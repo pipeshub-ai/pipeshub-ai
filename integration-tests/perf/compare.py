@@ -1,6 +1,6 @@
 """Compare a benchmark result with a committed baseline.
 
-Handles the benchmarks in ``perf/``: ``indexing`` (bench_indexing.py),
+Handles the benchmarks in ``perf/``: ``indexing`` (bench_indexing.py), ``costclass`` (bench_costclass.py),
 ``query`` (bench_query.py), ``scale`` (bench_scale.py) and ``load``
 (bench_load.py). The result's own ``benchmark`` field picks the checks, and two
 results of different benchmarks are never compared.
@@ -34,6 +34,9 @@ class Check:
     # A move smaller than this, in the measure's own unit, is never flagged
     # however large it is as a share: on a 50 ms search, 30% is jitter.
     min_change: float = 0.0
+    # True: the metric may be absent on one side (a corpus kind that one run did not have). Every other
+    # check treats a missing or null metric as an error in the result, not as "nothing to compare".
+    optional: bool = False
 
 
 INDEXING_CHECKS: tuple[Check, ...] = (
@@ -110,6 +113,46 @@ LOAD_COMPARABLE = _SHARED_COMPARABLE + (
     ("operation mix", lambda r: r["profile"]["mix"]),
 )
 
+# The cost-class bench (bench_costclass.py): numbers are per corpus kind, and only comparable when the
+# plan (scenario, tier, corpus, schedule seed) and the embedding mode are the same.
+COSTCLASS_COMPARABLE = (
+    ("label", lambda r: r["environment"]["label"]),
+    ("AI models", lambda r: r["environment"]["ai_models"]),
+    ("embedding mode", lambda r: r["environment"]["embedding_mode"]),
+    ("scenario", lambda r: r["plan"]["scenario"]),
+    ("tier", lambda r: r["plan"]["tier"]),
+    ("corpus", lambda r: r["plan"]["corpus_id"]),
+    ("schedule seed", lambda r: r["plan"]["seed"]),
+    ("arrivals", lambda r: r["plan"].get("arrivals")),
+    ("arrival rate", lambda r: (r["plan"].get("notes") or {}).get("rate_per_s")),
+    ("load duration", lambda r: (r["plan"].get("notes") or {}).get("duration_s")),
+    ("burst size", lambda r: (r["plan"].get("notes") or {}).get("burst_count")),
+)
+COSTCLASS_KIND_BUDGET = 0.20
+
+
+def _kind_check(kind: str, stat: str) -> Check:
+    return Check(
+        f"{kind} {stat}", lambda m, k=kind, s=stat: m["by_kind"][k][s], +1, COSTCLASS_KIND_BUDGET, " s", min_change=1.0,
+        optional=True,
+    )
+
+
+def costclass_checks(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[Check, ...]:
+    kinds = sorted(set(baseline["metrics"].get("by_kind", {})) | set(current["metrics"].get("by_kind", {})))
+    checks = [Check("Throughput (records/min)", lambda m: m.get("records_per_minute"), -1, COSTCLASS_KIND_BUDGET, "")]
+    for kind in kinds:
+        checks += [_kind_check(kind, "p95"), _kind_check(kind, "p50")]
+    return tuple(checks)
+
+
+def _invalid_mismatches(result: dict[str, Any], side: str) -> list[str]:
+    status = (result.get("verdict") or {}).get("status")
+    if status in ("invalid", "failed"):
+        return [f"{side}: the run was {status} ({'; '.join((result['verdict'].get('reasons') or [])[:3])})"]
+    return []
+
+
 BENCHMARKS: dict[str, tuple[tuple[Check, ...], tuple[Any, ...]]] = {
     "indexing": (INDEXING_CHECKS, INDEXING_COMPARABLE),
     "query": (QUERY_CHECKS, QUERY_COMPARABLE),
@@ -120,6 +163,7 @@ BENCHMARKS: dict[str, tuple[tuple[Check, ...], tuple[Any, ...]]] = {
     # 100,000-file one. Stress runs are deliberately absent: their result is a
     # list of pass-or-fail verdicts, not numbers to compare.
     "scale": (INDEXING_CHECKS, INDEXING_COMPARABLE),
+    "costclass": ((), COSTCLASS_COMPARABLE),
 }
 
 
@@ -156,6 +200,8 @@ def compare(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[list[Row
         # raise a KeyError instead of saying what is wrong.
         return [], [f"benchmark: {benchmark!r} is not one this can compare"]
     checks, comparable_fields = selected
+    if benchmark == "costclass":
+        checks = costclass_checks(baseline, current)
     mismatches = [
         f"{label}: baseline {_read(read, baseline)!r}, this run {_read(read, current)!r}"
         for label, read in comparable_fields
@@ -167,6 +213,8 @@ def compare(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[list[Row
         mismatches += _aborted_mismatches(baseline, "baseline") + _aborted_mismatches(current, "this run")
     if benchmark in ("indexing", "scale"):
         mismatches += _partial_run_mismatches(baseline, "baseline") + _partial_run_mismatches(current, "this run")
+    if benchmark == "costclass":
+        mismatches += _invalid_mismatches(baseline, "baseline") + _invalid_mismatches(current, "this run")
     rows = [_check_row(check, baseline["metrics"], current["metrics"]) for check in checks]
     if benchmark in ("query", "load"):
         # Under the load test's --fail-on-regression the citation rows stay
@@ -177,8 +225,18 @@ def compare(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[list[Row
     return rows, mismatches
 
 
+def _value(check: Check, metrics: dict[str, Any]) -> Any:
+    """A check's value. Only an optional check (a corpus kind) reads as None when one side never ran it."""
+    if not check.optional:
+        return check.read(metrics)
+    try:
+        return check.read(metrics)
+    except (KeyError, TypeError):
+        return None
+
+
 def _check_row(check: Check, base_m: dict[str, Any], cur_m: dict[str, Any]) -> Row:
-    base, cur = check.read(base_m), check.read(cur_m)
+    base, cur = _value(check, base_m), _value(check, cur_m)
     if base is None or cur is None or base == 0:
         return Row(check.name, base, cur, None, False, "not measured on one side", check.unit, check.gates)
     change = (cur - base) / base

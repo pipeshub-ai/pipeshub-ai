@@ -65,6 +65,7 @@ _COMPAT_FORMAT = AIModelField(
         ModelCapability.IMAGE_GENERATION,
         ModelCapability.TTS,
         ModelCapability.STT,
+        ModelCapability.DECISION,
     ]) \
     .with_icon("/icons/ai-models/openai.svg") \
     .with_color("#0078D4") \
@@ -95,6 +96,10 @@ _COMPAT_FORMAT = AIModelField(
     .add_field(API_KEY_OPTIONAL, ModelCapability.STT) \
     .add_field(model_field("e.g. whisper-1"), ModelCapability.STT) \
     .add_field(FRIENDLY_NAME, ModelCapability.STT) \
+    .add_field(_COMPAT_ENDPOINT_EMB, ModelCapability.DECISION) \
+    .add_field(API_KEY, ModelCapability.DECISION) \
+    .add_field(model_field("e.g. gpt-6-luna"), ModelCapability.DECISION) \
+    .add_field(FRIENDLY_NAME, ModelCapability.DECISION) \
     , GATEWAY_CAPABILITIES).build_decorator()
 class OpenAICompatibleProvider:
     pass

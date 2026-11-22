@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 from app.modules.pipeline.fingerprint import content_facts
 from app.modules.pipeline.ingress import StageIngress
@@ -27,6 +28,8 @@ def _ingress(document: dict[str, object] | None) -> tuple[StageIngress, AsyncMoc
     coordinator, graph = AsyncMock(), AsyncMock()
     coordinator.on_external_done = AsyncMock(return_value=["job"])
     graph.get_document = AsyncMock(return_value=document)
+    # the record holds no such revision: the write that matches it is refused, the one that matches what it holds drops the count
+    graph.update_node_fields_if_match = AsyncMock(side_effect=lambda _k, _c, updates, _expected: "pageCount" in updates)
     return StageIngress(coordinator, graph, MagicMock()), coordinator, graph
 
 
@@ -42,8 +45,15 @@ async def test_the_revision_and_content_facts_describe_the_record() -> None:
     assert (view.rev, view.text_digest, view.text_chars, view.tier) == ("abc", facts.text_digest, 5, ParseTier.LIGHT)
     assert kwargs == {
         "priority": Priority.INTERACTIVE, "trigger": "newRecord", "force": False,
-        "keep_claim_on_publish_failure": True,
+        "keep_claim_on_publish_failure": True, "defer": frozenset(),
     }
+
+
+@pytest.mark.asyncio
+async def test_classification_left_for_first_use_is_not_dispatched() -> None:
+    ingress, coordinator, _ = _ingress({"contentRev": "abc"})
+    await ingress.on_indexed(_record(), trigger="newRecord", defer_classify=True)
+    assert coordinator.on_external_done.await_args.kwargs["defer"] == frozenset({"classify"})
 
 
 @pytest.mark.asyncio
@@ -59,7 +69,9 @@ async def test_a_missing_revision_is_derived_from_the_blocks_and_stored() -> Non
     record = _record()
     await ingress.on_indexed(record, trigger=None)
     rev = content_facts(record.block_containers).blocks_digest[:16]
-    graph.update_node.assert_awaited_once_with("rec-1", "records", {"contentRev": rev})
+    # a record with no revision holds no count it can vouch for: it goes with the new revision (the rule of write_attempt_start)
+    graph.update_node.assert_not_awaited()
+    assert graph.update_node_fields_if_match.await_args.args[:3] == ("rec-1", "records", {"contentRev": rev, "pageCount": None})
     assert coordinator.on_external_done.await_args.args[1].rev == rev
     assert coordinator.on_external_done.await_args.kwargs["trigger"] == "index"
 
@@ -76,9 +88,28 @@ async def test_a_forced_event_forces_the_stages_it_dispatches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_deleted_record_is_an_error() -> None:
-    ingress, _, _ = _ingress(None)
-    with pytest.raises(LookupError):
+async def test_a_deleted_record_raises_record_deleted() -> None:
+    ingress, coordinator, graph = _ingress(None)
+    with pytest.raises(RecordDeletedError) as raised:
+        await ingress.on_indexed(_record(), trigger="newRecord")
+    assert raised.value.record_id == "rec-1"
+    assert graph.get_document.await_args.kwargs == {"raise_on_error": True}
+    coordinator.on_external_done.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_trashed_record_raises_record_deleted() -> None:
+    ingress, coordinator, _ = _ingress({"contentRev": "abc", "isDeleted": True})
+    with pytest.raises(RecordDeletedError):
+        await ingress.on_indexed(_record(), trigger="newRecord")
+    coordinator.on_external_done.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_graph_is_not_mistaken_for_a_deletion() -> None:
+    ingress, _, graph = _ingress(None)
+    graph.get_document.side_effect = ConnectionError("graph down")
+    with pytest.raises(ConnectionError):
         await ingress.on_indexed(_record(), trigger="newRecord")
 
 
@@ -93,11 +124,29 @@ async def test_a_retry_re_runs_stages_for_the_current_revision() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_first_use_redrive_is_not_forced() -> None:
+    ingress, coordinator, _ = _ingress(None)
+    coordinator.redrive_revision = AsyncMock(return_value=[])
+    await ingress.redrive("vr-1", "abc", ["classify"], force=False)
+    assert coordinator.redrive_revision.await_args.kwargs["force"] is False
+
+
+@pytest.mark.asyncio
 async def test_a_retry_without_a_revision_falls_back_to_a_reindex() -> None:
     ingress, coordinator, _ = _ingress(None)
     assert await ingress.redrive("vr-1", None, ["classify"]) is None
     assert await ingress.redrive(None, "abc", ["classify"]) is None
     coordinator.redrive_revision.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_record_whose_hand_off_was_lost_is_recovered() -> None:
+    ingress, coordinator, _ = _ingress(None)
+    coordinator.has_seen_revision = AsyncMock(return_value=False)
+    waiting = {"indexingStatus": "COMPLETED", "extractionStatus": "NOT_STARTED", "virtualRecordId": "vr-1", "contentRev": "abc"}
+    assert await ingress.handoff_lost({**waiting, "extractionDeferred": True}) is True
+    # NOT_STARTED without the marker is a cut-short enrichment or an older record: final.
+    assert await ingress.handoff_lost(waiting) is False
 
 
 _INDEXED_QUEUED = {
@@ -138,3 +187,14 @@ async def test_an_indexed_queued_record_without_a_revision_lost_its_hand_off() -
     ingress, coordinator, _ = _ingress(None)
     coordinator.has_seen_revision = AsyncMock(return_value=True)
     assert await ingress.handoff_lost({**_INDEXED_QUEUED, "contentRev": None}) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", ["", None, 5])
+async def test_an_empty_or_unusable_stored_revision_also_drops_the_count(held: object) -> None:
+    ingress, _, graph = _ingress({"contentRev": held, "pageCount": 9})
+    record = _record()
+    await ingress.on_indexed(record, trigger=None)
+    rev = content_facts(record.block_containers).blocks_digest[:16]
+    graph.update_node.assert_not_awaited()
+    assert graph.update_node_fields_if_match.await_args.args[:3] == ("rec-1", "records", {"contentRev": rev, "pageCount": None})

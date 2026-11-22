@@ -5036,6 +5036,10 @@ class TestCreateRecordFromVectorMetadata:
         assert "block_containers" in record
         assert len(record["block_containers"]["blocks"]) == 1
         assert "point-1" in point_id_map
+        # The scroll that rebuilds a record is confined to the caller's org.
+        mock_vector_service.filter_collection.assert_awaited_once_with(
+            must={"orgId": "org-1", "virtualRecordId": "vr-1"}
+        )
 
     @pytest.mark.asyncio
     async def test_exception_reraised(self):
@@ -5241,6 +5245,30 @@ class TestEnrichVirtualRecordIdFKChildren:
         }
         rec.update(overrides)
         return rec
+
+    @pytest.mark.parametrize(("limit", "named"), [
+        (None, "Warehouse DB"),
+        ({"apps": ["c-db"], "recordGroups": [], "records": []}, "Warehouse DB"),
+        ({"apps": [], "recordGroups": [], "records": ["rec-sql-1", "rec-child"]}, None),
+    ])
+    @pytest.mark.asyncio
+    async def test_a_related_table_names_its_connector_inside_the_limit(self, limit, named) -> None:
+        vr_map = {"vr-1": self._sql_table_record()}
+        gp = self._make_graph_provider(
+            child_relations=[{"record_id": "rec-child", "childTable": "orders"}], vrid_map={"rec-child": "vr-child"},
+        )
+        gp.get_document = AsyncMock(side_effect=lambda key, collection: (
+            {"_key": "c-db", "name": "Warehouse DB"} if collection == "apps" else {"connectorId": "c-db"}
+        ))
+        blob_store = self._make_blob_store(self._sql_table_record(vrid="vr-child", record_id="rec-child"))
+
+        with patch("app.modules.retrieval.selection_scope.outside_connection", AsyncMock(return_value=set())):
+            await enrich_virtual_record_id_to_result_with_fk_children(
+                vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=[], user_id="user-1",
+                connection_sources=limit,
+            )
+
+        assert vr_map["vr-child"]["connector_instance_name"] == named
 
     @pytest.mark.asyncio
     async def test_skips_when_no_graph_provider(self):
@@ -5851,7 +5879,7 @@ class TestEnrichRecordsWithGraphContext:
         blob_store.get_record_from_storage.assert_awaited_once()
         args, kwargs = blob_store.get_record_from_storage.await_args
         assert args == ("vr-parent-1", "org-1")
-        assert set(kwargs) <= {"lookup_result"}
+        assert set(kwargs) <= {"lookup_result", "head_only"}
 
     @pytest.mark.asyncio
     async def test_falls_back_to_graph_when_not_indexed(self):
@@ -7554,6 +7582,34 @@ class TestRenderBlocksWithImagesBudgetAccounting:
         assert any("conversation image limit" in item["text"] for item in content)
 
 
+@pytest.mark.asyncio
+async def test_the_per_record_fallback_caps_queries_in_flight() -> None:
+    """Every query in flight can open a new database connection; a page of hits
+    fanned out at once timed connects out ("Connection timeout to host")."""
+    import asyncio
+
+    from app.utils.chat_helpers import _relations_per_record
+    from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY
+
+    in_flight = peak = 0
+
+    async def query(*_args, **_kwargs) -> list:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)
+        in_flight -= 1
+        return []
+
+    gp = MagicMock()
+    gp.get_child_record_ids_by_relation_type = query
+    gp.get_parent_record_ids_by_relation_type = query
+    record_ids = [f"r{i}" for i in range(GRAPH_FANOUT_CONCURRENCY * 2)]
+    out = await _relations_per_record(gp, record_ids, ["PARENT_CHILD", "ATTACHMENT"])
+    assert set(out) == set(record_ids)
+    assert peak == GRAPH_FANOUT_CONCURRENCY
+
+
 class TestAccessibleNodeIds:
     """A user who does not exist reaches nothing; a lookup that failed is not
     an answer, and must not read as one."""
@@ -7690,3 +7746,18 @@ class TestLinkedContextNamesTheGraphRecord:
         own = _merge_graph_into_blob_record({"id": "y", "hide_weburl": True}, {"_key": "y", "webUrl": "https://y/9"})
         graph = _merge_graph_into_blob_record({"id": "x"}, {"_key": "y", "webUrl": "https://y/9", "hideWeburl": True})
         assert own["hide_weburl"] is True and graph["hide_weburl"] is True
+
+
+class TestResolveFrontendUrl:
+    @pytest.mark.asyncio
+    async def test_reads_endpoints_through_config_cache(self) -> None:
+        from app.utils.chat_helpers import resolve_frontend_url
+
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(
+            return_value={"frontend": {"publicEndpoint": "https://app.example.com"}}
+        )
+        assert await resolve_frontend_url(config_service) == "https://app.example.com"
+        config_service.get_config.assert_awaited_once_with(
+            "/services/endpoints", default={}, use_cache=True,
+        )

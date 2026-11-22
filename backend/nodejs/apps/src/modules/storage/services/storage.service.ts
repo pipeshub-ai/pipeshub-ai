@@ -1,9 +1,11 @@
 import type { FileHandle } from 'fs/promises';
+import type { ObjectStat } from '../utils/storage-fingerprint';
 import {
   Document,
   FilePayload,
   SignObjectUrlOptions,
   SignedObjectUrl,
+  ObjectPage,
   StorageServiceResponse,
 } from '../types/storage.service.types';
 
@@ -110,6 +112,13 @@ export interface StorageServiceInterface {
   objectExists?(document: Document): Promise<boolean>;
 
   /**
+   * Size and ETag of the document's current file as the store reports them now (HEAD on S3 and Azure, stat on local disk): the
+   * ETag has no quotes. Null when storage confirms the file is absent or the document has no location for this store; any other
+   * failure rejects. An S3 URL the provider cannot parse rejects with `StorageUrlParseError`.
+   */
+  statObject?(document: Document): Promise<ObjectStat | null>;
+
+  /**
    * Whether a file is stored at this path. Resolves false only when storage
    * confirms the path is empty; any other failure rejects.
    */
@@ -211,6 +220,27 @@ export interface StorageServiceInterface {
    * Writes bytes at a storage key, replacing any file already there. Local only.
    */
   writeObject?(storageKey: string, data: Buffer): Promise<void>;
+
+  /**
+   * Writes bytes at a storage key only when nothing is stored there. Resolves
+   * false, and leaves the stored object alone, when the key is taken. Local only.
+   */
+  writeObjectIfAbsent?(storageKey: string, data: Buffer): Promise<boolean>;
+
+  /**
+   * One page of the objects under a key prefix, in key order. `after` is the
+   * cursor a previous page returned. An empty or missing prefix is an empty page.
+   */
+  listObjects?(
+    prefix: string,
+    options: { after?: string; limit: number },
+  ): Promise<ObjectPage>;
+
+  /**
+   * Removes objects by key, at most 1000 per call. A key that is already gone
+   * is not an error; any other failure rejects.
+   */
+  deleteObjects?(storageKeys: string[]): Promise<void>;
 
   /**
    * Opens a storage key for reading, checked to be a regular file inside the

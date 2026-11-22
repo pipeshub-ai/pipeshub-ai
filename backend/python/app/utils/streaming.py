@@ -12,6 +12,7 @@ import aiohttp
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatBedrock, ChatBedrockConverse
+from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -22,6 +23,7 @@ from pydantic import BaseModel, ValidationError
 from app.agent_loop_lib.transport.provider_conflicts import (
     refused_cache_params,
 )
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.prompt_cache import (
     CacheStrategy,
     NoCacheStrategy,
@@ -34,7 +36,7 @@ from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
 )
 from app.exceptions.non_retryable import NonRetryableError
-from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.modules.retrieval import degraded_notice
 from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.citations import (
@@ -42,6 +44,7 @@ from app.utils.citations import (
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,  # noqa: F401  # tests patch this module attribute
 )
+from app.utils.error_class import log_failure
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
@@ -51,7 +54,9 @@ from app.utils.url_fetcher import private_addresses_blocked
 from app.utils.url_redaction import redact_urls_in_text
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
-INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
+# search() tries every "[", so a scan stops at the next one: the last "[" before an unfinished
+# citation decides the answer, and scanning on from each earlier one takes quadratic time.
+INCOMPLETE_CITE_RE = re.compile(r'\[[^\[\]]*(?:\]\([^)\[]*(?:\[[^)\[]*){0,8})?$')
 logger = create_logger("streaming")
 
 # Re-export for tests that patch app.utils.streaming.opik_tracer
@@ -432,56 +437,53 @@ async def aiter_llm_stream(
         if all(cb is not opik_tracer for cb in callbacks):
             callbacks.append(opik_tracer)
         config = {"callbacks": callbacks}
-    try:
-        if hasattr(llm, "astream"):
-            # Fix #1710: Manual iteration to catch per-chunk ValidationError
-            # when providers like LiteLLM send role=None on non-first chunks
-            astream_iter = llm.astream(messages, config=config).__aiter__()
-            while True:
-                try:
-                    part = await astream_iter.__anext__()
-                except StopAsyncIteration:
-                    break
-                except ValidationError as e:
-                    # Only suppress the specific validation error related to 'role'
-                    if "role" in str(e).lower():
-                        logger.warning(
-                            f"Skipping chunk due to validation error "
-                            f"(likely role=None from provider): {e}"
-                        )
-                        continue
-                    # Re-raise other validation errors to avoid hiding unexpected issues.
-                    raise
-
-                if not part:
+    if hasattr(llm, "astream"):
+        # Fix #1710: Manual iteration to catch per-chunk ValidationError
+        # when providers like LiteLLM send role=None on non-first chunks
+        astream_iter = llm.astream(messages, config=config).__aiter__()
+        while True:
+            try:
+                part = await astream_iter.__anext__()
+            except StopAsyncIteration:
+                break
+            except ValidationError as e:
+                # Only suppress the specific validation error related to 'role'
+                if "role" in str(e).lower():
+                    # Type only: pydantic's text quotes the rejected chunk, the model's output.
+                    logger.warning(
+                        "Skipping chunk due to validation error (likely role=None from provider)",
+                        extra={"error_type": type(e).__name__},
+                    )
                     continue
-                parts.append(part)
+                # Re-raise other validation errors to avoid hiding unexpected issues.
+                raise
 
-                if isinstance(part, dict):
-                    yield part
-                    continue
-                else:
-                    content = getattr(part, "content", None)
-                text = _stringify_content(content)
-                if text:
-                    yield text
-        else:
-            logger.info("Using non-streaming mode")
-            response = await llm.ainvoke(messages, config=config)
-            content = getattr(response, "content", response)
-            parts.append(response)
+            if not part:
+                continue
+            parts.append(part)
 
-            if isinstance(content, dict):
-                yield content
+            if isinstance(part, dict):
+                yield part
+                continue
             else:
-                text = _stringify_content(content)
-                if text:
-                    yield text
-                else:
-                    logger.info("No content found in response")
-    except Exception as e:
-        logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
-        raise
+                content = getattr(part, "content", None)
+            text = _stringify_content(content)
+            if text:
+                yield text
+    else:
+        logger.info("Using non-streaming mode")
+        response = await llm.ainvoke(messages, config=config)
+        content = getattr(response, "content", response)
+        parts.append(response)
+
+        if isinstance(content, dict):
+            yield content
+        else:
+            text = _stringify_content(content)
+            if text:
+                yield text
+            else:
+                logger.info("No content found in response")
 
 # Configuration for Qdrant limits based on context length.
 VECTOR_DB_LIMIT_TIERS = [
@@ -678,12 +680,12 @@ async def handle_simple_mode(
 
                 yield {
                     "event": "complete",
-                    "data": {
+                    "data": degraded_notice.flag({
                         "answer": normalized,
                         "citations": cites,
                         "reason": None,
                         "confidence": confidence,
-                    },
+                    }),
                 }
                 return
         except Exception as e:
@@ -885,7 +887,7 @@ def _initialize_answer_parser_regex() -> tuple[re.Pattern, re.Pattern, re.Patter
     answer_key_re = re.compile(r'"answer"\s*:\s*"')
     # cite_block_re = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
     cite_block_re = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
-    incomplete_cite_re = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
+    incomplete_cite_re = INCOMPLETE_CITE_RE
     # incomplete_cite_re = re.compile(r'[\[【][^\]】]*$')
     word_iter = re.compile(r'\S+').finditer
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
@@ -1030,16 +1032,16 @@ async def call_aiter_llm_stream_simple(
         )
         yield {
             "event": "complete",
-            "data": {
+            "data": degraded_notice.flag({
                 "answer": normalized,
                 "citations": cites,
                 "reason": None,
                 "confidence": confidence,
-            },
+            }),
         }
     except Exception as exc:
-        logger.error("Error in call_aiter_llm_stream_simple", exc_info=True)
-        yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
+        log_failure(logger, "llm_stream.failed", exc, include_error_text=False)
+        yield {"event": "error", "data": {"error": classify_exception(exc)[1]}}
         return
 
 def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
@@ -1097,6 +1099,15 @@ def cleanup_content(response_text: str) -> str:
     if response_text.endswith("```"):
         response_text = response_text.rsplit("```", 1)[0]
     return response_text.strip()
+
+
+# An answer that does not fit the schema is the model's doing, not a bug of ours: a WARNING, as before.
+_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException)
+
+
+def answer_error_class(exc: BaseException) -> str | None:
+    """``bad_request`` for a model answer that did not fit the schema; None lets ``classify_error`` decide."""
+    return "bad_request" if isinstance(exc, _ANSWER_PARSE_ERRORS) else None
 
 
 def _recover_structured_json_from_exception(
@@ -1202,7 +1213,10 @@ async def invoke_with_structured_output_and_reflection(
                 refused = refused_cache_params(exc, sent - dropped)
                 if not refused:
                     raise
-                logger.warning("Prompt-cache parameters %s rejected; resending without them: %s", sorted(refused), exc)
+                logger.warning(
+                    "Prompt-cache parameters %s rejected; resending without them", sorted(refused),
+                    extra={"error_type": type(exc).__name__},
+                )
                 if on_cache_rejected is not None:
                     on_cache_rejected(refused)
                 else:
@@ -1222,9 +1236,12 @@ async def invoke_with_structured_output_and_reflection(
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
             return recovered
-        logger.error(f"LLM invocation failed: {type(e).__name__}: {e}")
         if raise_call_errors:
             raise
+        log_failure(
+            logger, "structured_llm.failed", e, include_error_text=False,
+            error_class=answer_error_class(e), schema=schema.__name__, attempt=0,
+        )
         return None
 
     # Try to parse the response
@@ -1332,14 +1349,14 @@ Respond only with valid JSON that matches the schema."""
                         "Recovered schema-valid structured output from reflection invocation error"
                     )
                     return recovered
-                logger.warning(
-                    f"Reflection attempt {attempt + 1} failed: "
-                    f"{type(reflection_error).__name__}: {reflection_error}"
-                )
                 # An earlier timeout still leaves a retry; one that ends the loop means the
                 # last word was a starved call, not a reply that did not fit the schema.
                 if raise_call_errors and isinstance(reflection_error, TimeoutError) and attempt == max_retries - 1:
                     raise
+                log_failure(
+                    logger, "structured_llm.failed", reflection_error, include_error_text=False,
+                    error_class=answer_error_class(reflection_error), schema=schema.__name__, attempt=attempt + 1,
+                )
                 # A call that failed outright left no reply to correct, and
                 # the pending request already asks for valid JSON.
                 if attempt < max_retries - 1 and reflection_content is not None:
@@ -1348,115 +1365,3 @@ Respond only with valid JSON that matches the schema."""
 
         logger.error("All reflection attempts failed")
         return None
-
-
-async def invoke_with_count_validation_and_reflection(
-    llm: BaseChatModel,
-    messages: list,
-    schema: type[SchemaT],
-    count_field: str,
-    expected_count: int,
-    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
-) -> SchemaT | None:
-    """
-    Invoke LLM with structured output and validate that a list field has the expected length.
-
-    If the LLM returns the wrong number of items, performs one reflection to correct it.
-
-    Args:
-        llm: The LangChain chat model to use
-        messages: List of messages to send to the LLM
-        schema: Pydantic model class to validate the response against
-        count_field: Name of the list field on *schema* whose length must match
-        expected_count: Expected length of that field
-        max_retries: Maximum number of reflection retries on parse failure (default: 2)
-
-    Returns:
-        Validated schema instance with correct count, or None if validation fails
-    """
-    # First, try to get a parsed response using the standard reflection function
-    parsed_response = await invoke_with_structured_output_and_reflection(
-        llm, messages, schema, max_retries
-    )
-
-    if parsed_response is None:
-        logger.warning(f"Failed to parse {schema.__name__} after initial attempts")
-        return None
-
-    # Validate the count matches expected
-    actual_count = len(getattr(parsed_response, count_field) or [])
-
-    if actual_count == expected_count:
-        logger.debug(f"Count validation passed: {actual_count} {count_field}")
-        return parsed_response
-
-    # Count mismatch detected - perform reflection to correct it
-    logger.warning(
-        f"Count mismatch: LLM returned {actual_count} {count_field} "
-        f"but {expected_count} were expected. Attempting reflection..."
-    )
-
-    # Build reflection messages
-    reflection_messages = list(messages)
-    reflection_messages.append(
-        AIMessage(content=json.dumps(parsed_response.model_dump()))
-    )
-
-    reflection_prompt = f"""Your previous response contained {actual_count} {count_field}, but exactly {expected_count} {count_field} are required.
-
-CRITICAL: You must provide EXACTLY {expected_count} {count_field} - one for each row, in the same order they were provided.
-
-Please correct your response to include exactly {expected_count} {count_field}. Do not skip any rows, do not combine rows, and do not split rows.
-
-Respond with a valid JSON object:
-{{
-    "{count_field}": [
-        "Description for row 1",
-        "Description for row 2",
-        ...
-        "Description for row {expected_count}"
-    ]
-}}"""
-
-    reflection_messages.append(HumanMessage(content=reflection_prompt))
-
-    # Try reflection once (per user preference: 1 reflection attempt for count mismatches)
-    try:
-        reflection_response = await invoke_with_structured_output_and_reflection(
-            llm, reflection_messages, schema, max_retries=1
-        )
-
-        if reflection_response is None:
-            logger.error("Reflection failed to parse response")
-            return None
-
-        # Validate the count again
-        reflection_count = len(getattr(reflection_response, count_field) or [])
-
-        if reflection_count == expected_count:
-            logger.info(
-                f"Reflection successful: corrected from {actual_count} to {reflection_count} {count_field}"
-            )
-            return reflection_response
-        else:
-            logger.error(
-                f"Reflection failed: still have {reflection_count} {count_field} "
-                f"instead of {expected_count}"
-            )
-            return None
-
-    except Exception as e:
-        logger.error(f"Reflection attempt failed with error: {e}")
-        return None
-
-
-async def invoke_with_row_descriptions_and_reflection(
-    llm: BaseChatModel,
-    messages: list,
-    expected_count: int,
-    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
-) -> RowDescriptions | None:
-    """Invoke LLM for row descriptions and validate the count matches expected."""
-    return await invoke_with_count_validation_and_reflection(
-        llm, messages, RowDescriptions, "descriptions", expected_count, max_retries
-    )

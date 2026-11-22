@@ -66,7 +66,7 @@ async def assert_authenticated_identity_link(
         )
         return
 
-    source_user = await graph_provider.get_user_by_email(email)
+    source_user = await graph_provider.get_user_by_email(email, org_id=authenticator.get("orgId"))
     assert source_user is not None, (
         f"no user holds {email}, the account connector {connector_id} authenticated as"
     )

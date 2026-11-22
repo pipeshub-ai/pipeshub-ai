@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import type { PreviewCitation } from '../types';
@@ -10,14 +10,24 @@ interface ImageRendererProps {
   fileName: string;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
+  /** Increments on every click on a citation, so a repeat click on the active one scrolls again. */
+  citationClickVersion?: number;
   onHighlightClick?: (citationId: string) => void;
 }
 
-export function ImageRenderer({ fileUrl, fileName, citations, activeCitationId, onHighlightClick }: ImageRendererProps) {
+export function ImageRenderer({ fileUrl, fileName, citations, activeCitationId, citationClickVersion, onHighlightClick }: ImageRendererProps) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const [error, setError] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const frameRef = useRef<HTMLDivElement>(null);
+
+  // A repeat click on the active citation brings its box back into view.
+  useEffect(() => {
+    if (!activeCitationId || isLoading) return;
+    const box = frameRef.current?.querySelector('[data-citation-overlay="active"]');
+    (box as HTMLElement | null)?.scrollIntoView?.({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+  }, [activeCitationId, citationClickVersion, isLoading]);
 
   // Filter citations that have bounding boxes for overlay display
   const overlays = useMemo(() => {
@@ -89,6 +99,7 @@ export function ImageRenderer({ fileUrl, fileName, citations, activeCitationId, 
       }}
     >
       <Box
+        ref={frameRef}
         style={{
           position: 'relative',
           width: 'max-content',
@@ -137,6 +148,7 @@ export function ImageRenderer({ fileUrl, fileName, citations, activeCitationId, 
             <Box
               key={overlay.id}
               role="button"
+              data-citation-overlay={isActive ? 'active' : 'idle'}
               tabIndex={0}
               aria-label={`Go to citation ${overlay.id}`}
               onClick={() => onHighlightClick?.(overlay.id)}

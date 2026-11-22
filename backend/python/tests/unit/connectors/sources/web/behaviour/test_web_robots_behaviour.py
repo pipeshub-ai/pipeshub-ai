@@ -445,10 +445,21 @@ async def test_only_the_first_512_kib_of_robots_txt_are_read(
 
 
 def test_a_pathological_pattern_is_matched_quickly() -> None:
+    """Timed as a ratio, not against a limit: doubling the path costs about 4x at worst when the
+    scan is linear, and thousands of times as much when the pattern backtracks."""
     rules = RobotsRules.parse("User-agent: *\nDisallow: /*a*a*a*a*a*a*a*a*b\n", "PipesHub")
 
-    started = time.monotonic()
-    allowed = rules.allows("http://site.test/" + "a" * 40)
+    def best_of_three(size: int, reps: int) -> float:
+        runs = []
+        for _ in range(3):
+            started = time.monotonic()
+            for _ in range(reps):
+                assert rules.allows("http://site.test/" + "a" * size) is True
+            runs.append(time.monotonic() - started)
+        return min(runs)
 
-    assert allowed is True
-    assert time.monotonic() - started < 0.5
+    # Repeat the call until the small input takes at least 5 ms, so the comparison is never against noise.
+    one = best_of_three(12, 1)
+    reps = max(1, int(0.005 / max(one, 1e-7)) + 1)
+    small, large = best_of_three(12, reps), best_of_three(24, reps)
+    assert large <= small * 40, (reps, small, large)  # linear is about 2-4x; backtracking is thousands of times

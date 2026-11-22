@@ -10,20 +10,33 @@ default; set ``PIPESHUB_CHAT_TIMING=false`` to compile it down to no-ops.
 `StageTimer` stops at the first agent event. `RunTimer` covers the rest of an
 agent run — each model turn, each tool call, the pattern-match wait inside a
 search, and the finish step — under the same flag.
+
+`collect_spans` and `span` break a stage down without passing a timer through
+the services it calls: a route opens a collector, and code anywhere under it
+adds the time of a named step (embedding, the vector search, the access check,
+fetching records). Steps that run side by side, like a timeline's searches,
+add to the same name, so a name shows its summed time and how many times it ran.
 """
 
 from __future__ import annotations
 
 import contextlib
+import functools
 import os
 import time
-from typing import TYPE_CHECKING
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Hashable
+    from collections.abc import Awaitable, Callable, Hashable, Iterator
 
-__all__ = ["RunTimer", "StageTimer", "timing_enabled"]
+__all__ = ["RunTimer", "StageTimer", "collect_spans", "format_spans", "span", "spanned", "timing_enabled"]
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+_SPANS: ContextVar[dict[str, list[float]] | None] = ContextVar("stage_spans", default=None)
 
 
 def timing_enabled() -> bool:
@@ -63,21 +76,27 @@ class StageTimer:
     def total_ms(self) -> float:
         return (time.perf_counter() - self._t0) * 1000.0
 
-    def emit(self, logger: "logging.Logger", label: str, **extra: object) -> None:
+    def emit(
+        self, logger: "logging.Logger", label: str, *, detail: str | None = None, **extra: object,
+    ) -> None:
+        """Log the marks as one line. ``detail``, when given, follows the last
+        mark in brackets: what that stage was made of (``format_spans``)."""
         if not self._enabled or self._emitted:
             return
         self._emitted = True
         parts = " ".join(f"{name}={ms:.0f}ms" for name, ms in self._marks)
+        if detail:
+            parts = f"{parts} ({detail})"
         suffix = " ".join(f"{k}={v}" for k, v in extra.items() if v is not None)
         with contextlib.suppress(Exception):
             logger.info(
-                "⏱ %s total=%.0fms | %s%s",
+                "%s total=%.0fms | %s%s",
                 label, self.total_ms, parts, f" | {suffix}" if suffix else "",
             )
 
 
 class RunTimer:
-    """Span timings for one agent run, written as one line when the run ends.
+    """Span timings for one agent run, summarised on the run's end line.
 
     Unlike `StageTimer`'s marks, spans are measured independently: tool calls
     can run in parallel and the pattern-match wait happens inside a tool call,
@@ -88,24 +107,26 @@ class RunTimer:
     `start(key, name)` / `stop(key)` time a span between two events that share
     a key (a turn number, a tool-call id); `stop` without a matching `start` is
     ignored. `record(name, ms)` adds a span measured elsewhere. A span still
-    open when `emit()` runs (a model call that raised, a tool cut off by a
-    client disconnect) is logged too, timed up to that moment and marked
-    ``(open)``. `emit()` is safe to call more than once; only the first call
-    logs.
+    open when `summary()` runs (a model call that raised, a tool cut off by a
+    client disconnect) is included too, timed up to that moment and marked
+    ``(open)``. `total_ms` counts from construction whether or not timing is on.
     """
 
-    __slots__ = ("_enabled", "_t0", "_open", "_spans", "_emitted")
+    __slots__ = ("_enabled", "_t0", "_open", "_spans")
 
     def __init__(self, *, enabled: bool | None = None) -> None:
         self._enabled = timing_enabled() if enabled is None else enabled
         self._t0 = time.perf_counter()
         self._open: dict[Hashable, tuple[str, float]] = {}
         self._spans: list[tuple[str, float]] = []
-        self._emitted = False
 
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    @property
+    def total_ms(self) -> float:
+        return (time.perf_counter() - self._t0) * 1000.0
 
     @property
     def spans(self) -> list[tuple[str, float]]:
@@ -130,21 +151,69 @@ class RunTimer:
             return
         self._spans.append((name, ms))
 
-    def emit(self, logger: "logging.Logger", label: str, **extra: object) -> None:
-        if not self._enabled or self._emitted:
-            return
-        self._emitted = True
+    def summary(self) -> str | None:
+        """``llm_turn_1=812ms tool:retrieval=4130ms(open)``: finished spans in the
+        order they finished, then open ones. ``None`` when disabled or empty."""
+        if not self._enabled:
+            return None
         now = time.perf_counter()
-        total_ms = (now - self._t0) * 1000.0
         finished = [f"{name}={ms:.0f}ms" for name, ms in self._spans]
         unfinished = [
             f"{name}={(now - started) * 1000.0:.0f}ms(open)"
             for name, started in self._open.values()
         ]
-        parts = " ".join(finished + unfinished)
-        suffix = " ".join(f"{k}={v}" for k, v in extra.items() if v is not None)
-        with contextlib.suppress(Exception):
-            logger.info(
-                "⏱ %s total=%.0fms | %s%s",
-                label, total_ms, parts, f" | {suffix}" if suffix else "",
-            )
+        return " ".join(finished + unfinished) or None
+
+
+@contextlib.contextmanager
+def collect_spans() -> Iterator[dict[str, list[float]]]:
+    """Collect the time of every `span` run inside, as ``{name: [ms, ...]}``.
+
+    Empty, and every `span` free, when timing is off. Tasks started inside
+    share the collector, since they copy the context they were created in.
+    """
+    spans: dict[str, list[float]] = {}
+    token = _SPANS.set(spans if timing_enabled() else None)
+    try:
+        yield spans
+    finally:
+        _SPANS.reset(token)
+
+
+@contextlib.contextmanager
+def span(name: str) -> Iterator[None]:
+    """Add the time spent inside to ``name`` in the open collector, if any."""
+    spans = _SPANS.get()
+    if spans is None:
+        yield
+        return
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        spans.setdefault(name, []).append((time.perf_counter() - started) * 1000.0)
+
+
+def spanned(name: str) -> "Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Awaitable[_R]]]":
+    """Time every call of an async function as ``span(name)``."""
+
+    def decorate(fn: "Callable[_P, Awaitable[_R]]") -> "Callable[_P, Awaitable[_R]]":
+        @functools.wraps(fn)
+        async def timed(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+            with span(name):
+                return await fn(*args, **kwargs)
+
+        return timed
+
+    return decorate
+
+
+def format_spans(spans: dict[str, list[float]]) -> str | None:
+    """``embed=812ms vector=4130ms/7 ...``: each name's summed time, and after a
+    slash how many times it ran when more than once. ``None`` when empty."""
+    if not spans:
+        return None
+    return " ".join(
+        f"{name}={sum(times):.0f}ms" + (f"/{len(times)}" if len(times) > 1 else "")
+        for name, times in spans.items()
+    )

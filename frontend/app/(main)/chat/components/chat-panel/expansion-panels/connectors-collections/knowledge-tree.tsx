@@ -12,6 +12,7 @@ import { useChatStore } from '@/chat/store';
 import type { ChatKnowledgeFilters, CollectionMeta } from '@/chat/types';
 import { BELOW_APP_KEYS, checkStateOf, selectedIds, toggleNode } from '@/chat/utils/tree-selection';
 import { CollectionLeadingIcon } from './collection-row';
+import { onSessionEnd } from '@/lib/api/session-cache';
 
 const CHILDREN_PAGE_SIZE = 20;
 const INDENT_PER_LEVEL_PX = 16;
@@ -496,6 +497,11 @@ const MAX_PLACE_ATTEMPTS = 3;
 const PLACE_RETRY_MS = 3000;
 const placeAsked = new Set<string>();
 const placeAttempts = new Map<string, number>();
+// The places are forgotten with the chat store at session end, so the next person must ask again.
+onSessionEnd(() => {
+  placeAsked.clear();
+  placeAttempts.clear();
+});
 
 /**
  * Learns where nodes sit in the tree when it was not walked down to them: a

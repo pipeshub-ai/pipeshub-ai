@@ -33,8 +33,9 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.model_identity.errors import classify_for_user
-from app.utils.log_redaction import redact_secrets_in_text
+from app.utils.log_redaction import URL_PATTERN, redact_secrets_in_text
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -70,7 +71,10 @@ _REQUEST_TOO_LARGE_HINTS = (
     "error code: 413",
     "reduce your message size",
     "context length exceeded",
+    "context_length_exceeded",
     "maximum context length",
+    # Azure OpenAI: "Your input exceeds the context window of this model."
+    "exceeds the context window",
     # `Agent.step` ends the run with this when the shapers cannot fit the
     # context into the model's window (see agent_loop_lib/context/errors.py).
     "context could not be shaped",
@@ -79,6 +83,7 @@ _REQUEST_TOO_LARGE_HINTS = (
 # waiting a minute never fixes it.
 _QUOTA_HINTS = (
     "insufficient_quota",
+    "credit_balance",
     "exceeded your current quota",
     "credit balance is too low",
 )
@@ -98,6 +103,13 @@ _SERVER_ERROR_HINTS = (
     "connection error",
     "connection refused",
     "apiconnectionerror",
+    # A failure inside an open stream arrives without its HTTP status, only the
+    # provider's wording (Azure OpenAI 503 / 500, Anthropic overloaded_error).
+    "high demand",
+    "server had an error",
+    "server_error",
+    "service_unavailable",
+    "overloaded",
 )
 _TIMEOUT_HINTS = ("timeout", "timed out")
 
@@ -172,11 +184,10 @@ _MAX_PROVIDER_MESSAGE_LEN = 240
 # OpenAI-style organization/project ids ("in organization org-abc123 on
 # tokens per min") and the account/billing/docs links providers append.
 _PROVIDER_ACCOUNT_ID_RE = re.compile(r"\b(?:org|proj|acct|account)[-_][A-Za-z0-9_-]{4,}\b")
-_URL_RE = re.compile(r"https?://\S+")
 
 
 def _sanitize_provider_message(message: str) -> str | None:
-    text = _URL_RE.sub("", message)
+    text = redact_secrets_in_text(URL_PATTERN.sub("", message))
     text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
     text = " ".join(text.split())
     if not text or "traceback" in text.lower():
@@ -280,17 +291,6 @@ def classify_error(error_msg: str) -> tuple[str, str]:
     return error_code, _USER_MESSAGES[error_code]
 
 
-def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
-    """The raw error with URLs, account ids and credentials masked, capped at `max_len`.
-
-    A provider's error can echo the request URL, whose query string may carry
-    a credential (Google's REST endpoints accept `?key=`), or a request header.
-    """
-    text = _URL_RE.sub("[url]", error_msg)
-    text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
-    return redact_secrets_in_text(text)[:max_len]
-
-
 def _status_phrase(status_code: int) -> str | None:
     try:
         return HTTPStatus(status_code).phrase
@@ -313,6 +313,13 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
 
     if isinstance(exc, LLMNotConfiguredError):
         return "llm_not_configured", str(exc)
+    if isinstance(exc, PermissionVerificationUnavailableError):
+        # Not "no access": the graph could not say, so the reader is told to retry.
+        from app.modules.retrieval.retrieval_service import (
+            PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
+        )
+
+        return "permission_check_unavailable", PERMISSION_CHECK_UNAVAILABLE_MESSAGE
     if isinstance(exc, HTTPException):
         detail = exc.detail
         if isinstance(detail, dict):
@@ -323,9 +330,15 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     return classify_error(str(exc))
 
 
+def run_error_text(result: object) -> str | None:
+    """What a run's user-facing answer is classified from: the raw text behind `AgentResult.error` (`error_detail`),
+    else `error`. Duck-typed: a result that keeps no raw text (a stub, an older result type) gives its `error`."""
+    return getattr(result, "error_detail", None) or getattr(result, "error", None)
+
+
 __all__ = [
     "classify_error",
     "classify_exception",
-    "redact_error_for_log",
     "register_error_classifier",
+    "run_error_text",
 ]

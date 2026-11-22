@@ -664,21 +664,19 @@ class TestP4BatchDelete:
 
 
 # ---------------------------------------------------------------------------
-# PP-347 S1: a team connector must name its shares
+# A team connector with no shares named syncs every share, like a personal one
 # ---------------------------------------------------------------------------
 class TestS1TeamScope:
-    async def test_team_connector_without_share_filter_refuses(self) -> None:
+    async def test_team_connector_without_share_filter_syncs_every_share(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
+        ds.add("other", "b.txt")
         proc = FakeProcessor()
         conn = _connector(ds, proc, scope="team")
-        with pytest.raises(ValueError, match="team connector"):
-            await _sync(conn)
-        assert proc.records == {}
-        conn.notify.assert_awaited()
+        await _sync(conn)
+        assert "s/a.txt" in proc.records and "other/b.txt" in proc.records
 
-    async def test_team_connector_with_a_not_in_filter_refuses(self) -> None:
-        # Every share but a few, including ones created later, is still org-wide.
+    async def test_team_connector_honours_not_in(self) -> None:
         ds = FakeDataSource({})
         ds.add("s", "a.txt")
         ds.add("other", "b.txt")
@@ -687,9 +685,8 @@ class TestS1TeamScope:
         conn._test_filters = FilterCollection(filters=[
             Filter(key="shares", value=["other"], type=FilterType.MULTISELECT, operator=MultiselectOperator.NOT_IN),
         ])
-        with pytest.raises(ValueError, match="team connector"):
-            await _sync(conn)
-        assert proc.records == {}
+        await _sync(conn)
+        assert "s/a.txt" in proc.records and "other/b.txt" not in proc.records
 
     async def test_personal_connector_honours_not_in(self) -> None:
         ds = FakeDataSource({})

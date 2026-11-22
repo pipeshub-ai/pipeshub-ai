@@ -8,7 +8,7 @@ vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null })
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn() }, isProcessedError: () => false }));
-vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null }));
+vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null, McpManageAccess: () => null }));
 vi.mock('../../../api', () => ({
   McpServersApi: { discoverOAuthMetadata: vi.fn(), getOAuthConfig: vi.fn() },
 }));
@@ -75,11 +75,6 @@ function panel(customStdioAllowed: boolean) {
         customStdioAllowed={customStdioAllowed}
         onOpenChange={vi.fn()}
         onSaved={vi.fn()}
-        onRequestDelete={vi.fn()}
-        busyInstanceId={null}
-        onAuthenticate={vi.fn()}
-        onReauthenticate={vi.fn()}
-        onDisconnect={vi.fn()}
       />
     </Theme>
   );
@@ -127,5 +122,44 @@ describe('McpInstanceConfigPanel custom STDIO setting', () => {
     expect(offeredTransports()).toContain('stdio');
     expect(screen.getByText('workspace.mcpServers.stdioPolicy.unavailableHint')).toBeTruthy();
     expect((screen.getByText('save') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('Okta catalog URL', () => {
+  it('asks for a URL on the Okta card and keeps GitHub locked', () => {
+    const okta = {
+      typeId: 'okta',
+      displayName: 'Okta',
+      description: 'Your Okta org',
+      transport: 'streamable_http' as const,
+      defaultAuthMode: 'oauth' as const,
+      supportedAuthModes: ['oauth' as const],
+      args: [],
+      requiredEnv: [],
+      optionalEnv: [],
+      defaultScopes: [],
+      supportsDcr: false,
+      urlEditable: true,
+      requireOauthClient: true,
+      authHint: { label: 'Okta OAuth', helpText: 'Paste your org MCP URL.' },
+      tags: [],
+    };
+    render(
+      <Theme>
+        <McpInstanceConfigPanel
+          state={{ open: true, mode: 'create', editingInstance: null, prefillTemplate: okta }}
+          templates={[okta]}
+          instances={[]}
+          customStdioAllowed={false}
+          onOpenChange={vi.fn()}
+          onSaved={vi.fn()}
+        />
+      </Theme>
+    );
+
+    expect(textInput('workspace.mcpServers.form.url')).toBeTruthy();
+    expect(screen.getByText('Paste your org MCP URL.')).toBeTruthy();
+    expect(screen.queryByRole('group', { name: 'workspace.mcpServers.form.transport' })).toBeNull();
+    expect(screen.queryByRole('group', { name: 'workspace.mcpServers.form.scopes' })).toBeNull();
   });
 });

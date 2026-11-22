@@ -4,6 +4,7 @@ import pytest
 from app.connectors.core.registry.code_indexing_flags import (
     code_exclude_globs,
     code_indexing_filters_changed,
+    sync_filters_changed_beyond_branch,
 )
 from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
 from app.modules.parsers.code_parser.file_role import (
@@ -94,3 +95,18 @@ def test_a_test_files_toggle_is_a_code_filter_change() -> None:
     assert code_indexing_filters_changed(old, {"test_files": {"operator": "is", "value": True}})
     assert not code_indexing_filters_changed(old, dict(old))
     assert not code_indexing_filters_changed({}, {"documents": {"value": True}})
+
+
+def test_a_branch_change_alone_is_no_full_resync() -> None:
+    """The connector sees its checkpoint's branch differ and syncs the difference."""
+    repos = {"repo_ids": {"operator": "in", "value": ["acme/widgets"]}}
+
+    def branch(name: str) -> dict:
+        return {"branch": {"operator": "in", "type": "select", "value": [name]}}
+
+    old = {"values": {**repos, **branch("main")}}
+    assert not sync_filters_changed_beyond_branch(old, {"values": {**repos, **branch("release")}})
+    assert not sync_filters_changed_beyond_branch(old, {"values": dict(repos)})
+    assert not sync_filters_changed_beyond_branch({"values": dict(repos)}, old)
+    other = {"values": {"repo_ids": {"operator": "in", "value": ["acme/gadgets"]}, **branch("release")}}
+    assert sync_filters_changed_beyond_branch(old, other)

@@ -38,10 +38,13 @@ def _field_names(provider_id: str) -> list[str]:
 def test_registry_lists_decision_providers() -> None:
     assert CAPABILITY_TO_MODEL_TYPE["decision"] == "decision"
     ids = {p["providerId"] for p in ai_model_registry.list_providers() if "decision" in p["capabilities"]}
-    assert ids == {"openAI", "azureOpenAI", "typesafe"}
+    assert ids == {"openAI", "azureOpenAI", "typesafe", "openRouter", "litellmProxy", "openAICompatible"}
     assert _field_names("typesafe") == ["apiKey", "endpoint", "model", "modelFriendlyName"]
     assert _field_names("azureOpenAI") == ["endpoint", "apiKey", "model", "deploymentName", "modelFriendlyName"]
     assert "apiKey" in _field_names("openAI")
+    assert _field_names("openRouter") == ["apiKey", "model", "modelFriendlyName"]
+    assert _field_names("litellmProxy") == ["endpoint", "apiKey", "model", "modelFriendlyName"]
+    assert _field_names("openAICompatible") == ["endpoint", "apiKey", "model", "modelFriendlyName"]
 
 
 async def test_discovery_lists_jev_for_typesafe_without_a_key() -> None:

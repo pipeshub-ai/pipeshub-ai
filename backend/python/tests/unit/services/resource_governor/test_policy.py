@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import random
 from collections import deque
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -13,6 +15,7 @@ from app.services.resource_governor.feedback import FeedbackWindow
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
+    LimitRule,
     Limits,
     Pool,
     PoolDemand,
@@ -1729,3 +1732,202 @@ class TestDownstreamBrake:
         )
         assert limits.get(Pool.INDEX_HEAVY) == 32
         assert limits.get(Pool.INDEX_LIGHT) == 64
+
+
+class TestDownstreamBrakeScope:
+    """A dependency only one tier calls brakes only that tier's index pool. Docling parses PDF-route (heavy)
+    records: its outage must not narrow the light pool, which takes no load off it."""
+
+    CEILINGS = Ceilings(heavy=8, light=32, index_heavy=32, index_light=64)
+    SNAP = _snapshot(cpu_quota=16.0, mem_limit_bytes=64 * 1024 ** 3, mem_working_set_bytes=8 * 1024 ** 3)
+
+    @staticmethod
+    def _busy(limits: Limits) -> dict[Pool, PoolDemand]:
+        return {
+            p: PoolDemand(permit_seconds=limits.get(p) * INTERVAL, blocked_acquires=3, completions=limits.get(p))
+            for p in Pool
+        }
+
+    def _step(
+        self, window: FeedbackWindow, heavy: int = 32, light: int = 64, ceilings: Ceilings | None = None,
+    ) -> tuple[Limits, ControllerState]:
+        limits = Limits(values={Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 16, Pool.INDEX_HEAVY: heavy, Pool.INDEX_LIGHT: light})
+        return next_limits(
+            limits, self.SNAP, ceilings or self.CEILINGS, ControllerState.initial(), self._busy(limits),
+            now=1000.0, feedback=window,
+        )
+
+    def test_a_docling_outage_halves_heavy_and_leaves_light_unbraked(self) -> None:
+        limits, state = self._step(FeedbackWindow(unavailable={"DoclingService": 3}))
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        assert limits.get(Pool.INDEX_LIGHT) == 64
+        light = state.get(Pool.INDEX_LIGHT)
+        assert light.rule is not LimitRule.DOWNSTREAM
+        assert light.cooldown_until < 1000.0
+        assert light.downstream_holdoff == 0
+
+    @pytest.mark.parametrize(
+        ("window", "heavy"),
+        [
+            (FeedbackWindow(throttles={"DoclingService": 1}), 16),
+            (FeedbackWindow(timeouts={"DoclingService": 2}), 24),
+        ],
+    )
+    def test_a_docling_throttle_or_timeouts_brake_heavy_only(self, window: FeedbackWindow, heavy: int) -> None:
+        limits, _ = self._step(window)
+        assert limits.get(Pool.INDEX_HEAVY) == heavy
+        assert limits.get(Pool.INDEX_LIGHT) == 64
+
+    def test_a_shared_dependency_in_the_same_window_still_brakes_light(self) -> None:
+        limits, state = self._step(FeedbackWindow(unavailable={"DoclingService": 3}, pool_exhaustions={"neo4j": 1}))
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        assert limits.get(Pool.INDEX_LIGHT) == 32
+        assert state.get(Pool.INDEX_LIGHT).rule_services == ("neo4j",)
+        assert state.get(Pool.INDEX_HEAVY).rule_services == ("DoclingService", "neo4j")
+
+    def test_the_timeout_threshold_is_counted_per_pool_after_scoping(self) -> None:
+        limits, _ = self._step(FeedbackWindow(timeouts={"DoclingService": 1, "neo4j": 1}))
+        assert limits.get(Pool.INDEX_HEAVY) == 24  # two timeouts: a quarter off
+        assert limits.get(Pool.INDEX_LIGHT) == 64  # one timeout: no shrink
+
+    def test_light_grows_through_a_sustained_docling_outage_as_on_a_clean_window(self) -> None:
+        def run(window: FeedbackWindow) -> list[tuple[int, int]]:
+            limits = Limits(values={Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 16, Pool.INDEX_HEAVY: 32, Pool.INDEX_LIGHT: 32})
+            state = ControllerState.initial()
+            seen = []
+            for i in range(6):
+                limits, state = next_limits(
+                    limits, self.SNAP, self.CEILINGS, state, self._busy(limits), now=1000.0 + i * INTERVAL,
+                    feedback=window,
+                )
+                seen.append((limits.get(Pool.INDEX_HEAVY), limits.get(Pool.INDEX_LIGHT)))
+            return seen
+
+        outage = run(FeedbackWindow(unavailable={"DoclingService": 1}))
+        clean = run(FeedbackWindow.empty())
+        assert [light for _, light in outage] == [light for _, light in clean]
+        assert clean[-1][1] > 32
+        assert all(heavy < clean_heavy for (heavy, _), (clean_heavy, _) in zip(outage, clean, strict=True))
+
+    def test_a_collapsed_light_tier_still_brakes_heavy(self) -> None:
+        ceilings = Ceilings(heavy=8, light=32, index_heavy=32, index_light=0)
+        limits, _ = self._step(FeedbackWindow(unavailable={"DoclingService": 3}), light=0, ceilings=ceilings)
+        assert limits.get(Pool.INDEX_HEAVY) == 16
+        assert limits.get(Pool.INDEX_LIGHT) == 0
+
+    def test_the_docling_key_is_the_name_the_client_reports_under(self) -> None:
+        source = (Path(__file__).resolve().parents[4] / "app/services/docling/client.py").read_text()
+        assert 'service_name="DoclingService"' in source
+        assert policy_mod.SERVICE_POOL["DoclingService"] is Pool.INDEX_HEAVY
+
+
+class TestBrakesNeverRaiseALimit:
+    """A brake or target walk may hold or lower a limit, never raise it.
+
+    The memory target can hold heavy parse below its pressure floor (one
+    Docling working set is larger than the free memory). A brake computed as
+    ``max(floor, current - step)`` then lifts the limit back to the floor,
+    and the next sample walks it down again: 1, 2, 1, 2 under constant
+    pressure, admitting another working set on every even sample.
+    """
+
+    GIB = 1024 ** 3
+    CEILINGS = Ceilings(heavy=4, light=32, index_heavy=8, index_light=64)
+
+    @staticmethod
+    def _pressured() -> ResourceSnapshot:
+        # 75% of 4 GiB in use: past MEM_SOFT, under MEM_HARD, 1 GiB free so
+        # the heavy target is 1 (less than one 1.5 GiB working set fits).
+        return _snapshot(mem_limit_bytes=4 * 1024 ** 3, mem_working_set_bytes=3 * 1024 ** 3)
+
+    def test_constant_pressure_never_oscillates_heavy_parse(self) -> None:
+        limits = Limits(values=dict.fromkeys(Pool, 1))
+        state = ControllerState.initial()
+        trace = []
+        for i in range(20):
+            limits, state = next_limits(
+                limits, self._pressured(), self.CEILINGS, state, _no_demand(),
+                now=1000.0 + i * INTERVAL,
+            )
+            trace.append(limits.get(Pool.HEAVY_PARSE))
+        assert trace == [1] * 20
+
+    def test_heavy_hold_below_floor_is_not_raised_by_the_soft_brake(self) -> None:
+        limits = Limits(values=dict.fromkeys(Pool, 1))
+        out, _ = next_limits(
+            limits, self._pressured(), self.CEILINGS, ControllerState.initial(),
+            _no_demand(), now=1000.0,
+        )
+        assert out.get(Pool.HEAVY_PARSE) == 1
+
+    def test_hard_brake_below_floor_is_not_raised(self) -> None:
+        snap = _snapshot(mem_limit_bytes=4 * self.GIB, mem_working_set_bytes=int(3.4 * self.GIB))
+        limits = Limits(values=dict.fromkeys(Pool, 1))
+        out, state = next_limits(
+            limits, snap, self.CEILINGS, ControllerState.initial(), _no_demand(), now=1000.0,
+        )
+        assert out.get(Pool.HEAVY_PARSE) == 1
+        # Still treated as a shrink: the incident cooldown applies.
+        assert state.get(Pool.HEAVY_PARSE).cooldown_until == 1000.0 + INCIDENT_COOLDOWN_SECONDS
+
+    def test_downstream_incident_does_not_raise_a_pool_below_its_floor(self) -> None:
+        feedback = FeedbackWindow(
+            throttles={"qdrant": 3},
+        )
+        limits = Limits(values=dict.fromkeys(Pool, 1))
+        out, _ = next_limits(
+            limits, _snapshot(), self.CEILINGS, ControllerState.initial(), _no_demand(),
+            now=1000.0, feedback=feedback,
+        )
+        for pool in (Pool.INDEX_HEAVY, Pool.INDEX_LIGHT):
+            assert out.get(pool) <= 1
+
+    def test_no_pressure_behaviour_is_unchanged(self) -> None:
+        limits = Limits(values={
+            Pool.HEAVY_PARSE: 4, Pool.LIGHT_PARSE: 32, Pool.INDEX_HEAVY: 8, Pool.INDEX_LIGHT: 64,
+        })
+        out, _ = next_limits(
+            limits,
+            _snapshot(mem_limit_bytes=64 * self.GIB, mem_working_set_bytes=1 * self.GIB),
+            self.CEILINGS, ControllerState.initial(), _no_demand(), now=1000.0,
+        )
+        assert out == limits
+
+    def test_a_real_brake_still_lowers_a_limit_above_the_floor(self) -> None:
+        limits = Limits(values=dict.fromkeys(Pool, 4))
+        snap = _snapshot(mem_limit_bytes=64 * self.GIB, mem_working_set_bytes=int(46 * self.GIB))
+        out, _ = next_limits(
+            limits, snap, self.CEILINGS, ControllerState.initial(), _no_demand(), now=1000.0,
+        )
+        assert out.get(Pool.HEAVY_PARSE) == 3
+
+    def test_property_no_limit_is_ever_raised_without_demand(self) -> None:
+        # Without demand nothing may grow, so any rise is a brake raising.
+        rng = random.Random(20260502)
+        for _ in range(3000):
+            limit = rng.choice([2 * self.GIB, 4 * self.GIB, 8 * self.GIB, 16 * self.GIB])
+            snap = _snapshot(
+                cpu_quota=rng.choice([1.0, 2.0, 4.0, 16.0]),
+                cpu_utilisation=rng.random(),
+                cpu_throttled_ratio=rng.random() * 0.5,
+                cpu_pressure=rng.random() * 0.5,
+                mem_limit_bytes=limit,
+                mem_working_set_bytes=int(limit * rng.random()),
+                mem_baseline_bytes=rng.choice([None, int(limit * 0.3 * rng.random())]),
+            )
+            ceilings = Ceilings(
+                heavy=rng.randint(1, 16), light=rng.randint(1, 64),
+                index_heavy=rng.randint(1, 32), index_light=rng.randint(1, 64),
+            )
+            limits = Limits(values={pool: rng.randint(1, 40) for pool in Pool})
+            feedback = rng.choice([
+                None,
+                FeedbackWindow(throttles={"qdrant": 1}),
+                FeedbackWindow(timeouts={"qdrant": 9}),
+            ])
+            out, _ = next_limits(
+                limits, snap, ceilings, ControllerState.initial(), _no_demand(),
+                now=1000.0, feedback=feedback, worker_count=rng.choice([1, 2, 4]),
+            )
+            for pool in Pool:
+                assert out.get(pool) <= limits.get(pool), (pool, snap, ceilings, limits, feedback)

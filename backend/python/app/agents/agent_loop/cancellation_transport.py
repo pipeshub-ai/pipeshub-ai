@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.core.messages import AssistantMessage, TextPart
 from app.agent_loop_lib.core.responses import ModelResponse, StopReason, TokenUsage
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
+from app.agent_loop_lib.core.tasks import wait_owned
 from app.agent_loop_lib.transport.base import LLMTransport
 
 if TYPE_CHECKING:
@@ -109,7 +110,7 @@ class CancellationAwareTransport(LLMTransport):
         # wraps an `asyncio.Event` that, once set, stays set -- reusing the
         # same task across iterations (rather than recreating it) is both
         # cheaper and correct, since a not-yet-done task is safe to pass to
-        # `asyncio.wait()` again next iteration.
+        # `wait_owned()` again next iteration.
         cancel_task = asyncio.ensure_future(self._token.wait())
         text_parts: list[str] = []
         try:
@@ -121,7 +122,7 @@ class CancellationAwareTransport(LLMTransport):
                 if self._token.is_cancelled:
                     break
                 next_chunk_task = asyncio.ensure_future(stream_iter.__anext__())
-                await asyncio.wait(
+                await wait_owned(
                     {next_chunk_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED,
                 )
                 if self._token.is_cancelled:

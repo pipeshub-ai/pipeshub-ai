@@ -23,6 +23,12 @@ class TestValidateRunId:
         with pytest.raises(ValueError, match="Invalid runId"):
             validate_run_id("not-a-uuid")
 
+    def test_the_message_does_not_quote_the_rejected_value(self) -> None:
+        # The message reaches the 400 body that Node passes to the reader and logs.
+        with pytest.raises(ValueError, match="Invalid runId") as caught:
+            validate_run_id("F47SEED-ada@example.com")
+        assert "F47SEED" not in str(caught.value)
+
     def test_an_empty_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Invalid runId"):
             validate_run_id("")

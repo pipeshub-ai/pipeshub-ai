@@ -1,11 +1,11 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, IconButton, Avatar, Switch, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
-import { formatRelativeTime } from '@/lib/utils/formatters';
+import { formatRelativeTime, shortUserName } from '@/lib/utils/formatters';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import {
@@ -16,11 +16,15 @@ import {
   FullSyncButton,
 } from './primitives';
 import { InlineEditableName } from '../inline-editable-name';
-import { InstanceSyncOperationIndicator, InstanceSetupStatusRow } from './instance-status-badges';
+import {
+  InstanceActionNeededBadge,
+  InstanceSyncOperationIndicator,
+  InstanceSetupStatusRow,
+} from './instance-status-badges';
 import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel, lastSyncedAt } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
-import type { ConnectorInstance, ConnectorConfig, ConnectorScope } from '../../types';
+import type { ConnectorInstance, ConnectorConfig } from '../../types';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ========================================
@@ -29,8 +33,6 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 interface InstanceCardProps {
   instance: ConnectorInstance;
-  /** Scope: team or personal */
-  scope: ConnectorScope;
   /** Per-instance config from GET /connectors/{id}/config */
   config?: ConnectorConfig;
   onManage?: (instance: ConnectorInstance) => void;
@@ -51,7 +53,6 @@ interface InstanceCardProps {
 
 export function InstanceCard({
   instance,
-  scope,
   config,
   onManage,
   onToggleSyncActive,
@@ -62,45 +63,14 @@ export function InstanceCard({
 }: InstanceCardProps) {
   const isMobile = useIsMobile();
   const { t } = useTranslation();
-  const [identityIcon, setIdentityIcon] = useState<string | null>(null);
-  const [identityIconError, setIdentityIconError] = useState(false);
-  const [enabledByName, setEnabledByName] = useState<string | null>(null);
-  const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
   const [syncToggleBusy, setSyncToggleBusy] = useState(false);
   const [disableConfirmOpen, setDisableConfirmOpen] = useState(false);
 
-  const updatedByEntry = useUserDirectoryEntry(instance.updatedBy);
+  const updatedBy = useUserDirectoryEntry(instance.updatedBy);
+  const enabledByName = shortUserName(updatedBy?.name);
+  const enabledByAvatar = updatedBy?.profilePicture;
 
   usePollInstanceWhileSyncing(instance._key, instance.status);
-
-  useEffect(() => {
-    setIdentityIconError(false);
-    if (scope === 'personal') {
-      setIdentityIcon(null);
-    }
-    if (!instance.updatedBy) {
-      setIdentityIcon(null);
-      setEnabledByName(null);
-      setEnabledByAvatar(null);
-      return;
-    }
-    if (!updatedByEntry) {
-      setEnabledByName(null);
-      setEnabledByAvatar(null);
-      return;
-    }
-
-    const { fullName, resolvedUserId } = updatedByEntry;
-    if (scope === 'personal' && resolvedUserId) {
-      setIdentityIcon(`/api/v1/users/${resolvedUserId}/dp`);
-    }
-
-    const parts = fullName.trim().split(/\s+/);
-    const displayName =
-      parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1][0]}` : parts[0] || '';
-    setEnabledByName(displayName);
-    if (resolvedUserId) setEnabledByAvatar(`/api/v1/users/${resolvedUserId}/dp`);
-  }, [scope, instance.updatedBy, updatedByEntry]);
 
   const { status: effectiveStatus, oauthAuthIncompleteForSync: oauthAuthIncomplete } =
     deriveSyncStatusState(instance, undefined, config);
@@ -185,25 +155,14 @@ export function InstanceCard({
             style={{
               width: 32,
               height: 32,
-              padding: scope === 'personal' && identityIcon && !identityIconError ? 0 : 8,
+              padding: 8,
               backgroundColor: 'var(--gray-a2)',
               borderRadius: 'var(--radius-2)',
               flexShrink: 0,
               overflow: 'hidden',
             }}
           >
-            {scope === 'personal' && identityIcon && !identityIconError ? (
-              <img
-                src={identityIcon}
-                alt=""
-                width={32}
-                height={32}
-                onError={() => setIdentityIconError(true)}
-                style={{ display: 'block', objectFit: 'cover', width: 32, height: 32 }}
-              />
-            ) : (
-              <ConnectorIcon type={instance.type} size={16} />
-            )}
+            <ConnectorIcon type={instance.type} size={16} />
           </Flex>
 
           <InlineEditableName
@@ -214,6 +173,8 @@ export function InstanceCard({
             truncate
             style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
           />
+
+          <InstanceActionNeededBadge instance={instance} onOpen={onChevronClick} />
 
           {onRefresh ? (
             <IconButton className="touch-hit"
@@ -303,7 +264,7 @@ export function InstanceCard({
                 <Avatar
                   size="1"
                   radius="small"
-                  src={enabledByAvatar ?? undefined}
+                  src={enabledByAvatar}
                   fallback={enabledByName?.[0] ?? '?'}
                   style={{ width: 24, height: 24 }}
                 />

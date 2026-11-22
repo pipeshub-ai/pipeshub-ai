@@ -50,7 +50,7 @@ jobs:
           # and the suite side of each guard with the helpers it imports.
           # integration-tests/unit/test_guard_scope.py fails when a guard reads a
           # file this does not match.
-          WATCHED_PATHS: '^(backend/python/app/|backend/python/pyproject\.toml$|backend/python/pytest\.ini$|backend/nodejs/apps/src/|integration-tests/(unit|validation|connectors|helper|retrieval)/|integration-tests/response-validation/helper/|integration-tests/[^/]+/suite_extensions/|\.github/workflows/integration-suite-guards\.yml$)'
+          WATCHED_PATHS: '^(backend/python/app/|backend/python/pyproject\.toml$|backend/python/pytest\.ini$|backend/nodejs/apps/src/|integration-tests/(unit|validation|connectors|helper|retrieval|perf)/|backend/python/tests/perf/parse_bench/|deployment/docker-compose/docker-compose\.bench\.yml$|integration-tests/response-validation/helper/|integration-tests/[^/]+/suite_extensions/|\.github/workflows/integration-suite-guards\.yml$|\.github/workflows/perf-costclass\.yml$)'
         run: |
           if [ "$EVENT" != "pull_request" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
@@ -68,21 +68,19 @@ jobs:
 
       - name: Checkout code
         if: steps.scope.outputs.run == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Python
         if: steps.scope.outputs.run == 'true'
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
       - name: Install dependencies
         if: steps.scope.outputs.run == 'true'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
           pip install uv
           cd backend/python
           # The guards import the backend's models and connector registry; the
@@ -100,6 +98,9 @@ jobs:
             integration-tests/unit/test_admin_route_conditional_world.py
             integration-tests/unit/test_guard_scope.py
             integration-tests/unit/test_suite_extensions.py
+            integration-tests/unit/test_citation_viewer_stats.py
+            integration-tests/unit/test_perf_costclass.py
+            integration-tests/unit/test_perf_costclass_driver.py
         run: |
           # `-c` and `--noconftest` because the files sit inside integration-tests,
           # whose pytest.ini asks for pytest-order and whose conftest expects a

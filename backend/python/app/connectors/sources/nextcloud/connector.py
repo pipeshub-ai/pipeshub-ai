@@ -736,10 +736,12 @@ class NextcloudConnector(BaseConnector):
         await self._app_password_rejected(data_source)
 
     async def _app_password_rejected(self, data_source: NextcloudDataSource | None = None) -> NoReturn:
-        """Run a remote wipe Nextcloud asks for (asked once per rejected password), tell the user, and raise."""
+        """Run a remote wipe Nextcloud asks for (asked until it answers, once per rejected password), tell the user, and raise."""
         if not self._remote_wipe_asked:
-            self._remote_wipe_asked = True
-            if await self._remote_wipe_requested(data_source or self.data_source):
+            wipe = await self._remote_wipe_requested(data_source or self.data_source)
+            # No answer (a throttled 429, an outage) asks again on the next sync, so a wipe is never missed.
+            self._remote_wipe_asked = wipe is not None
+            if wipe:
                 await self._wipe_synced_data(data_source or self.data_source)
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
@@ -759,18 +761,26 @@ class NextcloudConnector(BaseConnector):
         )
         raise NextcloudNoFilesystemAccessError(NO_FILESYSTEM_ACCESS_MESSAGE)
 
-    async def _remote_wipe_requested(self, data_source: NextcloudDataSource | None) -> bool:
-        """Whether Nextcloud flagged this app password for remote wipe (asked after a 401, as its clients do)."""
+    async def _remote_wipe_requested(self, data_source: NextcloudDataSource | None) -> bool | None:
+        """Whether Nextcloud flagged this app password for remote wipe (asked after a 401, as its clients do).
+
+        None when Nextcloud gave no answer: Nextcloud answers 404 for a password it has not flagged.
+        """
         if data_source is None or not self._app_password:
             return False
         try:
             response = await data_source.check_remote_wipe_status(self._app_password)
-            if not is_response_successful(response):
+            if getattr(response, "status", None) == HttpStatusCode.NOT_FOUND.value:
                 return False
+            if not is_response_successful(response):
+                self.logger.warning(
+                    f"Could not ask Nextcloud whether the app password is to be wiped: {get_response_error(response)}"
+                )
+                return None
             return json.loads(extract_response_body(response) or b"{}").get("wipe") is True
         except Exception as e:
             self.logger.warning(f"Could not ask Nextcloud whether the app password is to be wiped: {e}")
-            return False
+            return None
 
     async def _wipe_synced_data(self, data_source: NextcloudDataSource) -> NoReturn:
         """Remove every record this connector synced, then tell Nextcloud the wipe is done.
@@ -1603,6 +1613,10 @@ class NextcloudConnector(BaseConnector):
 
         except Exception as ex:
             self.logger.error(f"Error in Nextcloud Smart Sync: {ex}", exc_info=True)
+            if self.app_password_rejected and not isinstance(ex, ALREADY_NOTIFIED_ERRORS):
+                # A preview or indexing fetch met the 401 while this sync ran. Nextcloud then throttles
+                # the address (429), so the sync's own requests never see a 401 to report.
+                await self._app_password_rejected()
             if not isinstance(ex, ALREADY_NOTIFIED_ERRORS):
                 await self.notify(
                     type=NotificationType.CONNECTOR_SYNC_ERROR,

@@ -1,0 +1,116 @@
+import React from 'react';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { screen, fireEvent, cleanup } from '@testing-library/react';
+import '@/lib/__tests__/test-i18n';
+
+vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+
+import { ActionItemsCallout } from '../action-items-callout';
+import { installDomShims, renderInTheme, makeInstance } from '../../../__tests__/fixtures';
+import type { ConnectorActionItem } from '../../../types';
+
+const SWITCH: ConnectorActionItem = {
+  code: 'certificate_sign_in',
+  severity: 'warning',
+  title: 'Switch to certificate sign-in',
+  message: 'Upload a client certificate and its private key.',
+  action: 'authenticate',
+};
+
+beforeEach(() => installDomShims());
+afterEach(() => cleanup());
+
+describe('ActionItemsCallout', () => {
+  it('shows each item as the connector words it', () => {
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [SWITCH] })} />);
+
+    expect(screen.getByText('Switch to certificate sign-in')).toBeTruthy();
+    expect(screen.getByText('Upload a client certificate and its private key.')).toBeTruthy();
+  });
+
+  it('shows a known item from the catalogue rather than as the connector words it', () => {
+    const known: ConnectorActionItem = {
+      code: 'drupal_wiki_graphql_refused',
+      severity: 'warning',
+      title: 'connector wording',
+      message: 'connector message',
+      action: null,
+    };
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [known] })} />);
+
+    expect(screen.getByText('Drupal Wiki refuses member and page structure queries')).toBeTruthy();
+    expect(screen.queryByText('connector wording')).toBeNull();
+  });
+
+  it('fills a known item with its params and picks the variant they name', () => {
+    const dated: ConnectorActionItem = {
+      code: 'drupal_wiki_graphql_refused',
+      severity: 'warning',
+      title: 't',
+      message: 'm',
+      action: null,
+      params: { days: '30', confirmedOn: '2026-10-02', context: 'dated' },
+    };
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [dated] })} />);
+
+    expect(screen.getByText(/only for 30 days after it was confirmed.*confirmed on 2026-10-02\./)).toBeTruthy();
+  });
+
+  it('words folder patterns that matched nothing in the reader\'s language, for one or several', () => {
+    const several: ConnectorActionItem = {
+      code: 'folder_filter_unmatched',
+      severity: 'warning',
+      title: 't',
+      message: 'm',
+      action: null,
+      params: { count: '2', values: '"**/drafts", "custmer/*/quotes"', context: 'several_exclude' },
+    };
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [several] })} />);
+
+    expect(screen.getByText('2 folder patterns matched nothing')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'No folder this connector syncs matches "**/drafts", "custmer/*/quotes", so they exclude nothing. Check the spelling in the Folders filter.'
+      )
+    ).toBeTruthy();
+  });
+
+  it('opens the Authenticate tab for an item done there', () => {
+    const open = vi.fn();
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [SWITCH] })} onOpenAuthentication={open} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update authentication' }));
+
+    expect(open).toHaveBeenCalledOnce();
+  });
+
+  it('offers no button when nothing is done on the Authenticate tab', () => {
+    const elsewhere = { ...SWITCH, code: 'sharepoint_permission_missing', action: null };
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [elsewhere] })} onOpenAuthentication={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: 'Update authentication' })).toBeNull();
+  });
+
+  it('links to the steps when the connector gives them', () => {
+    const withSteps = { ...SWITCH, docsUrl: 'https://docs.pipeshub.com/connectors/microsoft-365/one-drive#switch-to-certificate-sign-in' };
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [withSteps] })} />);
+
+    const link = screen.getByRole('link', { name: 'View setup steps' });
+    expect(link.getAttribute('href')).toBe(withSteps.docsUrl);
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toContain('noopener');
+  });
+
+  it('shows no link that is not https', () => {
+    const scripted = { ...SWITCH, docsUrl: 'javascript:alert(1)' };
+    renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [scripted] })} />);
+
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('renders nothing when there is nothing to do', () => {
+    const { container } = renderInTheme(<ActionItemsCallout instance={makeInstance({ actionItems: [] })} />);
+
+    expect(container.textContent).toBe('');
+  });
+});

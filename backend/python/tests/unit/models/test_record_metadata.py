@@ -1,11 +1,13 @@
 """Record properties: schema definitions, value validation, provenance ownership, searchable text."""
 
+import dataclasses
 import json
 
 import pytest
 from pydantic import ValidationError
 
 from app.models import record_metadata as rm
+from app.models.blocks import SemanticMetadata
 from app.models.record_metadata import (
     MAX_LIST_ITEMS,
     MAX_STRING_BYTES,
@@ -21,6 +23,8 @@ from app.models.record_metadata import (
     searchable_lines,
     validate_values,
 )
+from app.modules.transformers.vectorstore import VectorStore
+from app.services.vector_db import models as vector_models
 from app.services.vector_db.const import const as vector_payload
 
 SOURCE = "connector:jira"
@@ -133,6 +137,24 @@ class TestReservedNames:
     def test_derived_from_the_payload_constants(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(vector_payload, "NEW_FILTER_FIELD", "metadata.addedLaterKey", raising=False)
         assert "addedLaterKey" in rm._vector_payload_keys()
+
+    def test_derived_from_the_point_models(self) -> None:
+        @dataclasses.dataclass
+        class Grown(vector_models.VectorChunkMetadata):
+            addedLaterFlag: bool | None = None
+
+        assert {f.name for f in dataclasses.fields(vector_models.VectorChunkMetadata)} <= RESERVED_PROPERTY_NAMES
+        assert {f.name for f in dataclasses.fields(vector_models.VectorChunkPayload)} <= RESERVED_PROPERTY_NAMES
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(rm, "VectorChunkMetadata", Grown)
+            assert "addedLaterFlag" in rm._vector_payload_keys()
+
+    def test_the_summary_points_metadata_is_reserved(self) -> None:
+        document = VectorStore._build_record_summary_document(
+            "rec-1", "vr-1", "org-1", SemanticMetadata(summary="A summary."),
+        )
+        assert document is not None
+        assert set(document.metadata) <= RESERVED_PROPERTY_NAMES
 
     def test_pipeline_names_are_reserved(self) -> None:
         assert {"orgId", "virtualRecordId", "blockId", "rev", "connectorIds", "recordGroupIds"} <= PIPELINE_FIELD_NAMES
@@ -249,3 +271,21 @@ def test_json_round_trip() -> None:
     back = RecordMetadata.model_validate_json(json.dumps(as_json))
     assert back == metadata
     assert isinstance(back.values["urgent"].value, bool) and isinstance(back.values["score"].value, float)
+
+
+def test_validation_error_codes() -> None:
+    """P3-08: callers branch on ``code``, never on the message."""
+    from app.models.record_metadata import (
+        MetadataSchema,
+        MetadataValidationError,
+        PropertyDefinition,
+        PropertyType,
+        validate_values,
+    )
+
+    schema = MetadataSchema(schema_id="o:k:1", properties=(PropertyDefinition(name="n", type=PropertyType.INT, display_label="N"),))
+    for raw, code in (({"orgId": 1}, "PROPERTY_RESERVED"), ({"zzz": 1}, "PROPERTY_UNKNOWN"), ({"n": "x"}, "PROPERTY_INVALID")):
+        with pytest.raises(MetadataValidationError) as e:
+            validate_values(schema, raw, source="push")
+        assert e.value.code == code
+    assert MetadataValidationError("p", "m").code == "PROPERTY_INVALID"

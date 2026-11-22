@@ -986,11 +986,12 @@ class TestReindex:
         atlassian_api.on("GET", f"{API}/content/att1", attachment("att1", version=2))
         atlassian_api.on("GET", f"{API}/content/c2file", attachment("c2file", version=4, container={"type": "page", "id": "p1"}))
 
+        stored_version = db.records["p1"].version
         await connector.reindex_records([db.records[k] for k in ("p1", "b1", "c2", "att1", "c2file")])
 
         updated = {r.external_record_id: r for r in db.content_updates}
         assert set(updated) == {"p1", "c2", "att1", "c2file"}
-        assert updated["p1"].version == db.records["p1"].version + 1
+        assert updated["p1"].version == stored_version + 1
         assert updated["p1"].access_rule == AccessRule.RESTRICTED
         assert (updated["c2"].parent_external_record_id, updated["c2"].parent_record_type) == ("c1", RecordType.COMMENT)
         assert (updated["c2file"].parent_external_record_id, updated["c2file"].parent_record_type) == ("c2", RecordType.COMMENT)

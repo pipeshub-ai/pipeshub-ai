@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unicodedata
 
-LOCK_PREFIX = "~$"
+from app.connectors.core.base.data_processor.system_files import SYSTEM_FILE_NAMES
 
 
 def join_rel_path(parent_dir: str, name: str) -> str | None:
@@ -67,13 +67,10 @@ def file_extension(rel_path: str) -> str | None:
     return parts[-1].lower()
 
 
-def is_lock_file(name: str) -> bool:
-    return name.startswith(LOCK_PREFIX)
-
-
-# Folders and files no one searches for: version control, package caches, and what
-# Windows and macOS keep for themselves. Matched on the whole name, case-insensitively.
-EXCLUDED_NAMES = frozenset(
+# Files and folders no one searches for: version control, package caches, and what
+# Windows and macOS keep for themselves; the file names are shared with every
+# connector (system_files.py). Matched on the whole name, case-insensitively.
+EXCLUDED_NAMES = SYSTEM_FILE_NAMES | frozenset(
     name.casefold()
     for name in (
         ".git",
@@ -83,9 +80,6 @@ EXCLUDED_NAMES = frozenset(
         "__pycache__",
         "$RECYCLE.BIN",
         "System Volume Information",
-        "Thumbs.db",
-        "desktop.ini",
-        ".DS_Store",
         ".Trashes",
         ".Spotlight-V100",
         ".fseventsd",

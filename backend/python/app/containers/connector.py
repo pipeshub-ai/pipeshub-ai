@@ -18,6 +18,9 @@ from app.edition_services import bootstrap_guard
 from app.health.health import Health
 from app.migrations.all_team_migration import run_all_team_migration
 from app.migrations.app_org_id_migration import run_app_org_id_migration
+from app.migrations.service_account_kind_migration import (
+    run_service_account_kind_migration,
+)
 from app.migrations.folder_mime_type_migration import run_folder_mime_type_migration
 from app.migrations.hierarchy_backfill_migration import run_hierarchy_backfill_migration
 from app.migrations.kb_apps_migration import run_kb_apps_migration
@@ -30,7 +33,11 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.notification.notification_service import (
     NotificationService,
 )
+from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.logger import create_logger
+
+# Startup tries of ensure_schema, a second apart and then two, for a store that is briefly unavailable.
+_SCHEMA_TRIES = 3
 
 
 class ConnectorAppContainer(BaseAppContainer):
@@ -234,7 +241,7 @@ async def _kh_plan_keeper(
         logger.warning("KH_PLAN_KEEPER_SECONDS is not a number; the knowledge hub plan keeper is off")
         return
     # Nothing to keep for a backend that offers no sample (the interface's default).
-    if every <= 0 or type(graph_provider).get_knowledge_hub_warm_sample is _Provider.get_knowledge_hub_warm_sample:
+    if every <= 0 or type(graph_provider).get_knowledge_hub_warm_samples is _Provider.get_knowledge_hub_warm_samples:
         return
     service = KnowledgeHubService(logger=logger, graph_provider=graph_provider, config_service=config_service)
     while True:
@@ -344,8 +351,21 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
                 raise
 
             # Schema init: collections, graph, departments seed
-            await data_store.graph_provider.ensure_schema()
-            logger.info("✅ Schema ensured")
+            # Retried, not fatal: OAuth, configuration and the dashboard's endpoints do not need it. Until it is ensured, a store that
+            # refuses the apps schema refuses every sync's start, and each refused sync says so on its connector (`run_sync_task`).
+            for attempt in range(_SCHEMA_TRIES):
+                if await data_store.graph_provider.ensure_schema():
+                    logger.info("✅ Schema ensured")
+                    break
+                if attempt + 1 < _SCHEMA_TRIES:
+                    await asyncio.sleep(attempt + 1)
+            else:
+                logger.error(
+                    "The graph schema could not be ensured after %d tries (see the errors above). On ArangoDB this is usually "
+                    "the apps collection's schema: until it is applied, every sync stops at its start. Check that the database "
+                    "user may update collection properties, then restart the connector service.", _SCHEMA_TRIES,
+                )
+                record_service_activity("connector_service", "graph_schema_not_ensured", status="failed")
 
             # Apps from before connector instances carried an orgId get one, or the
             # org filters on Apps drop them. Not fatal: the next startup retries.
@@ -361,6 +381,27 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
                     logger.info(f"✅ App orgId migration stamped {org_result.get('backfilled', 0)} App(s)")
             except Exception as e:
                 logger.error(f"❌ App orgId migration error: {e}")
+
+            # User nodes that predate `kind` get it from the list the user
+            # management service stages, which is the only place that knows
+            # which accounts are machines. Not fatal: the next startup retries,
+            # and that service keeps staging until this records it done.
+            try:
+                kind_result = await run_service_account_kind_migration(
+                    graph_provider=data_store.graph_provider,
+                    config_service=config_service,
+                    logger=logger,
+                )
+                if not kind_result.get("success"):
+                    logger.error(
+                        f"❌ Service-account kind migration failed: {kind_result.get('error')}"
+                    )
+                elif not kind_result.get("skipped"):
+                    logger.info(
+                        f"✅ Service-account kind migration marked {kind_result.get('stamped', 0)} user node(s)"
+                    )
+            except Exception as e:
+                logger.error(f"❌ Service-account kind migration error: {e}")
 
             logger.info("✅ Container initialization completed successfully")
 

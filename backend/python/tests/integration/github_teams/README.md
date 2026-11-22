@@ -74,6 +74,9 @@ To use other servers, set `NEO4J_IT_URI`, `NEO4J_IT_PASSWORD`, `ARANGO_IT_URL` a
 | GraphQL `Issue.updatedAt` equals the REST `updated_at` of the same issue (both to the second) | Schema (`updatedAt: DateTime!`); same field on both APIs. Not compared live issue by issue | Medium |
 | Issues listing read newest first (`direction=desc`, as the connector does): an issue leaving the listing between two page requests moves later issues up one place | Follows from `page=N` being an offset (row above) | High |
 | Commit history cursor `"<oid> <offset>"` | Existing connector code (`timestamps.py`), used as GitHub returns it | Medium |
+| GraphQL `repository.object(expression:)` answers the same Commit for `HEAD`, a branch name or a full commit sha, and `null` (no error) for a ref that does not exist | Live, octocat/Hello-World (2026-10-26): `HEAD`, `master` and its sha gave the same oid, `test` its own, `no-such-branch` gave `null` | High |
+| GraphQL `refs(refPrefix: "refs/heads/", query:)` matches `query` anywhere in a branch name, ignoring case. Cursors are keysets | Live, pipeshub-ai/pipeshub-ai (2026-10-26): `ix`, `fix`, `FIX` and `Fix` all matched `fix/...` branches. Cursor format not checked; the connector only passes back `endCursor` | High for matching, Medium for cursors |
+| `GET /repos/{owner}/{repo}/commits?sha=` starts from that branch or commit. An unknown ref answers 404 | OpenAPI params. Live, octocat/Hello-World: `sha=no-such-branch` gave 404 | High |
 | `affiliation=all` collaborators include outside collaborators, direct members, team members (child teams included), base-permission members and owners. `permissions` booleans give the base role | OpenAPI description of repos/list-collaborators | High |
 | `/collaborators` needs push access (403 otherwise) | OpenAPI description | High |
 | Internal repositories readable by organisation members, not by outside collaborators | GitHub docs (quoted in `projects.py`) | High |

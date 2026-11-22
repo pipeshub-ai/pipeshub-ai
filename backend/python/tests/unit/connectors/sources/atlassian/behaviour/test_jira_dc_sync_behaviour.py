@@ -9,6 +9,7 @@ import json
 import logging
 import time
 from typing import Any, Optional
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -24,14 +25,20 @@ from atlassian_behaviour_fakes import (
 )
 from fastapi import HTTPException
 
+from app.config.constants.arangodb import AccessRule
+from app.connectors.sources.atlassian.core.jira_issue_security import (
+    IssueSecurityContext,
+    SchemeKnowledge,
+)
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     DC_EPIC_LINK_SCHEMA_CUSTOM,
     JiraDataCenterConnector,
     _parse_jira_dc_user_list_page,
 )
-from app.models.entities import AppUser, FileRecord, RecordType, TicketRecord
-from app.models.permission import EntityType, PermissionType
+from app.connectors.utils.record_ids import new_record_id
+from app.models.entities import AppUser, FileRecord, Record, RecordType, TicketRecord
+from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.jira.jira import JiraRESTClientViaToken
@@ -60,8 +67,16 @@ class JiraRecordsDb(FakeRecordsDb):
     async def get_all_active_users(self) -> list[Any]:
         return self.platform_users
 
-    async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
-        return self.cached_app_users
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[AppUser]:
+        """The links an earlier sync left (``cached_app_users``) and those this one wrote, less the withdrawn."""
+        gone = {u.source_user_id for u in self.withdrawn_users}
+        linked = {u.source_user_id: u for u in [*self.cached_app_users, *self.app_users] if u.source_user_id not in gone}
+        return list(linked.values())
+
+    async def on_new_app_users(self, users: list[Any]) -> None:
+        await super().on_new_app_users(users)
+        listed = {u.source_user_id for u in users}
+        self.withdrawn_users = [u for u in self.withdrawn_users if u.source_user_id not in listed]
 
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
         for role, members in roles:
@@ -155,6 +170,7 @@ class IssueSearch:
     def __init__(self) -> None:
         self.pages: dict[tuple[str, int], Any] = {}
         self.jql: list[str] = []
+        self.fields_asked: list[list[str]] = []
 
     def add(self, project: str, start: int, issues: object, total: Optional[int] = None) -> None:
         if isinstance(issues, (httpx.Response, list)) and not (isinstance(issues, list) and issues and isinstance(issues[0], dict)):
@@ -166,6 +182,7 @@ class IssueSearch:
         body = json.loads(request.content)
         jql = body["jql"]
         self.jql.append(jql)
+        self.fields_asked.append(body.get("fields") or [])
         project = jql.split('project = "')[1].split('"')[0] if 'project = "' in jql else "*"
         page = self.pages.get((project, int(body.get("startAt", 0))), {"issues": [], "total": 0})
         if isinstance(page, list):
@@ -173,9 +190,14 @@ class IssueSearch:
         return page if isinstance(page, httpx.Response) else json_response(page)
 
 
+# Every user of the stub site has Jira product access: they are the members of jira-software-users.
+LICENSED = ("alice-key", "bob-key", "carol-key", "dave-key")
+
+
 def stub_site(api: AtlassianApiStub, search: IssueSearch) -> None:
     """A small but complete Jira DC site: users, groups, roles, one project, its ACL."""
     api.on("GET", f"{API}/field", json_response([{"id": EPIC_FIELD, "name": "Epic Link", "schema": {"custom": DC_EPIC_LINK_SCHEMA_CUSTOM}}]))
+    api.on("GET", f"{API}/serverInfo", {"version": "11.3.13", "versionNumbers": [11, 3, 13], "deploymentType": "Server"})
 
     def user_list(request: httpx.Request) -> httpx.Response:
         if AtlassianApiStub.query(request).get("cursor") == "abc":
@@ -202,7 +224,7 @@ def stub_site(api: AtlassianApiStub, search: IssueSearch) -> None:
     def members(request: httpx.Request) -> httpx.Response:
         q = AtlassianApiStub.query(request)
         if q["groupname"] == "jira-software-users":
-            return json_response({"values": [{"key": "bob-key"}], "isLast": True})
+            return json_response({"values": [{"key": k} for k in LICENSED], "isLast": True})
         if q.get("startAt", "0") == "0":
             ghosts = [{"key": f"ghost-{i}"} for i in range(49)]
             return json_response({"values": [*ghosts, {"key": "alice-key"}], "isLast": False})
@@ -232,6 +254,8 @@ def stub_site(api: AtlassianApiStub, search: IssueSearch) -> None:
         {"type": "atlassian-group-role-actor", "name": "devs"},
     ]})
     api.on("GET", f"{API}/issue/ENG-1", {"id": "1001", "key": "ENG-1"})
+    api.on("GET", f"{API}/project/ENG/issuesecuritylevelscheme", json_response(
+        {"errorMessages": ["The project has no issue security scheme."], "errors": {}}, status=404))
     api.on("POST", f"{API}/search", search)
 
 
@@ -333,7 +357,8 @@ class TestFullSync:
         )
         devs = {m.email for m in db.groups_saved["devs"]}
         assert devs == {"alice@example.com", "carol@example.com"}, "second page of group members is read"
-        assert jira.calls("GET", f"{API}/group/member")[1].url.params["startAt"] == "50"
+        devs_calls = [r for r in jira.calls("GET", f"{API}/group/member") if r.url.params["groupname"] == "devs"]
+        assert devs_calls[1].url.params["startAt"] == "50"
 
         (acl,) = db.record_group_permissions.values()
         grants = {(p.entity_type, p.external_id or p.email) for p in acl}
@@ -569,6 +594,9 @@ class TestAccessControlSafety:
     async def test_application_roles_forbidden_grants_only_the_configuring_user(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         jira.on("GET", f"{API}/applicationrole", json_response({}, status=403))
+        # Product access is unknown, so only accounts linked before stay linked: bob, whom the scheme names.
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
         connector, notes = await make_connector(db, store)
 
         await connector.run_sync()
@@ -619,7 +647,7 @@ class TestAccessControlSafety:
         developers_before = sorted(m.email for m in db.app_roles["ENG_10002"])
         assert "alice@example.com" in developers_before, "alice is in the role only through the devs group"
         devs_before = sorted(m.email for m in db.groups_saved["devs"])
-        assert [m.email for m in db.app_roles["ENG_10004"]] == ["bob@example.com"]
+        assert len(db.app_roles["ENG_10004"]) == len(LICENSED)
         assert [m.email for m in db.app_roles["ENG_10005"]] == ["alice@example.com"]
 
         jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "jira-software-users"}], "total": 2})
@@ -717,6 +745,368 @@ class TestAccessControlSafety:
         assert "ENG_10002" in db.app_roles
         assert "ENG_10004" not in db.app_roles, "a role that could not be read keeps its previous members"
         assert any("couldn't sync project roles" in t for t in notes.titles())
+
+
+class TestProductAccess:
+    """Jira treats an account without application access (no group of any application role) as
+    anonymous: its groups, roles and its name on a scheme give it nothing."""
+
+    @staticmethod
+    def _stub_members(jira: AtlassianApiStub, licensed: tuple[str, ...], *, product_status: int = 200) -> None:
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
+                if product_status != 200:
+                    return json_response({"errorMessages": ["busy"]}, status=product_status)
+                return json_response({"values": [{"key": k} for k in licensed], "isLast": True})
+            return json_response({"values": [{"key": k} for k in ("alice-key", "carol-key", "dave-key")], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+
+    @staticmethod
+    def _grant_dave_by_name(jira: AtlassianApiStub) -> None:
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "dave-key", "user": {
+                "key": "dave-key", "name": "dave", "emailAddress": "dave@example.com", "active": True}}},
+        ]})
+
+    @staticmethod
+    def _dave_reaches(db: JiraRecordsDb) -> list[str]:
+        how = [f"group {g}" for g, ms in db.groups_saved.items() if any(m.email == "dave@example.com" for m in ms)]
+        how += [f"role {r}" for r, ms in db.app_roles.items() if any(m.email == "dave@example.com" for m in ms)]
+        how += [f"grant {p.external_id}" for p in db.record_group_permissions["10000"] if p.email == "dave@example.com"]
+        return how
+
+    async def test_an_account_without_product_access_gets_no_link_group_role_or_grant(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, ("alice-key", "bob-key", "carol-key"))
+        self._grant_dave_by_name(jira)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert "dave@example.com" not in {u.email for u in db.app_users}
+        assert self._dave_reaches(db) == []
+        assert {m.email for m in db.groups_saved["devs"]} == {"alice@example.com", "carol@example.com"}
+
+    async def test_the_user_link_step_leaves_out_an_account_without_product_access(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, ("alice-key", "bob-key", "carol-key"))
+        connector, _ = await make_connector(db, store)
+
+        await connector._link_users_and_groups()
+
+        assert {u.email for u in db.app_users} == {"alice@example.com", "bob@example.com", "carol@example.com"}
+        assert "dave@example.com" not in {m.email for m in db.groups_saved["devs"]}
+
+    async def test_an_account_that_loses_product_access_is_withdrawn_and_one_that_regains_it_is_linked(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, LICENSED)
+        self._grant_dave_by_name(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert self._dave_reaches(db), "dave has product access, so his group, role and grant reach him"
+        db.cached_app_users = list(db.app_users)
+
+        self._stub_members(jira, ("alice-key", "bob-key", "carol-key"))  # also how a deactivated account looks
+        await connector.run_sync()
+
+        assert [u.email for u in db.withdrawn_users] == ["dave@example.com"]
+        assert self._dave_reaches(db) == []
+
+        db.cached_app_users = [u for u in db.cached_app_users if u.email != "dave@example.com"]
+        db.app_users.clear()
+        self._stub_members(jira, LICENSED)
+        await connector.run_sync()
+
+        assert "dave@example.com" in {u.email for u in db.app_users}
+        assert self._dave_reaches(db)
+
+    async def test_a_stored_account_sharing_a_licensed_accounts_email_keeps_the_link(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, LICENSED)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="old-bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.withdrawn_users == []
+
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param([{"errorMessages": []}], id="first page with no values"),
+            pytest.param(["not a page"], id="first page not an object"),
+            pytest.param([{"values": [{"key": "alice-key"}], "isLast": False}, {"values": None, "isLast": True}],
+                         id="later page with no list of values"),
+        ],
+    )
+    async def test_a_product_group_page_that_is_not_a_page_links_no_one_new(
+        self, jira, db, store, search, pages
+    ) -> None:
+        """Read as the end of the members, it would make the members read so far everyone with product access."""
+        stub_site(jira, search)
+
+        def members(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q["groupname"] == "jira-software-users":
+                return json_response(pages[int(q.get("startAt", "0")) and 1])
+            return json_response({"values": [{"key": "alice-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"}, "the stored link stays; no one new is linked"
+        assert db.withdrawn_users == []
+
+    async def test_an_empty_product_group_gives_no_account_product_access(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_members(jira, ())
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.app_users == [] and [u.email for u in db.withdrawn_users] == ["bob@example.com"]
+
+    @pytest.mark.parametrize("unread", ["roles busy", "roles refused", "roles not found", "product group",
+                                        "a role without a group list"])
+    async def test_product_access_that_cannot_be_read_links_no_one_new(self, jira, db, store, search, unread) -> None:
+        """Unknown is not no access, so the stored links stay, but neither is it access: an account not linked
+        (one withdrawn earlier included) is linked only by a read that shows it has product access. The
+        connector's own account can use Jira, so it is linked."""
+        stub_site(jira, search)
+        self._stub_members(jira, ("alice-key",), product_status=503 if unread == "product group" else 200)
+        roles = {"roles busy": json_response({"errorMessages": ["busy"]}, status=503),
+                 "roles refused": json_response({}, status=403), "roles not found": json_response({}, status=404),
+                 "a role without a group list": json_response([{"key": "jira-software", "name": "Jira Software"}])}
+        if unread in roles:
+            jira.on("GET", f"{API}/applicationrole", roles[unread])
+        jira.on("GET", f"{API}/myself", {"key": "carol-key", "name": "carol", "emailAddress": "carol@example.com"})
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com", "carol@example.com"}
+        assert db.withdrawn_users == []
+        assert {m.email for m in db.groups_saved["devs"]} <= {"bob@example.com", "carol@example.com"}
+
+    @pytest.mark.parametrize(
+        "groups",
+        [pytest.param([None], id="null"), pytest.param([""], id="empty name"), pytest.param(["  "], id="blank name"),
+         pytest.param([{"name": "jira-software-users"}], id="an object"), pytest.param([7], id="a number"),
+         pytest.param(["jira-software-users", None], id="one good one bad")],
+    )
+    async def test_a_role_with_a_group_entry_that_is_not_a_group_name_leaves_product_access_unknown(
+        self, jira, db, store, search, groups,
+    ) -> None:
+        """Dropping the entry would leave a role that looks read in full with fewer groups, or none."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([{"key": "jira-software", "groups": groups}]))
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
+
+    @pytest.mark.parametrize(
+        "row",
+        [pytest.param({"displayName": "Bob"}, id="no key or name"), pytest.param({"key": ""}, id="an empty key"),
+         pytest.param("bob-key", id="not an object")],
+    )
+    async def test_a_product_group_member_row_without_an_identifier_leaves_product_access_unknown(
+        self, jira, db, store, search, row,
+    ) -> None:
+        """Skipping the row would leave a member list read in full without that member."""
+        stub_site(jira, search)
+
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
+                return json_response({"values": [{"key": "alice-key"}, row], "isLast": True})
+            return json_response({"values": [{"key": "alice-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
+
+    async def test_a_failed_read_of_the_linked_accounts_fails_the_sync_and_changes_no_access(
+        self, jira, db, store, search,
+    ) -> None:
+        """Read as no accounts, it would link no one while product access is unknown, and save every group empty."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+
+        async def linked(connector_id: str, *, raise_on_error: bool = False) -> list[AppUser]:
+            if raise_on_error:
+                raise RuntimeError("graph unavailable")
+            return []  # what the store answers on a failed read without raise_on_error
+
+        db.get_all_app_users = linked
+        connector, _ = await make_connector(db, store)
+
+        with pytest.raises(RuntimeError, match="graph unavailable"):
+            await connector.run_sync()
+
+        assert db.app_users == [] and db.groups_saved == {} and db.withdrawn_users == []
+
+    async def test_the_groups_of_a_role_marked_not_defined_give_no_product_access(self, jira, db, store, search) -> None:
+        """`defined` has no description in the Data Center REST API (ApplicationRoleBean,
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-applicationrole/), so a role
+        marked `defined: false` is not taken to grant anything."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([
+            {"key": "jira-software", "groups": ["jira-software-users"], "defined": True},
+            {"key": "jira-core", "groups": ["jira-core-users"], "defined": False},
+        ]))
+
+        def members(request: httpx.Request) -> httpx.Response:
+            name = AtlassianApiStub.query(request)["groupname"]
+            keys = {"jira-software-users": ["alice-key", "bob-key", "carol-key"], "jira-core-users": ["dave-key"]}.get(
+                name, ["alice-key"])
+            return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"alice@example.com", "bob@example.com", "carol@example.com"}
+
+    async def test_roles_all_marked_not_defined_leave_product_access_unknown(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([
+            {"key": "jira-software", "groups": ["jira-software-users"], "defined": False}]))
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
+
+    async def test_the_user_list_is_read_with_its_documented_parameters_only(self, jira, db, store, search) -> None:
+        """GET /rest/api/2/user/list takes `cursor` and `maxResults` only (Jira DC REST 10.3 and 11.2,
+        https://developer.atlassian.com/server/jira/platform/rest/v11002/api-group-user/); the connector keeps the
+        active users itself."""
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        calls = jira.calls("GET", f"{API}/user/list")
+        assert calls and all(set(c.url.params) <= {"cursor", "maxResults"} for c in calls)
+
+    async def test_roles_read_in_full_with_no_groups_give_no_account_product_access(self, jira, db, store, search) -> None:
+        """Only an administrator can read the roles, so the answer is the whole picture: access comes only through
+        a role's groups, and no role has one."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response([{"key": "jira-software", "groups": []},
+                                                                 {"key": "jira-core", "groups": []}]))
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert db.app_users == [] and [u.email for u in db.withdrawn_users] == ["bob@example.com"]
+
+
+class TestVersions:
+    """Behaviour per Jira Data Center version, each checked against that version's REST specification
+    (developer.atlassian.com/server/jira/platform/rest/v<NNNNN>/): the oldest supported (10.2), the 10.3 LTS before
+    and after /user/list was added (10.3.13), a middle release without it (10.5) and the newest (11.3)."""
+
+    @staticmethod
+    def _searchable_directory(jira: AtlassianApiStub) -> None:
+        """/user/search with username "." lists the directory, as on these versions."""
+        everyone = [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com"),
+                    user("carol-key", "carol", "carol@example.com")]
+        jira.on("GET", f"{API}/user/search", lambda request: json_response(
+            everyone if AtlassianApiStub.query(request).get("username") == "." else []))
+
+    @pytest.mark.parametrize(
+        ("version", "supported", "user_list"),
+        [
+            pytest.param((10, 2, 1), True, False, id="10.2 oldest supported"),
+            pytest.param((10, 3, 12), True, False, id="10.3 before the user list"),
+            pytest.param((10, 3, 13), True, True, id="10.3 with the user list"),
+            pytest.param((10, 5, 1), True, False, id="10.5 middle"),
+            pytest.param((11, 0, 1), True, True, id="11.0"),
+            pytest.param((11, 3, 13), True, True, id="11.3 newest"),
+            pytest.param((9, 12, 20), False, False, id="9.12 out of support"),
+            pytest.param((11, 4, 0), False, True, id="a release not checked yet"),
+            pytest.param(None, False, True, id="unknown"),
+        ],
+    )
+    def test_the_rest_profile_of_each_version(self, version, supported, user_list) -> None:
+        from app.connectors.sources.atlassian.jira_data_center.connector import (
+            dc_rest_profile,
+        )
+
+        assert dc_rest_profile(version) == (supported, user_list)
+
+    @pytest.mark.parametrize(
+        ("server_info", "lists"),
+        [
+            pytest.param({"version": "10.2.1", "versionNumbers": [10, 2, 1]}, False, id="10.2"),
+            pytest.param({"version": "10.5.1", "versionNumbers": [10, 5, 1]}, False, id="10.5"),
+            pytest.param({"version": "10.3.13", "versionNumbers": [10, 3, 13]}, True, id="10.3.13"),
+            pytest.param({"version": "11.3.13"}, True, id="11.3 from the version text"),
+        ],
+    )
+    async def test_the_user_list_is_read_only_where_its_version_documents_it(
+        self, jira, db, store, search, server_info, lists,
+    ) -> None:
+        stub_site(jira, search)
+        self._searchable_directory(jira)
+        jira.on("GET", f"{API}/serverInfo", server_info)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert bool(jira.calls("GET", f"{API}/user/list")) is lists
+        assert "alice@example.com" in {u.email for u in db.app_users}
+
+    @pytest.mark.parametrize(
+        "server_info",
+        [
+            pytest.param(json_response({"version": "9.12.20", "versionNumbers": [9, 12, 20]}), id="9.12"),
+            pytest.param(json_response({"version": "12.0.0", "versionNumbers": [12, 0, 0]}), id="a later release"),
+            pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="unreadable"),
+            pytest.param(json_response({"version": "next"}), id="no version number"),
+        ],
+    )
+    async def test_an_unsupported_or_unknown_version_links_no_one_new_and_withdraws_no_one(
+        self, jira, db, store, search, server_info,
+    ) -> None:
+        stub_site(jira, search)
+        self._searchable_directory(jira)
+        jira.on("GET", f"{API}/serverInfo", server_info)
+        db.cached_app_users = [AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="bob-key",
+                                       email="bob@example.com", full_name="Bob")]
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        assert {u.email for u in db.app_users} == {"bob@example.com"} and db.withdrawn_users == []
 
 
 class TestUserDirectoryFallbacks:
@@ -996,6 +1386,9 @@ class TestHierarchyLinks:
         jira.on("GET", f"{API}/issue/ENG-404", json_response({"errorMessages": ["gone"]}, status=404))
         jira.on("GET", f"{API}/issue/ENG-500", json_response({}, status=500))
         jira.on("GET", f"{API}/issue/INIT-1", {"id": "5001", "key": "INIT-1"})
+        # A parent in another project is read for its level before the issue is filed under it.
+        jira.on("GET", f"{API}/issue/5001", {"id": "5001", "key": "INIT-1", "fields": {
+            "project": {"id": "20000", "key": "INIT"}, "security": None}})
         with_parent_link = issue("1005", "ENG-5", ts(4))
         with_parent_link["fields"]["customfield_10200"] = {"data": {"key": "INIT-1"}}
         search.add("ENG", 0, [
@@ -1038,11 +1431,12 @@ class TestRoleActors:
         stub_site(jira, search)
         jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [
             {"type": "atlassian-user-role-actor", "actorUser": "not-a-dict", "key": "alice-key"},
-            {"type": "atlassian-user-role-actor", "actorUser": {"emailAddress": "BOB@example.com"}},
+            {"type": "atlassian-user-role-actor", "name": "Bob"},
             {"type": "atlassian-user-role-actor", "actorUser": {"key": "nobody"}},
-            {"type": "atlassian-group-role-actor", "groupId": "grp-1", "name": "renamed"},
+            {"type": "atlassian-group-role-actor", "name": "grp-1"},
         ]})
         connector, _ = await make_connector(db, store)
+        connector._dc_name_to_source_id = {"bob": "bob-key"}
         users = [
             AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id=k, org_id="org-1", email=e, full_name=k)
             for k, e in (("alice-key", "alice@example.com"), ("bob-key", "bob@example.com"), ("carol-key", "carol@example.com"))
@@ -1051,6 +1445,60 @@ class TestRoleActors:
         await connector._sync_project_roles(["ENG"], users, {"grp-1": [users[2]]})
 
         assert {m.email for m in db.app_roles["ENG_10002"]} == {"alice@example.com", "bob@example.com", "carol@example.com"}
+
+    async def test_an_actor_never_resolves_through_an_email_another_account_shares(
+        self, jira, db, store, search,
+    ) -> None:
+        """Bob has no product access and shares Alice's email: his role must not make Alice a member."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": "bob", "actorUser": {"emailAddress": "shared@example.com"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        connector._dc_name_to_source_id = {"bob": "bob-key", "alice": "alice-key"}
+        alice = AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="alice-key",
+                        org_id="org-1", email="shared@example.com", full_name="Alice")
+
+        await connector._sync_project_roles(["ENG"], [alice], {})
+
+        assert db.app_roles["ENG_10002"] == []
+
+    async def test_a_username_resolves_to_its_own_account_not_to_a_key_equal_to_it(
+        self, jira, db, store, search,
+    ) -> None:
+        """A renamed account keeps its first username as its key; a new account may now hold that username."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": "alice"},
+        ]})
+        connector, _ = await make_connector(db, store)
+        connector._dc_name_to_source_id = {"alice": "JIRAUSER10100", "alice.smith": "alice"}
+        renamed = AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="alice",
+                          org_id="org-1", email="alice.smith@example.com", full_name="Alice Smith")
+
+        await connector._sync_project_roles(["ENG"], [renamed], {})
+
+        assert db.app_roles["ENG_10002"] == []
+
+    @pytest.mark.parametrize("actor", [
+        {"type": "atlassian-user-role-actor", "name": "alice"},
+        {"type": "atlassian-user-role-actor", "actorUser": {"name": "alice"}},
+    ], ids=["name", "actorUser-name"])
+    async def test_a_username_the_user_list_did_not_show_is_never_taken_for_a_key(
+        self, jira, db, store, search, actor: dict,
+    ) -> None:
+        """A user list cut short (the search fallback stops at 100 on Jira 10+) did not show "alice": the synced account
+        whose key is "alice" (a renamed account keeps its first username as its key) is not that person."""
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role/10002", {"name": "Developers", "actors": [actor]})
+        connector, _ = await make_connector(db, store)
+        connector._dc_name_to_source_id = {"alice.smith": "alice"}
+        renamed = AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="alice",
+                          org_id="org-1", email="alice.smith@example.com", full_name="Alice Smith")
+
+        await connector._sync_project_roles(["ENG"], [renamed], {})
+
+        assert db.app_roles["ENG_10002"] == []
 
     async def test_unreadable_role_list_is_reported_not_fatal(self, jira, db, store, search) -> None:
         stub_site(jira, search)
@@ -1074,7 +1522,7 @@ class TestGroupMemberPaging:
         def members(request: httpx.Request) -> httpx.Response:
             q = AtlassianApiStub.query(request)
             if q["groupname"] != "devs":
-                return json_response({"values": [], "isLast": True})
+                return json_response({"values": [{"key": k} for k in LICENSED], "isLast": True})
             return json_response(pages[q.get("startAt", "0")])
 
         jira.on("GET", f"{API}/group/member", members)
@@ -1110,10 +1558,13 @@ class TestDirectoryEdgeCases:
         stub_site(jira, search)
         connector, _ = await make_connector(db, store)
 
+        connector._dc_name_to_source_id = {"b": "b-key"}  # a member named by username is the account the user list gave it
         jira.on("GET", f"{API}/group/member", json_response([{"key": "a"}, {"name": "b"}]))
-        assert await connector._fetch_group_members("g", "g") == ["a", "b"]
+        assert await connector._fetch_group_members("g", "g") == ["a", "b-key"]
 
         jira.on("GET", f"{API}/group/member", json_response("odd"))
+        assert await connector._fetch_group_members("g", "g") is None, "a body that is not a page leaves the members unknown"
+        jira.on("GET", f"{API}/group/member", json_response({"values": [], "isLast": True}))
         assert await connector._fetch_group_members("g", "g") == []
         assert await connector._fetch_group_members("g", "") == []
 
@@ -1349,7 +1800,7 @@ class TestUnfinishedUserRead:
 
         def members(request: httpx.Request) -> httpx.Response:
             if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
-                return json_response({"values": [{"key": "bob-key"}], "isLast": True})
+                return json_response({"values": [{"key": k} for k in LICENSED], "isLast": True})
             return json_response({"values": [{"key": "alice-key"}, {"key": "dave-key"}], "isLast": True})
 
         jira.on("GET", f"{API}/group/member", members)
@@ -1867,7 +2318,7 @@ class TestFullSyncCoverage:
 
         def members(request: httpx.Request) -> httpx.Response:
             name = AtlassianApiStub.query(request)["groupname"]
-            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"], "qa": ["alice-key"]}[name]
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": list(LICENSED), "qa": ["alice-key"]}[name]
             return json_response({"values": [{"key": k} for k in keys], "isLast": True})
 
         jira.on("GET", f"{API}/group/member", members)
@@ -1920,7 +2371,7 @@ class TestFullSyncCoverage:
 
         def members(request: httpx.Request) -> httpx.Response:
             name = AtlassianApiStub.query(request)["groupname"]
-            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"], "qa": ["alice-key"]}[name]
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": list(LICENSED), "qa": ["alice-key"]}[name]
             return json_response({"values": [{"key": k} for k in keys], "isLast": True})
 
         jira.on("GET", f"{API}/group/member", members)
@@ -2035,7 +2486,7 @@ class TestFullSyncCoverage:
 
         def members(request: httpx.Request) -> httpx.Response:
             name = AtlassianApiStub.query(request)["groupname"]
-            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"]}.get(name, ["alice-key"])
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": list(LICENSED)}.get(name, ["alice-key"])
             return json_response({"values": [{"key": k} for k in keys], "isLast": True})
 
         jira.on("GET", f"{API}/group/member", members)
@@ -2305,3 +2756,728 @@ class TestUnreadApplicationRoles:
         groups = {p.external_id for p in db.record_group_permissions["10000"] if p.entity_type == EntityType.GROUP}
         assert "jira-software-users" not in groups
         assert "new-licensees" in groups
+
+
+class LookupsBeforeEitherStores(JiraRecordsDb):
+    """The sync and the stream of an issue each look for its attachment before either
+    has stored it, and every record either one writes is kept, as the graph keeps it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids_written: dict[str, set[str]] = {}
+
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+        if external_record_id.startswith("attachment_"):
+            return None
+        return await super().get_record_by_external_id(connector_id, external_record_id)
+
+    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+        await super().on_new_records(records_with_permissions)
+        for record, _ in records_with_permissions:
+            self.ids_written.setdefault(record.external_record_id, set()).add(record.id)
+
+
+def opened_with_log(jira: AtlassianApiStub) -> None:
+    """ENG-1 as GET issue returns it when it is opened: its comment shows log.txt."""
+    jira.on("GET", f"{API}/issue/1001", {
+        "id": "1001", "key": "ENG-1",
+        "fields": {
+            "summary": "Crash on save",
+            "attachment": [attachment("203", "log.txt", "text/plain")],
+            "comment": {"comments": [{"id": "c1", "author": {"displayName": "Bob"}}], "total": 1},
+            "project": {"id": "10000"},
+        },
+        "renderedFields": {"description": "<p>crash</p>", "comment": {"comments": [
+            {"id": "c1", "body": '<p>see <a href="/secure/attachment/203/log.txt">log</a></p>'},
+        ]}},
+    })
+
+
+async def children_of_streamed(connector: JiraDataCenterConnector, record: TicketRecord) -> list[str]:
+    response = await connector.stream_record(record)
+    container = json.loads(b"".join([chunk async for chunk in response.body_iterator]))
+    return [c["child_id"] for g in container["block_groups"] for c in g.get("children_records") or []]
+
+
+class TestAttachmentMetByTwoWritersAtOnce:
+    """Each writer that found the attachment unstored created its own record, so the
+    graph held two records for one attachment. The next full sync rewrote the one its
+    lookup found and unlinked the other, which lost its issue and the access it inherits."""
+
+    async def test_the_sync_and_the_stream_store_one_record(self, jira, store, search) -> None:
+        db = LookupsBeforeEitherStores()
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1", ts(1), attachments=[attachment("203", "log.txt", "text/plain")])])
+        opened_with_log(jira)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+        linked = await children_of_streamed(connector, db.records["1001"])
+
+        assert sum(r.external_record_id == "attachment_203" for b in db.record_batches for r in b) == 2, (
+            "both writers created the attachment")
+        assert len(db.ids_written["attachment_203"]) == 1, (
+            f"one attachment stored as {len(db.ids_written['attachment_203'])} records")
+        assert linked == [db.records["attachment_203"].id], "the comment links the record that is stored"
+
+    async def test_a_stored_attachment_keeps_its_id(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1", ts(1), attachments=[attachment("203", "log.txt", "text/plain")])])
+        opened_with_log(jira)
+        connector, _ = await make_connector(db, store)
+        db.records["attachment_203"] = FileRecord(
+            id="f-203", org_id="org-1", external_record_id="attachment_203", record_name="log.txt",
+            record_type=RecordType.FILE, origin="CONNECTOR", connector_name="JIRA DATA CENTER",
+            connector_id=CONNECTOR_ID, version=0, is_file=True, parent_external_record_id="1001",
+            source_updated_at=connector._parse_jira_timestamp(ts(1, 9)),
+        )
+
+        await connector.run_sync()
+        linked = await children_of_streamed(connector, db.records["1001"])
+
+        assert db.records["attachment_203"].id == "f-203"
+        assert linked == ["f-203"]
+
+    async def test_a_new_attachment_gets_the_same_id_from_every_writer(self, jira, store, search) -> None:
+        stub_site(jira, search)
+
+        async def new_id() -> str:
+            connector, _ = await make_connector(JiraRecordsDb(), store)
+            return connector._create_attachment_file_record(
+                attachment_id="203", filename="log.txt", mime_type="text/plain", file_size=10, created_at=0,
+                parent_issue_id="1001", parent_node_id="t-1", project_id="10000", weburl=None,
+            ).id
+
+        assert await new_id() == await new_id() == new_record_id(CONNECTOR_ID, "attachment_203")
+
+
+SCHEME_PATH = f"{API}/permissionscheme/7/permission"
+FIELD_USERS, FIELD_GROUP = "customfield_20000", "customfield_20001"
+REPORTER, ASSIGNEE = {"type": "reporter"}, {"type": "assignee"}
+CAROL = ("EntityType.USER", None, "carol@example.com")
+
+
+def scheme_with(jira: AtlassianApiStub, *holders: dict[str, Any], permission: str = "BROWSE_PROJECTS") -> None:
+    """The ENG scheme: the devs group plus these holders on ``permission``."""
+    jira.on("GET", SCHEME_PATH, {"permissions": [
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+        *({"permission": permission, "holder": h} for h in holders),
+    ]})
+
+
+def scheme_unread(jira: AtlassianApiStub, status: int = 500) -> None:
+    jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["busy"]}, status=status))
+
+
+def story(iid: str, key: str, updated: str = ts(1), **fields: object) -> dict[str, Any]:
+    row = issue(iid, key, updated)
+    row["fields"].update(fields)
+    return row
+
+
+def grants(db: FakeRecordsDb, external_id: str) -> list[tuple[str, Optional[str], Optional[str]]]:
+    return sorted((str(p.entity_type), p.external_id, p.email) for p in db.record_permissions.get(external_id, []))
+
+
+def stored_ticket() -> TicketRecord:
+    return TicketRecord(
+        id="t-1", org_id="org-1", external_record_id="1001", record_name="[ENG-1] old", record_type=RecordType.TICKET,
+        origin="CONNECTOR", connector_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, external_record_group_id="10000",
+        version=2, mime_type="text/plain", source_updated_at=1,
+    )
+
+
+class TestBrowseHolders:
+    """Browse Projects held by the reporter, the assignee or a user or group field is granted on the issue."""
+
+    async def sync(self, jira, db, store, search, issues, *holders, connector=None) -> JiraDataCenterConnector:
+        stub_site(jira, search)
+        scheme_with(jira, *holders)
+        search.add("ENG", 0, issues)
+        if connector is None:
+            connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        return connector
+
+    async def test_the_reporter_and_assignee_read_their_issue_and_a_project_without_such_holders_grants_nothing(
+        self, jira, db, store, search
+    ) -> None:
+        mine = story("1001", "ENG-1", assignee={"key": "bob-key", "name": "bob", "displayName": "Bob"})
+        await self.sync(jira, db, store, search, [mine], REPORTER, ASSIGNEE)
+        assert grants(db, "1001") == [("EntityType.USER", None, "bob@example.com"), CAROL]
+        assert db.records["1001"].access_rule.value == "OPEN" and db.records["1001"].rewrite_permissions is True
+
+        other_db, other_store = JiraRecordsDb(), FakeCheckpointStore()
+        await self.sync(jira, other_db, other_store, search, [mine])
+        assert grants(other_db, "1001") == [] and other_db.records["1001"].access_rule.value == "STRICT"
+
+    async def test_a_permission_other_than_browse_is_ignored(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        scheme_with(jira, REPORTER, permission="EDIT_ISSUES")
+        search.add("ENG", 0, [story("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert grants(db, "1001") == []
+
+    async def test_user_and_group_fields_grant_the_people_they_name_and_skip_those_who_cannot_be_granted(
+        self, jira, db, store, search
+    ) -> None:
+        holders = ({"type": "userCustomField", "parameter": FIELD_USERS}, {"type": "groupCustomField", "parameter": FIELD_GROUP})
+        users = [
+            {"key": "bob-key", "name": "bob", "active": True},
+            {"key": "old-key", "name": "old", "active": False, "emailAddress": "old@example.com"},
+            {"key": "ghost-key", "name": "ghost"},  # not in the directory and no email
+        ]
+        await self.sync(jira, db, store, search, [story("1001", "ENG-1", **{FIELD_USERS: users, FIELD_GROUP: {"name": "ops"}})], *holders)
+        assert grants(db, "1001") == [("EntityType.GROUP", "ops", None), ("EntityType.USER", None, "bob@example.com")]
+        assert {FIELD_USERS, FIELD_GROUP} <= set(search.fields_asked[-1]), "the issue read asks for the holder fields"
+
+    async def test_a_deactivated_reporter_gets_no_grant(self, jira, db, store, search) -> None:
+        gone = {"key": "carol-key", "name": "carol", "displayName": "Carol", "active": False, "emailAddress": "carol@example.com"}
+        await self.sync(jira, db, store, search, [story("1001", "ENG-1", reporter=gone)], REPORTER)
+        assert grants(db, "1001") == []
+
+    async def test_a_sub_task_hangs_off_its_project_with_its_holders_grant_and_follows_its_parent_without_one(
+        self, jira, db, store, search
+    ) -> None:
+        """Jira lets the reporter of a sub-task read it without its parent; a grant on a record filed under the
+        parent would reach the parent's readers too, so it is filed under the project instead."""
+        parent, child = story("1001", "ENG-1"), issue("1002", "ENG-2", ts(2), parent="1001")
+        await self.sync(jira, db, store, search, [parent, child], REPORTER)
+        assert grants(db, "1001") == [CAROL] and grants(db, "1002") == [CAROL]
+        assert db.records["1002"].parent_external_record_id is None and db.records["1002"].access_rule.value == "OPEN"
+
+        other_db, other_store = JiraRecordsDb(), FakeCheckpointStore()
+        await self.sync(jira, other_db, other_store, search, [parent, child])
+        assert grants(other_db, "1002") == [] and other_db.records["1002"].access_rule.value == "STRICT"
+        assert other_db.records["1002"].parent_external_record_id == "1001"
+
+    async def test_a_story_leaves_its_epic_while_a_holder_names_its_reporter_and_returns_when_it_goes(
+        self, jira, db, store, search
+    ) -> None:
+        epic_story = story("1003", "ENG-3", **{EPIC_FIELD: "ENG-1"})
+        connector = await self.sync(jira, db, store, search, [epic_story], REPORTER)
+        assert db.records["1003"].parent_external_record_id is None and grants(db, "1003") == [CAROL]
+
+        scheme_with(jira)
+        await connector.run_sync()  # nothing moved on the issue
+        assert db.records["1003"].parent_external_record_id == "1001"
+        assert grants(db, "1003") == [] and store.values_for("project_ENG")["browse_holders"] == ""
+
+    async def test_a_change_of_holders_re_reads_stored_issues_once(self, jira, db, store, search) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        digest = store.values_for("project_ENG")["browse_holders"]
+        assert digest not in ("", "?")
+
+        async def batches_after(*holders: dict[str, Any]) -> int:
+            scheme_with(jira, *holders)
+            before = len(db.record_batches)
+            await connector.run_sync()
+            return len(db.record_batches) - before
+
+        assert await batches_after(REPORTER) == 0, "same holders, nothing changed on the issue"
+        assert await batches_after(REPORTER, ASSIGNEE) == 1
+        assert store.values_for("project_ENG")["browse_holders"] != digest
+        assert await batches_after() == 1 and grants(db, "1001") == []
+        assert store.values_for("project_ENG")["browse_holders"] == ""
+
+    async def test_a_project_stored_before_the_holders_were_read_is_re_read_once(self, jira, db, store, search) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")])
+        store.values_for("project_ENG").pop("browse_holders", None)  # as saved by a version that did not read them
+        scheme_with(jira, REPORTER)
+        await connector.run_sync()
+        assert grants(db, "1001") == [CAROL]
+
+    async def test_an_unreadable_scheme_marks_the_project_before_the_walk_and_a_changed_issue_waits_for_it(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        digest = store.values_for("project_ENG")["browse_holders"]
+
+        scheme_unread(jira)
+        search.add("ENG", 0, json_response({"errorMessages": ["down"]}, status=500))
+        await connector.run_sync()  # the walk fails: the marker was saved before it
+        assert store.values_for("project_ENG")["browse_holders"] == "?"
+
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(2))])
+        await connector.run_sync()  # the issue changed while the scheme was unread: its reporter may be another
+        assert grants(db, "1001") == [] and db.records["1001"].access_rule == AccessRule.STRICT
+        assert store.values_for("project_ENG")["browse_holders"] == "?"
+
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", {"id": 7})
+        before = len(db.record_batches)
+        await connector.run_sync()  # read again: re-read once, whatever the digest was
+        assert len(db.record_batches) == before + 1 and store.values_for("project_ENG")["browse_holders"] == digest
+        assert grants(db, "1001") == [CAROL]
+
+    async def test_a_first_sync_with_an_unread_scheme_grants_nothing_and_does_not_loop(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        scheme_unread(jira)
+        search.add("ENG", 0, [story("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert grants(db, "1001") == [] and store.values_for("project_ENG")["browse_holders"] == "?"
+        before = len(db.record_batches)
+        await connector.run_sync()
+        assert len(db.record_batches) == before
+
+    @pytest.mark.parametrize("level_field", ["absent", "null"])
+    async def test_while_the_scheme_is_unread_a_changed_open_issue_is_read_by_its_project_alone(
+        self, jira, db, store, search, level_field
+    ) -> None:
+        """Its reporter, assignee or fields may no longer name the people its stored grants name; an unchanged
+        issue keeps them (``test_a_full_sync_with_an_unread_scheme_does_not_replace_the_stored_grants``)."""
+        level = {} if level_field == "absent" else {"security": None}
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1", **level)], REPORTER)
+        scheme_unread(jira)
+
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(2), **level)])
+        await connector.run_sync()
+        assert grants(db, "1001") == [] and db.records["1001"].access_rule == AccessRule.STRICT
+
+    async def test_a_level_cleared_while_the_scheme_is_unread_drops_the_old_levels_grants(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1", security=None)], REPORTER)
+        db.records["1001"].access_rule = AccessRule.RESTRICTED  # stored with a level: its grants are the level's
+        db.record_permissions["1001"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
+        scheme_unread(jira)
+
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(2), security=None)])
+        await connector.run_sync()
+        assert grants(db, "1001") == []
+
+    async def test_a_full_sync_with_an_unread_scheme_does_not_replace_the_stored_grants(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        store.values_for("project_ENG").update(last_sync_time=None, last_issue_updated=None)  # a full sync wipes the timestamps
+        scheme_unread(jira)
+        db.record_batches.clear()
+        await connector.run_sync()
+        assert grants(db, "1001") == [CAROL]
+        assert not any(r.external_record_id == "1001" for batch in db.record_batches for r in batch), (
+            "written through the content update, which leaves grants alone, not on_new_records"
+        )
+
+    async def test_a_story_stays_where_it_was_filed_while_the_scheme_is_unread(self, jira, db, store, search) -> None:
+        under_reporter = story("1003", "ENG-3", **{EPIC_FIELD: "ENG-1"})
+        connector = await self.sync(jira, db, store, search, [under_reporter], REPORTER)
+        scheme_unread(jira)
+        search.add("ENG", 0, [story("1003", "ENG-3", ts(2), **{EPIC_FIELD: "ENG-1"})])
+        await connector.run_sync()
+        assert db.records["1003"].parent_external_record_id is None and grants(db, "1003") == []  # changed: see above
+
+        other_db, other_store = JiraRecordsDb(), FakeCheckpointStore()
+        connector = await self.sync(jira, other_db, other_store, search, [under_reporter])  # no such holder: under its epic
+        assert other_db.records["1003"].parent_external_record_id == "1001"
+        scheme_unread(jira)
+        search.add("ENG", 0, [story("1003", "ENG-3", ts(2), **{EPIC_FIELD: "ENG-1"})])
+        await connector.run_sync()
+        assert other_db.records["1003"].parent_external_record_id == "1001"
+
+    async def test_a_sub_task_stays_where_it_was_filed_while_the_scheme_is_unread(self, jira, db, store, search) -> None:
+        parent = story("1001", "ENG-1", security=None)
+        child = issue("1002", "ENG-2", ts(2), parent="1001")
+        child["fields"]["security"] = None
+        connector = await self.sync(jira, db, store, search, [parent, child], REPORTER)
+        assert db.records["1002"].parent_external_record_id is None and grants(db, "1002") == [CAROL]
+
+        scheme_unread(jira)
+        changed = {**child, "fields": {**child["fields"], "updated": ts(3)}}
+        search.add("ENG", 0, [changed])
+        await connector.run_sync()
+        assert db.records["1002"].parent_external_record_id is None and grants(db, "1002") == []  # changed: see above
+
+    @pytest.mark.parametrize("level_field", ["absent", "null"])
+    async def test_a_reindex_with_an_unreadable_scheme_leaves_the_changed_issue_to_its_project(
+        self, jira, db, store, search, level_field
+    ) -> None:
+        stub_site(jira, search)
+        scheme_unread(jira)
+        connector, _ = await make_connector(db, store)
+        ticket = stored_ticket()
+        db.records["1001"] = ticket
+        db.record_permissions["1001"] = [Permission(entity_type=EntityType.USER, email="carol@example.com", type=PermissionType.READ)]
+        level = {} if level_field == "absent" else {"security": None}
+        jira.on("GET", f"{API}/issue/1001", story("1001", "ENG-1", ts(6), **level))
+        await connector.reindex_records([ticket])
+        assert db.records["1001"].version == 3
+        assert db.records["1001"].access_rule == AccessRule.STRICT and db.records["1001"].rewrite_permissions is True
+        assert grants(db, "1001") == [], "a reindex reads only a changed issue, whose holders may name others now"
+
+    @pytest.mark.parametrize("named_by", ["reporter", "user field"])
+    async def test_an_account_that_gains_product_access_reads_the_issues_its_holder_names_without_them_changing(
+        self, jira, db, store, search, named_by,
+    ) -> None:
+        """Carol's email is hidden, so a holder that names her is granted only through the linked accounts: when
+        she gains product access, the stored issues that may name her are read again, though none changed."""
+        holder = REPORTER if named_by == "reporter" else {"type": "userCustomField", "parameter": FIELD_USERS}
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"},
+                     **({FIELD_USERS: [{"key": "carol-key", "name": "carol", "active": True}]} if named_by == "user field" else {}))
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        scheme_with(jira, holder)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert CAROL not in grants(db, "1001")
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        await connector.run_sync()  # the search answers the same unchanged issue
+
+        field = "reporter" if named_by == "reporter" else f"cf[{FIELD_USERS.removeprefix('customfield_')}]"
+        assert any(f'{field} in ("carol")' in jql for jql in search.jql)
+        assert CAROL in grants(db, "1001")
+
+    async def test_an_issue_that_fails_to_build_in_that_read_is_read_again_by_the_next_sync(
+        self, jira, db, store, search,
+    ) -> None:
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"})
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert CAROL not in grants(db, "1001")
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        extract, calls = connector._extract_issue_data, []
+
+        def fails_in_the_re_read(*args: object, **kwargs: object) -> dict[str, object]:
+            calls.append(1)
+            if len(calls) == 2:  # the first call is the incremental pass, which skips the unchanged issue
+                raise RuntimeError("could not build the issue")
+            return extract(*args, **kwargs)
+
+        connector._extract_issue_data = fails_in_the_re_read
+        await connector.run_sync()
+        assert len(calls) >= 2 and CAROL not in grants(db, "1001")
+
+        connector._extract_issue_data = extract
+        await connector.run_sync()
+        assert CAROL in grants(db, "1001")
+
+    async def test_a_reindex_reads_the_holders_and_applies_them(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        scheme_with(jira, REPORTER)
+        connector, _ = await make_connector(db, store)
+        ticket = stored_ticket()
+        db.records["1001"] = ticket
+        db.cached_app_users = [AppUser(
+            app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="carol-key", org_id="org-1",
+            email="carol@example.com", full_name="Carol", is_active=True,
+        )]
+        jira.on("GET", f"{API}/issue/1001", story("1001", "ENG-1", ts(6)))
+        await connector.reindex_records([ticket])
+        assert grants(db, "1001") == [CAROL]
+
+    async def test_an_unreadable_scheme_does_not_stop_a_reindex_and_marks_the_project(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        for status in (403, 500):
+            scheme_unread(jira, status)
+            connector, _ = await make_connector(db, store)
+            await connector._update_project_sync_checkpoint("ENG", browse_holders="abc")
+            ticket = stored_ticket()
+            db.records["1001"] = ticket
+            db.record_permissions["1001"] = []
+            jira.on("GET", f"{API}/issue/1001", story("1001", "ENG-1", ts(6)))
+            await connector.reindex_records([ticket])
+            assert db.records["1001"].version == 3, f"reindexed with the scheme answering {status}"
+            assert db.records["1001"].access_rule == AccessRule.STRICT and db.records["1001"].rewrite_permissions is True
+            assert store.values_for("project_ENG")["browse_holders"] == "?"
+
+    @pytest.mark.parametrize(("answer", "known"), [
+        ({}, False), ({"permissions": None}, False), ({"permissions": [None]}, False), (json_response([]), False),
+        ({"permissions": []}, True),
+    ], ids=["no permissions", "null permissions", "a null grant", "a top-level list", "an empty list"])
+    async def test_a_grant_list_that_is_not_a_list_of_grants_leaves_the_holders_unknown(
+        self, jira, db, store, search, answer, known,
+    ) -> None:
+        """Only a list of grants (PermissionGrantsBean) is a reading of the scheme, for the holders and for the
+        project's own access; an empty list says the grants are gone."""
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        project_acl = acl_summary(db.record_group_permissions["10000"])
+        jira.on("GET", SCHEME_PATH, answer)
+        await connector.run_sync()
+        assert store.values_for("project_ENG")["browse_holders"] == ("" if known else "?")
+        assert grants(db, "1001") == ([] if known else [CAROL])
+        assert acl_summary(db.record_group_permissions["10000"]) == ([] if known else project_acl)
+        assert (await connector._read_browse_issue_holders("ENG")) == ([] if known else None)
+
+    async def test_a_full_resync_with_the_scheme_unread_keeps_the_stored_grants_until_it_is_read(
+        self, jira, db, store, search,
+    ) -> None:
+        """A cleared checkpoint is no proof the holders granted nothing: the stored issues they granted keep it."""
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        store.sync_points = {k: v for k, v in store.sync_points.items() if not k.endswith("project_ENG")}
+        scheme_unread(jira)
+        await connector.run_sync()
+        assert grants(db, "1001") == [CAROL] and store.values_for("project_ENG")["browse_holders"] == "?"
+
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", {"id": 7})
+        await connector.run_sync()
+        assert grants(db, "1001") == [CAROL] and store.values_for("project_ENG")["browse_holders"] not in ("", "?")
+
+    async def test_a_changed_scheme_is_marked_before_its_issues_are_read_again(self, jira, db, store, search) -> None:
+        """A walk cut short leaves the marker, so a scheme changed back before the next sync is still read again."""
+        mine = story("1001", "ENG-1", assignee={"key": "bob-key", "name": "bob", "displayName": "Bob"})
+        connector = await self.sync(jira, db, store, search, [mine], REPORTER)
+        scheme_with(jira, ASSIGNEE)
+        search.add("ENG", 0, [json_response({"issues": [mine], "total": 1}),
+                              json_response({"errorMessages": ["down"]}, status=500)])
+        await connector.run_sync()
+        assert store.values_for("project_ENG")["browse_holders"] == "?"
+
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [mine])
+        before = len(db.record_batches)
+        await connector.run_sync()
+        assert len(db.record_batches) > before and grants(db, "1001") == [CAROL]
+        assert store.values_for("project_ENG")["browse_holders"] not in ("", "?")
+
+    async def test_a_project_missing_while_an_account_was_admitted_reads_its_issues_for_it_when_back(
+        self, jira, db, store, search,
+    ) -> None:
+        """Carol, the reporter of ENG-1, is linked while ENG is missing from the project list, and the accounts are
+        handed on. ENG covered an older generation than the emptied queue, so the queue no longer names whom it
+        missed: when ENG is back, every stored issue is read, and Carol gets her grant."""
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"})
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert CAROL not in grants(db, "1001")
+
+        projects = next(r for m, path, r in jira._routes if (m, path) == ("GET", f"{API}/project"))
+        jira.on("GET", f"{API}/project", json_response([]))
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        await connector.run_sync()
+        assert json.loads(store.values_for("people_reread")["accounts"]) == [], "the projects listed took them"
+
+        jira.on("GET", f"{API}/project", projects)
+        await connector.run_sync()
+        assert CAROL in grants(db, "1001")
+
+    async def test_the_naming_pass_for_an_admitted_account_has_the_project_stubs_swept(self, jira, db, store, search) -> None:
+        """ENG has no levels; Carol, ENG-1's reporter, is linked, so only the naming pass reads ENG again. Its stubs may
+        name her too, so ENG is in the projects whose stubs the sweep revisits."""
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"})
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        sweep = connector._sweep_placeholder_records
+        connector._sweep_placeholder_records = AsyncMock(side_effect=sweep)
+        await connector.run_sync()
+        assert CAROL in grants(db, "1001")
+        assert "10000" in connector._sweep_placeholder_records.await_args.kwargs["full_sync_project_ids"]
+
+    async def test_a_refused_naming_query_keeps_the_project_marked_until_the_whole_read_succeeds(
+        self, jira, db, store, search,
+    ) -> None:
+        mine = story("1001", "ENG-1", reporter={"key": "carol-key", "name": "carol"})
+        stub_site(jira, search)
+
+        def product_group(*licensed: str) -> None:
+            def members(request: httpx.Request) -> httpx.Response:
+                name = AtlassianApiStub.query(request)["groupname"]
+                keys = licensed if name == "jira-software-users" else ("alice-key",)
+                return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+            jira.on("GET", f"{API}/group/member", members)
+
+        def refuses_names(request: httpx.Request) -> httpx.Response:
+            if "reporter in" in json.loads(request.content)["jql"]:
+                return json_response({"errorMessages": ["bad JQL"]}, status=400)
+            return search(request)
+
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [mine])
+        product_group("alice-key", "bob-key", "dave-key")
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert CAROL not in grants(db, "1001")
+
+        db.cached_app_users = list(db.app_users)
+        product_group(*LICENSED)
+        jira.on("POST", f"{API}/search", refuses_names)
+        extract, calls = connector._extract_issue_data, []
+
+        def fails_in_the_whole_read(*args: object, **kwargs: object) -> dict[str, object]:
+            calls.append(1)
+            if len(calls) == 2:  # the first call is the incremental pass
+                raise RuntimeError("could not build the issue")
+            return extract(*args, **kwargs)
+
+        connector._extract_issue_data = fails_in_the_whole_read
+        await connector.run_sync()
+        assert len(calls) >= 2 and CAROL not in grants(db, "1001")
+        assert store.values_for("project_ENG")["browse_holders"] == "?"
+
+        connector._extract_issue_data = extract
+        await connector.run_sync()
+        assert CAROL in grants(db, "1001") and store.values_for("project_ENG")["browse_holders"] not in ("", "?")
+
+    async def test_a_reindex_that_reads_other_holders_than_the_last_sync_applied_marks_the_project(
+        self, jira, db, store, search,
+    ) -> None:
+        """The sync that reads them re-reads the project, even if the scheme is changed back meanwhile."""
+        stub_site(jira, search)
+        scheme_with(jira, ASSIGNEE)
+        connector, _ = await make_connector(db, store)
+        applied = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, browse_holders=[REPORTER]).browse_fingerprint()
+        await connector._update_project_sync_checkpoint("ENG", browse_holders=applied)
+        ticket = stored_ticket()
+        db.records["1001"] = ticket
+        jira.on("GET", f"{API}/issue/1001", story("1001", "ENG-1", ts(6)))
+        await connector.reindex_records([ticket])
+        assert store.values_for("project_ENG")["browse_holders"] == "?"
+
+    async def test_a_given_up_issue_is_still_read_again_when_its_project_s_access_changes(
+        self, jira, db, store, search,
+    ) -> None:
+        """Skipped while it does not change, it would keep the grant of a holder the scheme no longer has."""
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        assert grants(db, "1001") == [CAROL]
+        await connector._update_project_sync_checkpoint("ENG", given_up_issues={"1001": ts(1)})
+        scheme_with(jira)
+        await connector.run_sync()
+        assert grants(db, "1001") == []
+
+    async def test_a_reindex_that_cannot_mark_the_project_writes_no_grant_from_the_holders_it_read(
+        self, jira, db, store, search,
+    ) -> None:
+        """Unmarked, a grant from holders the last sync did not apply would outlive a scheme changed back."""
+        stub_site(jira, search)
+        scheme_with(jira, REPORTER)
+        connector, _ = await make_connector(db, store)
+        applied = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, browse_holders=[ASSIGNEE]).browse_fingerprint()
+        await connector._update_project_sync_checkpoint("ENG", browse_holders=applied)
+        connector._update_project_sync_checkpoint = AsyncMock(side_effect=RuntimeError("store down"))
+        ticket = stored_ticket()
+        db.records["1001"] = ticket
+        db.cached_app_users = [AppUser(
+            app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="carol-key", org_id="org-1",
+            email="carol@example.com", full_name="Carol", is_active=True,
+        )]
+        jira.on("GET", f"{API}/issue/1001", story("1001", "ENG-1", ts(6)))
+        await connector.reindex_records([ticket])
+        assert db.records["1001"].version == 3 and db.records["1001"].access_rule == AccessRule.STRICT
+        assert grants(db, "1001") == [], "the reporter holder was read but could not be marked"
+
+    async def test_a_first_walk_cut_short_marks_the_holders_so_the_next_sync_reads_the_project_again(
+        self, jira, db, store, search,
+    ) -> None:
+        """A first page written with the reporter's grant, then a failure: the next sync must not take the scheme
+        without that holder as unchanged from a digest never saved."""
+        stub_site(jira, search)
+        scheme_with(jira, REPORTER)
+        search.add("ENG", 0, [story("1001", "ENG-1")], total=2)
+        search.add("ENG", 1, json_response({"errorMessages": ["down"]}, status=500))
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert grants(db, "1001") == [CAROL] and store.values_for("project_ENG")["browse_holders"] == "?"
+
+        scheme_with(jira)
+        search.add("ENG", 0, [story("1001", "ENG-1")])
+        search.add("ENG", 1, [])
+        await connector.run_sync()
+        assert grants(db, "1001") == []
+
+    async def test_a_page_without_an_issues_list_fails_the_read_instead_of_ending_it(self, jira, db, store, search) -> None:
+        """SearchResultsBean declares ``issues`` without requiring it: only a zero ``total`` ends the search."""
+        connector = await self.sync(jira, db, store, search, [story("1001", "ENG-1")], REPORTER)
+        scheme_with(jira)
+        search.add("ENG", 0, json_response({"total": 1}))
+        await connector.run_sync()
+        assert store.values_for("project_ENG")["browse_holders"] == "?" and grants(db, "1001") == [CAROL]
+
+        search.add("ENG", 0, json_response({"total": 0}))
+        await connector.run_sync()  # an empty search: the project is read, nothing is left to re-read
+        assert store.values_for("project_ENG")["browse_holders"] == ""
+
+    async def test_a_reindex_written_without_its_holders_is_read_again_by_the_next_sync(self, jira, db, store, search) -> None:
+        """The stored timestamp stays, so the next sync, which can read the holders, rebuilds the issue."""
+        stub_site(jira, search)
+        scheme_with(jira, REPORTER)
+        connector, _ = await make_connector(db, store)
+        applied = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, browse_holders=[ASSIGNEE]).browse_fingerprint()
+        await connector._update_project_sync_checkpoint("ENG", browse_holders=applied)
+        save = connector._update_project_sync_checkpoint
+        connector._update_project_sync_checkpoint = AsyncMock(side_effect=RuntimeError("store down"))
+        ticket = stored_ticket()
+        db.records["1001"] = ticket
+        db.cached_app_users = [AppUser(
+            app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id="carol-key", org_id="org-1",
+            email="carol@example.com", full_name="Carol", is_active=True,
+        )]
+        jira.on("GET", f"{API}/issue/1001", story("1001", "ENG-1", ts(6)))
+        await connector.reindex_records([ticket])
+        assert grants(db, "1001") == [] and db.records["1001"].source_updated_at == ticket.source_updated_at
+
+        # The scheme is back to what the last sync applied, so no project re-read runs: only the incremental pass,
+        # which takes the issue as changed because its stored timestamp is the old one, grants the assignee.
+        connector._update_project_sync_checkpoint = save
+        await connector._update_project_sync_checkpoint("ENG", browse_holders=applied, last_sync_time=1, last_issue_updated=1)
+        scheme_with(jira, ASSIGNEE)
+        bob = {"key": "bob-key", "name": "bob", "displayName": "Bob"}
+        search.add("ENG", 0, [story("1001", "ENG-1", ts(6), assignee=bob)])
+        db.cached_app_users = [
+            AppUser(app_name="JIRA DATA CENTER", connector_id=CONNECTOR_ID, source_user_id=f"{name}-key", org_id="org-1",
+                    email=f"{name}@example.com" if name != "dave" else "", full_name=name, is_active=True)
+            for name in ("alice", "bob", "carol", "dave")
+        ]  # none newly listed: no read of the issues naming them
+        # dave's email is hidden: an earlier sync already held him by account, so he is no new admission either.
+        await connector.issues_sync_point.update_sync_point(
+            "admitted_without_email", {"accounts": '["dave-key"]', "key_only": "[]"})
+        searched = len(search.jql)
+        await connector.run_sync()
+        assert ("EntityType.USER", None, "bob@example.com") in grants(db, "1001")
+        project_searches = [jql for jql in search.jql[searched:] if 'project = "ENG"' in jql]
+        assert project_searches and all("updated >=" in jql for jql in project_searches), (
+            "the incremental pass alone (its date predicate), no project re-read")

@@ -445,7 +445,6 @@ export default function SignUpPage() {
         style={{
           maxWidth: '34rem',
           padding: 'var(--space-5)',
-          backgroundColor: 'var(--color-panel-solid)',
           borderRadius: 'var(--radius-5)',
           border: '1px solid var(--olive-a3)',
           boxShadow:

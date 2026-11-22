@@ -1,0 +1,59 @@
+# Vetted SECURITY DEFINER functions of schema platform: the state of background jobs (platform.jobs). Format and rules: db/lib/vetted.py.
+# After editing: python -m db.lib.vetted render versions/platform/vetted/manifest.yaml
+functions:
+  # The operator (the migrate role) starts a job of a kind that imports and restores check for; one running job of a kind at a time.
+  - name: platform.job_start
+    class: jobs
+    scope: global
+    grants: [pipeshub_owner]
+    args:
+      - {name: p_kind, type: text, pattern: '^[a-z][a-z_]{2,39}$'}
+    returns: bigint
+    reads: [platform.jobs]
+    writes: [platform.jobs]
+    body: |
+      IF EXISTS (SELECT 1 FROM platform.jobs j WHERE j.kind = p_kind AND j.status = 'running') THEN
+        RAISE EXCEPTION 'a job of this kind is already running' USING ERRCODE = '55006';
+      END IF;
+      BEGIN
+        INSERT INTO platform.jobs (kind, status) VALUES (p_kind, 'running');
+        -- the unique index admits one running job of a kind, so the row found is the one this call inserted
+        RETURN (SELECT j.id FROM platform.jobs j WHERE j.kind = p_kind AND j.status = 'running');
+      EXCEPTION WHEN unique_violation THEN
+        RAISE EXCEPTION 'a job of this kind is already running' USING ERRCODE = '55006';
+      END;
+    test:
+      checks: [privileges, catalog]
+
+  # The operator ends a job that has not ended (false: unknown, or it had already ended).
+  - name: platform.job_finish
+    class: jobs
+    scope: global
+    grants: [pipeshub_owner]
+    args:
+      - {name: p_id, type: bigint}
+      - {name: p_status, type: text, enum: [done, failed, cancelled]}
+    returns: boolean
+    reads: [platform.jobs]
+    writes: [platform.jobs]
+    body: |
+      UPDATE platform.jobs SET status = p_status, updated_at = now() WHERE id = p_id AND status IN ('queued', 'running');
+      RETURN FOUND;
+    test:
+      checks: [privileges, catalog]
+
+  # The running job saves how far it got: progress only, and only while the job is running.
+  - name: platform.job_checkpoint
+    class: jobs
+    scope: global
+    args:
+      - {name: p_id, type: bigint}
+      - {name: p_progress, type: text, length: [2, 65536]}
+    returns: boolean
+    reads: [platform.jobs]
+    writes: [platform.jobs]
+    body: |
+      UPDATE platform.jobs SET progress = p_progress::jsonb, updated_at = now() WHERE id = p_id AND status = 'running';
+      RETURN FOUND;
+    test:
+      checks: [privileges, catalog]

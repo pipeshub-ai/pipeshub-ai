@@ -1022,3 +1022,24 @@ describe('an agent that re-asks a question the user already answered', () => {
     expect(unansweredAskUserQuestion?.assistantMessageId).toBe('b3');
   });
 });
+
+describe('loadHistoricalMessages, feedback', () => {
+  const fb = (isHelpful: boolean) => ({ isHelpful, categories: [] });
+  const feedbackOf = (feedback: Array<{ isHelpful: boolean }>) => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'hi' }),
+      message({ _id: 'a', messageType: 'bot_response', content: 'hello', feedback } as Partial<ConversationMessage>),
+    ]);
+    return (messages[1].metadata?.custom as { feedbackInfo?: { value?: string } }).feedbackInfo;
+  };
+
+  it('shows the latest rating, since each rating is appended', () => {
+    expect(feedbackOf([fb(true), fb(false)])).toEqual({ value: 'dislike' });
+    expect(feedbackOf([fb(false), fb(true)])).toEqual({ value: 'like' });
+    expect(feedbackOf([fb(true), fb(false), fb(true)])).toEqual({ value: 'like' });
+  });
+
+  it('shows no rating for an unrated reply', () => {
+    expect(feedbackOf([])).toBeUndefined();
+  });
+});

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect } from 'react';
-import { useThreadRuntime } from '@assistant-ui/react';
+import { useAui } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -20,6 +20,8 @@ import {
   isSearchNoAccessibleDocumentsNotFound,
 } from '@/lib/api';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
+import { i18n } from '@/lib/i18n';
+import { readAccessNotices } from '@/app/components/feedback/access-notice';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -32,7 +34,7 @@ let lastEffectiveAgentIdForQueryMode: string | null = null;
  * Must be used inside AssistantRuntimeProvider.
  */
 export function ChatInputWrapper() {
-  const threadRuntime = useThreadRuntime();
+  const aui = useAui();
   const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
 
@@ -80,7 +82,8 @@ export function ChatInputWrapper() {
     currentSearchAbort = searchController;
 
     store.setIsSearching(true);
-    store.setSearchError(null);
+    // The query first, so the heading shows while loading and a closed search can be told apart.
+    store.setSearchResults([], null, query);
 
     const request: SearchRequest = {
       query,
@@ -88,8 +91,13 @@ export function ChatInputWrapper() {
       filters: buildAssistantApiFilters(store.settings.filters),
     };
 
+    // Closing search (clearSearchResults) or a newer search makes this answer stale.
+    const isStale = () =>
+      myGeneration !== searchSubmitGeneration || useChatStore.getState().searchQuery !== query;
+
     try {
       const response = await ChatApi.search(request, searchController.signal);
+      if (isStale()) return;
       store.setSearchResults(
         response.searchResponse.searchResults,
         response.searchId,
@@ -97,9 +105,20 @@ export function ChatInputWrapper() {
         response,
       );
     } catch (error: unknown) {
-      if (isRequestCancelledError(error)) return;
+      if (isRequestCancelledError(error) || isStale()) return;
       if (isSearchNoAccessibleDocumentsNotFound(error)) {
-        store.setSearchResults([], null, query);
+        // Keep the server's reason ("No documents are available…") for the empty state.
+        store.setSearchResults([], null, query, {
+          message: (error as Error).message,
+          // Codes say whether "nothing" is because a source is still syncing.
+          searchResponse: { searchResults: [], accessNotices: (error as { details?: { accessNotices?: unknown } }).details?.accessNotices },
+        });
+        return;
+      }
+      // "We couldn't check which documents you have access to": said in the reader's language, not the server's.
+      const noticed = readAccessNotices((error as { details?: { accessNotices?: unknown } }).details?.accessNotices);
+      if (noticed.some((n) => n.code === 'check_unavailable')) {
+        store.setSearchError(i18n.t('accessNotice.check_unavailable'));
         return;
       }
       store.setSearchError((error as Error)?.message || 'Search failed');
@@ -222,7 +241,7 @@ export function ChatInputWrapper() {
     // Attachments were uploaded the moment they were added to the composer,
     // so by the time we reach here every ref is already server-assigned.
     // Forward verbatim to the runtime; no upload step at send time.
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: message }],
       metadata: {

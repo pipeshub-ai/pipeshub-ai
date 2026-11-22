@@ -21,7 +21,7 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
-import type { MessagePart, StatusMessage } from '../../types';
+import { TOOL_PROGRESS_STATUS, type MessagePart, type StatusMessage } from '../../types';
 import { looksLikeJson, safeLink, toolResultView, type ToolResultView } from '../../tool-result-view';
 import { stripAnswerMarkers } from '../../utils/parse-download-markers';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
@@ -131,7 +131,9 @@ function groupConsecutiveToolCalls(parts: MessagePart[]): RenderItem[] {
       }
       i = j;
     } else {
-      items.push({ kind: 'part', part, key: `part-${part.type}-${part.runId ?? i}` });
+      // One run emits several narration parts with the same runId, so the
+      // index keeps their keys apart; parts are only ever appended.
+      items.push({ kind: 'part', part, key: `part-${part.type}-${part.runId ?? 'root'}-${i}` });
       i += 1;
     }
   }
@@ -294,13 +296,14 @@ export function AgentActivityTimeline({ parts, isNested = false, isStreaming = f
   // Don't show status alongside live text with content (the text itself
   // signals progress), or when the last visible entry already covers the
   // status visually (a reasoning block = "Thinking", a running tool call
-  // = the same activity the status describes).
+  // = the same activity the status describes). A tool's own progress note
+  // ("waiting in queue") is not on its row, so it is always shown.
   const hasLiveTextWithContent = isStreaming && visible.some(
     (p) => p.type === 'text' && !p.settled && !p.isFinal && !!p.content?.trim(),
   );
   const items = groupConsecutiveToolCalls(visible).filter(hasRenderableContent);
   const lastItem = items.length > 0 ? items[items.length - 1] : null;
-  const lastItemCoversStatus = lastItem !== null && (
+  const lastItemCoversStatus = lastItem !== null && currentStatus?.status !== TOOL_PROGRESS_STATUS && (
     (lastItem.kind === 'part' && lastItem.part.type === 'reasoning') ||
     (lastItem.kind === 'part' && lastItem.part.type === 'tool_call' && (lastItem.part.status ?? 'running') === 'running') ||
     (lastItem.kind === 'toolGroup' && lastItem.parts.some((p) => (p.status ?? 'running') === 'running'))

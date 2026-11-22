@@ -18,7 +18,8 @@ type Spec = {
   paths: Record<string, Record<string, { tags?: string[]; security?: unknown[] }>>
 }
 
-function servedRoutes(): string[] {
+/** The router under test, with authentication stubbed to pass. */
+function router(): any {
   const container: any = {
     get: sinon.stub().callsFake((key: string) =>
       key === 'AuthMiddleware'
@@ -26,17 +27,39 @@ function servedRoutes(): string[] {
         : { connectorBackend: 'http://localhost:8088' },
     ),
   }
-  const router: any = createMcpServersRouter(container)
-  return router.stack
-    .filter((layer: any) => layer.route)
-    .flatMap((layer: any) =>
-      Object.keys(layer.route.methods).map(
-        (method) => `${method} /mcp-servers${String(layer.route.path).replace(/:(\w+)/g, '{$1}')}`,
-      ),
-    )
+  return createMcpServersRouter(container)
+}
+
+/** An Express route as `method /mcp-servers/{param}`, the spec's path form. */
+const routeId = (method: string, path: string) =>
+  `${method} /mcp-servers${path.replace(/:(\w+)/g, '{$1}')}`
+
+/** Every `method /mcp-servers...` route the router serves, in spec path form. */
+function servedRoutes(): string[] {
+  return router()
+    .stack.filter((layer: any) => layer.route)
+    .flatMap((layer: any) => Object.keys(layer.route.methods).map((method) => routeId(method, String(layer.route.path))))
     .sort()
 }
 
+/** The scopes each route's requireScopes accepts, read from its refusal of an OAuth token without any. */
+function gateScopes(): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const layer of router().stack.filter((l: any) => l.route)) {
+    let refusal: Error | undefined
+    for (const handler of layer.route.stack.slice(0, 2)) {
+      handler.handle({ user: { isOAuth: true, oauthScopes: [] } }, {}, (err?: Error) => (refusal = err))
+      if (refusal) break
+    }
+    const required = refusal?.message.match(/^Insufficient scope\. Required: (.+)$/)?.[1]
+    for (const method of Object.keys(layer.route.methods)) {
+      out[routeId(method, String(layer.route.path))] = required ? required.split(' or ') : []
+    }
+  }
+  return out
+}
+
+/** Every `method path` the spec documents under `/mcp-servers`. */
 function documentedRoutes(spec: Spec): string[] {
   return Object.entries(spec.paths)
     .filter(([path]) => path.startsWith('/mcp-servers'))
@@ -53,12 +76,18 @@ describe('MCP server routes match the spec', () => {
     expect(documentedRoutes(spec)).to.deep.equal(servedRoutes())
   })
 
-  it('tags and secures every MCP operation', () => {
+  it('tags every MCP operation and lists the scopes its gate accepts', () => {
+    const scopes = gateScopes()
     for (const [path, operations] of Object.entries(spec.paths)) {
       if (!path.startsWith('/mcp-servers')) continue
       for (const [method, operation] of Object.entries(operations)) {
-        expect(operation.tags?.[0], `${method} ${path}`).to.match(/^MCP /)
-        expect(operation.security, `${method} ${path}`).to.deep.equal([{ bearerAuth: [] }])
+        const id = `${method} ${path}`
+        expect(operation.tags?.[0], id).to.match(/^MCP /)
+        expect(scopes[id], id).to.not.be.empty
+        expect(operation.security, id).to.deep.equal([
+          { bearerAuth: [] },
+          ...scopes[id]!.map((scope) => ({ oauth2: [scope] })),
+        ])
       }
     }
   })

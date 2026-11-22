@@ -580,12 +580,12 @@ class TestHandleDoc:
     async def test_converts_doc_to_docx(self):
         parser = _make_parser()
         stream = io.BytesIO(b"fake docx bytes")
-        parser._doc_parser.convert_doc_to_docx = MagicMock(return_value=stream)
+        parser._doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=stream)
         parser.handle_docx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_doc(b"raw", "file.doc")
-        parser._doc_parser.convert_doc_to_docx.assert_called_once_with(b"raw")
+        parser._doc_parser.convert_doc_to_docx_async.assert_awaited_once_with(b"raw")
         parser.handle_docx.assert_called_once()
 
 
@@ -593,22 +593,22 @@ class TestHandlePptAndXls:
     @pytest.mark.asyncio
     async def test_ppt_converts_to_pptx(self):
         parser = _make_parser()
-        parser._ppt_parser.convert_ppt_to_pptx = MagicMock(return_value=b"pptx bytes")
+        parser._ppt_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx bytes")
         parser.handle_pptx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_ppt(b"raw", "a.ppt")
-        parser._ppt_parser.convert_ppt_to_pptx.assert_called_once_with(b"raw")
+        parser._ppt_parser.convert_ppt_to_pptx_async.assert_awaited_once_with(b"raw")
 
     @pytest.mark.asyncio
     async def test_xls_converts_to_xlsx(self):
         parser = _make_parser()
-        parser._xls_parser.convert_xls_to_xlsx = MagicMock(return_value=b"xlsx bytes")
+        parser._xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx bytes")
         parser.handle_xlsx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_xls(b"raw", "a.xls")
-        parser._xls_parser.convert_xls_to_xlsx.assert_called_once_with(b"raw")
+        parser._xls_parser.convert_xls_to_xlsx_async.assert_awaited_once_with(b"raw")
 
 
 class TestHandleXlsx:
@@ -629,6 +629,25 @@ class TestHandleXlsx:
             result = await parser.handle_xlsx(b"raw", "book.xlsx")
             assert result is expected
             instance.load_workbook_from_binary.assert_called_once_with(b"raw")
+
+    @pytest.mark.asyncio
+    async def test_the_workbook_is_loaded_off_the_event_loop(self) -> None:
+        import threading
+
+        parser = _make_parser()
+        loop_thread = threading.get_ident()
+        loaded_in: list[int] = []
+        with patch(
+            "app.agents.actions.util.parse_file.get_llm_for_role",
+            new_callable=AsyncMock,
+            return_value=("llm", None),
+        ), patch("app.agents.actions.util.parse_file.ExcelParser") as mock_cls:
+            instance = mock_cls.return_value
+            instance.load_workbook_from_binary = lambda _raw: loaded_in.append(threading.get_ident())
+            instance.create_blocks = AsyncMock(return_value=BlocksContainer(blocks=[], block_groups=[]))
+            await parser.handle_xlsx(b"raw", "book.xlsx")
+        assert loaded_in
+        assert loaded_in[0] != loop_thread
 
 
 class TestHandleCsvTsv:
@@ -784,7 +803,7 @@ class TestHandleHtml:
         result = await parser.handle_html(b"<html></html>", "page.html")
         assert result is expected
         parser._image_parser.urls_to_base64.assert_awaited_once_with(
-            ["https://example.com/pic.png"]
+            ["https://example.com/pic.png"], allow_remote_fetch=True
         )
         parser._html_parser.parse_to_blocks.assert_awaited_once_with(
             cleaned,

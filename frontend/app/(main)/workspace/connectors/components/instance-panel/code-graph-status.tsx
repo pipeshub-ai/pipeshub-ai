@@ -2,9 +2,13 @@
 
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Flex, Text } from '@radix-ui/themes';
+import { Badge, Flex, Link, Text } from '@radix-ui/themes';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ConnectorsApi } from '../../api';
 import type { CodeGraphRepo, CodeGraphStatus } from '../../types';
+
+/** The code graph explorer, while it is switched on for this build. */
+const GRAPH_EXPLORER_ACTIVE = process.env.NEXT_PUBLIC_GRAPH_EXPLORER_ACTIVE === 'true';
 
 type BadgeColor = React.ComponentProps<typeof Badge>['color'];
 
@@ -26,6 +30,7 @@ const STATUS_COLOR: Record<CodeGraphStatus, BadgeColor> = {
  */
 export function CodeGraphStatus({ connectorId }: { connectorId: string }) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [repos, setRepos] = useState<CodeGraphRepo[] | null>(null);
 
   useEffect(() => {
@@ -55,6 +60,17 @@ export function CodeGraphStatus({ connectorId }: { connectorId: string }) {
           <Text size="2" style={{ overflowWrap: 'anywhere' }}>
             {repo.repo}
           </Text>
+          {/* A repository with a graph (or one being built) can be explored: the page opens with search scoped to it. */}
+          {GRAPH_EXPLORER_ACTIVE && !['never_built', 'too_large'].includes(repo.graph_status) ? (
+            <Link
+              size="2"
+              href={`/graph/?repo=${encodeURIComponent(repo.repo)}`}
+              aria-label={t('graph.ui.viewGraphOf', { repo: repo.repo })}
+              style={isMobile ? { display: 'inline-flex', alignItems: 'center', minHeight: 44 } : undefined}
+            >
+              {t('graph.ui.viewGraph')}
+            </Link>
+          ) : null}
           <Badge
             color={STATUS_COLOR[repo.graph_status] ?? 'gray'}
             variant="soft"

@@ -357,6 +357,10 @@ class TestFreeFormSql:
         assert ctx.decision == PreDecision.ASK
         assert ctx.pending_approval is not None and ctx.pending_approval.details["kind"] == "destructive"
 
+    async def test_a_query_that_writes_asks_too(self) -> None:
+        assert (await _sql_gate(_context(), "UPDATE orders SET a = 1")).decision == PreDecision.ASK
+        assert (await _sql_gate(_context(), "SELECT pg_terminate_backend(1)")).decision == PreDecision.ASK
+
     async def test_a_query_that_deletes_doesnt_run_where_nobody_can_answer(self) -> None:
         ctx = await _sql_gate(_context(client_name="api"), "DROP TABLE orders")
         assert ctx.decision == PreDecision.DENY

@@ -12,6 +12,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests.support.app_tree import may_contain_name, sources
+
 APP = Path(__file__).resolve().parents[4] / "app"
 
 ANYONE_WRITERS = {
@@ -40,19 +42,40 @@ def _calls(tree: ast.AST) -> list[tuple[int, str]]:
     return calls
 
 
-def test_no_production_code_writes_anyone_documents() -> None:
+def _anyone_callers(files: "tuple[tuple[Path, str], ...]", root: Path = APP) -> list[str]:
     callers = []
-    for path in APP.rglob("*.py"):
-        relative = path.relative_to(APP).as_posix()
-        if relative.startswith(STORE_LAYERS):
+    for path, text in files:
+        relative = path.relative_to(root).as_posix()
+        # A call to a writer carries its name as an identifier (names are NFKC-folded by the parser, as in
+        # may_contain_name), so a file without any name is not parsed.
+        if relative.startswith(STORE_LAYERS) or not may_contain_name(text, *ANYONE_WRITERS):
             continue
-        for line, name in _calls(ast.parse(path.read_text(encoding="utf-8-sig"))):
+        for line, name in _calls(ast.parse(text, filename=str(path))):
             if name in ANYONE_WRITERS:
                 callers.append(f"app/{relative}:{line} calls {name}")
+    return callers
+
+
+def test_no_production_code_writes_anyone_documents() -> None:
+    callers = _anyone_callers(sources(APP))
     assert not callers, (
         "Link-style shares are off by product decision, and search grants org-wide "
         f"access to any file with an anyone document. New callers: {callers}"
     )
+
+
+def test_the_scan_finds_a_planted_caller_and_ignores_the_store_layers(tmp_path: Path) -> None:
+    for rel, text in {
+        "connectors/sources/x.py": "async def run(store):\n    await store.batch_upsert_anyone([])\n    create_anyone()\n",
+        "connectors/sources/clean.py": "async def run(store):\n    await store.batch_upsert_users([])\n",
+        "services/graph_db/provider.py": "async def batch_upsert_anyone(self, rows):\n    self.create_anyone()\n",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8")
+    assert sorted(_anyone_callers(sources(tmp_path), tmp_path)) == [
+        "app/connectors/sources/x.py:2 calls batch_upsert_anyone",
+        "app/connectors/sources/x.py:3 calls create_anyone",
+    ]
 
 
 def test_the_permission_step_ignores_link_style_share_types() -> None:
@@ -70,3 +93,13 @@ def test_the_permission_step_ignores_link_style_share_types() -> None:
         "The permission step now handles a link-style share type, which would start "
         f"granting access that is off by product decision: {handled}"
     )
+
+
+def test_a_fullwidth_spelling_of_a_writer_is_still_a_call_to_it(tmp_path: Path) -> None:
+    # The parser folds identifiers with NFKC, so this is a call to create_anyone and the old full parse found it.
+    (tmp_path / "connectors").mkdir()
+    text = "def run(s):\n    s.\uff43reate_anyone([])\n"
+    (tmp_path / "connectors" / "x.py").write_text(text, encoding="utf-8")
+    assert "create_anyone" not in text
+    assert [name for _, name in _calls(ast.parse(text))] == ["create_anyone"]
+    assert _anyone_callers(sources(tmp_path), tmp_path) == ["app/connectors/x.py:2 calls create_anyone"]

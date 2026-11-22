@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from contextlib import aclosing
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Literal
@@ -23,6 +23,7 @@ from app.agents.agent_loop.protocol import resolve_protocol
 from app.agents.agent_loop.protocol.agui import AGUIEventType
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
+from app.agents.agent_loop.turn_log import log_turn_end
 from app.agents.chat_modes.custom_instructions import resolve_custom_instructions
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.openapi import attachments as api_toolset_attachments
@@ -30,6 +31,13 @@ from app.agents.openapi.service import ApiToolsetError, connected_tool_refs
 from app.agents.openapi.store import ApiToolsetStore
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import connection_limit, require_scopes
+from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
+from app.api.middlewares.request_log import (
+    add_request_log_fields,
+    bind_request_log_fields,
+    mark_request_failure,
+    path_log_fields,
+)
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
     get_llm_for_chat,
@@ -49,6 +57,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
 )
+from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.modules.agents.capability_summary import (
     PARTLY_SHARED_KEY,
     fetch_connector_configs,
@@ -57,8 +66,10 @@ from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
+    service_account_knowledge,
 )
 from app.modules.agents.qna.router import (
     RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
@@ -84,6 +95,7 @@ from app.modules.retrieval.selection_scope import (
 from app.modules.transformers.blob_storage import (
     BlobStorage,  # noqa: F401 - re-exported, see above
 )
+from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.interface.graph_db_provider import (
     SELECTION_APPS_FILTER_KEY,
     IGraphDBProvider,
@@ -93,15 +105,18 @@ from app.services.model_identity.runtime import assert_identity_allowed, call_sc
 from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.telemetry.modules.schema_metrics import record_schema_rejection
+from app.utils import error_class
 from app.utils.aimodels import model_default_reasoning_effort
 from app.utils.attachment_utils import (
     keep_accessible_attachments,
     resolve_attachments,  # noqa: F401 - re-exported, see above
 )
 from app.utils.llm import LLM_MISSING_FOR_CHAT
+from app.utils.logging_fields import log_event
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_org_or_503, get_user_or_503
+from app.utils.user_lookup import get_caller_user, get_org_or_503, get_user_or_503
 from app.utils.user_messages import action_failed
 from app.web.config import resolve_web_search
 from app.web.search import PROVIDERS as WEB_SEARCH_PROVIDERS
@@ -123,6 +138,11 @@ _log = logging.getLogger(__name__)
 # from the new module directly.
 
 router = APIRouter()
+
+# The CRUD routes' ids on every line of the request, its own line included. Per route: the chat routes share this
+# router, and the assistant's chat names `agentIdPlaceholder`.
+_AGENT_ID_LOG = Depends(path_log_fields(agent_id="agent_id"))
+_TEMPLATE_ID_LOG = Depends(path_log_fields(template_id="template_id"))
 
 
 def _resolve_protocol(chat_query: "ChatQuery", request: Request) -> str:
@@ -221,7 +241,12 @@ class ChatQuery(BaseModel):
     toolApproval: dict[str, Any] | None = None
     # Set by Node for a project-scoped chat whose turn selects below app level:
     # the project's own sources (`{"apps": [...]}`), which the selected record
-    # groups, folders and records must lie in. Never taken from a client.
+    # groups, folders and records must lie in. Node builds it from the project and
+    # never copies it from the client's request. It only narrows the turn: a body
+    # that names other sources, or leaves it out, reaches no record beyond the
+    # identity the turn retrieves as, as in a chat outside any project. That is the
+    # caller, except for a service-account agent, which retrieves as its creator
+    # or bound account.
     allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
@@ -283,6 +308,30 @@ class LLMInitializationError(AgentError):
             status_code=500
         )
 
+
+# The documents a request's own values are written into: a schema rejection there is the caller's mistake. Anywhere
+# else (permission edges, toolset and tool nodes) it is a document we built, so our own drift.
+_CALLER_DOCUMENTS = frozenset({CollectionNames.AGENT_INSTANCES.value, CollectionNames.AGENT_TEMPLATES.value})
+
+
+def _route_failure(request: Request, e: BaseException, action: str, *, writes_body: bool = False) -> HTTPException:
+    """The HTTPException a route raises ``from e`` when it fails: 400 when the store refused the caller's values (a
+    schema rejection of an agent or template document on a route that ``writes_body`` into it, or a cause classed
+    ``bad_request``, such as a database data error), else 500. A clone writes only what we stored, so its rejection
+    is our drift. The request's line classes it by ``e`` and keeps the store's text off it. A JSON decode error or
+    an upstream 4xx in the chain would also be a 400; none reaches these routes (the body is parsed by
+    ``_parse_request_body``). Every schema rejection is counted: one of a field we compute is our drift."""
+    rejection = error_class.chain_link(e, SchemaValidationError)
+    if rejection is not None:
+        record_schema_rejection(rejection.collection)
+        refused = writes_body and rejection.collection in _CALLER_DOCUMENTS
+    else:
+        refused = error_class.classify_error(e) == "bad_request"
+    http_exc = HTTPException(status_code=400 if refused else 500, detail=action_failed(action))
+    mark_request_failure(request, http_exc, reason="schema_rejected" if rejection is not None else None,
+                         include_error_text=False)
+    return http_exc
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -299,14 +348,12 @@ async def get_services(request: Request) -> dict[str, Any]:
 
     retrieval_service = await container.retrieval_service()
     graph_provider = await container.graph_provider()
-    reranker_service = container.reranker_service()
     config_service = container.config_service()
     logger = container.logger()
 
     return {
         "retrieval_service": retrieval_service,
         "graph_provider": graph_provider,
-        "reranker_service": reranker_service,
         "config_service": config_service,
         "logger": logger,
     }
@@ -449,7 +496,6 @@ async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, log
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching user document: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve user information") from e
 
 
@@ -491,6 +537,166 @@ async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any])
     return enriched
 
 
+def _is_live_identity(node: dict[str, Any]) -> bool:
+    """False once an account has been removed or switched off.
+
+    Two separate signals, because they are written by different things.
+    Soft-delete leaves the user node and clears `isActive`
+    (`entity.py` `_handle_user_deleted`). Disabling is its own field, carried
+    from user management on the update event, and deliberately not stored in
+    `isActive` — a rename sets that one back to true, so a disable kept there
+    would not survive one.
+
+    Absence is read as live for both. Nodes written before these fields
+    existed carry neither, and treating those as dead would cut off agents
+    that work today.
+    """
+    return (
+        node.get("isActive", True) is not False
+        and node.get("isDisabled", False) is not True
+    )
+
+
+async def _resolve_service_account_binding(
+    service_account_user_id: str,
+    graph_provider: IGraphDBProvider,
+    caller_org_id: str,
+) -> str:
+    """The `userId` of a service account an agent is being bound to.
+
+    Takes the account's `userId` — what the service-accounts API hands the
+    screen — and gives the same `userId` back, so what is stored is what a
+    picker sends and what it reads afterwards. The graph node's own key is
+    deliberately not used: it is minted locally and means nothing to the
+    service-accounts API, so a screen could neither send it nor match an
+    existing binding against the list it shows.
+
+    Refuses anything that is not a live service account of the caller's own
+    organisation. `kind` is the only thing trusted for "is this a service
+    account". It is told to the graph by user management rather than worked
+    out here, and without it this would have to fall back to the reserved
+    address, which would let an administrator aim an agent at a colleague
+    instead — the whole point of binding is to stop one person's reach being
+    lent out.
+
+    A deleted account is refused too. Soft-delete leaves the node in place and
+    only clears `isActive` (`entity.py` `_handle_user_deleted`), so `kind`
+    alone would still accept it and an agent would keep searching with the
+    reach of an account an administrator has removed.
+
+    The same 400 covers missing, wrong-org, not-a-service-account and deleted,
+    so this cannot be used to find out which user ids exist in another
+    organisation.
+    """
+    wanted = str(service_account_user_id or "").strip()
+    if not wanted:
+        raise InvalidRequestError("Choose a service account for this agent to search as.")
+
+    # raise_on_error, so a database that is down surfaces as a failure rather
+    # than as "no such account" — an administrator told the wrong one of those
+    # goes looking for a problem that is not there.
+    account = await graph_provider.get_user_by_user_id(wanted, raise_on_error=True)
+    caller_org = str(caller_org_id or "").strip()
+    account_org = str((account or {}).get("orgId") or "").strip()
+
+    if (
+        not account
+        or not caller_org
+        or account_org != caller_org
+        or (account or {}).get("kind") != "service"
+        or not _is_live_identity(account)
+    ):
+        raise InvalidRequestError(
+            "That service account was not found in this organisation. Choose one "
+            "from Workspace \u2192 Service accounts, or create one there first."
+        )
+
+    return wanted
+
+
+async def _only_an_administrator_may_bind(
+    request: Request,
+    config_service: ConfigurationService,
+    detail: str = "Only an administrator can choose the service account an agent searches as.",
+) -> None:
+    """Refuse a change of binding from anyone who does not administer the org.
+
+    Binding is how an administrator decides what a shared agent may read: the
+    account's reach is whatever they granted it, usually by putting it in
+    groups. Without this check any signed-in member could point an agent they
+    own at any service account in the organisation and ask questions with that
+    account's reach, and because a service agent is shared with everyone
+    (`sa_forces_org_sharing`), so could every colleague after them. The screen
+    that lists these accounts and the one that puts them in groups are both
+    administrator-only already; this is the same rule on the route that spends
+    what those screens grant.
+
+    The role is the live one Node reports for the caller's own credentials,
+    never a flag read off the request. An unconfirmed role is a 503 rather than
+    a refusal: "you are not an administrator" is the wrong thing to tell an
+    administrator whose edit failed because a lookup timed out.
+    """
+    role = await fetch_caller_role(request, config_service)
+    if role.status is not CallerRoleStatus.VALID:
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail=(
+                "We couldn't confirm your role just now, so nothing was saved. "
+                "Please try again."
+            ),
+        )
+    if not role.is_admin:
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail=detail)
+
+
+async def _checked_service_account_binding(
+    requested: object,
+    graph_provider: IGraphDBProvider,
+    caller_org_id: str,
+    *,
+    is_service_account: bool,
+    admin_check: Callable[[], Awaitable[None]],
+    current: object = None,
+) -> str | None:
+    """The binding to store, refusing one the agent could not use, and one
+    whoever is asking is not entitled to set.
+
+    `None` is allowed on any agent. It means "search as the creator", which is
+    where every unbound agent already sits, and every agent document carries
+    this field as null — so a client that reads an agent and sends it back
+    unchanged must not be turned away.
+
+    Anything else is only meaningful on a service agent, and is refused rather
+    than quietly dropped: dropping it would leave an agent searching as its
+    creator, the wider identity, while whoever asked believed they had narrowed
+    it. On update, "is a service agent" means what the agent will be once the
+    request is applied, so one request may convert an agent and bind it.
+    """
+    stored = str(current or "").strip() or None
+    asked = None if requested is None else str(requested or "").strip()
+
+    # Only an administrator picks the account, and that is what `admin_check`
+    # refuses. A value that is not changing passes for anyone, because every
+    # agent document carries this field and a client that reads an agent and
+    # saves it back sends it every time — an owner editing a bound agent's
+    # name would otherwise be turned away. Clearing counts as a change: it
+    # returns the agent to searching as its creator, which is the wider
+    # identity an administrator bound it to get away from.
+    if asked != stored:
+        await admin_check()
+
+    if asked is None:
+        return None
+    if not is_service_account:
+        raise InvalidRequestError(
+            "Only a service agent searches as a service account. Make this "
+            "a service agent first, or leave the binding alone."
+        )
+    return await _resolve_service_account_binding(
+        asked, graph_provider, caller_org_id,
+    )
+
+
 async def _enrich_user_info_for_service_account_agent_chat(
     agent: dict[str, Any],
     graph_provider: IGraphDBProvider,
@@ -498,46 +704,128 @@ async def _enrich_user_info_for_service_account_agent_chat(
     caller_org_id: str,
 ) -> dict[str, Any]:
     """
-    Service-account agents are invoked with a synthetic JWT (e.g. Slack bot). Retrieval and
-    permission checks must use the agent creator's real userId — the same identity whose
-    knowledge access configured the agent — not the service principal.
+    The identity a service agent searches knowledge as.
+
+    A service agent is invoked with a synthetic JWT (e.g. the Slack bot), which
+    is not a principal the permission graph knows, so retrieval has to run as
+    someone. Which someone is what this decides.
+
+    A bound service account, when the agent names one. Its reach is whatever an
+    administrator has shared with it, usually through group membership, so what
+    the agent can see is something granted rather than inherited.
+
+    Otherwise the agent's creator, which is where every agent made before
+    binding existed still stands. A service agent is shared with the whole
+    organisation, so what it may search is limited to what is shared with the
+    whole organisation: the org's team connectors, never its creator's personal
+    ones, and collections only when it is bound (``service_account_knowledge``,
+    applied on every run and when the agent is saved).
+
+    Either way the identity must belong to the caller's own organisation. This
+    path skips check_agent_permission, so that is checked here instead.
     """
-    creator_key = agent.get("createdBy")
-    if not creator_key:
+    binding_user_id = agent.get("serviceAccountUserId")
+    bound = bool(binding_user_id)
+    what = "service account" if bound else "creator"
+    identity_key = binding_user_id or agent.get("createdBy")
+
+    if not identity_key:
         raise HTTPException(
             status_code=500,
             detail="Service account agent is missing createdBy; cannot resolve knowledge permissions.",
         )
-    creator_doc = await graph_provider.get_document(
-        str(creator_key), CollectionNames.USERS.value
+    # A binding stores the account's `userId`, which is what the
+    # service-accounts API speaks; `createdBy` stores the graph node's own key.
+    # Two different identifiers, so two different lookups.
+    identity_doc = (
+        await graph_provider.get_user_by_user_id(str(identity_key), raise_on_error=True)
+        if bound
+        else await graph_provider.get_document(
+            str(identity_key), CollectionNames.USERS.value
+        )
     )
-    if not creator_doc:
+    if not identity_doc:
         raise HTTPException(
             status_code=500,
-            detail="Agent creator user not found; cannot resolve knowledge permissions.",
+            detail=f"Agent {what} user not found; cannot resolve knowledge permissions.",
         )
-    creator_user_id = creator_doc.get("userId")
-    if not creator_user_id:
+    identity_user_id = identity_doc.get("userId")
+    if not identity_user_id:
         logger.error(
-            "Service account agent creator %s has no userId field",
-            creator_key,
+            "Service account agent %s %s %s has no userId field",
+            agent.get("_key"),
+            what,
+            identity_key,
         )
         raise HTTPException(
             status_code=500,
-            detail="Agent creator is missing userId; cannot resolve knowledge permissions.",
+            detail=f"Agent {what} is missing userId; cannot resolve knowledge permissions.",
         )
-    creator_org = str(creator_doc.get("orgId") or "").strip()
+    identity_org = str(identity_doc.get("orgId") or "").strip()
     caller_org = str(caller_org_id or "").strip()
-    # This branch skips check_agent_permission; empty/mismatched org must not
-    # let a caller run retrieval as another tenant's creator.
-    if not creator_org or not caller_org or creator_org != caller_org:
-        raise AgentNotFoundError(str(agent.get("_key") or creator_key))
+    # Empty or mismatched org must not let a caller run retrieval as another
+    # tenant's identity. A binding is validated when it is set, but an account
+    # can be moved or removed afterwards, so it is checked again on every run.
+    if not identity_org or not caller_org or identity_org != caller_org:
+        raise AgentNotFoundError(str(agent.get("_key") or identity_key))
+    # A binding that is no longer a service account is refused rather than
+    # quietly used: whatever it has become, it was not what an administrator
+    # chose. Falling back to the creator here would be worse — it would widen
+    # the agent's reach at the moment the narrower identity stopped working.
+    if bound and identity_doc.get("kind") != "service":
+        logger.error(
+            "Agent %s is bound to %s, which is no longer a service account",
+            agent.get("_key"),
+            identity_key,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "This agent is bound to something that is no longer a service "
+                "account. An administrator needs to point it at one again."
+            ),
+        )
+    # Checked on every run, not only when the binding was set: an account can
+    # be removed or switched off long after an administrator bound it, and
+    # neither reaches here any other way. Falling back to the creator would be
+    # worse for the same reason as above — it widens the agent's reach at the
+    # moment the narrower identity stopped being allowed.
+    if bound and not _is_live_identity(identity_doc):
+        # Deleted wins when both are set. Soft-delete only merges `isActive`
+        # and leaves `isDisabled` as it found it, so an account switched off
+        # and then removed still carries the flag — and telling an
+        # administrator to switch it back on would send them after something
+        # that cannot work, since the account is gone from the list too.
+        switched_off = (
+            identity_doc.get("isDisabled") is True
+            and identity_doc.get("isActive") is not False
+        )
+        logger.error(
+            "Agent %s is bound to %s, which has been %s",
+            agent.get("_key"),
+            identity_key,
+            "switched off" if switched_off else "deleted",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                # Said separately, because what an administrator should do
+                # differs: a switched-off account can be switched back on and
+                # this agent works again, a deleted one cannot.
+                "This agent is bound to a service account that has been "
+                "switched off. Switch it back on, or point the agent at "
+                "another one."
+                if switched_off
+                else "This agent is bound to a service account that has been "
+                "deleted. An administrator needs to point it at another one."
+            ),
+        )
     synthetic = {
-        "userId": str(creator_user_id),
-        "orgId": creator_org,
-        "email": (creator_doc.get("email") or "").strip(),
+        "userId": str(identity_user_id),
+        "orgId": identity_org,
+        "email": (identity_doc.get("email") or "").strip(),
     }
-    return await _enrich_user_info(synthetic, creator_doc)
+    return await _enrich_user_info(synthetic, identity_doc)
 
 
 async def _assert_agent_belongs_to_caller_org(
@@ -565,10 +853,16 @@ async def _assert_agent_belongs_to_caller_org(
         raise AgentNotFoundError(agent_id)
 
 
-def _validate_required_fields(data: dict[str, Any], required_fields: list[str]) -> None:
-    """Validate required fields in request data"""
+def _validate_required_fields(
+    data: dict[str, Any], required_fields: list[str], optional_fields: tuple[str, ...] = (),
+) -> None:
+    """The caller's text fields: each required one a non-blank string, each optional one a string or None. A value of
+    another type is the caller's mistake (a 400), not a failure while the document is built."""
+    for field in (*required_fields, *optional_fields):
+        if data.get(field) is not None and not isinstance(data[field], str):
+            raise InvalidRequestError(f"'{field}' must be text")
     for field in required_fields:
-        if not data.get(field) or not str(data.get(field)).strip():
+        if not data.get(field) or not data[field].strip():
             raise InvalidRequestError(f"'{field}' is required")
 
 
@@ -697,7 +991,8 @@ def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
         if not isinstance(toolset_data, dict):
             continue
 
-        toolset_name = toolset_data.get("name", "").lower().strip()
+        _validate_required_fields(toolset_data, [], ("name",))
+        toolset_name = (toolset_data.get("name") or "").lower().strip()
         if not toolset_name:
             continue
 
@@ -752,9 +1047,9 @@ async def _refuse_limit_over_the_cap(
         nodes = await graph_provider.get_selection_nodes(
             org_id, group_ids=group_ids, record_ids=record_ids, exact_record_ids=[], limit=cap,
         )
-    except Exception:
+    except Exception as e:
         # The same cap is applied on every turn; a failed count must not block a save.
-        logger.warning("Could not size the knowledge limit of an agent in org %s", org_id, exc_info=True)
+        error_class.log_failure(logger, "agent.route.failed", e, op="size_knowledge_limit", include_error_text=False)
         return
     if len(nodes["groups"]) + len(nodes["records"]) > cap:
         raise InvalidRequestError(
@@ -774,7 +1069,8 @@ def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, An
         if not isinstance(knowledge_data, dict):
             continue
 
-        connector_id = knowledge_data.get("connectorId", "").strip()
+        _validate_required_fields(knowledge_data, [], ("connectorId",))
+        connector_id = (knowledge_data.get("connectorId") or "").strip()
         if not connector_id:
             continue
 
@@ -827,11 +1123,13 @@ async def _resolve_turn_filters(
     connection_sources: dict[str, list[str]] | None = None,
     retrieval_user_id: str | None = None,
     searches_knowledge: bool = True,
+    admit_project_collections: bool = True,
 ) -> dict[str, Any]:
     """This turn's source filters, never wider than the agent's knowledge.
 
     Ids outside it are dropped, except the caller's own project collection
-    (see ``admit_caller_project_collections``). A selection below app level
+    (see ``admit_caller_project_collections``) when ``admit_project_collections``:
+    an unbound service-account agent searches no collection. A selection below app level
     is resolved once here, as the identity the search runs as, and bounded by
     a saved agent's sources and by the project's.
 
@@ -847,7 +1145,7 @@ async def _resolve_turn_filters(
     )
     filters = scope.filters
     dropped_kbs = list(scope.dropped_kb_ids)
-    if dropped_kbs:
+    if dropped_kbs and admit_project_collections:
         admitted = await admit_caller_project_collections(
             graph_provider,
             kb_ids=dropped_kbs,
@@ -1032,15 +1330,11 @@ async def _create_toolset_edges(
         }
 
     # Batch create all toolset nodes
-    try:
-        result = await graph_provider.batch_upsert_nodes(
-            toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction
-        )
-        if not result:
-            return created_toolsets, [{"name": "all", "error": "Failed to create toolset nodes"}]
-    except Exception as e:
-        logger.error(f"Failed to batch create toolset nodes: {e}")
-        return created_toolsets, [{"name": "all", "error": action_failed("add these tools to the agent")}]
+    result = await graph_provider.batch_upsert_nodes(
+        toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction
+    )
+    if not result:
+        return created_toolsets, [{"name": "all", "error": "Failed to create toolset nodes"}]
 
     # Prepare all tool nodes and edges
     tool_nodes = []
@@ -1087,27 +1381,19 @@ async def _create_toolset_edges(
     # these node keys, and some graph providers create edges via MATCH/MERGE that succeeds
     # silently even when the referenced node was never created.
     if tool_nodes:
-        try:
-            result = await graph_provider.batch_upsert_nodes(
-                tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
-            )
-            if not result:
-                raise RuntimeError("Failed to create tool nodes")
-        except Exception as e:
-            logger.error(f"Failed to batch create tool nodes: {e}")
-            raise
+        result = await graph_provider.batch_upsert_nodes(
+            tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
+        )
+        if not result:
+            raise RuntimeError("Failed to create tool nodes")
 
     # Batch create toolset -> tool edges. Re-raise for the same reason as above.
     if toolset_tool_edges:
-        try:
-            result = await graph_provider.batch_create_edges(
-                toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction
-            )
-            if not result:
-                raise RuntimeError("Failed to link tools to their toolsets")
-        except Exception as e:
-            logger.error(f"Failed to create toolset-tool edges: {e}")
-            raise
+        result = await graph_provider.batch_create_edges(
+            toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction
+        )
+        if not result:
+            raise RuntimeError("Failed to link tools to their toolsets")
 
     agent_toolset_edges = [
         {
@@ -1121,15 +1407,11 @@ async def _create_toolset_edges(
 
     # Batch create agent -> toolset edges. Re-raise — mirrors `_create_mcp_server_edges`,
     # since every caller already wraps this in a transaction rollback or an HTTPException.
-    try:
-        result = await graph_provider.batch_create_edges(
-            agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction
-        )
-        if not result:
-            raise RuntimeError("Failed to link toolsets to the agent")
-    except Exception as e:
-        logger.error(f"Failed to create agent-toolset edges: {e}")
-        raise
+    result = await graph_provider.batch_create_edges(
+        agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction
+    )
+    if not result:
+        raise RuntimeError("Failed to link toolsets to the agent")
 
     # Build response with created toolsets and tools
     for toolset_name, toolset_info in toolset_mapping.items():
@@ -1475,6 +1757,50 @@ def _assert_no_personal_toolsets(
         )
 
 
+async def _assert_service_account_knowledge(
+    connector_ids: Iterable[str], graph_provider: IGraphDBProvider, org_id: str, user_id: str, *, bound: bool,
+) -> None:
+    """A service-account agent is run by anyone in the organisation on one identity, so it may
+    only be given sources shared with the whole organisation: no personal connector, and a
+    collection only when it runs as a bound service account. A source that is not the
+    organisation's (or no longer exists) is refused too. The run applies the same rule."""
+    ids = list(dict.fromkeys(connector_ids))
+    if not ids:
+        return
+    try:
+        apps = await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True, app_ids=ids)
+    except Exception as e:
+        error_class.mark_error(e, hide_text=True)  # the store's text can quote what was sent
+        raise AgentError(
+            "This agent's knowledge couldn't be checked, so it can't be saved right now. Please try again in a moment.",
+            status_code=503,
+        ) from e
+    missing = len(ids) - len(apps)
+    if missing:
+        raise InvalidRequestError(f"{missing} knowledge source(s) of this agent were not found in your organization.")
+    kb = Connectors.KNOWLEDGE_BASE.value
+
+    def label(app: dict[str, Any]) -> str:
+        # Only the editor's own source is named.
+        if app.get("createdBy") != user_id:
+            return "one that someone else owns"
+        return app.get("name") or str(app.get("_key") or app.get("id"))
+
+    personal = [
+        label(a) for a in apps if a.get("type") != kb and a.get("scope") == ConnectorScope.PERSONAL.value
+    ]
+    if personal:
+        raise InvalidRequestError(
+            f"Personal sources ({', '.join(personal)}) can't be attached to an agent that runs as a service account."
+        )
+    collections = [] if bound else [label(a) for a in apps if a.get("type") == kb]
+    if collections:
+        raise InvalidRequestError(
+            f"Collections ({', '.join(collections)}) can be attached to a service-account agent only when it is "
+            "bound to a service account."
+        )
+
+
 async def _read_agent_mcp_attachments(
     agent_full_id: str, graph_provider: IGraphDBProvider, transaction: str,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1507,6 +1833,16 @@ async def _read_agent_mcp_attachments(
     return server_keys, server_ids, tool_keys, tool_ids
 
 
+def _rollback_failed(logger: Logger, exc: BaseException) -> None:
+    """Rolling back a failed save failed too; the save's own failure is the request's line."""
+    error_class.log_failure(logger, "agent.route.failed", exc, op="rollback", include_error_text=False)
+
+
+def _cleanup_failed(logger: Logger, exc: BaseException, **fields: object) -> None:
+    """A best-effort tidy-up after a failed save failed too; the save's own failure is the request's line."""
+    error_class.log_failure(logger, "agent.route.failed", exc, op="cleanup", include_error_text=False, **fields)
+
+
 async def _remove_mcp_servers(
     server_keys: list[str], tool_keys: list[str], graph_provider: IGraphDBProvider, logger: Logger,
 ) -> None:
@@ -1518,7 +1854,7 @@ async def _remove_mcp_servers(
             try:
                 await graph_provider.delete_all_edges_for_node(server_id, edge_collection)
             except Exception as cleanup_error:
-                logger.error(f"Failed to unlink MCP server node {key}: {cleanup_error}")
+                _cleanup_failed(logger, cleanup_error, collection=edge_collection)
     for keys, collection in (
         (tool_keys, CollectionNames.AGENT_TOOLS.value), (server_keys, CollectionNames.AGENT_MCP_SERVERS.value),
     ):
@@ -1527,7 +1863,7 @@ async def _remove_mcp_servers(
         try:
             await graph_provider.delete_nodes(keys, collection)
         except Exception as cleanup_error:
-            logger.error(f"Failed to remove {collection} nodes {keys}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=collection, nodes=len(keys))
 
 
 async def _create_mcp_server_edges(
@@ -1549,8 +1885,9 @@ async def _create_mcp_server_edges(
     MCP server nodes never carry credentials — auth is resolved at chat time
     from `/services/mcp/credentials/{instanceId}/{ownerId}` (etcd), same as
     the attach-time Node/Python validation that already rejects secrets here.
-    A failed node write is returned as a failure unless `raise_on_failure`,
-    which a caller running this in its own transaction needs: on Neo4j a failed
+    A node write the store refuses (answers False) is returned as a failure unless
+    `raise_on_failure`; one that raises always propagates. A caller running this in its
+    own transaction needs `raise_on_failure`: on Neo4j a failed
     statement has already doomed that transaction, and a deadlock must reach
     the retry helper as itself.
 
@@ -1603,19 +1940,13 @@ async def _create_mcp_server_edges(
         }
 
     # Batch create all MCP server nodes
-    try:
-        result = await graph_provider.batch_upsert_nodes(
-            mcp_server_nodes, CollectionNames.AGENT_MCP_SERVERS.value, transaction=transaction
-        )
-        if not result:
-            if raise_on_failure:
-                ensure_written(result, "the agent's MCP servers")
-            return created_mcp_servers, [{"name": "all", "error": "Failed to create MCP server nodes"}]
-    except Exception as e:
-        logger.error(f"Failed to batch create MCP server nodes: {e}")
+    result = await graph_provider.batch_upsert_nodes(
+        mcp_server_nodes, CollectionNames.AGENT_MCP_SERVERS.value, transaction=transaction
+    )
+    if not result:
         if raise_on_failure:
-            raise
-        return created_mcp_servers, [{"name": "all", "error": action_failed("add these MCP servers to the agent")}]
+            ensure_written(result, "the agent's MCP servers")
+        return created_mcp_servers, [{"name": "all", "error": "Failed to create MCP server nodes"}]
 
     # Prepare all tool nodes and edges (tools live in the shared AGENT_TOOLS
     # collection, same as toolset tools)
@@ -1663,26 +1994,18 @@ async def _create_mcp_server_edges(
     # these node keys, and some graph providers create edges via MATCH/MERGE that succeeds
     # silently even when the referenced node was never created.
     if tool_nodes:
-        try:
-            result = await graph_provider.batch_upsert_nodes(
-                tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
-            )
-            if not result:
-                raise RuntimeError("Failed to create MCP tool nodes")
-        except Exception as e:
-            logger.error(f"Failed to batch create MCP tool nodes: {e}")
-            raise
+        result = await graph_provider.batch_upsert_nodes(
+            tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction
+        )
+        if not result:
+            raise RuntimeError("Failed to create MCP tool nodes")
 
     # Batch create mcpServer -> tool edges. Re-raise: a swallowed failure here leaves tools
     # listed in the response with no MCP_SERVER_HAS_TOOL edge actually connecting them.
     if mcp_server_tool_edges:
-        try:
-            ensure_written(await graph_provider.batch_create_edges(
-                mcp_server_tool_edges, CollectionNames.MCP_SERVER_HAS_TOOL.value, transaction=transaction
-            ), "the MCP servers' tool links")
-        except Exception as e:
-            logger.error(f"Failed to create mcpServer-tool edges: {e}")
-            raise
+        ensure_written(await graph_provider.batch_create_edges(
+            mcp_server_tool_edges, CollectionNames.MCP_SERVER_HAS_TOOL.value, transaction=transaction
+        ), "the MCP servers' tool links")
 
     agent_mcp_server_edges = [
         {
@@ -1696,13 +2019,9 @@ async def _create_mcp_server_edges(
 
     # Batch create agent -> mcpServer edges, last. Re-raise: every caller turns it into a
     # failed save, and swallowing it would report "success" with servers never linked.
-    try:
-        ensure_written(await graph_provider.batch_create_edges(
-            agent_mcp_server_edges, CollectionNames.AGENT_HAS_MCP_SERVER.value, transaction=transaction
-        ), "the agent's MCP server links")
-    except Exception as e:
-        logger.error(f"Failed to create agent-mcpServer edges: {e}")
-        raise
+    ensure_written(await graph_provider.batch_create_edges(
+        agent_mcp_server_edges, CollectionNames.AGENT_HAS_MCP_SERVER.value, transaction=transaction
+    ), "the agent's MCP server links")
 
     # Build response with created MCP servers and tools
     for mcp_info in mcp_server_mapping.values():
@@ -1742,7 +2061,7 @@ async def _unlink_failed_mcp_servers(
     try:
         edges = await graph_provider.get_edges_from_node_with_target_name(agent_full_id, agent_link, raise_on_error=True)
     except Exception as read_error:
-        logger.error(f"Could not read the MCP servers of {agent_full_id} after one failed to attach: {read_error}")
+        _cleanup_failed(logger, read_error, collection=agent_link)
         return False
     leftover = [e["_to"] for e in edges or [] if e.get("_to") and e["_to"] not in accounted]
     accounted.update(leftover)
@@ -1750,7 +2069,7 @@ async def _unlink_failed_mcp_servers(
         try:
             await graph_provider.delete_all_edges_for_node(server_id, agent_link)
         except Exception as cleanup_error:
-            logger.error(f"Failed to unlink MCP server {server_id} from {agent_full_id}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=agent_link)
             return False
         # Unlinked, the server and its tools are never read again, so this is tidy-up only.
         try:
@@ -1764,7 +2083,7 @@ async def _unlink_failed_mcp_servers(
                 await graph_provider.delete_nodes(tool_keys, CollectionNames.AGENT_TOOLS.value)
             await graph_provider.delete_nodes([server_id.split("/", 1)[1]], CollectionNames.AGENT_MCP_SERVERS.value)
         except Exception as cleanup_error:
-            logger.error(f"Failed to remove unlinked MCP server {server_id}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=CollectionNames.AGENT_MCP_SERVERS.value)
     return True
 
 
@@ -1803,7 +2122,9 @@ async def _attach_mcp_servers_to_new_agent(
                 attach, {instance_id: mcp_data}, server_keys, tool_keys, explicit=True,
             )
         except Exception as e:
-            logger.error(f"Agent {agent_key} was created without MCP server '{mcp_data['name']}': {e}", exc_info=True)
+            error_class.log_failure(
+                logger, "agent.route.failed", e, op="attach_mcp_server", include_error_text=False, mcp_server_id=instance_id,
+            )
             name = mcp_data["displayName"]
             if await _unlink_failed_mcp_servers(agent_full_id, accounted, graph_provider, logger):
                 # The agent is linked last, so a failed try leaves nodes linked to nothing; without
@@ -1875,15 +2196,11 @@ async def _create_knowledge_edges(
 
     # Raise, as the toolset and MCP helpers do: returning quietly reported success
     # for an agent whose previous knowledge update_agent had just removed.
-    try:
-        result = await graph_provider.batch_upsert_nodes(
-            knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction
-        )
-        if not result:
-            raise RuntimeError("Failed to create knowledge nodes")
-    except Exception as e:
-        logger.error(f"Failed to batch create knowledge nodes: {e}")
-        raise
+    result = await graph_provider.batch_upsert_nodes(
+        knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction
+    )
+    if not result:
+        raise RuntimeError("Failed to create knowledge nodes")
 
     # Prepare agent -> knowledge edges
     agent_knowledge_edges = [
@@ -1897,15 +2214,11 @@ async def _create_knowledge_edges(
     ]
 
     # Batch create agent -> knowledge edges
-    try:
-        result = await graph_provider.batch_create_edges(
-            agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction
-        )
-        if not result:
-            raise RuntimeError("Failed to link knowledge to the agent")
-    except Exception as e:
-        logger.error(f"Failed to create agent-knowledge edges: {e}")
-        raise
+    result = await graph_provider.batch_create_edges(
+        agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction
+    )
+    if not result:
+        raise RuntimeError("Failed to link knowledge to the agent")
 
     # Build response
     created_knowledge.extend(
@@ -1928,11 +2241,11 @@ async def _remove_knowledge_nodes(keys: list[str], graph_provider: IGraphDBProvi
                 f"{CollectionNames.AGENT_KNOWLEDGE.value}/{key}", CollectionNames.AGENT_HAS_KNOWLEDGE.value,
             )
         except Exception as cleanup_error:
-            logger.error(f"Failed to unlink knowledge node {key}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=CollectionNames.AGENT_HAS_KNOWLEDGE.value)
     try:
         await graph_provider.delete_nodes(keys, CollectionNames.AGENT_KNOWLEDGE.value)
     except Exception as cleanup_error:
-        logger.error(f"Failed to remove knowledge nodes {keys}: {cleanup_error}")
+        _cleanup_failed(logger, cleanup_error, collection=CollectionNames.AGENT_KNOWLEDGE.value, nodes=len(keys))
 
 
 async def _finish_unlinking_old(
@@ -1956,7 +2269,7 @@ async def _finish_unlinking_old(
     try:
         edges = await graph_provider.get_edges_from_node(agent_full_id, edge_collection)
     except Exception as read_error:
-        logger.error(f"Could not read the {edge_collection} links of {agent_full_id} after a failed save: {read_error}")
+        _cleanup_failed(logger, read_error, collection=edge_collection)
         return False
     linked = {edge.get("_to") for edge in edges or []}
     remaining_old = [old_id for old_id in old_ids if old_id in linked]
@@ -1970,7 +2283,7 @@ async def _finish_unlinking_old(
         try:
             await graph_provider.delete_all_edges_for_node(old_id, edge_collection)
         except Exception as cleanup_error:
-            logger.error(f"Failed to unlink {old_id}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=edge_collection)
     return True
 
 
@@ -1985,14 +2298,14 @@ async def _remove_toolsets(
             try:
                 await graph_provider.delete_all_edges_for_node(toolset_id, edge_collection)
             except Exception as cleanup_error:
-                logger.error(f"Failed to unlink toolset {key}: {cleanup_error}")
+                _cleanup_failed(logger, cleanup_error, collection=edge_collection)
     for keys, collection in ((tool_keys, CollectionNames.AGENT_TOOLS.value), (toolset_keys, CollectionNames.AGENT_TOOLSETS.value)):
         if not keys:
             continue
         try:
             await graph_provider.delete_nodes(keys, collection)
         except Exception as cleanup_error:
-            logger.error(f"Failed to remove {collection} nodes {keys}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=collection, nodes=len(keys))
 
 
 async def _finish_removing_old_knowledge(
@@ -2017,7 +2330,7 @@ async def _finish_removing_old_knowledge(
         try:
             await graph_provider.delete_nodes(old_keys, CollectionNames.AGENT_KNOWLEDGE.value)
         except Exception as cleanup_error:
-            logger.error(f"Failed to remove old knowledge nodes {old_keys}: {cleanup_error}")
+            _cleanup_failed(logger, cleanup_error, collection=CollectionNames.AGENT_KNOWLEDGE.value, nodes=len(old_keys))
 
 
 def _parse_skills(raw_skills: list[Any]) -> list[str]:
@@ -2080,17 +2393,17 @@ async def _create_skill_edges(
         skill_key = f"{org_id}_{name}"
         skill_doc = await graph_provider.get_document(skill_key, skills_collection, transaction=transaction)
         if not skill_doc or skill_doc.get("orgId") != org_id:
-            logger.warning(f"Skipping unknown skill '{name}' for agent {agent_key}")
+            log_event(logger, "agent.skill.skipped", reason="unknown", skill=name)
             continue
         if skill_doc.get("source") != "builtin" and skill_doc.get("createdBy") != user_key:
-            logger.warning(f"Skipping skill '{name}' not owned by user {user_key} for agent {agent_key}")
+            log_event(logger, "agent.skill.skipped", reason="not_owned", skill=name)
             continue
         if (skill_doc.get("status") or "active") != "active":
             # Mirrors the picker (`GET /skills?status=active`, see
             # `SkillsApi.listAssignableSkills`) — closes the gap where a
             # direct API call could still newly assign a disabled or
             # deprecated skill the UI never offers.
-            logger.warning(f"Skipping non-active skill '{name}' for agent {agent_key}")
+            log_event(logger, "agent.skill.skipped", reason="inactive", skill=name)
             continue
         edges.append({
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
@@ -2113,7 +2426,7 @@ def _stored_default_effort(llm_config: dict[str, Any], model_key: str, logger: L
     try:
         effort = model_default_reasoning_effort(llm_config)
     except ValueError as e:
-        logger.warning(f"Ignoring the stored default reasoning effort of model {model_key}: {e}")
+        log_event(logger, "agent.model.default_effort_ignored", model_key=model_key, error_type=type(e).__name__)
         return {}
     return {"defaultReasoningEffort": effort} if effort else {}
 
@@ -2178,7 +2491,7 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
                     **_stored_default_effort(matching_config, model_key, logger),
                 })
             else:
-                logger.warning(f"Model key {model_key} not found in LLM configs")
+                log_event(logger, "agent.model.unknown", level=logging.DEBUG, model_key=model_key)
                 enriched_models.append({
                     "modelKey": model_key,
                     "modelName": model_name or model_key,
@@ -2192,7 +2505,7 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
 
         agent["models"] = enriched_models
     except Exception as e:
-        logger.warning(f"Failed to enrich models: {e}")
+        error_class.log_failure(logger, "agent.route.failed", e, op="enrich_models", include_error_text=False)
 
 
 
@@ -2246,21 +2559,22 @@ async def create_agent_template(request: Request) -> JSONResponse:
         user_context = _get_user_context(request)
 
         body = _parse_request_body(await request.body())
-        _validate_required_fields(body, ["name", "description", "systemPrompt"])
+        _validate_required_fields(body, ["name", "description", "systemPrompt"], ("startMessage",))
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
         time = get_epoch_timestamp_in_ms()
         template_key = str(uuid.uuid4())
+        bind_request_log_fields(request, template_id=template_key)
 
         template = {
             "_key": template_key,
             "name": body["name"].strip(),
             "description": body["description"].strip(),
-            "startMessage": body.get("startMessage", "").strip() or "Hello! How can I help you today?",
+            "startMessage": (body.get("startMessage") or "").strip() or "Hello! How can I help you today?",
             "systemPrompt": body["systemPrompt"].strip(),
             "tools": body.get("tools", []),
             "models": body.get("models", []),
-            "memory": body.get("memory", {"type": []}),
+            "memory": body["memory"] if body.get("memory") is not None else {"type": []},
             "tags": body.get("tags", []),
             "orgId": user_context["orgId"],
             "isActive": True,
@@ -2279,7 +2593,17 @@ async def create_agent_template(request: Request) -> JSONResponse:
             "updatedAtTimestamp": time,
         }
 
-        result = await services["graph_provider"].batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+        try:
+            result = await services["graph_provider"].batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+        except SchemaValidationError as e:
+            # The body carried a value the template schema refuses: the caller's mistake, and retrying cannot help.
+            # Only the field path goes back; the collection and schema detail stay out of the answer.
+            record_schema_rejection(e.collection)
+            err = e.original_error
+            path = ".".join(str(p) for p in err.path) if err is not None and getattr(err, "path", None) else ""
+            rejected = HTTPException(status_code=400, detail=f"Invalid agent template: {path}" if path else "Invalid agent template")
+            mark_request_failure(request, rejected, reason="schema_rejected")
+            raise rejected from e
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create agent template")
 
@@ -2298,8 +2622,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error creating template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=action_failed("create this template")) from e
+        raise _route_failure(request, e, "create this template", writes_body=True) from e
 
 
 @router.get("/template/list", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2323,11 +2646,10 @@ async def get_agent_templates(request: Request) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error getting templates: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("load agent templates")) from e
+        raise _route_failure(request, e, "load agent templates") from e
 
 
-@router.get("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+@router.get("/template/{template_id}", dependencies=[_TEMPLATE_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Get an agent template by ID"""
     try:
@@ -2351,11 +2673,10 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error getting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("load this template")) from e
+        raise _route_failure(request, e, "load this template") from e
 
 
-@router.post("/template/{template_id}/clone", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
+@router.post("/template/{template_id}/clone", dependencies=[_TEMPLATE_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def clone_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Clone an agent template"""
     try:
@@ -2397,14 +2718,14 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
             try:
                 await graph_provider.rollback_transaction(transaction_id)
             except Exception as rollback_error:
-                _log.error(f"Failed to roll back template copy: {rollback_error}")
+                _rollback_failed(_log, rollback_error)
             # Neo4j without explicit transactions commits each write, so rollback may leave it.
             if cloned_template_id:
                 try:
                     if await graph_provider.get_document(cloned_template_id, CollectionNames.AGENT_TEMPLATES.value):
                         await graph_provider.delete_nodes([cloned_template_id], CollectionNames.AGENT_TEMPLATES.value)
                 except Exception as cleanup_error:
-                    _log.error(f"Failed to remove template copy {cloned_template_id}: {cleanup_error}")
+                    _cleanup_failed(_log, cleanup_error, template_id=cloned_template_id)
             raise
 
         return JSONResponse(
@@ -2418,11 +2739,10 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error cloning template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("copy this template")) from e
+        raise _route_failure(request, e, "copy this template") from e
 
 
-@router.delete("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
+@router.delete("/template/{template_id}", dependencies=[_TEMPLATE_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Delete an agent template"""
     try:
@@ -2430,6 +2750,12 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         user_context = _get_user_context(request)
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        template = await services["graph_provider"].get_template(template_id, user_doc["_key"])
+        if not template:
+            raise AgentTemplateNotFoundError(template_id)
+        if not template.get("can_delete", False):
+            raise PermissionDeniedError("delete this template (only owner can delete)")
+
         result = await services["graph_provider"].delete_agent_template(template_id, user_doc["_key"])
 
         if not result:
@@ -2442,11 +2768,10 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error deleting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("delete this template")) from e
+        raise _route_failure(request, e, "delete this template") from e
 
 
-@router.put("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
+@router.put("/template/{template_id}", dependencies=[_TEMPLATE_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def update_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Update an agent template"""
     try:
@@ -2455,6 +2780,14 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
 
         body = _parse_request_body(await request.body())
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        if "memory" in body and body["memory"] is None:
+            body["memory"] = {"type": []}
+
+        template = await services["graph_provider"].get_template(template_id, user_doc["_key"])
+        if not template:
+            raise AgentTemplateNotFoundError(template_id)
+        if not template.get("can_edit", False):
+            raise PermissionDeniedError("edit this template (only owner can edit)")
 
         result = await services["graph_provider"].update_agent_template(template_id, body, user_doc["_key"])
         if not result:
@@ -2467,8 +2800,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error updating template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("save this template")) from e
+        raise _route_failure(request, e, "save this template", writes_body=True) from e
 
 
 # ============================================================================
@@ -2484,7 +2816,7 @@ async def create_agent(request: Request) -> JSONResponse:
         user_context = _get_user_context(request)
 
         body = _parse_request_body(await request.body())
-        _validate_required_fields(body, ["name"])
+        _validate_required_fields(body, ["name"], ("description", "startMessage", "systemPrompt", "instructions"))
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         user_key = user_doc["_key"]
@@ -2526,6 +2858,17 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         is_service_account = bool(body.get("isServiceAccount", False))
+        service_account_binding = await _checked_service_account_binding(
+            body.get("serviceAccountUserId"),
+            services["graph_provider"],
+            org_key,
+            is_service_account=is_service_account,
+            # Built lazily: the gate runs only when a binding is actually
+            # being set, and most creates never name one.
+            admin_check=lambda: _only_an_administrator_may_bind(
+                request, services["config_service"],
+            ),
+        )
         if sa_forces_org_sharing() and is_service_account:
             share_with_org = True
         else:
@@ -2534,19 +2877,27 @@ async def create_agent(request: Request) -> JSONResponse:
             attached_mcp_instances, shared_with_org=share_with_org, service_account=is_service_account,
         )
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=share_with_org, service_account=is_service_account)
+        if is_service_account:
+            await _assert_service_account_knowledge(
+                knowledge_sources, services["graph_provider"], org_key, user_context["userId"],
+                bound=bool(service_account_binding),
+            )
         api_toolset_tools = await _checked_api_toolset_tools(
             body.get("apiToolsetTools", []), services, org_key, service_account=is_service_account,
         )
 
         # Create agent document
         agent_key = str(uuid.uuid4())
+        bind_request_log_fields(request, agent_id=agent_key)
+        if share_with_org:
+            add_request_log_fields(request, shared_with_org=True)
         agent = {
             "_key": agent_key,
             "name": body["name"].strip(),
-            "description": body.get("description", "").strip() or "AI agent for task automation",
-            "startMessage": body.get("startMessage", "").strip() or "Hello! How can I help you today?",
-            "systemPrompt": body.get("systemPrompt", "").strip() or "You are a workplace productivity assistant. Help users with their connected work tools.",
-            "instructions": body.get("instructions", "").strip() or None,
+            "description": (body.get("description") or "").strip() or "AI agent for task automation",
+            "startMessage": (body.get("startMessage") or "").strip() or "Hello! How can I help you today?",
+            "systemPrompt": (body.get("systemPrompt") or "").strip() or "You are a workplace productivity assistant. Help users with their connected work tools.",
+            "instructions": (body.get("instructions") or "").strip() or None,
             "models": model_entries,
             "tags": body.get("tags", []) or [],
             "webSearch": web_search_attachment,
@@ -2554,6 +2905,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "apiToolsetTools": api_toolset_tools,
             "isActive": True,
             "isServiceAccount": is_service_account,
+            "serviceAccountUserId": service_account_binding,
             "sendUserContext": bool(body.get("sendUserContext", True)),
             "createdBy": user_key,
             "updatedBy": None,
@@ -2580,11 +2932,9 @@ async def create_agent(request: Request) -> JSONResponse:
                 created_toolsets.clear()
                 created_knowledge.clear()
                 transaction_id = tx_store.txn
-                logger.debug(f"Started transaction for agent creation: {agent_key}")
 
                 # Step 1: Create agent node
                 ensure_written(await graph_provider.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value, transaction=transaction_id), "the agent")
-                logger.debug(f"Created agent node: {agent_key}")
 
                 # Step 2: Create permission edge(s)
                 # share_with_org already validated above before starting transaction
@@ -2611,7 +2961,6 @@ async def create_agent(request: Request) -> JSONResponse:
                     permission_edges.append(org_permission_edge)
 
                 ensure_written(await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value, transaction=transaction_id), "the agent's permissions")
-                logger.debug(f"Created permission edge(s) for agent: {agent_key} (shareWithOrg={share_with_org})")
 
                 # Step 3: Create toolsets and tools (within same transaction)
                 if toolsets_with_tools:
@@ -2737,7 +3086,6 @@ async def create_agent(request: Request) -> JSONResponse:
                             "tools": created_tools
                         })
 
-                    logger.debug(f"Created {len(created_toolsets)} toolset(s) for agent: {agent_key}")
 
                 # Step 4: Create knowledge sources (within same transaction)
                 if knowledge_sources:
@@ -2794,7 +3142,6 @@ async def create_agent(request: Request) -> JSONResponse:
                         for knowledge_info in knowledge_mapping.values()
                     )
 
-                    logger.debug(f"Created {len(created_knowledge)} knowledge source(s) for agent: {agent_key}")
 
                 # Step 5: Link assigned skills (within same transaction) — mirrors
                 # AGENT_HAS_TOOLSET/AGENT_HAS_KNOWLEDGE above but never creates a
@@ -2804,21 +3151,15 @@ async def create_agent(request: Request) -> JSONResponse:
                         agent_key, skill_names, org_key, user_key, graph_provider, logger,
                         transaction=transaction_id,
                     )
-                    logger.debug(f"Linked {len(linked_skills)} skill(s) for agent: {agent_key}")
 
             # explicit: all-or-nothing on Neo4j too, so a failure leaves no half-made
             # agent and a deadlock on the user or org node re-runs from a clean slate.
             # The helper rolls back on any BaseException, so a cancelled request
             # does not leave the transaction holding its locks until it times out.
             await GraphDataStore(logger, graph_provider).execute_in_transaction(write_agent, explicit=True)
-            logger.info(f"✅ Successfully created agent {agent_key}")
 
         except Exception as e:
-            logger.error(f"Failed to create agent {agent_key}: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=500,
-                detail=action_failed("create this agent")
-            ) from e
+            raise _route_failure(request, e, "create this agent", writes_body=True) from e
 
         # Outside the agent's transaction: on Neo4j one failed statement fails the
         # whole transaction, which would turn one bad MCP server into no agent.
@@ -2826,7 +3167,6 @@ async def create_agent(request: Request) -> JSONResponse:
             created_mcp_servers, failed_mcp_servers = await _attach_mcp_servers_to_new_agent(
                 agent_key, mcp_servers_with_tools, user_context, user_key, graph_provider, logger,
             )
-            logger.debug(f"Created {len(created_mcp_servers)} MCP server(s) for agent: {agent_key}")
 
         # Build response
         response_agent = {
@@ -2858,12 +3198,12 @@ async def create_agent(request: Request) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error creating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("create this agent")) from e
+        raise _route_failure(request, e, "create this agent", writes_body=True) from e
 
 @router.get(
     "/{agent_id}/internal/service-account",
     dependencies=[
+        _AGENT_ID_LOG,
         Depends(
             require_scopes(
                 OAuthScopes.AGENT_READ,
@@ -2917,8 +3257,7 @@ async def get_agent_internal(request: Request, agent_id: str) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        _log.error("get_agent_internal failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("load this agent")) from e
+        raise _route_failure(request, e, "load this agent") from e
 
 
 @router.get("/web-search-usage/{provider}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2947,8 +3286,7 @@ async def get_web_search_provider_usage(request: Request, provider: str) -> JSON
     except HTTPException:
         raise
     except Exception as e:
-        _log.error("get_web_search_provider_usage failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("check where this web search provider is used")) from e
+        raise _route_failure(request, e, "check where this web search provider is used") from e
 
 
 @router.get("/model-usage/{model_key}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2977,16 +3315,10 @@ async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        _log.error("get_model_usage failed: %s", e, exc_info=True)
-        # Server-side failure (graph DB outage, etc.) — return 500 so callers
-        # treat this as a transient backend error and fail-closed on deletion.
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=action_failed("check where this model is used"),
-        ) from e
+        raise _route_failure(request, e, "check where this model is used") from e
 
 
-@router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+@router.get("/{agent_id}", dependencies=[_AGENT_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""
     try:
@@ -3032,8 +3364,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error getting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("load this agent")) from e
+        raise _route_failure(request, e, "load this agent") from e
 
 
 @router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -3134,11 +3465,10 @@ async def get_agents(
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error getting agents: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("load your agents")) from e
+        raise _route_failure(request, e, "load your agents") from e
 
 
-@router.put("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
+@router.put("/{agent_id}", dependencies=[_AGENT_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def update_agent(request: Request, agent_id: str) -> JSONResponse:
     """Update an agent using graph-based architecture"""
     try:
@@ -3216,6 +3546,35 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         final_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
         final_service_account = bool(body.get("isServiceAccount", agent.get("isServiceAccount", False)))
+
+        # A service agent searches as its creator until it is bound, and is shared
+        # with the whole organisation, so an editor converting someone else's agent
+        # would hand everyone the owner's access. Only the owner or an
+        # administrator may decide that.
+        converting = final_service_account and not agent.get("isServiceAccount")
+        if converting and perm.get("user_role") != "OWNER":
+            await _only_an_administrator_may_bind(
+                request,
+                services["config_service"],
+                detail="Only the agent's owner or an administrator can turn it into a service agent.",
+            )
+        # A conversion shares the agent as a matter of course and is checked above.
+        if final_shared and not agent.get("shareWithOrg") and not converting and not perm.get("can_share", False):
+            raise PermissionDeniedError("share this agent with the organisation")
+
+        if "serviceAccountUserId" in body:
+            body["serviceAccountUserId"] = await _checked_service_account_binding(
+                body["serviceAccountUserId"],
+                services["graph_provider"],
+                org_key,
+                is_service_account=final_service_account,
+                admin_check=lambda: _only_an_administrator_may_bind(
+                    request, services["config_service"],
+                ),
+                # What the agent is bound to now, so re-saving it unchanged is
+                # not a change anyone needs to be an administrator to make.
+                current=agent.get("serviceAccountUserId"),
+            )
         sharing_turned_on = (final_shared and not agent.get("shareWithOrg")) or (
             final_service_account and not agent.get("isServiceAccount")
         )
@@ -3229,8 +3588,9 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     existing_ids, services["config_service"], org_key,
                 ) if existing_ids else {}
             except Exception as e:
-                logger.error(f"Could not check the MCP servers of agent {agent_id} before sharing it: {e}")
-                raise _mcp_attachments_unreadable() from e
+                unreadable = _mcp_attachments_unreadable()
+                mark_request_failure(request, unreadable, include_error_text=False)
+                raise unreadable from e
         _assert_no_personal_mcp_servers(
             attached_mcp_instances, shared_with_org=final_shared, service_account=final_service_account,
         )
@@ -3241,9 +3601,19 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     existing_toolset_ids, services["config_service"], org_key,
                 ) if existing_toolset_ids else {}
             except Exception as e:
-                logger.error(f"Could not check the actions of agent {agent_id} before sharing it: {e}")
-                raise _toolset_attachments_unreadable() from e
+                unreadable = _toolset_attachments_unreadable()
+                mark_request_failure(request, unreadable, include_error_text=False)
+                raise unreadable from e
         _assert_no_personal_toolsets(attached_toolsets, shared_with_org=final_shared, service_account=final_service_account)
+        if final_service_account and ("knowledge" in body or converting or "serviceAccountUserId" in body):
+            await _assert_service_account_knowledge(
+                _parse_knowledge_sources(body.get("knowledge")) if "knowledge" in body
+                else [k.get("connectorId") for k in agent.get("knowledge") or [] if k.get("connectorId")],
+                services["graph_provider"],
+                org_key,
+                user_context["userId"],
+                bound=bool(body.get("serviceAccountUserId", agent.get("serviceAccountUserId"))),
+            )
         if "apiToolsetTools" in body or (final_service_account and not agent.get("isServiceAccount")):
             # Becoming a service account re-checks what is already attached.
             body["apiToolsetTools"] = await _checked_api_toolset_tools(
@@ -3272,7 +3642,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 await services["graph_provider"].batch_create_edges(
                     [org_permission_edge], CollectionNames.PERMISSION.value
                 )
-                logger.info(f"Created org permission edge for agent {agent_id}")
+                add_request_log_fields(request, shared_with_org=True)
 
             elif not new_share_with_org and current_share_with_org:
                 if sa_forces_org_sharing() and bool(agent.get("isServiceAccount", False)):
@@ -3292,7 +3662,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     }],
                     CollectionNames.PERMISSION.value,
                 )
-                logger.info(f"Deleted org permission edge for agent {agent_id}")
+                add_request_log_fields(request, shared_with_org=False)
 
 
         # Normalize webSearch attachment before persisting
@@ -3330,7 +3700,6 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         CollectionNames.AGENT_TOOLS.value
                     ]
                 )
-                logger.debug(f"Started transaction for toolset update on agent {agent_id}")
 
                 # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
 
@@ -3350,7 +3719,6 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
                             toolset_keys.append(parts[1])
 
-                logger.debug(f"Found {len(toolset_keys)} toolset(s) connected to agent {agent_id}")
 
                 # Get all tool edges for each toolset
                 for toolset_full_id in toolset_full_ids:
@@ -3368,7 +3736,6 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                             if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
                                 all_tool_keys.append(parts[1])
 
-                logger.debug(f"Found {len(all_tool_keys)} tool(s) connected to toolsets")
 
                 # ========== PHASE 2: WRITE THE NEW TOOLSETS ==========
 
@@ -3377,7 +3744,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 # transactions), a failure then leaves the agent with its old toolsets rather
                 # than none, and the except block below removes what the failed attempt wrote.
                 if toolsets_with_tools:
-                    created_toolsets, failed_toolsets = await _create_toolset_edges(
+                    _, failed_toolsets = await _create_toolset_edges(
                         agent_id, toolsets_with_tools, user_context, user_key, graph_provider, logger,
                         transaction=transaction_id,
                         written_toolset_keys=new_toolset_keys,
@@ -3385,9 +3752,6 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     )
                     if failed_toolsets:
                         raise RuntimeError(f"Toolsets could not be attached: {failed_toolsets}")
-                    logger.info(f"Created {len(created_toolsets)} toolset(s) for agent {agent_id}")
-                else:
-                    logger.info(f"All toolsets removed for agent {agent_id}")
 
                 # ========== PHASE 3: UNLINK, THEN REMOVE, THE OLD TOOLSETS ==========
 
@@ -3419,22 +3783,15 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         transaction=transaction_id
                     )
 
-                logger.info(
-                    f"Removed {len(toolset_keys)} old toolset(s) and {len(all_tool_keys)} old tool(s) "
-                    f"from agent {agent_id}"
-                )
-
                 await graph_provider.commit_transaction(transaction_id)
                 transaction_id = None
-                logger.debug(f"Committed transaction for toolset update on agent {agent_id}")
 
             except Exception as e:
                 if transaction_id:
                     try:
                         await graph_provider.rollback_transaction(transaction_id)
-                        logger.warning(f"Aborted transaction for toolset update on agent {agent_id}")
                     except Exception as abort_error:
-                        logger.error(f"Failed to abort transaction: {abort_error}")
+                        _rollback_failed(logger, abort_error)
                 # Before any old toolset is unlinked the agent is still on its old set, so the
                 # new writes go. After that the new set is the intended state: keep it.
                 if not unlinked_old_ids:
@@ -3446,11 +3803,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     graph_provider, logger,
                 ):
                     await _remove_toolsets(toolset_keys, all_tool_keys, graph_provider, logger)
-                logger.error(f"Failed to replace toolsets for agent {agent_id}: {e}", exc_info=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail=action_failed("save this agent")
-                ) from e
+                raise _route_failure(request, e, "save this agent", writes_body=True) from e
 
         # Update attached MCP servers if provided in request (even if empty array - means detach all).
         # The new servers are written, with their tools, before the old ones are unlinked: on a
@@ -3482,16 +3835,13 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 )
 
                 if mcp_servers_with_tools:
-                    created_mcp_servers, failed_mcp_servers = await _create_mcp_server_edges(
+                    _, failed_mcp_servers = await _create_mcp_server_edges(
                         agent_id, mcp_servers_with_tools, user_context, user_key,
                         graph_provider, logger, transaction=transaction_id,
                         written_server_keys=new_server_keys, written_tool_keys=new_tool_keys,
                     )
                     if failed_mcp_servers:
                         raise RuntimeError(f"MCP servers could not be attached: {failed_mcp_servers}")
-                    logger.info(f"Attached {len(created_mcp_servers)} MCP server(s) to agent {agent_id}")
-                else:
-                    logger.info(f"All MCP servers detached for agent {agent_id}")
 
                 for server_id in old_server_ids:
                     await graph_provider.delete_all_edges_for_node(
@@ -3518,9 +3868,8 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 if transaction_id:
                     try:
                         await graph_provider.rollback_transaction(transaction_id)
-                        logger.warning(f"Aborted transaction for MCP server update on agent {agent_id}")
                     except Exception as abort_error:
-                        logger.error(f"Failed to abort transaction: {abort_error}")
+                        _rollback_failed(logger, abort_error)
                 # Before any old server is unlinked the agent is still on its old set, so the
                 # new writes go. After that the new set is the intended state: keep it.
                 if not unlinked_old_ids:
@@ -3532,11 +3881,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     graph_provider, logger,
                 ):
                     await _remove_mcp_servers(old_server_keys, old_tool_keys, graph_provider, logger)
-                logger.error(f"Failed to update the MCP servers of agent {agent_id}: {e}", exc_info=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail=action_failed("save this agent")
-                ) from e
+                raise _route_failure(request, e, "save this agent", writes_body=True) from e
 
         # Update knowledge if provided in request (even if empty array - means delete all)
         if "knowledge" in body:
@@ -3561,7 +3906,6 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         CollectionNames.AGENT_KNOWLEDGE.value
                     ]
                 )
-                logger.debug(f"Started transaction for knowledge update on agent {agent_id}")
 
                 # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
 
@@ -3581,56 +3925,41 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
                             knowledge_keys.append(parts[1])
 
-                logger.debug(f"Found {len(knowledge_keys)} knowledge node(s) connected to agent {agent_id}")
 
                 # New knowledge is written before the old is removed: on a backend whose
                 # rollback does not undo writes (Neo4j without explicit transactions), a
                 # failure then leaves the agent with its old knowledge rather than none,
                 # and the except block below removes what the failed attempt wrote.
                 if knowledge_sources:
-                    created_knowledge = await _create_knowledge_edges(
+                    await _create_knowledge_edges(
                         agent_id, knowledge_sources, user_key, graph_provider, logger,
                         transaction=transaction_id, written_keys=new_knowledge_keys,
                     )
-                    logger.info(f"Created {len(created_knowledge)} knowledge source(s) for agent {agent_id}")
-                else:
-                    logger.info(f"All knowledge sources removed for agent {agent_id}")
 
-                total_knowledge_edges_deleted = 0
                 for knowledge_full_id in knowledge_full_ids:
-                    count = await graph_provider.delete_all_edges_for_node(
+                    await graph_provider.delete_all_edges_for_node(
                         knowledge_full_id,
                         CollectionNames.AGENT_HAS_KNOWLEDGE.value,
                         transaction=transaction_id
                     )
                     deleted_old_ids.append(knowledge_full_id)
-                    total_knowledge_edges_deleted += count
 
-                deleted_knowledge_nodes = 0
                 if knowledge_keys:
-                    result = await graph_provider.delete_nodes(
+                    await graph_provider.delete_nodes(
                         knowledge_keys,
                         CollectionNames.AGENT_KNOWLEDGE.value,
                         transaction=transaction_id
                     )
-                    deleted_knowledge_nodes = len(knowledge_keys) if result else 0
-
-                logger.info(
-                    f"Deleted for agent {agent_id}: "
-                    f"{deleted_knowledge_nodes} knowledge node(s), {total_knowledge_edges_deleted} edge(s)"
-                )
 
                 await graph_provider.commit_transaction(transaction_id)
                 transaction_id = None
-                logger.debug(f"Committed transaction for knowledge update on agent {agent_id}")
 
             except Exception as e:
                 if transaction_id:
                     try:
                         await graph_provider.rollback_transaction(transaction_id)
-                        logger.warning(f"Aborted transaction for knowledge update on agent {agent_id}")
                     except Exception as abort_error:
-                        logger.error(f"Failed to abort transaction: {abort_error}")
+                        _rollback_failed(logger, abort_error)
                 # Before any old link is removed the agent is still on its old set, so the
                 # new writes go. After that the new set is the intended state: keep it.
                 if not deleted_old_ids:
@@ -3641,11 +3970,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         agent_full_id, knowledge_full_ids, knowledge_keys, deleted_old_ids,
                         new_knowledge_keys, graph_provider, logger,
                     )
-                logger.error(f"Failed to replace knowledge for agent {agent_id}: {e}", exc_info=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail=action_failed("save this agent")
-                ) from e
+                raise _route_failure(request, e, "save this agent", writes_body=True) from e
 
         # Update skill assignments if provided in request (even if empty array - means unassign all).
         # Unlike toolsets/knowledge, this never deletes NODES — only this agent's
@@ -3661,31 +3986,23 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     read=[CollectionNames.AGENT_SKILLS.value],
                     write=[CollectionNames.AGENT_HAS_SKILL.value],
                 )
-                deleted_skill_edges = await graph_provider.delete_all_edges_for_node(
+                await graph_provider.delete_all_edges_for_node(
                     agent_full_id, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction_id,
                 )
-                logger.debug(f"Removed {deleted_skill_edges} existing agent->skill edge(s) for agent {agent_id}")
-
-                linked_skills = (
+                if skill_names:
                     await _create_skill_edges(
                         agent_id, skill_names, org_key, user_key, graph_provider, logger,
                         transaction=transaction_id,
                     )
-                    if skill_names else []
-                )
                 await graph_provider.commit_transaction(transaction_id)
                 transaction_id = None
-                logger.info(f"Linked {len(linked_skills)} skill(s) for agent {agent_id}")
             except Exception as e:
                 if transaction_id:
                     try:
                         await graph_provider.rollback_transaction(transaction_id)
                     except Exception as abort_error:
-                        logger.error(f"Failed to abort transaction: {abort_error}")
-                logger.error(f"Failed to update skill assignments for agent {agent_id}: {e}", exc_info=True)
-                raise HTTPException(
-                    status_code=500, detail=action_failed("save this agent"),
-                ) from e
+                        _rollback_failed(logger, abort_error)
+                raise _route_failure(request, e, "save this agent", writes_body=True) from e
 
         return JSONResponse(
             status_code=200,
@@ -3694,10 +4011,9 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
     except HTTPException:
         raise
     except Exception as e:
-        _log.error(f"Error updating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("save this agent")) from e
+        raise _route_failure(request, e, "save this agent", writes_body=True) from e
 
-@router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
+@router.delete("/{agent_id}", dependencies=[_AGENT_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
     """Soft-delete an agent (tombstone) using a transaction to ensure atomicity."""
     txn_id = None
@@ -3741,20 +4057,17 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                 CollectionNames.PERMISSION.value,
             ],
         )
-        services["logger"].debug(f"🔄 Started transaction {txn_id} for agent deletion")
 
         # Soft-delete: marks the agent instance deleted; related toolsets/tools/knowledge remain.
         result = await services["graph_provider"].delete_agent(
             agent_id, user_doc["_key"], org_key, transaction=txn_id
         )
         if not result:
-            if txn_id is not None:
-                await services["graph_provider"].rollback_transaction(txn_id)
-            raise HTTPException(status_code=500, detail="Failed to delete agent")
+            raise HTTPException(status_code=500, detail="Failed to delete agent")  # the handler below rolls back
 
         # Commit transaction on success
         await services["graph_provider"].commit_transaction(txn_id)
-        services["logger"].info(f"✅ Successfully soft-deleted agent {agent_id} in transaction {txn_id}")
+        txn_id = None
 
         # A service-account agent's own MCP credentials go with it (agents can't be restored),
         # so nothing keeps refreshing their tokens.
@@ -3764,7 +4077,9 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
 
                 await mcp_lifecycle.remove_owner_credentials(services["config_service"], org_key, agent_id)
             except Exception as e:
-                services["logger"].warning(f"Failed to remove MCP credentials of deleted agent {agent_id}: {e}")
+                error_class.log_failure(
+                    services["logger"], "agent.route.failed", e, op="remove_mcp_credentials", include_error_text=False,
+                )
 
         # For service account agents, stop in-process toolset token refresh tasks only.
         # Credential paths under /services/toolsets/{instanceId}/{agentKey} stay in ETCD.
@@ -3786,12 +4101,11 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                         parts = key.strip("/").split("/")
                         if len(parts) >= 4 and parts[3] == agent_id:
                             refresh_service.cancel_refresh_task(key)
-                            services["logger"].info(
-                                f"Cancelled toolset token refresh for service account agent path: {key}"
-                            )
+                            log_event(services["logger"], "agent.refresh_cancelled", level=logging.DEBUG,
+                                      toolset_id=parts[2])
             except Exception as e:
-                services["logger"].warning(
-                    f"Failed to cancel toolset refresh tasks for deleted service account agent {agent_id}: {e}"
+                error_class.log_failure(
+                    services["logger"], "agent.route.failed", e, op="cancel_refresh", include_error_text=False,
                 )
 
         return JSONResponse(
@@ -3808,25 +4122,15 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                 },
             },
         )
-    except HTTPException:
-        if txn_id is not None and services is not None:
-            try:
-                await services["graph_provider"].rollback_transaction(txn_id)
-                services["logger"].debug(f"🔄 Rolled back transaction {txn_id} due to HTTPException")
-            except Exception as rb_err:
-                if services is not None:
-                    services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
-        raise
     except Exception as e:
         if txn_id is not None and services is not None:
             try:
                 await services["graph_provider"].rollback_transaction(txn_id)
-                services["logger"].debug(f"🔄 Rolled back transaction {txn_id} due to error")
             except Exception as rb_err:
-                services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
-        if services is not None:
-            services["logger"].error(f"Error deleting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=action_failed("delete this agent")) from e
+                _rollback_failed(services["logger"], rb_err)
+        if isinstance(e, HTTPException):
+            raise
+        raise _route_failure(request, e, "delete this agent") from e
 
 
 # ============================================================================
@@ -3909,7 +4213,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
-        reranker_service = services["reranker_service"]
+        reranker_service = None  # reranking is not wired; the slot is kept for call signatures
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
@@ -4026,7 +4330,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     user_context, graph_provider, org_key,
                 )
                 perm = {"can_edit": False, "can_share": False, "role": "viewer"}
-                logger.debug(f"loaded service account agent. enriched_user_info: {enriched_user_info}")
+                logger.debug(
+                    "Loaded service account agent %s (retrieval runs as user %s)",
+                    agent_id,
+                    enriched_user_info.get("userId"),
+                )
             else:
                 # Standard user path: look up the user document and verify permissions.
                 user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
@@ -4279,12 +4587,12 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                                 f"{'; '.join(problem_parts)}. "
                                 "Please connect your actions in Workspace → Actions before using this agent."
                             )
-                        logger.info(
-                            f"Blocking agent {agent_id} execution "
-                            f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
-                            f"action issue(s) — {'; '.join(problem_parts)}"
+                        log_turn_end(
+                            logger, "error", error_class="bad_request", code="toolset_config_missing",
+                            run_id=chat_query.runId, duration_ms=round(timer.total_ms),
+                            missing=len(missing_toolset_display_names),
+                            unauthenticated=len(unauthenticated_toolset_display_names),
                         )
-
                         yield _stream_error_frame(protocol, error_message, code="toolset_config_missing")
                         return
 
@@ -4395,12 +4703,12 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                                 f"{'; '.join(problem_parts)}. "
                                 "Please connect them in Workspace → MCP Servers before using this agent."
                             )
-                        logger.info(
-                            f"Blocking agent {agent_id} execution "
-                            f"({'service account' if is_service_account else f'user {executing_user_id!r}'}): "
-                            f"MCP server issue(s) — {'; '.join(problem_parts)}"
+                        log_turn_end(
+                            logger, "error", error_class="bad_request", code="mcp_server_config_missing",
+                            run_id=chat_query.runId, duration_ms=round(timer.total_ms),
+                            missing=len(missing_mcp_server_display_names),
+                            unauthenticated=len(unauthenticated_mcp_server_display_names),
                         )
-
                         yield _stream_error_frame(
                             protocol, error_message, code="mcp_server_config_missing",
                             details={
@@ -4416,6 +4724,14 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 timer.mark("mcp_cfg")
 
                 agent_knowledge = agent.get("knowledge", [])
+                # An unbound service agent would read a collection as its creator, so it reads none,
+                # the caller's project collection included (project_files_knowledge reads it from filters).
+                collections_allowed = not is_service_account or bool(agent.get("serviceAccountUserId"))
+                if is_service_account:
+                    agent_knowledge = await service_account_knowledge(
+                        graph_provider, agent_knowledge, enriched_user_info.get("userId", ""), org_key, logger,
+                        bound=collections_allowed,
+                    )
                 caps = _parse_agent_capabilities(chat_query.agentCapabilities)
                 try:
                     filters = await _resolve_turn_filters(
@@ -4430,11 +4746,16 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         connection_sources=connection_limit(getattr(request.state, "user", None)),
                         retrieval_user_id=enriched_user_info.get("userId"),
                         searches_knowledge=caps.internal_search,
+                        admit_project_collections=collections_allowed,
                     )
                 except (SelectionTooLargeError, SelectionNotReadyError) as exc:
                     code, message = selection_error(
                         exc,
                         agent_limit=agent_id != "agentIdPlaceholder" and not has_selection(chat_query.filters),
+                    )
+                    log_turn_end(
+                        logger, "error", error_class="bad_request", code=code,
+                        run_id=chat_query.runId, duration_ms=round(timer.total_ms),
                     )
                     yield _stream_error_frame(protocol, message, code=code)
                     return
@@ -4468,12 +4789,26 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         connection_limit(getattr(request.state, "user", None)) if caps.internal_search else None,
                     )
                 except SelectionTooLargeError:
+                    log_turn_end(
+                        logger, "error", error_class="bad_request", code="selection_too_large",
+                        run_id=chat_query.runId, duration_ms=round(timer.total_ms),
+                    )
                     yield _stream_error_frame(
                         protocol, CONNECTION_LIMIT_TOO_LARGE_MESSAGE, code="selection_too_large",
                     )
                     return
-
-                logger.info(f"Filters: {filters}")
+                if chat_query.strictScope and caps.internal_search:
+                    agent_knowledge = [
+                        *agent_knowledge,
+                        *await project_files_knowledge(
+                            graph_provider,
+                            kb_ids=filters.get("kb") or [],
+                            known_ids=[
+                                k.get("connectorId") for k in agent_knowledge if isinstance(k, dict)
+                            ],
+                            logger=logger,
+                        ),
+                    ]
 
                 _stream_conn_ids = [
                     k["connectorId"] for k in agent_knowledge
@@ -4508,6 +4843,16 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     web_search_off = "capability_off"
                 else:
                     web_search_off = None
+                # Only the org default can be unset; an agent with no web search attached is a choice.
+                # A turn that switched web search off itself (capability, tools filter) is not asked to set it up.
+                web_search_unset = (
+                    web_search_off == "not_configured"
+                    and web_search_coro is not None
+                    and caps.web_search
+                    and _is_web_search_enabled(
+                        chat_query.tools, is_universal_agent=agent_id == UNIVERSAL_AGENT_ID,
+                    )
+                )
                 if web_search_off:
                     web_search_provider = None
                     web_search_tool_config = None
@@ -4558,6 +4903,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "instructions": agent.get("instructions"),
                     "custom_instructions": custom_instructions,
                     "projectInstructions": chat_query.projectInstructions,
+                    "projectToolsSelected": chat_query.strictScope and chat_query.tools is not None,
                     "timezone": chat_query.timezone,
                     "currentTime": chat_query.currentTime,
                     "toolsets": agent_toolsets,
@@ -4576,6 +4922,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "modelKey": model_key,
                     "webSearch": web_search_provider,
                     "webSearchConfig": web_search_tool_config,
+                    "webSearchUnset": web_search_unset,
                     "deepResearch": caps.deep_search,
                     "attachments": attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
@@ -4633,8 +4980,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     async for _evt in generator:
                         yield _evt
             except Exception as exc:
-                logger.error(f"Error in chat_stream body: {exc}", exc_info=True)
                 error_code, user_message = classify_exception(exc)
+                log_turn_end(
+                    logger, "error", exc=exc, code=error_code,
+                    run_id=chat_query.runId, duration_ms=round(timer.total_ms),
+                )
                 yield _stream_error_frame(protocol, user_message, error_code)
 
         async def _run() -> AsyncGenerator[str, None]:
@@ -4796,7 +5146,7 @@ async def get_assistant_agent(
 
     try:
         # Get active connector instances accessible to the user
-        user = user_doc or await graph_provider.get_user_by_user_id(user_id=user_id)
+        user = user_doc or await get_caller_user(graph_provider, user_id)
         if not user:
             logger.error(f"User not found: {user_id}")
             return {}, toolset_auth_by_instance

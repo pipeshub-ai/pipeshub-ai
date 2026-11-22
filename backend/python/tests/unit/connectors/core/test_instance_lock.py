@@ -78,25 +78,25 @@ class TestSerialization:
 
     @pytest.mark.asyncio
     async def test_one_connector_does_not_block_another(self):
-        started = asyncio.Event()
+        started, release = asyncio.Event(), asyncio.Event()
 
         async def hold(connector_id: str) -> None:
             async with connector_init_lock(connector_id):
                 started.set()
-                await asyncio.sleep(0.3)
+                await release.wait()
 
-        async def other() -> float:
+        async def other() -> None:
             await started.wait()
-            loop = asyncio.get_running_loop()
-            t0 = loop.time()
             async with connector_init_lock("other"):
                 pass
-            return loop.time() - t0
 
         holder = asyncio.create_task(hold("notion"))
-        elapsed = await other()
-        await holder
-        assert elapsed < 0.1
+        try:
+            # The first lock is still held for as long as this takes: it is not waited on, not timed.
+            await asyncio.wait_for(other(), timeout=10)
+        finally:
+            release.set()
+            await holder
 
     @pytest.mark.asyncio
     async def test_lock_is_released_when_a_build_raises(self):

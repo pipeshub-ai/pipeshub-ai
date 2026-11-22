@@ -3,7 +3,9 @@
 import React, { useMemo } from 'react';
 import { Box, Button, Flex, RadioGroup, Switch, Text, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { PickedModelExtraFields } from '@/config';
 import type { DiscoveredModel, PickedModel } from '../types';
+import { NO_CREDENTIAL_AUTOFILL_PROPS } from '@/app/components/ui/secret-text-field';
 
 export type PerModelFlag = 'isReasoning' | 'isMultimodal';
 
@@ -57,6 +59,8 @@ interface PickedModelsListProps {
   onDefaultChange: (modelId: string) => void;
   flagFields: PerModelFlagField[];
   contextLengthLabel?: string;
+  /** Names of the provider's form fields. */
+  fieldNames?: readonly string[];
   disabled?: boolean;
 }
 
@@ -70,6 +74,7 @@ export function PickedModelsList({
   onDefaultChange,
   flagFields,
   contextLengthLabel,
+  fieldNames = [],
   disabled = false,
 }: PickedModelsListProps) {
   const { t } = useTranslation();
@@ -102,6 +107,7 @@ export function PickedModelsList({
               discovered={discoveredById.get(item.id)}
               flagFields={flagFields}
               contextLengthLabel={contextLengthLabel}
+              fieldNames={fieldNames}
               showDefault={showDefault}
               disabled={disabled}
               onChange={(patch) => updatePicked(item.id, patch)}
@@ -119,6 +125,7 @@ function PickedModelRow({
   discovered,
   flagFields,
   contextLengthLabel,
+  fieldNames,
   showDefault,
   disabled,
   onChange,
@@ -128,6 +135,7 @@ function PickedModelRow({
   discovered?: DiscoveredModel;
   flagFields: PerModelFlagField[];
   contextLengthLabel?: string;
+  fieldNames: readonly string[];
   showDefault: boolean;
   disabled: boolean;
   onChange: (patch: Partial<PickedModel>) => void;
@@ -176,6 +184,7 @@ function PickedModelRow({
         </Flex>
         <Flex gap="2" wrap="wrap">
           <TextField.Root
+            {...NO_CREDENTIAL_AUTOFILL_PROPS}
             value={item.modelFriendlyName ?? ''}
             placeholder={placeholder}
             aria-label={t('workspace.aiModels.modelPickerFriendlyName', { model: item.id })}
@@ -205,6 +214,13 @@ function PickedModelRow({
             />
           ) : null}
         </Flex>
+        <PickedModelExtraFields
+          item={item}
+          discovered={discovered}
+          fieldNames={fieldNames}
+          disabled={disabled}
+          onChange={onChange}
+        />
         {flagFields.length > 0 ? (
           <Flex gap="4" wrap="wrap">
             {flagFields.map((field) => (

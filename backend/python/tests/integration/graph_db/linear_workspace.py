@@ -132,6 +132,7 @@ class Project:
     content: str = ""
     documents: list[Document] = field(default_factory=list)
     links: list[Link] = field(default_factory=list)
+    lead: Team | None = None
     trashed: bool = False
     archived_at: int | None = None
     created_at: int = 0
@@ -194,9 +195,10 @@ class LinearWorkspace:
         return issue
 
     def project(self, name: str, teams: list[Team], *, content: str = "",
-                documents: list[Document] = (), links: list[Link] = ()) -> Project:
+                documents: list[Document] = (), links: list[Link] = (), lead: Team | None = None) -> Project:
         now = self.tick(1000)
-        project = Project(name, list(teams), content, list(documents), list(links), created_at=now, updated_at=now)
+        project = Project(name, list(teams), content, list(documents), list(links), lead=lead,
+                          created_at=now, updated_at=now)
         for child in project.documents:
             child.created_at = child.updated_at = now
         self.projects.append(project)
@@ -464,7 +466,7 @@ class LinearWorkspace:
             "archivedAt": _iso(project.archived_at) if project.archived_at else None,
             "startDate": None, "targetDate": None, "startedAt": None, "completedAt": None, "canceledAt": None,
             "status": {"id": "status-1", "name": "Planned", "type": "planned", "color": "#000"},
-            "creator": None, "lead": None,
+            "creator": None, "lead": None, "leadTeamId": project.lead.id if project.lead else None,
             "teams": {"nodes": [{"id": t.id, "name": t.name, "key": t.key, "private": t.visibility == "private",
                                  "visibility": t.visibility} for t in project.teams]},
             "issues": {"nodes": []},

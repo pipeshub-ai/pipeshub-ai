@@ -37,6 +37,13 @@ def _one_search_per_request(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
 
 
+@pytest.fixture(autouse=True)
+def _no_lookup_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The lookup of records found by name has its own tests
+    # (test_search_unindexed_matches.py); here it must not add to the request's logs.
+    monkeypatch.setattr("app.api.routes.search._unindexed_matches", AsyncMock(return_value=[]))
+
+
 # ---------------------------------------------------------------------------
 # Pydantic model validation tests
 # ---------------------------------------------------------------------------
@@ -283,26 +290,28 @@ class TestSearchEndpoint:
         assert call_kwargs.kwargs["filter_groups"]["kb"] == ["kb1", "kb2"]
 
     @pytest.mark.asyncio
-    async def test_search_llm_none_and_get_fails(self):
-        """When LLM is None and get_llm_instance also returns None, raise 500."""
+    async def test_search_without_chat_model_searches_query_as_typed(self):
+        """No chat model configured: the search runs on the typed query, not a 500."""
         request = self._build_request()
 
         mock_retrieval = MagicMock()
         mock_retrieval.llm = None
         mock_retrieval.get_llm_instance = AsyncMock(return_value=None)
+        mock_retrieval.search_with_filters = AsyncMock(
+            return_value={"searchResults": [], "status_code": 200}
+        )
 
-        mock_graph = MagicMock()
-        body = SearchQuery(query="hello")
-
-        with pytest.raises(HTTPException) as exc_info:
-            await search(
+        with patch("app.api.routes.search.setup_query_transformation") as mock_setup:
+            response = await search(
                 request=request,
-                body=body,
+                body=SearchQuery(query="  hello  "),
                 retrieval_service=mock_retrieval,
-                graph_provider=mock_graph,
+                graph_provider=MagicMock(),
             )
-        assert exc_info.value.status_code == 500
-        assert exc_info.value.detail == "Failed to initialize LLM service. LLM configuration is missing."
+
+        assert response.status_code == 200
+        mock_setup.assert_not_called()
+        assert mock_retrieval.search_with_filters.call_args.kwargs["queries"] == ["hello"]
 
     @pytest.mark.asyncio
     async def test_search_http_exception_keeps_its_status(self):
@@ -358,6 +367,9 @@ class TestSearchEndpoint:
 
         assert response.status_code == 200
         mock_setup.assert_called_once_with(new_llm)
+        assert mock_retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "test", "rewritten", "exp",
+        ]
 
     @pytest.mark.asyncio
     async def test_search_exception_raises_http_500(self):
@@ -419,11 +431,11 @@ class TestSearchEndpoint:
 
         call_kwargs = mock_retrieval.search_with_filters.call_args
         queries = call_kwargs.kwargs["queries"]
-        assert queries == ["same query", "different query"]
+        assert queries == ["test", "same query", "different query"]
 
     @pytest.mark.asyncio
     async def test_search_empty_rewritten_query(self):
-        """If rewritten query is blank, only expanded queries are used."""
+        """A blank rewrite adds nothing; the typed query and the expansions are searched."""
         request = self._build_request()
 
         mock_retrieval = _retrieval_with_llm()
@@ -450,7 +462,7 @@ class TestSearchEndpoint:
 
         call_kwargs = mock_retrieval.search_with_filters.call_args
         queries = call_kwargs.kwargs["queries"]
-        assert queries == ["q1", "q2"]
+        assert queries == ["test", "q1", "q2"]
 
     @pytest.mark.asyncio
     async def test_search_custom_status_code_from_results(self):
@@ -679,10 +691,10 @@ class TestSearchHonoursLimit:
         retrieval.search_with_filters = AsyncMock(return_value=response)
         chain = lambda v: MagicMock(ainvoke=AsyncMock(return_value=v))  # noqa: E731
         with patch("app.api.routes.search.setup_query_transformation") as setup:
-            # Rewrite plus three expansions: four queries, each adding hits.
+            # The typed query, the rewrite and three expansions: five queries, each adding hits.
             setup.return_value = (chain("rewritten"), chain("e1\ne2\ne3"))
             res = await search(request=request, body=body, retrieval_service=retrieval, graph_provider=MagicMock())
-        assert len(retrieval.search_with_filters.call_args.kwargs["queries"]) == 4
+        assert len(retrieval.search_with_filters.call_args.kwargs["queries"]) == 5
         return json.loads(res.body)
 
     @pytest.mark.asyncio
@@ -792,7 +804,7 @@ class TestSearchHonoursLimit:
 
 
 class TestSearchSurvivesQueryTransformationFailure:
-    """A failed rewrite or expansion falls back to the query the user typed."""
+    """The query the user typed is searched whether the rewrite and expansion work or fail."""
 
     RESULTS = {"searchResults": [{"content": "hit"}], "status_code": 200}
 
@@ -946,6 +958,7 @@ class TestSearchSurvivesQueryTransformationFailure:
         )
 
         assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            QUERY_TEXT,
             "rewritten",
             "angle one",
             "angle two",
@@ -962,7 +975,36 @@ class TestSearchSurvivesQueryTransformationFailure:
             self._chain(raises=TimeoutError()),
         )
 
-        assert retrieval.search_with_filters.call_args.kwargs["queries"] == ["rewritten"]
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [QUERY_TEXT, "rewritten"]
+
+    @pytest.mark.asyncio
+    async def test_a_rewrite_that_drops_an_identifier_still_searches_it(self) -> None:
+        """A code found in one file only must reach the keyword leg as typed."""
+        request, retrieval = self._build_request(), self._retrieval()
+
+        with patch(
+            "app.api.routes.search.setup_query_transformation",
+            return_value=(
+                self._chain(returns="Marrow Gale financial workbook details"),
+                self._chain(returns="marrow gale spreadsheet\nfinance workbook 2026"),
+            ),
+        ):
+            await search(
+                request=request, body=SearchQuery(query="marrowgale4406"),
+                retrieval_service=retrieval, graph_provider=MagicMock(),
+            )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"][0] == "marrowgale4406"
+
+    @pytest.mark.asyncio
+    async def test_a_rewrite_identical_to_the_query_is_searched_once(self) -> None:
+        request, retrieval = self._build_request(), self._retrieval()
+
+        await self._search(
+            request, retrieval, self._chain(returns=f"  {QUERY_TEXT} "), self._chain(returns="angle one")
+        )
+
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [QUERY_TEXT, "angle one"]
 
     @pytest.mark.asyncio
     async def test_blank_output_from_both_steps_searches_with_the_original_query(self) -> None:
@@ -1086,7 +1128,7 @@ class TestSearchWithoutQueryRewrite:
         setup.assert_called_once()
         rewrite.ainvoke.assert_awaited_once()
         assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
-            "rewritten q", "variant a", "variant b",
+            "q", "rewritten q", "variant a", "variant b",
         ]
 
     @pytest.mark.asyncio
@@ -1143,10 +1185,10 @@ class TestSearchWithoutQueryRewrite:
         lines = [
             call.args[0] % call.args[1:]
             for call in logger.info.call_args_list
-            if call.args and str(call.args[0]).startswith("⏱")
+            if call.args and str(call.args[0]).startswith("%s total=")
         ]
         assert len(lines) == 1
-        assert lines[0].startswith("⏱ search total=")
+        assert lines[0].startswith("search total=")
         assert "query_transform=" in lines[0] and "retrieval=" in lines[0]
         assert lines[0].endswith("| rewrite=off queries=1")
 
@@ -1168,7 +1210,7 @@ class TestSearchLogsNoQueryText:
             )
 
         assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
-            "rewritten nightjar merger", "nightjar terms", "nightjar price",
+            "nightjar merger", "rewritten nightjar merger", "nightjar terms", "nightjar price",
         ]
         logged = " ".join(str(c) for c in logger.mock_calls)
         assert "nightjar" not in logged

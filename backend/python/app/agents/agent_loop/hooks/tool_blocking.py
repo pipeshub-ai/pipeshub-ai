@@ -17,7 +17,11 @@ used here instead.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
+
+from app.agent_loop_lib.tools.executor import MAX_LOGGED_TOOL_NAME
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.context import (
@@ -25,6 +29,8 @@ if TYPE_CHECKING:
         ToolResultContext,
     )
     from app.agent_loop_lib.hooks.middleware.pipeline import Next
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_ERROR_THRESHOLD = 3
 
@@ -66,6 +72,11 @@ class ToolErrorTracker:
             self._consecutive_errors[tool_path] = self._consecutive_errors.get(tool_path, 0) + 1
             if turn_index is not None:
                 self._last_failed_turn[tool_path] = turn_index
+            if self._consecutive_errors[tool_path] == self._threshold:
+                log_event(
+                    logger, "tool.blocked", level=logging.WARNING,
+                    tool_path=tool_path[:MAX_LOGGED_TOOL_NAME], consecutive_failures=self._threshold,   # an unknown tool's path holds the model's name
+                )
         else:
             self._consecutive_errors.pop(tool_path, None)
             self._last_failed_turn.pop(tool_path, None)
@@ -74,7 +85,8 @@ class ToolErrorTracker:
         if self.is_blocked(ctx.tool_path):
             ctx.deny(
                 f"Tool at {ctx.tool_path!r} has failed {self._threshold}+ times in a row this "
-                "conversation and has been temporarily disabled. Try a different tool or approach."
+                "conversation and has been temporarily disabled. Try a different tool or approach.",
+                code="consecutive_failures",
             )
             return
         await next_fn()

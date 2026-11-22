@@ -25,6 +25,7 @@ Queuing here instead would never settle a record the stage has no state for.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 import math
@@ -32,7 +33,8 @@ import os
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.core.org_context import for_org, system
 from app.modules.indexing.named_entity_persist_retry import (
     _BUSY,
     StoredContentUnreadableError,
@@ -42,6 +44,7 @@ from app.modules.indexing.named_entity_persist_retry import (
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
+from app.modules.named_entities.domain.models import model_failed
 from app.modules.named_entities.kept import keep_extraction
 from app.modules.named_entities.stage import REEXTRACT_MAX_WINDOWS
 from app.modules.named_entities.strategies.single_call import WINDOW_TIMEOUT_SECONDS
@@ -96,7 +99,9 @@ async def complete_named_entities(
     ``still_leader``: checked before each record; the pass stops once it is false."""
     if sink is None or not llm_mostly_free():
         return 0
-    rows = await graph_provider.get_due_named_entity_persist_retries(page_size, reextract=True)
+    # The read spans every organisation; each row's work is bound to the organisation the row carries.
+    with system("named_entity_completion"):
+        rows = await graph_provider.get_due_named_entity_persist_retries(page_size, reextract=True)
     written = 0
     for row in rows:
         if still_leader is not None and not still_leader():
@@ -105,40 +110,42 @@ async def complete_named_entities(
         record_id, org_id, due = row.get("recordId"), row.get("orgId"), row.get("dueAt")
         if not record_id or due is None:
             continue
-        attempts = int(row.get("attempts") or 0)
-        if attempts > MAX_REEXTRACT_ATTEMPTS:
-            logger.error(
-                "named_entity_completion: giving up on record %s after %d failures; "
-                "it is extracted again when next indexed", record_id, attempts,
-            )
-            await graph_provider.clear_named_entity_persist_retry(record_id, due)
-            continue
-        try:
-            async with call_scope(
-                service_principal("named-entity-completion", str(org_id or "")),
-                Workload.EXTRACTION,
-                config_service=config_service,
-                record_id=str(record_id),
-            ):
-                outcome = await _complete_one(
-                    graph_provider, sink, concurrency_manager, record_id, org_id, due, attempts,
+        # A legacy marker without an org (Arango/Neo4j only; PostgreSQL stamps its partition's) runs unbound, as before.
+        with for_org(str(org_id), job="named_entity_completion") if org_id else contextlib.nullcontext():
+            attempts = int(row.get("attempts") or 0)
+            if attempts > MAX_REEXTRACT_ATTEMPTS:
+                logger.error(
+                    "named_entity_completion: giving up on record %s after %d failures; "
+                    "it is extracted again when next indexed", record_id, attempts,
                 )
-        except Exception as exc:
-            logger.warning("named_entity_completion: record %s failed: %s", record_id, type(exc).__name__)
-            await _count_failure(graph_provider, logger, org_id, record_id, type(exc).__name__, attempts)
-            continue
-        if outcome is _BUSY or outcome in ("failed", "superseded"):
-            # Being indexed now (that write is newer), queued again by the sink, or
-            # already replaced by a newer write.
-            continue
-        if outcome == "extract_failed":
-            await _count_failure(graph_provider, logger, org_id, record_id, "extract_failed", attempts)
-            continue
-        if outcome == "written":
-            written += 1
-            continue
-        # Gone, nothing to read, or nothing better to write: the job is done.
-        await graph_provider.clear_named_entity_persist_retry(record_id, due)
+                await graph_provider.clear_named_entity_persist_retry(record_id, due)
+                continue
+            try:
+                async with call_scope(
+                    service_principal("named-entity-completion", str(org_id or "")),
+                    Workload.EXTRACTION,
+                    config_service=config_service,
+                    record_id=str(record_id),
+                ):
+                    outcome = await _complete_one(
+                        graph_provider, sink, concurrency_manager, record_id, org_id, due, attempts,
+                    )
+            except Exception as exc:
+                logger.warning("named_entity_completion: record %s failed: %s", record_id, type(exc).__name__)
+                await _count_failure(graph_provider, logger, org_id, record_id, type(exc).__name__, attempts)
+                continue
+            if outcome is _BUSY or outcome in ("failed", "superseded"):
+                # Being indexed now (that write is newer), queued again by the sink, or
+                # already replaced by a newer write.
+                continue
+            if outcome in ("extract_failed", "not_indexed"):
+                await _count_failure(graph_provider, logger, org_id, record_id, str(outcome), attempts)
+                continue
+            if outcome == "written":
+                written += 1
+                continue
+            # Gone, nothing to read, or nothing better to write: the job is done.
+            await graph_provider.clear_named_entity_persist_retry(record_id, due)
     if rows:
         logger.info("named_entity_completion: %d due, %d written", len(rows), written)
     return written
@@ -162,6 +169,10 @@ async def _complete_one(
     record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
     if not record or not is_live_record(record) or not record.get("virtualRecordId"):
         return "gone"
+    if record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
+        # Replacing its copy (or failed doing so): its revision is the attempt's, not the served copy's. The job is counted as a failure, so
+        # it backs off and is given up after its attempts (the record is extracted when it is next indexed) instead of staying first in line.
+        return "not_indexed"
     try:
         blob = await sink.blob_storage.get_record_from_storage(record["virtualRecordId"], org_id or record.get("orgId"))
     except StorageDocumentNotFoundError:
@@ -175,7 +186,7 @@ async def _complete_one(
     record_obj.block_containers = BlocksContainer.model_validate(containers)
     ctx = TransformContext(record=record_obj, settings={"skip_blob": True})
     extraction = await asyncio.wait_for(sink.extract_named_entities(ctx, reextract=True), EXTRACT_TIMEOUT_SECONDS)
-    if extraction.status == "FAILED":
+    if extraction.status == "FAILED" or model_failed(extraction):
         return "extract_failed"
     if extraction.status == "SKIPPED":
         return "gone"

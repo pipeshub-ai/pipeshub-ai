@@ -53,6 +53,19 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong>, kurumsal bilgiyi birbirine bağlayan, kaynak göstererek açıklanabilir arama sunan ve sistemleriniz genelinde iş akışlarını otomatikleştiren, açık kaynaklı ve kendi sunucunuzda barındırabileceğiniz yapay zekâ-yerel bir yürütme katmanıdır.
 
+### PipesHub nasıl çalışır
+
+PipesHub; belgeler, konuşmalar, yapılandırılmış veriler, wiki'ler, ticket'lar ve kod üzerinde **birleşik bir bağlam katmanı** oluşturur. Bağlayıcılar her kaynağı izinleriyle birlikte senkronize eder. İndeksleme hattı içeriği ayrıştırır, parçalara böler, embedding'lerini çıkarır ve kayıtları, kişileri ve varlıkları bir bilgi grafında birbirine bağlar.
+
+Sorular tek bir "getir, sonra üret" adımıyla değil, bir **ajan döngüsüyle** yanıtlanır. Ajan plan yapar, araçları çağırır, sonuçları okur ve kanıtlara ulaşana kadar devam eder:
+
+- **Hibrit arama** — anlamsal ve anahtar kelime tabanlı arama; hem anlamı hem de tam terimleri yakalar.
+- **Grep / desen eşleştirme** — tam tanımlayıcılar, hata mesajları, ticket anahtarları ve kod sembolleri.
+- **Bilgi grafında gezinme** — belgeler, kişiler, ticket'lar, pull request'ler ve yazışma dizileri arasındaki bağlantıları izler.
+- **Belge okuma** — eşleşen tek bir parçaya güvenmek yerine kaynağın tamamını açar.
+
+Her araç çağrısı soruyu soran kullanıcının izinlerine göre filtrelenir ve her yanıt, geldiği blokları kaynak olarak gösterir.
+
 
 ## Özellikler
 

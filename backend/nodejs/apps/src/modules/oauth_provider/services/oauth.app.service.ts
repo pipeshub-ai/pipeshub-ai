@@ -1,32 +1,34 @@
-import { injectable, inject } from 'inversify'
-import { randomUUID } from 'crypto'
-import crypto from 'crypto'
-import { Types } from 'mongoose'
-import { Logger } from '../../../libs/services/logger.service'
-import { EncryptionService } from '../../../libs/encryptor/encryptor'
-import { ScopeValidatorService } from './scope.validator.service'
-import { OAuthTokenService } from './oauth_token.service'
+import { injectable, inject } from 'inversify';
+import { randomUUID } from 'crypto';
+import crypto from 'crypto';
+import { Logger } from '../../../libs/services/logger.service';
+import { EncryptionService } from '../../../libs/encryptor/encryptor';
+import { ScopeValidatorService } from './scope.validator.service';
+import { OAuthTokenService } from './oauth_token.service';
 import {
-  OAuthApp,
-  IOAuthApp,
+  getOAuthAppRepository,
   OAuthAppStatus,
   OAuthGrantType,
-} from '../schema/oauth.app.schema'
+  type OAuthAppDto,
+  type OAuthAppPatch,
+} from '../../../libs/repositories/oauth-app';
+import { idOf, isValidId } from '../../../libs/repositories/ids';
 import {
+  isKnowledgeLimitWithin,
   sameKnowledgeLimit,
   toKnowledgeLimit,
-} from '../schema/knowledge_limit.schema';
+} from '../types/knowledge_limit';
 import {
   InvalidClientError,
   InvalidRedirectUriError,
-} from '../../../libs/errors/oauth.errors'
+} from '../../../libs/errors/oauth.errors';
 import {
   NotFoundError,
   BadRequestError,
   ForbiddenError,
 } from '../../../libs/errors/http.errors';
 import { ADMIN_ACCESS_REQUIRED_MESSAGE } from '../../user_management/services/user-admin.service';
-import { Users } from '../../user_management/schema/users.schema'
+import { getUserRepository } from '../../../libs/repositories/user';
 import {
   CreateOAuthAppRequest,
   UpdateOAuthAppRequest,
@@ -34,32 +36,66 @@ import {
   OAuthAppWithSecret,
   ListAppsQuery,
   PaginatedResponse,
-} from '../types/oauth.types'
+} from '../types/oauth.types';
 import {
   ALLOWED_CUSTOM_REDIRECT_URIS,
   FIRST_PARTY_DEVICE_CLIENT_ID,
-  PAT_APP_CLIENT_ID_PREFIX,
-  SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
-} from '../constants/constants'
+} from '../constants/constants';
 
-const CLIENT_SECRET_LENGTH = 32
+const CLIENT_SECRET_LENGTH = 32;
+
+/** Token lifetimes, in seconds, of a dynamically registered client. */
+export const DYNAMIC_ACCESS_TOKEN_LIFETIME = 3600;
+export const DYNAMIC_REFRESH_TOKEN_LIFETIME = 2592000;
 
 export const APP_WORKSPACE_MISMATCH_MESSAGE =
   'This application belongs to a different workspace. Switch to that workspace and try again.';
 
-/**
- * An app issues tokens only for the workspace that created it. DCR apps and
- * the first-party device app are registered once per instance, so every
- * workspace may use them.
- */
-export function isAppUsableInOrg(app: IOAuthApp, orgId: string): boolean {
-  if (app.isDynamic === true || app.clientId === FIRST_PARTY_DEVICE_CLIENT_ID) {
-    return true;
-  }
-  return app.orgId.toString() === orgId;
+/** DCR apps and the first-party device app are registered once per instance, not by a workspace or a person. */
+export function isInstanceApp(app: OAuthAppDto): boolean {
+  return (
+    app.isDynamic === true || app.clientId === FIRST_PARTY_DEVICE_CLIENT_ID
+  );
 }
 
-type WorkspaceMismatchDetails = (app: IOAuthApp) => Record<string, string>;
+/** An app issues tokens only for the workspace that created it; every workspace may use an instance app. */
+export function isAppUsableInOrg(app: OAuthAppDto, orgId: string): boolean {
+  return isInstanceApp(app) || app.orgId === orgId;
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * RFC 8252 §7.3: a native app listens on a port it picks at run time, so a loopback redirect URI
+ * registered without a port matches the same URI on any port.
+ */
+export function loopbackMatchesAnyPort(
+  registered: string,
+  requested: string,
+): boolean {
+  let r: URL;
+  let q: URL;
+  try {
+    r = new URL(registered);
+    q = new URL(requested);
+  } catch {
+    return false;
+  }
+  return (
+    r.protocol === 'http:' &&
+    r.port === '' &&
+    LOOPBACK_HOSTS.has(r.hostname) &&
+    q.protocol === r.protocol &&
+    q.hostname === r.hostname &&
+    q.pathname === r.pathname &&
+    q.search === r.search &&
+    q.hash === '' &&
+    !q.username &&
+    !q.password
+  );
+}
+
+type WorkspaceMismatchDetails = (app: OAuthAppDto) => Record<string, string>;
 
 let workspaceMismatchDetails: WorkspaceMismatchDetails = () => ({});
 
@@ -71,7 +107,7 @@ export function setWorkspaceMismatchDetails(
 }
 
 export function getWorkspaceMismatchDetails(
-  app: IOAuthApp,
+  app: OAuthAppDto,
 ): Record<string, string> {
   return workspaceMismatchDetails(app);
 }
@@ -88,31 +124,6 @@ export class OAuthAppService {
   ) {}
 
   /**
-   * Every org member (including org admins) only sees OAuth apps they created.
-   * Matches compound index `{ orgId, createdBy, isDeleted, createdAt }` on `OAuthApp` for list queries.
-   *
-   * Excludes the per-org synthetic PAT app (`pat-system:<orgId>`, see
-   * {@link PatService}) and the instance-wide first-party device app
-   * (`pipeshub-agent`) — internal clients, not something their creator
-   * should be able to view, edit, suspend, delete, or pull a working
-   * secret for through this CRUD surface.
-   */
-  private buildAppFilter(orgId: string, userId: string): Record<string, unknown> {
-    return {
-      orgId: new Types.ObjectId(orgId),
-      isDeleted: false,
-      createdBy: new Types.ObjectId(userId),
-      clientId: {
-        $nin: [FIRST_PARTY_DEVICE_CLIENT_ID],
-        $not: new RegExp(
-          `^(?:${PAT_APP_CLIENT_ID_PREFIX}|${SERVICE_TOKEN_APP_CLIENT_ID_PREFIX})`,
-        ),
-      },
-      isDynamic: { $ne: true },
-    }
-  }
-
-  /**
    * Create a new OAuth app
    */
   async createApp(
@@ -125,14 +136,14 @@ export class OAuthAppService {
     this.scopeValidatorService.validateRequestedScopes(
       data.allowedScopes,
       this.scopeValidatorService.getAllowedScopeNamesForRole(isAdmin),
-    )
+    );
 
     // Validate grant types
     const allowedGrantTypes = data.allowedGrantTypes || [
       OAuthGrantType.AUTHORIZATION_CODE,
       OAuthGrantType.REFRESH_TOKEN,
-    ]
-    this.validateGrantTypes(allowedGrantTypes)
+    ];
+    this.validateGrantTypes(allowedGrantTypes);
 
     // An app that allows client_credentials gets tokens with no person in
     // them. Without a service account to act as, it falls back to whoever
@@ -147,7 +158,7 @@ export class OAuthAppService {
     const needsServiceAccount = allowedGrantTypes.includes(
       OAuthGrantType.CLIENT_CREDENTIALS,
     );
-    let tokenIdentityUserId: Types.ObjectId | undefined;
+    let tokenIdentityUserId: string | undefined;
     if (needsServiceAccount) {
       // Choosing the service account decides whose documents this app's
       // tokens reach, so it is an administrator's decision wherever it is
@@ -173,21 +184,21 @@ export class OAuthAppService {
       );
     }
 
-    const redirectUris = data.redirectUris || []
-    this.validateRedirectUris(redirectUris)
+    const redirectUris = data.redirectUris || [];
+    this.validateRedirectUris(redirectUris);
 
     // Generate credentials
-    const clientId = randomUUID()
-    const clientSecret = this.generateClientSecret()
-    const clientSecretEncrypted = this.encryptionService.encrypt(clientSecret)
+    const clientId = randomUUID();
+    const clientSecret = this.generateClientSecret();
+    const clientSecretEncrypted = this.encryptionService.encrypt(clientSecret);
 
-    const app = await OAuthApp.create({
+    const app = await getOAuthAppRepository().create({
       clientId,
       clientSecretEncrypted,
       name: data.name,
       description: data.description,
-      orgId: new Types.ObjectId(orgId),
-      createdBy: new Types.ObjectId(createdBy),
+      orgId,
+      createdBy,
       tokenIdentityUserId,
       redirectUris,
       allowedGrantTypes,
@@ -199,19 +210,19 @@ export class OAuthAppService {
       accessTokenLifetime: data.accessTokenLifetime ?? 3600,
       refreshTokenLifetime: data.refreshTokenLifetime ?? 2592000,
       knowledgeLimit: data.knowledgeLimit,
-    })
+    });
 
     this.logger.info('OAuth app created', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id,
       clientId,
       orgId,
       name: data.name,
-    })
+    });
 
     return {
       ...this.toAppResponse(app),
       clientSecret,
-    }
+    };
   }
 
   /**
@@ -224,23 +235,20 @@ export class OAuthAppService {
   private async requireUsableServiceAccount(
     serviceAccountId: string,
     orgId: string,
-  ): Promise<Types.ObjectId> {
-    if (!Types.ObjectId.isValid(serviceAccountId)) {
+  ): Promise<string> {
+    if (!isValidId(serviceAccountId)) {
       throw new NotFoundError(
         'That service account was not found in this organisation. Choose one ' +
           'from Workspace → Service accounts, or create one there first.',
       );
     }
 
-    const serviceAccount = await Users.findOne({
-      _id: serviceAccountId,
+    const serviceAccount = await getUserRepository().getLiveFields(
       orgId,
-      kind: 'service',
-      isDeleted: false,
-    })
-      .select('isDisabled')
-      .lean()
-      .exec();
+      serviceAccountId,
+      ['isDisabled'],
+      { serviceOnly: true },
+    );
 
     if (!serviceAccount) {
       throw new NotFoundError(
@@ -254,7 +262,7 @@ export class OAuthAppService {
       );
     }
 
-    return new Types.ObjectId(serviceAccountId);
+    return serviceAccountId;
   }
 
   /**
@@ -291,20 +299,18 @@ export class OAuthAppService {
     userId: string,
     serviceAccountId: string | null,
   ): Promise<OAuthAppResponse> {
-    if (!Types.ObjectId.isValid(appId)) {
-      throw new NotFoundError('OAuth app not found')
+    if (!isValidId(appId)) {
+      throw new NotFoundError('OAuth app not found');
     }
-    const app = await OAuthApp.findOne({
-      _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId),
-    })
+    const repo = getOAuthAppRepository();
+    const app = await repo.findOwned(orgId, userId, appId);
     if (!app) {
-      throw new NotFoundError('OAuth app not found')
+      throw new NotFoundError('OAuth app not found');
     }
 
     // Captured before anything is changed, so a failed revocation can put it
     // back rather than restoring the value it was just set to.
-    const previousIdentity = app.tokenIdentityUserId
+    const previousIdentity = app.tokenIdentityUserId;
 
     if (serviceAccountId === null) {
       // Clearing it puts the tokens back on the app's creator, which is the
@@ -323,15 +329,18 @@ export class OAuthAppService {
             'created the application.',
         );
       }
-      app.tokenIdentityUserId = undefined;
-    } else {
-      app.tokenIdentityUserId = await this.requireUsableServiceAccount(
-        serviceAccountId,
-        orgId,
-      );
     }
+    const newIdentity =
+      serviceAccountId === null
+        ? undefined
+        : await this.requireUsableServiceAccount(serviceAccountId, orgId);
 
-    await app.save()
+    const updated = await repo.updateOwned(orgId, userId, appId, {
+      tokenIdentityUserId: newIdentity,
+    });
+    if (!updated) {
+      throw new NotFoundError('OAuth app not found');
+    }
 
     // Every token this app has already issued was minted carrying the old
     // identity, and that claim is what the Python services read to decide
@@ -343,15 +352,16 @@ export class OAuthAppService {
     // no longer the same principal, so its credentials should not be either.
     // Whatever uses it needs a new token.
     try {
-      await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
+      await this.oauthTokenService.revokeAllTokensForApp(updated.clientId);
     } catch (error) {
       // The new identity is already committed, and every outstanding token
       // still carries the old one. Putting the identity back leaves the
       // application as it was rather than half-changed, and the caller is
       // told the change did not happen.
-      app.tokenIdentityUserId = previousIdentity
-      await app.save()
-      throw error
+      await repo.updateOwned(orgId, userId, appId, {
+        tokenIdentityUserId: previousIdentity,
+      });
+      throw error;
     }
 
     this.logger.info('OAuth app token identity changed', {
@@ -359,8 +369,8 @@ export class OAuthAppService {
       orgId,
       changedBy: userId,
       serviceAccountId,
-    })
-    return this.toAppResponse(app)
+    });
+    return this.toAppResponse(updated);
   }
 
   /**
@@ -372,36 +382,38 @@ export class OAuthAppService {
    * registered dynamically, without review, should be able to obtain.
    */
   async createDynamicClient(params: {
-    orgId: string
-    createdBy: string
-    name: string
-    redirectUris: string[]
-    allowedGrantTypes: OAuthGrantType[]
-    allowedScopes: string[]
-    isConfidential: boolean
-    homepageUrl?: string
-    privacyPolicyUrl?: string
-    termsOfServiceUrl?: string
-    logoUrl?: string
+    /** A client metadata document URL; a random id otherwise. */
+    clientId?: string;
+    orgId: string;
+    createdBy: string;
+    name: string;
+    redirectUris: string[];
+    allowedGrantTypes: OAuthGrantType[];
+    allowedScopes: string[];
+    isConfidential: boolean;
+    homepageUrl?: string;
+    privacyPolicyUrl?: string;
+    termsOfServiceUrl?: string;
+    logoUrl?: string;
   }): Promise<OAuthAppWithSecret> {
     if (params.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS)) {
       throw new BadRequestError(
         'client_credentials is not allowed for dynamically registered clients',
-      )
+      );
     }
-    this.validateGrantTypes(params.allowedGrantTypes)
-    this.validateDcrRedirectUris(params.redirectUris)
+    this.validateGrantTypes(params.allowedGrantTypes);
+    this.validateDcrRedirectUris(params.redirectUris);
 
-    const clientId = randomUUID()
-    const clientSecret = this.generateClientSecret()
-    const clientSecretEncrypted = this.encryptionService.encrypt(clientSecret)
+    const clientId = params.clientId ?? randomUUID();
+    const clientSecret = this.generateClientSecret();
+    const clientSecretEncrypted = this.encryptionService.encrypt(clientSecret);
 
-    const app = await OAuthApp.create({
+    const app = await getOAuthAppRepository().create({
       clientId,
       clientSecretEncrypted,
       name: params.name,
-      orgId: new Types.ObjectId(params.orgId),
-      createdBy: new Types.ObjectId(params.createdBy),
+      orgId: params.orgId,
+      createdBy: params.createdBy,
       redirectUris: params.redirectUris,
       allowedGrantTypes: params.allowedGrantTypes,
       allowedScopes: params.allowedScopes,
@@ -411,20 +423,20 @@ export class OAuthAppService {
       logoUrl: params.logoUrl,
       isConfidential: params.isConfidential,
       isDynamic: true,
-      accessTokenLifetime: 3600,
-      refreshTokenLifetime: 2592000,
-    })
+      accessTokenLifetime: DYNAMIC_ACCESS_TOKEN_LIFETIME,
+      refreshTokenLifetime: DYNAMIC_REFRESH_TOKEN_LIFETIME,
+    });
 
     this.logger.info('Dynamically registered OAuth client', {
       clientId,
       orgId: params.orgId,
       isConfidential: params.isConfidential,
-    })
+    });
 
     return {
       ...this.toAppResponse(app),
       clientSecret,
-    }
+    };
   }
 
   /**
@@ -434,87 +446,82 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
+    isAdmin = false,
   ): Promise<OAuthAppResponse> {
-    const app = await OAuthApp.findOne({
-      _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId),
-    })
+    const app = await this.findManageable(orgId, userId, isAdmin, appId);
 
     if (!app) {
-      throw new NotFoundError('OAuth app not found')
+      throw new NotFoundError('OAuth app not found');
     }
 
-    return this.toAppResponse(app)
+    return this.toAppResponse(app);
   }
 
   /**
    * Get OAuth app by client ID
    */
-  async getAppByClientId(clientId: string): Promise<IOAuthApp> {
-    const app = await OAuthApp.findOne({
-      clientId: { $eq: clientId },
-      isDeleted: false,
-    })
+  async getAppByClientId(clientId: string): Promise<OAuthAppDto> {
+    const app = await getOAuthAppRepository().findLiveByClientId(clientId);
 
     if (!app) {
-      throw new InvalidClientError('Invalid client_id')
+      throw new InvalidClientError('Invalid client_id');
     }
 
     if (app.status !== OAuthAppStatus.ACTIVE) {
-      throw new InvalidClientError(
-        `OAuth app is ${app.status}`,
-        { status: app.status },
-      )
+      throw new InvalidClientError(`OAuth app is ${app.status}`, {
+        status: app.status,
+      });
     }
 
-    return app
+    return app;
   }
 
   /**
-   * List OAuth apps for organization
+   * The caller's own apps, or for an administrator every app of the org, each
+   * with who created it. `createdBy` narrows either to one person's.
    */
   async listApps(
     orgId: string,
     userId: string,
     query: ListAppsQuery,
+    isAdmin = false,
   ): Promise<PaginatedResponse<OAuthAppResponse>> {
-    const page = query.page || 1
-    const limit = query.limit || 20
-    const skip = (page - 1) * limit
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const skip = (page - 1) * limit;
+    const filter = { status: query.status, search: query.search, skip, limit };
 
-    const filter: Record<string, unknown> = this.buildAppFilter(orgId, userId)
+    const repo = getOAuthAppRepository();
+    const { rows: apps, total } = isAdmin
+      ? await repo.listInOrg(orgId, { ...filter, createdBy: query.createdBy })
+      : query.createdBy !== undefined && query.createdBy !== userId
+        ? { rows: [], total: 0 }
+        : await repo.listOwned(orgId, userId, filter);
 
-    if (query.status) {
-      filter.status = { $eq: query.status }
+    const creators = new Map<string, { fullName?: string; email?: string }>();
+    if (isAdmin && apps.length > 0) {
+      const ids = [...new Set(apps.map((app) => idOf(app.createdBy)))];
+      for (const u of await getUserRepository().listNamesByIds(orgId, ids)) {
+        creators.set(idOf(u._id), u);
+      }
     }
-
-    if (query.search) {
-      // Escape special regex characters to prevent ReDoS attacks
-      const escapedSearch = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      filter.$or = [
-        { name: { $regex: escapedSearch, $options: 'i' } },
-        { description: { $regex: escapedSearch, $options: 'i' } },
-      ]
-    }
-
-    const [apps, total] = await Promise.all([
-      OAuthApp.find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .exec(),
-      OAuthApp.countDocuments(filter),
-    ])
 
     return {
-      data: apps.map((app) => this.toAppResponse(app)),
+      data: apps.map((app) => {
+        const creator = creators.get(idOf(app.createdBy));
+        return {
+          ...this.toAppResponse(app),
+          ...(creator?.fullName && { createdByName: creator.fullName }),
+          ...(creator?.email && { createdByEmail: creator.email }),
+        };
+      }),
       pagination: {
         page,
         limit,
         total,
         totalPages: Math.ceil(total / limit),
       },
-    }
+    };
   }
 
   /**
@@ -527,13 +534,11 @@ export class OAuthAppService {
     isAdmin: boolean,
     data: UpdateOAuthAppRequest,
   ): Promise<OAuthAppResponse> {
-    const app = await OAuthApp.findOne({
-      _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId),
-    })
+    const repo = getOAuthAppRepository();
+    const app = await repo.findOwned(orgId, userId, appId);
 
     if (!app) {
-      throw new NotFoundError('OAuth app not found')
+      throw new NotFoundError('OAuth app not found');
     }
 
     // Validate scopes if provided
@@ -541,7 +546,7 @@ export class OAuthAppService {
       this.scopeValidatorService.validateRequestedScopes(
         data.allowedScopes,
         this.scopeValidatorService.getAllowedScopeNamesForRole(isAdmin),
-      )
+      );
     }
 
     // Validate redirect URIs if provided
@@ -551,7 +556,7 @@ export class OAuthAppService {
 
     // Validate grant types if provided
     if (data.allowedGrantTypes) {
-      this.validateGrantTypes(data.allowedGrantTypes)
+      this.validateGrantTypes(data.allowedGrantTypes);
 
       // Creation requires a service account for client_credentials. Without
       // this, that requirement is one edit away from meaningless: make an
@@ -565,6 +570,18 @@ export class OAuthAppService {
       const gainingClientCredentials =
         data.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS) &&
         !app.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS);
+
+      // An instance app is no person's and acts as nobody: whoever edits it
+      // and whatever it is bound to, it never gets client_credentials. The
+      // owned lookup already leaves instance apps out; this keeps the rule here.
+      if (
+        data.allowedGrantTypes.includes(OAuthGrantType.CLIENT_CREDENTIALS) &&
+        isInstanceApp(app)
+      ) {
+        throw new BadRequestError(
+          'A dynamically registered client or the device login app cannot use client_credentials.',
+        );
+      }
 
       // Gaining the grant is the same decision as making it at creation, and
       // this route has no admin check of its own, so without this the gate on
@@ -587,78 +604,119 @@ export class OAuthAppService {
       // every token request afterwards would fail — a confusing way to find
       // out, and the check is the same one creation uses.
       if (gainingClientCredentials && app.tokenIdentityUserId) {
-        await this.requireUsableServiceAccount(
-          app.tokenIdentityUserId.toString(),
-          orgId,
-        );
+        await this.requireUsableServiceAccount(app.tokenIdentityUserId, orgId);
       }
     }
 
-    const previousScopes = [...app.allowedScopes]
+    const previousScopes = [...app.allowedScopes];
     const previousLimit = toKnowledgeLimit(app.knowledgeLimit);
 
     // Update fields
-    if (data.name !== undefined) app.name = data.name
-    if (data.description !== undefined) app.description = data.description
-    if (data.redirectUris !== undefined) app.redirectUris = data.redirectUris
+    const patch: OAuthAppPatch = {};
+    if (data.name !== undefined) patch.name = data.name;
+    if (data.description !== undefined) patch.description = data.description;
+    if (data.redirectUris !== undefined) patch.redirectUris = data.redirectUris;
     if (data.allowedGrantTypes !== undefined) {
-      app.allowedGrantTypes = data.allowedGrantTypes as OAuthGrantType[]
+      patch.allowedGrantTypes = data.allowedGrantTypes;
     }
-    if (data.allowedScopes !== undefined) app.allowedScopes = data.allowedScopes
+    if (data.allowedScopes !== undefined)
+      patch.allowedScopes = data.allowedScopes;
     if (data.homepageUrl !== undefined) {
-      app.homepageUrl = data.homepageUrl ?? undefined
+      patch.homepageUrl = data.homepageUrl ?? undefined;
     }
     if (data.privacyPolicyUrl !== undefined) {
-      app.privacyPolicyUrl = data.privacyPolicyUrl ?? undefined
+      patch.privacyPolicyUrl = data.privacyPolicyUrl ?? undefined;
     }
     if (data.termsOfServiceUrl !== undefined) {
-      app.termsOfServiceUrl = data.termsOfServiceUrl ?? undefined
+      patch.termsOfServiceUrl = data.termsOfServiceUrl ?? undefined;
     }
     if (data.accessTokenLifetime !== undefined) {
-      app.accessTokenLifetime = data.accessTokenLifetime
+      patch.accessTokenLifetime = data.accessTokenLifetime;
     }
     if (data.refreshTokenLifetime !== undefined) {
-      app.refreshTokenLifetime = data.refreshTokenLifetime
+      patch.refreshTokenLifetime = data.refreshTokenLifetime;
     }
     if (data.knowledgeLimit !== undefined) {
-      app.knowledgeLimit = data.knowledgeLimit ?? undefined;
+      patch.knowledgeLimit = data.knowledgeLimit ?? undefined;
     }
 
-    await app.save()
+    // The knowledge limit rides in each token's claim. A narrowed one may
+    // hide what a token reaches, so those tokens go below. A widened one
+    // keeps them: each token, and each refresh, stays at the limit its user
+    // agreed to, and the new items reach a user once they connect again.
+    const newLimit =
+      data.knowledgeLimit !== undefined
+        ? toKnowledgeLimit(data.knowledgeLimit)
+        : previousLimit;
+    const limitNarrowed = !isKnowledgeLimitWithin(previousLimit, newLimit);
+    const limitWidened =
+      !limitNarrowed && !sameKnowledgeLimit(newLimit, previousLimit);
+    if (limitWidened) {
+      // Refresh tokens stored before they kept the user's limit take the
+      // app's on refresh. Revoked before the save, so a refresh that still
+      // gets through read the app before it and carries the old limit;
+      // revoked after, a refresh in between could mint with the wider one.
+      await this.oauthTokenService.revokeRefreshTokensWithoutKnowledgeLimit(
+        app.clientId,
+      );
+    }
+
+    // Saved only over the limit read above. Two edits from one snapshot are
+    // each judged against it, so without this the later save could pass as a
+    // widening while dropping what the earlier one added.
+    const updated = await repo.updateOwned(
+      orgId,
+      userId,
+      appId,
+      patch,
+      data.knowledgeLimit !== undefined
+        ? { overKnowledgeLimit: previousLimit }
+        : undefined,
+    );
+    if (!updated) {
+      throw new NotFoundError('OAuth app not found');
+    }
 
     // Tokens carry their scopes in the claim, and neither Node nor the Python
     // services compare that claim with the app on each request. Removing a
     // scope therefore only takes effect for tokens issued after the change.
     const removedScopes = previousScopes.filter(
-      (scope) => !app.allowedScopes.includes(scope),
-    )
-    // The knowledge limit rides in the claim the same way. Any change goes:
-    // a new limit may hide what a token reaches, and a lifted one widens what
-    // users agreed to, so they connect again.
-    const limitChanged = !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
-    if (removedScopes.length > 0 || limitChanged) {
+      (scope) => !updated.allowedScopes.includes(scope),
+    );
+    if (removedScopes.length > 0 || limitNarrowed) {
       try {
-        await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
+        await this.oauthTokenService.revokeAllTokensForApp(updated.clientId);
       } catch (error) {
-        app.allowedScopes = previousScopes
-        app.knowledgeLimit = previousLimit;
-        await app.save()
-        throw error
+        // Put back only over the limit this request saved: an edit that
+        // landed since stands, and was judged against what is stored.
+        await repo.updateOwned(
+          orgId,
+          userId,
+          appId,
+          { allowedScopes: previousScopes, knowledgeLimit: previousLimit },
+          {
+            ...(data.knowledgeLimit !== undefined && {
+              overKnowledgeLimit: toKnowledgeLimit(updated.knowledgeLimit),
+            }),
+            ignoreStale: true,
+          },
+        );
+        throw error;
       }
       this.logger.info('OAuth app access changed; tokens revoked', {
-        appId: (app._id as Types.ObjectId).toString(),
+        appId: updated._id,
         orgId,
         removedScopes,
-        limitChanged,
-      })
+        limitNarrowed,
+      });
     }
 
     this.logger.info('OAuth app updated', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: updated._id,
       orgId,
-    })
+    });
 
-    return this.toAppResponse(app)
+    return this.toAppResponse(updated);
   }
 
   /**
@@ -668,26 +726,28 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
+    isAdmin = false,
   ): Promise<void> {
-    const app = await OAuthApp.findOne({
-      _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId),
-    })
-
+    const repo = getOAuthAppRepository();
+    const found = await this.findManageable(orgId, userId, isAdmin, appId);
+    if (!found) {
+      throw new NotFoundError('OAuth app not found');
+    }
+    // Deleted only once its tokens are gone: a deleted app cannot be found again to retry.
+    await this.setStatusAndRevokeTokens(orgId, found, OAuthAppStatus.REVOKED);
+    const app = await repo.updateOwned(orgId, found.createdBy, appId, {
+      isDeleted: true,
+      deletedBy: userId,
+    });
     if (!app) {
-      throw new NotFoundError('OAuth app not found')
+      throw new NotFoundError('OAuth app not found');
     }
 
-    app.isDeleted = true
-    app.deletedBy = new Types.ObjectId(userId)
-    app.status = OAuthAppStatus.REVOKED
-    await app.save()
-
     this.logger.info('OAuth app deleted', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id,
       orgId,
       userId,
-    })
+    });
   }
 
   /**
@@ -698,28 +758,29 @@ export class OAuthAppService {
     orgId: string,
     userId: string,
   ): Promise<OAuthAppWithSecret> {
-    const app = await OAuthApp.findOne({
-      _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId),
-    })
+    const clientSecret = this.generateClientSecret();
+    const app = await getOAuthAppRepository().updateOwned(
+      orgId,
+      userId,
+      appId,
+      {
+        clientSecretEncrypted: this.encryptionService.encrypt(clientSecret),
+      },
+    );
 
     if (!app) {
-      throw new NotFoundError('OAuth app not found')
+      throw new NotFoundError('OAuth app not found');
     }
 
-    const clientSecret = this.generateClientSecret()
-    app.clientSecretEncrypted = this.encryptionService.encrypt(clientSecret)
-    await app.save()
-
     this.logger.info('OAuth app secret regenerated', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id,
       orgId,
-    })
+    });
 
     return {
       ...this.toAppResponse(app),
       clientSecret,
-    }
+    };
   }
 
   /**
@@ -729,29 +790,59 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
+    isAdmin = false,
   ): Promise<OAuthAppResponse> {
-    const app = await OAuthApp.findOne({
-      _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId),
-    })
+    const app = await this.findManageable(orgId, userId, isAdmin, appId);
 
     if (!app) {
-      throw new NotFoundError('OAuth app not found')
+      throw new NotFoundError('OAuth app not found');
     }
 
     if (app.status === OAuthAppStatus.SUSPENDED) {
-      throw new BadRequestError('OAuth app is already suspended')
+      throw new BadRequestError('OAuth app is already suspended');
     }
 
-    app.status = OAuthAppStatus.SUSPENDED
-    await app.save()
+    const updated = await this.setStatusAndRevokeTokens(
+      orgId,
+      app,
+      OAuthAppStatus.SUSPENDED,
+    );
 
     this.logger.info('OAuth app suspended', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: updated._id,
       orgId,
-    })
+    });
 
-    return this.toAppResponse(app)
+    return this.toAppResponse(updated);
+  }
+
+  /**
+   * Sets the status, which stops new tokens, then revokes the ones the app already issued: token
+   * checks do not read the status, so those would work until they expire. A failed revocation
+   * puts the previous status back, so the same call can be retried.
+   */
+  private async setStatusAndRevokeTokens(
+    orgId: string,
+    app: OAuthAppDto,
+    status: OAuthAppStatus,
+  ): Promise<OAuthAppDto> {
+    const repo = getOAuthAppRepository();
+    const previous = app.status;
+    const updated = await repo.updateOwned(orgId, app.createdBy, app._id, {
+      status,
+    });
+    if (!updated) {
+      throw new NotFoundError('OAuth app not found');
+    }
+    try {
+      await this.oauthTokenService.revokeAllTokensForApp(updated.clientId);
+    } catch (error) {
+      await repo.updateOwned(orgId, app.createdBy, app._id, {
+        status: previous,
+      });
+      throw error;
+    }
+    return updated;
   }
 
   /**
@@ -761,33 +852,36 @@ export class OAuthAppService {
     appId: string,
     orgId: string,
     userId: string,
+    isAdmin = false,
   ): Promise<OAuthAppResponse> {
-    const app = await OAuthApp.findOne({
-      _id: new Types.ObjectId(appId),
-      ...this.buildAppFilter(orgId, userId),
-    })
+    const repo = getOAuthAppRepository();
+    const app = await this.findManageable(orgId, userId, isAdmin, appId);
 
     if (!app) {
-      throw new NotFoundError('OAuth app not found')
+      throw new NotFoundError('OAuth app not found');
     }
 
     if (app.status === OAuthAppStatus.REVOKED) {
-      throw new BadRequestError('Cannot activate a revoked app')
+      throw new BadRequestError('Cannot activate a revoked app');
     }
 
     if (app.status === OAuthAppStatus.ACTIVE) {
-      throw new BadRequestError('OAuth app is already active')
+      throw new BadRequestError('OAuth app is already active');
     }
 
-    app.status = OAuthAppStatus.ACTIVE
-    await app.save()
+    const updated = await repo.updateOwned(orgId, app.createdBy, appId, {
+      status: OAuthAppStatus.ACTIVE,
+    });
+    if (!updated) {
+      throw new NotFoundError('OAuth app not found');
+    }
 
     this.logger.info('OAuth app activated', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: updated._id,
       orgId,
-    })
+    });
 
-    return this.toAppResponse(app)
+    return this.toAppResponse(updated);
   }
 
   /**
@@ -797,49 +891,57 @@ export class OAuthAppService {
   async verifyClientCredentials(
     clientId: string,
     clientSecret: string,
-  ): Promise<IOAuthApp> {
-    const app = await this.getAppByClientId(clientId)
+  ): Promise<OAuthAppDto> {
+    const app = await this.getAppByClientId(clientId);
 
     const storedSecret = this.encryptionService.decrypt(
       app.clientSecretEncrypted,
-    )
+    );
 
     // Use timing-safe comparison to prevent timing attacks
     // Hash both secrets with SHA-256 to get fixed-length buffers for comparison
     const hash = (secret: string) =>
-      crypto.createHash('sha256').update(secret).digest()
+      crypto.createHash('sha256').update(secret).digest();
 
-    const storedHash = hash(storedSecret)
-    const providedHash = hash(clientSecret)
+    const storedHash = hash(storedSecret);
+    const providedHash = hash(clientSecret);
 
     if (!crypto.timingSafeEqual(storedHash, providedHash)) {
-      throw new InvalidClientError('Invalid client credentials')
+      throw new InvalidClientError('Invalid client credentials');
     }
 
-    return app
+    return app;
   }
 
   /**
    * Validate redirect URI for an app
    */
-  validateRedirectUriForApp(app: IOAuthApp, redirectUri: string): void {
-    if (!app.redirectUris.includes(redirectUri)) {
+  validateRedirectUriForApp(app: OAuthAppDto, redirectUri: string): void {
+    if (
+      !app.redirectUris.includes(redirectUri) &&
+      !app.redirectUris.some((r) => loopbackMatchesAnyPort(r, redirectUri))
+    ) {
       throw new InvalidRedirectUriError(
         'redirect_uri does not match any registered URIs',
         { providedUri: redirectUri },
-      )
+      );
     }
   }
 
   /**
    * Check if grant type is allowed for app
    */
-  isGrantTypeAllowed(app: IOAuthApp, grantType: string): boolean {
-    return app.allowedGrantTypes.includes(grantType as OAuthGrantType)
+  isGrantTypeAllowed(app: OAuthAppDto, grantType: string): boolean {
+    // An instance app that holds client_credentials from before is still refused it.
+    const grant = grantType as OAuthGrantType;
+    if (grant === OAuthGrantType.CLIENT_CREDENTIALS && isInstanceApp(app)) {
+      return false;
+    }
+    return app.allowedGrantTypes.includes(grant);
   }
 
   private generateClientSecret(): string {
-    return crypto.randomBytes(CLIENT_SECRET_LENGTH).toString('hex')
+    return crypto.randomBytes(CLIENT_SECRET_LENGTH).toString('hex');
   }
 
   private validateRedirectUris(uris: string[]): void {
@@ -848,7 +950,7 @@ export class OAuthAppService {
         continue;
       }
       try {
-        const parsed = new URL(uri)
+        const parsed = new URL(uri);
         if (
           parsed.protocol !== 'https:' &&
           parsed.hostname !== 'localhost' &&
@@ -856,67 +958,118 @@ export class OAuthAppService {
         ) {
           throw new InvalidRedirectUriError(
             `Redirect URI must use HTTPS (except localhost): ${uri}`,
-          )
+          );
         }
         // Disallow fragments
         if (parsed.hash) {
           throw new InvalidRedirectUriError(
             `Redirect URI must not contain a fragment: ${uri}`,
-          )
+          );
         }
       } catch (error) {
-        if (error instanceof InvalidRedirectUriError) throw error
-        throw new InvalidRedirectUriError(`Invalid redirect URI: ${uri}`)
+        if (error instanceof InvalidRedirectUriError) throw error;
+        throw new InvalidRedirectUriError(`Invalid redirect URI: ${uri}`);
       }
     }
   }
 
   /**
-   * DCR redirect URIs: HTTPS, loopback HTTP, or private-use schemes (RFC 8252).
-   * `javascript:` / `data:` / `file:` / `vbscript:` are rejected.
+   * DCR and metadata document redirect URIs: HTTPS, loopback HTTP, or an app's own scheme
+   * (RFC 8252 §7.1). An app scheme must look like one: reverse-domain (`com.example.app:/cb`)
+   * or followed by `//` (`cursor://…`, `vscode://…`). That refuses `mailto:`, `tel:`, `sms:`
+   * and the like, where the code would be handed to something that is not the client.
    */
   validateDcrRedirectUris(uris: string[]): void {
-    const blocked = new Set(['javascript:', 'data:', 'file:', 'vbscript:'])
+    // Browser and network schemes that are never an app's callback, though they can look like one.
+    const blocked = new Set([
+      'javascript:',
+      'data:',
+      'file:',
+      'vbscript:',
+      'blob:',
+      'about:',
+      'filesystem:',
+      'ftp:',
+      'ws:',
+      'wss:',
+    ]);
     for (const uri of uris) {
-      let parsed: URL
+      let parsed: URL;
       try {
-        parsed = new URL(uri)
+        parsed = new URL(uri);
       } catch {
-        throw new InvalidRedirectUriError(`Invalid redirect URI: ${uri}`)
+        throw new InvalidRedirectUriError(`Invalid redirect URI: ${uri}`);
       }
       if (parsed.hash) {
         throw new InvalidRedirectUriError(
           `Redirect URI must not contain a fragment: ${uri}`,
-        )
+        );
       }
-      if (blocked.has(parsed.protocol)) {
+      const appScheme =
+        parsed.protocol !== 'https:' && parsed.protocol !== 'http:';
+      if (
+        blocked.has(parsed.protocol) ||
+        (appScheme &&
+          !parsed.protocol.includes('.') &&
+          !uri.startsWith(`${parsed.protocol}//`))
+      ) {
         throw new InvalidRedirectUriError(
           `Redirect URI scheme is not allowed: ${uri}`,
-        )
+        );
       }
       if (parsed.protocol === 'http:') {
-        const host = parsed.hostname.toLowerCase()
-        if (host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]' && host !== '::1') {
+        const host = parsed.hostname.toLowerCase();
+        if (
+          host !== 'localhost' &&
+          host !== '127.0.0.1' &&
+          host !== '[::1]' &&
+          host !== '::1'
+        ) {
           throw new InvalidRedirectUriError(
             `http redirect URIs are only allowed on loopback: ${uri}`,
-          )
+          );
         }
       }
     }
   }
 
-  private validateGrantTypes(grantTypes: string[]): void {
-    const validGrantTypes = Object.values(OAuthGrantType)
+  private validateGrantTypes(
+    grantTypes: string[],
+  ): asserts grantTypes is OAuthGrantType[] {
+    const validGrantTypes = Object.values(OAuthGrantType);
     for (const grantType of grantTypes) {
       if (!validGrantTypes.includes(grantType as OAuthGrantType)) {
-        throw new BadRequestError(`Invalid grant type: ${grantType}`)
+        throw new BadRequestError(`Invalid grant type: ${grantType}`);
       }
     }
   }
 
-  private toAppResponse(app: IOAuthApp): OAuthAppResponse {
+  /**
+   * The app if the caller may see and stop it: one they created, or for an
+   * administrator any app of the org. Writes after it name `app.createdBy` as
+   * the owner, so an administrator's write still targets that exact app.
+   *
+   * Only for reading, suspending, activating and deleting. Changing what an app
+   * is (redirect URIs, scopes, knowledge limit, secret, token identity) stays
+   * with its creator: an administrator who could change those on someone
+   * else's app could capture the codes of everyone consenting to it, or mint
+   * tokens that act as its creator.
+   */
+  private findManageable(
+    orgId: string,
+    userId: string,
+    isAdmin: boolean,
+    appId: string,
+  ): Promise<OAuthAppDto | null> {
+    const repo = getOAuthAppRepository();
+    return isAdmin
+      ? repo.findInOrg(orgId, appId)
+      : repo.findOwned(orgId, userId, appId);
+  }
+
+  private toAppResponse(app: OAuthAppDto): OAuthAppResponse {
     return {
-      id: (app._id as Types.ObjectId).toString(),
+      id: app._id,
       slug: app.slug,
       clientId: app.clientId,
       name: app.name,
@@ -934,8 +1087,9 @@ export class OAuthAppService {
       refreshTokenLifetime: app.refreshTokenLifetime,
       knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
       tokenIdentityUserId: app.tokenIdentityUserId?.toString(),
+      createdBy: idOf(app.createdBy),
       createdAt: app.createdAt,
       updatedAt: app.updatedAt,
-    }
+    };
   }
 }

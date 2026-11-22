@@ -13,6 +13,7 @@ built by ``_compress_record`` exercise the gate without megabytes of test data.
 import asyncio
 import base64
 import gc
+import json
 import struct
 import threading
 import time
@@ -60,7 +61,9 @@ def _msgpack_len(record: dict) -> int:
 
 
 def _envelope(record: dict) -> dict:
-    return {"isCompressed": True, "record": _bs()._compress_record(record), "virtualRecordId": "vr-1"}
+    """As a reader receives it: the envelope's JSON carries the payload as text."""
+    payload = _bs()._compress_record(record).decode("ascii")
+    return {"isCompressed": True, "record": payload, "virtualRecordId": "vr-1"}
 
 
 def _slot_taken() -> bool:
@@ -190,9 +193,9 @@ class TestInlinePath:
         records = [{"record_name": f"r{i}", "blocks": [{"data": f"text {i}"}]} for i in range(120)]
         envelopes = []
         for record in records:
-            payload, compressed = storage._maybe_compress_record(record)
+            body, compressed = storage._upload_body(record, "vr-1")
             assert compressed
-            envelopes.append({"isCompressed": True, "record": payload})
+            envelopes.append(json.loads(body))
 
         executor = MagicMock()
         executor.submit.side_effect = AssertionError("went to a thread")
@@ -481,28 +484,24 @@ class TestGate:
             await large
 
     async def test_event_loop_keeps_running_during_a_large_decode(self) -> None:
-        storage = _bs()
+        # Counted, not timed: the decode does not finish until the loop has run ten turns of its own, which it
+        # can do only while the decode is off the loop. On the loop, the decode never sees the release.
+        storage, fake = _bs(), _Blocking()
+        turns = 0
 
-        def slow(data: dict) -> bytes:
-            time.sleep(0.3)
-            return msgspec.msgpack.encode({"ok": True})
+        async def heartbeat() -> None:
+            nonlocal turns
+            assert await asyncio.to_thread(fake.entered.wait, 30)
+            while turns < 10:
+                await asyncio.sleep(0.001)
+                turns += 1
+            fake.release.set()
 
-        lags: list[float] = []
-
-        async def ticker(stop: asyncio.Event) -> None:
-            while not stop.is_set():
-                t = time.perf_counter()
-                await asyncio.sleep(0.01)
-                lags.append(time.perf_counter() - t - 0.01)
-
-        stop = asyncio.Event()
-        tick = asyncio.create_task(ticker(stop))
-        with patch.object(storage, "_decompressed_payload", side_effect=slow):
-            await storage._decode_record(_envelope(_record(5000)))
-        stop.set()
-        await tick
-        assert len(lags) > 10
-        assert max(lags) < 0.15
+        beat = asyncio.create_task(heartbeat())
+        with patch.object(storage, "_decompressed_payload", side_effect=fake):
+            assert await storage._decode_record(_envelope(_record(5000))) == {"ok": True}
+        await beat
+        assert turns == 10
 
 
 class TestPerLoopSlots:

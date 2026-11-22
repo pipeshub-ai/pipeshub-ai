@@ -341,6 +341,28 @@ describe('XSS Sanitization Middleware', () => {
       expect(next.firstCall.args).to.have.length(0)
     })
 
+    it('passes the files and manifest of a pushed repository through, but not its name or any other path under it', () => {
+      for (const [path, method, exempt] of [
+        ['/api/v1/local-repos/key12345/files', 'PUT', true],
+        ['/api/v1/local-repos/key12345/manifest', 'POST', true],
+        ['/api/v1/local-repos/key12345', 'PUT', false],
+        ['/api/v1/local-repos/key12345/commit', 'POST', false],
+        ['/api/v1/local-repos/key12345/files/', 'PUT', true],
+        ['/api/v1/Local-Repos/key12345/FILES', 'PUT', true],
+        ['/api/v1/local-repos/key12345/manifest/', 'POST', true],
+        ['/api/v1/local-repos/key12345/files/extra', 'PUT', false],
+        ['/api/v1/local-repos/key12345/files', 'GET', false],
+      ] as const) {
+        const req = createMockRequest({ path, method, body: { name: '<img src=x onerror=alert(1)>' } })
+        const next = createMockNext()
+
+        xssSanitizationMiddleware(req, createMockResponse(), next)
+
+        const passed = next.calledOnce && next.firstCall.args.length === 0
+        expect(passed, `${method} ${path}`).to.equal(exempt)
+      }
+    })
+
     it('should skip validation for POST to /api/v1/conversations/ paths', () => {
       const req = createMockRequest({
         path: '/api/v1/conversations/new',
@@ -370,6 +392,29 @@ describe('XSS Sanitization Middleware', () => {
         xssSanitizationMiddleware(req, res, next)
         expect(next.firstCall.args, `${method} ${path}`).to.have.length(0)
         expect(req.body, `${method} ${path}`).to.deep.equal(body)
+      }
+    })
+
+    it('passes an MCP server logo through and checks the same string anywhere else', () => {
+      // Base64 whose last segment reads like an event handler (`/onAb=`).
+      const logo = `data:image/png;base64,iVBORw0KGgo${'A'.repeat(120_000)}/onAb=`
+      const res = createMockResponse()
+
+      const req = createMockRequest({ path: '/api/v1/mcp-servers/instances/abc/logo', method: 'PUT', body: { logo } })
+      const next = createMockNext()
+      xssSanitizationMiddleware(req, res, next)
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.body.logo).to.equal(logo)
+
+      for (const [method, path] of [
+        ['PUT', '/api/v1/mcp-servers/instances/abc'],
+        ['POST', '/api/v1/mcp-servers/instances/abc/logo'],
+        ['PUT', '/api/v1/mcp-servers/instances/abc/logo/extra'],
+      ] as const) {
+        const other = createMockRequest({ path, method, body: { logo } })
+        const otherNext = createMockNext()
+        xssSanitizationMiddleware(other, res, otherNext)
+        expect(otherNext.firstCall.args[0], `${method} ${path}`).to.be.instanceOf(BadRequestError)
       }
     })
 
@@ -1005,6 +1050,69 @@ describe('XSS Sanitization Middleware', () => {
 
       expect(status).to.equal(200)
       expect(body.received.query).to.equal(question)
+    })
+
+    it('accepts <id> in the pattern of an MCP pipeshub_grep call and the query of pipeshub_search_entities, unchanged', async () => {
+      const grep = await post('/mcp', toolCall('pipeshub_grep', { pattern: 'List<String>', regex: false }))
+      expect(grep.status).to.equal(200)
+      expect(grep.body.received.params.arguments.pattern).to.equal('List<String>')
+
+      const entities = await post('/mcp', toolCall('pipeshub_search_entities', { query: question }))
+      expect(entities.status).to.equal(200)
+      expect(entities.body.received.params.arguments.query).to.equal(question)
+    })
+
+    it('accepts markup in the pattern of POST /api/v1/search/grep, unchanged, but not in its other fields', async () => {
+      const ok = await post('/api/v1/search/grep', { pattern: '<div class="x">' })
+      expect(ok.status).to.equal(200)
+      expect(ok.body.received.pattern).to.equal('<div class="x">')
+
+      const bad = await post('/api/v1/search/grep', { pattern: 'x', paths: ['<script>alert(1)</script>'] })
+      expect(bad.status).to.equal(400)
+    })
+
+    it('accepts source text in the code search, read and resolve fields, unchanged, but not in their other fields', async () => {
+      const cases: Array<[string, Record<string, string>]> = [
+        ['/api/v1/code-graph/search', { pattern: 'vector<int>::push_back', path: 'src/a<b>.cpp' }],
+        ['/api/v1/code-graph/semantic-search', { query: 'where is List<String> built' }],
+        ['/api/v1/code-graph/read', { qualified_name: 'operator<<', file_path: 'src/x.cpp' }],
+        ['/api/v1/code-graph/outline', { file_path: 'src/a<b>.cpp' }],
+        ['/api/v1/graph/resolve', { qualifiedName: 'Map<K, V>::get', filePath: 'src/a<b>.java' }],
+      ]
+      for (const [route, fields] of cases) {
+        const ok = await post(route, fields)
+        expect(ok.status, route).to.equal(200)
+        for (const [key, value] of Object.entries(fields)) {
+          expect(ok.body.received[key], `${route} ${key}`).to.equal(value)
+        }
+        const bad = await post(route, { ...fields, repo: '<script>alert(1)</script>' })
+        expect(bad.status, `${route} other field`).to.equal(400)
+      }
+    })
+
+    it('accepts <id> in the query of POST /api/v1/search/entities, unchanged, but not in its other fields', async () => {
+      const ok = await post('/api/v1/search/entities', { query: question })
+      expect(ok.status).to.equal(200)
+      expect(ok.body.received.query).to.equal(question)
+
+      const bad = await post('/api/v1/search/entities', { query: 'x', namedEntityKinds: ['<script>alert(1)</script>'] })
+      expect(bad.status).to.equal(400)
+    })
+
+    it('accepts <id> in the query of POST /api/v1/retrieve, unchanged', async () => {
+      const { status, body } = await post('/api/v1/retrieve', { query: question, limit: 5 })
+
+      expect(status).to.equal(200)
+      expect(body.received.query).to.equal(question)
+    })
+
+    it('still refuses a script tag in the filters of POST /api/v1/retrieve', async () => {
+      const { status } = await post('/api/v1/retrieve', {
+        query: question,
+        filters: { apps: ['<script>alert(1)</script>'] },
+      })
+
+      expect(status).to.equal(400)
     })
 
     it('still refuses a script tag in another argument of an MCP chat call', async () => {

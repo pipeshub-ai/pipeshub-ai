@@ -360,12 +360,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return success is not None
 
         except Exception as e:
-            logger.error("❌ Failed to create key %s: %s", key, str(e))
-            logger.error("📋 Error details:")
-            logger.error("   - Type: %s", type(e).__name__)
-            logger.error("   - Message: %s", str(e))
-            logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to create key: {str(e)}")
+            raise ConnectionError(f"Failed to create key: {e}") from e
 
     async def update_value(self, key: str, value: T, ttl: Optional[int] = None) -> None:
         # Check if key exists
@@ -417,29 +412,23 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     raise ValueError("Stored value could not be decoded")
                 return deserialized
             except json.JSONDecodeError as e:
-                logger.error("❌ Failed to deserialize value: %s", str(e))
-                logger.error("📋 Value that failed: %d bytes", len(value_bytes))
                 # A stored value that cannot be read is not an absent one.
                 # Surfaces as ConnectionError via the handler below, as every
                 # failed read from this store does.
                 if raise_on_error:
                     raise
+                logger.error("Failed to deserialize value (%d bytes): %s", len(value_bytes), e)
                 return None
 
         except Exception as e:
-            logger.error("❌ Failed to get key %s: %s", key, str(e))
-            logger.error("📋 Error details:")
-            logger.error("   - Type: %s", type(e).__name__)
-            logger.error("   - Message: %s", str(e))
-            logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to get key: {str(e)}")
+            raise ConnectionError(f"Failed to get key: {e}") from e
 
     async def delete_key(self, key: str) -> bool:
         try:
-            result = await self._run(lambda c: c.delete(key))
-            return result is not None
+            # The client answers deleted >= 1: False for a key that was not there.
+            return bool(await self._run(lambda c: c.delete(key)))
         except Exception as e:
-            raise ConnectionError(f"Failed to delete key: {str(e)}")
+            raise ConnectionError(f"Failed to delete key: {e}") from e
 
     async def get_all_keys(self) -> List[str]:
         """Get all keys from etcd."""
@@ -450,12 +439,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             decoded_keys = [key[1].key.decode("utf-8") for key in keys]
             return decoded_keys
         except Exception as e:
-            logger.error("❌ Failed to get all keys: %s", str(e))
-            logger.error("📋 Error details:")
-            logger.error("   - Type: %s", type(e).__name__)
-            logger.error("   - Message: %s", str(e))
-            logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to get all keys: {str(e)}")
+            raise ConnectionError(f"Failed to get all keys: {e}") from e
 
     async def watch_key(
         self,
@@ -500,9 +484,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.debug("✅ Watch setup complete. ID: %s", watch_id)
             return watch_id
         except Exception as e:
-            logger.error("❌ Failed to setup watch: %s", str(e))
-            logger.exception("Detailed error stack:")
-            raise ConnectionError(f"Failed to watch key: {str(e)}")
+            raise ConnectionError(f"Failed to watch key: {e}") from e
 
     async def list_keys_in_directory(self, directory: str) -> List[str]:
         try:
@@ -512,7 +494,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             results = await self._run(lambda c: list(c.get_prefix(prefix, keys_only=True)))
             return [metadata.key.decode("utf-8") for _, metadata in results]
         except Exception as e:
-            raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
+            raise ConnectionError(f"Failed to list keys in directory: {e}") from e
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         await self._cancel(watch_id)

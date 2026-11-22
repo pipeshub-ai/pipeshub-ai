@@ -29,6 +29,7 @@ def _make_mock_processor_cls():
     """Return a mock processor class and the mock instance it produces."""
     mock_processor = MagicMock()
     mock_processor.initialize = AsyncMock()
+    mock_processor.cleanup = AsyncMock()
     mock_processor.org_id = None
     mock_processor_cls = MagicMock(return_value=mock_processor)
     return mock_processor_cls, mock_processor
@@ -208,12 +209,12 @@ class TestCreateConnectorInnerNone:
 
     @pytest.mark.asyncio
     async def test_inner_returns_none(self):
-        """Factory returns None without raising when inner returns None."""
+        """Factory returns None without raising, and closes the processor it built."""
         mock_cls = MagicMock()
         mock_cls.create_connector = AsyncMock(return_value=None)
         ConnectorFactory.register_connector("test_inner_none", mock_cls)
 
-        mock_processor_cls, _ = _make_mock_processor_cls()
+        mock_processor_cls, mock_processor = _make_mock_processor_cls()
         logger = MagicMock()
 
         result = await ConnectorFactory.create_connector(
@@ -228,4 +229,4 @@ class TestCreateConnectorInnerNone:
         )
 
         assert result is None
-        logger.info.assert_called()
+        mock_processor.cleanup.assert_awaited_once()

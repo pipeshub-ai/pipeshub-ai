@@ -4,6 +4,7 @@ import React, { useState, useRef, useContext, useMemo, useEffect, useId } from '
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { NO_CREDENTIAL_AUTOFILL_PROPS, secretInputProps } from '@/app/components/ui/secret-text-field';
 import { FormField, labelEndsWithOptional, useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
 import {
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
@@ -478,6 +479,7 @@ function TextInput({
       <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
           {...control}
+          {...NO_CREDENTIAL_AUTOFILL_PROPS}
           type={htmlType}
           value={String(value ?? '')}
           placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
@@ -674,7 +676,7 @@ function PasswordInput({
       <StartAdornmentOverlay startAdornment={startAdornment}>
         <input
           {...control}
-          type={showPassword ? 'text' : 'password'}
+          {...secretInputProps(!showPassword)}
           value={String(value ?? '')}
           placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
           disabled={disabled}
@@ -737,6 +739,8 @@ function TextareaInput({
   hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
+  // A secret (a private key) is masked except while it is being edited.
+  const isSecret = 'isSecret' in field && Boolean(field.isSecret);
   const control = useFormFieldControl();
 
   return (
@@ -744,6 +748,8 @@ function TextareaInput({
       <textarea
         {...control}
         value={String(value ?? '')}
+        {...(isSecret ? NO_CREDENTIAL_AUTOFILL_PROPS : {})}
+        spellCheck={isSecret ? false : undefined}
         placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
         disabled={disabled}
         onChange={(e) => onChange(field.name, e.target.value)}
@@ -759,6 +765,7 @@ function TextareaInput({
                 : { ...focusStyle })
             : {}),
           opacity: disabled ? 0.6 : 1,
+          ...(isSecret && !isFocused ? ({ WebkitTextSecurity: 'disc' } as React.CSSProperties) : {}),
         }}
       />
     </>

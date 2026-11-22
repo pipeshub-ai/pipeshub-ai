@@ -1,7 +1,6 @@
 'use client'
 
 import React, { Suspense, useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
 import { Flex, Box, Text } from "@radix-ui/themes"
 import { MaterialIcon } from "../components/ui/MaterialIcon"
 import { ThemeProvider, ThemeScript } from "../components/theme-provider"
@@ -18,9 +17,7 @@ import { OrgProfileInitializer } from './components/org-profile-initializer'
 import { ElectronLocalSyncBootstrap } from './components/electron-local-sync-bootstrap'
 import { UserBackgroundSurvey } from "./components/surveys/user-background"
 import { OnboardingTour } from "./components/tours/onboarding"
-import { useOnboardingStore } from "./onboarding/store"
-import { getOnboardingStatus } from "./onboarding/api"
-import { useAuthStore } from "@/config"
+import { useOnboardingRedirect } from "./onboarding/use-onboarding-redirect"
 import { useAppliedSidebarWidth } from "@/lib/store/sidebar-width-store"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
@@ -132,10 +129,6 @@ function AppLayout({
   children: React.ReactNode
   sidebar: React.ReactNode
 }) {
-  const router = useRouter()
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
-  const isHydrated = useAuthStore((s) => s.isHydrated)
-  const setOnboardingActive = useOnboardingStore((s) => s.setOnboardingActive)
   const sidebarWidth = useAppliedSidebarWidth()
   const navHidden = useNavHidden()
 
@@ -152,31 +145,7 @@ function AppLayout({
   }
   // ──────────────────────────────────────────────────────────────────────────
 
-  // ── Onboarding gate ────────────────────────────────────────────────────────
-  useEffect(() => {
-    // 0. Already on the onboarding page — bail out to prevent an infinite redirect loop
-    if (window.location.pathname.startsWith('/onboarding')) {
-      return
-    }
-
-    // 1. Not yet hydrated or not authenticated — too early to check
-    if (!isHydrated || !isAuthenticated) {
-      return
-    }
-
-    // 2. Call the API and decide
-    getOnboardingStatus()
-      .then(({ status }) => {
-        if (status === 'notConfigured') {
-          setOnboardingActive(true)
-          router.replace('/onboarding')
-        }
-      })
-      .catch(() => {
-        // If the check fails (network, permissions) proceed normally — don't block the app
-      })
-  }, [isHydrated, isAuthenticated])
-  // ──────────────────────────────────────────────────────────────────────────
+  useOnboardingRedirect()
 
   return (
     <SWRConfig

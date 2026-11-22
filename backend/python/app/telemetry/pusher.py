@@ -10,6 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
+from app.core.org_context import spawn_detached
 from app.telemetry.backend import METRICS_BACKEND
 from app.telemetry.event_buffer import event_buffer
 from app.telemetry.flag import TELEMETRY_COLLECTION_FLAG, telemetry_enabled
@@ -96,7 +97,7 @@ class MetricsPusher:
             )
             return
         if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self._run())
+            self._task = spawn_detached(self._run())
             self._log_with_context(
                 f"📈 Telemetry pusher started for '{self._service_name}'"
             )

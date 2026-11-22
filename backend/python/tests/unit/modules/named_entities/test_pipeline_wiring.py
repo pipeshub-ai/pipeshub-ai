@@ -11,7 +11,7 @@ import pytest
 
 from app.models.blocks import BlocksContainer
 from app.models.entities import EntityType
-from app.modules.named_entities import stage
+from app.modules.named_entities import extractor, stage
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.domain.models import (
     Mention,
@@ -19,6 +19,8 @@ from app.modules.named_entities.domain.models import (
     NamedEntityExtraction,
 )
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.services.base_client import ServiceUnavailableError
+from app.utils.llm import LLMUnavailableError
 
 _SECRET_NAME = "Zebulon Quartermaine"
 
@@ -199,6 +201,46 @@ async def test_extraction_failure_returns_failed_and_does_not_raise(caplog):
     assert _SECRET_NAME not in caplog.text
 
 
+async def test_a_provider_outage_behind_the_extraction_service_is_reported_as_unavailable() -> None:
+    """The service's 424 reaches the stage as every window unavailable, so the stage pauses on it (and counts the sends
+    the service made) instead of retrying the document as a model failure."""
+    from app.modules.pipeline.stages.entities import _provider_down
+    from app.utils.llm import LLMUnavailableError
+
+    sink = _sink()
+    with patch(
+        "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+        AsyncMock(return_value=True),
+    ), patch.object(stage, "extract_named_entities", AsyncMock(side_effect=LLMUnavailableError("provider down"))):
+        result = await sink.extract_named_entities(SimpleNamespace(record=_record()))
+    assert result.status == "FAILED"
+    assert _provider_down(result)
+
+
+@pytest.mark.parametrize(
+    ("raised", "sent", "retry_after"),
+    [
+        (LLMUnavailableError("down", retry_after=120.0), True, 120.0),
+        (ServiceUnavailableError("circuit open", delivered=False), False, None),
+        (ServiceUnavailableError("503", delivered=True), True, None),
+    ],
+    ids=["provider-down", "service-unreachable", "service-5xx"],
+)
+async def test_the_extraction_carries_what_the_stage_needs_to_pause(raised, sent, retry_after) -> None:
+    """A service that was never reached has sent nothing (the pause is not a send against the budget); the provider's
+    retry-after survives to the stage's pause."""
+    from app.modules.pipeline.models import StageResult
+
+    sink = _sink()
+    with patch(
+        "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+        AsyncMock(return_value=True),
+    ), patch.object(stage, "extract_named_entities", AsyncMock(side_effect=raised)):
+        result = await sink.extract_named_entities(SimpleNamespace(record=_record()))
+    paused = StageResult.paused_for(result.pause_cause, "down")
+    assert (paused.sent, paused.retry_after_s) == (sent, retry_after)
+
+
 @pytest.mark.parametrize("config", [{"budgets": {"max_turns": "lots"}}, {"tz": 7}])
 async def test_a_malformed_config_blob_runs_with_the_defaults(config):
     sink = _sink()
@@ -212,7 +254,7 @@ async def test_a_malformed_config_blob_runs_with_the_defaults(config):
     with patch(
         "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
         AsyncMock(return_value=True),
-    ), patch.object(stage, "indexing_llm", AsyncMock(side_effect=RuntimeError("no model"))):
+    ), patch.object(extractor, "indexing_llm", AsyncMock(side_effect=RuntimeError("no model"))):
         result = await sink.extract_named_entities(SimpleNamespace(record=record))
     assert (result.status, result.termination_reason) == ("SKIPPED", "empty")
 
@@ -575,3 +617,95 @@ async def test_a_retry_that_fails_again_keeps_its_count() -> None:
         await sink.persist_named_entities(SimpleNamespace(record=_record()), _extraction(), retry_due=100, retry_attempts=3)
     graph.schedule_named_entity_persist_retry.assert_awaited_once_with("org-1", "rec-1", "persist_failed", 3)
 
+
+
+async def test_writing_a_kept_extraction_again_folds_its_short_forms_and_learns_them() -> None:
+    # Stored before "Hospitality" was a designator: the short form is its own entity.
+    def org(name: str, block: int) -> NamedEntity:
+        return NamedEntity(
+            kind=EntityKind.ORGANIZATION, display_name=name, norm_key=f"name:organization:{name.casefold()}",
+            mentions=[Mention(block_index=block, char_start=0, char_end=len(name), surface=name, extractor="agent")],
+        )
+
+    kept = NamedEntityExtraction(
+        strategy="agent", termination_reason="finish_ok", status="COMPLETED",
+        entities=[org("Pinecrest Hospitality", 0), org("Pinecrest", 1)],
+    )
+    graph = MagicMock(
+        get_named_entities_for_record=AsyncMock(return_value=[]),
+        find_named_entities=AsyncMock(return_value=[]),
+        create_named_entities_if_absent=AsyncMock(),
+        add_named_entity_aliases=AsyncMock(),
+        replace_named_entity_values=AsyncMock(),
+        clear_named_entity_persist_retry=AsyncMock(return_value=True),
+    )
+    with patch("app.modules.named_entities.graph_writer.EdgeReconciler") as reconciler:
+        reconciler.return_value.reconcile = AsyncMock()
+        assert await stage.persist_named_entities(
+            SimpleNamespace(record=_record()), kept, graph_provider=graph, graph_data_store=_store(), enabled=True,
+        ) == "written"
+
+    (docs,) = graph.create_named_entities_if_absent.await_args.args
+    assert [doc["name"] for doc in docs] == ["Pinecrest Hospitality"]
+    _org, kind, _key, displays, keys = graph.add_named_entity_aliases.await_args.args
+    assert (kind, displays, keys) == ("organization", ["Pinecrest"], ["name:organization:pinecrest"])
+    # The stored extraction itself is left as it was.
+    assert [e.display_name for e in kept.entities] == ["Pinecrest Hospitality", "Pinecrest"]
+
+
+async def test_a_year_less_date_is_written_in_the_year_nearest_the_records_creation() -> None:
+    from app.modules.named_entities.merge import entity_identity
+    from app.modules.named_entities.normalizers.dates import NormalizationContext
+
+    display, key, value = entity_identity(EntityKind.DATE, "Sep 10", NormalizationContext())
+    year_less = NamedEntity(
+        kind=EntityKind.DATE, display_name=display, norm_key=key, value=value,
+        mentions=[Mention(block_index=0, char_start=0, char_end=6, surface="Sep 10", extractor="value")],
+    )
+    kept = NamedEntityExtraction(strategy="agent", termination_reason="finish_ok", status="COMPLETED", entities=[year_less])
+    record = SimpleNamespace(**vars(_record()), source_created_at=1_759_320_000_000, connector_name="CONFLUENCE", origin="CONNECTOR")
+    graph = MagicMock(
+        get_named_entities_for_record=AsyncMock(return_value=[]),
+        find_named_entities=AsyncMock(return_value=[]),
+        create_named_entities_if_absent=AsyncMock(),
+        replace_named_entity_values=AsyncMock(),
+        clear_named_entity_persist_retry=AsyncMock(return_value=True),
+    )
+    with patch("app.modules.named_entities.graph_writer.EdgeReconciler") as reconciler:
+        reconciler.return_value.reconcile = AsyncMock()
+        await stage.persist_named_entities(
+            SimpleNamespace(record=record), kept, graph_provider=graph, graph_data_store=_store(), enabled=True,
+        )
+
+    _record_id, values, _ = graph.replace_named_entity_values.await_args.args
+    # Created 2025-10-01: September 10 is 2025, and now has a start a date query can match.
+    assert [(v["timex"], v["startMs"] is not None) for v in values] == [("2025-09-10", True)]
+    assert kept.entities[0].value.ambiguous
+
+
+async def _persist_with_vector_store(upsert, monkeypatch) -> str:
+    monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)
+    graph = MagicMock(
+        find_named_entities=AsyncMock(return_value=[]),
+        resolve_named_entity_redirects=AsyncMock(return_value={}),
+        schedule_named_entity_persist_retry=AsyncMock(return_value=1),
+    )
+    with patch.object(stage.NamedEntityGraphWriter, "write", AsyncMock(return_value=[object()])):
+        return await stage.persist_named_entities(
+            SimpleNamespace(record=_record()), _extraction(), graph_provider=graph, graph_data_store=_store(), enabled=True,
+            entity_vector_store=SimpleNamespace(upsert_entities_batch=upsert),
+        )
+
+
+async def test_entity_points_that_were_not_written_make_the_persist_a_failure_for_the_caller_to_retry(monkeypatch) -> None:
+    from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
+
+    assert await _persist_with_vector_store(AsyncMock(return_value=EntityWriteOutcome(failed=1)), monkeypatch) == "failed"
+    assert await _persist_with_vector_store(AsyncMock(return_value=EntityWriteOutcome(written=1)), monkeypatch) == "written"
+
+
+async def test_an_entity_write_that_could_not_be_confirmed_is_a_failure_for_the_caller_to_retry(monkeypatch) -> None:
+    from app.services.vector_db.precision_guard import PrecisionUnreadable
+
+    upsert = AsyncMock(side_effect=PrecisionUnreadable("pin unreadable"))
+    assert await _persist_with_vector_store(upsert, monkeypatch) == "failed"

@@ -1,43 +1,41 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef, useMemo } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
 import { HEADER_ELEMENT_SIZE, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { WorkspaceMenu } from '@/config';
 import type { OrgInfo } from '@/app/components/workspace-menu';
-import { fetchOrgWithLogo } from '@/chat/api';
+import { useOrg, useOrgLogo } from '@/app/(main)/workspace/general/use-org';
 
 /**
  * Sidebar footer — organisation selector button + popup menu.
  *
- * Fetches organisation details on mount (not on popup open) and
- * caches the result for the session.
+ * Reads the org and its logo from the session cache (fetched once, refreshed
+ * by the General settings writes).
  */
 export function ChatSidebarFooter() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [org, setOrg] = useState<OrgInfo | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
+  const { data: orgData } = useOrg();
+  const { data: logoData } = useOrgLogo();
+  const orgLogoUrl = logoData ?? null;
 
-  // Fetch org + logo on mount — uses a module-level singleton so the
-  // network request fires exactly once regardless of StrictMode double-mount
-  // or component remounts across navigation.
-  useEffect(() => {
-    fetchOrgWithLogo().then(({ org: data, logoUrl }) => {
-      if (!data) return;
-      setOrg({
-        _id: data._id,
-        registeredName: data.registeredName,
-        shortName: data.shortName,
-        domain: data.domain,
-        accountType: data.accountType,
-        logoUrl,
-      });
-    });
-  }, []);
-
-  const orgLogoUrl = org?.logoUrl ?? null;
+  const org = useMemo<OrgInfo | null>(
+    () =>
+      orgData
+        ? {
+            _id: orgData._id,
+            registeredName: orgData.registeredName,
+            shortName: orgData.shortName,
+            domain: orgData.domain,
+            accountType: orgData.accountType,
+            logoUrl: orgLogoUrl,
+          }
+        : null,
+    [orgData, orgLogoUrl],
+  );
 
   return (
     <Box style={{ padding: 'var(--space-2)', position: 'relative' }}>
@@ -55,8 +53,8 @@ export function ChatSidebarFooter() {
         onClick={() => setIsMenuOpen((prev) => !prev)}
         style={{
           width: '100%',
-          height: 40,
-          padding: 'var(--space-2)',
+          // Avatar gets the same inset on every side; the chevron keeps the wider right edge
+          padding: 'var(--space-1) var(--space-2) var(--space-1) var(--space-1)',
           background: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-1)',

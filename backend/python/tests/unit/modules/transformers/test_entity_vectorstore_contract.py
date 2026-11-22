@@ -14,6 +14,8 @@ import uuid
 from typing import TYPE_CHECKING
 import pytest
 
+from app.services.vector_db.models import VectorPoint
+
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
@@ -78,6 +80,15 @@ class TestFakeKeepsTheProviderGuards:
         flt = await service.filter_collection(max_values={"connectorIds": 1})
         with pytest.raises(ValueError):
             await service.delete_points("c", flt)
+
+    async def test_a_delete_scoped_by_org_and_a_length_bound_removes_nothing(self) -> None:
+        service = InMemoryVectorDBService()
+        await service.create_collection("c")
+        await service.upsert_points("c", [VectorPoint(id="p", payload={"metadata": {"orgId": "a"}})])
+        flt = await service.filter_collection(must={"orgId": "a"}, max_values={"connectorIds": 1})
+        with pytest.raises(ValueError):
+            await service.delete_points("c", flt)
+        assert [p.id for p in (await service.scroll("c", await service.filter_collection(), limit=10)).points] == ["p"]
 
     async def test_an_overwrite_with_no_filter_is_refused(self) -> None:
         from app.services.vector_db.models import FilterExpression

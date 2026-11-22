@@ -3,6 +3,7 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
 import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 import axios from 'axios';
+import { installUpstreamLogging } from '../../../libs/http/upstream-call';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../storage/constants/constants';
 import { storedServiceEndpoint } from '../../storage/utils/service-endpoint';
@@ -40,6 +41,8 @@ const INDEX_OPERATION = 'add this file to the knowledge base';
 const axiosInstance = axios.create({
   maxRedirects: 0,
 });
+// Created at import, possibly before index.ts instruments the default instance; a no-op if it inherited that.
+installUpstreamLogging(axiosInstance);
 
 export interface StorageResponseMetadata {
   documentId: string;
@@ -86,6 +89,18 @@ export interface ProcessedFile {
   filePath: string;
   lastModified: number;
 }
+
+/**
+ * The name the user picked, extension included. recordName has the extension
+ * stripped, and names that differ only by extension may live side by side, so a
+ * message naming recordName alone is ambiguous.
+ */
+export const displayFileName = (pf: ProcessedFile): string => {
+  const base = pf.filePath.split(/[\\/]/).pop();
+  if (base) return base;
+  const ext = pf.fileRecord.extension;
+  return ext ? `${pf.record.recordName}.${ext}` : pf.record.recordName;
+};
 
 /**
  * Creates a placeholder document and returns metadata.
@@ -607,7 +622,7 @@ export const processUploadsInBackground = async (
             fileName: pf.record.recordName,
             filePath: pf.filePath,
           },
-          `A file named "${pf.record.recordName}" already exists in this location; it was skipped.`,
+          `A file named "${displayFileName(pf)}" already exists in this location; it was skipped.`,
           'index',
           'DUPLICATE_NAME',
         );

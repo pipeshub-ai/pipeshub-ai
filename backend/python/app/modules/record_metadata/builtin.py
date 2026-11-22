@@ -26,6 +26,7 @@ from app.models.record_metadata import (
     PropertyType,
     RecordMetadata,
     coerce_value,
+    string_fits,
 )
 
 TICKET_SCHEMA_ID = "builtin:ticket:1"
@@ -101,34 +102,48 @@ def connector_source(connector: Connectors | str) -> str:
     return "connector:" + name.lower().replace(" ", "_")
 
 
-def _plain(value: object) -> object:
-    return value.value if isinstance(value, Enum) else value
+def _member(value: object, enum: type[Enum]) -> object:
+    """``value`` as its member's value, matched without case as
+    ``TicketRecord._safe_enum_parse`` does; anything else unchanged.
+
+    Some connectors pass the source's own spelling through (a Salesforce
+    picklist's "High"), and the same ticket re-read from the graph comes back
+    upper-cased; both must provide the same value.
+    """
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, str):
+        wanted = value.upper()
+        for member in enum:
+            if member.value.upper() == wanted:
+                return member.value
+    return value
 
 
 def ticket_metadata(record: Record) -> RecordMetadata | None:
     """The values a ticket provides under ``TICKET_SCHEMA``; None for any other record or none set.
 
     A value that does not fit its property (a status the connector did not map,
-    an over-long name) is left out rather than failing the record; labels past
-    ``MAX_LIST_ITEMS`` are cut.
+    an over-long name) is left out rather than failing the record, and so is a
+    label that does not fit; labels past ``MAX_LIST_ITEMS`` are cut.
     """
     if not isinstance(record, TicketRecord):
         return None
     # With emails hidden, the email fields hold the source's own user ids.
     emails = not record.is_email_hidden
     raw: dict[str, object] = {
-        "status": _plain(record.status),
+        "status": _member(record.status, Status),
         "sourceStatus": record.source_status,
-        "priority": _plain(record.priority),
-        "issueType": _plain(record.type),
-        "deliveryStatus": _plain(record.delivery_status),
+        "priority": _member(record.priority, Priority),
+        "issueType": _member(record.type, ItemType),
+        "deliveryStatus": _member(record.delivery_status, DeliveryStatus),
         "assignee": record.assignee,
         "assigneeEmail": record.assignee_email if emails else None,
         "reporterName": record.reporter_name,
         "reporterEmail": record.reporter_email if emails else None,
         "creatorName": record.creator_name,
         "creatorEmail": record.creator_email if emails else None,
-        "labels": list(record.labels or [])[:MAX_LIST_ITEMS] or None,
+        "labels": [label for label in record.labels or () if string_fits(label)][:MAX_LIST_ITEMS] or None,
         "resolvedAt": record.resolved_at,
         "dueDate": record.due_date,
     }

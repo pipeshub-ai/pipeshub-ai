@@ -59,6 +59,11 @@ export interface PlusMenuCapabilities {
    */
   agentHasInternalSearch?: boolean;
   agentHasWebSearch?: boolean;
+  /**
+   * Web search is shown off only because no admin has set it up yet. That is not a filter the
+   * person chose, so it does not mark the + button as filtered.
+   */
+  webSearchNotSetUp?: boolean;
 }
 
 interface PlusMenuContentProps extends PlusMenuCapabilities {
@@ -215,7 +220,7 @@ export function PlusMenuButton({
   const { t } = useTranslation();
   const showFilterBadge = hasNonDefaultSearchCapabilities(
     capabilities.internalSearch,
-    capabilities.webSearch,
+    capabilities.webSearch || Boolean(capabilities.webSearchNotSetUp),
   );
   return (
     <Popover.Root open={open} onOpenChange={onOpenChange}>
@@ -224,6 +229,7 @@ export function PlusMenuButton({
           variant="ghost"
           color="gray"
           size="2"
+          className="touch-size"
           disabled={disabled}
           aria-label={
             showFilterBadge
@@ -259,9 +265,13 @@ export function PlusMenuButton({
         style={{
           width: 216,
           padding: 6,
-          backgroundColor: 'var(--color-panel-solid)',
-          borderRadius: 'var(--radius-3)',
-          boxShadow: 'var(--shadow-4)',
+          // Same surface as the settings row menus: frosted, one olive-3 border, no ring shadow
+          backgroundColor: 'var(--frost-bg-strong)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
+          border: '1px solid var(--olive-3)',
+          borderRadius: 'var(--radius-1)',
+          boxShadow: 'none',
         }}
       >
         <PlusMenuContent

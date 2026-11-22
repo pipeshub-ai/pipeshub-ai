@@ -1,3 +1,4 @@
+import secrets
 from typing import Optional
 
 import httpx  # type: ignore
@@ -80,7 +81,19 @@ class HTTPClient(IClient):
             **kwargs
         }
 
-        if isinstance(request.body, dict):
+        if request.files:
+            # httpx only writes its multipart Content-Type when none is set, and a default
+            # the client was built with (often "application/json") counts as set. Naming the
+            # boundary here wins over both that default and a caller's bare "multipart/form-data";
+            # httpx encodes the body with the boundary it finds in this header.
+            request_kwargs["headers"] = {
+                **{k: v for k, v in merged_headers.items() if k.lower() != "content-type"},
+                "Content-Type": f"multipart/form-data; boundary={secrets.token_hex(16)}",
+            }
+            request_kwargs["files"] = request.files
+            if isinstance(request.body, dict):
+                request_kwargs["data"] = request.body
+        elif isinstance(request.body, dict):
             # Check if Content-Type indicates form data
             content_type = request.headers.get("Content-Type", "").lower()
             if "application/x-www-form-urlencoded" in content_type:

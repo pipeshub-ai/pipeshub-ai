@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 
+import httpx
 import pytest
 
+from app.services.docling.client import DoclingClient, DoclingUnavailableError
 from app.services.resource_governor.controller import ResourceGovernor
 from app.services.resource_governor.feedback import (
     DownstreamFeedback,
@@ -281,8 +284,9 @@ class TestResourceGovernorController:
             "cpu_throttled_ratio", "mem_pressure", "mem_limit_bytes",
             "mem_usable_bytes", "mem_working_set_raw_bytes", "mem_baseline_bytes",
             "worker_count", "ceilings", "fleet_ceilings", "limits", "in_use", "demand",
-            "downstream_feedback",
+            "downstream_feedback", "lanes",
             "mem_pressure_raw",
+            "record_memory", "download_ahead", "admission",
         }
         assert set(stats["limits"].keys()) == {pool.value for pool in Pool}
         assert set(stats["ceilings"].keys()) == {
@@ -350,6 +354,40 @@ class TestDownstreamFeedbackWiring:
             "throttles": {}, "timeouts": {}, "pool_exhaustions": {}, "unavailable": {},
         }
 
+    @pytest.mark.asyncio
+    async def test_a_docling_outage_shrinks_only_the_heavy_index_pool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The real client's exhausted retries reach the governor; only the pool whose records call Docling is braked."""
+        monkeypatch.delenv("PARSE_ADMISSION", raising=False)  # classes mode would build the shared Docling engine
+
+        class RefusingDocling(DoclingClient):
+            def _make_client(self) -> httpx.AsyncClient:
+                def refuse(request: httpx.Request) -> httpx.Response:
+                    raise httpx.ConnectError("connection refused", request=request)
+
+                return httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+
+        feedback = DownstreamFeedback()
+        set_default_downstream_feedback(feedback)  # where BaseServiceClient reports
+        try:
+            governor = ResourceGovernor(
+                logger=logging.getLogger("test.downstream"),
+                probe=ScriptedProbe([_snap(8.0, mem_limit_gb=64.0, cpu_quota=16.0)]),
+                feedback=feedback,
+                clock=ManualClock(),
+            )
+            heavy, light = governor.limit(Pool.INDEX_HEAVY), governor.limit(Pool.INDEX_LIGHT)
+            docling = RefusingDocling(service_url="http://docling.invalid:8081", retry_delay=0.0)
+            with pytest.raises(DoclingUnavailableError):
+                await docling.parse_pdf("report.pdf", b"%PDF-1.7")
+            await governor._sample_once()
+        finally:
+            set_default_downstream_feedback(None)
+
+        assert governor.stats()["downstream_feedback"]["unavailable"] == {"DoclingService": 1}
+        assert governor.limit(Pool.INDEX_HEAVY) == max(pressure_floor(Pool.INDEX_HEAVY, governor.ceilings.index_heavy), heavy // 2)
+        assert governor.limit(Pool.INDEX_LIGHT) == light
+        assert light // 2 >= pressure_floor(Pool.INDEX_LIGHT, governor.ceilings.index_light)  # a halving would show
+
     def test_limit_reads_the_live_registry(self) -> None:
         governor = self._governor(DownstreamFeedback(), ManualClock())
         assert governor.limit(Pool.INDEX_HEAVY) == governor._registry.get(Pool.INDEX_HEAVY)
@@ -365,3 +403,84 @@ class TestDownstreamFeedbackWiring:
             assert governor._feedback is get_default_downstream_feedback()
         finally:
             set_default_downstream_feedback(None)
+
+
+@pytest.mark.asyncio
+class TestLaneBudgetWiring:
+    """PARSE_LANES=on: the governor owns the lane budget and feeds it (T52)."""
+
+    @pytest.fixture(autouse=True)
+    def _domain(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PARSE_LANES", "on")
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr("app.services.resource_governor.controller.effective_cpu_count", lambda: 16)
+
+    def _governor(self, working_set_gb: float = 1.0) -> ResourceGovernor:
+        return ResourceGovernor(
+            logger=logging.getLogger("test.lanes"),
+            probe=ScriptedProbe([_snap(mem_pressure_working_set_gb=working_set_gb, mem_limit_gb=32, cpu_quota=16.0)]),
+            env_parse=16,
+        )
+
+    async def test_off_builds_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PARSE_LANES", "off")
+        governor = self._governor()
+        assert governor.lanes is None
+        assert governor.stats()["lanes"]["mode"] == "off"
+
+    async def test_incident_writes_the_domain_ledger(self) -> None:
+        first, second = self._governor(), self._governor()
+        try:
+            assert first.lanes is not None and second.lanes is not None
+            lanes = first.lanes.plan.lanes
+            assert lanes > 1 and second.lanes.cap() == lanes
+            first.report_memory_incident("a parse worker died")
+            deadline = time.monotonic() + 5  # the other process's view of the ledger is cached for a moment
+            while second.lanes.cap() == lanes and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert second.lanes.cap() == max(1, lanes // 2)
+        finally:
+            first.close()
+            second.close()
+
+    async def test_sampler_applies_the_brake_step(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        governor = self._governor(working_set_gb=31.0)  # raw pressure far over the soft limit
+        try:
+            assert governor.lanes is not None
+            calls: list[tuple[str, float | None]] = []
+            real = governor.lanes.brake_step
+
+            def spy(pressure: float | None = None) -> int | None:
+                import threading
+
+                calls.append((threading.current_thread().name, pressure))
+                return real(pressure)
+
+            monkeypatch.setattr(governor.lanes, "brake_step", spy)
+            before = governor.lanes.cap()
+            await governor._sample_once()
+            assert calls and calls[0][1] is not None and calls[0][1] > MEM_SOFT
+            assert calls[0][0] != "MainThread"  # off the event loop
+            assert governor.lanes.cap() < before
+        finally:
+            governor.close()
+
+    async def test_lanes_block_has_pool_gauges(self) -> None:
+        governor = self._governor()
+        try:
+            block = governor.stats()["lanes"]
+            assert block["mode"] == "on" and block["slots"] == "shared"
+            assert {"limit", "cap", "resident_limit", "standby", "run_in_use_domain", "resident_domain",
+                    "live_processes", "waiting", "wait_seconds_p95", "ledger", "pool", "explicit_private",
+                    "interactive_pool", "unleased"} <= set(block)
+            assert block["pool"] is None  # no pool has been built in this process
+        finally:
+            governor.close()
+
+    async def test_close_closes_the_budget(self) -> None:
+        governor = self._governor()
+        budget = governor.lanes
+        governor.close()
+        assert governor.lanes is None
+        with pytest.raises(Exception, match="closed"):
+            budget.try_acquire()  # type: ignore[union-attr]

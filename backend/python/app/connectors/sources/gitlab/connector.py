@@ -43,7 +43,10 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
-from app.connectors.core.registry.code_indexing_flags import exclude_paths_filter_field
+from app.connectors.core.registry.code_indexing_flags import (
+    branch_filter_field,
+    exclude_paths_filter_field,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -200,6 +203,7 @@ class GitLabSyncIncompleteError(RuntimeError):
             option_source_type=OptionSourceType.DYNAMIC,
             required=True,
         ))
+        .add_filter_field(branch_filter_field())
         .add_filter_field(FilterField(
             name=SyncFilterKey.MODIFIED.value,
             display_name="Modified Date",
@@ -280,6 +284,8 @@ class GitLabConnector(BaseConnector):
         # Runtime state set during init/sync
         self._gitlab_included_group_paths: list[str] | None = None
         self._gitlab_user_id: int | None = None
+        # GitLab ids of each project's members at Guest or above, from this run's member read.
+        self._project_reader_ids: dict[int, set[int]] = {}
         self._is_admin: bool = False
         self._is_auditor: bool = False
         self._auditor_fallback_warned: bool = False

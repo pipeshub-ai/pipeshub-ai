@@ -20,7 +20,7 @@ export type PlatformSettings = {
  * Handles decryption, parsing, and applying defaults.
  */
 export async function getPlatformSettingsFromStore(
-  keyValueStoreService: KeyValueStoreService,
+  keyValueStoreService: Pick<KeyValueStoreService, 'get'>,
 ): Promise<PlatformSettings> {
   const configManagerConfig = loadConfigurationManagerConfig();
   const encrypted = await keyValueStoreService.get<string>(configPaths.platform.settings);

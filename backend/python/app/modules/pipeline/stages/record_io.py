@@ -14,17 +14,23 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.models.entities import Record
-from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
+from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
+from app.modules.pipeline.leases import RecordBusy, RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import Deadline
+from app.modules.transformers.stored_write import RunSuperseded, mint_stored_write
 from app.modules.transformers.transformer import TransformContext
+from app.services.featureflag.platform_settings import artifact_settings
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
+    from app.modules.transformers.stored_write import SidecarWrite
 
 RecordFromDocument = Callable[[dict[str, Any]], Record]
+# Whether a connector is being deleted (``ConnectorDeletingCheck``).
+ConnectorDeleting = Callable[[str], Awaitable[bool]]
 StoredMetadata = dict[str, Any]
 # Given the stored record's current semantic_metadata (None when it has none), the new one.
 SectionUpdate = Callable[[StoredMetadata | None], StoredMetadata | None]
@@ -58,6 +64,7 @@ class RecordStageIO:
         blob_storage: "BlobStorage",
         record_from_document: RecordFromDocument,
         record_leases: RecordLeases,
+        connector_deleting: ConnectorDeleting | None = None,
     ) -> None:
         super().__init__()
         self._job = job
@@ -67,6 +74,7 @@ class RecordStageIO:
         self._blob_storage = blob_storage
         self._record_from_document = record_from_document
         self._record_leases = record_leases
+        self._connector_deleting = connector_deleting
         self._stored: dict[str, Any] | None = None
         self._stored_loaded = False
         self._documents: dict[str, dict[str, Any]] = {}
@@ -79,7 +87,19 @@ class RecordStageIO:
     def deadline(self) -> Deadline:
         return self._deadline
 
+    async def connector_deleting(self, job: StageJob) -> bool:
+        """Whether the job's connector is being deleted: its records are the delete's to remove,
+        and a write to one makes the delete's batch lose a write conflict."""
+        return self._connector_deleting is not None and await self._connector_deleting(job.connector_id)
+
+    async def _not_being_deleted(self, job: StageJob) -> None:
+        # Raised rather than answered as "no record is current": that would end the run STALE,
+        # which is terminal, and a delete that is put back must leave the job runnable.
+        if await self.connector_deleting(job):
+            raise ConnectorBeingDeleted(job.connector_id)
+
     async def current_record_ids(self, job: StageJob) -> list[str]:
+        await self._not_being_deleted(job)
         current: list[str] = []
         for record_id in job.record_ids:
             # Raising: a failed read answering None would read as "the record is gone".
@@ -116,14 +136,16 @@ class RecordStageIO:
         if document is None:
             return None
         record = self._record_from_document(document)
-        # The graph document's converter leaves the virtual record id unset. The summary
-        # point is keyed by it, and the blocks and stored record are this job's content,
-        # so the outputs go under the job's virtual record id.
+        # The summary point is keyed by the virtual record id, and the blocks and stored
+        # record are this job's content, so the outputs go under the job's id, not the
+        # document's (a newer revision may have moved it on).
         record.virtual_record_id = self._job.virtual_record_id
         record.block_containers = blocks
         return TransformContext(record=record)
 
     async def _on_revision(self, job: StageJob, record_id: str) -> bool:
+        # Checked under the lease before every write, so a delete that starts mid-run stops the rest.
+        await self._not_being_deleted(job)
         document = await self._graph.get_document(record_id, CollectionNames.RECORDS.value)
         return document is not None and document.get("contentRev") == job.rev
 
@@ -152,25 +174,40 @@ class RecordStageIO:
         before: Callable[[], Awaitable[object]] | None = None,
         written: Callable[[], Awaitable[object]] | None = None,
         then: Callable[[], Awaitable[object]] | None = None,
+        sidecar: "SidecarWrite | None" = None,
     ) -> None:
-        """Re-read the stored record under the lease and write ``update`` of its metadata, then
+        """Rewrite the stored record's metadata under the lease with ``update`` of what it holds, then
         run ``written`` (only when that write happened) and ``then`` (the stage's other writes
         for ``owner``) while the lease is still held. ``before`` runs under the lease ahead of the
         write, for an output that must exist before the stored record says it does.
 
-        Raises ``RevisionSuperseded`` / ``RecordBusy`` from the lease, and
-        ``StoredRecordMissing`` when no stored record exists."""
+        The write is ``BlobStorage.rewrite_semantic_metadata``: one read of the mapped document, and
+        either a copy of it with only ``semantic_metadata`` changed (a shadow or read flag is on; the
+        classification is then filed through ``sidecar``) or an in-place write (both off). The layout
+        comes from one read of the settings.
+
+        Raises ``RevisionSuperseded`` / ``RecordBusy`` from the lease or from the write (the mapping
+        moved under it: the stage's retry runs the job again), and ``StoredRecordMissing`` when no
+        stored record exists."""
+        from app.modules.transformers.blob_storage import StoredRecordNotFound
+
         async with self._holding(job, owner, also=still_current):
-            stored = await self._blob_storage.get_record_from_storage(job.virtual_record_id, job.org_id)
-            if stored is None:
-                raise StoredRecordMissing(f"no stored record for virtual record {job.virtual_record_id}")
-            if before is not None:
-                _ = await before()
-            current = stored.get("semantic_metadata")
-            new = update(current if isinstance(current, dict) else None)
-            if new is not None:
-                await self._blob_storage.save_semantic_metadata(job.org_id, owner, job.virtual_record_id, new)
-                stored["semantic_metadata"] = new
+            async def transform(stored: dict[str, Any]) -> StoredMetadata | None:
+                if before is not None:
+                    _ = await before()
+                current = stored.get("semantic_metadata")
+                return update(current if isinstance(current, dict) else None)
+
+            stored_write = mint_stored_write(await artifact_settings(self._blob_storage.config_service))
+            try:
+                stored = await self._blob_storage.rewrite_semantic_metadata(
+                    job.org_id, owner, job.virtual_record_id, transform, stored_write=stored_write, sidecar=sidecar,
+                )
+            except StoredRecordNotFound as exc:
+                raise StoredRecordMissing(str(exc)) from exc
+            except RunSuperseded as exc:
+                raise RecordBusy(str(exc)) from exc
+            if stored is not None:
                 self._stored, self._stored_loaded = stored, True
                 if written is not None:
                     _ = await written()

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { IconButton, Flex, Text, Box, Popover, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
@@ -299,7 +299,10 @@ function ActionCard({
 
 const floatingCard: React.CSSProperties = {
   minWidth: 178,
-  backgroundColor: 'var(--olive-2)',
+  // Frosted card for both views (actions and the role picker)
+  backgroundColor: 'var(--frost-bg-strong)',
+  backdropFilter: 'var(--frost-filter)',
+  WebkitBackdropFilter: 'var(--frost-filter)',
   border: '1px solid var(--olive-3)',
 };
 const sheetCard: React.CSSProperties = { minWidth: 0, backgroundColor: 'transparent', border: 'none' };
@@ -309,6 +312,11 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
   const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<View>('actions');
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  // Hover only, and only after the pointer moves: focus returns here when the menu
+  // closes (even if the pointer never left), and a tooltip opened by that focus
+  // would catch the next Escape meant for the panel the picked item opened.
+  const hoverArmed = useRef(false);
 
   const visibleActions = actions.filter(Boolean) as RowAction[];
   if (visibleActions.length === 0) return null;
@@ -317,6 +325,8 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
 
   const handleOpenChange = (isOpen: boolean) => {
     setOpen(isOpen);
+    setTooltipOpen(false);
+    hoverArmed.current = false;
     if (!isOpen) setView('actions');
   };
 
@@ -327,6 +337,8 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
       size={isMobile ? '3' : '1'}
       color="gray"
       aria-label={t('common.moreOptions')}
+      onPointerMove={() => { hoverArmed.current = true; }}
+      onPointerLeave={() => { hoverArmed.current = false; }}
       onClick={(e) => {
         e.stopPropagation();
         if (isMobile) setOpen(true);
@@ -346,7 +358,6 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
             ...(isMobile ? sheetCard : floatingCard),
             borderRadius: 'var(--radius-1)',
             padding: 4,
-            backdropFilter: 'blur(25px)',
             display: 'flex',
             flexDirection: 'column',
             gap: 'var(--space-2)',
@@ -362,7 +373,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
                 aria-disabled={isDisabled || undefined}
                 tabIndex={isDisabled ? -1 : 0}
                 align="center"
-                gap="1"
+                gap="2"
                 onClick={(e) => {
                   e.stopPropagation();
                   if (isDisabled) return;
@@ -435,12 +446,7 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
             style={{
               ...(isMobile
                 ? sheetCard
-                : {
-                  ...floatingCard,
-                  borderRadius: 'var(--radius-2)',
-                  boxShadow:
-                    '0px 12px 32px -16px rgba(0, 9, 50, 0.12), 0px 12px 60px 0px rgba(0, 0, 0, 0.15)',
-                }),
+                : { ...floatingCard, borderRadius: 'var(--radius-1)' }),
               overflow: 'hidden',
             }}
           >
@@ -541,7 +547,13 @@ export function EntityRowActionMenu({ actions }: EntityRowActionMenuProps) {
 
   return (
     <Popover.Root open={open} onOpenChange={handleOpenChange}>
-      <Popover.Trigger>{trigger}</Popover.Trigger>
+      <Tooltip
+        content={t('common.moreOptions')}
+        open={tooltipOpen && !open}
+        onOpenChange={(next) => setTooltipOpen(next && hoverArmed.current)}
+      >
+        <Popover.Trigger>{trigger}</Popover.Trigger>
+      </Tooltip>
 
       <Popover.Content
         side="bottom"

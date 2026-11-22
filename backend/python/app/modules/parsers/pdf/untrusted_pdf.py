@@ -28,15 +28,21 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    PasswordProtectedError,
+)
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseAbandonedError, ParseWorkerError
 from app.modules.parsers.pdf.pdf_inspection import (
+    PdfFacts,
     PdfStructure,
     detect_ocr,
     open_pdf,
+    quick_facts,
     repair_pdf,
 )
+from app.services.resource_governor.kinds import ParseKind
 from app.utils.env_config import env_float, env_int
 
 if TYPE_CHECKING:
@@ -63,6 +69,8 @@ class InspectedPdf:
     content: bytes
     needs_ocr: bool
     repaired: bool
+    # None when only pdfium can open the file.
+    page_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -84,14 +92,30 @@ def ocr_sample_pages() -> int:
 
 
 async def inspect_untrusted_pdf(content: bytes, *, label: str = "") -> InspectedPdf:
-    """The bytes to parse and whether they need OCR.
+    """The bytes to parse, whether they need OCR, and the page count.
 
-    Raises ``UnreadablePdfError`` when the file cannot be opened either way. A
+    Raises ``PasswordProtectedError`` when the file needs a password, and
+    ``UnreadablePdfError`` when it cannot be opened either way. A
     worker that died (most likely out of memory) or a cancelled caller is
     raised as it is, so those are retried rather than read as a bad file.
     """
     copy = await _readable_copy(content, label)
-    return InspectedPdf(copy.content, await _needs_ocr(copy, label), copy.repaired)
+    page_count = copy.structure.page_count if copy.structure else None
+    return InspectedPdf(copy.content, await _needs_ocr(copy, label), copy.repaired, page_count)
+
+
+async def inspect_for_class(content: bytes, *, label: str = "") -> PdfFacts | None:
+    """The page count and text layer of *content*, read on the inspect pool, for the cost class.
+
+    Cheap and best effort: ``None`` when the file cannot be read this way (the class then stays on its size
+    prior and the full inspection at parse time deals with the file), and for a stop or a dead worker, which
+    the parse that follows will meet again.
+    """
+    try:
+        return await _in_worker(quick_facts, content, label=label)
+    except Exception as exc:
+        _logger.info("No quick facts for PDF %s (%s); its class stays on the size prior", label, type(exc).__name__)
+        return None
 
 
 async def _readable_copy(content: bytes, label: str) -> _Copy:
@@ -155,7 +179,8 @@ async def _try(fn: Callable[..., T], content: bytes, *args: object, label: str) 
 
 async def _in_worker(fn: Callable[..., T], content: bytes, *args: object, label: str) -> T:
     return await parse_pool.submit(
-        fn, content, *args, label=label, size=len(content), timeout=inspection_timeout_seconds()
+        fn, content, *args, label=label, size=len(content), timeout=inspection_timeout_seconds(),
+        kind=ParseKind.INSPECT,
     )
 
 
@@ -169,7 +194,10 @@ def _about_the_file(exc: Exception) -> bool:
     """False for failures a rewrite cannot help: a dead worker, a stop, a broken install."""
     if isinstance(exc, ParseWorkerError):
         return _timed_out(exc)
-    return not isinstance(exc, (ParseAbandonedError, MemoryError, ImportError))
+    # A password is a fact about the file, but no rewrite or second reader can help.
+    return not isinstance(
+        exc, (ParseAbandonedError, MemoryError, ImportError, PasswordProtectedError)
+    )
 
 
 def _timed_out(exc: Exception) -> bool:

@@ -99,13 +99,6 @@ SCHEDULED_ELSEWHERE = (
     "every connector type, and each run waits on a real scheduler tick"
 )
 
-FILTER_KEEPS_EXCLUDED_ITEM = (
-    "a narrowed sync filter must remove the excluded item from every store (record, "
-    "vectors, stored files). This connector's full sync only unlinks what it did not see "
-    "(sync_runner.py, unlink_nodes_missed_by_full_sync) and never deletes it, so its record "
-    "and vectors stay behind where nobody can find them"
-)
-
 INDEXED = "COMPLETED"
 NOT_INDEXED = "AUTO_INDEX_OFF"
 MANUAL_INDEXING_FILTER = {
@@ -402,7 +395,9 @@ def static_marks_for(cls: type, fn: Callable[..., Any]) -> list[pytest.MarkDecor
     scenario = fn.__name__.removeprefix("test_matrix_")
     bug = getattr(cls, "KNOWN_BUGS", {}).get(scenario)
     if bug:
-        return [pytest.mark.xfail(reason=bug, strict=True)]
+        # Only a failed check is the bug. A probe that crashes (a docker exec, a store
+        # that will not answer) has to fail the run, not pass as the expected failure.
+        return [pytest.mark.xfail(reason=bug, strict=True, raises=AssertionError)]
     return []
 
 

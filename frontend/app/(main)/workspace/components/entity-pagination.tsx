@@ -18,6 +18,24 @@ export interface EntityPaginationProps {
   onLimitChange?: (limit: number) => void;
 }
 
+/** 28px pager controls: ghost buttons without Radix's negative margin, page and size in a bordered pill */
+const PAGER_BUTTON: React.CSSProperties = {
+  margin: 0,
+  height: 28,
+  boxSizing: 'border-box',
+  paddingInline: 'var(--space-2)',
+  gap: 'var(--space-1)',
+};
+const PAGER_PILL: React.CSSProperties = {
+  minWidth: 28,
+  height: 28,
+  padding: '0 var(--space-2)',
+  boxSizing: 'border-box',
+  borderRadius: 'var(--radius-1)',
+  border: '1px solid var(--olive-4)',
+  backgroundColor: 'var(--olive-2)',
+};
+
 /**
  * EntityPagination — pagination footer for entity list pages.
  *
@@ -47,9 +65,9 @@ export function EntityPagination({
       wrap="wrap"
       gap="2"
       style={{
+        // 16px around the count text on every side (12px + the 28px controls' centring)
         padding: 'var(--space-3) var(--space-4)',
-        borderTop: '1px solid var(--slate-4)',
-        backgroundColor: 'var(--slate-1)',
+        borderTop: '1px solid var(--olive-3)',
         flexShrink: 0,
         width: '100%',
         rowGap: 'var(--space-2)',
@@ -57,7 +75,7 @@ export function EntityPagination({
     >
       {/* Left: showing count (hidden with no rows; the table's empty state says so) */}
       {totalCount > 0 ? (
-        <Text size="2" style={{ color: 'var(--slate-9)' }}>
+        <Text size="2" style={{ color: 'var(--olive-11)' }}>
           {t('workspace.pagination.showing', { from, to, count: totalCount })}
         </Text>
       ) : (
@@ -65,36 +83,28 @@ export function EntityPagination({
       )}
 
       {/* Right: pagination controls */}
-      <Flex gap="3" align="center">
+      <Flex gap="2" align="center">
         {/* Previous */}
-        <Button variant="ghost" size="2" color="gray" disabled={!hasPrev} onClick={() => onPageChange(page - 1)}>
+        <Button className="touch-hit" variant="ghost" size="2" color="gray" disabled={!hasPrev} onClick={() => onPageChange(page - 1)} style={PAGER_BUTTON}>
           <MaterialIcon name="chevron_left" size={16} />
           {t('workspace.pagination.previous')}
         </Button>
 
         {/* Page number */}
-        <Box
-          style={{
-            padding: 'var(--space-1) var(--space-3)',
-            backgroundColor: 'var(--slate-3)',
-            borderRadius: 'var(--radius-2)',
-            minWidth: 'var(--space-8)',
-            textAlign: 'center',
-          }}
-        >
-          <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+        <Flex align="center" justify="center" style={PAGER_PILL}>
+          <Text size="1" weight="medium" style={{ color: 'var(--olive-12)' }}>
             {page}
           </Text>
-        </Box>
+        </Flex>
 
         {/* Next */}
-        <Button variant="ghost" size="2" color="gray" disabled={!hasNext} onClick={() => onPageChange(page + 1)}>
+        <Button className="touch-hit" variant="ghost" size="2" color="gray" disabled={!hasNext} onClick={() => onPageChange(page + 1)} style={PAGER_BUTTON}>
           {t('workspace.pagination.next')}
           <MaterialIcon name="chevron_right" size={16} />
         </Button>
 
         {/* Separator */}
-        <Box style={{ width: '1px', height: '20px', backgroundColor: 'var(--slate-6)' }} />
+        <Box style={{ width: '1px', height: '20px', backgroundColor: 'var(--olive-4)' }} />
 
         {/* Limit selector */}
         {onLimitChange && (
@@ -104,17 +114,13 @@ export function EntityPagination({
                 data-testid="page-size-trigger"
                 align="center"
                 gap="1"
-                style={{
-                  cursor: 'pointer',
-                  padding: 'var(--space-1) var(--space-2)',
-                  backgroundColor: 'var(--slate-3)',
-                  borderRadius: 'var(--radius-2)',
-                }}
+                className="entity-pager-select touch-hit"
+                style={{ ...PAGER_PILL, cursor: 'pointer', gap: 'var(--space-1)' }}
               >
-                <Text size="2" style={{ color: 'var(--slate-12)' }}>
+                <Text size="1" weight="medium" style={{ color: 'var(--olive-12)' }}>
                   {limit}
                 </Text>
-                <MaterialIcon name="expand_less" size={14} color="var(--slate-11)" />
+                <MaterialIcon name="expand_less" size={14} color="var(--olive-11)" />
               </Flex>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content align="end" sideOffset={4}>

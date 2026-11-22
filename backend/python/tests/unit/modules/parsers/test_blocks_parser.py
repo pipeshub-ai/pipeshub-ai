@@ -291,7 +291,7 @@ class TestProcessBlockgroupImages:
             mock_md_cls.return_value = mock_md
             mock_image_cls.return_value = MagicMock()
 
-            md, caption_map = await parser._process_blockgroup_images("# hello")
+            md, caption_map = await parser._process_blockgroup_images("# hello", allow_remote_fetch=True)
 
         assert md == "# hello"
         assert caption_map == {}
@@ -318,7 +318,8 @@ class TestProcessBlockgroupImages:
             mock_image_cls.return_value = mock_image
 
             md, caption_map = await parser._process_blockgroup_images(
-                "![x](http://example.com/a.png)"
+                "![x](http://example.com/a.png)",
+                allow_remote_fetch=True
             )
 
         assert "Image_1" in md
@@ -343,7 +344,7 @@ class TestProcessBlockgroupImages:
             mock_image.urls_to_base64 = AsyncMock(return_value=[None])
             mock_image_cls.return_value = mock_image
 
-            _, caption_map = await parser._process_blockgroup_images("![x](u)")
+            _, caption_map = await parser._process_blockgroup_images("![x](u)", allow_remote_fetch=True)
 
         assert caption_map == {}
 
@@ -359,14 +360,14 @@ class TestProcessSingleBlockgroup:
         parser = _make_parser()
         bg = MagicMock(data=None, index=0)
         with pytest.raises(ValueError, match="no valid markdown data"):
-            await parser._process_single_blockgroup(bg, "record", MagicMock())
+            await parser._process_single_blockgroup(bg, "record", MagicMock(), allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_non_string_data_raises(self):
         parser = _make_parser()
         bg = MagicMock(data={"x": 1}, index=0)
         with pytest.raises(ValueError, match="no valid markdown data"):
-            await parser._process_single_blockgroup(bg, "record", MagicMock())
+            await parser._process_single_blockgroup(bg, "record", MagicMock(), allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_success_delegates_to_md_parser(self):
@@ -382,7 +383,8 @@ class TestProcessSingleBlockgroup:
         md_parser.parse_to_blocks = AsyncMock(return_value=result)
 
         new_bgs, new_blocks = await parser._process_single_blockgroup(
-            bg, "record", md_parser
+            bg, "record", md_parser,
+            allow_remote_fetch=True
         )
 
         assert len(new_blocks) == 1
@@ -404,7 +406,7 @@ class TestProcessSingleBlockgroup:
         md_parser = MagicMock()
         md_parser.parse_to_blocks = AsyncMock(return_value=result)
 
-        await parser._process_single_blockgroup(bg, "fallback", md_parser)
+        await parser._process_single_blockgroup(bg, "fallback", md_parser, allow_remote_fetch=True)
 
         md_parser.parse_to_blocks.assert_awaited_once_with(
             "# Hello", caption_map=None, name="fallback"
@@ -422,14 +424,14 @@ class TestProcessSingleBlockgroupHtml:
         parser = _make_parser()
         bg = MagicMock(data=None, index=0)
         with pytest.raises(ValueError, match="no valid HTML data"):
-            await parser._process_single_blockgroup_html(bg, "record", MagicMock())
+            await parser._process_single_blockgroup_html(bg, "record", MagicMock(), allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_non_string_data_raises(self):
         parser = _make_parser()
         bg = MagicMock(data={"not": "html"}, index=0)
         with pytest.raises(ValueError, match="no valid HTML data"):
-            await parser._process_single_blockgroup_html(bg, "record", MagicMock())
+            await parser._process_single_blockgroup_html(bg, "record", MagicMock(), allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_success_without_images(self):
@@ -445,7 +447,8 @@ class TestProcessSingleBlockgroupHtml:
         )
 
         new_bgs, new_blocks = await parser._process_single_blockgroup_html(
-            bg, "record", html_parser
+            bg, "record", html_parser,
+            allow_remote_fetch=True
         )
 
         assert len(new_blocks) == 1
@@ -478,7 +481,8 @@ class TestProcessSingleBlockgroupHtml:
             mock_image_cls.return_value = image_parser
 
             await parser._process_single_blockgroup_html(
-                bg, "fallback_name", html_parser
+                bg, "fallback_name", html_parser,
+                allow_remote_fetch=True
             )
 
         html_parser.parse_to_blocks.assert_awaited_once_with(
@@ -509,7 +513,7 @@ class TestProcessSingleBlockgroupHtml:
             image_parser = MagicMock()
             image_parser.urls_to_base64 = AsyncMock(return_value=[None])
             mock_image_cls.return_value = image_parser
-            await parser._process_single_blockgroup_html(bg, "r", html_parser)
+            await parser._process_single_blockgroup_html(bg, "r", html_parser, allow_remote_fetch=True)
 
         html_parser.parse_to_blocks.assert_awaited_once_with(
             "<img alt='Image_1' src='u'>", caption_map=None, name="x"
@@ -526,7 +530,7 @@ class TestProcessBlockgroups:
     async def test_empty_block_groups_returns_original(self):
         parser = _make_parser()
         container = BlocksContainer(blocks=[], block_groups=[])
-        assert await parser._process_blockgroups(container, "r") is container
+        assert await parser._process_blockgroups(container, "r", allow_remote_fetch=True) is container
 
     @pytest.mark.asyncio
     async def test_no_processing_needed_returns_original(self):
@@ -535,7 +539,7 @@ class TestProcessBlockgroups:
             index=0, type=GroupType.TEXT_SECTION, requires_processing=False
         )
         container = BlocksContainer(blocks=[], block_groups=[bg])
-        assert await parser._process_blockgroups(container, "r") is container
+        assert await parser._process_blockgroups(container, "r", allow_remote_fetch=True) is container
 
     @pytest.mark.asyncio
     async def test_requires_processing_without_data_skipped(self):
@@ -544,7 +548,7 @@ class TestProcessBlockgroups:
             index=0, type=GroupType.TEXT_SECTION, requires_processing=True, data=None
         )
         container = BlocksContainer(blocks=[], block_groups=[bg])
-        assert await parser._process_blockgroups(container, "r") is container
+        assert await parser._process_blockgroups(container, "r", allow_remote_fetch=True) is container
 
     @pytest.mark.asyncio
     async def test_routes_html_format(self):
@@ -566,7 +570,7 @@ class TestProcessBlockgroups:
         with patch(
             "app.modules.parsers.blocks.blocks_parser.MarkdownParser"
         ), patch("app.modules.parsers.blocks.blocks_parser.HTMLParser"):
-            result = await parser._process_blockgroups(container, "record")
+            result = await parser._process_blockgroups(container, "record", allow_remote_fetch=True)
 
         parser._process_single_blockgroup_html.assert_awaited_once()
         parser._process_single_blockgroup.assert_not_awaited()
@@ -593,7 +597,7 @@ class TestProcessBlockgroups:
         with patch(
             "app.modules.parsers.blocks.blocks_parser.MarkdownParser"
         ), patch("app.modules.parsers.blocks.blocks_parser.HTMLParser"):
-            result = await parser._process_blockgroups(container, "record")
+            result = await parser._process_blockgroups(container, "record", allow_remote_fetch=True)
 
         parser._process_single_blockgroup.assert_awaited_once()
         parser._process_single_blockgroup_html.assert_not_awaited()
@@ -617,7 +621,7 @@ class TestProcessBlockgroups:
             "app.modules.parsers.blocks.blocks_parser.MarkdownParser"
         ), patch("app.modules.parsers.blocks.blocks_parser.HTMLParser"):
             with pytest.raises(RuntimeError, match="parser failed"):
-                await parser._process_blockgroups(container, "record")
+                await parser._process_blockgroups(container, "record", allow_remote_fetch=True)
 
 # ---------------------------------------------------------------------------
 # _enhance_tables_with_llm
@@ -1185,3 +1189,44 @@ class TestParse:
 
         parser._process_single_blockgroup_html.assert_awaited_once()
         assert len(result.block_container.blocks) == 1
+
+
+class TestImagePayloadInConnectorMarkdown:
+    """A connector's markdown section (a GitHub pull request's file diff here)
+    whose code holds a data-URI image parses into blocks that pass validation."""
+
+    @pytest.mark.asyncio
+    async def test_a_file_diff_with_an_inline_icon_validates(self) -> None:
+        import base64
+
+        from app.modules.transformers.block_container_validator import (
+            BlockContainerValidator,
+        )
+
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8).decode()
+        groups = [
+            BlockGroup(
+                index=0, type=GroupType.TEXT_SECTION, format=DataFormat.MARKDOWN,
+                requires_processing=True, data="Add the login icons\n\nBody of the pull request.",
+            ),
+            BlockGroup(
+                index=1, parent_index=0, type=GroupType.TEXT_SECTION, format=DataFormat.MARKDOWN,
+                requires_processing=True, name="File change: www/static/dist/icon.png.js",
+                data=(
+                    "[added file]\n\nDiff:\n@@ -0,0 +1 @@\n"
+                    f'+export default "data:image/png;base64,{png}"'
+                ),
+            ),
+        ]
+        payload = BlocksContainer(blocks=[], block_groups=groups).model_dump_json()
+        with patch(
+            "app.modules.parsers.blocks.blocks_parser.enhance_tables_with_llm",
+            new_callable=AsyncMock,
+        ):
+            result = await _make_parser().parse(payload.encode("utf-8"), "record")
+
+        container = result.block_container
+        BlockContainerValidator().validate(container)
+        texts = [b.data for b in container.blocks if b.type == BlockType.TEXT]
+        assert any('+export default "data:image/png;base64,[image data omitted]"' in t for t in texts)
+        assert any("Body of the pull request." in t for t in texts)

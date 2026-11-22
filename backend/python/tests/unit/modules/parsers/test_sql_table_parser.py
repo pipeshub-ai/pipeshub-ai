@@ -651,7 +651,7 @@ class TestParseStream:
         assert result.block_groups[0].content_hash is not None
         assert ":" in result.block_groups[0].content_hash
 
-    def test_schema_hash_stable_across_row_count_changes(self, parser):
+    def test_group_hash_changes_when_rows_are_added(self, parser):
         base = {
             "table_name": "t",
             "database_name": "db",
@@ -660,7 +660,42 @@ class TestParseStream:
         }
         r1 = parser.parse_stream(_stream({**base, "rows": [{"id": 1}]}))
         r2 = parser.parse_stream(_stream({**base, "rows": [{"id": 1}, {"id": 2}]}))
+        assert r1.block_groups[0].content_hash != r2.block_groups[0].content_hash
+
+    def test_group_hash_is_stable_for_the_same_rows(self, parser) -> None:
+        data = {
+            "table_name": "t",
+            "database_name": "db",
+            "columns": [{"name": "id", "data_type": "integer"}],
+            "rows": [{"id": 1}, {"id": 2}],
+        }
+        r1 = parser.parse_stream(_stream(data))
+        r2 = parser.parse_stream(_stream(data))
         assert r1.block_groups[0].content_hash == r2.block_groups[0].content_hash
+
+    def test_added_rows_regenerate_the_summary_through_reconciliation(self, parser) -> None:
+        """The summary text states the row count; the group must be re-indexed, the unchanged rows kept."""
+        from app.modules.reconciliation.service import ReconciliationService
+
+        base = {
+            "table_name": "t",
+            "database_name": "db",
+            "columns": [{"name": "id", "data_type": "integer"}],
+            "primary_keys": ["id"],
+        }
+        old = parser.parse_stream(_stream({**base, "rows": [{"id": 1}]}))
+        new = parser.parse_stream(_stream({**base, "rows": [{"id": 1}, {"id": 2}]}))
+        assert "1 rows" in old.block_groups[0].data["table_summary"]
+        assert "2 rows" in new.block_groups[0].data["table_summary"]
+
+        service = ReconciliationService()
+        old_meta, new_meta = service.build_metadata(old), service.build_metadata(new)
+        to_index, to_delete, unchanged = service.compute_diff(old_meta, new_meta)
+
+        group_id = new.block_groups[0].id
+        assert group_id in to_index
+        assert old.block_groups[0].id in to_delete
+        assert new.blocks[0].id in unchanged and new.blocks[0].id not in to_index
 
     def test_schema_hash_changes_on_column_change(self, parser):
         base = {

@@ -14,6 +14,9 @@ import { usesSharedCredential, type McpConnectionState } from '../../connection-
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { MCP_TRANSPORT_LABELS } from '../../types';
 
+// The sign-in card above already says what a refused sign-in needs.
+const SIGN_IN_STATES = new Set<McpConnectionState>(['needs_auth_mode', 'needs_reconnect', 'shared_credential_missing']);
+
 /** The tool list the tab shows: read from the cache when the tab opens, live on Refresh. */
 export type McpToolsLoad =
   | { status: 'idle' }
@@ -32,6 +35,8 @@ interface McpToolsApprovalsTabProps {
   onRefresh: () => void;
   onAuthenticate: () => void;
   onReauthenticate: () => void;
+  /** Opens the server's settings; absent when this person can't change them. */
+  onEditServer?: () => void;
 }
 
 /** Who is signed in and how, then the server's tools (with the person's own rules on their personal server). */
@@ -44,17 +49,18 @@ export function McpToolsApprovalsTab({
   onRefresh,
   onAuthenticate,
   onReauthenticate,
+  onEditServer,
 }: McpToolsApprovalsTabProps) {
   const { t } = useTranslation();
   const canListTools = state !== 'needs_connect' && state !== 'waiting_for_admin' && state !== 'shared_credential_missing';
   const listing = canListTools && (load.status === 'idle' || load.status === 'loading');
   // Without the list (no sign-in, or it failed) rules are still set by name.
-  const showRules = editor !== null && !listing && !editor.loading && !editor.loadError;
-  const showFooter = showRules;
+  const showRules = editor !== null && !listing && !editor.loading;
+  const showFooter = showRules && !editor.loadError;
 
   return (
-    <Flex direction="column" style={{ height: '100%', minHeight: 0 }}>
-      <Flex direction="column" gap="4" style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingBottom: 'var(--space-4)' }}>
+    <Flex direction="column">
+      <Flex direction="column" gap="4" style={{ paddingBottom: 'var(--space-4)' }}>
         <McpDisabledCallout instance={instance} />
         <SignInCard
           instance={instance}
@@ -62,6 +68,7 @@ export function McpToolsApprovalsTab({
           isBusy={isBusy}
           onAuthenticate={onAuthenticate}
           onReauthenticate={onReauthenticate}
+          onEditServer={onEditServer}
         />
 
         <Flex direction="column" gap="3">
@@ -100,7 +107,7 @@ export function McpToolsApprovalsTab({
             </Text>
           ) : listing ? (
             <FindingTools />
-          ) : load.status === 'error' ? (
+          ) : load.status === 'error' && !(load.code === 'reauth' && SIGN_IN_STATES.has(state)) ? (
             <Flex
               direction="column"
               gap="2"
@@ -143,6 +150,8 @@ export function McpToolsApprovalsTab({
                   {t('workspace.mcpServers.toolRules.description.personal')}
                 </Text>
                 <McpToolRulesList editor={editor} toolsUnknown={load.status !== 'ready'} />
+                {/* Without their rules the tools are still worth seeing. */}
+                {editor.loadError && load.status === 'ready' && <McpToolList tools={ruleToolsFromInfo(load.tools)} />}
               </Flex>
             )
           )}
@@ -157,8 +166,11 @@ export function McpToolsApprovalsTab({
           data-testid="mcp-rules-footer"
           style={{
             borderTop: '1px solid var(--olive-3)',
-            paddingTop: 'var(--space-3)',
-            flexShrink: 0,
+            paddingBlock: 'var(--space-3)',
+            // Stays in view while the page scrolls, so unsaved rules are never out of sight.
+            position: 'sticky',
+            bottom: 0,
+            backgroundColor: 'var(--olive-1)',
           }}
         >
           <Text size="1" style={{ color: editor.changes > 0 ? 'var(--amber-11)' : 'var(--gray-10)' }}>
@@ -217,15 +229,40 @@ function SignInCard({
   isBusy,
   onAuthenticate,
   onReauthenticate,
+  onEditServer,
 }: {
   instance: McpMyServerEntry;
   state: McpConnectionState;
   isBusy: boolean;
   onAuthenticate: () => void;
   onReauthenticate: () => void;
+  onEditServer?: () => void;
 }) {
   const { t } = useTranslation();
   const transport = MCP_TRANSPORT_LABELS[instance.transport];
+
+  if (state === 'needs_auth_mode') {
+    return (
+      <Callout.Root color="amber" size="1">
+        <Callout.Icon>
+          <MaterialIcon name="warning" size={16} color="var(--amber-11)" />
+        </Callout.Icon>
+        <Flex direction="column" gap="2">
+          <Text size="2" weight="medium">
+            {t('workspace.mcpServers.configPanel.asksForSignIn')}
+          </Text>
+          <Text size="1">{t('workspace.mcpServers.configPanel.asksForSignInBody')}</Text>
+          {onEditServer && (
+            <Box>
+              <Button size="1" color="amber" onClick={onEditServer}>
+                {t('workspace.mcpServers.configPanel.editServer')}
+              </Button>
+            </Box>
+          )}
+        </Flex>
+      </Callout.Root>
+    );
+  }
 
   if (instance.authMode === 'none') {
     return (

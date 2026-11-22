@@ -16,7 +16,12 @@ from app.agent_loop_lib.core.responses import ModelResponse, StructuredResponse
 from app.agent_loop_lib.core.streaming import StreamEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
-from app.services.llm_gateway.gateway import get_llm_gateway
+from app.services.llm_gateway.fleet_breaker import credential_of
+from app.services.llm_gateway.gateway import (
+    ProviderUnavailableError,
+    estimate_tokens,
+    get_llm_gateway,
+)
 from app.utils.concurrency import indexing_llm_slot
 
 if TYPE_CHECKING:
@@ -26,6 +31,9 @@ if TYPE_CHECKING:
 class SlottedTransport(LLMTransport):
     def __init__(self, inner: LLMTransport) -> None:
         self._inner = inner
+        # The run only keeps an error's text, so the strategy reads here whether
+        # a turn failed because the provider could not serve it.
+        self.provider_unavailable = False
 
     @property
     def provider(self) -> str:
@@ -52,20 +60,16 @@ class SlottedTransport(LLMTransport):
         *,
         tool_choice: ToolChoice | None = None,
     ) -> ModelResponse:
-        return await get_llm_gateway().call(
-            lambda: self._inner.complete(
-                messages,
-                tools=tools,
-                system=system,
-                model=model,
-                thinking_budget=thinking_budget,
-                effort=effort,
-                system_blocks=system_blocks,
-                **({"tool_choice": tool_choice} if tool_choice else {}),
-            ),
-            provider=self._gateway_provider,
-            call_site="named_entities",
-        )
+        return await self._call(estimate_tokens([messages, system, system_blocks, tools]), lambda: self._inner.complete(
+            messages,
+            tools=tools,
+            system=system,
+            model=model,
+            thinking_budget=thinking_budget,
+            effort=effort,
+            system_blocks=system_blocks,
+            **({"tool_choice": tool_choice} if tool_choice else {}),
+        ))
 
     async def complete_structured(
         self,
@@ -74,13 +78,20 @@ class SlottedTransport(LLMTransport):
         system: str | None = None,
         model: str | None = None,
     ) -> StructuredResponse:
-        return await get_llm_gateway().call(
-            lambda: self._inner.complete_structured(
-                messages, output_schema, system=system, model=model
-            ),
-            provider=self._gateway_provider,
-            call_site="named_entities",
-        )
+        return await self._call(estimate_tokens([messages, system, output_schema]), lambda: self._inner.complete_structured(
+            messages, output_schema, system=system, model=model
+        ))
+
+    async def _call(self, est_tokens, call):  # noqa: ANN001, ANN202 - the gateway's own call shape
+        # The size class of the call (its breaker and success rate) follows its input, not a default of "small".
+        try:
+            return await get_llm_gateway().call(
+                call, provider=self._gateway_provider, call_site="named_entities", est_tokens=est_tokens,
+                credential=credential_of(self._inner),
+            )
+        except ProviderUnavailableError:
+            self.provider_unavailable = True
+            raise
 
     def stream(
         self,

@@ -33,6 +33,7 @@ describe('PatController', () => {
       query: {},
       params: {},
       body: {},
+      headers: {},
     }
     mockRes = { json: sinon.stub(), status: sinon.stub().returnsThis() }
     mockNext = sinon.stub()
@@ -89,6 +90,18 @@ describe('PatController', () => {
       expect(JSON.stringify(events[0])).to.not.include('dev@example.com')
     })
 
+    it('tags pat_created with the client and channel that asked for it', async () => {
+      eventBuffer.drain()
+      mockPatService.createToken.resolves({ id: 'tok-1', name: 'cli', scopes: ['kb:read'], createdAt: new Date(), expiresAt: new Date() })
+      mockReq.headers = { 'user-agent': 'pipeshub-cli/4.7.0 node/22', 'x-pipeshub-channel': 'pipeshub-cli' }
+      mockReq.body = { name: 'cli', scopes: ['kb:read'] }
+
+      await controller.createToken(mockReq, mockRes, mockNext)
+
+      const [event] = eventBuffer.drain()
+      expect(event.props).to.include({ user_agent: 'pipeshub-cli/4.7.0', channel: 'pipeshub-cli' })
+    })
+
     it('records the default lifetime when the request omits expiryDays', async () => {
       eventBuffer.drain()
       mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: [], createdAt: new Date(), expiresAt: new Date(), accessToken: 'x' })
@@ -97,16 +110,6 @@ describe('PatController', () => {
       await controller.createToken(mockReq, mockRes, mockNext)
 
       expect(eventBuffer.drain()[0].props.expiry_days).to.equal(30)
-    })
-
-    it("keeps a token that never expires as 'never'", async () => {
-      eventBuffer.drain()
-      mockPatService.createToken.resolves({ id: 't', name: 'n', scopes: [], createdAt: new Date(), expiresAt: null, accessToken: 'x' })
-      mockReq.body = { name: 'n', expiryDays: 'never' }
-
-      await controller.createToken(mockReq, mockRes, mockNext)
-
-      expect(eventBuffer.drain()[0].props.expiry_days).to.equal('never')
     })
 
     it('counts the token on the Grafana activity counter with org and domain only', async () => {

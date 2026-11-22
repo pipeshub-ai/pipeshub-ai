@@ -2,10 +2,15 @@
 
 import asyncio
 import base64
+import gc
+import itertools
 import struct
 import threading
+import time
+import warnings
+from collections.abc import Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -15,16 +20,19 @@ from fastapi.testclient import TestClient
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.embedding_main import (
+    MAX_EMBEDDING_REQUEST_BYTES,
     DownloadStatus,
+    EncodeAbandoned,
     EncodeGate,
     EncodePriority,
     ModelManager,
     _compute_expected_total_bytes,
     _format_embedding_vector,
+    _local_model_in_use,
     _measure_blobs_dir_bytes,
     _normalize_input,
     app,
-    model_manager,
+    release_memory,
     run,
 )
 
@@ -37,11 +45,25 @@ async def _passthrough_to_thread(func, *args, **kwargs):
     return func(*args, **kwargs)
 
 
+@pytest.fixture(autouse=True)
+def _no_settings_lookup_at_startup() -> Iterator[None]:
+    """Lifespan reads the AI settings to decide on warm-up; never hit a real store."""
+    with patch(
+        "app.embedding_main._local_model_in_use",
+        new_callable=AsyncMock,
+        return_value=False,
+    ):
+        yield
+
+
 @pytest.fixture
 def client():
     mock_manager = MagicMock(spec=ModelManager)
     mock_manager.list_loaded_models.return_value = [DEFAULT_EMBEDDING_MODEL]
+    mock_manager.max_seq_length.return_value = 512
+    mock_manager.prompt_tokens.return_value = 0
     mock_manager.encode = AsyncMock(return_value=[[0.1, 0.2, 0.3]])
+    mock_manager.encode_gate_stats.return_value = EncodeGate(2, 1).stats()
 
     mock_manager.warmup = AsyncMock()
     with patch("app.embedding_main.model_manager", mock_manager):
@@ -65,6 +87,24 @@ class TestEmbeddingServerRoutes:
         body = response.json()
         assert body["object"] == "list"
         assert body["data"][0]["id"] == DEFAULT_EMBEDDING_MODEL
+        assert body["data"][0]["max_seq_length"] == 512
+
+    def test_tokenize_returns_the_counts(self, client) -> None:
+        test_client, mock_manager = client
+        mock_manager.count_tokens = AsyncMock(return_value=[3, 7])
+        response = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a", "b"]})
+        assert response.status_code == 200
+        assert response.json()["counts"] == [3, 7]
+
+    def test_tokenize_rejects_too_many_items_or_characters(self, client) -> None:
+        import app.embedding_main as em
+
+        test_client, mock_manager = client
+        mock_manager.count_tokens = AsyncMock(return_value=[1])
+        too_many = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a"] * (em.TOKENIZE_MAX_ITEMS + 1)})
+        too_long = test_client.post("/v1/tokenize", json={"model": DEFAULT_EMBEDDING_MODEL, "input": "a" * (em.TOKENIZE_MAX_CHARS + 1)})
+        assert (too_many.status_code, too_long.status_code) == (413, 413)
+        mock_manager.count_tokens.assert_not_awaited()
 
     def test_create_embeddings_single_input(self, client):
         test_client, mock_manager = client
@@ -82,6 +122,7 @@ class TestEmbeddingServerRoutes:
             ["hello"],
             trust_remote_code=False,
             priority=EncodePriority.BULK,
+            should_stop=ANY, witness=ANY,
         )
 
     def test_create_embeddings_batch_input(self, client):
@@ -102,6 +143,7 @@ class TestEmbeddingServerRoutes:
             ["hello", "world"],
             trust_remote_code=False,
             priority=EncodePriority.BULK,
+            should_stop=ANY, witness=ANY,
         )
 
     def test_create_embeddings_empty_input_rejected(self, client):
@@ -111,6 +153,26 @@ class TestEmbeddingServerRoutes:
             json={"model": DEFAULT_EMBEDDING_MODEL, "input": []},
         )
         assert response.status_code == 400
+
+    def test_create_embeddings_too_many_inputs_is_413(self, client: tuple) -> None:
+        test_client, mock_manager = client
+        with patch("app.embedding_main.MAX_EMBEDDING_INPUTS", 3):
+            response = test_client.post(
+                "/v1/embeddings",
+                json={"model": DEFAULT_EMBEDDING_MODEL, "input": ["a"] * 4},
+            )
+        assert response.status_code == 413
+        mock_manager.encode.assert_not_called()
+
+    def test_create_embeddings_oversized_body_is_413(self, client: tuple) -> None:
+        test_client, mock_manager = client
+        big = "x" * (MAX_EMBEDDING_REQUEST_BYTES + 1)
+        response = test_client.post(
+            "/v1/embeddings",
+            json={"model": DEFAULT_EMBEDDING_MODEL, "input": big},
+        )
+        assert response.status_code == 413
+        mock_manager.encode.assert_not_called()
 
     def test_create_embeddings_base64_format(self, client):
         test_client, mock_manager = client
@@ -148,6 +210,7 @@ class TestEmbeddingServerRoutes:
             ["hello"],
             trust_remote_code=True,
             priority=EncodePriority.BULK,
+            should_stop=ANY, witness=ANY,
         )
 
     def test_a_marked_query_is_encoded_as_a_query(self, client) -> None:
@@ -272,29 +335,101 @@ class TestEmbeddingHelpers:
 
 class TestModelManager:
     def test_cache_key(self):
-        assert (
-            ModelManager._cache_key("model-a", trust_remote_code=False)
-            == "model-a::trust_remote_code=False"
-        )
-        assert (
-            ModelManager._cache_key("model-a", trust_remote_code=True)
-            == "model-a::trust_remote_code=True"
-        )
+        # One key per model: trust_remote_code must not split it into two loads.
+        assert ModelManager._cache_key("model-a") == "model-a"
 
-    def test_list_loaded_models_deduplicates_trust_remote_code_keys(self):
+    def test_list_loaded_models(self):
         manager = ModelManager()
-        manager._models = {
-            "model-a::trust_remote_code=False": MagicMock(),
-            "model-a::trust_remote_code=True": MagicMock(),
-            "model-b::trust_remote_code=False": MagicMock(),
-        }
+        manager._models = {"model-a": MagicMock(), "model-b": MagicMock()}
         assert sorted(manager.list_loaded_models()) == ["model-a", "model-b"]
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_uses_the_models_own_tokenizer(self) -> None:
+        class Model:
+            def tokenizer(self, texts: list[str], add_special_tokens: bool, truncation: bool) -> dict:
+                assert add_special_tokens and truncation is False
+                return {"input_ids": [list(range(len(t))) for t in texts]}
+
+        manager = ModelManager()
+        manager._models = {"m": Model()}
+        gate = MagicMock()
+        gate.slot = MagicMock(side_effect=AssertionError("counting must not take an encode slot"))
+        manager._encode_gate = gate
+        assert await manager.count_tokens("m", ["ab", "abcde"]) == [2, 5]
+        gate.slot.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_count_tokens_includes_the_default_prompt_encode_would_add(self) -> None:
+        seen: list[list[str]] = []
+
+        class Model:
+            default_prompt_name = "query"
+            prompts = {"query": "search: "}
+
+            def tokenizer(self, texts: list[str], add_special_tokens: bool, truncation: bool = False) -> dict:
+                seen.append(texts)
+                return {"input_ids": [list(range(len(t))) for t in texts]}
+
+        manager = ModelManager()
+        manager._models = {"m": Model()}
+        assert await manager.count_tokens("m", ["ab"]) == [10]  # "search: ab"
+        assert manager.prompt_tokens("m") == 8
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_fallback_count_holds_its_slot_until_the_thread_ends(self) -> None:
+        from app.embedding_main import _Counter
+
+        release, inside = threading.Event(), threading.Event()
+
+        class Model:
+            def tokenizer(self, texts: list[str], add_special_tokens: bool, truncation: bool) -> dict:
+                inside.set()
+                release.wait(timeout=5)
+                return {"input_ids": [[0] for _ in texts]}
+
+        model = Model()
+        manager = ModelManager(max_concurrency=2, query_reserved_slots=1)
+        manager._models = {"m": model}
+        # No private tokenizer could be made: counting falls back to the model's own.
+        manager._counter = AsyncMock(  # type: ignore[method-assign]
+            return_value=_Counter(model=model, tokenizer=None, prompt_tokens=0)
+        )
+        task = asyncio.ensure_future(manager.count_tokens("m", ["a"]))
+        assert await asyncio.to_thread(inside.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert manager.encode_gate_stats()["in_use"] == 1  # the thread is still in the tokenizer
+        # ...and in the model, so the idle reaper must keep it.
+        assert manager._in_use == {manager._cache_key("m"): 1}
+
+        release.set()
+        for _ in range(100):
+            if manager.encode_gate_stats()["in_use"] == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert manager.encode_gate_stats()["in_use"] == 0
+        assert manager._in_use == {}
+
+    def test_a_model_without_a_default_prompt_adds_no_tokens(self) -> None:
+        manager = ModelManager()
+        manager._models = {"m": MagicMock(default_prompt_name=None, prompts={"query": "x"}), "n": MagicMock(spec=[])}
+        assert manager.prompt_tokens("m") == 0
+        assert manager.prompt_tokens("n") == 0
+        assert manager.prompt_tokens("not-loaded") == 0
+
+    def test_max_seq_length_reads_the_loaded_model(self) -> None:
+        manager = ModelManager()
+        manager._models = {"a": MagicMock(max_seq_length=384), "b": MagicMock(max_seq_length=None)}
+        assert manager.max_seq_length("a") == 384
+        assert manager.max_seq_length("b") is None
+        assert manager.max_seq_length("not-loaded") is None
 
     @pytest.mark.asyncio
     async def test_get_model_returns_cached_without_loading(self):
         manager = ModelManager()
         cached = MagicMock(name="cached-model")
-        manager._models["cached::trust_remote_code=False"] = cached
+        manager._models["cached"] = cached
 
         with patch("sentence_transformers.SentenceTransformer") as mock_st:
             result = await manager.get_model("cached")
@@ -434,7 +569,7 @@ class TestModelManager:
             manager, "get_model", new_callable=AsyncMock, return_value=MagicMock()
         ) as mock_get:
             await manager.warmup("warm-model")
-        mock_get.assert_awaited_once_with("warm-model")
+        mock_get.assert_awaited_once_with("warm-model", trust_remote_code=False)
 
     @pytest.mark.asyncio
     async def test_encode_returns_tolist_from_model(self):
@@ -458,12 +593,14 @@ class TestModelManager:
             ["hello", "world"],
             normalize_embeddings=True,
             convert_to_numpy=True,
+            show_progress_bar=False,
         )
 
 
 class TestEmbeddingServerEdgeCases:
-    def test_health_starting_when_default_model_not_loaded(self):
+    def test_health_healthy_when_default_model_not_loaded(self):
         mock_manager = MagicMock(spec=ModelManager)
+        mock_manager.encode_gate_stats.return_value = EncodeGate(2, 1).stats()
         mock_manager.list_loaded_models.return_value = []
         mock_manager.warmup = AsyncMock()
 
@@ -472,7 +609,8 @@ class TestEmbeddingServerEdgeCases:
                 response = test_client.get("/health")
 
         assert response.status_code == 200
-        assert response.json()["status"] == "starting"
+        # Not loaded is normal now: it loads on demand and unloads when idle.
+        assert response.json()["status"] == "healthy"
 
     def test_health_unhealthy_on_exception(self):
         mock_manager = MagicMock(spec=ModelManager)
@@ -531,15 +669,36 @@ class TestEmbeddingServerEdgeCases:
 
     def test_lifespan_continues_when_warmup_fails(self):
         mock_manager = MagicMock(spec=ModelManager)
+        mock_manager.encode_gate_stats.return_value = EncodeGate(2, 1).stats()
         mock_manager.list_loaded_models.return_value = [DEFAULT_EMBEDDING_MODEL]
         mock_manager.warmup = AsyncMock(side_effect=RuntimeError("warmup failed"))
 
-        with patch("app.embedding_main.model_manager", mock_manager):
+        with patch("app.embedding_main.model_manager", mock_manager), patch(
+            "app.embedding_main._local_model_in_use",
+            new_callable=AsyncMock,
+            return_value=True,
+        ):
             with TestClient(app) as test_client:
                 response = test_client.get("/health")
 
         assert response.status_code == 200
         mock_manager.warmup.assert_awaited_once()
+
+    def test_lifespan_skips_warmup_when_no_local_model_in_use(self) -> None:
+        mock_manager = MagicMock(spec=ModelManager)
+        mock_manager.encode_gate_stats.return_value = EncodeGate(2, 1).stats()
+        mock_manager.list_loaded_models.return_value = []
+        mock_manager.warmup = AsyncMock()
+
+        with patch("app.embedding_main.model_manager", mock_manager), patch(
+            "app.embedding_main._local_model_in_use",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            with TestClient(app) as test_client:
+                assert test_client.get("/health").status_code == 200
+
+        mock_manager.warmup.assert_not_awaited()
 
 
 class TestEmbeddingServerRun:
@@ -631,7 +790,7 @@ class TestModelManagerDownloadLifecycle:
 
     def test_start_prepare_returns_ready_status_when_already_loaded(self):
         manager = ModelManager()
-        manager._models["cached::trust_remote_code=False"] = MagicMock()
+        manager._models["cached"] = MagicMock()
 
         status = manager.start_prepare("cached")
 
@@ -851,10 +1010,11 @@ class TestEncodeGate:
         await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
 
     @pytest.mark.asyncio
-    async def test_a_steady_stream_of_queries_cannot_stop_indexing(self) -> None:
+    @pytest.mark.parametrize("capacity", [2, 4])
+    async def test_a_steady_stream_of_queries_cannot_stop_indexing(self, capacity: int) -> None:
         """Queries looping on every slot, with more always queued: a bulk
-        request still gets a slot."""
-        gate = EncodeGate(capacity=4, reserved_for_queries=1)
+        request still gets a slot, on the two-slot small tier as well."""
+        gate = EncodeGate(capacity=capacity, reserved_for_queries=1)
         stop = asyncio.Event()
 
         async def query_loop() -> None:
@@ -954,6 +1114,94 @@ class TestEncodeGate:
             await waiter
         assert gate.in_use == 0
 
+    def test_stats_at_idle(self) -> None:
+        stats = EncodeGate(capacity=2, reserved_for_queries=1).stats()
+        assert stats == {
+            "slots": 2,
+            "reserved": 1,
+            "bulk_limit": 1,
+            "in_use": 0,
+            "waiting": 0,
+            "wait_p95_ms": {"query": 0.0, "bulk": 0.0},
+            "oldest_in_use_age_s": {"query": 0.0, "bulk": 0.0},
+        }
+
+    def test_the_reservation_is_capped_so_bulk_keeps_a_slot(self) -> None:
+        stats = EncodeGate(capacity=1, reserved_for_queries=1).stats()
+        assert (stats["slots"], stats["reserved"], stats["bulk_limit"]) == (1, 0, 1)
+
+    @pytest.mark.asyncio
+    async def test_stats_under_load(self) -> None:
+        now = [100.0]
+        gate = EncodeGate(capacity=2, reserved_for_queries=1, clock=lambda: now[0])
+        bulk = await gate.acquire(EncodePriority.BULK)
+        now[0] = 130.0
+        query = await gate.acquire(EncodePriority.QUERY)
+        now[0] = 140.0
+        waiter = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+
+        stats = gate.stats()
+        assert stats["in_use"] == 2 and stats["waiting"] == 1
+        assert stats["oldest_in_use_age_s"] == {"query": 10.0, "bulk": 40.0}
+
+        # A later holder finishing must not hide the one that has run longest.
+        gate.release(EncodePriority.QUERY, query)
+        assert gate.stats()["oldest_in_use_age_s"] == {"query": 0.0, "bulk": 40.0}
+
+        now[0] = 150.0
+        gate.release(EncodePriority.BULK, bulk)  # hands the slot to the waiter, which waited 10 s
+        await asyncio.wait_for(waiter, timeout=1)
+        assert gate.stats()["wait_p95_ms"]["bulk"] == 10000.0
+        assert gate.stats()["oldest_in_use_age_s"]["bulk"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_the_wait_window_is_bounded(self) -> None:
+        gate = EncodeGate(capacity=1, reserved_for_queries=0)
+        for _ in range(EncodeGate._WAIT_WINDOW * 2):
+            gate.release(EncodePriority.BULK, await gate.acquire(EncodePriority.BULK))
+        assert len(gate._waits[EncodePriority.BULK]) == EncodeGate._WAIT_WINDOW
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_waiter_leaves_no_holder_record(self) -> None:
+        gate = EncodeGate(capacity=1, reserved_for_queries=0)
+        first = await gate.acquire(EncodePriority.BULK)
+        waiter = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+        gate.release(EncodePriority.BULK, first)  # granted to the waiter...
+        waiter.cancel()  # ...which is cancelled before it resumes
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert gate.stats()["in_use"] == 0
+        assert gate.stats()["oldest_in_use_age_s"]["bulk"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_releasing_a_token_twice_frees_only_one_slot(self) -> None:
+        gate = EncodeGate(capacity=2, reserved_for_queries=0)
+        first = await gate.acquire(EncodePriority.BULK)
+        await gate.acquire(EncodePriority.BULK)
+        gate.release(EncodePriority.BULK, first)
+        gate.release(EncodePriority.BULK, first)
+        assert gate.in_use == 1
+        assert len(gate._held) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_grant_cancelled_before_it_runs_hands_back_its_own_token(self) -> None:
+        now = [0.0]
+        gate = EncodeGate(capacity=2, reserved_for_queries=0, clock=lambda: now[0])
+        await gate.acquire(EncodePriority.BULK)  # long-running holder
+        now[0] = 50.0
+        second = await gate.acquire(EncodePriority.BULK)
+        waiter = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+        gate.release(EncodePriority.BULK, second)  # granted to the waiter...
+        waiter.cancel()  # ...which is cancelled before it resumes
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        # The long-running holder is still recorded, not the one that was handed back.
+        assert gate.in_use == 1
+        assert gate.stats()["oldest_in_use_age_s"]["bulk"] == 50.0
+
     def test_priority_header_values(self) -> None:
         assert EncodePriority.from_header("query") is EncodePriority.QUERY
         assert EncodePriority.from_header(" Query ") is EncodePriority.QUERY
@@ -999,3 +1247,1021 @@ class TestQueriesDuringIndexing:
             release_bulk.set()
             await asyncio.gather(*batches)
         assert sorted(encoded[1:]) == [f"batch-{i}" for i in range(4)]
+
+    @pytest.mark.asyncio
+    async def test_queries_start_at_once_and_the_wait_shows_by_priority(self) -> None:
+        """The small-tier shape: two slots, one reserved, bulk saturated."""
+        manager = ModelManager(max_concurrency=2, query_reserved_slots=1)
+        # Every reading moves a second, so stats() ages and waits are not
+        # rounded to zero by a fast machine.
+        ticks = itertools.count()
+        manager._encode_gate._clock = lambda: float(next(ticks))
+        release_bulk = threading.Event()
+        model = MagicMock()
+
+        def encode(texts: list[str], **_kwargs: object) -> np.ndarray:
+            if texts[0].startswith("batch"):
+                release_bulk.wait(timeout=5)
+            return np.zeros((len(texts), 2))
+
+        model.encode.side_effect = encode
+        with patch.object(manager, "get_model", new_callable=AsyncMock, return_value=model):
+            batches = [
+                asyncio.ensure_future(manager.encode("m", [f"batch-{i}"], priority=EncodePriority.BULK))
+                for i in range(3)
+            ]
+            await asyncio.sleep(0.05)
+            before = manager.encode_gate_stats()
+            assert before["in_use"] == 1 and before["waiting"] == 2
+            assert before["oldest_in_use_age_s"]["bulk"] > 0
+
+            await asyncio.wait_for(manager.encode("m", ["query"], priority=EncodePriority.QUERY), timeout=10)
+            # The query took the reserved slot without queueing (read on the gate's own clock, not timed).
+            assert manager.encode_gate_stats()["wait_p95_ms"]["query"] == 0.0
+
+            release_bulk.set()
+            await asyncio.gather(*batches)
+        # The third batch queued behind the first two, so bulk waits show.
+        assert manager.encode_gate_stats()["wait_p95_ms"]["bulk"] > 0
+        assert manager.encode_gate_stats()["in_use"] == 0
+
+    def test_health_reports_the_gate_at_idle_and_under_load(self) -> None:
+        manager = ModelManager(max_concurrency=2, query_reserved_slots=1)
+        manager.warmup = AsyncMock()  # type: ignore[method-assign]
+        with patch("app.embedding_main.model_manager", manager), TestClient(app) as test_client:
+            idle = test_client.get("/health").json()
+            gate = idle["encode_gate"]
+            assert gate["slots"] == 2 and gate["reserved"] == 1 and gate["bulk_limit"] == 1
+            assert gate["in_use"] == 0 and gate["waiting"] == 0
+            for key in ("wait_p95_ms", "oldest_in_use_age_s"):
+                assert set(gate[key]) == {"query", "bulk"}
+                assert all(isinstance(v, float) for v in gate[key].values())
+            assert idle["cpu"]["max_concurrent_embeddings"] == embedding_main_slots()
+
+            # Taking a slot does not touch the event loop when there is no wait.
+            asyncio.run(manager._encode_gate.acquire(EncodePriority.BULK))
+            time.sleep(0.01)
+            loaded = test_client.get("/health").json()["encode_gate"]
+        assert loaded["in_use"] == 1
+        assert loaded["oldest_in_use_age_s"]["bulk"] >= 0.0
+        assert isinstance(loaded["in_use"], int) and isinstance(loaded["waiting"], int)
+
+
+def embedding_main_slots() -> int:
+    from app import embedding_main
+
+    return embedding_main.MAX_CONCURRENT_EMBEDDINGS
+
+
+class TestAbandonedRequests:
+    """A client that left while its request queued must not cost an encode."""
+
+    @staticmethod
+    def _manager(release: threading.Event, calls: list[str], started: threading.Event | None = None) -> ModelManager:
+        manager = ModelManager(max_concurrency=1, query_reserved_slots=0)
+        model = MagicMock()
+
+        def encode(texts: list[str], **_kwargs: object) -> np.ndarray:
+            calls.append(texts[0])
+            if started is not None:
+                started.set()
+            release.wait(timeout=5)
+            return np.zeros((len(texts), 2))
+
+        model.encode.side_effect = encode
+        manager.get_model = AsyncMock(return_value=model)  # type: ignore[method-assign]
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_requests_whose_client_left_while_queued_cost_no_encode(self) -> None:
+        release, calls = threading.Event(), []
+        manager = self._manager(release, calls)
+        gone = {"b": False, "c": False}
+
+        def stop_for(name: str) -> Callable[[], Awaitable[bool]]:
+            async def should_stop() -> bool:
+                return gone.get(name, False)
+
+            return should_stop
+
+        a = asyncio.ensure_future(manager.encode("m", ["a"], should_stop=stop_for("a")))
+        await asyncio.sleep(0.05)
+        b = asyncio.ensure_future(manager.encode("m", ["b"], should_stop=stop_for("b")))
+        c = asyncio.ensure_future(manager.encode("m", ["c"], should_stop=stop_for("c")))
+        await asyncio.sleep(0.05)
+        assert manager.encode_gate_stats()["waiting"] == 2
+        gone["b"] = gone["c"] = True
+        release.set()
+
+        assert len(await a) == 1
+        for abandoned in (b, c):
+            with pytest.raises(EncodeAbandoned):
+                await abandoned
+        assert calls == ["a"]
+        assert manager.encode_gate_stats()["in_use"] == 0
+
+    @pytest.mark.asyncio
+    async def test_the_slot_is_held_until_the_thread_ends(self) -> None:
+        release, calls = threading.Event(), []
+        started = threading.Event()
+        manager = self._manager(release, calls, started)
+        task = asyncio.ensure_future(manager.encode("m", ["a"]))
+        assert await asyncio.to_thread(started.wait, 5)  # the thread is inside the model
+        task.cancel()  # the request is cancelled while its thread is inside the model
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert manager.encode_gate_stats()["in_use"] == 1
+        # The thread still uses the model, so the idle reaper must keep it.
+        assert manager._in_use == {manager._cache_key("m"): 1}
+
+        # A second request has to wait for that thread, not run beside it.
+        follower = asyncio.ensure_future(manager.encode("m", ["b"]))
+        await asyncio.sleep(0.05)
+        assert calls == ["a"]
+        release.set()
+        await asyncio.wait_for(follower, timeout=2)
+        assert calls == ["a", "b"]
+        assert manager.encode_gate_stats()["in_use"] == 0
+        assert manager._in_use == {}
+
+    @pytest.mark.asyncio
+    async def test_a_client_that_leaves_after_the_encode_gets_the_abandon_signal_not_an_error(self) -> None:
+        release, calls = threading.Event(), []
+        release.set()
+        manager = self._manager(release, calls)
+        answers = iter([False, True])  # connected at the start, gone when the vectors are ready
+
+        async def should_stop() -> bool:
+            return next(answers)
+
+        with pytest.raises(EncodeAbandoned):
+            await manager.encode("m", ["a"], should_stop=should_stop)
+        assert calls == ["a"]
+        assert manager.encode_gate_stats()["in_use"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_check_that_raises_before_start_counts_as_still_connected(self) -> None:
+        release, calls = threading.Event(), []
+        release.set()
+        manager = self._manager(release, calls)
+
+        async def broken() -> bool:
+            raise RuntimeError("receive channel closed")
+
+        assert len(await manager.encode("m", ["a"], should_stop=broken)) == 1
+        assert calls == ["a"]
+        assert manager.encode_gate_stats()["in_use"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_check_that_raises_after_the_encode_does_not_fail_the_request(self) -> None:
+        release, calls = threading.Event(), []
+        release.set()
+        manager = self._manager(release, calls)
+        answers = iter([False])  # the second ask raises StopAsyncIteration-like failure
+
+        async def flaky() -> bool:
+            try:
+                return next(answers)
+            except StopIteration:
+                raise RuntimeError("receive channel closed") from None
+
+        assert len(await manager.encode("m", ["a"], should_stop=flaky)) == 1
+        assert manager.encode_gate_stats()["in_use"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("left", [True, False])
+    async def test_disconnect_check_sees_a_client_that_left_behind_the_telemetry_middleware(self, left) -> None:
+        """The route's check is ``Request.is_disconnected``, under the telemetry middleware as in the service."""
+        from fastapi import FastAPI, Request
+
+        from app.telemetry.middleware import MetricsMiddleware
+
+        probe = FastAPI()
+        probe.add_middleware(MetricsMiddleware, service_name="probe")
+        seen: list[bool] = []
+        queued, decided = asyncio.Event(), asyncio.Event()
+
+        @probe.post("/p")
+        async def handler(request: Request) -> dict:
+            await request.body()
+            queued.set()
+            await decided.wait()  # in the gate queue while the client leaves, or stays
+            seen.append(await request.is_disconnected())
+            return {}
+
+        inbox: asyncio.Queue = asyncio.Queue()
+        inbox.put_nowait({"type": "http.request", "body": b"{}", "more_body": False})
+
+        async def send(_message: dict) -> None:
+            return None
+
+        scope = {
+            "type": "http", "method": "POST", "path": "/p", "headers": [(b"content-length", b"2")],
+            "query_string": b"", "http_version": "1.1", "scheme": "http", "root_path": "",
+            "server": ("t", 80), "client": ("c", 1),
+        }  # fmt: skip
+        run = asyncio.ensure_future(probe(scope, inbox.get, send))
+        await queued.wait()
+        if left:
+            inbox.put_nowait({"type": "http.disconnect"})
+        decided.set()
+        await run
+        assert seen == [left]
+
+    def test_route_passes_the_disconnect_check_and_answers_an_abandoned_request_quietly(self, client) -> None:
+        test_client, mock_manager = client
+        seen: list[bool] = []
+
+        async def encode(*_args: object, should_stop: Callable[[], Awaitable[bool]], **_kwargs: object) -> None:
+            seen.append(await should_stop())
+            raise EncodeAbandoned
+
+        mock_manager.encode = AsyncMock(side_effect=encode)
+        response = test_client.post("/v1/embeddings", json={"model": DEFAULT_EMBEDDING_MODEL, "input": "hello"})
+        assert seen == [False]  # this client is still connected
+        assert response.status_code == 499
+
+
+class TestDefaultEncodeConcurrency:
+    """Without an explicit setting, encode slots follow the container's CPUs
+    and the threads one encode uses."""
+
+    @staticmethod
+    def _slots(cpus: int, omp: str | None = None) -> int:
+        import os
+
+        from app import embedding_main
+
+        env = {k: v for k, v in os.environ.items() if k != "OMP_NUM_THREADS"}
+        if omp is not None:
+            env["OMP_NUM_THREADS"] = omp
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(embedding_main, "effective_cpu_count", return_value=cpus),
+        ):
+            return embedding_main._default_max_concurrent_embeddings()
+
+    def test_follows_effective_cpu_count_not_host(self) -> None:
+        import os
+
+        from app import embedding_main
+
+        with (
+            patch.object(os, "cpu_count", return_value=64),
+            patch.object(embedding_main, "effective_cpu_count", return_value=16),
+        ):
+            assert embedding_main._default_max_concurrent_embeddings() == 16
+
+    def test_floor_of_two(self) -> None:
+        assert self._slots(1) == 2
+
+    @pytest.mark.parametrize(("cpus", "slots"), [(4, 2), (8, 4), (9, 9), (16, 16)])
+    def test_small_tiers_fill_the_cpus_once(self, cpus: int, slots: int) -> None:
+        assert self._slots(cpus, "2") == slots
+
+    @pytest.mark.parametrize(("omp", "slots"), [
+        (None, 2), ("0", 2), ("", 2), ("2,2", 2), ("abc", 2), ("-1", 2), ("4", 2), ("1", 4),
+    ])
+    def test_omp_num_threads_is_read_only_as_a_positive_integer(self, omp: str | None, slots: int) -> None:
+        assert self._slots(4, omp) == slots
+
+    def test_four_cpus_give_two_slots_one_reserved_and_bulk_width_one(self) -> None:
+        gate = EncodeGate(self._slots(4), 1)
+        assert gate.stats()["slots"] == 2
+        assert gate.stats()["reserved"] == 1
+        assert gate.bulk_limit == 1
+
+    def test_env_wins_over_the_default(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import app.services.resource_governor.probe as p;"
+            "p.effective_cpu_count = lambda: 4;"
+            "import app.embedding_main as m;"
+            "print(m.MAX_CONCURRENT_EMBEDDINGS)"
+        )
+        env = {**os.environ, "EMBEDDING_SERVER_MAX_CONCURRENCY": "5"}
+        out = subprocess.run(
+            [sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True, timeout=300
+        )
+        assert out.stdout.strip().splitlines()[-1] == "5"
+
+    def test_health_reports_cpu_source_and_slots(self, client) -> None:
+        test_client, _ = client
+        with (
+            patch("app.embedding_main.effective_cpu_count", return_value=3),
+            patch("app.embedding_main.effective_cpu_source", return_value="cgroup_v1"),
+        ):
+            body = test_client.get("/health").json()
+        assert body["cpu"]["effective_cpus"] == 3
+        assert body["cpu"]["source"] == "cgroup_v1"
+
+    def test_module_constant_comes_from_helper(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import app.services.resource_governor.probe as p;"
+            "p.effective_cpu_count = lambda: 7;"
+            "import app.embedding_main as m;"
+            "print(m.MAX_CONCURRENT_EMBEDDINGS)"
+        )
+        env = {
+            k: v for k, v in os.environ.items() if k not in ("EMBEDDING_SERVER_MAX_CONCURRENCY", "OMP_NUM_THREADS")
+        }
+        out = subprocess.run(
+            [sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True, timeout=300
+        )
+        assert out.stdout.strip().splitlines()[-1] == "3"
+
+    def test_health_reports_slot_count(self, client) -> None:
+        from app import embedding_main
+
+        test_client, _ = client
+        with patch.object(embedding_main, "MAX_CONCURRENT_EMBEDDINGS", 11):
+            body = test_client.get("/health").json()
+        assert body["cpu"]["max_concurrent_embeddings"] == 11
+
+
+def _config_service(value: object = None, error: Exception | None = None) -> MagicMock:
+    service = MagicMock()
+    service.get_config = AsyncMock(return_value=value, side_effect=error)
+    return service
+
+
+class TestWarmupDecision:
+    """The default local model is loaded at startup only when something uses it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ai_models",
+        [
+            None,
+            {},
+            {"embedding": []},
+            {"embedding": [{"provider": "default", "isDefault": True}]},
+            {"embedding": [{"provider": "huggingFace"}]},
+            {"embedding": [{"provider": "sentenceTransformers", "isDefault": True}]},
+            {
+                "embedding": [
+                    {"provider": "openAI"},
+                    {"provider": "default", "isDefault": True},
+                ]
+            },
+        ],
+    )
+    async def test_warms_when_local_model_is_chosen(self, ai_models: dict | None) -> None:
+        assert await _local_model_in_use(_config_service(ai_models)) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ai_models",
+        [
+            {"embedding": [{"provider": "openAI", "isDefault": True}]},
+            {"embedding": [{"provider": "bedrock"}]},
+            {"embedding": [{"provider": "ollama", "isDefault": True}]},
+            # The default entry decides, not an unused local one beside it.
+            {
+                "embedding": [
+                    {"provider": "default"},
+                    {"provider": "cohere", "isDefault": True},
+                ]
+            },
+        ],
+    )
+    async def test_skips_warmup_when_embedding_is_remote(self, ai_models: dict | None) -> None:
+        assert await _local_model_in_use(_config_service(ai_models)) is False
+
+    @pytest.mark.asyncio
+    async def test_skips_warmup_when_settings_unreadable(self) -> None:
+        assert await _local_model_in_use(_config_service(error=RuntimeError("redis down"))) is False
+        assert await _local_model_in_use(None) is False
+
+
+def _fake_st(loaded: list[str]) -> Callable[..., MagicMock]:
+    def factory(model_name: str, **kwargs: object) -> MagicMock:
+        loaded.append(model_name)
+        model = MagicMock(name=model_name)
+        model.encode.return_value = np.array([[0.1, 0.2]])
+        return model
+
+    return factory
+
+
+@pytest.fixture
+def inline_threads() -> Iterator[None]:
+    with patch(
+        "app.embedding_main.asyncio.to_thread", side_effect=_passthrough_to_thread
+    ):
+        yield
+
+
+@pytest.mark.usefixtures("inline_threads")
+class TestIdleUnload:
+    @pytest.mark.asyncio
+    async def test_first_request_loads_lazily(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        assert manager.list_loaded_models() == []
+
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            result = await manager.encode("m", ["x"])
+
+        assert result == [[0.1, 0.2]]
+        assert loaded == ["m"]
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_idle_model_is_unloaded_and_reloaded_by_next_request(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            await manager.encode("m", ["x"])
+            # Not time.monotonic(): just below a power of two, (t + 60) - t rounds to
+            # 59.99999999999955 and the boundary check below failed on CI runners.
+            used_at = manager._last_used["m"] = 1000.0
+
+            assert manager.reap_idle(now=used_at + 59) == []
+            assert manager.list_loaded_models() == ["m"]
+
+            assert manager.reap_idle(now=used_at + 60) == ["m"]
+            assert manager.list_loaded_models() == []
+            assert "m" not in manager._locks
+
+            await manager.encode("m", ["x"])
+
+        assert loaded == ["m", "m"]
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_zero_idle_seconds_never_unloads(self) -> None:
+        manager = ModelManager(idle_seconds=0)
+        manager._models["m"] = MagicMock()
+        manager._last_used["m"] = 0.0
+        assert manager.reap_idle(now=10**9) == []
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_request_in_flight_keeps_the_model(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            model = await manager.get_model("m")
+
+            # Hold the model the way a running request does.
+            async def request() -> None:
+                async with manager._lease("m"):
+                    started.set()
+                    await release.wait()
+
+            task = asyncio.create_task(request())
+            await started.wait()
+            assert manager.reap_idle(now=time.monotonic() + 10**6) == []
+            assert manager._models["m"] is model
+
+            release.set()
+            await task
+            assert manager.reap_idle(now=time.monotonic() + 10**6) == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_request_arriving_while_unloading_gets_a_model(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            await manager.encode("m", ["x"])
+            future = manager._last_used["m"] + 61
+
+            # Unload and a new request interleave on the loop: both must succeed.
+            reap = asyncio.create_task(asyncio.to_thread(manager.reap_idle, future))
+            request = asyncio.create_task(manager.encode("m", ["y"]))
+            await asyncio.gather(reap, request)
+
+            assert request.result() == [[0.1, 0.2]]
+            # Either the request kept the first copy or it reloaded after the
+            # unload; it is never left without a model, and never loaded twice at once.
+            assert len(loaded) in (1, 2)
+            assert manager.list_loaded_models() in (["m"], [])
+            await manager.encode("m", ["z"])
+            assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_load_in_progress_is_not_unloaded(self) -> None:
+        manager = ModelManager(idle_seconds=1)
+        loading = asyncio.Event()
+
+        def slow_factory(model_name: str, **kwargs: object) -> MagicMock:
+            return MagicMock()
+
+        async def blocked_to_thread(func: Callable[..., object], *args: object, **kwargs: object) -> object:
+            loading.set()
+            await asyncio.sleep(0.05)
+            return func(*args, **kwargs)
+
+        with patch("sentence_transformers.SentenceTransformer", side_effect=slow_factory), patch(
+            "app.embedding_main.asyncio.to_thread", side_effect=blocked_to_thread
+        ):
+            task = asyncio.create_task(manager.warmup("m"))
+            await loading.wait()
+            assert manager.reap_idle(now=time.monotonic() + 10**6) == []
+            await task
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_start_prepare_load_is_released_for_unloading(self) -> None:
+        manager = ModelManager(idle_seconds=60)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            manager.start_prepare("m")
+            await manager._prepare_tasks["m"]
+        assert manager._in_use == {}
+        assert manager.reap_idle(now=manager._last_used["m"] + 61) == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_reaper_loop_unloads_and_returns_memory(self) -> None:
+        manager = ModelManager(idle_seconds=1)
+        manager._models["m"] = MagicMock()
+        manager._last_used["m"] = time.monotonic() - 100
+        with patch("app.embedding_main.release_memory") as release:
+            task = asyncio.create_task(manager.run_idle_reaper())
+            for _ in range(200):
+                if release.called:
+                    break
+                await asyncio.sleep(0.05)
+            task.cancel()
+        assert manager.list_loaded_models() == []
+        release.assert_called_once()
+
+    def test_release_memory_frees_unreferenced_objects(self) -> None:
+        import gc
+        import weakref
+
+        class Holder:
+            pass
+
+        holder = Holder()
+        holder.me = holder  # cycle: only gc frees it
+        ref = weakref.ref(holder)
+        del holder
+        release_memory()
+        assert ref() is None
+        assert gc.garbage == []
+
+
+@pytest.mark.usefixtures("inline_threads")
+class TestSingleCopyPerModel:
+    @pytest.mark.asyncio
+    async def test_trust_remote_code_does_not_load_a_second_copy(self) -> None:
+        manager = ModelManager(idle_seconds=0)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            first = await manager.get_model("m", trust_remote_code=False)
+            second = await manager.get_model("m", trust_remote_code=True)
+        assert first is second
+        assert loaded == ["m"]
+        assert manager.list_loaded_models() == ["m"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_with_both_flags_load_once(self) -> None:
+        manager = ModelManager(idle_seconds=0)
+        loaded: list[str] = []
+        with patch("sentence_transformers.SentenceTransformer", side_effect=_fake_st(loaded)):
+            await asyncio.gather(
+                manager.encode("m", ["a"], trust_remote_code=False),
+                manager.encode("m", ["b"], trust_remote_code=True),
+            )
+        assert loaded == ["m"]
+
+    def test_remote_code_is_still_refused_when_not_allowed(self) -> None:
+        mock_manager = MagicMock(spec=ModelManager)
+        mock_manager.list_loaded_models.return_value = ["m"]
+        mock_manager.encode = AsyncMock(return_value=[[0.1]])
+        with patch("app.embedding_main.model_manager", mock_manager), patch(
+            "app.embedding_main.ALLOW_REMOTE_CODE", False
+        ), patch(
+            "app.embedding_main._local_model_in_use",
+            new_callable=AsyncMock,
+            return_value=False,
+        ):
+            with TestClient(app) as test_client:
+                response = test_client.post(
+                    "/v1/embeddings",
+                    json={"model": "m", "input": "x", "trust_remote_code": True},
+                )
+        assert response.status_code == 403
+        mock_manager.encode.assert_not_awaited()
+
+
+class TestTokenizerRace:
+    """Counting must not change what a concurrent encode does.
+
+    Fast tokenizers keep truncation state on the instance, and a call with
+    ``truncation=False`` rewrites it while it runs. When counting shared the
+    model's tokenizer, some concurrent encodes came back untruncated.
+    """
+
+    MAX_LEN = 32
+    VOCAB_WORDS = 50
+    TEXT = " ".join(f"w{i % 50}" for i in range(400))
+
+    @classmethod
+    def _model(cls, *, specials: bool = False) -> MagicMock:
+        from tokenizers import Tokenizer, models, pre_tokenizers, processors
+        from transformers import PreTrainedTokenizerFast
+
+        vocab = {"[UNK]": 0, **{f"w{i}": i + 1 for i in range(cls.VOCAB_WORDS)}}
+        vocab["[CLS]"] = len(vocab)
+        vocab["[SEP]"] = len(vocab)
+        backend = Tokenizer(models.WordLevel(vocab, unk_token="[UNK]"))
+        backend.pre_tokenizer = pre_tokenizers.Whitespace()
+        if specials:
+            backend.post_processor = processors.TemplateProcessing(
+                single="[CLS] $A [SEP]",
+                special_tokens=[("[CLS]", vocab["[CLS]"]), ("[SEP]", vocab["[SEP]"])],
+            )
+        model = MagicMock()
+        model.tokenizer = PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]")
+        model.default_prompt_name = None
+        model.prompts = {}
+        return model
+
+    def _run(self, *, encoders: int, count: bool, rounds: int = 400) -> tuple[int, int, list[int]]:
+        model = self._model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        texts = [self.TEXT] * 4
+        stop = threading.Event()
+        untruncated = [0]
+        encodes = [0]
+        guard = threading.Lock()
+
+        def encoder() -> None:
+            while not stop.is_set():
+                out = model.tokenizer(
+                    texts, truncation=True, max_length=self.MAX_LEN, add_special_tokens=True,
+                )["input_ids"]
+                bad = sum(1 for ids in out if len(ids) > self.MAX_LEN)
+                with guard:
+                    encodes[0] += 1
+                    untruncated[0] += bad
+
+        threads = [threading.Thread(target=encoder) for _ in range(encoders)]
+        for t in threads:
+            t.start()
+        counts: list[int] = []
+        try:
+            if count:
+                async def counting() -> None:
+                    for _ in range(rounds):
+                        counts[:] = await manager.count_tokens("m", ["w1 w2 w3"] * 2 + [self.TEXT] * 30)
+                asyncio.run(counting())
+            else:
+                time.sleep(0.5)
+        finally:
+            stop.set()
+            for t in threads:
+                t.join()
+        return untruncated[0], encodes[0], counts
+
+    def test_counting_never_leaves_an_encode_untruncated(self) -> None:
+        untruncated, encodes, counts = self._run(encoders=2, count=True)
+        assert encodes > 0
+        assert untruncated == 0
+        # Counting itself stays untruncated and exact: 3, 3, then the full text, 30 times.
+        assert counts == [3, 3] + [400] * 30
+
+    def test_control_encoders_alone_are_never_untruncated(self) -> None:
+        untruncated, encodes, _ = self._run(encoders=3, count=False)
+        assert encodes > 0
+        assert untruncated == 0
+
+    @pytest.mark.asyncio
+    async def test_concurrent_counts_agree(self) -> None:
+        manager = ModelManager()
+        manager._models = {"m": self._model()}
+        results = await asyncio.gather(*(
+            manager.count_tokens("m", [self.TEXT, "w1 w2"]) for _ in range(16)
+        ))
+        assert all(r == [400, 2] for r in results)
+
+    @pytest.mark.asyncio
+    async def test_counting_tokenizer_is_private_and_reused(self) -> None:
+        model = self._model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        counter = await manager._counter("m", model)
+        assert counter.tokenizer is not model.tokenizer
+        assert await manager._counter("m", model) is counter
+        # A reloaded model gets a fresh copy rather than the evicted model's.
+        other = self._model()
+        assert (await manager._counter("m", other)).tokenizer is not counter.tokenizer
+
+    @pytest.mark.asyncio
+    async def test_eviction_drops_the_counting_tokenizer(self) -> None:
+        model = self._model()
+        manager = ModelManager(idle_seconds=1.0)
+        manager._models = {"m": model}
+        manager._last_used = {"m": 0.0}
+        await manager._counter("m", model)
+        assert manager.reap_idle(now=100.0) == ["m"]
+        assert manager._counters == {}
+
+    @pytest.mark.asyncio
+    async def test_counting_falls_back_when_the_tokenizer_cannot_be_copied(self) -> None:
+        model = self._model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        fallback = self._model().tokenizer
+        with patch("copy.deepcopy", side_effect=TypeError("no copy")), patch(
+            "transformers.AutoTokenizer.from_pretrained", return_value=fallback,
+        ) as load:
+            assert await manager.count_tokens("m", ["w1 w2"]) == [2]
+        load.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_prompt_tokens_use_the_private_tokenizer_and_skip_special_tokens(self) -> None:
+        model = self._model(specials=True)
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "w1 w2"}
+        manager = ModelManager()
+        manager._models = {"m": model}
+        await manager._counter("m", model)
+        assert manager.prompt_tokens("m") == 2  # no [CLS]/[SEP]
+        assert manager._counters["m"].tokenizer is not model.tokenizer
+
+    @pytest.mark.asyncio
+    async def test_counts_include_special_tokens(self) -> None:
+        model = self._model(specials=True)
+        manager = ModelManager()
+        manager._models = {"m": model}
+        assert await manager.count_tokens("m", ["w1 w2"]) == [4]
+
+    @pytest.mark.asyncio
+    async def test_counts_on_the_private_tokenizer_do_not_overlap(self) -> None:
+        class Spy:
+            active = 0
+            peak = 0
+
+            def __call__(self, texts: list[str], **_: object) -> dict:
+                Spy.active += 1
+                Spy.peak = max(Spy.peak, Spy.active)
+                time.sleep(0.02)
+                Spy.active -= 1
+                return {"input_ids": [[1] for _ in texts]}
+
+        model = MagicMock()
+        model.tokenizer = Spy()
+        model.default_prompt_name = None
+        manager = ModelManager()
+        manager._models = {"m": model}
+        await asyncio.gather(*(manager.count_tokens("m", ["a"]) for _ in range(6)))
+        assert Spy.peak == 1
+
+    @staticmethod
+    def _slow_model(delay: float) -> MagicMock:
+        class Slow:
+            def __call__(self, texts: list[str], **_: object) -> dict:
+                time.sleep(delay)
+                return {"input_ids": [[1, 2] for _ in texts]}
+
+        model = MagicMock()
+        model.tokenizer = Slow()
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "p"}
+        model.encode = lambda texts, **_: np.zeros((len(texts), 4))
+        return model
+
+    @pytest.mark.asyncio
+    async def test_queued_counts_do_not_starve_a_query_encode(self) -> None:
+        manager = ModelManager()
+        model = self._slow_model(0.05)
+        manager._models = {"m": model}
+        await manager._counter("m", model)  # built when the model loads
+        flood = [asyncio.create_task(manager.count_tokens("m", ["a"])) for _ in range(64)]
+        await asyncio.sleep(0.2)
+        start = time.perf_counter()
+        await manager.encode("m", ["q"], priority=EncodePriority.QUERY)
+        waited = time.perf_counter() - start
+        for t in flood:
+            t.cancel()
+        await asyncio.gather(*flood, return_exceptions=True)
+        assert waited < 0.5
+
+    @pytest.mark.asyncio
+    async def test_models_listing_does_not_wait_for_queued_counts(self) -> None:
+        manager = ModelManager()
+        model = self._slow_model(0.3)
+        manager._models = {"m": model}
+        await manager._counter("m", model)  # built when the model loads
+        flood = [asyncio.create_task(manager.count_tokens("m", ["a"])) for _ in range(4)]
+        await asyncio.sleep(0.1)
+        start = time.perf_counter()
+        assert manager.prompt_tokens("m") == 2
+        waited = time.perf_counter() - start
+        for t in flood:
+            t.cancel()
+        await asyncio.gather(*flood, return_exceptions=True)
+        assert waited < 0.05
+
+    @pytest.mark.asyncio
+    async def test_copying_a_tokenizer_does_not_block_the_event_loop(self) -> None:
+        # The thread the copy ran on, not the loop's longest gap during it (which a busy runner stretches).
+        copied_on: list[int] = []
+
+        class SlowCopy:
+            def __deepcopy__(self, memo: dict) -> "SlowCopy":
+                copied_on.append(threading.get_ident())
+                return SlowCopy()
+
+            def __call__(self, texts: list[str], **_: object) -> dict:
+                return {"input_ids": [[1] for _ in texts]}
+
+        model = MagicMock()
+        model.tokenizer = SlowCopy()
+        model.default_prompt_name = None
+        manager = ModelManager()
+        manager._models = {"m": model}
+        assert await manager.count_tokens("m", ["a"]) == [1]
+        assert copied_on and threading.get_ident() not in copied_on, "the tokenizer was copied on the event loop"
+
+    @pytest.mark.asyncio
+    async def test_without_any_private_tokenizer_counting_degrades_to_the_shared_one(self) -> None:
+        model = self._model(specials=True)
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "w1 "}
+        manager = ModelManager()
+        manager._models = {"m": model}
+        slots: list[object] = []
+        real_acquire = manager._encode_gate.acquire
+
+        async def acquire(priority: EncodePriority) -> int:
+            slots.append(priority)
+            return await real_acquire(priority)
+
+        manager._encode_gate.acquire = acquire  # ty: ignore[invalid-assignment]
+        with patch("copy.deepcopy", side_effect=TypeError("no copy")), patch(
+            "transformers.AutoTokenizer.from_pretrained", side_effect=OSError("not cached"),
+        ), patch("app.embedding_main.logger") as log:
+            assert await manager.count_tokens("m", ["w2"]) == [4]
+            assert await manager.count_tokens("m", ["w2"]) == [4]
+            assert manager.prompt_tokens("m") == 1
+        assert slots == [EncodePriority.BULK] * 2
+        assert log.warning.call_count == 1  # once per model, not per call
+
+    @staticmethod
+    def _spy_model(delay: float) -> tuple[MagicMock, type]:
+        class Spy:
+            copies = 0
+            active = 0
+            peak = 0
+            copy_threads: list[int] = []
+            copy_gate: threading.Event | None = None  # a test may hold the copy until it releases this
+
+            def __deepcopy__(self, memo: dict) -> "Spy":
+                Spy.copies += 1
+                Spy.copy_threads.append(threading.get_ident())
+                if Spy.copy_gate is not None:
+                    Spy.copy_gate.wait(30)
+                time.sleep(0.1)
+                return Spy()
+
+            def __call__(self, texts: list[str], **_: object) -> dict:
+                Spy.active += 1
+                Spy.peak = max(Spy.peak, Spy.active)
+                time.sleep(delay)
+                Spy.active -= 1
+                return {"input_ids": [[1] for _ in texts]}
+
+        model = MagicMock()
+        model.tokenizer = Spy()
+        model.default_prompt_name = None
+        return model, Spy
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_counts_share_one_build(self) -> None:
+        model, spy = self._spy_model(0.0)
+        manager = ModelManager()
+        manager._models = {"m": model}
+        results = await asyncio.gather(*(manager.count_tokens("m", ["a"]) for _ in range(16)))
+        assert all(r == [1] for r in results)
+        assert spy.copies == 1
+
+    @pytest.mark.asyncio
+    async def test_a_waiter_that_leaves_does_not_cancel_the_shared_build(self) -> None:
+        model, spy = self._spy_model(0.0)
+        manager = ModelManager()
+        manager._models = {"m": model}
+        first = asyncio.create_task(manager.count_tokens("m", ["a"]))
+        second = asyncio.create_task(manager.count_tokens("m", ["a"]))
+        await asyncio.sleep(0.02)
+        first.cancel()
+        assert await second == [1]
+        assert spy.copies == 1
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_count_keeps_the_lock_until_its_thread_ends(self) -> None:
+        model, spy = self._spy_model(0.3)
+        manager = ModelManager()
+        manager._models = {"m": model}
+        counter = await manager._counter("m", model)
+        spy.peak = 0
+        first = asyncio.create_task(manager.count_tokens("m", ["a"]))
+        await asyncio.sleep(0.1)  # its thread is inside the tokenizer
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        assert counter.lock.locked()
+        assert await manager.count_tokens("m", ["a"]) == [1]
+        assert spy.peak == 1
+        assert not counter.lock.locked()
+
+    @pytest.mark.asyncio
+    async def test_a_model_loads_even_if_counting_cannot_be_prepared(self) -> None:
+        manager = ModelManager(device="cpu")
+        loaded = self._model()
+        with patch("sentence_transformers.SentenceTransformer", return_value=loaded), patch.object(
+            manager, "_build_counter", side_effect=RuntimeError("boom"),
+        ), patch("app.embedding_main.logger") as log:
+            assert await manager.get_model("m") is loaded
+        assert manager._counters == {}
+        log.warning.assert_called_once()
+        # The first count retries, and succeeds once the tokenizer can be prepared.
+        manager._build_counter = ModelManager._build_counter.__get__(manager)  # ty: ignore[invalid-assignment]
+        assert await manager.count_tokens("m", ["w1 w2"]) == [2]
+
+    @staticmethod
+    def _prompted_model(delay: float = 0.0) -> tuple[MagicMock, type]:
+        model, spy = TestTokenizerRace._spy_model(delay)
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "p"}
+        return model, spy
+
+    @pytest.mark.asyncio
+    async def test_listing_without_a_counter_returns_at_once_and_builds_in_the_background(self) -> None:
+        model, spy = self._prompted_model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        # The copy is held until released. Returning 0 while it is still held proves the call did not wait for
+        # it; a watchdog thread releases it if a wait blocks the loop, so a regression fails instead of hanging.
+        spy.copy_gate = threading.Event()
+        watchdog = threading.Timer(5, spy.copy_gate.set)
+        watchdog.start()
+        try:
+            assert manager.prompt_tokens("m") == 0  # not known yet
+            assert not spy.copy_gate.is_set(), "prompt_tokens waited for the counter build"
+        finally:
+            watchdog.cancel()
+            spy.copy_gate.set()
+        for _ in range(500):  # bounded poll for the background build, 10 s
+            if manager.prompt_tokens("m") == 1:
+                break
+            await asyncio.sleep(0.02)
+        assert manager.prompt_tokens("m") == 1  # known once the build is done
+        # The copy ran, and not on the loop: where it ran is checked, not how long the listing took.
+        assert spy.copy_threads
+        assert threading.get_ident() not in spy.copy_threads
+
+    @pytest.mark.asyncio
+    async def test_listing_without_a_counter_survives_a_failing_build(self) -> None:
+        model = MagicMock()
+        model.default_prompt_name = "q"
+        model.prompts = {"q": "p"}
+        manager = ModelManager()
+        manager._models = {"m": model}
+        with patch.object(manager, "_build_counter", side_effect=RuntimeError("boom")), patch(
+            "app.embedding_main.logger",
+        ) as log:
+            assert manager.prompt_tokens("m") == 0
+            assert manager.prompt_tokens("m") == 0
+            await asyncio.sleep(0.1)
+            assert manager.prompt_tokens("m") == 0  # tries again, still does not raise
+            await asyncio.sleep(0.1)
+        assert log.warning.called
+
+    @pytest.mark.asyncio
+    async def test_listing_and_counting_share_one_build(self) -> None:
+        model, spy = self._prompted_model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        counts = [asyncio.create_task(manager.count_tokens("m", ["a"])) for _ in range(8)]
+        await asyncio.sleep(0.02)  # the build is in flight
+        manager.prompt_tokens("m")
+        manager.prompt_tokens("m")
+        results = await asyncio.gather(*counts)
+        assert all(r == [1] for r in results)
+        assert spy.copies == 1
+
+    def test_listing_without_a_running_loop_does_not_build(self) -> None:
+        model, spy = self._prompted_model()
+        manager = ModelManager()
+        manager._models = {"m": model}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert manager.prompt_tokens("m") == 0
+            gc.collect()
+        assert spy.copies == 0
+        assert not [w for w in caught if "never awaited" in str(w.message)]

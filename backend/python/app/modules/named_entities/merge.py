@@ -5,9 +5,14 @@ from __future__ import annotations
 from bisect import bisect_left, insort
 from typing import TYPE_CHECKING, NamedTuple
 
+from app.modules.named_entities.coref import link_short_forms
 from app.modules.named_entities.domain.kinds import EntityKind, EntitySource, spec_for
 from app.modules.named_entities.domain.models import Mention, NamedEntity
-from app.modules.named_entities.domain.values import ContactValue, TypedValue
+from app.modules.named_entities.domain.values import (
+    ContactValue,
+    DateRangeValue,
+    TypedValue,
+)
 from app.modules.named_entities.normalizers import normalize_value
 from app.modules.named_entities.normalizers.names import canonical_name, norm_key_for
 from app.modules.named_entities.recognizers.pattern import is_suppressed_secret
@@ -72,7 +77,7 @@ def entity_identity(kind: EntityKind, surface: str, ctx: NormalizationContext) -
         # A date or amount whose text states none is not stored under a name key,
         # and a link that cannot be made canonical is never stored as its raw text.
         return None
-    display = canonical_name(surface, organization=kind is EntityKind.ORGANIZATION)
+    display = canonical_name(surface, kind)
     if kind is EntityKind.URL and isinstance(value, ContactValue):
         # The graph shows the canonical link, never the credentials a raw one can carry.
         display = value.canonical
@@ -112,4 +117,42 @@ def mentions_to_entities(
             )
         else:
             entity.mentions.append(mention)
+    return link_short_forms(list(grouped.values()))
+
+
+_DAY_KINDS = frozenset({EntityKind.DATE, EntityKind.DATE_RANGE})
+
+
+def anchor_year_less_dates(entities: list[NamedEntity], ctx: NormalizationContext) -> list[NamedEntity]:
+    """``entities`` with each date written without a year re-read under ``ctx`` (which
+    anchors years), from its mentions' own text. An anchored "Sep 10" that is the same
+    day as an explicit "September 10, 2025" joins that entity, as extraction would
+    have grouped them. A date no year fits stays as it was."""
+    grouped: dict[tuple[EntityKind, str], NamedEntity] = {}
+    for entity in entities:
+        year_less = entity.kind in _DAY_KINDS and isinstance(entity.value, DateRangeValue) and entity.value.ambiguous
+        parts: list[tuple[str, str, TypedValue | None, list[Mention]]] = [
+            (entity.display_name, entity.norm_key, entity.value, list(entity.mentions)),
+        ]
+        if year_less:
+            parts = []
+            for mention in entity.mentions:
+                identity = entity_identity(entity.kind, mention.surface, ctx)
+                if identity is None or identity.norm_key == entity.norm_key:
+                    parts.append((entity.display_name, entity.norm_key, entity.value, [mention]))
+                else:
+                    parts.append((identity.display, identity.norm_key, identity.value, [mention]))
+        for display, key, value, mentions in parts:
+            found = grouped.get((entity.kind, key))
+            if found is None:
+                grouped[(entity.kind, key)] = entity.model_copy(
+                    update={"display_name": display[:256], "norm_key": key, "value": value, "mentions": mentions},
+                )
+            else:
+                found.mentions.extend(mentions)
+                if not year_less and found.display_name != display:
+                    # The day as the record wrote it in full, not the year-less form that joined it.
+                    found.display_name = display[:256]
+    for entity in grouped.values():
+        entity.mentions.sort(key=lambda m: (m.block_index, m.char_start))
     return list(grouped.values())

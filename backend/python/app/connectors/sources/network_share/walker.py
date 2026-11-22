@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
-from app.connectors.core.registry.folder_scope import FolderScope
+from app.connectors.core.registry.folder_scope import FolderRole
 from app.connectors.sources.network_share.entry import DirectoryEntry
-from app.connectors.sources.network_share.errors import DirectoryListingError
+from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
+    DirectoryListingError,
+    NetworkShareAuthError,
+)
 from app.connectors.sources.network_share.filters import (
     date_bounds,
     passes_date_filters,
     passes_extension_filter,
+    share_folder_scope,
 )
 from app.connectors.sources.network_share.pathing import (
     identity_rel_path,
@@ -48,6 +54,24 @@ class WalkResult:
     seen: set[str]
     complete: bool
     max_timestamp_ms: int = 0
+    # External ids of the folders and files that failed to be read. What was
+    # stored under them is still on the share as far as this walk knows.
+    unread: set[str] = field(default_factory=set)
+    # The folder patterns of the filter that matched a folder in this share.
+    matched: frozenset[str] = frozenset()
+
+
+@dataclass
+class _HeldFolder:
+    """A folder the walk passes through towards a possible match. Its record is
+    written only once something under it is kept, so a pattern such as
+    ``**/quotes`` does not write a record for every folder it looks in."""
+
+    entry: DirectoryEntry
+    parent_dir: str
+    server_path: str
+    nfc_path: str
+    written: bool = False
 
 
 @dataclass
@@ -70,7 +94,8 @@ class ShareWalker:
         sync_filters: FilterCollection,
         indexing_filters: FilterCollection,
     ) -> WalkResult:
-        scope = FolderScope.from_filters(sync_filters)
+        scope = share_folder_scope(sync_filters)
+        tracker = scope.tracker()
         modified_after, modified_before, created_after, created_before = date_bounds(
             sync_filters
         )
@@ -78,6 +103,7 @@ class ShareWalker:
             IndexingFilterKey.FILES, default=True
         )
         seen: set[str] = {share}
+        unread: set[str] = set()
         complete = True
         max_ts = 0
         upserts: list[tuple[FileRecord, list[Permission]]] = []
@@ -86,16 +112,126 @@ class ShareWalker:
         seen_file_ids: set[int] = set()
         # The folders the walk is inside right now, outermost first.
         open_dirs: list[tuple[int, datetime | None, datetime | None, str]] = []
-        chosen_folders = {p.rstrip("/") for p in scope.list_prefixes if p}
+        # The held folders above the one being walked, outermost first.
+        held: list[_HeldFolder] = []
+        # Where each walk starts, spelled as the saved values spell it, and for a
+        # start that is only the fixed start of a pattern, that pattern.
+        roots: list[tuple[str, str | None]] = []
+        literal_starts = {scope.rules.normalise(form) for form in scope.spellings}
+        # The folders named under Include (one inside another is walked as part of
+        # that one), and the folders above them. A walk from a pattern's start reaches
+        # them as entries, and must get to them as a walk starting there would.
+        outer_literals = set() if scope.exclude else {
+            form for form in literal_starts
+            if form and not any(o != form and form.startswith(f"{o}/") for o in literal_starts)
+        }
+        toward_literals = {
+            "/".join(parts[:i])
+            for parts in (form.split("/") for form in outer_literals)
+            for i in range(1, len(parts) + 1)
+        }
+        for prefix in scope.list_prefixes:
+            directory = scope.spelled_root(prefix).rstrip("/")
+            pattern = None
+            if directory and scope.rules.normalise(directory) not in literal_starts:
+                fixed = scope.rules.normalise(prefix)
+                pattern = next(
+                    (p.raw for p in scope.patterns if scope.rules.normalise(p.listing_prefix) == fixed),
+                    None,
+                )
+            roots.append((directory, pattern))
+        chosen_folders = {directory for directory, pattern in roots if directory and pattern is None}
+        pattern_starts = {directory: pattern for directory, pattern in roots if pattern is not None}
+
+        def keep_saved_under(server_path: str) -> None:
+            """Keep what is stored under each saved folder at or below a folder that could
+            not be read, as a walk starting at that saved folder would on its own failure.
+
+            Both spellings are kept: the saved value's own, which a walk starting there
+            writes, and the one this walk gives it when a pattern's walk starts above it.
+            """
+            failed = scope.rules.normalise(identity_rel_path(server_path))
+            for form in scope.spellings:
+                normal = scope.rules.normalise(form)
+                if normal not in outer_literals or not (
+                    not failed or normal == failed or normal.startswith(f"{failed}/")
+                ):
+                    continue
+                mark_unread(form)
+                spelled = ""
+                for part in form.split("/"):
+                    spelled = scope.spelled_child(spelled, part)
+                mark_unread(spelled)
+
+        def mark_failed(server_path: str) -> None:
+            mark_unread(server_path)
+            keep_saved_under(server_path)
+        # Set when the store saved nothing of a batch; the walk then fails at its end.
+        store_failure: Exception | None = None
+        saved_any = False
+
+        def mark_unread(server_path: str) -> None:
+            nonlocal complete
+            complete = False
+            unread.add(f"{share}/{identity_rel_path(server_path)}" if server_path else share)
+            # The folders above it are kept, not written: what is stored under the
+            # unread folder still hangs from them.
+            for folder in held:
+                if not folder.written:
+                    seen.add(f"{share}/{folder.nfc_path}")
+
+        async def save(
+            store: Callable[[list[Any]], Awaitable[None]],
+            batch: list[Any],
+            ids_of: Callable[[Any], list[str]],
+        ) -> None:
+            # A record the store always rejects failed its whole batch, which was
+            # then kept and sent again with every later file. Each record is
+            # retried alone, and only the ones that still fail are left unread.
+            nonlocal complete, store_failure, saved_any
+            try:
+                await store(batch)
+                saved_any = True
+                return
+            except NetworkShareAuthError:
+                raise
+            except Exception:
+                self.logger.warning(
+                    "Saving %d records failed; saving them one at a time", len(batch), exc_info=True
+                )
+            failure: Exception | None = None
+            saved = False
+            for item in batch:
+                try:
+                    await store([item])
+                    saved = saved_any = True
+                except NetworkShareAuthError:
+                    raise
+                except Exception as exc:
+                    failure = exc
+                    complete = False
+                    ids = ids_of(item)
+                    unread.update(ids)
+                    self.logger.exception("Failed to save %s", ids[0])
+            # Nothing of the batch saved: the store is failing, unless it was one
+            # record and the store has saved others, which makes it that record.
+            # The walk goes on, so a store that recovers saves the rest.
+            if failure is not None and not saved and (len(batch) > 1 or not saved_any):
+                store_failure = failure
 
         async def flush() -> None:
             nonlocal upserts, moves
             if upserts:
-                await self.flush_upserts(upserts)
-                upserts = []
+                batch, upserts = upserts, []
+                await save(self.flush_upserts, batch, lambda item: [item[0].external_record_id])
             if moves:
-                await self.flush_moves(moves)
-                moves = []
+                batch_moves, moves = moves, []
+                # A move that failed leaves the record at its old path, which the walk did not see.
+                await save(
+                    self.flush_moves,
+                    batch_moves,
+                    lambda item: [item[1].external_record_id, item[0]],
+                )
 
         def enclosing_folder(entry: DirectoryEntry) -> str | None:
             # Samba follows a directory symlink on the server and lists it as a
@@ -114,20 +250,27 @@ class ShareWalker:
                     return path
             return None
 
-        async def handle_entry(entry: DirectoryEntry, parent_dir: str) -> str | None:
-            nonlocal max_ts
+        def leads_to_literal(nfc_path: str) -> bool:
+            return scope.rules.normalise(nfc_path) in toward_literals
+
+        def admit(
+            entry: DirectoryEntry, parent_dir: str
+        ) -> tuple[str, str, FolderRole] | None:
+            """The entry's path, identity and role, or None when the filters leave it out."""
             if self.mapper.skip_reason(entry):
                 return None
             server_path = join_rel_path(parent_dir, entry.name)
             if server_path is None or not server_path:
                 return None
             nfc_path = identity_rel_path(server_path)
-            in_scope = (
-                scope.includes_folder(nfc_path)
-                if entry.is_directory
-                else scope.includes_file(nfc_path)
-            )
-            if not in_scope:
+            if entry.is_directory:
+                role = scope.folder_role(nfc_path)
+                tracker.note_folder(nfc_path, role)
+                if role is FolderRole.SKIP:
+                    return None
+            elif scope.includes_file(nfc_path):
+                role = FolderRole.KEEP
+            else:
                 return None
             if not passes_extension_filter(
                 nfc_path, is_directory=entry.is_directory, sync_filters=sync_filters
@@ -141,7 +284,39 @@ class ShareWalker:
                 created_before,
             ):
                 return None
+            return server_path, nfc_path, role
 
+        async def write_held() -> None:
+            """Write the records of the held folders above a kept entry, outermost first."""
+            for folder in held:
+                if folder.written:
+                    continue
+                folder.written = True
+                try:
+                    await record(
+                        folder.entry,
+                        folder.parent_dir,
+                        folder.server_path,
+                        folder.nfc_path,
+                        held_folder=True,
+                    )
+                except NetworkShareAuthError:
+                    raise
+                except Exception:
+                    mark_failed(folder.server_path)
+                    self.logger.exception(
+                        "Error writing the folder %s/%s", share, folder.server_path
+                    )
+
+        async def record(
+            entry: DirectoryEntry,
+            parent_dir: str,
+            server_path: str,
+            nfc_path: str,
+            *,
+            held_folder: bool = False,
+        ) -> str | None:
+            nonlocal max_ts
             ext_id = f"{share}/{nfc_path}"
             existing_by_id = await self.get_by_external_id(ext_id)
             existing_by_revision = None
@@ -155,15 +330,15 @@ class ShareWalker:
                     revision_id(share, entry, nfc_path)
                 )
 
-            if entry.is_directory and usable_file_id(entry.file_id):
-                inside = enclosing_folder(entry)
-                if inside is not None:
-                    self.logger.warning(
-                        "Not walking %s: it is %s, the folder that contains it (a link loop on the server)",
-                        ext_id,
-                        inside,
-                    )
-                    return None
+            # A held folder was checked when the walk entered it, and is now one of
+            # the folders the walk is inside.
+            if not held_folder:
+                if entry.is_directory and usable_file_id(entry.file_id):
+                    inside = enclosing_folder(entry)
+                    if inside is not None:
+                        warn_link_loop(ext_id, inside)
+                        return None
+                await write_held()
 
             seen.add(ext_id)
             if entry.last_write_time is not None:
@@ -195,8 +370,80 @@ class ShareWalker:
                     await flush()
             return server_path if entry.is_directory else None
 
-        async def traverse(directory_path: str, *, prefix: bool = False) -> None:
-            nonlocal complete
+        def warn_link_loop(ext_id: str, inside: str) -> None:
+            self.logger.warning(
+                "Not walking %s: it is %s, the folder that contains it (a link loop on the server)",
+                ext_id,
+                inside,
+            )
+
+        def respelled(entry: DirectoryEntry, parent_dir: str) -> DirectoryEntry:
+            # Above a saved folder its record ids follow the saved spelling, as when
+            # that folder is where the walk starts. Only the name changes: the file
+            # id and times still tell a link loop and a rename.
+            name = scope.spelled_child(parent_dir, entry.name).rsplit("/", 1)[-1]
+            return entry if name == entry.name else dataclasses.replace(entry, name=name)
+
+        async def pass_through(
+            entry: DirectoryEntry,
+            parent_dir: str,
+            server_path: str,
+            nfc_path: str,
+            *,
+            folder: _HeldFolder | None = None,
+        ) -> None:
+            if entry.is_reparse:
+                return
+            tracked = usable_file_id(entry.file_id)
+            if tracked:
+                inside = enclosing_folder(entry)
+                if inside is not None:
+                    warn_link_loop(f"{share}/{nfc_path}", inside)
+                    return
+                open_dirs.append(
+                    (entry.file_id, entry.created_time, entry.last_write_time, f"{share}/{nfc_path}")
+                )
+            held.append(folder or _HeldFolder(entry, parent_dir, server_path, nfc_path))
+            try:
+                await traverse(server_path)
+            finally:
+                held.pop()
+                if tracked:
+                    open_dirs.pop()
+
+        async def toward_skipped_literal(entry: DirectoryEntry, parent_dir: str) -> None:
+            """Walk on through a folder whose name is never synced (``node_modules``, say)
+            when a saved folder lies at or under it. Its record is not written, as when
+            the walk starts at the saved folder, and what was stored for it stays."""
+            if not entry.is_directory or entry.is_symlink or entry.is_reparse:
+                return
+            server_path = join_rel_path(parent_dir, entry.name)
+            if not server_path:
+                return
+            nfc_path = identity_rel_path(server_path)
+            if not leads_to_literal(nfc_path) or scope.folder_role(nfc_path) is FolderRole.SKIP:
+                return
+            seen.add(f"{share}/{nfc_path}")
+            folder = _HeldFolder(entry, parent_dir, server_path, nfc_path, written=True)
+            await pass_through(entry, parent_dir, server_path, nfc_path, folder=folder)
+
+        async def materialize(entry: DirectoryEntry, parent_dir: str) -> None:
+            """A folder above or at a chosen start, which its listing never shows."""
+            admitted = admit(entry, parent_dir)
+            if admitted is None:
+                path = join_rel_path(parent_dir, entry.name)
+                if path:
+                    seen.add(f"{share}/{identity_rel_path(path)}")
+                return
+            server_path, nfc_path, role = admitted
+            if role is FolderRole.PASS_THROUGH:
+                held.append(_HeldFolder(entry, parent_dir, server_path, nfc_path))
+            else:
+                await record(entry, parent_dir, server_path, nfc_path)
+
+        async def traverse(
+            directory_path: str, *, prefix: bool = False, start: bool = False
+        ) -> None:
             try:
                 entries = await self.data_source.list_directory(share, directory_path)
             except FileNotFoundError:
@@ -207,26 +454,57 @@ class ShareWalker:
                         directory_path,
                     )
                     return
-                complete = False
+                if directory_path in pattern_starts:
+                    self.logger.warning(
+                        'Folder %s/%s, the fixed start of folder pattern "%s", does not exist',
+                        share,
+                        directory_path,
+                        pattern_starts[directory_path],
+                    )
+                    return
+                mark_failed(directory_path)
                 self.logger.error(
                     "Failed to list %s/%s: not found", share, directory_path
                 )
                 return
+            except AccessDeniedError as exc:
+                # Where the walk starts, or at or above a folder named in the filter, a
+                # denial is more likely the account's session or the connector's settings
+                # than a folder it lost.
+                if start or leads_to_literal(identity_rel_path(directory_path)):
+                    mark_failed(directory_path)
+                    self.logger.error(
+                        "Failed to list %s/%s: %s", share, directory_path, exc
+                    )
+                    return
+                # Below that it is the folder's own permissions: what the account
+                # cannot list is not synced, and what was synced from it goes.
+                self.logger.info(
+                    "Not syncing %s/%s: the account may not list it", share, directory_path
+                )
+                return
             except (DirectoryListingError, OSError, ConnectionError) as exc:
-                complete = False
+                mark_failed(directory_path)
                 self.logger.error(
                     "Failed to list %s/%s: %s", share, directory_path, exc
                 )
                 return
 
             if prefix and directory_path:
-                await self._materialize_ancestors(
-                    share, directory_path, seen, handle_entry
-                )
+                await self._materialize_ancestors(directory_path, materialize)
 
-            for entry in entries:
+            for listed in entries:
+                entry = respelled(listed, directory_path) if listed.is_directory else listed
                 try:
-                    child_dir = await handle_entry(entry, directory_path)
+                    admitted = admit(entry, directory_path)
+                    if admitted is None:
+                        await toward_skipped_literal(entry, directory_path)
+                        continue
+                    server_path, nfc_path, role = admitted
+                    if role is FolderRole.PASS_THROUGH:
+                        await pass_through(entry, directory_path, server_path, nfc_path)
+                        continue
+                    child_dir = await record(entry, directory_path, server_path, nfc_path)
                     if (
                         child_dir is not None
                         and entry.is_directory
@@ -248,8 +526,12 @@ class ShareWalker:
                         finally:
                             if tracked:
                                 open_dirs.pop()
+                except NetworkShareAuthError:
+                    # The server refused the account: every folder after this one fails the
+                    # same way, and none of them is a folder that went away.
+                    raise
                 except Exception:
-                    complete = False
+                    mark_failed(join_rel_path(directory_path, entry.name) or directory_path)
                     self.logger.exception(
                         "Error processing %s in %s/%s",
                         entry.name,
@@ -266,15 +548,16 @@ class ShareWalker:
             the child check, and neither the chosen folder nor the folders above it
             are ever listed as entries. A failed stat must not prune.
             """
-            nonlocal complete
             along: list[tuple[int, datetime | None, datetime | None, str]] = []
             parts = [part for part in directory_path.split("/") if part]
             for index in range(len(parts)):
                 path = "/".join(parts[: index + 1])
                 try:
                     info = await self.data_source.stat(share, path, follow=False)
+                except NetworkShareAuthError:
+                    raise
                 except Exception as exc:
-                    complete = False
+                    mark_failed(directory_path)
                     self.logger.error(
                         "Failed to stat %s/%s before walking a selected folder: %s",
                         share,
@@ -309,16 +592,18 @@ class ShareWalker:
         if root is not None and usable_file_id(root.file_id):
             open_dirs.append((root.file_id, root.created_time, root.last_write_time, share))
 
-        for prefix in scope.list_prefixes:
-            directory = prefix.rstrip("/")
+        for directory, _pattern in roots:
+            # Each start writes the folders above it on its own, as it always did.
+            held.clear()
             along = await selected_prefix_dirs(directory) if directory else []
             if along is None:
                 continue
             open_dirs.extend(along)
             try:
-                await traverse(directory, prefix=bool(prefix))
+                await traverse(directory, prefix=bool(directory), start=True)
             finally:
                 del open_dirs[len(open_dirs) - len(along) :]
+        held.clear()
 
         # Settled only after the whole walk: the revision lookup returns one record
         # per file id, so for a hard link walked before its other path it hands
@@ -344,20 +629,24 @@ class ShareWalker:
                 await flush()
 
         await flush()
-        return WalkResult(seen=seen, complete=complete, max_timestamp_ms=max_ts)
+        if store_failure is not None:
+            raise store_failure
+        return WalkResult(
+            seen=seen,
+            complete=complete,
+            max_timestamp_ms=max_ts,
+            unread=unread,
+            matched=tracker.matched(),
+        )
 
     async def _materialize_ancestors(
         self,
-        share: str,
         directory_path: str,
-        seen: set[str],
-        handle_entry: Callable[..., Awaitable[str | None]],
+        materialize: Callable[[DirectoryEntry, str], Awaitable[None]],
     ) -> None:
         parts = [p for p in directory_path.split("/") if p]
         for i, name in enumerate(parts):
             parent = "/".join(parts[:i])
-            ancestor_path = "/".join(parts[: i + 1])
-            seen.add(f"{share}/{ancestor_path}")
             synthetic = DirectoryEntry(
                 name=name,
                 is_directory=True,
@@ -367,4 +656,4 @@ class ShareWalker:
                 last_write_time=None,
                 file_id=None,
             )
-            await handle_entry(synthetic, parent)
+            await materialize(synthetic, parent)

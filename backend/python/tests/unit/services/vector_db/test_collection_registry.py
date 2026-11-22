@@ -1,6 +1,6 @@
 """Unit tests for app.services.vector_db.collection_registry.CollectionRegistry."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -10,6 +10,7 @@ from app.services.vector_db.collection_manifest import (
     ManagedCollection,
 )
 from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.const.const import CONTENT_REV_FIELD, EMBED_KEY_FIELD
 from app.services.vector_db.models import CollectionConfig, VectorCollectionInfo
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
@@ -29,19 +30,34 @@ def _make_config_service(*, down: bool = False):
     get_config answers it: ``default``, unless asked to raise."""
     store: dict = {}
 
-    async def get_config(key, default=None, raise_on_error=False):
+    async def get_config(key, default=None, raise_on_error=False, use_cache=False):
         if down:
             if raise_on_error:
                 raise RuntimeError("KV store unreachable")
             return default
         return store.get(key, default)
 
-    async def set_config(key, value):
+    async def set_config(key, value, **_):  # ttl_seconds, keep_in_cache: no expiry and no cache here
         store[key] = value
+        return True
 
     svc = MagicMock()
     svc.get_config = AsyncMock(side_effect=get_config)
     svc.set_config = AsyncMock(side_effect=set_config)
+    svc.list_keys_in_directory = AsyncMock(return_value=[])  # no weight-precision pins to release
+
+    async def create_if_absent(key, value, **_k):  # noqa: ANN202
+        if key in store:
+            return False
+        store[key] = value
+        return True
+
+    async def create_key(key, value, overwrite=True, ttl=None):  # noqa: ANN202
+        store[key] = value
+        return True
+
+    svc.create_config_if_absent = AsyncMock(side_effect=create_if_absent)
+    svc.store.create_key = AsyncMock(side_effect=create_key)
     return svc
 
 
@@ -718,10 +734,10 @@ class TestARejectedManifestWriteIsRetried:
         stored: dict = {}
         state = {"reject_next_write": True}
 
-        async def get_config(key, default=None, raise_on_error=False):
+        async def get_config(key, default=None, raise_on_error=False, use_cache=False):
             return stored.get(key, default)
 
-        async def set_config(key, value):
+        async def set_config(key, value, **_):
             if state["reject_next_write"]:
                 state["reject_next_write"] = False
                 return False  # what set_config answers on a store failure
@@ -754,3 +770,142 @@ class TestARejectedManifestWriteIsRetried:
         await registry.ensure_collection(ctx, embedding_size=1024)
 
         assert "records" in (stored.get(key) or {}), "the retry did not record the collection"
+
+
+# ---------------------------------------------------------------------------
+# fence_ready
+# ---------------------------------------------------------------------------
+
+
+class TestFenceReady:
+    @staticmethod
+    def _vdb(fail_fence: list[bool]) -> AsyncMock:
+        vdb = _make_vdb(exists=True, dimension=8)
+
+        async def create_index(collection_name, field_name, field_schema) -> None:
+            if field_name in (CONTENT_REV_FIELD, EMBED_KEY_FIELD) and fail_fence[0]:
+                raise RuntimeError("Unknown field")
+
+        vdb.create_index = AsyncMock(side_effect=create_index)
+        return vdb
+
+    @pytest.mark.asyncio
+    async def test_not_ready_when_a_fence_index_failed_and_ready_after_a_later_success(self) -> None:
+        fail = [True]
+        vdb = self._vdb(fail)
+        registry = _make_registry(vector_db_service=vdb)
+        ctx = RecordContext(org_id="org-1")
+
+        await registry.ensure_collection(ctx, embedding_size=8)
+        assert registry.fence_ready("records") is False
+
+        fail[0] = False
+        vdb.create_index.reset_mock()
+        await registry.ensure_collection(ctx, embedding_size=8)  # the collection is cached; only the fence is retried
+        assert registry.fence_ready("records") is True
+        assert {c.kwargs["field_name"] for c in vdb.create_index.await_args_list} == {
+            "metadata.contentRev", "metadata.embedKey",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_field_counts_as_indexed(self) -> None:
+        vdb = _make_vdb(exists=True, dimension=8)
+        vdb.create_index = AsyncMock(side_effect=RuntimeError("Index already exists"))
+        registry = _make_registry(vector_db_service=vdb)
+        await registry.ensure_collection(RecordContext(org_id="org-1"), embedding_size=8)
+        assert registry.fence_ready("records") is True
+
+    def test_a_collection_never_seen_is_ready(self) -> None:
+        assert _make_registry().fence_ready("records") is True
+
+
+# ---------------------------------------------------------------------------
+# The drop moves the epoch again once the delete has returned
+# ---------------------------------------------------------------------------
+
+
+class TestDropMovesTheEpochTwice:
+    @staticmethod
+    async def _registry_with_collection(vdb):  # noqa: ANN205
+        registry = _make_registry(vector_db_service=vdb)
+        await registry.ensure_collection(RecordContext(org_id="org-1"), embedding_size=768)
+        vdb.create_collection.reset_mock()
+        return registry
+
+    @pytest.mark.asyncio
+    async def test_a_writer_that_began_during_the_delete_can_no_longer_confirm(self) -> None:
+        from app.services.vector_db.collection_epoch import CollectionEpochs
+
+        vdb = AsyncMock()
+        vdb.get_collection_info = AsyncMock(return_value=VectorCollectionInfo(name="records", exists=False))
+        registry = await self._registry_with_collection(vdb)
+        epochs = registry._pins().epochs
+        captured: dict = {}
+
+        async def delete(name):  # noqa: ANN202
+            captured["fence"] = await epochs.capture(name)  # accepted under the first reset's token, while the delete runs
+
+        vdb.delete_collection = AsyncMock(side_effect=delete)
+        calls: list[str] = []
+        real = CollectionEpochs.begin_reset
+
+        async def counting(self, collection):  # noqa: ANN202
+            calls.append("begin")
+            return await real(self, collection)
+
+        with patch.object(CollectionEpochs, "begin_reset", counting):
+            await registry.recreate_records_collections(records_dimension=1024)
+        assert calls == ["begin", "begin"]
+        assert await epochs.moved(captured["fence"])  # fails its confirmation and the record-end check
+
+    @pytest.mark.asyncio
+    async def test_a_second_epoch_that_fails_twice_is_made_the_third_time(self) -> None:
+        from app.services.vector_db import collection_registry as module
+        from app.services.vector_db.collection_epoch import CollectionEpochs
+
+        vdb = AsyncMock()
+        vdb.get_collection_info = AsyncMock(return_value=VectorCollectionInfo(name="records", exists=False))
+        registry = await self._registry_with_collection(vdb)
+        real, state = CollectionEpochs.begin_reset, {"n": 0}
+
+        async def flaky(self, collection):  # noqa: ANN202
+            state["n"] += 1
+            if state["n"] in (2, 3):
+                raise RuntimeError("kv down")
+            return await real(self, collection)
+
+        with patch.object(CollectionEpochs, "begin_reset", flaky), patch.object(module, "_SECOND_RESET_WAITS", (0.0, 0.0)):
+            assert await registry.recreate_records_collections(records_dimension=1024) == ["records"]
+        assert state["n"] == 4
+        vdb.create_collection.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_second_epoch_that_cannot_be_made_confirms_the_first_reset_and_raises_before_recreating(self) -> None:
+        from app.services.vector_db import collection_registry as module
+        from app.services.vector_db.collection_epoch import CollectionEpochs
+
+        vdb = AsyncMock()
+        vdb.get_collection_info = AsyncMock(return_value=VectorCollectionInfo(name="records", exists=False))
+        registry = await self._registry_with_collection(vdb)
+        real, state = CollectionEpochs.begin_reset, {"n": 0}
+        confirmed: list = []
+        real_confirm = CollectionEpochs.confirm_reset
+
+        async def failing_after_first(self, collection):  # noqa: ANN202
+            state["n"] += 1
+            if state["n"] > 1:
+                raise RuntimeError("kv down")
+            return await real(self, collection)
+
+        async def confirm(self, ticket):  # noqa: ANN202
+            confirmed.append(ticket)
+            return await real_confirm(self, ticket)
+
+        with patch.object(CollectionEpochs, "begin_reset", failing_after_first), patch.object(
+            CollectionEpochs, "confirm_reset", confirm
+        ), patch.object(module, "_SECOND_RESET_WAITS", (0.0, 0.0)):
+            with pytest.raises(RuntimeError, match="kv down"):
+                await registry.recreate_records_collections(records_dimension=1024)
+        assert state["n"] == 4  # the first, then three attempts at the second
+        assert len(confirmed) == 1  # the drop did happen: its reset is confirmed, so its old token is retired
+        vdb.create_collection.assert_not_awaited()  # not created over a cleanup that is reported failed; the next writer creates it

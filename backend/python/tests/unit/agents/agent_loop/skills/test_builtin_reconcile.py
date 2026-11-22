@@ -5,6 +5,7 @@ and reconcile itself is idempotent."""
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +19,7 @@ from app.agents.agent_loop.skills.builtin_seeder import (
     BuiltinSkillSeeder,
 )
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+from app.core import org_context
 from tests.unit.agents.adapter.test_builtin_skill_seeder import (
     _PACK_A_V1,
     _PACK_A_V2,
@@ -67,6 +69,17 @@ async def _drain() -> None:
 async def _builtin_names(graph: FakeGraphProvider, org: str) -> set[str]:
     store = GraphSkillStore(graph, org, SEED_IDENTITY)
     return {m.name for m in await store.list_skills(SkillFilter(source=SkillSource.BUILTIN))}
+
+
+def _graph_with_orgs(*orgs: dict[str, object]) -> FakeGraphProvider:
+    """``get_all_orgs`` filters like the real providers: ``active=True`` drops orgs whose ``isActive`` is False."""
+    graph = FakeGraphProvider()
+
+    async def _orgs(active: bool = True) -> list[dict[str, object]]:
+        return [o for o in orgs if not active or o.get("isActive", True)]
+
+    graph.get_all_orgs = AsyncMock(side_effect=_orgs)  # type: ignore[attr-defined]
+    return graph
 
 
 def _context(graph: object, org: str = "org-1") -> SimpleNamespace:
@@ -168,7 +181,7 @@ async def test_a_pack_the_seeder_could_not_write_is_retried(packs_root_v1: str) 
 
 
 async def test_concurrent_callers_share_one_reconcile(packs_root_v1: str) -> None:
-    graph = FakeGraphProvider()
+    graph = _graph_with_orgs({"_key": "org-1"})
     seeder = BuiltinSkillSeeder(packs_root_v1)
     real_sync = seeder.sync
 
@@ -184,7 +197,7 @@ async def test_concurrent_callers_share_one_reconcile(packs_root_v1: str) -> Non
     with patch.object(mf, "get_builtin_seeder", return_value=seeder):
         mf.schedule_builtin_skill_reconcile(graph, "org-1")
         await asyncio.gather(
-            mf.reconcile_builtin_skills_for_orgs(graph, [{"_key": "org-1"}]),
+            mf.reconcile_builtin_skills_for_orgs(graph),
             mf.sync_builtin_skills(graph, "org-1", manager),
             mf.reconcile_builtin_skills(graph, "org-1"),
         )
@@ -195,12 +208,76 @@ async def test_concurrent_callers_share_one_reconcile(packs_root_v1: str) -> Non
 
 
 async def test_startup_reconciles_every_org(packs_root_v1: str) -> None:
-    graph = FakeGraphProvider()
+    graph = _graph_with_orgs({"_key": "org-1"}, {"id": "org-2"}, {})
     with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)):
-        await mf.reconcile_builtin_skills_for_orgs(graph, [{"_key": "org-1"}, {"id": "org-2"}, {}])
+        await mf.reconcile_builtin_skills_for_orgs(graph)
 
     assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
     assert await _builtin_names(graph, "org-2") == {"pack-a", "pack-b"}
+
+
+async def test_startup_does_not_seed_a_deleted_org(packs_root_v1: str) -> None:
+    """A deleted org is soft-deleted (``isActive`` False, data stripped); seeding it would write skills back into it."""
+    graph = _graph_with_orgs({"_key": "org-1"}, {"_key": "org-gone", "isActive": False})
+    with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)):
+        await mf.reconcile_builtin_skills_for_orgs(graph)
+
+    assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
+    assert await _builtin_names(graph, "org-gone") == set()
+
+
+async def test_startup_seeds_each_org_inside_its_own_org_context(packs_root_v1: str) -> None:
+    """Startup has no request to bind an org; the PostgreSQL graph refuses unbound reads, so each org must be bound."""
+    graph = _graph_with_orgs({"_key": "org-1"}, {"id": "org-2"})
+    seeder = BuiltinSkillSeeder(packs_root_v1)
+    real_sync = seeder.sync
+    bound: list[str] = []
+
+    async def _sync(store: GraphSkillStore) -> bool:
+        bound.append(org_context.current_org_id())
+        return await real_sync(store)
+
+    seeder.sync = AsyncMock(side_effect=_sync)  # type: ignore[method-assign]
+    with patch.object(mf, "get_builtin_seeder", return_value=seeder):
+        await mf.reconcile_builtin_skills_for_orgs(graph)
+
+    assert bound == ["org-1", "org-2"]
+    assert org_context.peek() is None
+    assert graph.get_all_orgs.await_count == 1  # type: ignore[attr-defined]
+
+
+async def test_startup_failure_of_one_org_is_logged_and_the_next_org_still_seeds(
+    packs_root_v1: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    graph = _graph_with_orgs({"_key": "org-1"}, {"_key": "org-2"})
+    real_reconcile = mf.reconcile_builtin_skills
+
+    async def _reconcile(gp: object, org_id: str) -> None:
+        if org_id == "org-1":
+            raise RuntimeError("graph down")
+        await real_reconcile(gp, org_id)
+
+    with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)), \
+         patch.object(mf, "reconcile_builtin_skills", side_effect=_reconcile):
+        await mf.reconcile_builtin_skills_for_orgs(graph)
+
+    warnings = [r for r in caplog.records if r.name == mf.logger.name and r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "org-1" in warnings[0].getMessage() and "RuntimeError" in warnings[0].getMessage()
+    assert "graph down" not in warnings[0].getMessage()  # the class only: an exception's text can carry user data
+    assert await _builtin_names(graph, "org-2") == {"pack-a", "pack-b"}
+
+
+async def test_startup_org_list_failure_is_one_warning_and_does_not_raise(
+    packs_root_v1: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    graph = FakeGraphProvider()
+    graph.get_all_orgs = AsyncMock(side_effect=ConnectionError("db down"))  # type: ignore[attr-defined]
+    with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)):
+        await mf.reconcile_builtin_skills_for_orgs(graph)
+
+    warnings = [r for r in caplog.records if r.name == mf.logger.name and r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "ConnectionError" in warnings[0].getMessage()
+    assert "db down" not in warnings[0].getMessage()
 
 
 async def test_list_route_sync_skips_once_reconciled(packs_root_v1: str) -> None:

@@ -171,8 +171,7 @@ async def resolve_attachments_for_goal(
         text = "\n\nAttached files from the user:\n" + "\n".join(text_parts)
 
     # Append a compact table of attachable record IDs so the model can pass
-    # them directly to attachment_record_ids in Slack/Outlook/Salesforce/Gmail
-    # tool calls without requiring an intermediate lookup.
+    # them directly to any tool's attachment_record_ids without an intermediate lookup.
     attachable_rows = _build_attachable_records_table(attachments, attachment_records)
     if attachable_rows:
         text = (text or "") + (
@@ -259,8 +258,8 @@ def attachment_rehydration(context: "AgentContext") -> "Middleware[TurnContext]"
                 f"Call knowledgegraph__fetch_record(record_ids=[{ids_str}]) "
                 "to retrieve their full content. "
                 f"These same record IDs ([{ids_str}]) can also be passed as "
-                "attachment_record_ids in Slack, Outlook, Gmail, and Salesforce "
-                "tool calls to send the file as an attachment."
+                "attachment_record_ids in any tool that has that parameter (for example Slack, "
+                "Outlook, Gmail, Salesforce, Jira, and Confluence) to send the file as an attachment."
             )
         else:
             goal.constraints.append(

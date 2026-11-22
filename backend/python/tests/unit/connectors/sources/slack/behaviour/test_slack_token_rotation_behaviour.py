@@ -32,6 +32,7 @@ from slack_behaviour_setup import (
     workspace_connector,
 )
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.token_service import oauth_service, token_refresh_service
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.base.token_service.token_refresh_service import (
@@ -39,6 +40,7 @@ from app.connectors.core.base.token_service.token_refresh_service import (
 )
 from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
 from app.models.entities import FileRecord
+from app.utils.logger import log_record_fields
 from tests.support.slack_oauth import FakeSlackOAuth
 
 OLD_ACCESS = "xoxe.xoxp-1-first-access"
@@ -179,7 +181,8 @@ class TestRotatingTokenIsRenewed:
         new_access, _ = oauth.issued[0]
         assert {c.token for c in workspace.calls} == {new_access}
         assert dm in store.records
-        assert "Refreshing token for connector" in caplog.text
+        [end] = [r for r in caplog.records if r.getMessage() == "credential_refresh.end"]
+        assert (end.levelno, log_record_fields(end)["outcome"]) == (logging.INFO, "success")
         assert _tokens_in(caplog.text) == set()
 
     @pytest.mark.parametrize("nested", [False, True], ids=["flat-answer", "authed-user-answer"])
@@ -464,8 +467,10 @@ class TestTokensThatDoNotRotate:
         connector, _ = await workspace_connector(store, checkpoints, workspace_config(token=BOT_TOKEN))
         workspace.expired_tokens.add(BOT_TOKEN)
 
-        assert await connector.test_connection_and_access() is False
-        await connector.run_sync()
+        with pytest.raises(ConnectorInitError):
+            await connector.test_connection_and_access()
+        with pytest.raises(ConnectorInitError):
+            await connector.run_sync()
 
         assert oauth.requests == []
 
@@ -479,8 +484,10 @@ class TestTokensThatDoNotRotate:
         workspace.expired_tokens.add(pasted)
         capture_logs(caplog)
 
-        assert await connector.test_connection_and_access() is False
-        await connector.run_sync()
+        with pytest.raises(ConnectorInitError, match="token rotation"):
+            await connector.test_connection_and_access()
+        with pytest.raises(ConnectorInitError, match="token rotation"):
+            await connector.run_sync()
 
         assert oauth.requests == []
         explained = [r for r in caplog.records if "token rotation" in r.getMessage()]

@@ -68,7 +68,7 @@ export default defineConfig({
     {
       name: 'seed',
       testMatch: /seed\/.*\.spec\.ts/,
-      dependencies: ['setup'],
+      dependencies: ['setup', 'embedding-model'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',
@@ -80,7 +80,7 @@ export default defineConfig({
       name: 'authenticated',
       testMatch: /.*\.spec\.ts/,
       testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /first-run\//, /responsive\//, ...AI_SPECS],
-      dependencies: ['setup'],
+      dependencies: ['setup', 'embedding-model'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',
@@ -92,7 +92,7 @@ export default defineConfig({
     {
       name: 'responsive',
       testMatch: /responsive\/.*\.spec\.ts/,
-      dependencies: ['setup'],
+      dependencies: ['setup', 'embedding-model'],
       use: {
         storageState: '.auth/user.json',
         // Its own screenshots go to EVIDENCE_DIR.
@@ -101,12 +101,26 @@ export default defineConfig({
       },
     },
 
+    // The answering tests' embedding model, added before any project that
+    // uploads files: once the built-in model has embedded a record, the backend
+    // refuses to switch embedding models.
+    {
+      name: 'embedding-model',
+      testMatch: /setup\/embedding-model\.provision\.ts/,
+      dependencies: ['setup'],
+      teardown: 'embedding-model-cleanup',
+    },
+    {
+      name: 'embedding-model-cleanup',
+      testMatch: /setup\/embedding-model\.cleanup\.ts/,
+    },
+
     // Adds the AI models the answering tests need once, and removes them once
     // after all of them finish, so no test deletes a model another is using.
     {
       name: 'ai-models',
       testMatch: /setup\/ai-models\.provision\.ts/,
-      dependencies: ['setup'],
+      dependencies: ['setup', 'embedding-model'],
       teardown: 'ai-models-cleanup',
     },
     {
@@ -116,7 +130,7 @@ export default defineConfig({
     {
       name: 'ai',
       testMatch: AI_SPECS,
-      dependencies: ['setup', 'ai-models'],
+      dependencies: ['setup', 'embedding-model', 'ai-models'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',

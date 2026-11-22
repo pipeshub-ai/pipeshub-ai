@@ -15,6 +15,7 @@ import re
 
 import pytest
 
+from app.modules.agents.capability_summary import PROJECT_FILES_KEY
 from app.modules.agents.context.retrieval_routing import build_routing_guidance
 from app.modules.agents.context.source_catalog import (
     DEMO_ONLY_SOURCE_NOTE,
@@ -156,6 +157,34 @@ class TestRender:
         catalog = _catalog_from_knowledge(entries)
         rendered = catalog.render()
         assert "source_ids" in rendered
+
+
+class TestProjectFiles:
+    """A project's own file collection is named for what it is, so an agent asked about "the
+    file in the project" searches it rather than another source."""
+
+    def _entry(self) -> dict:
+        return {**_make_kb_entry("Project files", KB_ID), PROJECT_FILES_KEY: True}
+
+    def test_it_is_a_kb_source_marked_as_project_files(self) -> None:
+        (source,) = _catalog_from_knowledge([self._entry()]).sources
+        assert source.kind == SourceKind.KB
+        assert source.project_files is True
+
+    def test_render_says_to_search_it_for_the_projects_files(self) -> None:
+        rendered = _catalog_from_knowledge([
+            self._entry(), _make_app_entry("GitHub", "github", CONF_ID),
+        ]).render(tool_names=["knowledgegraph__search", "knowledgegraph__list_files"])
+        line = next(ln for ln in rendered.splitlines() if "Project files" in ln)
+        assert KB_ID in line
+        assert "uploaded to the project" in line
+        assert "search here first" in line
+        assert rendered.count(KB_ID) == 1
+
+    def test_an_ordinary_collection_is_not_called_project_files(self) -> None:
+        (source,) = _catalog_from_knowledge([_make_kb_entry("Team KB", KB_ID)]).sources
+        assert source.project_files is False
+        assert "uploaded to the project" not in _catalog_from_knowledge([_make_kb_entry("Team KB", KB_ID)]).render()
 
 
 # ---------------------------------------------------------------------------

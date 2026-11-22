@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 
+from app.agent_loop_lib.core.types import ToolResult
 from app.agent_loop_lib.sandbox.coding.base import CodeRequest, CodeResult, InstallResult
 from app.agent_loop_lib.sandbox.manager import SandboxManager, SandboxType
 from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
@@ -454,3 +455,24 @@ class TestStagedSkillResourceUpload:
             }
         finally:
             input_staging._staged_skill_resources.reset(token)
+
+
+def _ran(content: object) -> ToolResult:
+    return ToolResult(tool_call_id="call-1", name="run_code", content=content)
+
+
+def test_run_code_reports_a_non_zero_exit_as_failed() -> None:
+    tool = CodingSandboxTool(SandboxManager())
+    failed = CodeResult(stdout="", stderr="Traceback ...", exit_code=1, language="python", duration_ms=1.0)
+    passed = CodeResult(stdout="ok", stderr="", exit_code=0, language="python", duration_ms=1.0)
+
+    assert tool.result_failed({}, _ran(failed.model_dump())) is True
+    assert tool.result_failed({}, _ran(passed.model_dump())) is False
+    assert tool.result_failed({}, _ran("Unknown sandbox_id")) is False
+
+
+def test_install_packages_reports_a_failed_install_as_failed() -> None:
+    tool = InstallPackagesTool(SandboxManager())
+
+    assert tool.result_failed({}, _ran(InstallResult(success=False, stderr="no such package").model_dump())) is True
+    assert tool.result_failed({}, _ran(InstallResult(success=True, installed=["numpy"]).model_dump())) is False

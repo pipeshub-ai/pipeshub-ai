@@ -5,6 +5,12 @@ const MODELS_API = '/api/v1/configurationManager/ai-models';
 /** Written by the ai-models setup step, read by its teardown: the models that step added. */
 export const ADDED_MODELS_FILE = '.auth/ai-models.json';
 
+/** Written by the embedding-model setup step, read by its teardown: the model that step added. */
+export const ADDED_EMBEDDING_FILE = '.auth/embedding-model.json';
+
+/** Why the embedding-model setup step could not add the model, for the ai-models step to report. */
+export const EMBEDDING_ERROR_FILE = '.auth/embedding-model-error.txt';
+
 type ModelType = 'llm' | 'embedding';
 
 /**
@@ -22,8 +28,9 @@ export type AddedModel = { type: ModelType; modelKey: string };
  * is what CI runs on — then OpenAI, or, for local runs, any OpenAI-compatible
  * server at E2E_AI_ENDPOINT.
  *
- * Azure is tried first for the same reason the Python helper tries it first:
- * whichever key the org is given here is the one every answering test spends.
+ * TEST_AI_MODEL_PROVIDER (`openAI` or `azureOpenAI`), which CI always sets,
+ * picks the provider outright, as it does for the Python helper: both providers'
+ * keys are passed, so only the named one may be used. Unset, Azure is tried first.
  */
 function modelConfig(type: ModelType): { provider: string; configuration: Record<string, string> } | null {
   const endpoint = process.env.E2E_AI_ENDPOINT;
@@ -38,8 +45,13 @@ function modelConfig(type: ModelType): { provider: string; configuration: Record
     };
   }
 
-  const azure = azureConfig(type);
-  if (azure) return azure;
+  const forced = process.env.TEST_AI_MODEL_PROVIDER?.trim();
+  if (forced === 'azureOpenAI') return azureConfig(type);
+  if (forced && forced !== 'openAI') return null; // a provider this helper can't configure
+  if (!forced) {
+    const azure = azureConfig(type);
+    if (azure) return azure;
+  }
 
   const apiKey = process.env.TEST_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
@@ -113,15 +125,19 @@ export async function removeModels(api: APIRequestContext, added: AddedModel[]):
 }
 
 /**
- * Add a chat and a cloud embedding model where the org has none, and return
- * what was added. Models already configured are left alone. Returns undefined
- * when a model is missing and no credentials say how to add one. If adding
- * the second fails, the first is removed again before the error is rethrown.
+ * Add each of `types` (a chat and a cloud embedding model by default) where
+ * the org has none, and return what was added. Models already configured are
+ * left alone. Returns undefined when a model is missing and no credentials say
+ * how to add one. If adding the second fails, the first is removed again
+ * before the error is rethrown.
  */
-export async function provisionAnsweringModels(api: APIRequestContext): Promise<AddedModel[] | undefined> {
+export async function provisionAnsweringModels(
+  api: APIRequestContext,
+  types: readonly ModelType[] = ['llm', 'embedding'],
+): Promise<AddedModel[] | undefined> {
   const added: AddedModel[] = [];
   try {
-    for (const type of ['llm', 'embedding'] as const) {
+    for (const type of types) {
       if ((await listModels(api, type)).length > 0) continue;
       const config = modelConfig(type);
       if (!config) {

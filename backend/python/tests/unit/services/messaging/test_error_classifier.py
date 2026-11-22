@@ -19,10 +19,10 @@ from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
     _classify_aiohttp_transport_error,
-    _extract_status_code,
     _get_root_cause,
     _is_retryable_status,
     _iter_exception_chain,
+    extract_status_code,
     format_exception_chain,
 )
 
@@ -115,20 +115,20 @@ class TestStatusCodeExtraction:
         """Test extraction from exception with status_code attribute."""
         exc = Exception("API error")
         exc.status_code = 503
-        assert _extract_status_code(exc) == 503
+        assert extract_status_code(exc) == 503
 
     def test_extract_status_code_from_status_attr(self):
         """Test extraction from exception with status attribute."""
         exc = Exception("API error")
         exc.status = 429
-        assert _extract_status_code(exc) == 429
+        assert extract_status_code(exc) == 429
 
     def test_extract_status_code_from_response_status_code(self):
         """Test extraction from exception with response.status_code (httpx style)."""
         exc = Exception("HTTP error")
         exc.response = MagicMock()
         exc.response.status_code = 502
-        assert _extract_status_code(exc) == 502
+        assert extract_status_code(exc) == 502
 
     def test_extract_status_code_from_code_attr(self):
         """Test extraction from aiohttp ClientResponseError status."""
@@ -141,7 +141,7 @@ class TestStatusCodeExtraction:
                 status=504,
                 message="Gateway Timeout",
             )
-            assert _extract_status_code(exc) == 504
+            assert extract_status_code(exc) == 504
         except ImportError:
             pytest.skip("aiohttp not available")
 
@@ -152,25 +152,25 @@ class TestStatusCodeExtraction:
             "Error": {"Code": "ServiceUnavailable"},
             "ResponseMetadata": {"HTTPStatusCode": 503},
         }
-        assert _extract_status_code(exc) == 503
+        assert extract_status_code(exc) == 503
 
     def test_extract_status_code_returns_none_when_missing(self):
         """Test that None is returned when no status code is available."""
         exc = Exception("Generic error")
-        assert _extract_status_code(exc) is None
+        assert extract_status_code(exc) is None
 
     def test_extract_status_code_ignores_string_status(self):
         """Google-style string .status must not be treated as an HTTP code."""
         exc = Exception("Quota exceeded")
         exc.status = "RESOURCE_EXHAUSTED"
         exc.code = 429
-        assert _extract_status_code(exc) == 429
+        assert extract_status_code(exc) == 429
 
     def test_extract_status_code_string_status_alone_returns_none(self):
         """String-only .status is ignored so classify does not TypeError."""
         exc = Exception("Quota exceeded")
         exc.status = "RESOURCE_EXHAUSTED"
-        assert _extract_status_code(exc) is None
+        assert extract_status_code(exc) is None
 
 
 class TestExceptionWithStatusCode:
@@ -508,6 +508,23 @@ class TestOpenAIErrors:
             assert result == MessageErrorType.TRANSIENT
         except ImportError:
             pytest.skip("OpenAI not available")
+
+    def test_openai_empty_balance_is_terminal_although_it_is_a_429(self) -> None:
+        """A 429 that says the account is out of credit fails the same way on every redelivery."""
+        import httpx
+        import openai
+
+        from app.exceptions.indexing_exceptions import EmbeddingError
+
+        exc = openai.RateLimitError(
+            "Error code: 429",
+            response=httpx.Response(429, request=httpx.Request("POST", "http://x/v1/embeddings")),
+            body={"error": {"message": "no credit", "type": "insufficient_quota", "code": "insufficient_quota"}},
+        )
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+        wrapped = EmbeddingError("Dense embedding failed")
+        wrapped.__cause__ = exc
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL
 
     def test_openai_auth_error(self):
         """Test that OpenAI auth errors are terminal."""
@@ -1243,3 +1260,43 @@ def test_a_final_error_raised_from_a_connection_error_is_terminal() -> None:
             raise Final("stop") from cause
     except Final as exc:
         assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+
+
+class TestARecordsSchemaRefusalIsTransient:
+    """A records write refused by a schema narrower than ours aborts its transaction, nothing is kept, and the next delivery
+    finds the schema wide: the consumer must retry it, not mark the record FAILED on its first delivery. The store's own answer
+    is a 400, which alone reads as terminal."""
+
+    @staticmethod
+    def _refusal(shape: str) -> Exception:
+        from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        body = '{"error":true,"errorNum":1620,"errorMessage":"Document does not match the record schema."}'
+        causes = {
+            "aql": ArangoQueryError("Query failed", 400, body),
+            "document patch": Exception(f"Failed to update document (status=400): {body}"),
+            "batch insert": Exception("Batch insert failed with 1 error(s): Item 0: [1620] Document does not match the record schema."),
+        }
+        try:
+            raise RecordSchemaNarrowError("the records schema refused a write in transaction 1; it was aborted") from causes[shape]
+        except RecordSchemaNarrowError as error:
+            return error
+
+    @pytest.mark.parametrize("shape", ["aql", "document patch", "batch insert"])
+    def test_it_is_transient_whatever_the_store_answered(self, shape: str) -> None:
+        assert MessageErrorClassifier.classify_by_exception(self._refusal(shape)) == MessageErrorType.TRANSIENT
+
+    def test_it_is_transient_when_wrapped_by_a_stage(self) -> None:
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        outer = IndexingError("write failed")
+        outer.__cause__ = self._refusal("aql")
+        assert MessageErrorClassifier.classify_by_exception(outer) == MessageErrorType.TRANSIENT
+
+    def test_the_stores_bare_400_is_still_terminal(self) -> None:
+        """The control: without the exception type in the chain, a 400 stays terminal (a data refusal is permanent)."""
+        from app.services.graph_db.arango.arango_http_client import ArangoQueryError
+
+        bare = ArangoQueryError("Query failed", 400, '{"errorNum":1620}')
+        assert MessageErrorClassifier.classify_by_exception(bare) == MessageErrorType.TERMINAL

@@ -37,6 +37,8 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
+from app.agents.actions.knowledge_graph.ops.scope import ATTACHMENT_RECORD_IDS_KEY
+from app.agents.agent_loop import tool_approvals
 from app.agents.agent_loop.answer_rules import (
     READ_RECORDS_IN_FULL_STATE_KEY,
     answer_composition_rules_enabled,
@@ -46,7 +48,10 @@ from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.error_classification import classify_exception
+from app.agents.agent_loop.error_classification import (
+    classify_exception,
+    run_error_text,
+)
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks import (
     CitationCollector,
@@ -58,11 +63,13 @@ from app.agents.agent_loop.respond import AnswerFinalizer
 from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
+    _await_tasks_draining,
     _cancel_orphaned_agent_tasks,
     _heartbeat,
     _pre_stream_error_frame,
     sse_queue_maxsize,
 )
+from app.agents.agent_loop.turn_log import AgentRunTiming
 from app.agents.chat_modes.attachments import resolve_attachments
 from app.agents.chat_modes.custom_instructions import (
     resolve_custom_instructions as _resolve_custom_instructions,
@@ -85,6 +92,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.modules.retrieval import degraded_notice
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.selection_scope import (
     SelectionNotReadyError,
@@ -95,10 +103,15 @@ from app.modules.retrieval.selection_scope import (
 )
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.conversation_tasks import begin_run, discard_tasks
+from app.utils.error_class import log_failure
 from app.utils.image_admission import admission_from_state
+from app.utils.logging_fields import bind_log_fields, log_event
+from app.utils.stage_timer import RunTimer
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
 from app.utils.turn_memo import per_turn_lookups
+from app.utils.user_lookup import get_caller_user
 from app.web.config import resolve_web_search
 
 if TYPE_CHECKING:
@@ -195,7 +208,7 @@ async def _fetch_available_connectors(
     """
     try:
         if not user_key:
-            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await get_caller_user(graph_provider, user_id)
             user_key = (user.get("_key") or user.get("id")) if user else None
         if not user_key:
             return None
@@ -213,7 +226,7 @@ async def _fetch_available_connectors(
         )
         return connectors
     except Exception as exc:
-        log.debug("run_chat_stream: connector prefetch failed (non-fatal): %s", exc)
+        log_event(log, "connector_prefetch.failed", level=logging.DEBUG, error_type=type(exc).__name__)
         return None
 
 
@@ -238,6 +251,7 @@ def _apply_policy_to_chat_state(
     chat_state["has_code_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_code_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
     chat_state["deep_research"] = policy.deep_research and chat_state["web_search_config"] is not None
+    chat_state["web_search_unset"] = policy.include_web_search and web_search_config is None
     chat_state["chat_mode"] = policy.name
 
 
@@ -278,7 +292,7 @@ async def _run_no_tools_degradation(
     *, query_info: dict[str, Any], user_info: dict[str, Any], llm: "BaseChatModel",
     policy: ChatModePolicy, log: logging.Logger, retrieval_service: Any, graph_provider: Any,
     config_service: Any, system_prompts_config: dict[str, Any], is_multimodal_llm: bool,
-    context_length: int,
+    context_length: int, run_timing: AgentRunTiming,
 ) -> AsyncGenerator[str, None]:
     """`supports_tool_calls=False` (Ollama) path. `internal_search` degrades
     gracefully to a single no-tools turn seeded with forced (`force=True`)
@@ -287,6 +301,7 @@ async def _run_no_tools_degradation(
     anything at all, so they fail fast with a clear error instead of
     silently answering from training data alone."""
     if policy.name != "internal_search":
+        run_timing.end(log, "error", mode="no_tools", error_class="bad_request", code="unsupported_model_mode")
         yield create_sse_event("error", {
             "error": f"This model does not support tool calling, which {policy.name.replace('_', ' ')} mode requires.",
             "type": "unsupported_model_mode",
@@ -344,10 +359,13 @@ async def _run_no_tools_degradation(
         ):
             yield create_sse_event(event["event"], event["data"])
     except Exception as exc:
-        log.error("run_chat_stream: no-tools degradation stream failed: %s", exc, exc_info=True)
-        yield create_sse_event("error", {"error": f"Stream error: {exc}"})
+        run_timing.end(log, "error", mode="no_tools", exc=exc)
+        yield create_sse_event("error", {"error": classify_exception(exc)[1]})
+        return
+    run_timing.end(log, "done", mode="no_tools")
 
 
+@degraded_notice.scoped
 @per_turn_lookups  # knowledge-hub access is asked about by several stages of a turn
 async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's call-site symmetry
     query_info: dict[str, Any],
@@ -406,6 +424,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
     if cancellation_registry is not None:
         await cancellation_registry.register(run_id, cancellation_token, run_owner)
+    run_timer = RunTimer()
+    run_timing = AgentRunTiming(run_timer, run_id=run_id, model=model_name, mode=query_info.get("chatMode"))
 
     if not supports_tool_calls:
         try:
@@ -414,9 +434,12 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 retrieval_service=retrieval_service, graph_provider=graph_provider,
                 config_service=config_service, system_prompts_config=system_prompts_config,
                 is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+                run_timing=run_timing,
             ):
                 yield event
         finally:
+            # A no-op once the turn logged: the client went away mid-answer.
+            run_timing.end(log, "client_disconnect", mode="no_tools")
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
         return
@@ -474,9 +497,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     graph_provider, user_info.get("userId", ""), user_info.get("orgId", ""), filters,
                 )
             except Exception as exc:
-                log.warning("run_chat_stream: readable-scope check failed, running the turn: %s", exc)
+                # The turn still runs.
+                log_failure(log, "turn_scope.check_failed", exc)
         if unreadable is not None:
             error_code, user_message = unreadable
+            run_timing.end(log, "error", error_class="forbidden", code=error_code)
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             yield _pre_stream_error_frame(protocol, user_message, error_code)
@@ -505,6 +530,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         _apply_mode_instructions(chat_state, policy)
         chat_state["custom_instructions"] = _resolve_custom_instructions(system_prompts_config, policy)
         chat_state["citation_ref_mapper"] = ref_mapper
+        chat_state[ATTACHMENT_RECORD_IDS_KEY] = resolved_attachments.virtual_record_ids
         # Read by `ConnectorCatalog.build`, which skips its own DB round-trip
         # when this key is present.
         if available_connectors is not None:
@@ -513,13 +539,17 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
     except (SelectionTooLargeError, SelectionNotReadyError) as exc:
         error_code, user_message = selection_error(exc)
+        run_timing.end(log, "error", error_class="bad_request", code=error_code)
         if cancellation_registry is not None:
             await cancellation_registry.unregister(run_id)
         yield _pre_stream_error_frame(protocol, user_message, error_code)
         return
+    except asyncio.CancelledError:
+        run_timing.end(log, "client_disconnect")
+        raise
     except Exception as exc:
-        log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_exception(exc)
+        run_timing.end(log, "error", exc=exc, code=error_code)
         if cancellation_registry is not None:
             await cancellation_registry.unregister(run_id)
         yield _pre_stream_error_frame(protocol, user_message, error_code)
@@ -532,6 +562,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     # direct access to AgentContext — chat_state IS tool_state in AgentContext.
     chat_state["event_sink"] = event_sink
     chat_state["sse_protocol"] = protocol
+    # Read by the search tools for their pattern-match wait span.
+    chat_state["_run_timer"] = run_timer
     context = AgentContext.from_chat_state(
         chat_state, event_sink=event_sink, protocol=protocol,
         llm_provider=llm_provider, context_length=context_length,
@@ -540,11 +572,18 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     )
 
     async def _produce() -> None:
+        # Every line of the run carries run_id; the task dies with the turn, so no reset.
+        bind_log_fields(run_id=run_id)
         # Record headers rendered by tools show dates in the user's zone,
         # weekday included. Set inside this task so it reaches every tool
         # call of the run and nothing outside it.
         set_llm_time_zone(context.timezone)
+        begin_run()
         agent: Any = None
+        result: Any = None
+        stop_reason: str | None = "error"
+        parked = False
+        failure: BaseException | None = None
         try:
             factory = PipesHubAgentFactory()
             # Shared with `retrieval.py`/`citations.py`'s tool-result image
@@ -713,10 +752,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         plan, needs_whole_document=context.needs_whole_document,
                         read_in_full=read_in_full,
                     )
-                log.info(
-                    "prefetch: needs_whole_document=%s | candidates=%s",
-                    context.needs_whole_document,
-                    [c.record_id for c in plan.candidates],
+                log.debug(
+                    "prefetch: needs_whole_document=%s | candidates=%d",
+                    context.needs_whole_document, len(plan.candidates),
                 )
 
                 incomplete_note = (
@@ -744,18 +782,22 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     context, goal.description, clarifying_questions, event_sink=context.event_sink,
                 )
                 await emit_run_usage(context, agent, model=model_name or None)
+                stop_reason = "awaiting_input"
             else:
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
                 async for event in agent.stream(goal):
+                    run_timing.on_event(event)
                     await streamer.on_event(event)
                 result = agent.last_stream_result
+                stop_reason = None  # from `result`, inside `end()`
+                parked = tool_approvals.awaiting_approval(context)
 
                 await emit_run_usage(context, agent, result, model=model_name or None)
 
                 finalizer = AnswerFinalizer(context, collector)
                 await finalizer.run(
-                    agent_success=result.success, agent_error=result.error,
+                    agent_success=result.success, agent_error=run_error_text(result),
                     agent_output=result.output, event_sink=context.event_sink,
                     streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,
                     # Stop Generation (Phase 3b) — see the matching call in
@@ -766,8 +808,13 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     # is_cancelled` here.
                     agent_cancelled=result.cancelled,
                 )
+        except asyncio.CancelledError:
+            stop_reason = "client_disconnect"
+            raise
         except Exception as exc:
-            log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
+            # Before any await: a disconnect during the awaits below must not lose it.
+            failure = exc
+            stop_reason = "error"
             # What the turn spent before failing; nothing when the frame
             # already went out on the success path.
             await emit_run_usage(context, agent, model=model_name or None)
@@ -775,14 +822,20 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            # First, and without awaiting: a disconnect can cancel the awaits
+            # below, and this must still run.
+            discard_tasks(query_info.get("conversationId"))
+            run_timing.end(
+                log, stop_reason, result=result, awaiting_approval=parked, ledger=context.usage_ledger, exc=failure,
+            )
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()
-                except Exception:
-                    log.warning("run_chat_stream: sandbox cleanup failed", exc_info=True)
+                except Exception as exc:
+                    log_failure(log, "agent_turn.cleanup_failed", exc, step="sandbox")
             await event_sink.flush()
             await queue.put(_DONE)
 
@@ -794,6 +847,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             if item is _DONE:
                 break
             yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
+    except Exception as exc:
+        # A frame that cannot be written: the turn failed here, not by a disconnect.
+        run_timing.end(log, "error", exc=exc)
+        raise
     finally:
         if heartbeat and not heartbeat.done():
             heartbeat.cancel()
@@ -802,7 +859,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         tasks = [producer]
         if heartbeat:
             tasks.append(heartbeat)
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await _await_tasks_draining(queue, tasks)
 
 
 __all__ = ["run_chat_stream"]

@@ -94,35 +94,6 @@ def is_no_mailbox_error(error: object) -> bool:
     return bool(_NO_MAILBOX.search(str(error)))
 
 
-# Microsoft sign-in (AADSTS) codes of a failed token request, and what to fix.
-_SIGN_IN_PROBLEMS: tuple[tuple[str, str], ...] = (
-    ("AADSTS7000215", "the client secret is wrong. Copy the secret's Value (not its Secret ID) "
-                      "from the app registration and save it again."),
-    ("AADSTS7000222", "the client secret has expired. Create a new client secret in the app "
-                      "registration and save it here."),
-    ("AADSTS700016", "no app with this Application (Client) ID exists in this directory. Check the "
-                     "Client ID and the Directory (Tenant) ID."),
-    ("AADSTS90002", "the Directory (Tenant) ID was not found. Check it in the app registration."),
-    ("AADSTS900023", "the Directory (Tenant) ID is not valid. Check it in the app registration."),
-    ("AADSTS65001", "an admin has not granted consent to the app. Grant admin consent for its API "
-                    "permissions in the app registration."),
-    ("AADSTS700082", "the sign-in has expired. Sign in again on the connector's Authorize tab."),
-    ("AADSTS70008", "the sign-in has expired. Sign in again on the connector's Authorize tab."),
-)
-
-
-def describe_sign_in_error(error: object) -> str | None:
-    """A message that says what to fix, when ``error`` is a known Microsoft sign-in failure."""
-    text = str(error)
-    for code, problem in _SIGN_IN_PROBLEMS:
-        if re.search(rf"\b{code}\b", text):
-            return f"Microsoft sign-in failed ({code}): {problem}"
-    other = re.search(r"\bAADSTS\d+\b", text)
-    if other:
-        return f"Microsoft sign-in failed ({other.group(0)}). Check the connector's credentials, or sign in again."
-    return None
-
-
 class OutlookFolders:
     """Standard Outlook folders: filter option label -> Graph well-known folder name."""
     # Matched through /mailFolders/{well-known name}: display names are localized.

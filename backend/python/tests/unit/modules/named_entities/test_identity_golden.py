@@ -67,9 +67,10 @@ def test_keys_are_frozen(kind, surface, norm_key, key):
     assert _key(kind, surface) == key
 
 
-def test_the_recipe_version_is_one():
-    # Bumping it means the corpus above was re-pinned on purpose.
-    assert KEY_SCHEME == 1
+def test_the_recipe_version_is_two():
+    # Bumping it means the corpus above was re-pinned on purpose. 2: mention
+    # markers ("@", "(You)") are not part of a person's or organization's name.
+    assert KEY_SCHEME == 2
 
 
 @pytest.mark.parametrize(
@@ -162,8 +163,8 @@ def test_an_organization_shows_the_name_its_key_is_made_of():
     from app.modules.named_entities.normalizers.names import canonical_name
 
     for surface in ("Acme Co Ltd", "Porsche GmbH & Co. KG", "Fiat S.p.A."):
-        display = canonical_name(surface, organization=True)
-        assert canonical_name(display, organization=True) == display
+        display = canonical_name(surface, K.ORGANIZATION)
+        assert canonical_name(display, K.ORGANIZATION) == display
         assert _norm_key(K.ORGANIZATION, surface) == f"name:organization:{display.casefold()}"
 
 

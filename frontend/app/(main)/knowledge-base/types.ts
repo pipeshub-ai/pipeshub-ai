@@ -67,7 +67,11 @@ export interface KnowledgeBaseFilter {
   searchQuery?: string;          // NEW: for search query
 }
 
-export type SortField = 'name' | 'createdAt' | 'updatedAt' | 'size' | 'nodeType';
+// Collections sorts, sent as-is as the API's `sortBy`: each must be a value of its
+// `SortField` enum. `sort-fields.json` mirrors both sort lists for the backend's parity
+// test (test_knowledge_hub_sort_matches_spec.py); __tests__/sort-fields.test.ts keeps it equal.
+export const SORT_FIELDS = ['name', 'createdAt', 'updatedAt', 'size', 'type'] as const;
+export type SortField = (typeof SORT_FIELDS)[number];
 
 export interface SortConfig {
   field: SortField;
@@ -161,7 +165,8 @@ export type IndexingStatus =
   | 'EMPTY'
   | 'PAUSED'
   | 'ENABLE_MULTIMODAL_MODELS'
-  | 'SKIPPED';
+  | 'SKIPPED'
+  | 'PASSWORD_PROTECTED';
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
@@ -262,6 +267,9 @@ export interface KnowledgeHubNode {
   recordGroupType?: string | null;
   indexingStatus?: IndexingStatus | null;
   reason?: string | null;
+  /** Chunks embedded so far and chunks needed; set only while an `IN_PROGRESS` record is embedding. */
+  embedDone?: number | null;
+  embedTotal?: number | null;
   sizeInBytes?: number | null;
   mimeType?: string | null;
   extension?: string | null;
@@ -353,6 +361,10 @@ export interface AppliedFilters {
  */
 export interface KnowledgeHubApiResponse {
   success: boolean;
+  /** Sources left out of this page because they are still being prepared; they are asked again on the next page. */
+  notReady?: string[];
+  /** Nothing could be listed yet: the source is still being prepared. The page is empty, with no cursor; ask again in a moment. */
+  preparing?: boolean;
   error: string | null;
   id: string | null;
   currentNode: {
@@ -375,6 +387,8 @@ export interface KnowledgeHubApiResponse {
   pagination: {
     limit: number;
     totalItems: number;
+    /** True when `totalItems` may not be exact (usually lower; see `totalCapped` in the API spec). */
+    totalCapped?: boolean;
     hasNext: boolean;
     hasPrev: boolean;
     /** 1-based position of this page's first and last item. */
@@ -509,8 +523,9 @@ export interface AllRecordItem extends KnowledgeHubNode {
   sourceIcon?: string; // Icon for the source
 }
 
-// Sort configuration for All Records
-export type AllRecordsSortField = 'name' | 'size' | 'createdAt' | 'updatedAt' | 'indexingStatus' | 'origin';
+// Sort configuration for All Records. Same rule: only values of the API's `SortField` enum.
+export const ALL_RECORDS_SORT_FIELDS = ['name', 'size', 'createdAt', 'updatedAt', 'origin'] as const;
+export type AllRecordsSortField = (typeof ALL_RECORDS_SORT_FIELDS)[number];
 
 export interface AllRecordsSortConfig {
   field: AllRecordsSortField;
@@ -535,6 +550,7 @@ export interface AllRecordsPagination {
   hasPrev: boolean;
   nextCursor: string | null;
   prevCursor: string | null;
+  totalCapped?: boolean;
 }
 
 // More Connectors link item (navigates to connectors page with the connector panel open)
@@ -555,6 +571,8 @@ export interface RecordDetailsResponse {
     orgId: string;
     recordName: string;
     externalRecordId: string;
+    externalRevisionId?: string | null;
+    contentRev?: string | null;
     recordType: RecordType;
     origin: 'UPLOAD' | 'CONNECTOR';
     createdAtTimestamp: number;
@@ -565,6 +583,8 @@ export interface RecordDetailsResponse {
     isArchived: boolean;
     indexingStatus: IndexingStatus;
     reason?: string;
+    // How a COMPLETED record was indexed (e.g. only part of a large text file); not a failure.
+    indexingNote?: string | null;
     // Set while the record waits out its source's rate limit (epoch ms).
     retryNotBefore?: number | null;
     connectorName?: string;

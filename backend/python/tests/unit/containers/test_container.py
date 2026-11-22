@@ -158,12 +158,14 @@ class TestBaseAppContainer:
         assert isinstance(lock, asyncio.Lock)
 
     @pytest.mark.asyncio
-    @patch("app.containers.container.os.getenv", return_value="neo4j")
-    async def test_create_arango_client_neo4j_returns_none(self, mock_getenv):
-        """Test that _create_arango_client returns None when DATA_STORE is neo4j."""
-        mock_config_service = MagicMock()
-        result = await BaseAppContainer._create_arango_client(mock_config_service)
+    @pytest.mark.parametrize("store", ["neo4j", "postgres"])
+    async def test_create_arango_client_other_store_returns_none(self, store):
+        """Test that _create_arango_client returns None, without reading the ArangoDB config, when another store is selected."""
+        with patch("app.containers.container.os.getenv", return_value=store):
+            mock_config_service = MagicMock()
+            result = await BaseAppContainer._create_arango_client(mock_config_service)
         assert result is None
+        mock_config_service.get_config.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("app.containers.container.os.getenv", return_value="arangodb")

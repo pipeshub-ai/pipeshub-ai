@@ -59,6 +59,13 @@ The three suites run at the same time against one app.
   workflow for them sets `x-speakeasy-test-security` to `bearerAuth: "x-env:
   PIPESHUB_SESSION_TOKEN"` (`with_oauth_app.py` signs in and sets it). A step's own
   `x-speakeasy-test-security` stays in force for the steps after it.
+- The OAuth app's tokens act as a service account, which is never an admin. A case that
+  needs an admin (team connectors, OAuth configurations) uses the same session: the
+  workflow sets that security, a hand-written test uses the admin client
+  (`createAdminClient`, the `admin` fixture, `newAdminClient`).
+- Speakeasy leaves out of the SDKs, with only a warning, an operation whose schemas use
+  `not`. `check_sdk_spec.py` fails on one; fold a refused pattern into `pattern` with a
+  negative lookahead, or say the rule in the description.
 - In `tests.arazzo.yaml`: a step whose output a later step uses needs a
   response-body condition; conditions support only `==` and `!=`; a condition value
   cannot contain spaces or refer to a step output; do not read a list item by

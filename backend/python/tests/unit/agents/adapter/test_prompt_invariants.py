@@ -67,6 +67,7 @@ _KNOWLEDGE_ESSENTIAL_TOOLS: frozenset[str] = frozenset(
         "knowledgegraph__lookup_record",
         "knowledgegraph__list_files",
         "knowledgegraph__search_entities",
+        "knowledgegraph__find_records_by_person",
     }
 )
 

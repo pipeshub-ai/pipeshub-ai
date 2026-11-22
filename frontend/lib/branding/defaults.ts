@@ -1,7 +1,7 @@
 export const DEFAULT_BRAND = {
   productName: 'PipesHub',
   companyName: 'Pipeshub LLC',
-  tagline: 'Explainable Enterprise Search for modern enterprises.',
+  tagline: 'Context layer for AI agents and an enterprise search platform.',
   supportEmail: 'support@pipeshub.com',
   websiteUrl: 'https://pipeshub.com',
   docsUrl: 'https://docs.pipeshub.com/',

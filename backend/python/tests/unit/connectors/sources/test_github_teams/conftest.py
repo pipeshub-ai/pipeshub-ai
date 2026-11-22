@@ -6,9 +6,13 @@ the mock-connector setup (mirrors ``tests/unit/connectors/sources/test_gitlab/co
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def make_mock_connector() -> MagicMock:
@@ -122,6 +126,18 @@ def make_mock_connector() -> MagicMock:
     c.issue_reconciler.reconcile = AsyncMock(return_value=0)
 
     return c
+
+
+@pytest.fixture(autouse=True)
+def _no_reused_github_profiles() -> Iterator[None]:
+    """User sync keeps fetched profiles process-wide; start every test without them."""
+    from app.connectors.sources.github_teams import users
+
+    users._recent_profiles.clear()
+    users._profile_fetch_locks.clear()
+    yield
+    users._recent_profiles.clear()
+    users._profile_fetch_locks.clear()
 
 
 @pytest.fixture()

@@ -11,7 +11,11 @@ import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
 import { StorageController } from '../../../../src/modules/storage/controllers/storage.controller'
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
-import { endpoint as ENDPOINTS_KEY, storageEtcdPaths } from '../../../../src/modules/storage/constants/constants'
+import {
+  endpoint as ENDPOINTS_KEY,
+  STORAGE_WRITE_FAILED_MESSAGE,
+  storageEtcdPaths,
+} from '../../../../src/modules/storage/constants/constants'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
@@ -21,6 +25,8 @@ import { scopedStorageServiceJwtGenerator } from '../../../../src/libs/utils/cre
 import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeKeyValueStore } from '../../knowledge_base/routes/kb-http-harness'
+import { useInertWriteState } from '../../../support/inert-write-state'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 const JWT_SECRET = 'storage-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'storage-http-test-scoped-secret'
@@ -29,6 +35,7 @@ const USER_ID = '64d0000000000000000000a2'
 const MOUNT = 'kbnode-storage-mount'
 
 describe('Storage internal upload over HTTP: the local disk path', () => {
+  useInertWriteState()
   let backend: FakeBackend
   let kv: FakeKeyValueStore
   let server: http.Server
@@ -55,8 +62,12 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     return { status: res.status, body: text ? (JSON.parse(text) as Record<string, unknown>) : {} }
   }
 
+  // Where LocalStorageAdapter puts the mount on this platform.
+  const mountParent = (): string =>
+    path.join(home, process.platform === 'darwin' ? 'Library' : process.platform === 'win32' ? 'AppData' : '.local')
+
   const filesOnDisk = (): string[] => {
-    const root = path.join(home, '.local', MOUNT)
+    const root = path.join(mountParent(), MOUNT)
     if (!fs.existsSync(root)) return []
     return (fs.readdirSync(root, { recursive: true }) as string[])
       .filter((p) => fs.statSync(path.join(root, p)).isFile())
@@ -78,6 +89,7 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     // so a test can tell which one a URL was built from.
     defaultEndpoint = backend.url
     const byName = backend.url.replace('127.0.0.1', 'localhost')
+    registerUpstreams({ nodejs: [defaultEndpoint, byName] })
 
     kv = new FakeKeyValueStore()
     kv.values.set(storageEtcdPaths, JSON.stringify({ storageType: 'local' }))
@@ -102,6 +114,9 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
       documents.set(String(doc._id), doc)
       return doc
     }) as unknown as typeof DocumentModel.create)
+    // The repository reloads the row it updates.
+    sinon.stub(DocumentModel, 'findOne').callsFake(((filter: { _id: unknown }) =>
+      Promise.resolve(documents.get(String(filter._id)) ?? null)) as unknown as typeof DocumentModel.findOne)
     sinon.stub(DocumentModel, 'deleteOne').callsFake(((filter: { _id: unknown }) => {
       documents.delete(String(filter._id))
       return Promise.resolve({ acknowledged: true, deletedCount: 1 })
@@ -123,6 +138,7 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     // Other suites in this worker expect the controller's cache to start empty.
     kv.changed(storageEtcdPaths)
     sinon.restore()
+    registerUpstreams({})
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await backend.stop()
     fs.rmSync(home, { recursive: true, force: true })
@@ -179,6 +195,18 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     expect((r.body.error as { message: string }).message).to.contain("The user id in the storage token isn't valid")
     expect(documents.size).to.equal(0)
     expect(filesOnDisk()).to.have.length(0)
+  })
+
+  it('says the file was not saved, with 503 and no document, when the storage folder cannot be made', async () => {
+    // A plain file where the mount folder belongs: every attempt to make it fails.
+    fs.mkdirSync(mountParent(), { recursive: true })
+    fs.writeFileSync(path.join(mountParent(), MOUNT), '')
+
+    const r = await upload()
+
+    expect(r.status).to.equal(503)
+    expect(r.body.error).to.deep.include({ code: 'HTTP_SERVICE_UNAVAILABLE', message: STORAGE_WRITE_FAILED_MESSAGE })
+    expect(documents.size).to.equal(0)
   })
 
   const configCalls = () => backend.callsTo('GET', '/api/v1/configurationManager/internal/storageConfig')

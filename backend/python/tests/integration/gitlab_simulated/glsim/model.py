@@ -215,9 +215,10 @@ class Project:
         sha = self.branches.get(self.default_branch)
         return self.commits.get(sha) if sha else None
 
-    def tree(self) -> dict[str, bytes]:
-        head = self.head()
-        return dict(head.tree) if head else {}
+    def tree(self, branch: str | None = None) -> dict[str, bytes]:
+        """The files at the head of ``branch`` (the default branch when None); empty if it does not exist."""
+        sha = self.branches.get(branch or self.default_branch)
+        return dict(self.commits[sha].tree) if sha else {}
 
 
 @dataclass
@@ -322,6 +323,15 @@ class World:
         p.commits[sha] = c
         p.branches[branch] = sha
         return c
+
+    def add_branch(self, p: Project, name: str, *, ref: str | None = None) -> str:
+        """A branch at ``ref`` (a branch or a commit; the default branch's head when None), as a push of a new
+        branch makes one. Its head sha."""
+        ref = ref or p.default_branch
+        sha = p.branches.get(ref, ref)
+        assert sha in p.commits, f"no branch or commit {ref!r}"
+        p.branches[name] = sha
+        return sha
 
     def add_issue(self, p: Project, title: str, *, author: User, description: str = "", **kw: Any) -> Issue:  # noqa: ANN401
         t = self.clock.tick()

@@ -1,0 +1,11 @@
+- id: CONF-X-01
+  title: Mixed space; most pages follow the space, the Salaries subtree needs the leads group as well
+  source: permission model doc, container rule (a space without restrictions is a container; a restriction is an exception)
+  rule: container
+  world: golden/confluence_mixed
+  expect:
+    verdicts:
+      ed: {page:Home: admit, page:Oncall: admit, att:oncall: admit, page:Design: admit, page:Salaries: deny, page:Salaries-2027: deny, att:salaries: deny}
+      lee: {page:Home: admit, page:Oncall: admit, page:Salaries: admit, page:Salaries-2027: admit, att:salaries: admit}
+      olu: {page:Home: deny, page:Design: deny, page:Salaries: deny, space:ENG: deny}
+  tags: [confluence, "cell:container/mixed-world"]

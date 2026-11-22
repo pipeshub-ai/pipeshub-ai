@@ -128,8 +128,10 @@ def _bubblewrap_wrap(cmd: list[str], working_dir: str, allow_network: bool) -> l
     args = [
         "bwrap",
         "--ro-bind", "/", "/",
-        "--bind", working_dir, working_dir,
+        # tmpfs before the bind: a later mount shadows an earlier one, and the
+        # working dir normally lives under /tmp.
         "--tmpfs", "/tmp",
+        "--bind", working_dir, working_dir,
         "--dev", "/dev",
         "--proc", "/proc",
         "--unshare-all",

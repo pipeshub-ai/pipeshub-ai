@@ -13,6 +13,7 @@ from app.connectors.sources.localKB.api.kb_router import (
     HTTP_MAX_STATUS,
     HTTP_MIN_STATUS,
     _parse_comma_separated_str,
+    _parse_string_id_list,
     kb_router,
 )
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
@@ -72,6 +73,19 @@ class TestParseCommaSeparatedStr:
 
     def test_whitespace_only_items(self):
         assert _parse_comma_separated_str(",  ,  ,") == []
+
+
+class TestParseStringIdList:
+    def test_none(self) -> None:
+        assert _parse_string_id_list(None, "writerUserIds") is None
+
+    def test_strips_values(self) -> None:
+        assert _parse_string_id_list([" a ", "b"], "writerUserIds") == ["a", "b"]
+
+    def test_rejects_empty_string(self) -> None:
+        with pytest.raises(HTTPException) as exc:
+            _parse_string_id_list(["ok", ""], "writerUserIds")
+        assert exc.value.status_code == 400
 
 
 class TestConstants:
@@ -191,6 +205,68 @@ class TestCreateKnowledgeBase:
         resp = client.post("/api/v1/kb/", json={"name": "Bad", "isHidden": 1})
         assert resp.status_code == 400
 
+    def test_owner_user_id_rejected_unless_hidden(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/",
+            json={"name": "Notes", "ownerUserId": "owner-1"},
+        )
+        assert resp.status_code == 400
+        kb_svc.create_knowledge_base.assert_not_called()
+
+    def test_owner_user_id_and_grants_passed_when_hidden(self) -> None:
+        app, kb_svc, _ = _make_app()
+        kb_svc.create_knowledge_base = AsyncMock(return_value={
+            "success": True, "id": "kb1", "name": "Hidden",
+            "createdAtTimestamp": 100, "updatedAtTimestamp": 100, "userRole": "WRITER"
+        })
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/", json={
+            "name": "Hidden",
+            "isHidden": True,
+            "ownerUserId": "owner-1",
+            "writerUserIds": ["editor-1"],
+            "readerUserIds": ["viewer-1"],
+            "teamIds": ["team-1"],
+        })
+        assert resp.status_code == 200
+        kwargs = kb_svc.create_knowledge_base.call_args.kwargs
+        assert kwargs["is_hidden"] is True
+        assert kwargs["owner_user_id"] == "owner-1"
+        assert kwargs["writer_user_ids"] == ["editor-1"]
+        assert kwargs["reader_user_ids"] == ["viewer-1"]
+        assert kwargs["team_ids"] == ["team-1"]
+
+    def test_writer_user_ids_must_be_strings(self) -> None:
+        app, _, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/",
+            json={"name": "Hidden", "isHidden": True, "writerUserIds": [1]},
+        )
+        assert resp.status_code == 400
+
+    def test_empty_owner_user_id_rejected(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/",
+            json={"name": "Hidden", "isHidden": True, "ownerUserId": "  "},
+        )
+        assert resp.status_code == 400
+        kb_svc.create_knowledge_base.assert_not_called()
+
+    def test_grants_rejected_unless_hidden(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/",
+            json={"name": "Notes", "writerUserIds": ["editor-1"]},
+        )
+        assert resp.status_code == 400
+        kb_svc.create_knowledge_base.assert_not_called()
+
 
 class TestListUserKnowledgeBases:
     _valid_pagination = {
@@ -222,6 +298,20 @@ class TestListUserKnowledgeBases:
         call_kwargs = kb_svc.list_user_knowledge_bases.call_args.kwargs
         assert call_kwargs["page"] == 2
         assert call_kwargs["permissions"] == ["OWNER", "READER"]
+
+    def test_the_folders_truncated_flag_reaches_the_caller(self) -> None:
+        app, kb_svc, _ = _make_app()
+        kb = {"id": "kb1", "name": "KB", "createdAtTimestamp": 1, "updatedAtTimestamp": 2, "createdBy": "u1",
+              "folders": [{"id": f"f{i:03}", "name": f"f{i:03}"} for i in range(100)]}
+        kb_svc.list_user_knowledge_bases = AsyncMock(return_value={
+            "knowledgeBases": [{**kb, "foldersTruncated": True}, {**kb, "id": "kb2", "folders": []}],
+            "pagination": self._valid_pagination, "filters": self._valid_filters,
+        })
+        resp = TestClient(app).get("/api/v1/kb/")
+        assert resp.status_code == 200
+        first, second = resp.json()["knowledgeBases"]
+        assert len(first["folders"]) == 100 and first["foldersTruncated"] is True
+        assert second["foldersTruncated"] is False          # a store that leaves it out has not truncated
 
     def test_service_failure(self):
         app, kb_svc, _ = _make_app()
@@ -281,6 +371,21 @@ class TestUpdateKnowledgeBase:
         client = TestClient(app)
         resp = client.put("/api/v1/kb/kb1", content="bad", headers={"content-type": "application/json"})
         assert resp.status_code == 400
+
+    def test_a_refused_field_comes_back_without_the_value_sent(self) -> None:
+        # F47: only `input` is dropped; Node logs this body.
+        app, kb_svc, _ = _make_app()
+        description = "F47SEED-kb-description-Ada " + "y" * 2000
+        resp = TestClient(app).put("/api/v1/kb/kb1", json={"description": description})
+        assert resp.status_code == 422
+        (entry,) = resp.json()["detail"]
+        assert "input" not in entry
+        assert entry["loc"] == ["description"]
+        assert entry["msg"] == "String should have at most 2000 characters"
+        assert entry["ctx"] == {"max_length": 2000}
+        assert entry["url"].startswith("https://errors.pydantic.dev/")
+        assert "F47SEED" not in resp.text
+        kb_svc.update_knowledge_base.assert_not_called()
 
     def test_failure(self):
         app, kb_svc, _ = _make_app()
@@ -736,25 +841,11 @@ class TestRemovedCreateRecordsRoutes:
         assert resp.status_code == 405
 
 
-class TestListKbRecords:
-    def test_success(self):
+class TestRemovedListRecordsRoute:
+    def test_get_kb_records_is_not_routed(self):
         app, kb_svc, _ = _make_app()
-        kb_svc.list_kb_records = AsyncMock(return_value={
-            "records": [],
-            "pagination": {
-                "page": 1, "limit": 20, "totalCount": 0, "totalPages": 0,
-            },
-            "filters": {
-                "applied": {},
-                "available": {
-                    "recordTypes": [], "origins": [], "connectors": [],
-                    "indexingStatus": [], "permissions": [],
-                },
-            },
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/records")
-        assert resp.status_code == 200
+        resp = TestClient(app).get("/api/v1/kb/kb1/records")
+        assert resp.status_code == 405
 
 
 class TestGetKbChildren:
@@ -1697,27 +1788,6 @@ class TestUploadRecordsToFolderFullCoverage:
         client = TestClient(app)
         resp = client.post("/api/v1/kb/kb1/folder/f1/upload", json=self._files_body())
         assert resp.status_code == 500
-
-
-class TestListKbRecordsFullCoverage:
-    def test_success(self):
-        app, kb_svc, _ = _make_app()
-        kb_svc.list_kb_records = AsyncMock(return_value={
-            "records": [],
-            "pagination": {
-                "page": 1, "limit": 20, "totalCount": 0, "totalPages": 0,
-            },
-            "filters": {
-                "applied": {},
-                "available": {
-                    "recordTypes": [], "origins": [], "connectors": [],
-                    "indexingStatus": [], "permissions": [],
-                },
-            },
-        })
-        client = TestClient(app)
-        resp = client.get("/api/v1/kb/kb1/records")
-        assert resp.status_code == 200
 
 
 class TestGetKbChildrenFullCoverage:

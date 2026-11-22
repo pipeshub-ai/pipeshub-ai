@@ -297,6 +297,22 @@ describe('xss-sanitization', () => {
       it('should return false for text without %', () => {
         expect(containsFormatSpecifiers('no specifiers here')).to.be.false;
       });
+
+      // A space after % is ordinary prose, not a printf space flag.
+      for (const text of [
+        'Growth % sales',
+        'Q3 % share',
+        'Revenue % x',
+        'What is the % notional value?',
+        'Margin % - net',
+        'Growth % 2x',
+        '50% stake',
+        '100%sure',
+      ]) {
+        it(`should return false for ordinary text "${text}"`, () => {
+          expect(containsFormatSpecifiers(text)).to.be.false;
+        });
+      }
     });
 
     describe('when given strings with format specifiers', () => {
@@ -327,6 +343,12 @@ describe('xss-sanitization', () => {
       it('should detect format specifier with width %-10s', () => {
         expect(containsFormatSpecifiers('name: %-10s')).to.be.true;
       });
+
+      for (const text of ['%n', '%hn', '%08x', '%#x', '%+s', '%1$n', 'a %p b', '%ls', '% 08x', '% -10s', '% +s']) {
+        it(`should still detect "${text}"`, () => {
+          expect(containsFormatSpecifiers(text)).to.be.true;
+        });
+      }
 
       it('should detect format specifier with precision %.2f', () => {
         expect(containsFormatSpecifiers('price: %.2f')).to.be.false;

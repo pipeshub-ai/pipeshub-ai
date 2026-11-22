@@ -21,9 +21,12 @@ from app.services.vector_db.membership import (
     sync_vector_membership,
     vector_point_payload,
 )
+from app.services.vector_db.models import ScrollResult
 from tests.support.vector_db import (
     make_collection_registry as _make_collection_registry,
 )
+
+pytestmark = pytest.mark.usefixtures("bound_org")
 
 
 def _loc(names=("records",)) -> StaticCollectionLocator:
@@ -137,7 +140,7 @@ class TestResolveVectorMembership:
             edges=[],
         )
 
-        async def _edges(node_id, collection):
+        async def _edges(node_id, collection, **kwargs):
             if node_id.endswith("/r1"):
                 return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/space-a"}]
             return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/space-b"}]
@@ -259,8 +262,12 @@ class TestVectorPointPayloadContext:
 class TestVectorStoreWritesMembership:
     @pytest.mark.asyncio
     async def test_unique_index_writes_both_arrays(self):
+        import logging
+
         from langchain_core.documents import Document
 
+        from app.config.configuration_service import ConfigurationService
+        from app.config.providers.in_memory_store import InMemoryKeyValueStore
         from app.modules.transformers.vectorstore import VectorStore
         from app.services.vector_db.membership import set_membership_context
         from app.services.vector_db.models import VectorDBCapabilities
@@ -270,7 +277,8 @@ class TestVectorStoreWritesMembership:
         mock_vdb.get_service_name = MagicMock(return_value="mock")
         vs = VectorStore(
             logger=MagicMock(),
-            config_service=AsyncMock(),
+            # every writer reads the epoch of its collection (the ids of its points depend on it)
+            config_service=ConfigurationService(logging.getLogger("m"), InMemoryKeyValueStore(logging.getLogger("m"))),
             graph_provider=AsyncMock(),
             collection_registry=_make_collection_registry(),
             vector_db_service=mock_vdb,
@@ -320,12 +328,14 @@ class TestBulkDeleteMembership:
         )
         pipeline.vector_db_service.delete_points = AsyncMock()
         pipeline.vector_db_service.set_payload = AsyncMock()
+        pipeline.vector_db_service.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
 
         result = await pipeline.bulk_delete_embeddings(["vr-1"])
 
         assert result["virtual_record_ids_processed"] == 1
         pipeline.vector_db_service.delete_points.assert_awaited_once()
         pipeline.vector_db_service.set_payload.assert_not_awaited()
+        pipeline.graph_provider.delete_nodes.assert_awaited_once()      # the last copy: the mapping goes too
 
     @pytest.mark.asyncio
     async def test_shared_instance_rewrites_arrays(self):
@@ -497,7 +507,7 @@ class TestSyncAndRewriteMembership:
             edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
         )
         # thread-1 belongs to channel-1, which has no parent of its own
-        async def edges_from(node_id, _collection):
+        async def edges_from(node_id, _collection, **kwargs):
             if node_id.endswith("/thread-1"):
                 return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/channel-1"}]
             if node_id.endswith("/channel-1"):
@@ -530,7 +540,7 @@ class TestSyncAndRewriteMembership:
             edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
         )
 
-        async def edges_from(node_id, _collection):
+        async def edges_from(node_id, _collection, **kwargs):
             if node_id.endswith("/thread-1"):
                 raise RuntimeError("graph unavailable")
             return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
@@ -546,6 +556,30 @@ class TestSyncAndRewriteMembership:
         # the rest of the membership is still current and must still be written
         assert payload[CONNECTOR_IDS_FIELD] == ["c1"]
         assert payload[RECORD_GROUP_IDS_FIELD] == ["thread-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_provider_that_answers_a_failed_walk_read_with_empty_does_not_publish_a_root(self) -> None:
+        """The default providers turn a read error into []: the walk must ask to be told, or the group it started from reads as the root."""
+        gp = _graph(
+            keys=["rec-1"],
+            records={"rec-1": {"connectorId": "c1", "recordGroupId": "thread-1", "connectorName": "SLACK"}},
+            edges=[{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}],
+        )
+
+        async def edges_from(node_id, _collection, *, raise_on_error=False, **kwargs) -> list[dict]:
+            if node_id.endswith("/thread-1"):  # the walk's first hop
+                if raise_on_error:
+                    raise RuntimeError("graph unavailable")
+                return []  # what the providers do otherwise
+            return [{"_to": f"{CollectionNames.RECORD_GROUPS.value}/thread-1"}]
+
+        gp.get_edges_from_node = AsyncMock(side_effect=edges_from)
+        vdb = AsyncMock()
+        vdb.filter_collection = AsyncMock(return_value=object())
+
+        await sync_vector_membership(vdb, _loc(), gp, "vr-1", MagicMock())
+
+        assert ROOT_RECORD_GROUP_IDS_FIELD not in vdb.set_payload.await_args.args[1]  # not "thread-1 is its own root"
 
     @pytest.mark.asyncio
     async def test_sync_does_not_walk_edges_for_other_connectors(self):
@@ -597,6 +631,8 @@ class TestSyncAndRewriteMembership:
         gp = _graph(keys=[])
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=None)  # answered by the scroll
 
         result = await rewrite_or_delete_virtual_record(
             vdb, _loc(), gp, "vr-1", MagicMock()
@@ -705,6 +741,7 @@ class TestSyncAndRewriteMembership:
         gp.delete_nodes = AsyncMock(side_effect=RuntimeError("arango down"))
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
 
         result = await rewrite_or_delete_virtual_record(
             vdb, _loc(), gp, "vr-1", MagicMock()
@@ -712,6 +749,7 @@ class TestSyncAndRewriteMembership:
 
         assert result == "deleted"
         vdb.delete_points.assert_awaited_once()
+        gp.delete_nodes.assert_awaited_once()          # the mapping delete was tried, and its failure did not undo the points delete
 
 
 class TestVectorStoreBindMembership:
@@ -1152,6 +1190,7 @@ class TestDeleteConfirmation:
         gp.get_records_by_virtual_record_id = AsyncMock(return_value=[])
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
 
         original = m.EMPTY_CONFIRM_DELAY_SECONDS
         m.EMPTY_CONFIRM_DELAY_SECONDS = 0
@@ -1164,6 +1203,7 @@ class TestDeleteConfirmation:
 
         assert result == "deleted"
         vdb.delete_points.assert_awaited_once()
+        gp.delete_nodes.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_points_deleted_before_mapping(self):
@@ -1176,6 +1216,8 @@ class TestDeleteConfirmation:
         gp.delete_nodes = AsyncMock(side_effect=lambda **k: order.append("mapping"))
         vdb = AsyncMock()
         vdb.filter_collection = AsyncMock(return_value=MagicMock())
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[], next_offset=None))
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=None)  # answered by the scroll
         vdb.delete_points = AsyncMock(side_effect=lambda **k: order.append("points"))
 
         original = m.EMPTY_CONFIRM_DELAY_SECONDS
@@ -1481,3 +1523,27 @@ class TestDeleteDuringIndexLeavesNoOrphans:
         await vs._resync_membership_after_write("vr-x", "rec-1")
 
         vdb.delete_points.assert_not_awaited()
+
+
+class TestOtherOrgsHoldPoints:
+    """A provider that answers the cross-org question itself (pgvector: its reads must name one org) is not scrolled."""
+
+    @pytest.mark.parametrize("answer", [True, False])
+    async def test_the_providers_answer_is_used_without_a_scroll(self, answer) -> None:
+        from app.services.vector_db.membership import _other_orgs_hold_points
+
+        vdb = AsyncMock()
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=answer)
+        assert await _other_orgs_hold_points(vdb, ["records"], "vr-1", "org-a") is answer
+        vdb.other_orgs_hold_virtual_record.assert_awaited_once_with("vr-1", "org-a")
+        vdb.scroll.assert_not_awaited()
+
+    async def test_none_falls_back_to_a_scroll_that_excludes_the_org(self) -> None:
+        from app.services.vector_db.membership import _other_orgs_hold_points
+
+        vdb = AsyncMock()
+        vdb.other_orgs_hold_virtual_record = AsyncMock(return_value=None)
+        vdb.filter_collection = AsyncMock(side_effect=lambda **kw: kw)
+        vdb.scroll = AsyncMock(return_value=ScrollResult(points=[VectorPoint(id="p", payload={})], next_offset=None))
+        assert await _other_orgs_hold_points(vdb, ["records"], "vr-1", "org-a") is True
+        assert vdb.scroll.await_args.kwargs["scroll_filter"] == {"must": {"virtualRecordId": "vr-1"}, "must_not": {"orgId": "org-a"}}

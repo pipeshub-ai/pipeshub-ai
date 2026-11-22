@@ -224,6 +224,25 @@ describe('HTML preview citation bridge', () => {
     expect(onHighlightClick).toHaveBeenCalledExactlyOnceWith('c2');
   });
 
+  it('jumps to the active citation instead of animating, so a second message cannot carry the frame past it', () => {
+    const doc = buildPreviewDocument({ sanitizedHtml: sanitizePreviewHtml('<p>Revenue grew.</p>'), nonce: 'n0', dark: false, citations: CITATIONS });
+    const start = doc.indexOf('>', doc.indexOf('<script nonce=')) + 1;
+    const bridge = doc.slice(start, doc.indexOf('</script>', start));
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const frameWindow = iframe.contentWindow as Window & typeof globalThis;
+    frameWindow.document.body.innerHTML = doc.slice(doc.indexOf('<body>') + 6, doc.indexOf('<script nonce='));
+    const highlight = frameWindow.document.querySelector('.highlight-c1') as HTMLElement;
+    const scrollIntoView = vi.fn();
+    highlight.scrollIntoView = scrollIntoView;
+    new Function('window', 'document', bridge)(frameWindow, frameWindow.document);
+
+    frameWindow.dispatchEvent(new frameWindow.MessageEvent('message', { data: { type: SET_ACTIVE_CITATION, id: 'c1' }, source: frameWindow.parent }));
+
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ behavior: 'instant', block: 'center' }));
+    iframe.remove();
+  });
+
   it('parseCitationClick rejects malformed payloads', () => {
     const known = new Set(['c1']);
     expect(parseCitationClick({ type: CITATION_CLICK, id: 'c1' }, known)).toBe('c1');
@@ -302,18 +321,25 @@ describe('DOCX preview isolation', () => {
     expect((window as unknown as { __docxXss?: number }).__docxXss).toBeUndefined();
   });
 
-  it('neutralizes the w:sym injection in a real parsed document before docx-preview renders it', async () => {
+  it('does not render the w:sym injection from a real parsed document, with or without neutralizing', async () => {
     const docxPreview = await import('docx-preview');
     const options = { inWrapper: true, renderAltChunks: false, useBase64URL: true };
     const parsed = await docxPreview.parseAsync(await buildDocx(MALICIOUS_BODY, MALICIOUS_RELS), options);
+    // docx-preview 0.4 returns the rendered nodes; the production renderer appends them to a container.
+    const renderInto = async (target: HTMLElement) => {
+      for (const node of await docxPreview.renderDocument(parsed, options)) target.appendChild(node);
+    };
 
-    const unsafe = document.createElement('div');
-    await docxPreview.renderDocument(parsed, unsafe, undefined, options);
-    expect(unsafe.querySelector('img[onerror]')).not.toBeNull();
+    // docx-preview >= 0.4.1 converts the symbol code to a character itself, so the
+    // payload is inert even before our own neutralizing pass (kept as defence in depth).
+    const raw = document.createElement('div');
+    await renderInto(raw);
+    expect(raw.querySelector('img')).toBeNull();
+    expect(raw.innerHTML).not.toContain('onerror');
 
     neutralizeDocxSymbols((parsed as unknown as { parts: unknown[] }).parts);
     const safe = document.createElement('div');
-    await docxPreview.renderDocument(parsed, safe, undefined, options);
+    await renderInto(safe);
     expect(safe.querySelector('img')).toBeNull();
     expect(safe.innerHTML).not.toContain('onerror');
     expect(safe.textContent).toContain('Board minutes');

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 from datetime import datetime, timezone
 
 import pytest
@@ -129,6 +130,10 @@ class TestNoiseAndSystemEntries:
     def test_well_known_noise_is_skipped(self, name):
         assert MAPPER.skip_reason(_entry(name, is_directory=True)) == "excluded-name"
 
+    @pytest.mark.parametrize("name", ["Thumbs.db", "Desktop.INI", ".DS_Store"])
+    def test_shared_system_file_names_are_skipped_as_files(self, name: str) -> None:
+        assert MAPPER.skip_reason(_entry(name)) == "excluded-name"
+
     @pytest.mark.parametrize("name", [".env", ".profile", "git", "my_node_modules", ".gitignore"])
     def test_names_that_only_look_alike_are_kept(self, name):
         assert MAPPER.skip_reason(_entry(name)) is None
@@ -230,6 +235,15 @@ class TestParentsAndFlags:
         unknown = mime_for("blob.xyz999", is_directory=False)
         assert unknown == MimeTypes.BIN.value
         assert mime_for("folder", is_directory=True) == MimeTypes.FOLDER.value
+
+    def test_a_mapped_type_keeps_its_mime_whatever_the_host_table_says(self, monkeypatch):
+        # The Windows registry's answers: an alias for .zip, Excel's type for .csv, none for .mdx.
+        registry = {"a.zip": "application/x-zip-compressed", "a.csv": "application/vnd.ms-excel"}
+        monkeypatch.setattr(mimetypes, "guess_type", lambda path, strict=True: (registry.get(path), None))
+        assert mime_for("a.zip", is_directory=False) == "application/zip"
+        assert mime_for("a.csv", is_directory=False) == "text/csv"
+        assert mime_for("a.mdx", is_directory=False) == "text/mdx"
+        assert mime_for("a.xyz999", is_directory=False) == MimeTypes.BIN.value
 
 
 class TestRevisionsAndMoves:

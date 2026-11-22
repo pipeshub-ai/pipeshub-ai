@@ -4,18 +4,17 @@ import inspect
 import json
 import logging
 from collections.abc import AsyncGenerator, Mapping
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import aclosing
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
-import pdfplumber
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.agents.agent_loop.cancellation.registry import (
     RunCancellationRegistry,
@@ -25,6 +24,7 @@ from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
+from app.agents.agent_loop.turn_log import log_turn_end
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.api.middlewares.auth import (
@@ -37,7 +37,7 @@ from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
-from app.events.processor import convert_record_dict_to_record
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import (
     Block,
     BlocksContainer,
@@ -45,10 +45,13 @@ from app.models.blocks import (
     CitationMetadata,
     DataFormat,
 )
-from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.models.record_convert import convert_record_dict_to_record
+from app.modules.parsers import parse_pool
+from app.modules.parsers.parse_pool import ParseWorkerError
+from app.modules.parsers.parse_pool_lanes import interactive_parsing
+from app.modules.parsers.pdf.pdf_inspection import needs_ocr_and_page_count
 from app.modules.parsers.pdf.pdf_rasterizer import (
-    count_chars_per_page_from_bytes_sync,
-    render_all_pages_as_pil_from_bytes_sync,
+    render_all_pages_as_png,
 )
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
@@ -63,6 +66,7 @@ from app.modules.transformers.transformer import (
     TransformContext,
 )
 from app.services.artifact_registry.access import is_direct_share, reader_edge
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.model_identity.boundary import (
@@ -72,6 +76,8 @@ from app.services.model_identity.boundary import (
 from app.services.model_identity.principal import Principal, service_principal
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
+from app.services.parsing.interface import ParseError
+from app.services.resource_governor.kinds import ParseKind
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
@@ -83,17 +89,25 @@ from app.utils.attachment_mime_types import (
     TEXT_ATTACHMENT_MIME_TYPES,
 )
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
+from app.utils.chat_helpers import accessible_node_ids
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.image_utils import downscale_to_limits
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_errors import EXCEL_TOO_LARGE
+from app.utils.user_lookup import get_caller_user, get_user_or_503
+from app.utils.validation_messages import validation_error_text
 
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
 OCR_IMAGE_PAGE_CAP = 30
+# Pages of one PDF attached to a chat message. This bounds the memory one upload can use:
+# the layout parse holds every page it reads. It is not a promise about time: on a busy
+# host a file near the cap can still run past _CHAT_ATTACHMENT_UPLOAD_BUDGET_S, and the
+# user is then told it took too long (_attachment_too_slow).
+CHAT_PDF_PAGE_CAP = 50
 
 router = APIRouter()
 
@@ -157,7 +171,10 @@ class ChatQuery(BaseModel):
     strictScope: bool = False
     # Set by Node for a project-scoped chat whose turn selects below app level:
     # the project's own sources (`{"apps": [...]}`), which the selected record
-    # groups, folders and records must lie in. Never taken from a client.
+    # groups, folders and records must lie in. Node builds it from the project and
+    # never copies it from the client's request. It only narrows the turn: a body
+    # that names other sources, or leaves it out, reaches no record beyond the
+    # caller's own access, as in a chat outside any project.
     allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
@@ -196,43 +213,24 @@ class AttachmentUploadRequest(BaseModel):
     attachments: list[AttachmentUploadItem]
 
 
-def _text_layer_char_counts(file_content: bytes) -> list[int] | None:
+_BodyT = TypeVar("_BodyT", bound=BaseModel)
+
+
+async def _parse_body(request: Request, model: type[_BodyT], problem: str) -> _BodyT:
+    """The JSON body as ``model``, or a 400 naming each refused field and rule, never the value sent."""
     try:
-        return count_chars_per_page_from_bytes_sync(file_content)
+        body = await request.json()
     except Exception:
-        logger.warning(
-            "Could not read the PDF's text layer with pdfium; checking every page with pdfplumber",
-            exc_info=True,
-        )
-        return None
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    try:
+        return model.model_validate(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=f"{problem}: {validation_error_text(e)}") from e
 
 
-def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
-    chars_per_page = _text_layer_char_counts(file_content)
-    with pdfplumber.open(BytesIO(file_content)) as pdf:
-        total = len(pdf.pages)
-        if total == 0:
-            return False
-        if chars_per_page is None or len(chars_per_page) != total:
-            chars_per_page = [None] * total
-        # A page with no text layer always needs OCR (`needs_ocr` sees zero text
-        # density), so it is counted without pdfplumber, which can spend minutes
-        # walking a page whose glyphs are drawn as vector paths.
-        ocr_count = sum(
-            1
-            for page, chars in zip(pdf.pages, chars_per_page)
-            if chars == 0 or OCRStrategy.needs_ocr(page, logger)
-        )
-    return ocr_count / total >= 0.5
-
-
-def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
+def _build_pdf_image_blocks(png_pages: list[bytes]) -> BlocksContainer:
     blocks: list[Block] = []
-    images = render_all_pages_as_pil_from_bytes_sync(file_content, resolution=144)
-    for idx, image in enumerate(images):
-        buf = BytesIO()
-        image.save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+    for idx, png_bytes in enumerate(png_pages):
         data_uri = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('utf-8')}"
         blocks.append(
             Block(
@@ -244,11 +242,6 @@ def _build_pdf_image_blocks(file_content: bytes) -> BlocksContainer:
             )
         )
     return BlocksContainer(blocks=blocks, block_groups=[])
-
-
-def _pdf_page_count(file_content: bytes) -> int:
-    with pdfplumber.open(BytesIO(file_content)) as pdf:
-        return len(pdf.pages)
 
 
 # Limits for the copy of an uploaded image kept in its parsed record, which is
@@ -504,12 +497,39 @@ def _attachment_unreadable(file_name: str, kind: str) -> str:
     return f"Couldn't read {file_name}. {_ATTACHMENT_UNREADABLE_HINTS[kind]}"
 
 
+def _attachment_too_heavy(file_name: str) -> str:
+    return (
+        f"{file_name} is too large or complex to read right now, so it wasn't attached. "
+        "Try again, or split it into smaller files and attach those."
+    )
+
+
+def _attachment_too_long(file_name: str, page_count: int) -> str:
+    return (
+        f"{file_name} has {page_count} pages, more than the {CHAT_PDF_PAGE_CAP} pages a PDF can have "
+        "when attached to a message. Attach a part of it, or split it into smaller files."
+    )
+
+
+def _attachment_too_slow(file_name: str) -> str:
+    return (
+        f"{file_name} took too long to read, so it wasn't attached. "
+        "Try again, attach fewer pages, or add it to a knowledge base."
+    )
+
+
 # Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
 _CHAT_ATTACHMENT_MAX_TABLE_ROWS = 500
 
 # The browser gives an attachment upload 90s, and one stalled vision call can run
 # for minutes. An image left undescribed still reaches a multimodal chat model.
 _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S = 40
+
+# Reading the PDFs and describing images share this, so the upload answers
+# before a proxy in front of the app gives up on it (60s on a load balancer,
+# 100s on Cloudflare) and drops it without a status. A PDF still being read
+# then fails with a message, its parse worker killed rather than left running.
+_CHAT_ATTACHMENT_UPLOAD_BUDGET_S = 50
 
 
 def _is_supported_attachment_mime(mime_type: str) -> bool:
@@ -630,15 +650,47 @@ async def upload_chat_attachments(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> dict[str, Any]:
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    # A person is waiting: every parse below, however deep in a parser, runs on
+    # the chat attachment pool, never behind background indexing.
+    with interactive_parsing():
+        return await _upload_chat_attachments(request, graph_provider, config_service)
 
-    try:
-        payload = AttachmentUploadRequest(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid attachment upload payload: {str(e)}")
+
+
+def attachment_record_doc(*, record_id: str, org_id: str, item: Any, external_record_id: str, virtual_record_id: str, now: int) -> dict[str, Any]:  # noqa: ANN401
+    """The record written for an uploaded chat attachment: a new record, so it starts its indexing run at ``now``."""
+    return {
+        "_key": record_id,
+        "id": record_id,
+        "orgId": org_id,
+        "recordName": item.fileName,
+        "externalRecordId": external_record_id,
+        "recordType": "FILE",
+        "origin": "UPLOAD",
+        "connectorId": f"attachments_{org_id}",
+        "connectorName": Connectors.ATTACHMENTS.value,
+        "createdAtTimestamp": now,
+        "updatedAtTimestamp": now,
+        "sourceCreatedAtTimestamp": now,
+        "sourceLastModifiedTimestamp": now,
+        "isDeleted": False,
+        "isArchived": False,
+        "indexingStatus": "NOT_STARTED",
+        "extractionStatus": "NOT_STARTED",
+        "firstQueuedAt": now,
+        "indexingAttempts": 0,
+        "version": 1,
+        "mimeType": item.mimeType,
+        "sizeInBytes": item.size,
+        "virtualRecordId": virtual_record_id,
+    }
+
+async def _upload_chat_attachments(
+    request: Request,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+) -> dict[str, Any]:
+    payload = await _parse_body(request, AttachmentUploadRequest, "Invalid attachment upload payload")
 
     user = request.state.user or {}
     org_id = user.get("orgId")
@@ -672,6 +724,8 @@ async def upload_chat_attachments(
     file_docs: list[dict[str, Any]] = []
     parsed_blocks_by_record: dict[str, BlocksContainer] = {}
     ocr_image_pages_used = 0
+    loop = asyncio.get_running_loop()
+    upload_deadline = loop.time() + _CHAT_ATTACHMENT_UPLOAD_BUDGET_S
 
     container: QueryAppContainer = request.app.container
     service_logger = container.logger()
@@ -716,29 +770,10 @@ async def upload_chat_attachments(
         )
         external_record_id = storage_doc_id if storage_doc_id else record_id
 
-        record_doc = {
-            "_key": record_id,
-            "id": record_id,
-            "orgId": org_id,
-            "recordName": item.fileName,
-            "externalRecordId": external_record_id,
-            "recordType": "FILE",
-            "origin": "UPLOAD",
-            "connectorId": f"attachments_{org_id}",
-            "connectorName": Connectors.ATTACHMENTS.value,
-            "createdAtTimestamp": now,
-            "updatedAtTimestamp": now,
-            "sourceCreatedAtTimestamp": now,
-            "sourceLastModifiedTimestamp": now,
-            "isDeleted": False,
-            "isArchived": False,
-            "indexingStatus": "NOT_STARTED",
-            "extractionStatus": "NOT_STARTED",
-            "version": 1,
-            "mimeType": item.mimeType,
-            "sizeInBytes": item.size,
-            "virtualRecordId": virtual_record_id,
-        }
+        record_doc = attachment_record_doc(
+            record_id=record_id, org_id=org_id, item=item, external_record_id=external_record_id,
+            virtual_record_id=virtual_record_id, now=now,
+        )
 
         needs_ocr = False
         parse_mode = "pdfplumber"
@@ -771,6 +806,16 @@ async def upload_chat_attachments(
                 block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "excel_lightweight"
+            except (ParseWorkerError, TimeoutError, BrokenProcessPool, MemoryError) as e:
+                # Same as the PDF branch: a worker that overran or died is most likely out of
+                # memory, not a damaged file. ParseWorkerError is a ParseError, so it goes first.
+                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
+            except ParseError as e:
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                if e.message == EXCEL_TOO_LARGE:
+                    raise HTTPException(status_code=400, detail=EXCEL_TOO_LARGE) from e
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet")) from e
             except Exception as e:
                 logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
                 raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet"))
@@ -786,30 +831,57 @@ async def upload_chat_attachments(
                 raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "csv"))
         else:
             try:
-                needs_ocr = await asyncio.to_thread(_pdf_has_any_ocr_page, file_binary)
-                if needs_ocr:
-                    page_count = await asyncio.to_thread(_pdf_page_count, file_binary)
-                    if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=(
-                                f"{item.fileName} has too many scanned pages to attach: the limit is "
-                                f"{OCR_IMAGE_PAGE_CAP} scanned pages per message. Attach fewer pages "
-                                "or split the document."
-                            ),
-                        )
-                    block_containers = await asyncio.to_thread(
-                        _build_pdf_image_blocks, file_binary
+                # pdfplumber and the layout parser are pure Python and hold the GIL,
+                # so they run in parse workers: a slow or hostile file then costs
+                # its own upload only, never this loop or this process's memory.
+                async with asyncio.timeout_at(upload_deadline):
+                    needs_ocr, page_count = await parse_pool.submit(
+                        needs_ocr_and_page_count,
+                        file_binary,
+                        CHAT_PDF_PAGE_CAP,
+                        label=item.fileName,
+                        size=len(file_binary),
+                        kind=ParseKind.INSPECT,
                     )
-                    ocr_image_pages_used += page_count
-                    parse_mode = "image_direct"
-                else:
-                    parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
-                    block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
-                    parse_mode = "pdfplumber"
+                    if page_count > CHAT_PDF_PAGE_CAP:
+                        raise HTTPException(status_code=400, detail=_attachment_too_long(item.fileName, page_count))
+                    if needs_ocr:
+                        if ocr_image_pages_used + page_count > OCR_IMAGE_PAGE_CAP:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"{item.fileName} has too many scanned pages to attach: the limit is "
+                                    f"{OCR_IMAGE_PAGE_CAP} scanned pages per message. Attach fewer pages "
+                                    "or split the document."
+                                ),
+                            )
+                        png_pages = await parse_pool.submit(
+                            render_all_pages_as_png,
+                            file_binary,
+                            144,
+                            label=item.fileName,
+                            size=len(file_binary),
+                            kind=ParseKind.RENDER,
+                        )
+                        block_containers = _build_pdf_image_blocks(png_pages)
+                        ocr_image_pages_used += page_count
+                        parse_mode = "image_direct"
+                    else:
+                        parsed_data = await pdf_processor.parse_document(item.fileName, file_binary)
+                        block_containers = await pdf_processor.create_blocks(parsed_data, skip_llm_enrichment=True)
+                        parse_mode = "pdfplumber"
                 parsed_blocks_by_record[record_id] = block_containers
             except HTTPException:
                 raise
+            except TimeoutError as e:
+                # The upload deadline fired: the file was being read, just not fast enough.
+                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                raise HTTPException(status_code=422, detail=_attachment_too_slow(item.fileName)) from e
+            except (ParseWorkerError, BrokenProcessPool, MemoryError) as e:
+                # A worker that died, or a renderer it started that
+                # died: most likely out of memory, not a damaged file.
+                logger.warning("Chat attachment %s could not be read in time: %r", item.fileName, e)
+                raise HTTPException(status_code=422, detail=_attachment_too_heavy(item.fileName)) from e
             except Exception as e:
                 logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
                 raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "pdf"))
@@ -895,8 +967,9 @@ async def upload_chat_attachments(
 
         # One budget for the whole request: its records are indexed one after
         # another, and the Slack bot and API send up to 10 files in one upload.
-        loop = asyncio.get_running_loop()
-        describe_deadline = loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S
+        describe_deadline = min(
+            loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S, upload_deadline
+        )
         for record_doc in record_docs:
             record_id = record_doc.get("_key") or record_doc.get("id")
             block_containers = parsed_blocks_by_record.get(record_id)
@@ -937,23 +1010,7 @@ class ArtifactPermissionRequest(BaseModel):
     userIds: list[str]
 
 
-_PermissionRequestT = TypeVar("_PermissionRequestT", bound=BaseModel)
-
 _PERMISSION_EDGE_LOOKUP_CONCURRENCY = 16
-
-
-async def _parse_permission_request(
-    request: Request, model: type[_PermissionRequestT]
-) -> _PermissionRequestT:
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        return model(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
 
 
 def _permission_grantor(claims: Mapping[str, Any]) -> tuple[str, str]:
@@ -1090,6 +1147,7 @@ async def _grant_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
+        await notify_principals_changed(org_id)  # a new READER grant
     return len(edges)
 
 
@@ -1146,6 +1204,8 @@ async def _revoke_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
+    if edges or direct_kept:
+        await notify_principals_changed(org_id)  # a narrowing PERMISSION write
     return len(edges) + len(direct_kept)
 
 
@@ -1191,7 +1251,7 @@ async def _attachment_caller(
     if user.get("isServiceAccount"):
         return org_id, None, True
     user_id = user.get("userId")
-    user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+    user_doc = await get_caller_user(graph_provider, user_id) if user_id else None
     return org_id, (user_doc or {}).get("_key") or (user_doc or {}).get("id"), False
 
 
@@ -1253,6 +1313,66 @@ async def _org_user_keys(
     return keys
 
 
+# Records read per address; an address that fills it is treated as unreadable.
+_RECORDS_PER_URL_LIMIT = 50
+
+
+class RecordAccessRequest(BaseModel):
+    recordIds: list[str] = Field(default_factory=list, max_length=500)
+    # Addresses of records known only by link (a tool's reference data): readable
+    # when every live record stored at the address is readable.
+    webUrls: list[str] = Field(default_factory=list, max_length=500)
+
+
+@router.post("/chat/records/access")
+@inject
+async def check_viewer_record_access(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
+) -> dict[str, Any]:
+    """Which of these records the viewer named in the service token may read, by
+    the same `check_access` as search and `fetch_record`. Node signs the viewer's
+    own ids after authenticating them, so a shared chat is rendered for the person
+    looking at it. An access check that cannot answer is a 503, never a guess."""
+    org_id, viewer_id = _permission_grantor(claims)
+    payload = await _parse_body(request, RecordAccessRequest, "Invalid request payload")
+    ids = list(dict.fromkeys(r for r in payload.recordIds if r))
+    urls = list(dict.fromkeys(u for u in payload.webUrls if u))
+    by_url: dict[str, list[str]] = {}
+    if urls:
+        try:
+            # Deleted records too: a deleted record's address is that record's, as its id is.
+            # Known limit: a record removed outright leaves no row, so its address reads as unmatched
+            # (a web page). Answers that cite it by record id are still hidden; only one that names it
+            # by address alone is not.
+            rows = await graph_provider.get_records_by_weburls(
+                urls, org_id, per_address=_RECORDS_PER_URL_LIMIT, include_deleted=True,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Access check unavailable") from exc
+        for row in rows:
+            by_url.setdefault(row.get("webUrl"), []).append(row["id"])
+    try:
+        readable = await accessible_node_ids(
+            graph_provider, set(ids) | {r for rs in by_url.values() for r in rs}, viewer_id, org_id,
+        )
+    except PermissionVerificationUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="Access check unavailable") from exc
+    return {
+        "accessible": [r for r in ids if r in readable],
+        "accessibleUrls": [
+            u for u in urls
+            if by_url.get(u)
+            # A full page means records may be cut off, so the address is not trusted.
+            and len(by_url[u]) < _RECORDS_PER_URL_LIMIT
+            and all(r in readable for r in by_url[u])
+        ],
+        # An address no record is stored at (a public web page): not a record to lose.
+        "unmatchedUrls": [u for u in urls if not by_url.get(u)],
+    }
+
+
 @router.post("/chat/attachments/permissions")
 @inject
 async def grant_attachment_permissions(
@@ -1262,7 +1382,7 @@ async def grant_attachment_permissions(
 ) -> dict[str, Any]:
     """Grant READER on chat attachment records to the users a conversation was shared with."""
     org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    payload = await _parse_body(request, AttachmentPermissionRequest, "Invalid request payload")
     record_ids = await _grantor_chat_attachments(graph_provider, org_id, grantor_user_id, payload.recordIds)
     granted = await _grant_reader_permissions(
         graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
@@ -1279,7 +1399,7 @@ async def revoke_attachment_permissions(
 ) -> dict[str, Any]:
     """Revoke READER on chat attachment records from users a conversation was unshared from."""
     org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    payload = await _parse_body(request, AttachmentPermissionRequest, "Invalid request payload")
     record_ids = await _grantor_chat_attachments(graph_provider, org_id, grantor_user_id, payload.recordIds)
     revoked = await _revoke_reader_permissions(
         graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
@@ -1298,7 +1418,7 @@ async def grant_artifact_permissions(
     each shared viewer's first-page load so artifacts created after the share
     become readable."""
     org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
+    payload = await _parse_body(request, ArtifactPermissionRequest, "Invalid request payload")
     if not payload.userIds:
         return {"granted": 0}
 
@@ -1320,7 +1440,7 @@ async def revoke_artifact_permissions(
 ) -> dict[str, Any]:
     """Revoke READER on a conversation's artifacts from users it was unshared from."""
     org_id, grantor_user_id = _permission_grantor(claims)
-    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
+    payload = await _parse_body(request, ArtifactPermissionRequest, "Invalid request payload")
     if not payload.userIds:
         return {"revoked": 0}
 
@@ -1395,7 +1515,7 @@ async def _load_user_doc(graph_provider: IGraphDBProvider, user_id: str | None) 
     by the caller's `gather(..., return_exceptions=True)`."""
     if not user_id:
         return None
-    return await graph_provider.get_user_by_user_id(user_id)
+    return await get_caller_user(graph_provider, user_id)
 
 
 async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) -> dict | None:
@@ -1442,9 +1562,9 @@ async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # 
     if store is None:
         return
     try:
-        logger_.info("🔥 Warming up entity vector store in background")
+        logger_.info("Warming up entity vector store in background")
         await store.embedding_fingerprint()
-        logger_.info("✅ Entity vector store warmup complete")
+        logger_.info("Entity vector store warmup complete")
     except Exception as exc:
         logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
 
@@ -1504,18 +1624,24 @@ async def _generate_chat_stream_via_agent_loop(
         container=getattr(request.app, "container", None),
         conversation_id=query_info.conversationId,
     ):
-        async with aclosing(
-            _stream_chat_via_agent_loop(
-                request=request,
-                query_info=query_info,
-                retrieval_service=retrieval_service,
-                graph_provider=graph_provider,
-                config_service=config_service,
-                cancellation_registry=cancellation_registry,
-            )
-        ) as inner:
-            async for event in inner:
-                yield event
+        try:
+            async with aclosing(
+                _stream_chat_via_agent_loop(
+                    request=request,
+                    query_info=query_info,
+                    retrieval_service=retrieval_service,
+                    graph_provider=graph_provider,
+                    config_service=config_service,
+                    cancellation_registry=cancellation_registry,
+                )
+            ) as inner:
+                async for event in inner:
+                    yield event
+        except Exception as exc:
+            # A turn that failed outside the agent loop (attachment check, prompts, the
+            # bridge's own setup) still gets its end line; the error propagates as before.
+            log_turn_end(logger, "error", exc=exc, code=classify_exception(exc)[0], run_id=query_info.runId)
+            raise
 
 
 async def _stream_chat_via_agent_loop(
@@ -1578,7 +1704,7 @@ async def _stream_chat_via_agent_loop(
         for pending in background_tasks:
             pending.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
-        logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
+        log_turn_end(logger_, "error", exc=exc, code="llm_initialization_failed", run_id=query_info.runId)
         error_code, user_message = classify_exception(exc)
         if error_code == "unknown":
             user_message = CHAT_MODEL_START_FAILED
@@ -1722,15 +1848,7 @@ async def _parse_chat_query(
 ) -> "ChatQuery":
     """Request prelude shared by `/chat` and `/chat/stream`: parse, validate,
     reject a `runId` that is already running, and record the session."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        query_info = ChatQuery(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+    query_info = await _parse_body(request, ChatQuery, "Invalid request parameters")
 
     # A real HTTP 409 is only possible HERE, before `StreamingResponse` is
     # returned — once the SSE generator below starts, Starlette has already
@@ -1853,15 +1971,7 @@ async def cancel_chat_stream(
     only for a genuine mismatch (403) or a malformed `runId` (400, via
     `CancelRunRequest`'s field validator).
     """
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        cancel_request = CancelRunRequest(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+    cancel_request = await _parse_body(request, CancelRunRequest, "Invalid request parameters")
 
     user = getattr(request.state, "user", {}) or {}
     requester = RunOwner(

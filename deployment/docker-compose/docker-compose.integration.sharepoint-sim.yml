@@ -1,0 +1,62 @@
+# SharePoint Online simulator for the sharepoint_sim suite (integration-tests/connectors/sharepoint/
+# sharepoint_sim_*_test.py). An override, used after the stack's own file:
+#
+#   deployment/docker-compose/sharepoint-sim/make-certs.sh "$SHAREPOINT_SIM_TLS_DIR"
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.sharepoint-sim.yml up -d
+#
+# The connector, the Graph SDK and azure-identity call fixed hosts over HTTPS (graph.microsoft.com,
+# login.microsoftonline.com, contoso.sharepoint.com and its -my host); nothing in the product moves them.
+# So sharepoint-tls takes those names as network aliases and answers them with a certificate from a CA
+# made for the run, and pipeshub-ai trusts that CA through SSL_CERT_FILE (httpx and OpenSSL, so aiohttp,
+# both read it). sharepoint-sim tells the services apart by Host. The test process drives the simulator's
+# control API on the published port (integration-tests/connectors/sharepoint_sim.env).
+#
+# Every Microsoft call from this stack goes to the simulator, so no suite that needs the real Microsoft 365
+# (the live `sharepoint` suite) can run on it. Never stop or recreate sharepoint-tls while a connector syncs:
+# without the alias the names resolve to Microsoft again.
+services:
+  sharepoint-sim:
+    image: ${SHAREPOINT_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["sharepoint"]
+    environment:
+      CONNSIM_SOURCES: sharepoint
+      # The tenant lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+    volumes:
+      - sharepoint_sim_data:/data
+    # Not 8101-8103 or 8106: the Atlassian, Notion and Gmail simulators publish those in the same stack.
+    ports:
+      - "127.0.0.1:8107:80"
+    mem_limit: 1g
+
+  sharepoint-tls:
+    image: nginx:1.27.5-alpine
+    restart: always
+    depends_on:
+      sharepoint-sim:
+        condition: service_healthy
+    volumes:
+      - ./sharepoint-sim/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${SHAREPOINT_SIM_TLS_DIR:?run sharepoint-sim/make-certs.sh and set SHAREPOINT_SIM_TLS_DIR}/tls.pem:/etc/nginx/tls/tls.pem:ro
+      - ${SHAREPOINT_SIM_TLS_DIR}/tls.key:/etc/nginx/tls/tls.key:ro
+    networks:
+      default:
+        aliases:
+          - graph.microsoft.com
+          - login.microsoftonline.com
+          - contoso.sharepoint.com
+          - contoso-my.sharepoint.com
+    mem_limit: 128m
+
+  pipeshub-ai:
+    environment:
+      - SSL_CERT_FILE=/etc/pipeshub-it/ca-bundle.pem
+    volumes:
+      - ${SHAREPOINT_SIM_TLS_DIR}/ca-bundle.pem:/etc/pipeshub-it/ca-bundle.pem:ro
+    depends_on:
+      sharepoint-tls:
+        condition: service_started
+
+volumes:
+  sharepoint_sim_data:

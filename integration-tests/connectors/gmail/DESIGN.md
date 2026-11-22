@@ -21,7 +21,7 @@ users, delegation removed, rate limits). So the Gmail API is simulated, and ever
 | PipesHub (Node API, connector service, indexing, graph, KV, broker) | real, the integration compose stack |
 | Gmail connectors, their Google clients (google-api-python-client, google-auth) | real |
 | Gmail API v1, Admin SDK Directory v1, Drive files.get, Google's OAuth token endpoint | the Gmail simulator (`connectors-simulator`, simulator `gmail`), compose service `gmail-sim` |
-| Credentials | the Google Drive suites' own: same environment variables, same service account key, same OAuth client and refresh token |
+| Credentials | none real: fixed values in `connectors/gmail_sim.env`, and a service-account key the test process generates per run |
 
 The simulator validates every request and response against Google's published Discovery documents and answers
 501 to anything it does not model, so a test cannot pass on a request the real API would refuse.
@@ -39,33 +39,38 @@ suites run. The connector logs a warning at start-up when it is set.
 The test process reaches the simulator on its published port (`GMAIL_SIM_URL`, default
 `http://localhost:8106`) to build mailboxes and change them.
 
-## 3. Authentication: same auth, same credentials as the Drive suites
+## 3. Authentication: real Google auth flows, simulated tenant, no secrets
 
-**Workspace** reads the Drive Workspace variables:
+As for the Confluence and Jira suites (`connectors/atlassian_sim.env`), every value the Gmail suites need is in
+`connectors/gmail_sim.env`. CI appends that file to the job's environment; a local run sources it.
 
-| Variable | Use |
-|---|---|
-| `GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON` | uploaded to the connector exactly as in the Drive suite; its `client_email` and public key (derived from `private_key` by the test) are registered with the simulator |
-| `GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL` | the connector's admin; an administrator in the simulated Workspace |
-| `GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL` | the mailbox owner the suite logs in as |
-| `GOOGLE_DRIVE_WORKSPACE_SECOND_USER_EMAIL` | a second mailbox owner (access isolation) |
-
-The connector signs its domain-wide-delegation JWT with the real key; the simulator checks the signature with
-the registered public key, the issuer, the audience, the scopes and the impersonated user, and refuses what
-Google would refuse. The simulated Workspace's domain is the admin's domain, so the users are the same
-addresses the Drive suite uses and the same PipesHub users can log in.
-
-**Personal** reads the Drive personal variables:
+**Workspace**
 
 | Variable | Use |
 |---|---|
-| `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET` | the OAuth app registered in PipesHub (as in the Drive suite) and with the simulator |
-| `GOOGLE_DRIVE_REFRESH_TOKEN` | registered with the simulator as the user's refresh token; exchanged by `helper/oauth_token_helper.py` at the simulator's token URL |
-| `GOOGLE_DRIVE_TEST_USER_EMAIL` | the connected Gmail account and the PipesHub user who creates the connector |
-| `SECRET_KEY` and the Redis variables | as for the Drive personal suite (the token helper writes the credentials into the KV store) |
+| `GMAIL_SIM_WORKSPACE_ADMIN_EMAIL` | the connector's admin; an administrator in the simulated Workspace, whose domain is the admin's |
+| `GMAIL_SIM_WORKSPACE_TEST_USER_EMAIL` | the mailbox owner the suite logs in as |
+| `GMAIL_SIM_WORKSPACE_SECOND_USER_EMAIL` | a second mailbox owner (access isolation) |
 
-No request leaves the stack for Google, and no secret is sent anywhere but the local simulator. A missing variable
-skips the suite (`helper/source_credentials.source_unavailable`), as the Drive suites do.
+The service account is made by `gmail_env.py` once per test run: a new RSA key in a key file shaped like
+Google's. The connector gets the whole file, as an admin would upload it; the simulator gets the account's address
+and the public half of the key. The connector signs its domain-wide-delegation JWT with that key, and the simulator
+checks the signature, the issuer, the audience, the scopes and the impersonated user, refusing what Google would
+refuse.
+
+**Personal**
+
+| Variable | Use |
+|---|---|
+| `GMAIL_SIM_OAUTH_CLIENT_ID`, `GMAIL_SIM_OAUTH_CLIENT_SECRET` | the OAuth app registered in PipesHub and with the simulator |
+| `GMAIL_SIM_REFRESH_TOKEN` | registered with the simulator as the user's refresh token; exchanged by `helper/oauth_token_helper.py` at the simulator's token URL |
+| `GMAIL_SIM_PERSONAL_USER_EMAIL` | the connected Gmail account (linked to the PipesHub user who creates the connector) |
+| `SECRET_KEY` and the Redis variables | as for the other OAuth suites (the token helper writes the credentials into the KV store) |
+
+No request leaves the stack for Google. A missing variable skips the suite
+(`helper/source_credentials.source_unavailable`). An unreachable simulator skips it too, unless
+`GMAIL_GOOGLE_API_BASE_URL` is set: then the stack was pointed at the simulator, so the suite fails instead of
+reporting a pass that tested nothing.
 
 ## 4. Test data
 
@@ -91,8 +96,8 @@ Each class gets its own connector instance; teardown disables and deletes it and
 | TC-GMAIL-WS-006 | Trash removes the message and its attachments; untrash brings it back | deletion, restore (7.1) |
 | TC-GMAIL-WS-007 | Permanent delete and spam remove the message | deletion (7.1) |
 | TC-GMAIL-WS-008 | Expired history (404): the mailbox is read again and mail deleted meanwhile is removed | expired cursor (6.6) |
-| TC-GMAIL-WS-009 | Narrowing the Received Date filter removes older mail on the next (full) sync; widening adds it back | filter change (8.2) |
-| TC-GMAIL-WS-010 | Stream: a message streams its body; an attachment streams its exact bytes | streaming (3.8) |
+| TC-GMAIL-WS-009 | Narrowing the Received Date filter takes older mail out of its mailbox group on the next (full) sync, which unlinks what it no longer reads; widening puts it back | filter change (8.2) |
+| TC-GMAIL-WS-010 | Stream, as the mailbox owner: a message streams its body; an attachment streams its exact bytes | streaming (3.8) |
 | TC-GMAIL-WS-011 | Suspending the second user takes their mailbox grant away; reinstating gives it back | deactivated users (5.13) |
 | TC-GMAIL-WS-012 | Delegation removed: the sync fails, nothing is removed, and the next sync after it is restored succeeds | failure safety (5.7, 6.10) |
 | TC-GMAIL-WS-013 | Deleting the connector removes all its records, groups and sync points | lifecycle (7.6) |
@@ -115,13 +120,14 @@ Local:
 CONNSIM_SOURCES=gmail connsim serve gmail --port 8106
 # PipesHub stack with the Gmail connectors pointed at it
 GMAIL_GOOGLE_API_BASE_URL=http://host.docker.internal:8106 docker compose ... up -d
-cd integration-tests && GMAIL_SIM_URL=http://localhost:8106 pytest -m "gmail_workspace or gmail_individual" -v
+cd integration-tests && set -a && . connectors/gmail_sim.env && set +a && \
+  GMAIL_SIM_URL=http://localhost:8106 pytest -m "gmail_workspace or gmail_individual" -v
 ```
 
-CI: the suites carry the `gmail_workspace` and `gmail_individual` markers and run on connector shard 4 with the
-Google Drive suites (the shard that already has the Google credentials). The shard starts the `gmail-sim` compose
-profile and loads `connectors/gmail_sim.env`. The workflow's `CONNSIM_REF` must point at a connectors-simulator
-commit that contains the `gmail` simulator.
+CI: the suites carry the `gmail_workspace` and `gmail_individual` markers and run on connector shard 2, next to
+Jira, which already builds the simulator image. The shard starts the `gmail-sim` compose profile and loads
+`connectors/gmail_sim.env`. The workflow's `CONNSIM_REF` must point at a connectors-simulator commit that contains
+the `gmail` simulator.
 
 ## 7. What these tests do not cover
 

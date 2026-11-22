@@ -14,12 +14,19 @@ parsing.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.messages import ToolCall
 from app.agent_loop_lib.transport.registry import TransportRegistry
-from app.agents.agent_loop.intent import IntentRouteDecision, parse_intent, parse_intent_and_route
+from app.agents.agent_loop.intent import (
+    IntentRouteDecision,
+    parse_intent,
+    parse_intent_and_route,
+)
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
+
+if TYPE_CHECKING:
+    import pytest
 
 _LOGGER = logging.getLogger("test.agents.agent_loop.intent")
 
@@ -315,3 +322,60 @@ class TestIntentSeesTheConversationTheAgentSees:
         from app.agents.agent_loop.intent import _INTENT_INSTRUCTIONS
 
         assert "only when the request refers back" in _INTENT_INSTRUCTIONS
+
+
+class TestTheFallbackIsLoggedOnce:
+    """P3b: a model failure is reported by its own `llm_call.failed`; the fallback is only recorded."""
+
+    async def test_a_model_failure_is_only_the_models_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.agent_loop_lib.core.exceptions import TransportError
+        from app.utils.logger import log_record_fields
+
+        caplog.set_level(logging.DEBUG)
+        transport = ScriptedTransport().add_error(TransportError("body-sentinel-77 upstream exploded", status_code=500))
+
+        decision = await _run_with_transport(transport, query="raw text")
+
+        assert decision.rewritten_query == "raw text"
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == ["llm_call.failed"]
+        (fallback,) = [r for r in caplog.records if r.getMessage() == "intent.fallback"]
+        fields = log_record_fields(fallback)
+        assert (fallback.levelno, fields["reason"], fields["end_event"]) == (logging.INFO, "run_failed", "llm_call_failed")
+        assert "body-sentinel-77" not in fallback.getMessage() + str(fields)
+
+    async def test_empty_output_is_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.utils.logger import log_record_fields
+
+        caplog.set_level(logging.DEBUG)
+        await _run_with_transport(_script_task_complete("   "), query="raw text")
+
+        (fallback,) = [r for r in caplog.records if r.getMessage() == "intent.fallback"]
+        assert (fallback.levelno, log_record_fields(fallback)["reason"]) == (logging.WARNING, "empty")
+
+    async def test_a_run_that_failed_without_a_model_failure_is_a_warning(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import app.agents.agent_loop.intent as intent_module
+        from app.agent_loop_lib.agent.single_shot_runner import (
+            StructuredSingleShotError,
+        )
+
+        async def _blocked(**_kwargs: Any) -> str:  # noqa: ANN401
+            raise StructuredSingleShotError("blocked", reason="run_failed", end_event="agent_blocked")
+
+        monkeypatch.setattr(intent_module, "run_text_single_shot", _blocked)
+        caplog.set_level(logging.DEBUG)
+        await _run_with_transport(ScriptedTransport(), query="raw text")
+
+        (fallback,) = [r for r in caplog.records if r.getMessage() == "intent.fallback"]
+        assert fallback.levelno == logging.WARNING
+
+    async def test_a_malformed_clarify_block_is_one_line_without_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.agents.agent_loop.intent import _parse_clarify_block
+
+        caplog.set_level(logging.DEBUG)
+        question = "clarify-sentinel-88 " + "x" * 600
+        assert _parse_clarify_block('```clarify\n{"questions": [{"question": "' + question + '", "options": [{"label": "a"}, {"label": "b"}]}]}\n```') is None
+
+        (line,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert line.getMessage() == "intent.clarify_malformed" and "clarify-sentinel-88" not in caplog.text

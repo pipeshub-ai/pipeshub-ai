@@ -1,0 +1,41 @@
+- id: GM-S-01
+  title: Mailboxes; each owner sees only their own mail, other users are denied
+  source: permission model doc, container rule (mailboxes)
+  rule: container
+  world: golden/gmail_mailboxes
+  expect:
+    verdicts:
+      ann: {mail:ann-1: admit, mail:ann-2: admit, mail:bob-1: deny}
+      bob: {mail:ann-1: deny, mail:ann-2: deny, mail:bob-1: admit}
+      cat: {mail:ann-1: deny, mail:bob-1: deny, mailbox:ann: deny}
+  tags: [gmail, "cell:container/mailbox-other-denied"]
+- id: GM-C-01
+  title: Delegate added at the source; the connector writes only the owner grant, so Cat still cannot find the mail
+  source: permission model doc, container rule
+  rule: container
+  comment: >
+    Gmail lets an owner delegate a mailbox, but the connector writes only the owner's grant
+    (google/gmail/team/connector.py:1311-1324); "delegation" in that connector means domain-wide impersonation. The graph
+    does not change (DELTA-17).
+  world: golden/gmail_mailboxes
+  expect:
+    before: {cat: {mail:ann-1: deny}}
+    verdicts:
+      cat: {mail:ann-1: admit, mail:ann-2: admit, mail:bob-1: deny}
+    index_writes: 0
+    source_delta: DELTA-17
+  tags: [gmail, "cell:container/member-change"]
+- id: GM-C-03
+  title: Mailbox deleted; the owner's mail is gone
+  source: permission model doc, container rule
+  rule: container
+  comment: A mailbox that is deleted is unlinked by the full-sync sweep (services/graph_db/common/full_sync_unlink.py:18-26), not deleted.
+  world: golden/gmail_mailboxes
+  mutation: {kind: deleted, node: mailbox:ann}
+  expect:
+    before: {ann: {mail:ann-1: admit}}
+    verdicts:
+      ann: {mail:ann-1: deny, mail:ann-2: deny}
+      bob: {mail:bob-1: admit}
+    index_writes: unlink
+  tags: [gmail, "cell:container/delete", narrowing]

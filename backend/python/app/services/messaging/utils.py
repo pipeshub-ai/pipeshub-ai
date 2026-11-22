@@ -58,7 +58,9 @@ class MessagingUtils:
 
     @staticmethod
     async def _get_redis_config(app_container: AppContainer) -> RedisConfig:
-        """Get Redis config from the configuration service."""
+        """Get Redis config from the configuration service (the defaults when the broker is PostgreSQL: no Redis server is read)."""
+        if get_message_broker_type() == MessageBrokerType.POSTGRES:
+            return RedisConfig()
         config_service = app_container.config_service()
         return await config_service.get_redis_config()
 
@@ -303,7 +305,11 @@ class MessagingUtils:
             app_container,
             "records_consumer_client",
             "records_consumer_group",
-            lane_topics_for(Topic.RECORD_EVENTS.value, broker_type),
+            lane_topics_for(
+                Topic.RECORD_EVENTS.value,
+                broker_type,
+                messaging_env.indexing_consume_lanes,
+            ),
             is_indexing=True,  # Use indexing batch size
         )
 

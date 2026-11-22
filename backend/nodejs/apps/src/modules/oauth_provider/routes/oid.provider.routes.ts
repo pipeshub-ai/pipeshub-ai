@@ -18,6 +18,21 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { Container } from 'inversify'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
 
+/** `GET /auth.md`; mounted at the root and under `/.well-known`. */
+export function createAuthMdRouter(
+  container: Container,
+  extraSections: (origin: string) => string[],
+): Router {
+  const router = Router();
+  const controller = container.get<OIDCProviderController>(
+    'OIDCProviderController',
+  );
+  router.get('/', (req: Request, res: Response, next: NextFunction) =>
+    controller.authMd(req, res, next, extraSections),
+  );
+  return router;
+}
+
 export function createOIDCDiscoveryRouter(container: Container): Router {
   const router = Router()
   const controller = container.get<OIDCProviderController>('OIDCProviderController')

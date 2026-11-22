@@ -1,10 +1,14 @@
 import asyncio
+import base64
+import codecs
 import json
 import logging
 import threading
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
+import requests
 from dropbox.files import SearchOptions
+from dropbox.sharing import LinkAudience, SharedLinkSettings
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
@@ -20,11 +24,37 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.sources.client.dropbox.dropbox_ import DropboxClient
+from app.sources.client.dropbox.dropbox_ import DropboxClient, to_plain
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 
 logger = logging.getLogger(__name__)
+
+# The most of a file download_file returns to the agent.
+_MAX_DOWNLOAD_BYTES = 1024 * 1024
+
+
+def _read_bounded(http_response: requests.Response) -> bytes:
+    """The body up to one byte past the bound, so a large file cannot fill the agent's memory or context."""
+    data = b""
+    try:
+        for chunk in http_response.iter_content(chunk_size=64 * 1024):
+            data += chunk
+            if len(data) > _MAX_DOWNLOAD_BYTES:
+                break
+    finally:
+        http_response.close()
+    return data
+
+
+def _content_fields(data: bytes, *, truncated: bool) -> dict[str, str]:
+    """Text as text; anything that is not UTF-8 as base64, so its bytes come back unchanged."""
+    try:
+        # A cut can split the last character: an incomplete tail is dropped, not refused.
+        text = codecs.getincrementaldecoder("utf-8")().decode(data, final=not truncated)
+        return {"content": text, "encoding": "utf-8"}
+    except UnicodeDecodeError:
+        return {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"}
 
 # Define tools
 tools: List[ToolDefinition] = [
@@ -346,13 +376,18 @@ class Dropbox:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use DropboxDataSource method
             response = self._run_async(self.client.files_download(path=path))
-
-            if response.success:
-                return True, response.to_json()
-            else:
+            if not response.success:
                 return False, response.to_json()
+            metadata, http_response = response.data
+            # Read in a worker thread, so a slow body does not hold the event loop.
+            data = await asyncio.to_thread(_read_bounded, http_response)
+            truncated = len(data) > _MAX_DOWNLOAD_BYTES
+            return True, json.dumps({
+                "metadata": to_plain(metadata),
+                **_content_fields(data[:_MAX_DOWNLOAD_BYTES], truncated=truncated),
+                "truncated": truncated,
+            })
         except Exception as e:
             logger.error(f"Error downloading file: {e}")
             return False, json.dumps({"error": str(e)})
@@ -541,44 +576,42 @@ class Dropbox:
     @tool(
         path="/tools/dropbox/get_shared_link",
         short_description="Get a shared link for a Dropbox file or folder",
-        description="Get or create a shared link for a file or folder in Dropbox.",
+        description=("Get a link to a file or folder in Dropbox. If the item already has a link, that link is "
+                     "returned as it is, with whatever audience it was given. Otherwise a new link is made that "
+                     "opens the item only for people who already have access to it."),
         parameters=[
             ToolParameter(
                 name="path",
                 type=ParameterType.STRING,
                 description="Path of the file or folder",
             ),
-            ToolParameter(
-                name="settings",
-                type=ParameterType.STRING,
-                description="Settings for the shared link",
-                required=False,
-            ),
         ],
-        tags=[Tag(key="category", value="storage"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="storage"), Tag(key="type", value="write")],
     )
     async def get_shared_link(
         self,
         path: str,
-        settings: Optional[str] = None
     ) -> Tuple[bool, str]:
         """Get a shared link for a file or folder"""
         """
         Args:
             path: Path of the file or folder
-            settings: Settings for the shared link
         Returns:
             Tuple[bool, str]: True if successful, False otherwise
         """
         try:
-            # Use DropboxDataSource method
+            # An existing link first; a new one is made for people who already have access only (audience
+            # no_one). Without settings Dropbox makes a public link, which would publish the file to anyone.
+            existing = self._run_async(self.client.sharing_list_shared_links(path=path, direct_only=True))
+            if existing.success and getattr(existing.data, "links", None):
+                return True, json.dumps({"url": existing.data.links[0].url, "created": False})
             response = self._run_async(self.client.sharing_create_shared_link_with_settings(
                 path=path,
-                settings=settings
+                settings=SharedLinkSettings(audience=LinkAudience.no_one),
             ))
 
             if response.success:
-                return True, response.to_json()
+                return True, json.dumps({"url": response.data.url, "created": True})
             else:
                 return False, response.to_json()
         except Exception as e:

@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.utils.error_class import log_failure
 
 # The permission type on the org -> record edge that makes a service account's
 # chat upload readable. Distinct from "ORG" (an org-wide share from a
@@ -84,12 +85,8 @@ async def caller_can_read_virtual_record(
                     user_id, org_id, record_id,
                 ):
                     return True
-            except Exception:
-                logger.warning(
-                    "Attachment access check failed for record %s",
-                    record_id,
-                    exc_info=True,
-                )
+            except Exception as exc:
+                log_failure(logger, "record_access.check_failed", exc, record_id=record_id, include_error_text=False)
         if is_service_account and await _org_permission_grants(
             graph_provider, org_id, record_id, logger,
         ):

@@ -1,10 +1,10 @@
 import base64
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
-from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.jinja_templates import compiled_template
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
@@ -51,7 +51,9 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
     """
     try:
         # Get LLM
-        llm, _ = await get_llm_for_role(config, "indexing", reasoning_effort="low")
+        llm, _ = await get_llm_for_role(
+            config, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
 
         # Convert table data to text representation
         if isinstance(table_data, list):
@@ -119,12 +121,15 @@ def generate_simple_row_text(row_data: Dict[str, Any]) -> str:
     Returns:
         String in format "Column1: value1, Column2: value2, ..."
     """
-    parts = []
+    # Pieces are joined once: an f-string per column would copy a large value one extra time.
+    parts: list[str] = []
     for key, value in row_data.items():
         # Convert value to string, handle None values
         value_str = str(value) if value is not None else "null"
-        parts.append(f"{key}: {value_str}")
-    return ", ".join(parts)
+        if parts:
+            parts.append(", ")
+        parts.extend((format(key), ": ", value_str))
+    return "".join(parts)
 
 
 def image_bytes_to_base64(image_bytes, extention) -> str:

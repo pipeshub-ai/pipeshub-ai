@@ -1,8 +1,9 @@
+import functools
 import json
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from inspect import isawaitable, isclass
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
@@ -16,6 +17,7 @@ from app.telemetry.identity import domain_from_email
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
+from app.core.org_jobs import for_each_org, of_org
 from app.models.entities import RecordType
 from app.services.graph_db.common.utils import (
     ROOT_SCOPED_CONNECTOR_TYPES,
@@ -43,6 +45,19 @@ def _parsed_summary(raw: object) -> dict[str, Any] | None:
     except ValueError:
         return None
     return value if isinstance(value, dict) else None
+
+def _parsed_action_items(raw: object) -> list[dict[str, Any]]:
+    """What the admin has to do, stored as JSON text on the app doc; [] when nothing or unreadable."""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [cast(dict[str, Any], item) for item in cast(list[object], value) if isinstance(item, dict)]
+
 
 class Origin(str, Enum):
     """Data origin types."""
@@ -692,11 +707,25 @@ class ConnectorRegistry:
         """
         try:
             graph_provider = await self._get_graph_provider()
-
-            # Get all connector instances from database
-            all_documents = await graph_provider.get_all_documents(
-                self._collection_name
+            # Org by org: on PostgreSQL every read and write runs under one org.
+            failed = await for_each_org(
+                graph_provider, "connector_registry_sync",
+                functools.partial(self._sync_org_with_database, graph_provider), self.logger,
             )
+        except Exception as e:
+            self.logger.error(f"Error syncing registry with database: {e}")
+            return False
+        if failed:
+            return False
+        self.logger.info("Successfully synced registry with database")
+        return True
+
+    async def _sync_org_with_database(self, graph_provider: IGraphDBProvider, org_id: str) -> None:
+        """One org's part of ``sync_with_database``, called under that org."""
+        try:
+            all_documents = of_org(await graph_provider.get_all_documents(
+                self._collection_name
+            ), org_id)
 
             # Collect keys of instances that need to be deactivated
             keys_to_deactivate = []
@@ -787,12 +816,9 @@ class ConnectorRegistry:
                     f"Backfilled permissionModel on {len(stale_permission_models)} connector instances"
                 )
 
-            self.logger.info("Successfully synced registry with database")
-            return True
-
         except Exception as e:
-            self.logger.error(f"Error syncing registry with database: {e}")
-            return False
+            self.logger.error(f"Error syncing registry with database org={org_id}: {e}")
+            raise
 
     def _build_connector_info(
         self,
@@ -867,6 +893,7 @@ class ConnectorRegistry:
                 'lastSyncFinishedAtTimestamp': instance_data.get('lastSyncFinishedAtTimestamp'),
                 'lastSyncOutcome': instance_data.get('lastSyncOutcome'),
                 'lastSyncSummary': _parsed_summary(instance_data.get('lastSyncSummary')),
+                'actionItems': _parsed_action_items(instance_data.get('actionItems')),
                 '_key': instance_data.get('_key') or instance_data.get('id'),
                 'name': instance_data.get('name'),
                 'scope': instance_data.get('scope', ConnectorScope.PERSONAL.value),
@@ -1547,6 +1574,7 @@ class ConnectorRegistry:
         org_id: str,
         *,
         is_admin: bool,
+        transaction: str | None = None,
     ) -> dict[str, Any] | None:
         """
         Update a connector instance in the database with access control.
@@ -1557,6 +1585,7 @@ class ConnectorRegistry:
             user_id: User ID performing the update
             org_id: Organization ID
             is_admin: Whether the user is an admin
+            transaction: Read and write the instance inside this graph transaction
         Returns:
             Updated connector instance document or None if failed
         Raises:
@@ -1567,7 +1596,8 @@ class ConnectorRegistry:
 
             existing_document = await graph_provider.get_document(
                 connector_id,
-                self._collection_name
+                self._collection_name,
+                transaction=transaction,
             )
 
             if not existing_document:
@@ -1622,16 +1652,18 @@ class ConnectorRegistry:
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Execute update via update_node (only the changed fields)
+            # Execute update via update_node (only the changed fields: replaying the whole stored
+            # document would send legacy keys the schema no longer accepts)
             node_updates = {
-                k: v for k, v in updated_document.items()
+                k: v for k, v in {**updates, 'updatedAtTimestamp': updated_document['updatedAtTimestamp']}.items()
                 if k not in ('_key', '_id', '_rev', 'id')
             }
 
             await graph_provider.update_node(
                 connector_id,
                 self._collection_name,
-                node_updates
+                node_updates,
+                transaction=transaction,
             )
 
             result = [updated_document]

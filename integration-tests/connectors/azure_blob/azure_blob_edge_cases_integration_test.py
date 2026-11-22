@@ -9,7 +9,7 @@ Each test makes its own connector, so the cases do not depend on each other:
   TC-SPECIAL-NAMES   — names with '#', '?' and '%25' sync, download byte-for-byte and index
   TC-REINDEX-STABLE  — reindexing an unchanged blob keeps its revision and version
   TC-CONTAINER-DELETE — a container deleted in Azure leaves the graph on the next sync
-  TC-TEAM-SCOPE      — a team connector with no container named syncs nothing; naming one syncs it
+  TC-TEAM-SCOPE      — a team connector syncs with or without a container named
 
 An ADLS Gen2 (hierarchical namespace) run needs a live HNS account; the unit tests cover
 its directory blobs (tests/unit/.../test_azure_blob_sync_behaviour.py).
@@ -181,31 +181,21 @@ class TestAzureBlobEdgeCases:
             with contextlib.suppress(Exception):
                 service.delete_container(container)
 
-    async def test_tc_team_scope_needs_named_containers(
+    async def test_tc_team_scope_syncs_with_or_without_named_containers(
         self,
         azure_blob_storage: AzureBlobStorageHelper,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-TEAM-SCOPE: a team connector with an empty Container Names filter used to share every container."""
+        """TC-TEAM-SCOPE: a team connector with an empty Container Names filter syncs every container."""
         folder = new_run_folder()
         key = f"{folder}team.txt"
         azure_blob_storage.upload_blob(RESOURCE_NAME, key, b"pp314 team scope\n", content_type="text/plain")
         try:
-            instance = pipeshub_client.create_connector(
-                connector_type="Azure Blob",
-                instance_name=f"azure-blob-team-{uuid.uuid4().hex[:8]}",
-                scope="team",
-                config={**azure_blob_connector_config(), "filters": folder_filter(folder)},
-            )
-            connector_id = instance.connector_id
-            try:
-                pipeshub_client.toggle_sync(connector_id, enable=True)
-                await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, sync_start_timeout=30)
-                assert await graph_provider.count_records(connector_id) == 0, "a team connector without containers synced files"
-            finally:
-                pipeshub_client.toggle_sync(connector_id, enable=False)
-                pipeshub_client.delete_connector(connector_id)
+            async with azure_connector(
+                pipeshub_client, graph_provider, filters=folder_filter(folder), expected_records=1, scope="team",
+            ) as state:
+                assert await graph_provider.get_record_by_external_id(state["connector_id"], f"{RESOURCE_NAME}/{key}")
 
             filters = folder_filter(folder)
             filters["sync"]["values"].update(containers_filter([RESOURCE_NAME])["sync"]["values"])

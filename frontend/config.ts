@@ -6,6 +6,7 @@ export {
   logoutAndRedirect,
   logoutFromWorkspaceMenu,
   switchToSignedInWorkspace,
+  readStoredRefreshToken,
   ELECTRON_SERVER_URL_NAVIGATION_EVENT,
 } from '@/lib/store/auth-store';
 export { useInitializeUserProfile } from '@/lib/hooks/use-initialize-user-profile';
@@ -33,6 +34,8 @@ export { OAuthAppSelector } from '@/app/(main)/workspace/connectors/components/a
 // Users page header — Requests + Blocked Users (Admin Org) between search and Invite
 export { UsersPageHeaderActions } from '@/app/(main)/workspace/users/components/users-page-header-actions';
 export { isMcpInstanceReadOnly, McpInheritedBadge, McpInheritedCallout } from '@/app/(main)/workspace/mcp-servers/team/components/mcp-inheritance-guards';
+// Who may use an organization MCP server (OSS: everyone, so nothing to manage)
+export { McpManageAccess } from '@/app/(main)/workspace/mcp-servers/team/components/mcp-manage-access';
 export { useUserPermission } from '@/lib/hooks/use-user-permission';
 export { PermissionLockIcon } from '@/app/components/ui/permission-lock-icon';
 export { PermissionDeniedDialog, usePermissionDeniedDialog } from '@/app/components/ui/permission-denied-dialog';
@@ -56,10 +59,18 @@ export { ConversationHeaderOverlay } from '@/app/(main)/chat/components/conversa
 export { SearchResultsExtras } from '@/app/(main)/chat/components/search-results/search-results-extras';
 export { useKbListExtraColumns } from '@/app/(main)/knowledge-base/hooks/use-kb-list-extra-columns';
 export { ConnectorOverviewExtras } from '@/app/(main)/workspace/connectors/components/instance-panel/connector-overview-extras';
+export { ConnectorConfigureExtras } from '@/app/(main)/workspace/connectors/components/configure-tab/connector-configure-extras';
+// Team connectors to warn about before setup: their data is searchable by the whole organization (OSS: no source permissions applied)
+export { TEAM_CONNECTOR_VISIBILITY_WARNINGS } from '@/app/(main)/workspace/connectors/utils/team-visibility-warning';
 // A toolset's "Tool approvals" (OSS: what its tools do by default; organization rules aren't set here)
 export { ToolsetToolRulesNotice as ToolsetToolRulesDialog } from '@/app/(main)/workspace/actions/components/toolset-tool-rules-notice';
 // Notices for features this edition does not include (OSS: shown)
 export { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
 export { McpAgentApprovalsNotice } from '@/app/(main)/agents/agent-builder/components/mcp-agent-approvals-notice';
+// Chat model menu entries and AI model form settings (OSS: none)
+export { chatModelOptions } from '@/app/(main)/chat/utils/chat-model-options';
+export { ModelSelectorExtraOptions } from '@/app/(main)/chat/components/chat-panel/expansion-panels/model-selector/model-selector-extra-options';
+export { aiModelFormOptions } from '@/app/(main)/workspace/ai-models/ai-model-form-options';
+export { PickedModelExtraFields } from '@/app/(main)/workspace/ai-models/components/picked-model-extra-fields';
 
 

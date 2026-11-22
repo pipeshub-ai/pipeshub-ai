@@ -15,6 +15,24 @@ import { localFsDesktopToast, readDesktopRefusal } from '../utils/local-fs-helpe
 // Types
 // ========================================
 
+function markInactiveInStore(connectorId: string) {
+  useConnectorsStore.setState((s) => ({
+    panelConnector: s.panelConnector
+      ? { ...s.panelConnector, isActive: false }
+      : s.panelConnector,
+    instances: s.instances.map((i) =>
+      i._key === connectorId ? { ...i, isActive: false } : i
+    ),
+    activeConnectors: s.activeConnectors.map((c) =>
+      c._key === connectorId ? { ...c, isActive: false } : c
+    ),
+    selectedInstance:
+      s.selectedInstance?._key === connectorId
+        ? { ...s.selectedInstance, isActive: false }
+        : s.selectedInstance,
+  }));
+}
+
 export interface DisableFirstDialogProps {
   /** Controls open/close */
   open: boolean;
@@ -83,8 +101,16 @@ export function DisableFirstDialog({
   const handleProceed = useCallback(async () => {
     setIsBusy(true);
     try {
-      await ConnectorsApi.toggleConnector(connectorId, 'sync');
+      await ConnectorsApi.toggleConnector(connectorId, 'sync', false);
     } catch (err: unknown) {
+      // A timed-out disable may still have landed; show the state the backend has.
+      // Read while the dialog is still busy, so the user can neither switch the
+      // panel to another connector nor change this one before the result is written.
+      await ConnectorsApi.getConnectorInstance(connectorId)
+        .then((fresh) => {
+          if (fresh && !fresh.isActive) markInactiveInStore(connectorId);
+        })
+        .catch(() => {});
       setIsBusy(false);
       // The interceptor exempts desktop refusals from its toast, so they are worded here.
       const refusal = readDesktopRefusal(err);
@@ -108,21 +134,7 @@ export function DisableFirstDialog({
     // Optimistically patch the store so that any retry (e.g. after a failed
     // save-config) reads isActive=false and skips this dialog, preventing the
     // enable/disable oscillation that would otherwise occur.
-    useConnectorsStore.setState((s) => ({
-      panelConnector: s.panelConnector
-        ? { ...s.panelConnector, isActive: false }
-        : s.panelConnector,
-      instances: s.instances.map((i) =>
-        i._key === connectorId ? { ...i, isActive: false } : i
-      ),
-      activeConnectors: s.activeConnectors.map((c) =>
-        c._key === connectorId ? { ...c, isActive: false } : c
-      ),
-      selectedInstance:
-        s.selectedInstance?._key === connectorId
-          ? { ...s.selectedInstance, isActive: false }
-          : s.selectedInstance,
-    }));
+    markInactiveInStore(connectorId);
 
     // Close dialog first, then run the follow-up action.
     // Closing before calling onProceed avoids "setState on unmounted component"
@@ -147,7 +159,6 @@ export function DisableFirstDialog({
         style={{
           maxWidth: '37.5rem',
           padding: 'var(--space-5)',
-          backgroundColor: 'var(--color-panel-solid)',
           borderRadius: 'var(--radius-5)',
           border: '1px solid var(--olive-a3)',
           boxShadow:

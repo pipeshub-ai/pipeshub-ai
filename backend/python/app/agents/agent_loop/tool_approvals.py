@@ -30,10 +30,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from pydantic import Field, ValidationError
@@ -42,7 +41,8 @@ from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, User
 from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.events.base import AgentEvent, EventType, ToolCallStatus
 from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval
-from app.agent_loop_lib.tools.executor import ToolExecutor
+from app.agent_loop_lib.tools.executor import ToolExecutor, log_tool_call_end
+from app.agents.actions.util.read_only_sql import read_only_statement
 from app.agents.agent_loop import parked_turn
 from app.agents.constants.mcp_server_constants import (
     get_mcp_tool_approval_claim_path,
@@ -52,6 +52,8 @@ from app.agents.constants.mcp_server_constants import (
 from app.agents.constants.toolset_constants import get_toolset_tool_rules_path
 from app.agents.mcp.models import MCPCamelModel
 from app.utils.env_utils import env_bool
+from app.utils.error_class import log_failure
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -201,42 +203,12 @@ def _mcp_target(adapter: "MCPToolAdapter") -> ApprovalTarget:
     )
 
 
-# Only what reads the same in MariaDB and Redshift is stripped: quoted literals, "-- " followed by
-# whitespace, and plain /* */ comments. Any other comment marker left after that makes the call
-# count as destructive, and backticks are kept, so a statement they could hide still counts.
-_SQL_STRING_OR_COMMENT = re.compile(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--(?=\s)[^\n]*|/\*(?![!M])[\s\S]*?\*/")
-_SQL_LEFTOVER_COMMENT_MARKERS = ("/*", "*/", "#", "--")
-_SQL_READS = frozenset({"select", "show", "describe", "desc", "explain"})
-_SQL_ORDINARY_WRITES = frozenset({"insert", "update"})
-_SQL_WORD = re.compile(r"[a-z_]+")
-
-
 def sql_keeps_its_kind(sql: str) -> bool:
-    """Whether a statement only reads, or makes an ordinary write (INSERT, UPDATE). Anything else,
-    such as DELETE, DROP, TRUNCATE, ALTER or GRANT, more than one statement, or text that can't be
-    read this way, counts as a call that can't be undone."""
-    if not isinstance(sql, str) or "\\" in sql:
-        # A backslash escapes a quote in one dialect and not the other: where a string ends is unclear.
-        return False
-    code = _SQL_STRING_OR_COMMENT.sub(" ", sql).lower()
-    if any(marker in code for marker in _SQL_LEFTOVER_COMMENT_MARKERS):
-        # Fail closed: a comment the two dialects read differently (MySQL's /*! */ and /*M! */,
-        # "--" with no space, "#") could hide or change the statement that runs.
-        return False
-    statements = [part for part in code.split(";") if part.strip()]
-    if len(statements) != 1:
-        return False
-    words = _SQL_WORD.findall(statements[0])
-    if not words:
-        return False
-    if {"outfile", "dumpfile"} & set(words) or ("into" in words and words[0] != "insert"):
-        # SELECT ... INTO makes a table (Redshift) or writes a file on the server (MariaDB). Only an
-        # INSERT's own verb makes INTO safe: "insert" can be an alias on Redshift.
-        return False
-    if words[0] == "with":
-        # A CTE: what runs is what the statement does once its named queries are read.
-        return not ({"delete", "drop", "truncate", "alter", "grant", "revoke", "create", "merge", "replace", "call"} & set(words))
-    return words[0] in _SQL_READS or words[0] in _SQL_ORDINARY_WRITES
+    """Whether a statement is one plain read, by the same test the SQL tools use to run it read-only
+    (`read_only_statement`). Anything else, such as INSERT, UPDATE, DELETE, DROP, more than one
+    statement, a call to a function that acts on the server, or text that can't be read this way,
+    needs a person's approval."""
+    return isinstance(sql, str) and read_only_statement(sql)[0] is not None
 
 
 # Docs batch requests that only add or restyle content. Anything else, a delete, a named-range
@@ -316,10 +288,16 @@ def starting_rule(*, kind: ToolKind, source: Source) -> Rule:
 
 def decide(
     *, own: Optional[Rule], kind: ToolKind, source: Source, watched: bool, approved_call: bool = False,
+    enabled_on_project: bool = False,
 ) -> Verdict:
     """The rule for one call. `approved_call`: this is the call a person just approved (it runs
-    unless something now blocks it)."""
+    unless something now blocks it). `enabled_on_project`: a project chat, where only the tools
+    the project enables are loaded; there a tool nobody set a rule for that would start at Block
+    asks instead, since enabling it on the project is a request to be able to use it. A Block
+    someone set still blocks, and an unwatched run still can't ask."""
     effective = own or starting_rule(kind=kind, source=source)
+    if own is None and effective == "block" and enabled_on_project:
+        effective = "ask"
     if effective == "block":
         return Verdict("block", "own" if own else "default")
     if effective == "allow" or approved_call:
@@ -354,7 +332,7 @@ def _model(model: type, raw: Any) -> Any:  # noqa: ANN401
     try:
         return model.model_validate(raw) if isinstance(raw, dict) else model()
     except ValidationError:
-        logger.warning(f"Ignoring a malformed {model.__name__} record")
+        log_event(logger, "tool_approval.record_malformed", level=logging.WARNING, record=model.__name__)
         return model()
 
 
@@ -383,6 +361,8 @@ class Claim:
     status: Literal["claimed", "used", "expired", "unknown"]
     pending: Optional[PendingCall] = None
     outcome: Optional[Outcome] = None
+    # Why an answer is `unknown`, for the log only (not part of what the claim is).
+    reason: Literal["", "not_found", "other_user", "other_conversation"] = field(default="", compare=False)
 
 
 async def claim_pending(
@@ -396,10 +376,11 @@ async def claim_pending(
     except ValidationError:
         pending = None
     if pending is None:
-        return Claim("unknown")
-    if (pending.org_id, pending.user_id, pending.conversation_id) != (org_id, user_id, conversation_id or ""):
-        logger.warning(f"Tool approval {approval_id} was answered by another user or from another conversation; ignored")
-        return Claim("unknown")
+        return Claim("unknown", reason="not_found")
+    if (pending.org_id, pending.user_id) != (org_id, user_id):
+        return Claim("unknown", reason="other_user")
+    if pending.conversation_id != (conversation_id or ""):
+        return Claim("unknown", reason="other_conversation")
     claim_path = get_mcp_tool_approval_claim_path(approval_id)
     earlier = await _read(config_service, claim_path)
     if isinstance(earlier, dict):
@@ -420,12 +401,17 @@ def _outcome_of(raw: Any) -> Optional[Outcome]:  # noqa: ANN401
 
 async def _keep_outcome(config_service: "ConfigurationService", approval_id: str, outcome: Outcome) -> None:
     try:
-        await _write(
+        kept = await _write(
             config_service, get_mcp_tool_approval_claim_path(approval_id),
             {"claimedAt": time.time(), "outcome": outcome.model_dump(by_alias=True)}, ttl_seconds=_RECORD_TTL_SECONDS,
         )
     except Exception as e:
-        logger.warning(f"Couldn't keep the outcome of tool approval {approval_id}: {e}")
+        log_failure(logger, "tool_approval.outcome_not_kept", e, approval_id=approval_id)
+        return
+    if not kept:
+        log_event(
+            logger, "tool_approval.outcome_not_kept", level=logging.WARNING, approval_id=approval_id, error_class="unavailable",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +454,8 @@ async def _rules_for(context: "AgentContext", source: Source, instance_id: str, 
                 # apart, every tool starts from what it does to data.
                 rules = ToolRules()
         except Exception as e:
-            logger.warning(f"Couldn't read the tool rules of {source} instance {instance_id}: {e}")
+            # Once per request and instance (cached); each refused call's tool_call.end says deny_reason=rules_unavailable.
+            log_failure(logger, "tool_approval.rules_unavailable", e, source=source)
             cache[key] = _InstanceRules(ToolRules(), unavailable=True)
         else:
             cache[key] = _InstanceRules(rules)
@@ -505,6 +492,10 @@ def _card_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"arguments": None, "argumentsPreview": text[:_MAX_CARD_ARGUMENT_CHARS] + "…"}
 
 
+# `Verdict.reason` -> the `deny_reason` on the call's tool_call.end.
+_DENY_CODE = {"own": "rule", "default": "default_rule", "unattended": "unattended"}
+
+
 def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
     """PreToolUse middleware; registered last, so nothing after it can still deny a call it
     leaves pending."""
@@ -519,7 +510,8 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
         if rules.unavailable:
             ctx.deny(
                 f"The approval rules for {target.tool_name} on {target.owner} couldn't be checked, "
-                "so it wasn't run. Tell the user to try again in a moment."
+                "so it wasn't run. Tell the user to try again in a moment.",
+                code="rules_unavailable",
             )
             await next_fn()
             return
@@ -529,9 +521,10 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
             source=target.defaults or target.source,
             watched=watched(context),
             approved_call=context.tool_state.get(_APPROVED_CALL) == _identity(target),
+            enabled_on_project=context.project_tools_selected,
         )
         if verdict.rule == "block":
-            ctx.deny(_blocked_message(verdict.reason, target))
+            ctx.deny(_blocked_message(verdict.reason, target), code=_DENY_CODE.get(verdict.reason, verdict.reason))
         elif verdict.rule == "ask":
             await _ask(context, ctx, target)
         await next_fn()
@@ -546,7 +539,8 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         # then, or the action is silently dropped.
         ctx.deny(
             "Not run yet: only one action can wait for the user's approval at a time, and another one is waiting. "
-            f"After the user answers it, call {tool_name} again with the same arguments to ask for this one."
+            f"After the user answers it, call {tool_name} again with the same arguments to ask for this one.",
+            code="approval_busy",
         )
         return
     now = time.time()
@@ -567,11 +561,22 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
             pending.model_dump(by_alias=True), ttl_seconds=_RECORD_TTL_SECONDS,
         )
     except Exception as e:
-        logger.warning(f"Couldn't save a tool approval for {tool_name}: {e}")
-        saved = False
+        log_failure(
+            logger, "tool_approval.requested", e, outcome="failure", reason="not_saved", approval_id=pending.approval_id,
+        )
+        saved = None
+    else:
+        if not saved:
+            log_event(
+                logger, "tool_approval.requested", level=logging.WARNING, outcome="failure", reason="not_saved",
+                error_class="unavailable", approval_id=pending.approval_id,
+            )
     if not saved:
         context.tool_state.pop(_PENDING_IN_RUN, None)
-        ctx.deny(f"{tool_name} on {server} needs approval, and the approval couldn't be saved, so it wasn't run.")
+        ctx.deny(
+            f"{tool_name} on {server} needs approval, and the approval couldn't be saved, so it wasn't run.",
+            code="approval_not_saved",
+        )
         return
     message = f"{WAITING_PREFIX} {tool_name} on {server}."
     context.tool_state[PENDING_MESSAGE] = message
@@ -585,6 +590,11 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
             "expiresAt": int(pending.expires_at * 1000), **_card_arguments(pending.arguments),
         },
     ))
+    # The executor binds the call's tool, tool_call_id and server/toolset id; the arguments are never logged.
+    log_event(
+        logger, "tool_approval.requested", outcome="success", approval_id=pending.approval_id,
+        source=target.source, kind=target.kind, personal=target.personal,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +634,12 @@ def resume_parked_call(context: "AgentContext") -> Any:  # noqa: ANN401
         history: Optional[ContextManager] = context.tool_state.pop(_RESUME_HISTORY, None)
         answer, context.tool_approval = context.tool_approval, None
         if history is None or answer is None:
+            if answer is not None:
+                # Not the app's answer text, or nobody watching: an ordinary message, and the answer is dropped.
+                log_event(
+                    logger, "tool_approval.answered", approval_id=answer.approval_id, decision="ignored",
+                    reason="not_resumable",
+                )
             await next_fn()
             return
         settled = await _settle(context, ctx.scope, answer)
@@ -636,10 +652,15 @@ def resume_parked_call(context: "AgentContext") -> Any:  # noqa: ANN401
     return _middleware
 
 
+def awaiting_approval(context: "AgentContext") -> bool:
+    """The run stopped on an approval card and waits for the person's answer."""
+    return bool(context.tool_state.get(_PENDING_IN_RUN))
+
+
 async def keep_stopped_turn(context: "AgentContext", agent: "Agent") -> None:
     """After a run that stopped on a card: the turn as the model had it, for the answer (`parked_turn`)."""
     call_id = context.tool_state.get(_STOPPED_CALL)
-    if context.tool_state.get(_PENDING_IN_RUN) and call_id:
+    if awaiting_approval(context) and call_id:
         await parked_turn.keep(context, agent, call_id=call_id, ttl_seconds=TURN_TTL_SECONDS)
 
 
@@ -663,6 +684,27 @@ class _Settled:
     is_error: bool
 
 
+_NOT_RUN_REASON = {"expired": "expired", "declined": "declined"}
+
+
+def _log_answered(
+    answer: ToolApprovalAnswer, pending: Optional[PendingCall], decision: str, *, call_id: str = "", tool: str = "",
+    outcome: Optional[Outcome] = None, reason: Optional[str] = None, remembered: Optional[str] = None,
+    level: int = logging.INFO, error_class: Optional[str] = None,
+) -> None:
+    """The answer's one `tool_approval.answered` line. `_settle` runs before any tool call, so nothing has
+    bound the instance: it is passed here. Never the call's arguments."""
+    instance: dict[str, str] = {}
+    if pending is not None and pending.instance_id:
+        instance["mcp_server_id" if pending.source == "mcp" else "toolset_id"] = pending.instance_id
+    log_event(
+        logger, "tool_approval.answered", level=level, approval_id=answer.approval_id, decision=decision, reason=reason,
+        remember=answer.remember, remembered=remembered, ran=outcome.ran if outcome else None,
+        status=outcome.status if outcome else None, tool=tool or None, tool_call_id=call_id or None,
+        error_class=error_class, **instance,
+    )
+
+
 async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApprovalAnswer) -> _Settled:
     try:
         claim = await claim_pending(
@@ -670,12 +712,17 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
             org_id=context.org_id, user_id=context.user_id, conversation_id=context.conversation_id,
         )
     except Exception as e:
-        logger.warning(f"Couldn't claim tool approval {answer.approval_id}: {e}")
+        log_failure(logger, "tool_approval.answered", e, decision="claim_failed", approval_id=answer.approval_id)
         # Nothing was claimed, so the card can be answered again.
         return _Settled("", "", {}, "The user's answer to the approval request couldn't be applied, so nothing ran. "
                         "Tell them to answer the card again.", True)
     pending = claim.pending
     if pending is None:
+        other_user = claim.reason == "other_user"
+        _log_answered(
+            answer, None, "refused", reason=claim.reason or "not_found",
+            level=logging.WARNING if other_user else logging.INFO, error_class="forbidden" if other_user else None,
+        )
         return _Settled("", "", {}, "The approval request the user answered wasn't found, so nothing ran.", True)
     target = _target_for(context, pending)
     call_id = pending.tool_call_id or f"approval_{pending.approval_id[:16]}"
@@ -683,15 +730,24 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
     if claim.status == "used":
         outcome = claim.outcome
         if outcome is None:
+            _log_answered(answer, pending, "already_answered", call_id=call_id, tool=tool_name, reason="in_progress")
             # The first answer is still being applied; its own request finishes the row.
             return _Settled(call_id, tool_name, pending.arguments, (
                 f"The user already answered the approval for {pending.tool_name} on {pending.server_name}; "
                 "it may still be running. Don't run it again."
             ), True)
+        _log_answered(answer, pending, "already_answered", call_id=call_id, tool=tool_name, outcome=outcome)
         await _show(run, call_id, tool_name, pending, target, outcome)
         return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
     tool, server = pending.tool_name, pending.server_name
     outcome: Optional[Outcome] = None
+    remembered: Optional[str] = None
+    if claim.status == "expired":
+        decision = "expired"
+    elif answer.decision == "deny":
+        decision = "declined"
+    else:
+        decision = "approved" if target is not None else "unavailable"
     try:
         if claim.status == "expired":
             outcome = Outcome(
@@ -708,7 +764,7 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 "Tell them you didn't do it because they declined, and don't make that call again unless they ask for it.",
             )
             if answer.remember:
-                await _remember(context, pending, "block")
+                remembered = await _remember(context, pending, "block")
         elif target is None:
             outcome = Outcome(
                 answer="allowed", status="blocked", preview="This tool is no longer available.",
@@ -717,59 +773,83 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
         else:
             outcome = await _run(context, run, target, pending, call_id)
             if answer.remember and outcome.status != "blocked":
-                await _remember(context, pending, "allow")
+                remembered = await _remember(context, pending, "allow")
     finally:
+        # Kept even when the run is stopped mid-call, so a later answer says what may have happened.
+        kept = outcome or Outcome(
+            answer="allowed", status="failed", ran=True, preview="Stopped before its result came back.",
+            result=f"The user approved running {tool} on {server}, but the request was stopped while it ran, so it "
+            "may or may not have run. Don't run it again; tell the user to check its effect.",
+        )
+        # Logged before the awaited write: a second cancel arriving during it would skip the rest of this block.
+        _log_answered(
+            answer, pending, decision, call_id=call_id, tool=tool_name, outcome=kept, remembered=remembered,
+            reason="stopped" if outcome is None else ("tool_gone" if decision == "unavailable" else None),
+        )
         if claim.status == "claimed":
-            # Kept even when the run is stopped mid-call, so a later answer says what may have happened.
-            await _keep_outcome(context.config_service, pending.approval_id, outcome or Outcome(
-                answer="allowed", status="failed", ran=True, preview="Stopped before its result came back.",
-                result=f"The user approved running {tool} on {server}, but the request was stopped while it ran, so it "
-                "may or may not have run. Don't run it again; tell the user to check its effect.",
-            ))
+            await _keep_outcome(context.config_service, pending.approval_id, kept)
     if outcome.answer != "allowed" or target is None:
+        # Not run: the parked call's one `tool_call.end` (the executor logs it when it runs).
+        log_tool_call_end(
+            outcome="skipped", reason=_NOT_RUN_REASON.get(outcome.answer, "unavailable"), tool=tool_name, tool_call_id=call_id,
+        )
         await _show(run, call_id, tool_name, pending, target, outcome)
     return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
 
 
-async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -> None:
+async def _saved(save: Any, rule: Rule) -> str:  # noqa: ANN401
+    """Awaits a rules write: `saved`, or `failed` logged once (a raise, or the store saying no)."""
+    try:
+        ok = await save
+    except Exception as e:
+        log_failure(logger, "tool_approval.rule_not_saved", e, rule=rule, step="save")
+        return "failed"
+    if not ok:
+        log_event(
+            logger, "tool_approval.rule_not_saved", level=logging.WARNING, rule=rule, step="save", error_class="unavailable",
+        )
+        return "failed"
+    return "saved"
+
+
+async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -> str:
     """ "Don't ask again for this tool": the answer becomes the person's rule for it. A Deny set
     since the card was shown stands over an Allow. An org toolset's rules are the admin's: an answer
-    never changes them, whatever the request says."""
+    never changes them, whatever the request says. Returns what came of it, for the log."""
     if pending.source != "mcp":
-        await _remember_for_personal_toolset(context, pending, rule)
-        return
+        return await _remember_for_personal_toolset(context, pending, rule)
     rules = await _rules_for(context, "mcp", pending.instance_id)
-    if rules.unavailable or (rule == "allow" and rules.rules.tools.get(pending.tool_name) == "block"):
-        return
+    if rules.unavailable:
+        return "failed"
+    if rule == "allow" and rules.rules.tools.get(pending.tool_name) == "block":
+        return "block_kept"
     rules.rules.tools[pending.tool_name] = rule
-    try:
-        await save_own_rules(context.config_service, rules.rules, user_id=context.user_id, instance_id=pending.instance_id)
-    except Exception as e:
-        logger.warning(f"Couldn't save the rule for {pending.tool_name}: {e}")
+    return await _saved(
+        save_own_rules(context.config_service, rules.rules, user_id=context.user_id, instance_id=pending.instance_id), rule,
+    )
 
 
-async def _remember_for_personal_toolset(context: "AgentContext", pending: PendingCall, rule: Rule) -> None:
+async def _remember_for_personal_toolset(context: "AgentContext", pending: PendingCall, rule: Rule) -> str:
     """A personal toolset instance's rules are its owner's: the answer is saved there, once the
     instance is confirmed to be this person's own (the saved call alone doesn't prove it)."""
     if not pending.personal:
-        return
+        return "not_allowed"
     from app.agents.toolset_store import get_personal_instance
 
     try:
         own = await get_personal_instance(context.config_service, context.org_id, context.user_id, pending.instance_id)
     except Exception as e:
-        logger.warning(f"Couldn't check the toolset instance of {pending.tool_name}: {e}")
-        return
+        log_failure(logger, "tool_approval.rule_not_saved", e, rule=rule, step="check_instance")
+        return "failed"
     if own is None:
-        return
+        return "not_allowed"
     rules = await _rules_for(context, "toolset", pending.instance_id, personal=True)
-    if rules.unavailable or (rule == "allow" and rules.rules.tools.get(pending.tool_name) == "block"):
-        return
+    if rules.unavailable:
+        return "failed"
+    if rule == "allow" and rules.rules.tools.get(pending.tool_name) == "block":
+        return "block_kept"
     rules.rules.tools[pending.tool_name] = rule
-    try:
-        await save_instance_rules(context.config_service, rules.rules, instance_id=pending.instance_id)
-    except Exception as e:
-        logger.warning(f"Couldn't save the rule for {pending.tool_name}: {e}")
+    return await _saved(save_instance_rules(context.config_service, rules.rules, instance_id=pending.instance_id), rule)
 
 
 def _target_for(context: "AgentContext", pending: PendingCall) -> Optional[ApprovalTarget]:
@@ -830,7 +910,8 @@ async def _run(context: "AgentContext", run: Any, target: ApprovalTarget, pendin
             call, session_id=run.session_id, on_denied=_on_denied,
         )
     except Exception as e:
-        logger.warning(f"Running the approved call {tool} failed: {e}", exc_info=True)
+        # The executor already logged it with its stack; this line is DEBUG then.
+        log_failure(logger, "tool_approval.run_failed", e, include_error_text=False)
         outcome = Outcome(
             answer="allowed", status="failed", ran=True, preview="Something went wrong while it ran.",
             result=f"The user approved running {tool} on {server}, but something went wrong while it ran, so it may "

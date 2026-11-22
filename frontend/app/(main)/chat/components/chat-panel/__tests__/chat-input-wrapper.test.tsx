@@ -8,7 +8,7 @@ const captured = vi.hoisted(() => ({
 }));
 
 vi.mock('@assistant-ui/react', () => ({
-  useThreadRuntime: () => ({ append: vi.fn() }),
+  useAui: () => ({ thread: () => ({ append: vi.fn() }) }),
 }));
 
 vi.mock('../../chat-input', () => ({
@@ -26,7 +26,12 @@ vi.mock('@/chat/utils/fetch-models-for-context', () => ({
   fetchModelsForContext: () => Promise.resolve(),
 }));
 
+const search = vi.hoisted(() => vi.fn());
+vi.mock('@/chat/api', () => ({ ChatApi: { search: (...args: unknown[]) => search(...args) } }));
+
 import { ChatInputWrapper } from '../chat-input-wrapper';
+import { useChatStore } from '@/chat/store';
+import { ErrorType } from '@/lib/api/api-error';
 
 beforeEach(() => {
   captured.props = null;
@@ -50,5 +55,86 @@ describe('ChatInputWrapper', () => {
     expect(captured.props?.persistDraft).toBe(true);
     expect(captured.props?.agentId).toBe('agent-7');
     expect(captured.props?.isAgentChat).toBe(true);
+  });
+});
+
+describe('ChatInputWrapper search', () => {
+  type Send = (message: string) => Promise<void>;
+  const send = (q: string) => (captured.props?.onSend as Send)(q);
+
+  beforeEach(() => {
+    search.mockReset();
+    useChatStore.getState().reset();
+    useChatStore.getState().setMode('search');
+  });
+
+  it('drops a search that was closed while it ran', async () => {
+    let answer: (v: unknown) => void = () => {};
+    search.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    render(<ChatInputWrapper />);
+
+    const pending = send('alpha');
+    expect(useChatStore.getState().searchQuery).toBe('alpha');
+    useChatStore.getState().clearSearchResults();
+    answer({ searchId: 's1', searchResponse: { searchResults: [{ content: 'old' }] } });
+    await pending;
+
+    const state = useChatStore.getState();
+    expect(state.searchResults).toEqual([]);
+    expect(state.searchQuery).toBe('');
+    expect(state.isSearching).toBe(false);
+  });
+
+  it("keeps the query and the server's reason when there is nothing to search", async () => {
+    search.mockRejectedValue({
+      type: ErrorType.NOT_FOUND,
+      message: 'No documents are available for you to search yet.',
+      details: { apiStatus: 'accessible_records_not_found' },
+    });
+    render(<ChatInputWrapper />);
+
+    await send('alpha');
+
+    const state = useChatStore.getState();
+    expect(state.searchQuery).toBe('alpha');
+    expect(state.searchError).toBeNull();
+    expect(state.searchResponseMeta?.message).toBe('No documents are available for you to search yet.');
+  });
+
+  it('keeps the query when the search fails', async () => {
+    search.mockRejectedValue({ type: ErrorType.SERVER_ERROR, message: 'Search is unavailable.' });
+    render(<ChatInputWrapper />);
+
+    await send('alpha');
+
+    const state = useChatStore.getState();
+    expect(state.searchQuery).toBe('alpha');
+    expect(state.searchError).toBe('Search is unavailable.');
+  });
+
+  it('hands the notice codes of a search that found nothing to the results view', async () => {
+    const notices = [{ code: 'connector_syncing', connectorName: 'Jira' }];
+    search.mockRejectedValue({ type: ErrorType.NOT_FOUND, message: 'none', details: { accessNotices: notices } });
+    render(<ChatInputWrapper />);
+
+    await send('alpha');
+
+    const state = useChatStore.getState();
+    expect(state.searchError).toBeNull();
+    expect((state.searchResponseMeta?.searchResponse as { accessNotices?: unknown }).accessNotices).toEqual(notices);
+  });
+
+  it('words a search that could not check access itself, not with the server\'s text', async () => {
+    search.mockRejectedValue({
+      type: ErrorType.SERVER_ERROR,
+      message: 'raw server words',
+      statusCode: 503,
+      details: { accessNotices: [{ code: 'check_unavailable' }] },
+    });
+    render(<ChatInputWrapper />);
+
+    await send('alpha');
+
+    expect(useChatStore.getState().searchError).toBe("We couldn't check which documents you have access to just now, so no results are shown. Please try again in a minute.");
   });
 });

@@ -1,0 +1,69 @@
+# Vetted SECURITY DEFINER functions of schema identity. Format and rules: db/lib/vetted.py.
+# After editing: python -m db.lib.vetted render versions/identity/vetted/manifest.yaml
+#
+# The two questions asked before an organisation is bound: which one is the install's organisation, and how many are there.
+# Everything else in this schema is read and written as the organisation the unit runs as.
+functions:
+  - name: identity.oldest_org
+    class: read
+    scope: global
+    grants: [pipeshub_node]
+    args: []
+    returns: text
+    reads: [identity.orgs]
+    body: |
+      RETURN (SELECT o.org_id FROM identity.orgs o WHERE NOT o.is_deleted ORDER BY o.created_at, o.org_id LIMIT 1);
+    test:
+      checks: [privileges, catalog, shadowing]
+      args: []
+
+  - name: identity.org_count
+    class: read
+    scope: global
+    grants: [pipeshub_node]
+    args:
+      - {name: p_live_only, type: boolean}
+    returns: bigint
+    reads: [identity.orgs]
+    body: |
+      RETURN (SELECT count(*) FROM identity.orgs o WHERE NOT p_live_only OR NOT o.is_deleted);
+    test:
+      checks: [privileges, catalog, shadowing]
+      args: [true]
+
+  # The organisation gauges (the jobs role): exactly the columns they chart, for every live organisation.
+  - name: identity.gauge_user_counts
+    class: jobs
+    scope: global
+    args: []
+    returns: "TABLE (org_id text, n bigint)"
+    reads: [identity.users]
+    body: |
+      RETURN QUERY SELECT u.org_id, count(*) FROM identity.users u WHERE NOT u.is_deleted GROUP BY u.org_id;
+    test:
+      checks: [privileges, catalog]
+      args: []
+
+  - name: identity.gauge_live_orgs
+    class: jobs
+    scope: global
+    args: []
+    returns: "TABLE (org_id text, account_type text, domain text)"
+    reads: [identity.orgs]
+    body: |
+      RETURN QUERY SELECT o.org_id, o.account_type, o.domain FROM identity.orgs o WHERE NOT o.is_deleted;
+    test:
+      checks: [privileges, catalog]
+      args: []
+
+  - name: identity.gauge_auth_configs
+    class: jobs
+    scope: global
+    args: []
+    returns: "TABLE (org_id text, auth_steps jsonb)"
+    reads: [identity.org_auth_config]
+    body: |
+      RETURN QUERY SELECT c.org_id, c.auth_steps FROM identity.org_auth_config c WHERE NOT c.is_deleted;
+    test:
+      checks: [privileges, catalog]
+      args: []

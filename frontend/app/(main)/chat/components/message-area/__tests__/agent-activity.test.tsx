@@ -15,7 +15,7 @@ import {
   ToolCallCard,
   formatToolPayload,
 } from '../agent-activity';
-import type { MessagePart, StatusMessage } from '../../../types';
+import { TOOL_PROGRESS_STATUS, type MessagePart, type StatusMessage } from '../../../types';
 
 // No global RTL setup file is wired into vitest.config.ts for this
 // project — clean up the DOM after each test ourselves so renders from
@@ -63,6 +63,23 @@ describe('AgentActivityTimeline — narration text', () => {
     renderTimeline([{ type: 'text', content: 'Let me check the test file first.' }]);
 
     expect(screen.getByText('Let me check the test file first.')).toBeTruthy();
+  });
+
+  it('renders two narration parts of the same run without a duplicate React key', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderTimeline([
+      { type: 'text', content: 'I will find the CSV first.', runId: 'run-1' },
+      { type: 'tool_call', toolCallId: 'call-1', toolName: 'search', status: 'done' },
+      { type: 'text', content: 'Found it, reading the first rows.', runId: 'run-1' },
+    ]);
+
+    expect(screen.getByText('I will find the CSV first.')).toBeTruthy();
+    expect(screen.getByText('Found it, reading the first rows.')).toBeTruthy();
+    const duplicateKeyWarnings = errorSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('Encountered two children with the same key'),
+    );
+    errorSpy.mockRestore();
+    expect(duplicateKeyWarnings).toEqual([]);
   });
 
   it('hides the root-level text part marked isFinal', () => {
@@ -698,6 +715,24 @@ describe('AgentActivityTimeline — status indicator as a timeline entry', () =>
     // The shimmer treatment renders the message text twice (base + sweep
     // overlay layers) — assert via textContent rather than getByText.
     expect(container.textContent).toContain('Using Jira Search...');
+  });
+
+  it("lets a running tool's row stand in for its plain status", () => {
+    const { container } = renderTimeline(
+      [{ type: 'tool_call', toolCallId: 'call-1', toolName: 'run_code', status: 'running' }],
+      { isStreaming: true, currentStatus: { ...STATUS, status: 'running_tool', message: 'Using Run Code...' } },
+    );
+
+    expect(container.textContent).not.toContain('Using Run Code...');
+  });
+
+  it("still shows a running tool's own progress note, such as waiting for a sandbox", () => {
+    const { container } = renderTimeline(
+      [{ type: 'tool_call', toolCallId: 'call-1', toolName: 'run_code', status: 'running' }],
+      { isStreaming: true, currentStatus: { ...STATUS, status: TOOL_PROGRESS_STATUS, message: 'Using Run Code... waiting in queue' } },
+    );
+
+    expect(container.textContent).toContain('waiting in queue');
   });
 
   it('renders the status entry alone when there are no other visible parts yet', () => {

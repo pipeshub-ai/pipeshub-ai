@@ -1,9 +1,14 @@
-"""Zammad group and role members when the user list or a group can't be read in full.
+"""Zammad group and role members when the user or role list can't be read in full.
 
 Writing a group or role replaces its stored members, so a read that stopped for a
 reason that passes (no answer, a rate limit, a server error) must leave them as
 stored, while a complete read writes them as Zammad has them, removals included.
-A read Zammad refuses (403) repeats every sync, so it fails closed instead.
+A read Zammad refuses (403) repeats every sync, so it fails closed instead. Either
+way the sync ends as failed (``ZammadSyncIncompleteError``) once the rest is written.
+
+A group's members are the users who may read its tickets, worked out from the user
+list (each user's own ``group_ids``) and the role list (each role's permissions and
+``group_ids``), so both lists gate the members.
 
 The connector's run_sync and the real ``ZammadDataSource`` run as they do in
 production, over an in-memory Zammad answering HTTP requests. The store is an
@@ -11,106 +16,31 @@ in-memory stand-in that replaces members the way the processor does.
 """
 
 import logging
-import re
 from collections.abc import AsyncIterator
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from urllib.parse import urlparse
 
 import pytest
-from app.connectors.sources.zammad.connector import ZammadConnector
-from app.sources.client.http.http_request import HTTPRequest
+from app.connectors.sources.zammad.connector import ZammadConnector, ZammadSyncIncompleteError
 from app.sources.external.zammad.zammad import ZammadDataSource
-from zammad_behaviour_fakes import FakeConfigService, FakeHttpResponse, FakeStore
+from zammad_behaviour_fakes import (
+    AGENT_ROLE_ID,
+    FakeConfigService,
+    FakeDirectory,
+    FakeStore,
+    FakeZammadPeople,
+)
 
 CONNECTOR_ID = "zm-members"
 SUPPORT, SALES = 1, 2
-AGENT_ROLE = 2
+AGENT_ROLE = AGENT_ROLE_ID
 # More than one page of users: the connector reads 100 per page.
 USER_COUNT = 150
 
 
-class FakeZammadPeople:
-    """Users, groups and roles behind Zammad's REST API, with the failures it can answer with."""
-
-    def __init__(self) -> None:
-        self.users: dict[int, dict[str, Any]] = {}
-        self.group_members: dict[int, list[int]] = {SUPPORT: [], SALES: []}
-        # page number -> HTTP status answered instead of that page of users
-        self.users_page_status: dict[int, int] = {}
-        self.users_page_unanswered: set[int] = set()
-        # group id -> HTTP status answered instead of the group's details
-        self.group_status: dict[int, int] = {}
-
-    def add_user(self, user_id: int, groups: tuple[int, ...] = (SUPPORT,), roles: tuple[int, ...] = (AGENT_ROLE,)) -> None:
-        self.users[user_id] = {
-            "id": user_id, "email": f"u{user_id}@example.com", "firstname": "User", "lastname": str(user_id),
-            "active": True, "role_ids": list(roles),
-        }
-        for group in groups:
-            self.group_members[group].append(user_id)
-
-    def remove_user(self, user_id: int) -> None:
-        del self.users[user_id]
-        for members in self.group_members.values():
-            if user_id in members:
-                members.remove(user_id)
-
-    async def execute(self, request: HTTPRequest) -> FakeHttpResponse:
-        path = urlparse(request.url).path
-        params = dict(request.query_params or {})
-        page, per_page = int(params.get("page", 1)), int(params.get("per_page", 100))
-        if path == "/api/v1/users":
-            if page in self.users_page_unanswered:
-                raise ConnectionError("connection reset by peer")
-            if page in self.users_page_status:
-                return FakeHttpResponse(self.users_page_status[page], {"error": "not now"})
-            rows = [self.users[uid] for uid in sorted(self.users)]
-            return FakeHttpResponse(200, rows[(page - 1) * per_page:page * per_page])
-        if path == "/api/v1/groups":
-            rows = [{"id": gid, "name": f"group-{gid}", "active": True} for gid in sorted(self.group_members)]
-            return FakeHttpResponse(200, rows[(page - 1) * per_page:page * per_page])
-        match = re.fullmatch(r"/api/v1/groups/(\d+)", path)
-        if match:
-            group_id = int(match.group(1))
-            if group_id in self.group_status:
-                return FakeHttpResponse(self.group_status[group_id], {"error": "not now"})
-            return FakeHttpResponse(200, {"id": group_id, "user_ids": list(self.group_members[group_id])})
-        if path == "/api/v1/roles":
-            rows = [{"id": AGENT_ROLE, "name": "Agent", "active": True}]
-            return FakeHttpResponse(200, rows[(page - 1) * per_page:page * per_page])
-        return FakeHttpResponse(404, {"error": f"no route {path}"})
-
-
-class Directory:
-    """Groups and roles as the processor stores them: each write replaces the members."""
-
-    def __init__(self) -> None:
-        self.org_id = "org-1"
-        self.group_members: dict[str, set[str]] = {}
-        self.role_members: dict[str, set[str]] = {}
-        self.group_writes = 0
-
-    async def on_new_app_users(self, users: list[Any]) -> None:
-        return None
-
-    async def on_new_user_groups(self, user_groups: list[tuple[Any, list[Any]]]) -> None:
-        self.group_writes += 1
-        for group, members in user_groups:
-            self.group_members[group.source_user_group_id] = {m.email for m in members}
-
-    async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
-        for role, members in roles:
-            self.role_members[role.source_role_id] = {m.email for m in members}
-
-    async def on_new_record_groups(self, record_groups: list[tuple[Any, list[Any]]]) -> None:
-        return None
-
-
 class World:
     def __init__(self) -> None:
-        self.zammad = FakeZammadPeople()
-        self.directory = Directory()
+        self.zammad = FakeZammadPeople({SUPPORT: "Support", SALES: "Sales"})
+        self.directory = FakeDirectory()
         with patch("app.connectors.sources.zammad.connector.ZammadApp"):
             self.connector = ZammadConnector(
                 logger=logging.getLogger("test.zammad.members"),
@@ -134,6 +64,12 @@ class World:
 
     async def sync(self) -> None:
         await self.connector.run_sync()
+
+    async def sync_incomplete(self) -> list[str]:
+        """A sync that could not read every part: it writes the rest, then ends as failed."""
+        with pytest.raises(ZammadSyncIncompleteError) as raised:
+            await self.connector.run_sync()
+        return raised.value.parts
 
     def members(self, group_id: int) -> set[str]:
         return self.directory.group_members[str(group_id)]
@@ -165,7 +101,7 @@ async def world() -> AsyncIterator[World]:
 async def test_a_user_page_that_fails_leaves_group_and_role_members_as_stored(world: World, status: int) -> None:
     world.zammad.users_page_status[2] = status
 
-    await world.sync()
+    assert await world.sync_incomplete() == ["the user list (interrupted)"]
 
     assert world.members(SUPPORT) == EVERYONE
     assert world.members(SALES) == emails(*range(1, 11))
@@ -175,7 +111,7 @@ async def test_a_user_page_that_fails_leaves_group_and_role_members_as_stored(wo
 async def test_a_user_page_that_gets_no_answer_leaves_members_as_stored(world: World) -> None:
     world.zammad.users_page_unanswered.add(2)
 
-    await world.sync()
+    await world.sync_incomplete()
 
     assert world.members(SUPPORT) == EVERYONE
     assert world.agents() == EVERYONE
@@ -184,7 +120,7 @@ async def test_a_user_page_that_gets_no_answer_leaves_members_as_stored(world: W
 async def test_a_user_list_that_fails_on_its_first_page_takes_no_one_out(world: World) -> None:
     world.zammad.users_page_status[1] = 502
 
-    await world.sync()
+    await world.sync_incomplete()
 
     assert world.members(SUPPORT) == EVERYONE
     assert world.members(SALES) == emails(*range(1, 11))
@@ -194,7 +130,7 @@ async def test_a_user_list_that_fails_on_its_first_page_takes_no_one_out(world: 
 async def test_the_next_complete_read_applies_what_changed_meanwhile(world: World) -> None:
     world.zammad.users_page_status[2] = 503
     world.zammad.remove_user(120)
-    await world.sync()
+    await world.sync_incomplete()
     assert world.members(SUPPORT) == EVERYONE  # left as stored while the list was cut short
 
     del world.zammad.users_page_status[2]
@@ -219,26 +155,75 @@ async def test_a_user_list_zammad_refuses_fails_closed(world: World) -> None:
     """403 repeats every sync: members not read lose access rather than keep it unchecked."""
     world.zammad.users_page_status[2] = 403
 
-    await world.sync()
+    assert await world.sync_incomplete() == ["the user list (refused)"]
 
     assert world.members(SUPPORT) == emails(*range(1, 101))
     assert world.agents() == emails(*range(1, 101))
 
 
-async def test_a_group_whose_members_fail_to_read_keeps_them_and_the_others_update(world: World) -> None:
-    world.zammad.group_status[SALES] = 500
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_a_role_list_that_fails_leaves_group_and_role_members_as_stored(world: World, status: int) -> None:
+    """Who reads a group depends on the roles, so a role list cut short changes no member."""
+    world.zammad.roles_page_status[1] = status
     world.zammad.remove_user(3)
+    groups_written, roles_written = world.directory.group_writes, world.directory.role_writes
 
-    await world.sync()
+    assert await world.sync_incomplete() == ["the role list (interrupted)"]
 
     assert world.members(SALES) == emails(*range(1, 11))
-    assert world.members(SUPPORT) == EVERYONE - emails(3)
+    assert world.members(SUPPORT) == EVERYONE
+    assert world.agents() == EVERYONE
+    assert (world.directory.group_writes, world.directory.role_writes) == (groups_written, roles_written)
 
 
-async def test_a_group_zammad_refuses_to_show_is_saved_with_no_members(world: World) -> None:
-    world.zammad.group_status[SALES] = 403
+async def test_a_role_list_that_gets_no_answer_leaves_members_as_stored(world: World) -> None:
+    world.zammad.roles_page_unanswered.add(1)
+    world.zammad.remove_user(3)
+
+    await world.sync_incomplete()
+
+    assert world.members(SUPPORT) == EVERYONE
+    assert world.agents() == EVERYONE
+
+
+async def test_a_role_list_zammad_refuses_fails_closed(world: World) -> None:
+    """With no role read, no user is known to hold ticket.agent, so no group keeps a member."""
+    world.zammad.roles_page_status[1] = 403
+
+    assert await world.sync_incomplete() == ["the role list (refused)"]
+
+    assert world.members(SUPPORT) == set()
+    assert world.members(SALES) == set()
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "Suspected gap: with the role list refused no AppRole is written, so every role keeps its stored "
+    "members (and the knowledge-base access granted to the role) although the read failed closed for groups."
+))
+async def test_a_role_list_zammad_refuses_takes_role_members_away(world: World) -> None:
+    world.zammad.roles_page_status[1] = 403
+
+    await world.sync_incomplete()
+
+    assert world.agents() == set()
+
+
+async def test_a_role_list_without_permission_names_leaves_members_as_stored(world: World) -> None:
+    """Without the names nobody would count as an agent, so every group would be emptied."""
+    world.zammad.honours_expand = False
+    world.zammad.remove_user(3)
+
+    assert await world.sync_incomplete() == ["the role list (interrupted)"]
+
+    assert world.members(SUPPORT) == EVERYONE
+    assert world.agents() == EVERYONE
+
+
+async def test_group_members_come_from_the_lists_not_a_read_of_each_group(world: World) -> None:
+    world.zammad.calls.clear()
 
     await world.sync()
 
-    assert world.members(SALES) == set()
-    assert world.members(SUPPORT) == EVERYONE
+    assert world.zammad.group_detail_reads() == []
+    role_reads = [params for path, params in world.zammad.calls if path == "/api/v1/roles"]
+    assert role_reads and all(params.get("expand") == "true" for params in role_reads)

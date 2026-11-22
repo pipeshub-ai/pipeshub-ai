@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, override
 
 from pydantic import JsonValue
 
+from app.core.envelope import sign_message
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
@@ -14,7 +15,10 @@ from app.utils.request_context import inject_envelope
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
+    from app.services.redis.connection_provider import (
+        IRedisConnectionProvider,
+        RedisClient,
+    )
 
 
 class RedisStreamsProducer(IMessagingProducer):
@@ -109,7 +113,7 @@ class RedisStreamsProducer(IMessagingProducer):
     ) -> bool:
         # Stamped before the hop: the owner loop's context has no request id.
         return await run_on_loop(
-            self._owner_loop, self._send_message(topic, inject_envelope(message), key)
+            self._owner_loop, self._send_message(topic, sign_message(topic, inject_envelope(message)), key)
         )
 
     async def _send_message(
@@ -155,7 +159,7 @@ class RedisStreamsProducer(IMessagingProducer):
         """
         if not messages:
             return []
-        stamped = [(key, inject_envelope(dict(message))) for key, message in messages]
+        stamped = [(key, sign_message(topic, inject_envelope(dict(message)))) for key, message in messages]
         try:
             return await run_on_loop(self._owner_loop, self._send_messages(topic, stamped))
         except Exception as e:

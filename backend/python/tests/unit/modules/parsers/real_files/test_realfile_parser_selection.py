@@ -135,6 +135,14 @@ EXPECTED_DEFAULT_PARSER = {
     "sql_table": "SQLTableParser",
     "sql_view": "SQLViewParser",
     **dict.fromkeys(("png", "jpg", "jpeg", "webp", "svg", "heic", "heif"), "ImageParser"),
+    "odt": "DocParser",
+    "rtf": "DocParser",
+    "docm": "OoxmlPackageParser",
+    "dotx": "OoxmlPackageParser",
+    "potx": "OoxmlPackageParser",
+    "msg": "MsgParser",
+    "log": "PlainTextParser",
+    "cfg": "PlainTextParser",
 }
 
 

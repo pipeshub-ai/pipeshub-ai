@@ -81,7 +81,7 @@ class InMemoryGraph:
     def add_edge(self, collection: str, edge: dict[str, Any]) -> None:
         self.edges.setdefault(collection, []).append(copy.deepcopy(edge))
 
-    def add_agent(self, key: str, owner: str, *, share_with_org: bool = False, **fields: Any) -> None:
+    def add_agent(self, key: str, owner: str, *, share_with_org: bool = False, **fields: Any) -> None:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         self.add_node(AGENTS, {
             "_key": key, "name": f"Agent {key}", "createdBy": user_key(owner),
             "isDeleted": False, "models": [], **fields,
@@ -97,7 +97,7 @@ class InMemoryGraph:
                 "type": "ORG", "role": "READER",
             })
 
-    def add_template(self, key: str, owner: str, **fields: Any) -> None:
+    def add_template(self, key: str, owner: str, **fields: Any) -> None:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         self.add_node(TEMPLATES, {
             "_key": key, "name": f"Template {key}", "orgId": USERS[owner]["orgId"],
             "createdBy": user_key(owner), "isDeleted": False, **fields,
@@ -116,7 +116,7 @@ class InMemoryGraph:
     def edges_from(self, collection: str, from_id: str) -> list[dict[str, Any]]:
         return [e for e in self.edges.get(collection, []) if e.get("_from") == from_id]
 
-    def _enter(self, method: str, *args: Any, **kwargs: Any) -> None:
+    def _enter(self, method: str, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         self.calls.append((method, args, kwargs))
         if method in self.failures:
             raise self.failures[method]
@@ -126,7 +126,7 @@ class InMemoryGraph:
 
     # -- IGraphDBProvider surface used by the agent routes -------------------
     async def get_user_by_user_id(
-        self, user_id: str, *, raise_on_error: bool = False, **_: Any,
+        self, user_id: str, *, raise_on_error: bool = False, **_: Any,  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
     ) -> dict[str, Any] | None:
         try:
             self._enter("get_user_by_user_id", user_id)
@@ -155,7 +155,7 @@ class InMemoryGraph:
 
     async def get_nodes_by_field_in(
         self, collection: str, field: str, values: list[Any],
-        return_fields: list[str] | None = None, transaction: str | None = None,
+        return_fields: list[str] | None = None, transaction: str | None = None, *, raise_on_error: bool = False,
     ) -> list[dict]:
         self._enter("get_nodes_by_field_in", collection, field, values)
         stored_field = "_key" if field == "id" else field
@@ -165,6 +165,33 @@ class InMemoryGraph:
                 view = {**doc, "id": doc["_key"]}
                 out.append({f: view.get(f) for f in return_fields} if return_fields else view)
         return out
+
+    async def get_user_connector_instances(
+        self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, **_: object,
+    ) -> list[dict]:
+        try:
+            self._enter("get_user_connector_instances", user_id, org_id)
+        except Exception:
+            return []  # like the real providers
+        return [
+            copy.deepcopy(doc) for doc in self.nodes.get(collection, {}).values()
+            if doc.get("orgId") == org_id and (
+                doc.get("scope") == team_scope
+                or (doc.get("scope") == personal_scope and doc.get("createdBy") == user_id)
+            )
+        ]
+
+    async def get_org_apps(
+        self, org_id: str, *, active_only: bool = True, app_type: str | None = None, raise_on_error: bool = False,
+        app_ids: list[str] | None = None,
+    ) -> list[dict]:
+        self._enter("get_org_apps", org_id)
+        return [
+            {**copy.deepcopy(doc), "id": doc["_key"]} for doc in self.nodes.get("apps", {}).values()
+            if doc.get("orgId") == org_id and (not active_only or doc.get("isActive"))
+            and (app_type is None or doc.get("type") == app_type)
+            and (app_ids is None or doc["_key"] in app_ids)
+        ]
 
     async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
         self._enter("check_agent_permission", agent_id, user_id, org_id)
@@ -249,7 +276,7 @@ class InMemoryGraph:
         self.nodes[AGENTS][agent_id].update({"isDeleted": True, "deletedByUserId": user_id})
         return True
 
-    async def get_all_agents(self, user_id: str, org_id: str, **kwargs: Any) -> dict[str, Any]:
+    async def get_all_agents(self, user_id: str, org_id: str, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         self._enter("get_all_agents", user_id, org_id, **kwargs)
         page, limit = kwargs.get("page") or 1, kwargs.get("limit") or 20
         visible = []
@@ -298,7 +325,7 @@ class InMemoryGraph:
         if role is None:
             return None
         return {**copy.deepcopy(self.nodes[TEMPLATES][template_id]), "user_role": role,
-                "can_edit": role in _EDIT_ROLES, "can_delete": role == "OWNER"}
+                "can_edit": role == "OWNER", "can_delete": role == "OWNER"}
 
     async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
         # The real provider reads the template with no permission check.
@@ -438,7 +465,7 @@ AGENT_UPDATE_FIELDS = (
 )
 
 
-def _normalize_models(raw: Any) -> list[str] | None:
+def _normalize_models(raw: Any) -> list[str] | None:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
     """ArangoHTTPProvider.update_agent's models rule: a list replaces the stored models
     (an empty list clears them), None clears them, anything else leaves them as they are."""
     if raw is None:
@@ -464,8 +491,8 @@ class FakeConfigService:
         self.values = values or {}
 
     async def get_config(
-        self, key: str, default: Any = None, use_cache: bool = True, *, raise_on_error: bool = False,
-    ) -> Any:
+        self, key: str, default: Any = None, use_cache: bool = True, *, raise_on_error: bool = False,  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
+    ) -> Any:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         return copy.deepcopy(self.values.get(key, default))
 
     async def list_keys_in_directory(self, directory: str) -> list[str]:
@@ -489,9 +516,6 @@ class FakeContainer:
             raise self.graph_provider_error
         return self.graph
 
-    def reranker_service(self) -> object:
-        return object()
-
     def config_service(self) -> FakeConfigService:
         return self.config
 
@@ -506,11 +530,11 @@ class _TestAuth:
     """Stands in for the JWT middleware: the `x-test-user` header picks the
     already-authenticated identity, exactly as `request.state.user` would hold it."""
 
-    def __init__(self, app: Any, users: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, app: Any, users: dict[str, dict[str, Any]]) -> None:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         self.app = app
         self.users = users
 
-    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:  # noqa: ANN401 - a JSON value, model response or caller callable of any shape
         if scope["type"] == "http":
             name = dict(scope["headers"]).get(b"x-test-user")
             if name is not None:

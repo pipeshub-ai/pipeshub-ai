@@ -36,6 +36,12 @@ _UNITS: dict[str, tuple[str, str, Decimal]] = {
     "mib": ("data_size", "B", Decimal(2) ** 20),
     "gib": ("data_size", "B", Decimal(2) ** 30),
     "tib": ("data_size", "B", Decimal(2) ** 40),
+    # shortcut: "mWh" reads as megawatt-hours (casefolded); milliwatt-hours are rare in business text.
+    "wh": ("energy", "J", Decimal(3600)),
+    "kwh": ("energy", "J", Decimal(3600) * 10**3),
+    "mwh": ("energy", "J", Decimal(3600) * 10**6),
+    "gwh": ("energy", "J", Decimal(3600) * 10**9),
+    "twh": ("energy", "J", Decimal(3600) * 10**12),
 }
 # Thousands are grouped with commas only; a decimal comma ("1,5 %") is not read.
 _N = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
@@ -43,17 +49,22 @@ _TOKENS = re.compile(rf"^(?P<n>{_N})\s?(?P<scale>[kKmM]?)\s?tokens?$")
 _TOKEN_SCALE = {"": Decimal(1), "k": Decimal(10) ** 3, "m": Decimal(10) ** 6}
 _QTY = re.compile(
     rf"^(?P<n>{_N})(?P<gap>\s*)(?P<u>km/h|km|m|cm|mm|kg|g|lbs|lb|mi|ft|mph|kph|celsius|fahrenheit|c|f"
-    r"|kib|mib|gib|tib|kb|mb|gb|tb|pb)$",
+    r"|kib|mib|gib|tib|kb|mb|gb|tb|pb|wh|kwh|mwh|gwh|twh)$",
     re.IGNORECASE,
 )
 _AGE = re.compile(r"^(?P<n>\d{1,3})[\-\s]?years?[\-\s]?old$", re.IGNORECASE)
+_MINUS = "-−\u2012\u2013"
 _PERCENT = re.compile(rf"^(?P<n>{_N})\s*(?P<u>%|bps|percent|per\s?cent|pct)$", re.IGNORECASE)
 
 
 def normalize_quantity(surface: str) -> QuantityValue | None:
     text = (surface or "").strip().replace("°", "")
+    # One sign written against the number; "- 25 °C" or "--25 °C" is not a reading.
+    negative = text[:1] in _MINUS and text[1:2].isdigit()
+    if negative:
+        text = text[1:]
     tokens = _TOKENS.match(text)
-    if tokens:
+    if tokens and not negative:
         count = Decimal(tokens.group("n").replace(",", "")) * _TOKEN_SCALE[tokens.group("scale").casefold()]
         count = count.quantize(Decimal(1)) if count == count.to_integral_value() else count
         return QuantityValue(value=count, unit="token", dimension="tokens", si_value=float(count), si_unit="token")
@@ -72,6 +83,10 @@ def normalize_quantity(surface: str) -> QuantityValue | None:
     except InvalidOperation:
         return None
     dimension, si_unit, factor = spec
+    if negative:
+        if dimension != "temperature":
+            return None
+        value = -value
     if unit in {"c", "celsius"}:
         si = float(value + Decimal("273.15"))
     elif unit in {"f", "fahrenheit"}:

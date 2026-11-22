@@ -5,6 +5,10 @@ import { Container } from 'inversify';
 import { createOrgRouter } from '../../../../src/modules/user_management/routes/org.routes';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { OrgController } from '../../../../src/modules/user_management/controller/org.controller';
+import { FileProcessorFactory } from '../../../../src/libs/middlewares/file_processor/fp.factory';
+import { userAdminCheck } from '../../../../src/modules/user_management/middlewares/userAdminCheck';
+import { setOrgRepository } from '../../../../src/libs/repositories/org';
+import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum';
 
 describe('Org Routes', () => {
   let container: Container;
@@ -185,6 +189,17 @@ describe('Org Routes', () => {
       expect(onboardingRoute).to.not.be.undefined;
     });
 
+    it('should only let an admin update the onboarding status', () => {
+      const router = createOrgRouter(container);
+      const route = (router as any).stack.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/onboarding-status' &&
+          layer.route.methods.put,
+      ).route;
+      expect(route.stack.map((layer: any) => layer.handle)).to.include(userAdminCheck);
+    });
+
     it('should register GET /health route', () => {
       const router = createOrgRouter(container);
       const routes = (router as any).stack;
@@ -242,6 +257,21 @@ describe('Org Routes', () => {
       expect(deleteRoute).to.not.be.undefined;
       // auth + requireScopes + metrics + adminCheck + handler
       expect(deleteRoute.route.stack.length).to.be.greaterThanOrEqual(3);
+    });
+    it('should check admin before reading the PUT /logo upload body', () => {
+      const upload = (_req: any, _res: any, next: any) => next();
+      sinon
+        .stub(FileProcessorFactory, 'createBufferUploadProcessor')
+        .returns({ getMiddleware: [upload] });
+      const router = createOrgRouter(container);
+      const putLogo = (router as any).stack.find(
+        (layer: any) =>
+          layer.route && layer.route.path === '/logo' && layer.route.methods.put,
+      );
+      const handles = putLogo.route.stack.map((s: any) => s.handle);
+      const adminIdx = handles.indexOf(userAdminCheck);
+      expect(adminIdx).to.be.greaterThan(-1);
+      expect(adminIdx).to.be.lessThan(handles.indexOf(upload));
     });
   });
 
@@ -563,6 +593,51 @@ describe('Org Routes - handler coverage', () => {
 
       await handler(req, res, next)
       expect(mockOrgController.deleteOrganization.calledOnce).to.be.true
+    })
+  })
+
+  describe('GET /internal handler', () => {
+    afterEach(() => setOrgRepository())
+
+    function withOrg(org: unknown) {
+      const getLive = sinon.stub().resolves(org)
+      setOrgRepository({ getLive } as any)
+      return getLive
+    }
+
+    it('is guarded by a USER_LOOKUP scoped token', () => {
+      const auth = container.get<any>('AuthMiddleware')
+      expect(auth.scopedTokenValidator.calledWith(TokenScopes.USER_LOOKUP)).to.be.true
+      const layer = router.stack.find((l: any) => l.route?.path === '/internal' && l.route.methods.get)
+      expect(layer.route.stack).to.have.length(2)
+    })
+
+    it("answers the token's own org, from the token alone", async () => {
+      const getLive = withOrg({ _id: 'org1', accountType: 'business', registeredName: 'Acme', contactEmail: 'a@acme.com' })
+      const res = mockRes()
+      const next = sinon.stub()
+
+      await findHandler('/internal', 'get')(
+        { tokenPayload: { orgId: 'org1' }, query: { orgId: 'org2' }, params: { orgId: 'org2' } } as any, res, next,
+      )
+
+      expect(getLive.calledOnceWithExactly('org1')).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({ _id: 'org1', accountType: 'business', registeredName: 'Acme' })
+      expect(next.called).to.be.false
+    })
+
+    it('is a 404 for a deleted org or a token without one', async () => {
+      for (const tokenPayload of [{ orgId: 'gone' }, {}]) {
+        const getLive = withOrg(null)
+        const res = mockRes()
+        const next = sinon.stub()
+
+        await findHandler('/internal', 'get')({ tokenPayload } as any, res, next)
+
+        expect(next.firstCall.args[0].statusCode).to.equal(404)
+        expect(res.json.called).to.be.false
+        expect(getLive.called).to.equal(Boolean((tokenPayload as any).orgId))
+      }
     })
   })
 

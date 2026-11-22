@@ -1,14 +1,17 @@
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, TypeVar
 
 from app.config.constants.store_type import StoreType
 from app.config.key_value_store import KeyValueStore
-from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
-from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
+from app.config.providers.postgres_store import PostgresKeyValueStore
 from app.telemetry.modules.db_metrics import instrument_store
 from app.utils.logger import create_logger
+
+if TYPE_CHECKING:
+    from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
+    from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
 
 logger = create_logger("KV Store:" + os.getenv("KV_STORE_TYPE", "redis"))
 
@@ -97,6 +100,12 @@ class KeyValueStoreFactory:
                 )
                 logger.info("✅ Redis store created successfully")
                 return instrument_store(store, "kv")
+            elif store_type == StoreType.POSTGRES:
+                if not serializer or not deserializer:
+                    raise ValueError("Serializer and deserializer functions must be provided for PostgreSQL store.")
+                store = PostgresKeyValueStore[T](serializer, deserializer)
+                logger.info("✅ PostgreSQL store created successfully")
+                return instrument_store(store, "kv")
             else:
                 logger.error("❌ Unsupported store type: %s", store_type)
                 raise ValueError(f"Unsupported store type: {store_type}")
@@ -114,7 +123,7 @@ class KeyValueStoreFactory:
         serializer: Optional[Callable[[T], bytes]],
         deserializer: Optional[Callable[[bytes], T]],
         config: StoreConfig,
-    ) -> Etcd3DistributedKeyValueStore[T]:
+    ) -> "Etcd3DistributedKeyValueStore[T]":
         """Create an ETCD3 store instance with validation."""
         logger.debug("🔄 Validating ETCD3 store requirements")
 
@@ -135,6 +144,9 @@ class KeyValueStoreFactory:
             logger.debug("   - Serializer type: %s", type(serializer))
             logger.debug("   - Deserializer type: %s", type(deserializer))
             raise TypeError("Serializer and deserializer must be callable functions")
+
+        # etcd3 is imported here: a deployment on another store does not install it
+        from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 
         logger.debug("🔄 Creating ETCD3 store instance")
         store = Etcd3DistributedKeyValueStore[T](
@@ -165,7 +177,7 @@ class KeyValueStoreFactory:
         serializer: Optional[Callable[[T], bytes]],
         deserializer: Optional[Callable[[bytes], T]],
         config: StoreConfig,
-    ) -> RedisDistributedKeyValueStore[T]:
+    ) -> "RedisDistributedKeyValueStore[T]":
         """Create a Redis store instance with validation."""
         logger.debug("🔄 Validating Redis store requirements")
 
@@ -186,6 +198,8 @@ class KeyValueStoreFactory:
             logger.debug("   - Serializer type: %s", type(serializer))
             logger.debug("   - Deserializer type: %s", type(deserializer))
             raise TypeError("Serializer and deserializer must be callable functions")
+
+        from app.config.providers.redis.redis_store import RedisDistributedKeyValueStore
 
         logger.debug("🔄 Creating Redis store instance")
         store = RedisDistributedKeyValueStore[T](

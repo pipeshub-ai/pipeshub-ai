@@ -1,6 +1,7 @@
 from typing import Any, Dict
 
 from app.config.configuration_service import ConfigurationService
+from app.core.org_context import for_org, system
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -106,7 +107,8 @@ class AllTeamMigrationService:
             self.logger.info("=" * 70)
 
             # Get all active organizations
-            orgs = await self.graph_provider.get_all_orgs(active=True)
+            with system("all_team_migration"):
+                orgs = await self.graph_provider.get_all_orgs(active=True)
 
             if not orgs:
                 self.logger.info("✅ No organizations found - marking migration as complete")
@@ -132,7 +134,8 @@ class AllTeamMigrationService:
                 try:
                     self.logger.info(f"🔄 Processing org {org_id}...")
                     
-                    await self.graph_provider.ensure_all_team_with_users(org_id)
+                    with for_org(org_id, job="all_team_migration"):
+                        await self.graph_provider.ensure_all_team_with_users(org_id)
                     
                     orgs_processed += 1
                     teams_created += 1

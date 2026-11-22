@@ -82,6 +82,8 @@ async def smb_connector(
         storage_name="SMB share",
         connector_type="SMB",
         connector_config=config,
+        # The test share is on a private address, which personal connectors cannot reach.
+        scope="team",
         resource_name_override=creds["share"],
     )
     state["share_name"] = creds["share"]

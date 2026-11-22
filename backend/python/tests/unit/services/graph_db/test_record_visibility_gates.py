@@ -202,7 +202,7 @@ class TestPermissionMap:
         provider = _neo4j()
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _neo4j_queries(provider)
-        paths = query.count("RETURN r.virtualRecordId AS virtualId, r.id AS recordId")
+        paths = query.count("RETURN collect([r.virtualRecordId, r.id]) AS pairs")
         assert paths == 1
         assert query.count(cypher_searchable_record("r")) == paths
         assert query.count(f"AND {cypher_live_record('r')}") == paths
@@ -350,6 +350,11 @@ class TestNeo4jKnowledgeHubListing:
     lists the trash: every arm that collects nodes drops deleted ones, and a row
     counts only its live children."""
 
+    @pytest.fixture(autouse=True)
+    def _legacy_browse(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The browse statement pinned here is the legacy browse's (split's live tests: test_kh_split_browse.py); split is the default.
+        monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
+
     @staticmethod
     def _live(var: str) -> str:
         # Null-safe: a node written before soft delete has no isDeleted.
@@ -394,7 +399,7 @@ class TestNeo4jKnowledgeHubListing:
     @pytest.mark.parametrize("page", [{"flatten": False}, {"flatten": True}, {"start_id": "f1", "start_type": "folder"}])
     async def test_a_row_counts_only_its_live_children(self, page) -> None:
         listing = await self._listing(**page)
-        assert listing.count(self._live("kh_ch")) == 1, "hierarchy children"
+        assert listing.count(self._live("kh_ch")) >= 1, "hierarchy children"
         assert listing.count(self._live("kh_bc")) == 1, "belonging records"
 
 

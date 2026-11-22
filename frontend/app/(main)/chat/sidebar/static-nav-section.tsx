@@ -26,12 +26,17 @@ interface NavItem {
   beta?: boolean;
 }
 
+/** The code graph explorer, while it is switched on for this build (NEXT_PUBLIC_GRAPH_EXPLORER_ACTIVE=true). */
+const GRAPH_EXPLORER_ACTIVE = process.env.NEXT_PUBLIC_GRAPH_EXPLORER_ACTIVE === 'true';
+const GRAPH_NAV_ITEM: NavItem = { icon: 'hub', labelKey: 'graph.title', route: '/graph/', beta: true };
+
 /** Primary navigation items — labels resolved via i18n */
 const MAIN_NAV_ITEMS: NavItem[] = [
   // { icon: 'search', labelKey: 'nav.searchChats', route: '/search' },
   { icon: 'folder', labelKey: 'nav.collections', route: '/knowledge-base/' },
   { icon: 'inventory_2', labelKey: 'nav.allRecords', route: '/knowledge-base/?view=all-records' },
   { icon: 'attachment', labelKey: 'nav.allArtifacts', route: '/artifacts/', beta: true },
+  ...(GRAPH_EXPLORER_ACTIVE ? [GRAPH_NAV_ITEM] : []),
 ];
 
 /** Projects nav item — gated behind `ENABLE_PROJECTS`, rendered separately below. */
@@ -157,10 +162,9 @@ export function StaticNavSection() {
           }
           href={item.route}
           onClick={closeOnMobile}
-          isActive={
-            item.route.startsWith('/artifacts') &&
-            pathname.startsWith('/artifacts')
-          }
+          isActive={['/artifacts', '/graph'].some(
+            (base) => item.route.startsWith(base) && pathname.startsWith(base),
+          )}
         />
       ))}
     </Flex>

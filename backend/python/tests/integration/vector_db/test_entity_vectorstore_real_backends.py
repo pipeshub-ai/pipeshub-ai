@@ -193,7 +193,9 @@ def _entity(
 
 
 async def _point(store: EntityVectorStore, org: str, entity_type: str, entity_id: str) -> dict[str, Any] | None:
-    point_id = store._point_id(org, entity_type, entity_id)
+    # a point is stored under the id of the epoch it was written in (the first epoch keeps the plain one)
+    fence = await store._guard().capture(store.collection_name)
+    point_id = store._stored_id(store._point_id(org, entity_type, entity_id), fence)
     points = await store.vector_db_service.retrieve_points(store.collection_name, [point_id])
     return points[0].payload if points else None
 
@@ -257,6 +259,7 @@ class TestMembershipReads:
 
         await store.vector_db_service.update_payload_by_ids(
             store.collection_name, [present, missing], {"connectorIds": ["c2"]},
+            org_id=org,
         )
 
         assert (await _point(store, org, "topic", "t1"))["connectorIds"] == ["c2"]
@@ -720,7 +723,7 @@ class TestRebuildSupport:
         assert outcome.written == 1
         info = await store.vector_db_service.get_collection_info(store.collection_name)
         assert info.exists and info.dense_dimension == DIM * 2
-        assert await _point(store, org, "topic", "t1") is not None
+        assert await _point(writer, org, "topic", "t1") is not None  # read through the writer: the epoch keys are its
 
     async def test_a_same_dimension_model_change_waits_for_the_owner_to_recreate(
         self, store: EntityVectorStore,
@@ -804,6 +807,7 @@ class TestWriteOutcomeAndLocks:
                 await service.update_payload_by_ids(
                     collection, [store._point_id(org, "topic", "t1")],
                     {"connectorIds": ["c-gone", "c-other", "c-new"]},
+                    org_id=org,
                 )
             return await real_retrieve(collection, ids)
 

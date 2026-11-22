@@ -17,6 +17,9 @@ from tests.support.vector_db import (
 # ---------------------------------------------------------------------------
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _make_pipeline():
     """Create an IndexingPipeline with all dependencies mocked."""
     with patch(
@@ -32,6 +35,8 @@ def _make_pipeline():
             collection_registry=_make_collection_registry(),
             vector_db_service=AsyncMock(),
         )
+        # no other org holds points of a vrid unless a test says so
+        pipeline.vector_db_service.other_orgs_hold_virtual_record = AsyncMock(return_value=False)
         return pipeline
 
 
@@ -111,6 +116,7 @@ class TestBulkDeleteNodesError:
         assert result["success"] is True
         assert result["virtual_record_ids_processed"] == 1
         pipeline.vector_db_service.delete_points.assert_awaited_once()
+        pipeline.graph_provider.delete_nodes.assert_awaited_once()      # the failing mapping delete was reached
 
 
 # ===================================================================

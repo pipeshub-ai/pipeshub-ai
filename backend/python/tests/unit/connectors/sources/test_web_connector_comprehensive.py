@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, FILE_MIME_TYPES, MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import SOURCE_REFUSAL_HEADER
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
@@ -30,6 +31,7 @@ from app.connectors.sources.web.connector import (
     WebApp,
     WebConnector,
     _bytes_async_gen,
+    failed_page_reason,
 )
 from app.connectors.sources.web.fetch_strategy import MAX_RATE_LIMIT_BACKOFF, FetchResponse
 from app.models.entities import RecordType
@@ -1818,44 +1820,49 @@ class TestRetryAndOrchestrationHelpers:
 # Image / SVG / HTML processing
 # ===========================================================================
 class TestImageProcessingComprehensive:
-    def test_convert_svg_tag_success(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_tag_success(self):
         c = _make_connector()
         soup = BeautifulSoup(f"<html><body>{_MINIMAL_SVG.decode()}</body></html>", "html.parser")
         svg = soup.find("svg")
         fake_png = base64.b64encode(_TINY_PNG).decode()
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             return_value=fake_png,
         ):
-            assert c._convert_svg_tag_to_png(soup, svg) is True
+            assert await c._convert_svg_tag_to_png(soup, svg) is True
         assert soup.find("img") is not None
 
-    def test_convert_svg_tag_empty_png_decomposes(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_tag_empty_png_decomposes(self):
         c = _make_connector()
         soup = BeautifulSoup(f"<html><body>{_MINIMAL_SVG.decode()}</body></html>", "html.parser")
         svg = soup.find("svg")
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             return_value="valid",
         ), patch.object(c, "_clean_base64_string", return_value=""):
-            assert c._convert_svg_tag_to_png(soup, svg) is False
+            assert await c._convert_svg_tag_to_png(soup, svg) is False
         assert soup.find("svg") is None
 
-    def test_convert_svg_tag_failure_decomposes(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_tag_failure_decomposes(self):
         c = _make_connector()
         soup = BeautifulSoup(f"<html><body>{_MINIMAL_SVG.decode()}</body></html>", "html.parser")
         svg = soup.find("svg")
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             side_effect=RuntimeError("convert fail"),
         ):
-            assert c._convert_svg_tag_to_png(soup, svg) is False
+            assert await c._convert_svg_tag_to_png(soup, svg) is False
 
-    def test_process_svg_tags_iterates(self):
+    @pytest.mark.asyncio
+    async def test_process_svg_tags_iterates(self):
         c = _make_connector()
         soup = BeautifulSoup(f"<html><body>{_MINIMAL_SVG.decode()}</body></html>", "html.parser")
-        with patch.object(c, "_convert_svg_tag_to_png", return_value=True):
-            c._process_svg_tags(soup)
+        with patch.object(c, "_convert_svg_tag_to_png", return_value=True) as convert:
+            await c._process_svg_tags(soup)
+        convert.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_inline_svg_data_uri_base64_converted(self):
@@ -2150,21 +2157,23 @@ class TestImageProcessingComprehensive:
             resp.headers = {"content-type": "application/octet-stream"}
             assert c._determine_image_content_type(resp, f"https://x.com/a{path}") == expected
 
-    def test_convert_svg_bytes_returns_none_on_failure(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_bytes_returns_none_on_failure(self):
         c = _make_connector()
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             side_effect=RuntimeError("fail"),
         ):
-            assert c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "url") is None
+            assert await c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "url") is None
 
-    def test_convert_svg_bytes_empty_after_clean(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_bytes_empty_after_clean(self):
         c = _make_connector()
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             return_value="x",
         ), patch.object(c, "_clean_base64_string", return_value=""):
-            assert c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "url") is None
+            assert await c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "url") is None
 
     def test_convert_avif_bytes_via_pillow(self):
         c = _make_connector()
@@ -2286,7 +2295,35 @@ class TestStreamRecordComprehensive:
         ):
             with pytest.raises(HTTPException) as exc:
                 await c.stream_record(record)
-        assert exc.value.status_code == 409
+        # Nor as "reconnect the connector": a page behind a login is refused for good.
+        assert exc.value.status_code == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("site_status", "our_status"),
+        [(400, 422), (401, 403), (403, 403), (404, 404), (429, 429), (500, 502), (503, 502), (None, 502)],
+    )
+    async def test_a_refused_page_says_what_the_site_answered(self, site_status: int | None, our_status: int) -> None:
+        c = _make_connector()
+        c.session = MagicMock()
+        record = MagicMock(
+            weburl="https://example.com/page", record_name="Page", id="r1",
+            mime_type="text/html", storage_document_id=None,
+        )
+        answer = None if site_status is None else FetchResponse(
+            status_code=site_status, content_bytes=b"", headers={},
+            final_url="https://example.com/page", strategy="aiohttp", success=False,
+        )
+        with patch(
+            "app.connectors.sources.web.connector.fetch_url_with_fallback",
+            new_callable=AsyncMock, return_value=answer,
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await c.stream_record(record)
+        assert exc.value.status_code == our_status
+        assert exc.value.detail == failed_page_reason(site_status)
+        # A refusal is marked; the site being down or unreachable is an outage, not a refusal.
+        assert (SOURCE_REFUSAL_HEADER in (exc.value.headers or {})) == (our_status < 500)
 
     @pytest.mark.asyncio
     async def test_failed_fetch_with_2xx_status_is_not_streamed_as_empty(self):
@@ -2951,14 +2988,15 @@ class TestWebConnectorRemainingCoverageGaps:
         resp.headers = {"content-type": "application/octet-stream"}
         assert c._determine_image_content_type(resp, "https://x.com/file.unknown") == "image/jpeg"
 
-    def test_convert_svg_bytes_success(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_bytes_success(self):
         c = _make_connector()
         fake_png = base64.b64encode(_TINY_PNG).decode()
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             return_value=fake_png,
         ):
-            result = c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "https://example.com/icon.svg")
+            result = await c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "https://example.com/icon.svg")
         assert result == fake_png
 
     def test_convert_avif_bytes_empty_after_clean(self):

@@ -18,7 +18,8 @@ Files of a revision (paths are relative to its root):
 - ``reconciliation.json``: block hashes to ids and ids to indexes.
 - ``properties.json``: the record's provided property values
   (``RecordMetadata``: ``{"schemaId", "values"}``), for a ticket that sets any
-  of the built-in ticket schema's properties.
+  of the built-in ticket schema's properties. Optional: a storage service that
+  does not take the file yet gets the set without it.
 - ``manifest.json``: what was written, with sizes and sha256s. Written last,
   only once every other file is stored, so a revision without it is incomplete.
 
@@ -33,14 +34,17 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel
 
+from app.config.constants.http_status_code import HttpStatusCode
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.models.blocks import BlocksContainer, BlockType
 from app.models.entities import Record
+from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import (
     ASSET_MEDIA_TYPE,
     MANIFEST_PATH,
@@ -49,15 +53,19 @@ from app.modules.artifacts.models import (
     ArtifactFile,
     ArtifactRef,
     Manifest,
+    RevisionUploadPlan,
     WrittenRevision,
 )
 from app.modules.artifacts.store import (
+    PROPERTIES_FILE,
     ArtifactRoutesUnavailable,
     NodeArtifactStore,
+    SetPerWriteUnsupported,
     artifact_writes_available,
 )
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.transformers.blob_storage import SHARED_CONTENT_FIELDS
+from app.modules.transformers.stored_write import write_id
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 PART_MAX_BYTES = 8 * 1024 * 1024
@@ -198,6 +206,7 @@ def build_revision(
     semantic_metadata: BaseModel | dict[str, Any] | None = None,
     reconciliation_metadata: dict[str, Any] | None = None,
     stored_record_fields: dict[str, Any] | None = None,
+    properties: RecordMetadata | None = None,
     part_max_bytes: int = PART_MAX_BYTES,
 ) -> BuiltRevision:
     """Every file of the revision but the manifest, and the manifest's entries. Pure.
@@ -205,6 +214,8 @@ def build_revision(
     ``stored_record_fields``: the stored copy's fields outside the shared content
     (``BlobStorage.apply``'s ``STORED_RECORD_FIELDS``); record.json then holds
     them instead of ``record``'s own.
+    ``properties``: the record's provided values; left out, they are
+    ``ticket_metadata(record)``.
     """
     built = BuiltRevision()
     snapshot = record.model_dump(
@@ -266,10 +277,24 @@ def build_revision(
         )
     # The values are this record's; when record.json is another record's (it
     # stored the shared content first), they would not describe it.
-    properties = ticket_metadata(record)
-    if properties is not None and (stored_record_fields or {}).get("id") in (None, record.id):
+    if properties is None:
+        properties = ticket_metadata(record)
+    if (
+        properties is not None
+        and properties.values
+        and (stored_record_fields or {}).get("id") in (None, record.id)
+    ):
         _add_single(built, "properties", PROPERTIES_PATH, properties.to_json_dict(), len(properties.values))
     return built
+
+
+#: What the storage service's validation says of a path an artifact set cannot hold.
+PATH_NOT_HELD_REFUSAL = "Not a file an artifact set can hold"
+
+
+def _drop_properties(built: BuiltRevision) -> None:
+    built.files.pop(PROPERTIES_PATH, None)
+    built.artifacts.pop("properties", None)
 
 
 class ArtifactWriter:
@@ -288,6 +313,36 @@ class ArtifactWriter:
         self.upload_concurrency = upload_concurrency
         self.producer_versions = dict(producer_versions or {})
 
+    async def _presign(
+        self, built: BuiltRevision, org_id: str, virtual_record_id: str, rev: str, set_id: str,
+    ) -> RevisionUploadPlan:
+        def files() -> list[tuple[str, str]]:
+            return [(p, built.files[p].content_type) for p in sorted(built.files)] + [(MANIFEST_PATH, _JSON)]
+
+        try:
+            return await self.store.presign_revision(org_id, virtual_record_id, rev, files(), write_id=set_id)
+        except StorageRequestRejectedError as refused:
+            # A storage service older than properties.json refuses the whole set
+            # (400) over that one path; the rest of the revision is still worth
+            # storing. It names no path, only one line per path it does not know,
+            # so exactly one such line, with the file in the set, is the sign;
+            # any other 400 (a bad revision, a duplicate path, two bad paths) is
+            # raised as before and never turns the file off for the process.
+            if (
+                refused.status != HttpStatusCode.BAD_REQUEST.value
+                or PROPERTIES_PATH not in built.files
+                or (refused.detail or "").splitlines() != [PATH_NOT_HELD_REFUSAL]
+            ):
+                raise
+            _drop_properties(built)
+            plan = await self.store.presign_revision(org_id, virtual_record_id, rev, files(), write_id=set_id)
+            if PROPERTIES_FILE.mark_unavailable(refused.status):
+                self.logger.warning(
+                    "Storage refuses %s (HTTP %d); revisions are stored without it until this "
+                    "service restarts", PROPERTIES_PATH, refused.status,
+                )
+            return plan
+
     async def write_revision(
         self,
         record: Record,
@@ -298,17 +353,33 @@ class ArtifactWriter:
         semantic_metadata: BaseModel | dict[str, Any] | None = None,
         reconciliation_metadata: dict[str, Any] | None = None,
         stored_record_fields: dict[str, Any] | None = None,
+        properties: RecordMetadata | None = None,
+        *,
+        stored_run: str,
+        still_current: Callable[[], Awaitable[bool]] | None = None,
     ) -> WrittenRevision | None:
-        """Store every file of revision ``rev``, the manifest last.
+        """Store every file of revision ``rev``, the manifest last, in the set of the stored write ``stored_run``.
 
-        None when nothing was written because artifact writes are unavailable
-        (a storage service without the routes). Raises when a file could not
-        be stored; the manifest is then not written.
+        Each stored write has a set of its own (``write_id``), so two writes of one revision never share a
+        file: whatever lands late, from a write that lost its place or an upload storage commits after it
+        was given up, lands in its own write's set, which the pointer never names over a newer write.
+        None when nothing was written: artifact writes are unavailable (a storage service without the
+        routes, or one that gives the write no set of its own and would file it in the revision's shared
+        set: no lock in one process could keep another process's late files out of it), the run keeps no set (a ``none`` run), or ``still_current`` said another stored write took
+        over, so the rest of this write's set would be wasted. Raises when a file could not be stored; the
+        manifest is then not written.
         """
         if not artifact_writes_available():
             return None
         if not REV_PATTERN.match(rev):
             raise ValueError("revision is not 8 to 64 lowercase hex digits")
+        set_id = write_id(stored_run)
+        if set_id is None:
+            return None
+
+        async def current() -> bool:
+            return still_current is None or await still_current()
+
         # Off the event loop: encoding and hashing a large record takes a while.
         built = await asyncio.to_thread(
             build_revision,
@@ -317,19 +388,17 @@ class ArtifactWriter:
             semantic_metadata=semantic_metadata,
             reconciliation_metadata=reconciliation_metadata,
             stored_record_fields=stored_record_fields,
+            properties=properties,
             part_max_bytes=self.part_max_bytes,
         )
-        paths = sorted(built.files)
+        if not PROPERTIES_FILE.available:
+            _drop_properties(built)
         try:
-            plan = await self.store.presign_revision(
-                org_id,
-                virtual_record_id,
-                rev,
-                [(p, built.files[p].content_type) for p in paths] + [(MANIFEST_PATH, _JSON)],
-            )
-        except ArtifactRoutesUnavailable:
+            plan = await self._presign(built, org_id, virtual_record_id, rev, set_id)
+        except (ArtifactRoutesUnavailable, SetPerWriteUnsupported):
             return None
-
+        if not await current():
+            return None
         limit = asyncio.Semaphore(max(1, self.upload_concurrency))
 
         async def upload(path: str) -> None:
@@ -340,16 +409,19 @@ class ArtifactWriter:
         # A TaskGroup cancels the remaining uploads on the first failure.
         try:
             async with asyncio.TaskGroup() as uploads:
-                for path in paths:
+                for path in sorted(built.files):
                     uploads.create_task(upload(path))
         except ExceptionGroup as failed:
             raise failed.exceptions[0] from None
 
+        if not await current():
+            return None
         manifest = Manifest(
             virtualRecordId=virtual_record_id,
             rev=rev,
             orgId=org_id,
             producedAt=get_epoch_timestamp_in_ms(),
+            storedRun=stored_run,
             producerVersions=self.producer_versions,
             artifacts=built.artifacts,
         )

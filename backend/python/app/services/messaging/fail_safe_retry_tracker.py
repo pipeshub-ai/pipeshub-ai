@@ -227,6 +227,29 @@ class FailSafeRetryTracker(IRetryTracker):
             self._handbacks, message_id, lambda: self._inner.get_handbacks(message_id), "read a hand-back count"
         )
 
+    # Not kept in this process while the store fails: they count crashes of
+    # this process, which take any in-process count with them. Unknown reads
+    # as none, so an unreachable store never gives up on a record.
+    async def unfinished_attempts(self, work_key: str) -> int:
+        try:
+            return await self._inner.unfinished_attempts(work_key)
+        except Exception as exc:
+            self._warn("read unfinished attempts", exc)
+            return 0
+
+    async def start_attempt(self, work_key: str) -> int:
+        try:
+            return await self._inner.start_attempt(work_key)
+        except Exception as exc:
+            self._warn("count an attempt", exc)
+            return 0
+
+    async def finish_attempt(self, work_key: str, *, settled: bool) -> None:
+        try:
+            await self._inner.finish_attempt(work_key, settled=settled)
+        except Exception as exc:
+            self._warn("finish an attempt", exc)
+
     async def clear(self, message_id: str) -> None:
         self._start_clear(message_id)
         try:

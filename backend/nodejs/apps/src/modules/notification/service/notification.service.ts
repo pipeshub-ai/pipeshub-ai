@@ -3,13 +3,16 @@ import { DefaultEventsMap, Server, Socket } from 'socket.io';
 import { Logger } from '../../../libs/services/logger.service';
 import { inject, injectable } from 'inversify';
 import { BadRequestError } from '../../../libs/errors/http.errors';
+import { classifyError } from '../../../libs/utils/error-class';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TYPES } from '../../../libs/types/container.types';
+import { findSessionRefusal } from '../../../libs/utils/user-session.utils';
+import { isNotYetVisible } from '../../../libs/repositories/notification/dates';
 
 interface CustomSocketData {
   userId: string;
   orgId: string;
-  forceLogoutReason?: 'missing_role' | 'invalid_token';
+  forceLogoutReason?: 'missing_role' | 'invalid_token' | 'session_ended';
 }
 
 type CustomSocket = Socket<
@@ -37,6 +40,8 @@ export class NotificationService {
   private readonly MAX_RETRY_COUNT = 3;
   private readonly QUEUE_PROCESSING_INTERVAL_MS = 5000; // Process queue every 5 seconds
   private readonly MAX_QUEUE_SIZE_PER_USER = 100; // Maximum notifications per user to prevent memory issues
+  // The same session rules authMiddleware holds every HTTP request to.
+  private sessionRefusal: typeof findSessionRefusal = findSessionRefusal;
 
   constructor(
     @inject(TYPES.AuthTokenService) private authTokenService: AuthTokenService,
@@ -76,10 +81,33 @@ export class NotificationService {
         if (role !== 'admin' && role !== 'member') {
           // Allow the socket to connect briefly so we can emit force_logout.
           socket.data.forceLogoutReason = 'missing_role';
+        } else {
+          // A signature that still verifies says nothing about a logout,
+          // password change or disabled account since the token was issued.
+          let refusal: string | null;
+          try {
+            refusal = await this.sessionRefusal(decodedData, this.logger);
+          } catch (error) {
+            // Fail closed, and not as an auth failure, so the client retries rather than signing out.
+            this.logger.error('Notification handshake: session check failed', {
+              error,
+              target_user_id: socket.data.userId,
+              org_id: socket.data.orgId,
+            });
+            return next(new Error('Unable to check the session right now'));
+          }
+          if (refusal) {
+            socket.data.forceLogoutReason = 'session_ended';
+          }
         }
 
         next();
       } catch (error) {
+        // The socket is refused here, so this is the one place it is logged.
+        this.logger.warn('socket.auth.rejected', {
+          error_class: classifyError(error),
+          error,
+        });
         next(
           error instanceof Error
             ? error
@@ -95,8 +123,8 @@ export class NotificationService {
 
       if (socket.data.forceLogoutReason) {
         socket.emit('force_logout', { reason: socket.data.forceLogoutReason });
-        this.logger.info('force_logout on connect (missing JWT role)', {
-          userId,
+        this.logger.info('force_logout on connect', {
+          target_user_id: userId,
           reason: socket.data.forceLogoutReason,
         });
         socket.disconnect(true);
@@ -104,17 +132,18 @@ export class NotificationService {
       }
 
       this.logger.debug('User connected', {
-        userId,
-        orgId,
+        target_user_id: userId,
+        org_id: orgId,
       });
 
       if (userId) {
         // Join a room with the user's ID for direct messaging
         socket.join(userId);
         this.connectedUsers.add(userId);
-        this.logger.debug(
-          `User connected: userId: ${userId} & socketId: ${socket.id}`,
-        );
+        this.logger.debug('Socket joined its user room', {
+          target_user_id: userId,
+          socket_id: socket.id,
+        });
 
         // Process any queued notifications for this user immediately upon connection
         this.processQueuedNotificationsForUser(userId);
@@ -132,13 +161,18 @@ export class NotificationService {
           const room = this.io?.sockets.adapter.rooms.get(userId);
           if (!room || room.size === 0) {
             this.connectedUsers.delete(userId);
-            this.logger.info(
-              `User disconnected: userId: ${userId} & socketId: ${socket.id}`,
-            );
+            this.logger.debug('Socket disconnected', {
+              target_user_id: userId,
+              socket_id: socket.id,
+            });
           } else {
             // User still has other connections, keep them marked as connected
             this.logger.debug(
-              `User socket disconnected but still has other connections: userId: ${userId} & socketId: ${socket.id}`,
+              'Socket disconnected; user has other connections',
+              {
+                target_user_id: userId,
+                socket_id: socket.id,
+              },
             );
           }
         }
@@ -176,12 +210,15 @@ export class NotificationService {
     if (queue.length >= this.MAX_QUEUE_SIZE_PER_USER) {
       // Remove oldest notification (FIFO)
       const removed = queue.shift();
-      this.logger.warn('Notification queue full, dropping oldest notification', {
-        userId,
-        event: removed?.event,
-        queueSize: queue.length,
-        maxSize: this.MAX_QUEUE_SIZE_PER_USER,
-      });
+      this.logger.warn(
+        'Notification queue full, dropping oldest notification',
+        {
+          target_user_id: userId,
+          event: removed?.event,
+          queueSize: queue.length,
+          maxSize: this.MAX_QUEUE_SIZE_PER_USER,
+        },
+      );
     }
 
     queue.push({
@@ -193,7 +230,7 @@ export class NotificationService {
     });
 
     this.logger.debug('Notification queued for user', {
-      userId,
+      target_user_id: userId,
       event,
       queueSize: queue.length,
     });
@@ -221,7 +258,7 @@ export class NotificationService {
         if (sent) {
           processed.push(notification);
           this.logger.debug('Queued notification delivered', {
-            userId,
+            target_user_id: userId,
             event: notification.event,
             queuedAt: notification.timestamp,
             deliveryDelay: Date.now() - notification.timestamp,
@@ -232,19 +269,22 @@ export class NotificationService {
           if (notification.retryCount < this.MAX_RETRY_COUNT) {
             remaining.push(notification);
           } else {
-            this.logger.warn('Notification exceeded max retry count, dropping', {
-              userId,
-              event: notification.event,
-              retryCount: notification.retryCount,
-            });
+            this.logger.warn(
+              'Notification exceeded max retry count, dropping',
+              {
+                target_user_id: userId,
+                event: notification.event,
+                retryCount: notification.retryCount,
+              },
+            );
           }
         }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         this.logger.error('Error processing queued notification', {
-          userId,
+          target_user_id: userId,
           event: notification.event,
-          error: err.message,
+          error: err,
         });
         notification.retryCount += 1;
         if (notification.retryCount < this.MAX_RETRY_COUNT) {
@@ -306,13 +346,16 @@ export class NotificationService {
     }
     if (!this.isUserConnected(userId)) {
       this.logger.debug('force_logout skipped; user not connected', {
-        userId,
+        target_user_id: userId,
         reason,
       });
       return false;
     }
     this.sendToUserDirect(userId, 'force_logout', { reason });
-    this.logger.info('force_logout emitted', { userId, reason });
+    this.logger.info('force_logout emitted', {
+      target_user_id: userId,
+      reason,
+    });
     return true;
   }
 
@@ -322,11 +365,26 @@ export class NotificationService {
    * Returns true if sent immediately, false if queued or failed.
    */
   sendToUser(userId: string, event: string, data: any): boolean {
-    if (!this.io) {
-      this.logger.warn('Socket.IO server not initialized, notification not sent', {
-        userId,
+    // A scheduled notification is never pushed and never queued for an offline user: a client sees it through its own
+    // list or stats, at or after `visibleAt`. Nothing delivers it later.
+    if (
+      event === 'newNotification' &&
+      isNotYetVisible((data as { visibleAt?: unknown } | undefined)?.visibleAt)
+    ) {
+      this.logger.debug('Scheduled notification not pushed', {
+        target_user_id: userId,
         event,
       });
+      return false;
+    }
+    if (!this.io) {
+      this.logger.warn(
+        'Socket.IO server not initialized, notification not sent',
+        {
+          target_user_id: userId,
+          event,
+        },
+      );
       return false;
     }
 
@@ -335,7 +393,7 @@ export class NotificationService {
       // User is connected, send immediately
       this.sendToUserDirect(userId, event, data);
       this.logger.debug('Notification sent immediately to connected user', {
-        userId,
+        target_user_id: userId,
         event,
       });
       return true;
@@ -343,7 +401,7 @@ export class NotificationService {
       // User is not connected, queue for later delivery
       this.queueNotification(userId, event, data);
       this.logger.debug('User not connected, notification queued', {
-        userId,
+        target_user_id: userId,
         event,
       });
       return false; // Indicates notification was queued, not sent immediately

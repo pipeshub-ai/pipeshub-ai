@@ -48,6 +48,7 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set mongodb.auth.rootPassword="change-me" \
   --set redis.auth.password="change-me" \
   --set neo4j.auth.password="change-me" \
+  --set qdrant.apiKey="$(openssl rand -hex 32)" \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.passwords[0]=$(openssl rand -hex 16)" \
   --set "mongodb.auth.databases[0]=pipeshub"
@@ -118,6 +119,7 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set mongodb.auth.rootPassword="..." \
   --set redis.auth.password="..." \
   --set neo4j.auth.password="..." \
+  --set qdrant.apiKey="$(openssl rand -hex 32)" \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.passwords[0]=..." \
   --set "mongodb.auth.databases[0]=pipeshub"
@@ -208,6 +210,83 @@ Redis Cluster and MemoryDB never support `SELECT` (`REDIS_DB`); it is only
 honoured when `redis.mode` is `standalone` (and a non-standalone `redis.mode` requires `redis.external.enabled=true` — the bundled subchart is a replication deployment, not a Redis Cluster). Use `redis.keyNamespace` for
 isolation instead.
 
+## Qdrant API key
+
+Qdrant and the app share one API key, stored as `qdrant-api-key` in the
+release Secret. The chart has no default for it. With chart-created secrets
+(the inline mode) it refuses to render unless `qdrant.apiKey` is set, and it
+refuses the old shared defaults (`api_key`, `qdrant`, `your_qdrant_api_key`,
+`your_qdrant_secret_api_key`). ArangoDB likewise refuses `arango.auth.rootPassword=root`.
+
+Generate the key once and keep it with your other secrets:
+
+```bash
+openssl rand -hex 32
+```
+
+On a later `helm upgrade` against the cluster you may leave `qdrant.apiKey`
+unset: the chart reuses the key already in `<release>-pipeshub-ai-secrets`
+(or `pipeshub-ai-secrets` for the release name used above). `helm template`,
+`--dry-run=client`, Argo CD and Flux cannot read the cluster, so they need the
+key in values every time.
+
+### Upgrading a release that still uses `api_key`
+
+Inline-mode releases (the default `secretManagement`) installed from earlier
+chart versions without `qdrant.apiKey` run with the public default `api_key`.
+The first upgrade to this chart fails until you set a new key. Releases on
+`existingSecrets` or `externalSecrets` upgrade without one; rotate the key in
+your secret store as described at the end of this section. Qdrant stores no data under the key; it only checks it on each
+request, so collections stay readable after the change.
+
+In inline mode, both the Qdrant StatefulSet and the app Deployment carry a
+`checksum/qdrant-api-key` annotation, so changing the key restarts both. Until
+both have restarted, requests made with the old key to a pod that has the new
+one fail with 401. To avoid that window, stop the app first:
+
+```bash
+KEY="$(openssl rand -hex 32)"   # store it before continuing
+
+# 1. App stopped, and its pods gone: a terminating pod still holds the old key.
+#    kubectl, not helm: this chart refuses to render while the release holds
+#    `api_key`. A HorizontalPodAutoscaler leaves a Deployment at 0 alone.
+kubectl scale deployment/pipeshub-ai -n <namespace> --replicas=0
+kubectl wait --for=delete pod -n <namespace> --timeout=10m \
+  -l app.kubernetes.io/instance=pipeshub-ai,app.kubernetes.io/component=main
+
+# 2. Qdrant restarted on the new key, app still stopped
+helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai --reuse-values \
+  --set qdrant.apiKey="$KEY" --set replicaCount=0 --set autoscaling.enabled=false
+kubectl rollout status statefulset/pipeshub-ai-qdrant -n <namespace>
+
+# 3. App back, with your usual replicaCount / autoscaling values
+helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai --reuse-values \
+  --set replicaCount=<n> --set autoscaling.enabled=<true|false>
+```
+
+A single `helm upgrade --set qdrant.apiKey="$KEY"` also works if a short burst
+of failed indexing and search requests is acceptable.
+
+The services pick up the new key on the first start. The app pod receives it
+as `QDRANT_API_KEY`. The Node.js process writes it to the KV store
+(`/services/qdrant`) during startup, before its health check passes. The
+Python services start only after that check, and read the key once when they
+connect to Qdrant. There is no KV migration to run. The KV entry is shared by
+every app pod, and an old pod that is still running can write its old key back
+when certain admin requests reach it. Stopping the app first, as above, avoids
+pods with mixed keys.
+
+`helm rollback` restores the previous Secret, and the annotation restarts both
+sides again.
+
+With `existingSecrets` or `externalSecrets` the chart neither reads nor checks
+the key, and adds no checksum annotation. After rotating the key there, restart
+both sides yourself:
+
+```bash
+kubectl rollout restart statefulset/pipeshub-ai-qdrant deployment/pipeshub-ai -n <namespace>
+```
+
 ## Secret Management Modes
 
 - `inline` (default): chart creates Kubernetes Secret from values
@@ -225,6 +304,9 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set secretManagement.existingSecrets.neo4jSecretName="pipeshub-secrets" \
   --set secretManagement.existingSecrets.qdrantSecretName="pipeshub-secrets"
 ```
+
+The Secret must hold a random `qdrant-api-key` (for example
+`openssl rand -hex 32`). The chart does not check its value.
 
 ### External Secrets Example
 
@@ -282,6 +364,27 @@ Docker proxy, or later). On an older `image.tag` the sidecar crash-loops and
 `run_code` fails. Upgrade `image.tag`, or set `sandbox.proxy.image` to a newer
 image.
 
+## Parsing in its own pods
+
+Off by default (the chart renders as without it). `parsing.enabled=true` adds a
+Deployment and ClusterIP Service named `<release>-parsing` (port 8092) and a
+PodDisruptionBudget, from the same image with `PIPESHUB_ROLE=parsing`, and sets
+`USE_PARSING_SERVICE=true` and `PARSING_SERVICE_URL` on the app pods. The pods
+carry the label `pipeshub.ai/workload: parsing`.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `parsing.enabled` | `false` | render the parsing Deployment, Service and PDB and wire the app to it |
+| `parsing.replicas` | `1` | static replica count (this chart sets no HPA for it) |
+| `parsing.port` | `8092` | Service and container port |
+| `parsing.resources` | 1 CPU / 2Gi requested | keep the CPU request set; limits 4 CPU / 8Gi |
+| `parsing.nodeSelector`, `parsing.tolerations`, `parsing.affinity` | empty | place parse pods on a dedicated node pool |
+| `parsing.spreadAcrossNodes` | `true` | prefer one parse pod per node (ignored with `affinity`) |
+| `parsing.podDisruptionBudget.*` | enabled, `maxUnavailable: 1` | disruption budget |
+| `parsing.healthCheck.*` | see `values.yaml` | probes on `/health` |
+| `parsing.terminationGracePeriodSeconds` | `120` | time for an in-flight parse to finish |
+| `parsing.extraEnv`, `parsing.podAnnotations`, `parsing.podLabels` | empty | extras |
+
 ## High-Value Features
 
 - Secret validation with fail-fast messages
@@ -293,7 +396,12 @@ image.
 
 ## Metrics
 
-The chart exposes no scrape port: the services push product telemetry to the collector (see `telemetry.collection.enabled`) and do not serve `/metrics`. The earlier `metrics`, `monitoring.serviceMonitor` and `telemetry.otlp` values configured nothing and were removed.
+The chart serves the indexing governor's Prometheus metrics (a fixed set of series with closed labels: no pid, pod, org or record label, at most 300 series) when `metrics.enabled` is true (the default). Each pod publishes `/metrics` on the container port named `metrics` (`metrics.port`, default `9091`, plain HTTP, no authentication). `metrics.bind` is the address it listens on: `podIP` (the default) binds the pod's own address through the downward API, `0.0.0.0` listens on every interface, and any other IP address is used as given. The chart sets `PIPESHUB_METRICS_ENABLED`, `PIPESHUB_METRICS_PORT` and `PIPESHUB_METRICS_BIND` from these values.
+
+- Point your Prometheus at the container port named `metrics` of the application pods (path `/metrics`; the pods carry the label `app.kubernetes.io/component: main`).
+- The chart no longer renders the application `PodMonitor`. If your release had `metrics.podMonitor.enabled`, the upgrade deletes it: create your own `PodMonitor`, or an equivalent scrape configuration, before you upgrade, or scraping stops. The Redis subchart still renders its own `PodMonitor` when `redis.metrics.enabled` and `redis.metrics.podMonitor.enabled` are both true, so keep the PodMonitor CRD installed in that case.
+- With `networkPolicy.enabled: true`, add an ingress rule that lets your Prometheus reach the `metrics` port.
+- Product telemetry is separate: the services push it to the collector (see `telemetry.collection.enabled`), and the exporter never touches it.
 
 ## Validation
 
@@ -305,6 +413,7 @@ helm template pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set mongodb.auth.rootPassword="test" \
   --set redis.auth.password="test" \
   --set neo4j.auth.password="test" \
+  --set qdrant.apiKey="test" \
   --set "mongodb.auth.usernames[0]=pipeshub" \
   --set "mongodb.auth.passwords[0]=test" \
   --set "mongodb.auth.databases[0]=pipeshub"
@@ -326,7 +435,7 @@ SMOKE_VARIANT=arangodb-redis bash deployment/helm/tests/kind_smoke.sh
 
 ## Production Checklist
 
-- Set all passwords and `secretKey` securely
+- Set all passwords, `secretKey` and `qdrant.apiKey` securely
 - Configure ingress/TLS
 - Enable `podDisruptionBudget` for HA
 - Enable `networkPolicy` with cluster-specific rules

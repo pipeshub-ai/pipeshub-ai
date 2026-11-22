@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import requests
+from app.connectors.sources.microsoft.common.outlook_constants import OutlookAPIFields
 from app.connectors.sources.microsoft.common.outlook_folders import prefer_immutable_ids
 from app.sources.client.microsoft.microsoft import (
     GraphMode,
@@ -646,18 +647,28 @@ class OutlookSourceHelper:
         resp = await self.users_ds.groups_group_get_group(group_id)
         return self._unwrap(resp, f"get_group({group_id})")
 
-    async def list_unified_groups(self) -> list[_Obj]:
-        """Every Microsoft 365 (Unified) group in the tenant."""
-        url: str | None = (
-            f"{_GRAPH_V1}/groups?$filter={quote("groupTypes/any(c:c eq 'Unified')", safe='')}"
-            "&$select=id%2CdisplayName%2Cmail"
-        )
-        found: list[_Obj] = []
-        while url:
-            page = await self._get_json(url, "list_unified_groups")
-            found.extend(_Obj(item) for item in page.get("value", []))
-            url = page.get("@odata.nextLink")
-        return found
+    async def list_unified_groups(self) -> list[Group]:
+        """Every mail-enabled Microsoft 365 (Unified) group, read the way the connector reads them.
+
+        The unfiltered GET /groups list the connector pages lags a
+        ``groupTypes/any(...)`` filtered list by a minute or more in both
+        directions: a new group shows in the filtered list first, a deleted one
+        leaves it first. Only this list tells a test what the next sync will see.
+        """
+        found: list[Group] = []
+        next_url: str | None = None
+        while True:
+            resp = await self.users_ds.groups_list_groups(
+                next_url=next_url, select=OutlookAPIFields.GROUP_SELECT_FIELDS,
+            )
+            page = self._unwrap(resp, "list_unified_groups")
+            found.extend(
+                g for g in page.value or []
+                if g.group_types and "Unified" in g.group_types and g.mail_enabled is True
+            )
+            next_url = page.odata_next_link
+            if not next_url:
+                return found
 
     async def list_group_members(self, group_id: str) -> list[Any]:
         resp = await self.users_ds.groups_list_transitive_members(group_id)
@@ -736,6 +747,26 @@ class OutlookSourceHelper:
     async def account_enabled(self, user_id: str) -> bool | None:
         user = await self._get_json(f"{_GRAPH_V1}/users/{user_id}?$select=accountEnabled", "account_enabled")
         return user.get("accountEnabled")
+
+    async def listed_account_enabled(self, user_id: str) -> bool | None:
+        """accountEnabled for ``user_id`` as the unfiltered GET /users list the connector pages shows it.
+
+        That list lags GET /users/{id}: an account the single read already shows
+        disabled can stay enabled in the list for a minute. Only the list tells a
+        test what the next sync will see. None when the user is not listed.
+        """
+        next_url: str | None = None
+        while True:
+            resp = await self.users_ds.users_user_list_user(
+                next_url=next_url, select=OutlookAPIFields.USER_SYNC_SELECT_FIELDS,
+            )
+            page = self._unwrap(resp, "listed_account_enabled")
+            for user in page.value or []:
+                if user.id == user_id:
+                    return user.account_enabled
+            next_url = page.odata_next_link
+            if not next_url:
+                return None
 
     async def create_group(self, display_name: str, mail_nickname: str) -> Any:
         """POST /groups — create a mail-enabled M365 (Unified) group. Returns the created group."""

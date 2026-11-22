@@ -3,7 +3,11 @@ from copy import deepcopy
 from enum import Enum
 from typing import Any
 
-from app.config.constants.arangodb import ExtensionTypes, PermissionModel
+from app.config import file_types
+from app.config.constants.arangodb import (
+    ExtensionTypes,
+    PermissionModel,
+)
 from app.connectors.core.constants import AuthFieldKeys
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -808,10 +812,14 @@ class CommonFields:
         )
 
     @staticmethod
-    def folder_paths_filter(container: str = "bucket") -> FilterField:
+    def folder_paths_filter(
+        container: str = "bucket", *, path_style: str | None = None, wildcards: bool = False,
+    ) -> FilterField:
         """Folders inside a bucket, container or share to sync (typed paths).
 
         Empty syncs everything, as before. See FolderScope for the matching rules.
+        ``path_style`` is "windows" for a file share (``\\`` separates folders,
+        case does not matter) and "posix" or None for an object store.
         """
         return FilterField(
             name=SyncFilterKey.FOLDER_PATHS.value,
@@ -823,9 +831,16 @@ class CommonFields:
                 "Press Enter after each folder; names may contain spaces. "
                 "Include syncs only these folders; Exclude syncs everything except them. "
                 f"Leave empty to sync the whole {container}."
+                + (
+                    " In a folder name * matches any characters and ? one character; a ** folder"
+                    " matches any number of folders, as in customer/*/quotes or **/quotes."
+                    if wildcards else ""
+                )
             ),
             default_operator=ListOperator.IN.value,
             option_source_type=OptionSourceType.MANUAL,
+            path_style=path_style,
+            wildcards=wildcards,
         )
 
     @staticmethod
@@ -839,8 +854,10 @@ class CommonFields:
         """
         Standard file extension filter (static multiselect).
 
-        ``extensions`` limits the options to the types the connector can actually return
-        (every type by default); ``labels`` replaces an option's ".ext" label.
+        ``extensions`` limits the options to the types the connector can actually return;
+        ``labels`` replaces an option's ".ext" label. Without ``extensions`` every
+        indexable type is offered, followed by common types that cannot be indexed
+        (archives, databases, executables, temporary files, logs) so they can be excluded.
 
         Note: options_endpoint is reserved for a future dynamic-options implementation.
         """
@@ -850,12 +867,15 @@ class CommonFields:
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
             description=description
-            or "Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
+            or "Filter files by extension. Use Not in to skip types PipesHub can't index "
+            "(archives, databases, executables, media). Leave empty to sync all files.",
             default_operator=MultiselectOperator.IN.value,
             option_source_type=OptionSourceType.STATIC,
             options=[
-                FilterOption(id=ext.value, label=(labels or {}).get(ext.value, f".{ext.value}"))
-                for ext in (extensions or ExtensionTypes)
+                FilterOption(id=ext, label=(labels or {}).get(ext, f".{ext}"))
+                for ext in (
+                    [ext.value for ext in extensions] if extensions else file_types.filter_option_ids()
+                )
             ]
         )
 

@@ -107,7 +107,7 @@ async def test_a_merge_request_streams_comments_file_changes_and_commits(harness
     assert "System Comment by alice on merge request 1" in names
     change = next(g for g in groups if g["name"] == "block for file src/app.py")
     # The diff describes the change; the file itself is not indexed again.
-    assert change["data"] == "Existing file\n\nDiff content\n\n@@ -1 +1 @@"
+    assert change["data"] == "Existing file\n\nDiff content\n\n```diff\n@@ -1 +1 @@\n```"
     assert change["comments"][0][0]["text"] == "Rename this"
     assert [b["data"] for b in blocks["blocks"]] == ["Fix login bug"]
 

@@ -7,6 +7,7 @@ import { AddressInfo } from 'net'
 import {
   CALLER_ROLE_LOOKUP_PATH,
   SERVICE_AUTHORIZATION_HEADER,
+  createAuthIpRateLimiter,
   createAuthRateLimiter,
   createGlobalRateLimiter,
   createOAuthClientRateLimiter,
@@ -58,6 +59,15 @@ function createMockResponse(): any {
 
 function createMockNext(): sinon.SinonStub {
   return sinon.stub()
+}
+
+// Resolves with 200 when the limiter lets the request through, else its status.
+function attempt(limiter: any, overrides: Record<string, any>): Promise<number> {
+  return new Promise((resolve) => {
+    const res = createMockResponse()
+    res.json.callsFake(() => { resolve(res.statusCode); return res })
+    limiter(createMockRequest({ method: 'POST', ...overrides }), res, () => resolve(200))
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +555,69 @@ describe('Rate Limit Middleware', () => {
       })
 
       limiter(createMockRequest({ ip, path: '/initAuth' }), createMockResponse(), next1)
+    })
+
+    it('should give each account behind one IP its own bucket', async () => {
+      const limiter = createAuthRateLimiter(loggerStub as unknown as Logger, 1)
+      const ip = '10.0.7.2'
+
+      expect(await attempt(limiter, { ip, body: { email: 'alice@example.com' } })).to.equal(200)
+      expect(await attempt(limiter, { ip, body: { email: 'bob@example.com' } })).to.equal(200)
+      expect(await attempt(limiter, { ip, body: { email: ' Alice@Example.com ' } })).to.equal(429)
+    })
+
+    it('should still share one bucket per IP for requests that name no account', async () => {
+      const limiter = createAuthRateLimiter(loggerStub as unknown as Logger, 1)
+      const ip = '10.0.7.3'
+
+      expect(await attempt(limiter, { ip, body: {} })).to.equal(200)
+      expect(await attempt(limiter, { ip, body: { email: 42 } })).to.equal(429)
+    })
+
+    it('should key on the session email so rotating body.email gets no fresh bucket', async () => {
+      const limiter = createAuthRateLimiter(loggerStub as unknown as Logger, 1)
+      const ip = '10.0.7.4'
+      const sessionInfo = { email: 'target@example.com' }
+
+      expect(await attempt(limiter, { ip, sessionInfo, body: { email: 'a@example.com' } })).to.equal(200)
+      expect(await attempt(limiter, { ip, sessionInfo, body: { email: 'b@example.com' } })).to.equal(429)
+    })
+
+    it('should count a signed-in user on their own key whatever the IP', async () => {
+      const limiter = createAuthRateLimiter(loggerStub as unknown as Logger, 1)
+      const user = { userId: 'auth-rate-user' }
+
+      expect(await attempt(limiter, { ip: '10.0.7.5', user })).to.equal(200)
+      expect(await attempt(limiter, { ip: '10.0.7.5', user: { userId: 'auth-rate-other' } })).to.equal(200)
+      expect(await attempt(limiter, { ip: '10.0.7.6', user })).to.equal(429)
+    })
+
+    it('should keep email addresses out of the 429 log line', async () => {
+      const limiter = createAuthRateLimiter(loggerStub as unknown as Logger, 1)
+      const ip = '10.0.7.7'
+      const body = { email: 'private@example.com' }
+
+      await attempt(limiter, { ip, body })
+      expect(await attempt(limiter, { ip, body })).to.equal(429)
+      const logged = JSON.stringify(loggerStub.warn.firstCall.args)
+      expect(logged).to.include(`auth:ip:${ip}:acct:`)
+      expect(logged).to.not.include('private@example.com')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // createAuthIpRateLimiter
+  // -----------------------------------------------------------------------
+  describe('createAuthIpRateLimiter', () => {
+    it('should cap one IP across accounts at six times the per-account limit', async () => {
+      const limiter = createAuthIpRateLimiter(loggerStub as unknown as Logger, 1)
+      const ip = '10.0.8.1'
+
+      for (let i = 0; i < 6; i++) {
+        expect(await attempt(limiter, { ip, body: { email: `user${i}@example.com` } })).to.equal(200)
+      }
+      expect(await attempt(limiter, { ip, body: { email: 'user6@example.com' } })).to.equal(429)
+      expect(await attempt(limiter, { ip: '10.0.8.2', body: {} })).to.equal(200)
     })
   })
 

@@ -1,0 +1,9 @@
+[tool.ruff]
+extend = "../python/pyproject.toml"
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic hooks and revision files have fixed signatures; this is a command-line tool.
+"env.py" = ["ANN001", "ANN201", "ANN202"]
+"versions/**/*.py" = ["ANN201"]
+"tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "FBT001", "FBT002", "T201"]
+"{migrate,epoch_lint,lint,schema_requirements,bootstrap_roles,surface,restore_window,lib/vetted}.py" = ["T201"]

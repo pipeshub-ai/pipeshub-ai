@@ -91,7 +91,6 @@ Zbytek této části se týká spouštění aplikačních služeb ze zdrojových
 sudo apt update
 sudo apt install python3.12-venv
 sudo apt-get install libreoffice
-sudo apt install libmariadb-dev
 ```
 
 #### macOS

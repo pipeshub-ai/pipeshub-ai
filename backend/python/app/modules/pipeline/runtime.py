@@ -12,11 +12,14 @@ from app.config.constants.arangodb import ProgressStatus
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.artifacts.sidecars import ArtifactSidecars
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.pipeline.connector_gate import ConnectorDeletingCheck
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.duplicates import QueuedCopies
 from app.modules.pipeline.ingress import EMBED, StageIngress
 from app.modules.pipeline.leases import RecordLeases
 from app.modules.pipeline.models import HeadlineField, StageJob
+from app.modules.pipeline.pause_judge import PauseJudge, spend_limits_source
+from app.modules.pipeline.pause_store import PauseStore
 from app.modules.pipeline.policy import DEFAULT_POLICY
 from app.modules.pipeline.publisher import DeferredPublisher
 from app.modules.pipeline.registry import StageRegistry
@@ -125,10 +128,14 @@ def build_pipeline_runtime(
     headlines = GraphHeadlineStatusWriter(graph)
     publisher = DeferredPublisher()
     record_leases = RecordLeases()
+    connector_deleting = ConnectorDeletingCheck(graph, logger)
     sidecars = ArtifactSidecars(NodeArtifactStore(sink.blob_storage, logger), config_service, logger)
     queued_copies = QueuedCopies(graph, sink, logger)
+    # The pause budget lives in the fleet Redis the indexing service binds at start-up (lazily read).
+    pause_store = PauseStore()
     coordinator = Coordinator(
-        registry, states, headlines, publisher, policy_for=lambda _org: DEFAULT_POLICY, logger=logger
+        registry, states, headlines, publisher, policy_for=lambda _org: DEFAULT_POLICY, logger=logger,
+        pause_store=pause_store,
     )
 
     def io_for(job: StageJob, deadline: Deadline) -> StageIO:
@@ -143,6 +150,7 @@ def build_pipeline_runtime(
                 config_service=config_service,
                 record_from_document=record_from_document,
                 record_leases=record_leases,
+                connector_deleting=connector_deleting,
                 extraction_client=extraction_client if use_service else None,
                 logger=logger,
                 sidecars=sidecars,
@@ -158,6 +166,7 @@ def build_pipeline_runtime(
             config_service=config_service,
             record_from_document=record_from_document,
             record_leases=record_leases,
+            connector_deleting=connector_deleting,
             sidecars=sidecars,
         )
 
@@ -173,7 +182,8 @@ def build_pipeline_runtime(
         coordinator=coordinator,
         ingress=StageIngress(coordinator, graph, logger),
         handler=StageJobHandler(
-            registry, states, headlines, coordinator, io_for, logger=logger, on_headline_settled=on_headline_settled
+            registry, states, headlines, coordinator, io_for, logger=logger, on_headline_settled=on_headline_settled,
+            pause_judge=PauseJudge(pause_store, logger=logger, limits_source=spend_limits_source(config_service)),
         ),
         publisher=publisher,
         # Both are bounded by the LLM, so each shares the existing indexing LLM cap rather

@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+
+import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.registry.filters import (
@@ -18,7 +21,11 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
 )
 from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
-from app.connectors.sources.network_share.errors import DirectoryListingError
+from app.connectors.sources.network_share.errors import (
+    AccessDeniedError,
+    DirectoryListingError,
+    NetworkShareAuthError,
+)
 from app.connectors.sources.network_share.record_mapper import RecordMapper, revision_id
 from app.connectors.sources.network_share.walker import ShareWalker
 from app.models.entities import Record, RecordType
@@ -62,10 +69,15 @@ class FakeNetworkShareDataSource:
         fail_dirs: set[tuple[str, str]] | None = None,
         files: dict[tuple[str, str], bytes | BaseException] | None = None,
         stats: dict[tuple[str, str], DirectoryEntry | None] | None = None,
+        denied_dirs: set[tuple[str, str]] | None = None,
+        refused_dirs: set[tuple[str, str]] | None = None,
     ) -> None:
         self.tree = tree or {}
         self.shares = shares if shares is not None else [ShareInfo(name=SHARE, share_type="disk")]
         self.fail_dirs = fail_dirs or set()
+        self.denied_dirs = denied_dirs or set()
+        # Listing these raises what a refused sign-in raises (the server rejected the account).
+        self.refused_dirs = refused_dirs or set()
         self.files = files or {}
         self.stats = stats or {}
         self.closed = False
@@ -75,6 +87,10 @@ class FakeNetworkShareDataSource:
         self.list_calls.append((share, path))
         if (share, path) in self.fail_dirs:
             raise DirectoryListingError(share, path, "listing failed")
+        if (share, path) in self.denied_dirs:
+            raise AccessDeniedError(share, path, "STATUS_ACCESS_DENIED")
+        if (share, path) in self.refused_dirs:
+            raise NetworkShareAuthError("files.example refused the user name or password.")
         return list(self.tree.get((share, path), []))
 
     async def read_file(self, share: str, path: str, chunk_size: int = 8192):
@@ -151,9 +167,12 @@ async def _walk(
     existing_by_id: dict[str, FileRecord] | None = None,
     existing_by_revision: dict[str, FileRecord] | None = None,
     fail_ids: set[str] | None = None,
+    rejected_ids: set[str] | None = None,
+    failing_writes: int = 0,
 ):
     upserts: list[list[tuple[FileRecord, list]]] = []
     moves: list[list[tuple[str, FileRecord, list]]] = []
+    writes = {"failed": 0}
     by_id = existing_by_id or {}
     by_rev = existing_by_revision or {}
 
@@ -168,9 +187,16 @@ async def _walk(
         return by_rev.get(rev)
 
     async def flush_upserts(batch):
+        if writes["failed"] < failing_writes:
+            writes["failed"] += 1
+            raise RuntimeError("store unavailable")
+        if any(record.external_record_id in (rejected_ids or set()) for record, _perms in batch):
+            raise ValueError("store rejected the record")
         upserts.append(list(batch))
 
     async def flush_moves(batch):
+        if any(record.external_record_id in (rejected_ids or set()) for _old, record, _perms in batch):
+            raise ValueError("store rejected the move")
         moves.append(list(batch))
 
     walker = ShareWalker(
@@ -475,6 +501,7 @@ class TestShareWalker:
         )
         assert (SHARE, "keep") not in ds.list_calls
         assert result.complete is False
+        assert result.unread == {f"{SHARE}/keep"}
 
     async def test_recurses_into_nested_directories(self):
         ds = FakeNetworkShareDataSource(
@@ -585,11 +612,55 @@ class TestShareWalker:
         )
         result, upserts, _ = await _walk(ds)
         assert result.complete is False
+        assert result.unread == {f"{SHARE}/bad"}
         ids = _ids(upserts)
         assert f"{SHARE}/ok.txt" in ids
         assert f"{SHARE}/good/nested.txt" in ids
         assert f"{SHARE}/ok.txt" in result.seen
         assert f"{SHARE}/good/nested.txt" in result.seen
+
+    async def test_a_folder_the_account_may_not_list_is_synced_empty(self):
+        ds = FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [
+                    _entry("private", is_directory=True, file_id=1),
+                    _entry("ok.txt", file_id=2),
+                ],
+                (SHARE, "private"): [_entry("secret.txt", file_id=3)],
+            },
+            denied_dirs={(SHARE, "private")},
+        )
+        result, upserts, _ = await _walk(ds)
+        assert result.complete is True
+        assert result.unread == set()
+        assert f"{SHARE}/private" in result.seen
+        assert f"{SHARE}/private/secret.txt" not in result.seen
+        assert f"{SHARE}/ok.txt" in _ids(upserts)
+
+    async def test_a_denied_share_root_is_unread(self):
+        ds = FakeNetworkShareDataSource(denied_dirs={(SHARE, "")})
+        result, _upserts, _ = await _walk(ds)
+        assert result.complete is False
+        assert result.unread == {SHARE}
+
+    async def test_a_denied_chosen_folder_is_unread(self):
+        ds = FakeNetworkShareDataSource(
+            tree={(SHARE, ""): [_entry("keep", is_directory=True, file_id=1)]},
+            stats={(SHARE, "keep"): _entry("keep", is_directory=True, file_id=1)},
+            denied_dirs={(SHARE, "keep")},
+        )
+        result, _upserts, _ = await _walk(ds, sync_filters=_filters(_folder_filter("keep")))
+        assert result.complete is False
+        assert result.unread == {f"{SHARE}/keep"}
+
+    async def test_unread_folder_is_named_by_its_nfc_identity(self):
+        decomposed = "cafe\u0301"
+        ds = FakeNetworkShareDataSource(
+            tree={(SHARE, ""): [_entry(decomposed, is_directory=True, file_id=1)]},
+            fail_dirs={(SHARE, decomposed)},
+        )
+        result, _upserts, _ = await _walk(ds)
+        assert result.unread == {f"{SHARE}/caf\u00e9"}
 
     async def test_seen_set_accumulates_across_directories(self):
         ds = FakeNetworkShareDataSource(
@@ -629,3 +700,468 @@ class TestShareWalker:
         )
         result, _upserts, _ = await _walk(ds, fail_ids={f"{SHARE}/docs"})
         assert result.complete is False
+        assert result.unread == {f"{SHARE}/docs"}
+
+
+class TestShareWalkerRejectedRecords:
+    def share_of_five_files_and_a_folder(self) -> FakeNetworkShareDataSource:
+        files = [_entry(f"f{i}.txt", file_id=i + 1) for i in range(5)]
+        return FakeNetworkShareDataSource(
+            tree={
+                (SHARE, ""): [*files, _entry("sub", is_directory=True, file_id=10)],
+                (SHARE, "sub"): [_entry("deep.txt", file_id=11)],
+            }
+        )
+
+    async def test_a_record_the_store_always_rejects_leaves_the_rest_of_the_share_synced(self):
+        result, upserts, _ = await _walk(
+            self.share_of_five_files_and_a_folder(), batch_size=2, rejected_ids={f"{SHARE}/f1.txt"}
+        )
+
+        written = _ids(upserts)
+        assert f"{SHARE}/f1.txt" not in written
+        assert written == {f"{SHARE}/f{i}.txt" for i in (0, 2, 3, 4)} | {f"{SHARE}/sub", f"{SHARE}/sub/deep.txt"}
+        assert result.complete is False
+        assert result.unread == {f"{SHARE}/f1.txt"}
+
+    async def test_a_batch_that_fails_once_is_saved_record_by_record(self):
+        result, upserts, _ = await _walk(self.share_of_five_files_and_a_folder(), batch_size=100, failing_writes=1)
+
+        assert len(_ids(upserts)) == 7
+        assert all(len(batch) == 1 for batch in upserts)
+        assert result.complete is True
+        assert result.unread == set()
+
+    async def test_a_store_that_saves_nothing_fails_the_walk_as_before(self):
+        # Every record failing is the store, not one record: the walk must not end as if it had run.
+        with pytest.raises(RuntimeError, match="store unavailable"):
+            await _walk(self.share_of_five_files_and_a_folder(), batch_size=2, failing_writes=1000)
+
+    async def test_one_rejected_record_alone_in_its_batch_is_that_record(self):
+        # The tail batch holds only the rejected file, and the store has saved others: not a failing store.
+        ds = FakeNetworkShareDataSource(tree={(SHARE, ""): [_entry(f"f{i}.txt", file_id=i + 1) for i in range(3)]})
+
+        result, upserts, _ = await _walk(ds, batch_size=2, rejected_ids={f"{SHARE}/f2.txt"})
+
+        assert _ids(upserts) == {f"{SHARE}/f0.txt", f"{SHARE}/f1.txt"}
+        assert result.unread == {f"{SHARE}/f2.txt"}
+
+    async def test_a_lone_record_that_fails_before_anything_saved_fails_the_walk(self):
+        ds = FakeNetworkShareDataSource(tree={(SHARE, ""): [_entry("only.txt", file_id=1)]})
+
+        with pytest.raises(ValueError, match="rejected"):
+            await _walk(ds, rejected_ids={f"{SHARE}/only.txt"})
+
+    async def test_after_a_batch_that_saved_nothing_the_walk_reads_the_rest_and_fails_at_its_end(self):
+        ds = self.share_of_five_files_and_a_folder()
+
+        # The batch [f4.txt, sub] saves nothing; "sub" must still be walked.
+        with pytest.raises(ValueError, match="rejected"):
+            await _walk(ds, batch_size=2, rejected_ids={f"{SHARE}/f4.txt", f"{SHARE}/sub"})
+
+        assert (SHARE, "sub") in ds.list_calls
+
+    async def test_a_move_that_fails_keeps_the_record_at_its_old_path(self):
+        renamed = [_entry(f"new{i}.txt", file_id=i + 1) for i in range(2)]
+        stored = {
+            revision_id(SHARE, entry, entry.name): _stored(f"{SHARE}/old{i}.txt", revision_id(SHARE, entry, entry.name), f"r{i}")
+            for i, entry in enumerate(renamed)
+        }
+        ds = FakeNetworkShareDataSource(tree={(SHARE, ""): renamed})
+
+        result, _upserts, moves = await _walk(ds, existing_by_revision=stored, rejected_ids={f"{SHARE}/new0.txt"})
+
+        assert [record.external_record_id for batch in moves for _old, record, _p in batch] == [f"{SHARE}/new1.txt"]
+        # Without the old path, a full sync prunes the only stored copy.
+        assert result.unread == {f"{SHARE}/new0.txt", f"{SHARE}/old0.txt"}
+
+    async def test_a_refused_sign_in_while_saving_still_stops_the_walk(self):
+        ds = self.share_of_five_files_and_a_folder()
+
+        async def refuse(_batch):
+            raise NetworkShareAuthError("refused")
+
+        walker = ShareWalker(
+            data_source=ds,
+            mapper=RecordMapper(),
+            logger=logging.getLogger("test.walker"),
+            connector_name=Connectors.SMB,
+            connector_id="smb-1",
+            batch_size=2,
+            get_by_external_id=lambda _ext_id: _none(),
+            get_by_revision=lambda _rev: _none(),
+            flush_upserts=refuse,
+            flush_moves=refuse,
+            permissions_for=lambda _record: [],
+        )
+
+        with pytest.raises(NetworkShareAuthError):
+            await walker.walk_share(SHARE, FilterCollection(), FilterCollection())
+
+
+async def _none():
+    return None
+
+
+class TestShareWalkerRefusedSignIn:
+    async def test_a_refused_sign_in_in_a_subfolder_stops_the_walk(self):
+        ds = FakeNetworkShareDataSource(
+            tree={(SHARE, ""): [_entry("a", is_directory=True, file_id=3), _entry("b", is_directory=True, file_id=4)]},
+            refused_dirs={(SHARE, "a")},
+        )
+        with pytest.raises(NetworkShareAuthError):
+            await _walk(ds)
+        # Not read as one unreadable folder and walked past: every folder after it fails the same way.
+        assert (SHARE, "b") not in ds.list_calls
+
+    async def test_a_refused_sign_in_at_the_root_stops_the_walk(self):
+        ds = FakeNetworkShareDataSource(refused_dirs={(SHARE, "")})
+        with pytest.raises(NetworkShareAuthError):
+            await _walk(ds)
+
+
+# ---------------------------------------------------------------------------
+# Folder patterns
+# ---------------------------------------------------------------------------
+
+
+def _share_tree(*paths: str, share: str = SHARE) -> dict[tuple[str, str], list[DirectoryEntry]]:
+    """A tree from file paths (``a/b/c.txt``) and empty folders (``a/b/``), in the order given."""
+    tree: dict[tuple[str, str], list[DirectoryEntry]] = {(share, ""): []}
+    ids = iter(range(100, 10**6))
+    for path in paths:
+        parts = [p for p in path.split("/") if p]
+        is_folder = path.endswith("/")
+        for depth, name in enumerate(parts):
+            parent = "/".join(parts[:depth])
+            here = "/".join(parts[: depth + 1])
+            directory = is_folder or depth < len(parts) - 1
+            listing = tree.setdefault((share, parent), [])
+            if any(e.name == name for e in listing):
+                continue
+            stamp = NEW + timedelta(minutes=next(ids))
+            listing.append(
+                _entry(name, is_directory=directory, file_id=next(ids), created_time=stamp, last_write_time=stamp)
+            )
+            if directory:
+                tree.setdefault((share, here), [])
+    return tree
+
+
+def _key(path: str) -> str:
+    import unicodedata
+
+    return unicodedata.normalize("NFC", path).casefold()
+
+
+class InsensitiveShare(FakeNetworkShareDataSource):
+    """Resolves paths as Windows and Samba do, whatever their case or Unicode form; a missing folder is not found."""
+
+    async def list_directory(self, share: str, path: str) -> list[DirectoryEntry]:
+        self.list_calls.append((share, path))
+        for (s, stored), entries in self.tree.items():
+            if s == share and _key(stored) == _key(path):
+                if (s, stored) in self.fail_dirs:
+                    raise DirectoryListingError(share, path, "listing failed")
+                if (s, stored) in self.denied_dirs:
+                    raise AccessDeniedError(share, path, "STATUS_ACCESS_DENIED")
+                return list(entries)
+        raise FileNotFoundError(path)
+
+    async def stat(self, share: str, path: str, *, follow: bool = True) -> DirectoryEntry | None:
+        if not path:
+            return _entry("", is_directory=True, file_id=1)
+        parent, _, name = path.rpartition("/")
+        for (s, stored), entries in self.tree.items():
+            if s == share and _key(stored) == _key(parent):
+                return next((e for e in entries if _key(e.name) == _key(name)), None)
+        return None
+
+
+def _written(upserts) -> list[FileRecord]:
+    return [record for batch in upserts for record, _perms in batch]
+
+
+def _parents_come_first(records: list[FileRecord]) -> bool:
+    written: set[str] = set()
+    for record in records:
+        if record.parent_external_record_id is not None and record.parent_external_record_id not in written:
+            return False
+        written.add(record.external_record_id)
+    return True
+
+
+CUSTOMERS = ("acme", "beta", "gamma")
+
+
+def _customers_share(cls=FakeNetworkShareDataSource, **kwargs) -> FakeNetworkShareDataSource:
+    paths = ["top.txt", "other/x.pdf"]
+    for name in CUSTOMERS:
+        paths += [
+            f"customer/{name}/notes.txt",
+            f"customer/{name}/quotes/q-{name}.pdf",
+            f"customer/{name}/quotes/2026/q.pdf",
+            f"customer/{name}/invoices/i.pdf",
+            f"customer/{name}/Archive/old.pdf",
+        ]
+    return cls(tree=_share_tree(*paths), **kwargs)
+
+
+QUOTE_IDS = {
+    f"{SHARE}/{path}"
+    for name in CUSTOMERS
+    for path in (
+        "customer",
+        f"customer/{name}",
+        f"customer/{name}/quotes",
+        f"customer/{name}/quotes/q-{name}.pdf",
+        f"customer/{name}/quotes/2026",
+        f"customer/{name}/quotes/2026/q.pdf",
+    )
+}
+
+
+class TestShareWalkerPatterns:
+    async def test_one_folder_per_customer_lists_only_the_way_to_each_quotes_folder(self):
+        ds = _customers_share()
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("customer/*/quotes")))
+        assert ds.list_calls == [
+            (SHARE, path)
+            for path in ["customer"]
+            + [p for name in CUSTOMERS for p in (f"customer/{name}", f"customer/{name}/quotes", f"customer/{name}/quotes/2026")]
+        ]
+        # One listing for the start, one per customer, one per folder in a quotes subtree.
+        assert len(ds.list_calls) == 1 + len(CUSTOMERS) + 2 * len(CUSTOMERS)
+        records = _written(upserts)
+        assert {r.external_record_id for r in records} == QUOTE_IDS
+        assert len(records) == len(QUOTE_IDS)
+        assert _parents_come_first(records)
+        assert result.seen == QUOTE_IDS | {SHARE}
+        assert result.complete
+        assert result.matched == frozenset({"customer/*/quotes"})
+
+    async def test_backslashes_separate_folders(self):
+        ds = _customers_share()
+        _result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("customer\\*\\quotes")))
+        assert {r.external_record_id for r in _written(upserts)} == QUOTE_IDS
+        assert (SHARE, "customer") in ds.list_calls
+
+    async def test_names_match_whatever_their_case_on_a_share(self):
+        ds = _customers_share(InsensitiveShare)
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("customer/*/QUOTES")))
+        assert {r.external_record_id for r in _written(upserts)} == QUOTE_IDS
+        assert result.matched == frozenset({"customer/*/QUOTES"})
+
+    async def test_any_depth_writes_no_record_for_a_branch_without_a_match(self):
+        ds = FakeNetworkShareDataSource(tree=_share_tree(
+            "a/b/c/deep.txt", "a/b/near.txt", "x/quotes/q.txt", "y/z/quotes/sub/q.txt", "quotes/q.txt", "r.txt",
+            "a/quotesx/y.txt",
+        ))
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("**/quotes")))
+        records = _written(upserts)
+        assert {r.external_record_id for r in records} == {
+            f"{SHARE}/{p}" for p in (
+                "x", "x/quotes", "x/quotes/q.txt", "y", "y/z", "y/z/quotes", "y/z/quotes/sub",
+                "y/z/quotes/sub/q.txt", "quotes", "quotes/q.txt",
+            )
+        }
+        assert _parents_come_first(records)
+        assert not {f"{SHARE}/a", f"{SHARE}/a/b", f"{SHARE}/a/b/c"} & result.seen
+
+    async def test_not_in_an_archive_never_lists_it(self):
+        ds = FakeNetworkShareDataSource(tree=_share_tree("archive/x.txt", "archive/sub/y.txt", "docs/z.txt", "r.txt"))
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("archive/**", exclude=True)))
+        assert {r.external_record_id for r in _written(upserts)} == {
+            f"{SHARE}/docs", f"{SHARE}/docs/z.txt", f"{SHARE}/r.txt",
+        }
+        assert not [path for _share, path in ds.list_calls if path.startswith("archive")]
+        assert result.matched == frozenset({"archive/**"})
+
+    async def test_not_in_any_archive_leaves_out_each_customers_archive_whatever_its_case(self):
+        ds = _customers_share(InsensitiveShare)
+        _result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("**/archive", exclude=True)))
+        ids = {r.external_record_id for r in _written(upserts)}
+        assert not [i for i in ids if "/Archive" in i]
+        assert f"{SHARE}/customer/acme/invoices/i.pdf" in ids
+        assert not [path for _share, path in ds.list_calls if path.endswith("Archive")]
+
+    async def test_a_pattern_and_a_saved_folder_inside_its_start_list_that_folder_once(self):
+        for values in (("customer/acme/x", "customer/*/quotes"), ("customer/*/quotes", "customer/acme/x")):
+            ds = FakeNetworkShareDataSource(tree=_share_tree("customer/acme/x/f.txt", "customer/acme/quotes/q.txt"))
+            _result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter(*values)))
+            assert ds.list_calls.count((SHARE, "customer/acme/x")) == 1, values
+            assert ds.list_calls[0] == (SHARE, "customer"), values
+            assert {f"{SHARE}/customer/acme/x/f.txt", f"{SHARE}/customer/acme/quotes/q.txt"} <= _ids(upserts)
+
+    async def test_a_link_loop_inside_a_folder_passed_through_is_not_walked(self, caplog):
+        tree = _share_tree("a/quotes/q.txt")
+        folder_a = tree[(SHARE, "")][0]
+        tree[(SHARE, "a")].append(
+            _entry("loop", is_directory=True, file_id=folder_a.file_id,
+                   created_time=folder_a.created_time, last_write_time=folder_a.last_write_time)
+        )
+        tree[(SHARE, "a/loop")] = list(tree[(SHARE, "a")])
+        ds = FakeNetworkShareDataSource(tree=tree)
+        with caplog.at_level(logging.WARNING, logger="test.walker"):
+            result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("**/quotes")))
+        assert (SHARE, "a/loop") not in ds.list_calls
+        assert f"{SHARE}/a/quotes/q.txt" in _ids(upserts)
+        assert result.complete
+        assert "link loop" in caplog.text
+
+    async def test_a_misspelled_pattern_matches_nothing(self):
+        ds = _customers_share()
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("custmer/*/quotes")))
+        assert result.complete
+        assert result.matched == frozenset()
+        assert _written(upserts) == []
+
+    async def test_a_matched_folder_whose_files_are_all_filtered_out_still_counts(self):
+        ds = _customers_share()
+        result, upserts, _moves = await _walk(
+            ds, sync_filters=_filters(_folder_filter("customer/*/quotes"), _extension_filter("docx"))
+        )
+        assert result.matched == frozenset({"customer/*/quotes"})
+        assert not [r for r in _written(upserts) if r.is_file]
+
+    async def test_a_missing_fixed_start_is_named_and_does_not_make_the_walk_incomplete(self, caplog):
+        ds = _customers_share(InsensitiveShare)
+        with caplog.at_level(logging.WARNING, logger="test.walker"):
+            result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("nothere/*/quotes")))
+        assert result.complete
+        assert result.unread == set()
+        assert result.matched == frozenset()
+        assert _written(upserts) == []
+        assert f'Folder {SHARE}/nothere, the fixed start of folder pattern "nothere/*/quotes", does not exist' in caplog.text
+
+    async def test_the_folders_above_an_unmatched_pattern_are_not_kept(self):
+        ds = FakeNetworkShareDataSource(tree=_share_tree("customer/acme/invoices/i.pdf", "customer/beta/notes.txt"))
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("customer/*/quotes")))
+        assert result.seen == {SHARE}
+        assert _written(upserts) == []
+
+    async def test_an_unread_folder_keeps_the_folders_above_it(self):
+        ds = FakeNetworkShareDataSource(
+            tree=_share_tree("customer/alpha/quotes/q.txt", "customer/beta/notes.txt"),
+            fail_dirs={(SHARE, "customer/alpha")},
+        )
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("customer/*/quotes")))
+        assert not result.complete
+        assert result.unread == {f"{SHARE}/customer/alpha"}
+        # Not written, but kept: what is stored under the unread folder hangs from it.
+        assert f"{SHARE}/customer" in result.seen
+        assert _written(upserts) == []
+
+    async def test_a_folder_above_a_match_that_fails_to_write_is_kept_and_the_match_still_written(self):
+        ds = _customers_share()
+        result, upserts, _moves = await _walk(
+            ds, sync_filters=_filters(_folder_filter("customer/*/quotes")), fail_ids={f"{SHARE}/customer"}
+        )
+        assert not result.complete
+        assert f"{SHARE}/customer" in result.unread
+        assert QUOTE_IDS - {f"{SHARE}/customer"} == _ids(upserts)
+
+    async def test_two_saved_folders_write_their_shared_folder_once_each(self):
+        ds = FakeNetworkShareDataSource(tree=_share_tree("a/b/x.txt", "a/c/y.txt", "z/d/q/f.txt"))
+        _result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("a/b", "a/c", "z/*/q")))
+        # Each start writes the folders above it, as it did before patterns.
+        assert [r.external_record_id for r in _written(upserts)].count(f"{SHARE}/a") == 2
+        assert f"{SHARE}/z/d/q/f.txt" in _ids(upserts)
+
+    async def test_a_saved_folder_keeps_its_ids_when_a_pattern_is_added(self):
+        ds = InsensitiveShare(tree=_share_tree("reports/x.txt", "reports/sub/y.txt", "b/archive/z.txt"))
+        _alone, before, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("Reports")))
+        ds.list_calls.clear()
+        result, after, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("Reports", "*/archive")))
+        under = [
+            (r.external_record_id, r.parent_external_record_id) for r in _written(after)
+            if r.external_record_id.startswith(f"{SHARE}/Reports")
+        ]
+        assert under == [(r.external_record_id, r.parent_external_record_id) for r in _written(before)]
+        assert f"{SHARE}/Reports/x.txt" in result.seen
+        assert {f"{SHARE}/b", f"{SHARE}/b/archive", f"{SHARE}/b/archive/z.txt"} <= _ids(after)
+
+    async def test_a_respelled_folder_keeps_its_file_id_and_times(self):
+        tree = _share_tree("reports/x.txt", "b/archive/z.txt")
+        server = tree[(SHARE, "")][0]
+        tree[(SHARE, "reports")].append(
+            _entry("loop", is_directory=True, file_id=server.file_id,
+                   created_time=server.created_time, last_write_time=server.last_write_time)
+        )
+        tree[(SHARE, "reports/loop")] = []
+        ds = InsensitiveShare(tree=tree)
+        _result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("Reports", "*/archive")))
+        [folder] = [r for r in _written(upserts) if r.external_record_id == f"{SHARE}/Reports"]
+        spelled = dataclasses.replace(server, name="Reports")
+        assert folder.external_revision_id == revision_id(SHARE, spelled, "Reports")
+        assert folder.source_updated_at == int(server.last_write_time.timestamp() * 1000)
+        # The link check still knows the folder by its file id and times.
+        assert (SHARE, "Reports/loop") not in ds.list_calls
+
+    async def test_a_saved_folder_spells_the_folders_above_it_however_the_server_does(self):
+        ds = InsensitiveShare(tree=_share_tree("A/reports/x.txt", "b/archive/z.txt"))
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("a/Reports", "*/archive")))
+        ids = _ids(upserts)
+        assert {f"{SHARE}/a", f"{SHARE}/a/Reports", f"{SHARE}/a/Reports/x.txt"} <= ids
+        assert not [i for i in ids if i.startswith(f"{SHARE}/A")]
+        assert f"{SHARE}/b/archive/z.txt" in ids
+        for record in _written(upserts):
+            assert record.parent_external_record_id in result.seen | {None}
+
+    async def test_a_value_inside_another_one_is_walked_as_part_of_it(self):
+        ds = InsensitiveShare(tree=_share_tree("reports/2026/x.txt", "reports/y.txt"))
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("Reports", "reports/2026")))
+        assert [path for _share, path in ds.list_calls] == ["Reports", "Reports/2026"]
+        by_id = {r.external_record_id: r.parent_external_record_id for r in _written(upserts)}
+        assert by_id[f"{SHARE}/Reports/2026"] == f"{SHARE}/Reports"
+        assert by_id[f"{SHARE}/Reports/2026/x.txt"] == f"{SHARE}/Reports/2026"
+        assert not [i for i in result.seen if i.startswith(f"{SHARE}/reports")]
+
+    async def test_the_first_saved_value_spells_a_folder_two_values_share(self):
+        ds = InsensitiveShare(tree=_share_tree("a/y/f.txt", "a/x/g.txt", "q/z/h.txt"))
+        _result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("A/x", "a/y", "*/z")))
+        by_id = {r.external_record_id: r.parent_external_record_id for r in _written(upserts)}
+        assert by_id[f"{SHARE}/A/y/f.txt"] == f"{SHARE}/A/y"
+        assert by_id[f"{SHARE}/A/y"] == f"{SHARE}/A"
+        assert f"{SHARE}/A/x/g.txt" in by_id
+
+    async def test_a_saved_folder_under_a_never_synced_name_is_reached_from_a_pattern(self):
+        ds = FakeNetworkShareDataSource(tree=_share_tree("node_modules/keep/a.txt", "node_modules/other/b.txt", "c/archive/z.txt"))
+        _alone, before, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("node_modules/keep")))
+        _result, after, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("node_modules/keep", "*/archive")))
+        under = [
+            (r.external_record_id, r.parent_external_record_id) for r in _written(after)
+            if r.external_record_id.startswith(f"{SHARE}/node_modules")
+        ]
+        assert under == [(r.external_record_id, r.parent_external_record_id) for r in _written(before)]
+        assert f"{SHARE}/node_modules/other/b.txt" not in _ids(after)
+        assert f"{SHARE}/c/archive/z.txt" in _ids(after)
+
+    async def test_a_denied_saved_folder_reached_from_a_pattern_is_unread(self):
+        ds = FakeNetworkShareDataSource(
+            tree=_share_tree("secret/a.txt", "c/archive/z.txt"), denied_dirs={(SHARE, "secret")}
+        )
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("secret", "*/archive")))
+        assert result.unread == {f"{SHARE}/secret"}
+        assert not result.complete
+        assert f"{SHARE}/c/archive/z.txt" in _ids(upserts)
+
+    async def test_a_denied_folder_above_a_saved_folder_keeps_what_was_stored_under_it(self):
+        ds = FakeNetworkShareDataSource(
+            tree=_share_tree("dept/secret/keep/a.txt", "c/archive/z.txt"), denied_dirs={(SHARE, "dept/secret")}
+        )
+        result, upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("dept/secret/keep", "*/archive")))
+        assert not result.complete
+        assert f"{SHARE}/dept/secret/keep" in result.unread
+        assert f"{SHARE}/c/archive/z.txt" in _ids(upserts)
+
+    async def test_a_folder_above_a_saved_folder_that_fails_to_list_keeps_it_in_either_spelling(self):
+        # The saved folders spell `a` two ways; what an earlier walk stored under either is kept.
+        ds = InsensitiveShare(
+            tree=_share_tree("a/x/f.txt", "a/y/g.txt", "c/archive/z.txt"), fail_dirs={(SHARE, "a")}
+        )
+        result, _upserts, _moves = await _walk(ds, sync_filters=_filters(_folder_filter("A/x", "a/y", "*/archive")))
+        assert not result.complete
+        # Main walked each saved folder from its own spelling; this walk spells `a` as `A`.
+        for kept in (f"{SHARE}/A/x/f.txt", f"{SHARE}/a/y/g.txt", f"{SHARE}/A/y/g.txt"):
+            assert any(kept.startswith(f"{u}/") for u in result.unread), (kept, result.unread)

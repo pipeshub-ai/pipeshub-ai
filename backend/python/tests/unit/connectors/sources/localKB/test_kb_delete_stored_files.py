@@ -211,7 +211,12 @@ async def test_an_unreadable_record_deletes_nothing(service) -> None:
     """A failed read is not "no organisation": nothing is scheduled or deleted."""
     _writer(service)
 
-    service.graph_provider.get_document = AsyncMock(side_effect=RuntimeError("graph busy"))
+    async def read(key: str, collection: str, **_: object) -> dict:
+        if collection == "apps":
+            return {"_key": key}  # the KB is live; only the record read fails
+        raise RuntimeError("graph busy")
+
+    service.graph_provider.get_document = AsyncMock(side_effect=read)
 
     result = await service.delete_folder("kb1", "f1", "user1")
 

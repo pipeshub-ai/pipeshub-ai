@@ -293,7 +293,8 @@ describe('Enterprise Search Routes', () => {
       expect(route.methods.get, 'not readable').to.equal(undefined)
       expect(route.methods.post, 'not a POST').to.equal(undefined)
       // authenticate + scope check + param validation + handler: dropping one must fail here.
-      expect(route.stack.length).to.equal(archive.stack.length)
+      // Archive also clears the Compare branches' artifacts first.
+      expect(route.stack.length).to.equal(archive.stack.length - 1)
       expect(route.stack.length).to.equal(4)
     })
   }
@@ -472,6 +473,34 @@ describe('Enterprise Search Routes', () => {
     it('should reject an OAuth token with no semantic scopes', () => {
       const error = runScopeCheck(['kb:read'])
       expect(error).to.be.an('error')
+    })
+  })
+
+  describe('entity routes', () => {
+    const find = (path: string): any =>
+      createSemanticSearchRouter(container).stack.find(
+        (layer: any) => layer.route?.path === path && layer.route.methods.post,
+      )
+
+    for (const path of ['/grep', '/entities', '/entities/neighbors']) {
+      it('POST ' + path + ' authenticates, checks the semantic scopes, then validates, in that order', () => {
+        const layer = find(path)
+        expect(layer, path).to.not.equal(undefined)
+        const stack = layer.route.stack
+        expect(stack).to.have.length(4) // authenticate, requireScopes, validate, handler
+        const next = sinon.spy()
+        stack[1].handle({ user: { isOAuth: true, oauthScopes: ['kb:read'] } }, {}, next)
+        expect(next.firstCall.args[0], 'a token without semantic scopes is refused').to.be.an('error')
+        const ok = sinon.spy()
+        stack[1].handle({ user: { isOAuth: true, oauthScopes: ['semantic:read'] } }, {}, ok)
+        expect(ok.firstCall.args[0]).to.be.undefined
+      })
+    }
+
+    it('registers them above /:searchId so a search id cannot be read as one of these paths', () => {
+      const paths = createSemanticSearchRouter(container).stack.filter((l: any) => l.route).map((l: any) => l.route.path)
+      expect(paths.indexOf('/entities/neighbors')).to.be.greaterThan(-1)
+      expect(paths.indexOf('/entities/neighbors')).to.be.lessThan(paths.indexOf('/:searchId'))
     })
   })
 

@@ -16,6 +16,7 @@ import {
   createFolderSchema,
   kbPermissionSchema,
   updateFolderSchema,
+  FOLDER_NAME_SEPARATOR_MESSAGE,
   deleteFolderSchema,
   getPermissionsSchema,
   updatePermissionsSchema,
@@ -91,6 +92,18 @@ describe('knowledge_base/validators/validators', () => {
       const data = { params: { recordId: 'rec-123' } };
       const result = reindexRecordSchema.safeParse(data);
       expect(result.success).to.be.true;
+    });
+
+    it('keeps a user\'s force flag, which tells a Force reindex from a plain one', () => {
+      const result = reindexRecordSchema.safeParse({ params: { recordId: 'rec-123' }, body: { depth: 0, force: true } });
+      expect(result.success).to.be.true;
+      if (result.success) expect(result.data.body?.force).to.equal(true);
+    });
+
+    it('refuses a force flag that is not a boolean', () => {
+      for (const bad of ['true', 1, 'yes']) {
+        expect(reindexRecordSchema.safeParse({ params: { recordId: 'rec-123' }, body: { force: bad } }).success, String(bad)).to.be.false;
+      }
     });
 
     it('should accept optional depth', () => {
@@ -460,6 +473,42 @@ describe('knowledge_base/validators/validators', () => {
       const result = updateFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
     });
+
+    for (const folderName of ['a/b', 'a\\b', '/', 'trailing/']) {
+      it(`refuses a rename to ${JSON.stringify(folderName)}, which holds a path separator`, () => {
+        const result = updateFolderSchema.safeParse({
+          body: { folderName },
+          params: { kbId: 'kb-1', folderId: '123e4567-e89b-12d3-a456-426614174000' },
+        });
+        expect(result.success).to.be.false;
+        expect(result.error!.issues[0]!.message).to.equal(FOLDER_NAME_SEPARATOR_MESSAGE);
+      });
+    }
+  });
+
+  describe('folder names hold no path separator', () => {
+    const validKbId = '550e8400-e29b-41d4-a716-446655440000';
+
+    it('refuses to create a folder whose name holds "/" or "\\"', () => {
+      for (const folderName of ['a/b', 'a\\b']) {
+        const result = createFolderSchema.safeParse({
+          body: { folderName },
+          params: { kbId: validKbId },
+          query: {},
+        });
+        expect(result.success).to.be.false;
+        expect(result.error!.issues[0]!.message).to.equal(FOLDER_NAME_SEPARATOR_MESSAGE);
+      }
+    });
+
+    it('still accepts dots, dashes and other punctuation', () => {
+      const result = createFolderSchema.safeParse({
+        body: { folderName: 'Q3 report v1.2 - draft (final)' },
+        params: { kbId: validKbId },
+        query: {},
+      });
+      expect(result.success).to.be.true;
+    });
   });
 
   describe('deleteFolderSchema', () => {
@@ -651,6 +700,20 @@ describe('knowledge_base/validators/validators', () => {
       const result = listKnowledgeBasesSchema.safeParse(data);
       expect(result.success).to.be.false;
     });
+
+    for (const search of ['50% off', 'Growth % sales', '100%done']) {
+      it(`should accept ordinary text with a percent sign "${search}"`, () => {
+        const result = listKnowledgeBasesSchema.safeParse({ query: { search } });
+        expect(result.success).to.be.true;
+      });
+    }
+
+    for (const search of ['report %s', '%n', '%1$s']) {
+      it(`should reject format specifier "${search}" in search`, () => {
+        const result = listKnowledgeBasesSchema.safeParse({ query: { search } });
+        expect(result.success).to.be.false;
+      });
+    }
 
     it('should accept valid sortBy', () => {
       const data = { query: { sortBy: 'name' } };

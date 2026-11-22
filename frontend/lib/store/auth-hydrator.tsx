@@ -9,6 +9,7 @@ import {
 } from './auth-store';
 import { initTokenRefreshScheduler } from '@/lib/api/token-refresh-scheduler';
 import { isElectron } from '@/lib/electron';
+import { rememberSignupSource } from '@/lib/utils/signup-source';
 
 /**
  * Client-only component that hydrates the auth store from localStorage
@@ -30,6 +31,9 @@ export function AuthHydrator(): null {
   useEffect(() => {
     hydrateAuthStore();
     initTokenRefreshScheduler();
+    // Mounted at the root of every layout, so it sees the landing URL before
+    // any redirect to /login drops its query.
+    rememberSignupSource();
   }, []);
 
   // Electron-only: soft-navigation handlers for logout / server-URL flows.

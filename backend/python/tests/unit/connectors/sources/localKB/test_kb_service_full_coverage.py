@@ -750,6 +750,7 @@ class TestUpdateRecord:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "old"},
             {"isFile": True, "mimeType": "text/plain"},
         ])
@@ -1439,44 +1440,6 @@ class TestListKbPermissions:
 
 
 
-class TestListKbRecords:
-    @pytest.mark.asyncio
-    async def test_success(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(return_value=(
-            [{"id": "r1"}], 1, {}
-        ))
-
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["records"] == [{"id": "r1"}]
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value=None)
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["success"] is False
-        assert result["code"] == 404
-
-    @pytest.mark.asyncio
-    async def test_with_filters(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
-        service.graph_provider.list_kb_records = AsyncMock(return_value=([], 0, {}))
-
-        result = await service.list_kb_records(
-            "kb1", "user1", "org1", search="x",
-            record_types=["FILE"], date_from=100, date_to=200,
-            sort_by="recordName", sort_order="asc"
-        )
-        assert "search" in result["filters"]["applied"]
-
-    @pytest.mark.asyncio
-    async def test_exception(self, service):
-        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=Exception("err"))
-        result = await service.list_kb_records("kb1", "user1", "org1")
-        assert result["records"] == []
-        assert "error" in result
-
-
 class TestGetKbChildren:
     @pytest.mark.asyncio
     async def test_success(self, service):
@@ -1738,6 +1701,7 @@ class TestMoveRecord:
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old_parent"})
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "myfile.pdf"},  # For moving_record
             {"isFile": True, "mimeType": "application/pdf"}  # For file_doc
         ])
@@ -1758,6 +1722,7 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old_parent"})
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "myfile.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])
@@ -1778,6 +1743,7 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old_parent"})
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "myfile.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])
@@ -1981,6 +1947,7 @@ class TestMoveRecord:
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "myfile.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])
@@ -2077,6 +2044,7 @@ class TestDuplicateNameValidation:
         
         # First call for current record, second for file doc
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "old.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])
@@ -2172,6 +2140,7 @@ class TestDuplicateNameValidation:
         
         # First call for record, second for file doc
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "report.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])

@@ -527,6 +527,41 @@ class TestTheEditionHook:
         assert sum(load.large for load in snapshot.lanes) == 1
         assert snapshot.fields["version"] == "1"
 
+    async def test_the_rule_sees_the_orgs_pool(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        asked = []
+
+        async def pool_for(_redis, org_id):  # noqa: ANN202
+            asked.append(org_id)
+            return "reserved" if org_id == "org-r" else None
+
+        def rule(request, snapshot):  # noqa: ANN202
+            return 7 if request.pool == "reserved" else 0
+
+        assignments = _assignments(provider, choose=rule, pool_for=pool_for)
+
+        assert await assignments.lane_for("kb-1", LaneHint(org_id="org-r")) == 7
+        assert await assignments.lane_for("kb-2", LaneHint(org_id="org-p")) == 0
+        assert asked == ["org-r", "org-p"]
+
+    async def test_a_pool_that_cannot_be_read_places_in_the_shared_pool(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        async def broken(_redis, _org_id):  # noqa: ANN202
+            raise ConnectionError("down")
+
+        seen = []
+
+        def rule(request, snapshot):  # noqa: ANN202
+            seen.append(request.pool)
+            return 3
+
+        assignments = _assignments(provider, choose=rule, pool_for=broken)
+
+        assert await assignments.lane_for("kb-1", LaneHint(org_id="org-r")) == 3
+        assert seen == [None]
+
     async def test_a_lane_outside_the_lane_count_is_refused(
         self, provider: FakeRedisConnectionProvider
     ) -> None:

@@ -16,6 +16,7 @@ name no App at all, so only the walks can place them.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,7 @@ import aiohttp
 import pytest
 
 from app.connectors.sources.localKB.handlers.kh_search import search_page
+from app.services.graph_db.common.name_match import name_query_key
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 from . import test_hidden_above_declared as hidden
@@ -83,8 +85,20 @@ def provider(request, neo4j_provider, arango_provider) -> IGraphDBProvider:
     return neo4j_provider if request.param == "neo4j" else arango_provider
 
 
+def _renamed(graph: tuple[list, list], names: dict[str, str]) -> tuple[list, list]:
+    nodes, edges = graph
+    for n in nodes:
+        if n["id"] in names:
+            n["props"]["recordName"] = names[n["id"]]
+    return nodes, edges
+
+
 def _graphs() -> dict[str, tuple[list, list]]:
-    return {"arms": _graph(), "synced": production_shaped(), "as-built": build_fixture(), "hidden": hidden._graph()}
+    return {
+        "arms": _graph(), "synced": production_shaped(), "as-built": build_fixture(), "hidden": hidden._graph(),
+        # Names holding a "." and a capital sigma before one, which lowercases unlike one before a space.
+        "separators": _renamed(production_shaped(), {"pl-r5": "Reachable.child", "pl-r11": "ΝΟΜΟΣ.Α second gap"}),
+    }
 
 
 async def _truncate_arango(settings: dict) -> None:
@@ -149,6 +163,39 @@ async def test_a_name_search_is_the_full_listing_filtered(arms_graph, provider, 
         assert [r["id"] for r in got["rows"]] == expected_ids, term
         assert _without_parent(got["rows"], multi) == _without_parent(want["rows"], multi), term
         assert (got["total"], got.get("counts")) == (want["total"], want.get("counts")), term
+
+
+async def test_a_listing_reads_no_property_key_neo4j_has_never_stored(arms_graph, neo4j_provider, full_listing,
+                                                                      caplog) -> None:
+    """Neo4j attaches a notification to each query that reads a property key no node has ever held, and the driver logs it
+    with the whole query on every run. The schema registers ``accessOnly`` before any group carries it (this graph has
+    none)."""
+    caplog.set_level(logging.WARNING, logger="neo4j.notifications")
+    kwargs = {"filters": {"search_query": "item"}}
+    await _connector_page(neo4j_provider, APP, **kwargs)
+    await full_listing(lambda: _connector_page(neo4j_provider, APP, **kwargs))
+    assert not [r for r in caplog.records if "property `accessOnly` does not exist" in r.getMessage()]
+
+
+async def test_a_name_search_reads_separators_as_spaces(load_graph, provider, full_listing) -> None:
+    """Names join words with "-", "_" or "." and a query may too: on both sides each reads as a space,
+    so "group granted" finds "group-granted", and the hyphenated query still finds it as before.
+    A final sigma reads as a sigma, so "νομος α" finds "ΝΟΜΟΣ.Α" and "νομος" finds it too."""
+    await load_graph("separators")
+    app_id = "pl-app"
+    everything = await _connector_page(provider, app_id)
+    for term in (
+        "group granted", "group-granted", "group_granted", "granted.group", "in group granted",
+        "reachable child", "reachable.child", "reachable-child", "νομος α", "ΝΟΜΟΣ Α", "νομος", "νομοσ.α",
+    ):
+        filters = {"search_query": term}
+        got = await _connector_page(provider, app_id, filters=filters)
+        want = await full_listing(lambda f=filters: _connector_page(provider, app_id, filters=f))
+        expected_ids = [r["id"] for r in everything["rows"]
+                        if name_query_key(term) in name_query_key(r["name"] or "")]
+        assert expected_ids, term
+        assert [r["id"] for r in got["rows"]] == expected_ids, term
+        assert [r["id"] for r in want["rows"]] == expected_ids, term
 
 
 async def test_a_hidden_group_hides_its_declared_group_from_a_name_search(load_graph, provider, full_listing) -> None:

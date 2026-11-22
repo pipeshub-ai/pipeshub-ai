@@ -10,14 +10,20 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
+from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.entities import Record
+from app.modules.indexing.record_diagnostics import write_with_revision_rule
 from app.modules.pipeline.coordinator import Coordinator
 from app.modules.pipeline.fingerprint import content_facts
 from app.modules.pipeline.models import Priority, RecordView
+from app.modules.transformers.transformer import EXTRACTION_DEFERRED_FIELD
+from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.resource_governor.tiers import classify as classify_tier
 
 EMBED = "embed"
+# ClassifyStage.name; the stage module imports the extraction stack, so not imported here.
+CLASSIFY = "classify"
 
 
 class StageIngress:
@@ -37,16 +43,46 @@ class StageIngress:
         self._forced.discard(record_id)
 
     async def redrive(
-        self, virtual_record_id: str | None, rev: str | None, stages: Sequence[str]
+        self,
+        virtual_record_id: str | None,
+        rev: str | None,
+        stages: Sequence[str],
+        *,
+        force: bool = True,
     ) -> list[str] | None:
         """Re-run ``stages`` for a record's current revision because someone asked to.
 
-        None when the runtime holds no state for that revision (content indexed before the
-        runtime existed); a full reindex covers that case."""
+        ``force=False`` (a record's first use) lets a stage whose output is
+        already current finish without work. None when the runtime holds no
+        state for that revision (content indexed before the runtime existed); a
+        full reindex covers that case."""
         if not virtual_record_id or not rev:
             return None
         return await self._coordinator.redrive_revision(
-            virtual_record_id, rev, stages, priority=Priority.INTERACTIVE, force=True
+            virtual_record_id, rev, stages, priority=Priority.INTERACTIVE, force=force
+        )
+
+    async def redrive_unchanged(
+        self, virtual_record_id: str, rev: str, record: Mapping[str, Any] | None = None
+    ) -> list[str] | None:
+        """Re-dispatch the stages after embed that did not finish, for a revision whose content did not change.
+
+        Only a failed, paused or never-started stage is claimed: a finished one is left alone, so the record's statuses
+        and `reason` stay as they are and its queued copies are not held. Unforced and at bulk priority,
+        so the claim keeps the stage's pause budget (only a forced claim resets it). A refused publish leaves the
+        claim QUEUED for the sweep, which republishes it once per pass. None when the
+        runtime holds no state for the revision, which the caller treats as "run the record in full".
+        A stage with no state whose prerequisites are done is a hand-off the process stopped in the middle
+        of: it is recorded SKIPPED when it does not apply and dispatched otherwise. Classification is the
+        exception unless the record is still QUEUED for it: a deferred one stays deferred to first use."""
+        queued = record is not None and record.get("extractionStatus") == ProgressStatus.QUEUED.value
+        defer = frozenset() if queued else frozenset({CLASSIFY})
+        return await self._coordinator.redrive_revision(
+            virtual_record_id, rev, self._coordinator.stage_names(), priority=Priority.BULK, force=False,
+            only_unfinished=True,
+            recover_missing=True,
+            defer=defer,
+            keep_claim_on_publish_failure=True,
         )
 
     async def handoff_lost(self, record: Mapping[str, Any]) -> bool:
@@ -55,26 +91,36 @@ class StageIngress:
         and only re-running the record path dispatches its stages."""
         if record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
             return False
-        if record.get("extractionStatus") != ProgressStatus.QUEUED.value:
+        extraction = record.get("extractionStatus")
+        # NOT_STARTED is final unless the indexed write deferred classification.
+        deferred = extraction == ProgressStatus.NOT_STARTED.value and record.get(EXTRACTION_DEFERRED_FIELD) is True
+        if extraction != ProgressStatus.QUEUED.value and not deferred:
             return False
         vrid, rev = record.get("virtualRecordId"), record.get("contentRev")
         if not vrid or not rev:
             return True
         return not await self._coordinator.has_seen_revision(str(vrid), str(rev))
 
-    async def on_indexed(self, record: Record, *, trigger: str | None) -> list[str]:
-        """Record ``embed`` for the record's revision and dispatch its successors."""
+    async def on_indexed(
+        self, record: Record, *, trigger: str | None, defer_classify: bool = False
+    ) -> list[str]:
+        """Record ``embed`` for the record's revision and dispatch its successors;
+        with ``defer_classify``, all but classification, which the record's first
+        use asks for (``first_use``)."""
         container = record.block_containers
         facts = content_facts(container)
-        document = await self._graph.get_document(record.id, CollectionNames.RECORDS.value)
-        if document is None:
-            raise LookupError(f"record {record.id} is gone")
+        document = await self._graph.get_document(
+            record.id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        if document is None or not is_live_record(document):
+            raise RecordDeletedError(record.id)
         rev = document.get("contentRev")
         if not isinstance(rev, str) or not rev:
             # Paths that never saw the source bytes (re-index from a stored blob) still
             # need a revision: the blocks are that content's identity.
             rev = facts.blocks_digest[:16]
-            await self._graph.update_node(record.id, CollectionNames.RECORDS.value, {"contentRev": rev})
+            # The record held no revision, so a count it carries belongs to content of unknown identity: it goes with the new revision.
+            await write_with_revision_rule(self._graph, record.id, CollectionNames.RECORDS.value, {"contentRev": rev})
         extension = getattr(record, "extension", None)
         view = RecordView(
             org_id=record.org_id,
@@ -100,4 +146,5 @@ class StageIngress:
             force=record.id in self._forced,
             # The record is already searchable; a broker hiccup must not fail it.
             keep_claim_on_publish_failure=True,
+            defer=frozenset({CLASSIFY}) if defer_classify else frozenset(),
         )

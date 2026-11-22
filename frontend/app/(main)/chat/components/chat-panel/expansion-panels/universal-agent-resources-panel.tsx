@@ -21,7 +21,7 @@ import {
   TextField,
 } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useThemeAppearance } from '@/app/components/theme-provider';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore, ASSISTANT_CTX, getUniversalCombinedCatalog } from '@/chat/store';
@@ -40,6 +40,7 @@ import { McpServerIcon } from '@/app/(main)/workspace/mcp-servers/components';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
+import { onSessionEnd } from '@/lib/api/session-cache';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import { McpConnectRows, mcpServersToConnect } from './mcp-connect-rows';
 import { ToolsetConnectRows, actionName, actionsToConnect } from './toolset-connect-rows';
@@ -58,15 +59,6 @@ type ExpansionViewMode = 'inline' | 'overlay';
 const TAB_VALUES = ['connectors', 'collections', 'actions', 'mcp'] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
-/**
- * Width was a fixed 246px sized for 3 tabs — scaled per-tab so a 4th ("MCP") entry doesn't
- * crush the longer "Connectors"/"Collections" labels. Computed from the actually-rendered
- * tab count (`visibleTabValues`) so hiding the MCP tab shrinks the tablist back down.
- */
-const FIGMA_TABLIST_WIDTH_PER_TAB = 82;
-const FIGMA_TABLIST_HEIGHT = 32;
-const FIGMA_TABLIST_RADIUS = 4;
-
 function UniversalAgentFilterTablist({
   value,
   onValueChange,
@@ -81,105 +73,24 @@ function UniversalAgentFilterTablist({
   /** Tabs excluded entirely (not just disabled) — e.g. 'mcp' when ENABLE_MCP is off. */
   hiddenTabs?: TabValue[];
 }) {
-  const { appearance } = useThemeAppearance();
-  const isDark = appearance === 'dark';
-
-  const visibleTabValues = useMemo(
-    () => TAB_VALUES.filter((v) => !hiddenTabs.includes(v)),
-    [hiddenTabs]
+  const items = useMemo(
+    () =>
+      TAB_VALUES.filter((v) => !hiddenTabs.includes(v)).map((v) => ({
+        value: v,
+        label: labels[v],
+        disabled: disabledTabs.includes(v),
+      })),
+    [hiddenTabs, disabledTabs, labels]
   );
-
-  const trackStyle: React.CSSProperties = {
-    width: FIGMA_TABLIST_WIDTH_PER_TAB * visibleTabValues.length,
-    maxWidth: '100%',
-    height: FIGMA_TABLIST_HEIGHT,
-    borderRadius: FIGMA_TABLIST_RADIUS,
-    display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    boxSizing: 'border-box',
-    flexShrink: 0,
-    ...(isDark
-      ? {
-          background:
-            'linear-gradient(90deg, rgba(221, 234, 248, 0.0784314) 0%, rgba(221, 234, 248, 0.0784314) 100%), rgba(0, 0, 0, 0.25)',
-        }
-      : {
-          background:
-            'linear-gradient(90deg, rgba(0, 0, 51, 0.059) 0%, rgba(0, 0, 51, 0.059) 100%), linear-gradient(90deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.9) 100%)',
-        }),
-  };
-
-  const inactiveColor = isDark ? 'rgba(252, 253, 255, 0.937255)' : 'rgba(0, 5, 9, 0.89)';
-  const selectedBorder = isDark
-    ? '1px solid rgba(211, 237, 248, 0.113725)'
-    : '1px solid rgba(0, 0, 45, 0.09)';
-  const selectedBg = isDark ? '#111113' : 'var(--color-panel-solid, #ffffff)';
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const i = visibleTabValues.indexOf(value);
-    if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      const next = visibleTabValues[(i + 1) % visibleTabValues.length]!;
-      if (!disabledTabs.includes(next)) onValueChange(next);
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      const next = visibleTabValues[(i - 1 + visibleTabValues.length) % visibleTabValues.length]!;
-      if (!disabledTabs.includes(next)) onValueChange(next);
-    }
-  };
-
   return (
-    <div
-      role="tablist"
+    <SegmentedTabs
+      kind="tabs"
+      size="1"
       aria-label="Universal agent filters"
-      onKeyDown={onKeyDown}
-      style={trackStyle}
-    >
-      {visibleTabValues.map((tabValue) => {
-        const selected = value === tabValue;
-        const isDisabled = disabledTabs.includes(tabValue);
-        return (
-          <button
-            key={tabValue}
-            type="button"
-            role="tab"
-            aria-selected={selected}
-            aria-disabled={isDisabled}
-            disabled={isDisabled}
-            onClick={() => { if (!isDisabled) onValueChange(tabValue); }}
-            style={{
-              boxSizing: 'border-box',
-              flex: '1 1 0',
-              minWidth: 0,
-              height: FIGMA_TABLIST_HEIGHT,
-              padding: '0 12px',
-              gap: 4,
-              display: 'flex',
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: FIGMA_TABLIST_RADIUS,
-              border: selected ? selectedBorder : '1px solid transparent',
-              background: selected ? selectedBg : 'rgba(255, 255, 255, 0.00001)',
-              color: isDisabled ? 'var(--gray-7)' : inactiveColor,
-              fontSize: 12,
-              lineHeight: '16px',
-              letterSpacing: '0.04px',
-              fontWeight: selected ? 500 : 400,
-              fontFamily: 'inherit',
-              cursor: isDisabled ? 'not-allowed' : 'pointer',
-              opacity: isDisabled ? 0.5 : 1,
-              isolation: 'isolate',
-            }}
-          >
-            {labels[tabValue]}
-          </button>
-        );
-      })}
-    </div>
+      value={value}
+      onValueChange={onValueChange}
+      items={items}
+    />
   );
 }
 
@@ -256,11 +167,11 @@ const ACTIONS_PAGE_SIZE = 50;
  * within the same page session so we never re-fetch on every remount.
  *
  * `lastFetchedAt` is set on each successful page-1 fetch.  When the component mounts
- * and detects a stale cache (older than CACHE_TTL_MS) it re-fetches from page 1,
- * preventing leftover data from a prior user/session from being served.
+ * and detects a stale cache (older than CACHE_TTL_MS) it re-fetches from page 1.
+ * Emptied at session end, so the next person to sign in never sees these lists.
  */
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-let _actionsPageCache: {
+interface ActionsPageCache {
   toolsets: BuilderSidebarToolset[];
   page: number;
   hasMore: boolean;
@@ -271,7 +182,13 @@ let _actionsPageCache: {
   apiActions: ApiToolset[];
   /** The API actions flag when `apiActions` was loaded: flags can arrive after the panel first loads. */
   apiActionsEnabled: boolean;
-} = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [], apiActions: [], apiActionsEnabled: false };
+}
+
+function emptyActionsCache(apiActionsEnabled = false): ActionsPageCache {
+  return { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [], apiActions: [], apiActionsEnabled };
+}
+
+let _actionsPageCache: ActionsPageCache = emptyActionsCache();
 
 /** Without this list the tab still shows the connected actions, so a failure only hides Connect. */
 async function loadActionsToConnect(): Promise<BuilderSidebarToolset[]> {
@@ -289,14 +206,17 @@ async function loadActionsToConnect(): Promise<BuilderSidebarToolset[]> {
 
 /**
  * Module-level MCP cache, mirroring `_actionsPageCache`. `getMyMcpServers` isn't paginated —
- * a single fetch on mount is enough — but the same TTL-based staleness check applies so a
- * stale prior session's data isn't served after remount. Holds every server, connected or not:
- * the ones a sign-in keeps out are listed with a Connect button.
+ * a single fetch on mount is enough — but the same TTL-based staleness check applies.
+ * Holds every server, connected or not: the ones a sign-in keeps out are listed with a
+ * Connect button.
  */
-let _mcpCache: {
-  instances: McpMyServerEntry[];
-  lastFetchedAt: number;
-} = { instances: [], lastFetchedAt: 0 };
+const EMPTY_MCP_CACHE: { instances: McpMyServerEntry[]; lastFetchedAt: number } = { instances: [], lastFetchedAt: 0 };
+let _mcpCache = EMPTY_MCP_CACHE;
+
+onSessionEnd(() => {
+  _actionsPageCache = emptyActionsCache();
+  _mcpCache = EMPTY_MCP_CACHE;
+});
 
 interface UniversalAgentResourcesPanelProps {
   onToggleView?: () => void;
@@ -390,15 +310,7 @@ export function UniversalAgentResourcesPanel({
 
       if (page === 1) {
         if (!quiet) {
-          _actionsPageCache = {
-            toolsets: [],
-            page: 0,
-            hasMore: false,
-            lastFetchedAt: 0,
-            toConnect: [],
-            apiActions: [],
-            apiActionsEnabled,
-          };
+          _actionsPageCache = emptyActionsCache(apiActionsEnabled);
           setToolsLoading(true);
         }
       } else {
@@ -1093,9 +1005,8 @@ export function UniversalAgentResourcesPanel({
         gap="2"
         style={{ flex: 1, minHeight: 0, overflowY: 'auto', width: '100%' }}
       >
-        {/* Connectors + Collections share one CollectionsTab instance so the root list is
-            fetched only once. Switching between the two tabs changes filterMode (a prop),
-            which re-filters already-loaded data without any additional API call.
+        {/* Connectors + Collections share one CollectionsTab instance. Switching between the
+            two tabs changes filterMode (a prop), which refetches the roots of that origin.
             The component only unmounts when the user switches to the Actions tab. */}
         {(tab === 'connectors' || tab === 'collections') && (
           <CollectionsTab
@@ -1215,9 +1126,11 @@ export function UniversalAgentResourcesPanel({
             footerLinkAriaLabel: t('chat.agentResources.browseWorkspaceMcpAria', {
               defaultValue: 'Open MCP servers to add or manage connections',
             }),
-            renderGroupIcon: (group) => <McpServerIcon typeId={group.typeId} name={group.label} size={18} />,
+            renderGroupIcon: (group) => (
+              <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={18} />
+            ),
             renderToolIcon: (_fn, group) => (
-              <McpServerIcon typeId={group.typeId} name={group.label} size={16} color="var(--gray-9)" />
+              <McpServerIcon instanceId={group.instanceId} typeId={group.typeId} name={group.label} size={16} color="var(--gray-9)" />
             ),
             extraRows:
               filteredMcpToConnect.length > 0 ? (

@@ -13,14 +13,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.modules.agents.capability_summary import PROJECT_FILES_KEY
 from app.modules.agents.knowledge_scope import (
     MAX_CALLER_COLLECTIONS,
     MAX_COLLECTION_CANDIDATES,
+    PROJECT_FILES_LABEL,
     AgentScope,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
+    service_account_knowledge,
 )
 
 ORG = "org-1"
@@ -377,3 +381,123 @@ class TestReadSourceLimit:
         scope = _resolve(None, knowledge=LIMITED_KNOWLEDGE, universal=True)
         assert scope.sources == {}
         assert scope.filters == {"apps": ["jira-1", "drive-1"], "kb": ["kb-1", "kb-2"]}
+
+
+# ---------------------------------------------------------------------------
+# project_files_knowledge
+# ---------------------------------------------------------------------------
+
+
+def _hidden_graph(hidden: list[str]) -> MagicMock:
+    graph = MagicMock()
+    graph.get_hidden_app_ids = AsyncMock(side_effect=lambda ids: [i for i in ids if i in hidden])
+    return graph
+
+
+async def _project_files(graph: MagicMock, kb_ids: list, known: list | None = None) -> list:
+    return await project_files_knowledge(
+        graph, kb_ids=kb_ids, known_ids=known or [], logger=logging.getLogger("t"),
+    )
+
+
+class TestProjectFilesKnowledge:
+    async def test_the_hidden_project_collection_becomes_a_knowledge_entry(self) -> None:
+        graph = _hidden_graph(["proj-kb"])
+        (entry,) = await _project_files(graph, ["kb-1", "proj-kb"])
+        assert entry["connectorId"] == "proj-kb"
+        assert entry["type"] == "KB"
+        assert entry["displayName"] == PROJECT_FILES_LABEL
+        assert entry[PROJECT_FILES_KEY] is True
+
+    async def test_a_listed_collection_is_not_added_twice(self) -> None:
+        graph = _hidden_graph(["proj-kb"])
+        assert await _project_files(graph, ["proj-kb"], known=["proj-kb"]) == []
+        graph.get_hidden_app_ids.assert_not_called()
+
+    async def test_visible_collections_and_the_sentinel_are_not_added(self) -> None:
+        graph = _hidden_graph([])
+        assert await _project_files(graph, ["kb-1", "NO_KB_SELECTED"]) == []
+        graph.get_hidden_app_ids.assert_awaited_once_with(["kb-1"])
+
+    async def test_no_lookup_without_candidates(self) -> None:
+        graph = _hidden_graph([])
+        assert await _project_files(graph, []) == []
+        graph.get_hidden_app_ids.assert_not_called()
+
+    async def test_a_lookup_failure_adds_nothing(self) -> None:
+        graph = MagicMock()
+        graph.get_hidden_app_ids = AsyncMock(side_effect=RuntimeError("down"))
+        assert await _project_files(graph, ["proj-kb"]) == []
+
+    async def test_the_entry_puts_the_collection_in_the_search_scope(self) -> None:
+        """The agent searches the KB ids of its knowledge list, so the entry is what lets a
+        project chat search the project's files."""
+        from app.modules.agents.qna.chat_state import _extract_kb_app_ids
+
+        entries = await _project_files(_hidden_graph(["proj-kb"]), ["proj-kb"])
+        assert _extract_kb_app_ids([*AGENT_KNOWLEDGE, *entries]) == ["kb-1", "kb-2", "proj-kb"]
+
+
+class TestServiceAccountKnowledge:
+    """What a service-account agent may search: what is shared with the whole org."""
+
+    KNOWLEDGE = [
+        {"connectorId": "pg-team", "type": "POSTGRESQL"},
+        {"connectorId": "pg-mine", "type": "POSTGRESQL"},
+        {"connectorId": "drive-team", "type": "DRIVE"},
+        {"connectorId": "drive-mine", "type": "DRIVE"},
+        {"connectorId": "legacy", "type": "SLACK"},
+        {"connectorId": "gone", "type": "UNKNOWN"},
+        {"connectorId": "kb-1", "type": "KB"},
+        None,
+    ]
+    INSTANCES = [
+        {"_key": "pg-team", "scope": "team"},
+        {"_key": "pg-mine", "scope": "personal", "createdBy": "sa-1"},
+        {"_key": "drive-team", "scope": "team"},
+        {"_key": "drive-mine", "scope": "personal", "createdBy": "sa-1"},
+        # An app written before apps carried their org; the lookup found it through its org edge.
+        {"id": "legacy", "scope": "team"},
+    ]
+
+    @staticmethod
+    def _graph(instances: list[dict] | Exception) -> MagicMock:
+        graph = MagicMock()
+        graph.get_user_connector_instances = AsyncMock(
+            side_effect=instances if isinstance(instances, Exception) else None,
+            return_value=None if isinstance(instances, Exception) else instances,
+        )
+        return graph
+
+    async def _kept(self, graph: MagicMock, *, bound: bool, knowledge: list | None = None) -> list[str]:
+        kept = await service_account_knowledge(
+            graph, self.KNOWLEDGE if knowledge is None else knowledge, "sa-1", ORG, logging.getLogger("t"), bound=bound,
+        )
+        return [k["connectorId"] for k in kept]
+
+    async def test_an_unbound_agent_keeps_only_the_orgs_connectors(self) -> None:
+        assert await self._kept(self._graph(self.INSTANCES), bound=False) == ["pg-team", "drive-team", "legacy"]
+
+    async def test_a_bound_agent_also_keeps_its_collections(self) -> None:
+        assert await self._kept(self._graph(self.INSTANCES), bound=True) == ["pg-team", "drive-team", "legacy", "kb-1"]
+
+    async def test_a_failed_lookup_keeps_no_connector(self) -> None:
+        graph = self._graph(RuntimeError("down"))
+        assert await self._kept(graph, bound=True) == ["kb-1"]
+
+    @pytest.mark.parametrize("bound", [False, True])
+    async def test_a_source_whose_app_could_not_be_read_is_kept_only_as_a_team_connector(self, bound: bool) -> None:
+        graph = self._graph([*self.INSTANCES, {"_key": "kb-2", "scope": "team", "type": "KB"}])
+        knowledge = [{"connectorId": i, "type": "UNKNOWN"} for i in ("drive-team", "drive-mine", "kb-2", "gone")]
+        assert await self._kept(graph, bound=bound, knowledge=knowledge) == ["drive-team"]
+
+    async def test_collections_alone_need_no_lookup(self) -> None:
+        graph = self._graph(self.INSTANCES)
+        assert await self._kept(graph, bound=True, knowledge=[{"connectorId": "kb-1", "type": "KB"}]) == ["kb-1"]
+        graph.get_user_connector_instances.assert_not_awaited()
+
+    async def test_what_is_left_out_is_logged_as_a_count(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.INFO, logger="t"):
+            await self._kept(self._graph(self.INSTANCES), bound=False)
+        assert "4 knowledge source(s)" in caplog.text
+        assert "drive-mine" not in caplog.text

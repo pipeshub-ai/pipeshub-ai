@@ -16,6 +16,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { NotificationsApi, type NotificationListFilter, type NotificationListItem } from './api';
 import { useNotificationStore, getVisibleNotifications } from './store';
 import { NotificationRow, chatConversationIdFromHref, type NotificationRowAction } from './notification-row';
+import { CONNECT_DIALOG_ATTR } from '@/app/(main)/workspace/connectors/components/user-access/connect-account';
 import { useChatStore } from '@/chat/store';
 import {
   NotificationFilterMenu,
@@ -296,7 +297,9 @@ export function NotificationsPanel() {
         // Filter menu is portaled outside the panel; keep panel open while using it.
         if (
           target.closest('[data-ph-notifications-filter-menu]') ||
-          target.closest('.rt-DropdownMenuContent')
+          target.closest('.rt-DropdownMenuContent') ||
+          // The connect-account token dialog opened from a row.
+          target.closest(`.rt-BaseDialogOverlay:has([${CONNECT_DIALOG_ATTR}])`)
         ) {
           return;
         }
@@ -422,6 +425,9 @@ export function NotificationsPanel() {
           z-index: 9200 !important;
           pointer-events: none;
         }
+        .rt-BaseDialogOverlay:has([${CONNECT_DIALOG_ATTR}]) {
+          z-index: 9200;
+        }
         [data-ph-notifications-header-actions] > * {
           position: relative;
           isolation: isolate;
@@ -530,7 +536,10 @@ export function NotificationsPanel() {
           zIndex: 9100,
           display: 'flex',
           flexDirection: 'column',
-          background: 'var(--olive-1)',
+          // Frosted like the other side panels (shared frost tokens in globals.css)
+          background: 'var(--frost-bg)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           borderRight: isMobile ? 'none' : '1px solid var(--olive-4)',
           boxShadow: '4px 0 20px rgba(0, 0, 0, 0.09)',
           animation: isClosing

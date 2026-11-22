@@ -5,7 +5,10 @@ from typing import Any
 import pytest
 
 from app.models.blocks import BlocksContainer
-from app.modules.named_entities.domain.models import NamedEntityExtraction
+from app.modules.named_entities.domain.models import (
+    ExtractionStats,
+    NamedEntityExtraction,
+)
 from app.modules.pipeline.leases import RecordBusy, RevisionSuperseded
 from app.modules.pipeline.models import Priority, StageJob, StageOutcome
 from app.modules.pipeline.policy import DEFAULT_POLICY, PipelinePolicy
@@ -118,6 +121,68 @@ async def test_a_failed_extraction_is_retried_and_writes_nothing() -> None:
     assert io.saved == []
 
 
+@pytest.mark.parametrize("outcome", ["written", "kept"])
+@pytest.mark.asyncio
+async def test_a_model_failure_with_deterministic_hits_saves_them_and_is_retried(outcome: str) -> None:
+    # "written": a first index keeps its amounts and dates meanwhile; "kept": an edited record
+    # keeps its last good names. Either way the fingerprint is not stored, so the names come later.
+    io = _IO()
+    io.outcome = outcome
+    io.extraction = NamedEntityExtraction(status="PARTIAL", termination_reason="llm_error", strategy="deterministic")
+    result = await EntitiesStage().run(_job(), io)
+    assert result.outcome is StageOutcome.RETRY and result.output is None
+    assert io.saved == [["rec-1"]]
+
+
+@pytest.mark.asyncio
+async def test_a_single_call_with_a_failed_window_is_retried() -> None:
+    io = _IO()
+    io.extraction = NamedEntityExtraction(
+        status="PARTIAL", termination_reason="single_call", strategy="single_call",
+        stats=ExtractionStats(windows_total=3, windows_run=3, windows_failed=1),
+    )
+    assert (await EntitiesStage().run(_job(), io)).outcome is StageOutcome.RETRY
+
+
+@pytest.mark.parametrize(("status", "saved"), [("PARTIAL", [["rec-1"]]), ("FAILED", [])])
+@pytest.mark.asyncio
+async def test_a_provider_outage_pauses_instead_of_spending_attempts(status: str, saved: list) -> None:
+    # FAILED: nothing deterministic was found either, so nothing is written meanwhile.
+    io = _IO()
+    io.extraction = NamedEntityExtraction(
+        status=status, termination_reason="llm_error", strategy="deterministic",
+        stats=ExtractionStats(windows_total=2, windows_run=2, windows_failed=2, windows_unavailable=2),
+    )
+    result = await EntitiesStage().run(_job(), io)
+    assert result.outcome is StageOutcome.PAUSED and io.saved == saved
+
+
+@pytest.mark.asyncio
+async def test_an_outage_mixed_with_other_failures_still_counts_toward_the_attempt_limit() -> None:
+    io = _IO()
+    io.extraction = NamedEntityExtraction(
+        status="PARTIAL", termination_reason="llm_error", strategy="deterministic",
+        stats=ExtractionStats(windows_total=3, windows_run=3, windows_failed=3, windows_unavailable=1),
+    )
+    assert (await EntitiesStage().run(_job(), io)).outcome is StageOutcome.RETRY
+
+
+@pytest.mark.parametrize("reason", ["timeout", "no_progress", "budget_turns"])
+@pytest.mark.asyncio
+async def test_an_agent_that_gave_up_settles_rather_than_repeating_itself(reason: str) -> None:
+    io = _IO()
+    io.extraction = NamedEntityExtraction(status="PARTIAL", termination_reason=reason, strategy="agent")
+    assert (await EntitiesStage().run(_job(), io)).outcome is StageOutcome.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_a_model_failure_while_turned_off_is_skipped_not_retried() -> None:
+    io = _IO()
+    io.outcome = "disabled"
+    io.extraction = NamedEntityExtraction(status="PARTIAL", termination_reason="llm_error")
+    assert (await EntitiesStage().run(_job(), io)).outcome is StageOutcome.SKIPPED
+
+
 @pytest.mark.asyncio
 async def test_turned_off_clears_through_the_persist_and_is_skipped() -> None:
     io = _IO()
@@ -153,3 +218,32 @@ async def test_the_extraction_is_kept_as_the_stage_output_only() -> None:
     assert not hasattr(stage, "output_present") and not hasattr(stage, "restore_output")
     result = await stage.run(_job(), _IO())
     assert NamedEntityExtraction.model_validate_json(result.output or "").status == "COMPLETED"
+
+
+@pytest.mark.parametrize(
+    ("sent", "retry_after"), [(True, 120.0), (False, None), (False, 30.0)], ids=["sent", "not-sent", "open-circuit"]
+)
+@pytest.mark.asyncio
+async def test_the_pause_keeps_what_the_unavailable_error_said(sent: bool, retry_after: float | None) -> None:
+    """The provider's retry-after and whether a request was sent come from the error the extraction met, as classify takes
+    them: a pause that sent nothing is not a send against the budget, and the wait is the provider's when it gave one."""
+    from app.utils.llm import LLMUnavailableError
+
+    for status in ("FAILED", "PARTIAL"):
+        io = _IO()
+        io.extraction = NamedEntityExtraction(
+            status=status, termination_reason="llm_error", strategy="deterministic",
+            stats=ExtractionStats(windows_total=1, windows_run=1, windows_failed=1, windows_unavailable=1),
+            pause_cause=LLMUnavailableError("down", sent=sent, retry_after=retry_after),
+        )
+        result = await EntitiesStage().run(_job(), io)
+        assert result.outcome is StageOutcome.PAUSED
+        assert (result.sent, result.retry_after_s) == (sent, retry_after)
+
+
+def test_the_pause_cause_is_not_part_of_the_stored_extraction() -> None:
+    from app.utils.llm import LLMUnavailableError
+
+    stored = NamedEntityExtraction(status="FAILED", pause_cause=LLMUnavailableError("down", retry_after=5))
+    assert "pause_cause" not in stored.model_dump() and "pause_cause" not in stored.model_dump_json()
+    assert NamedEntityExtraction.model_validate_json(stored.model_dump_json()).pause_cause is None

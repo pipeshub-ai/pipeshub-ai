@@ -5,7 +5,10 @@ import { ValidationMiddleware } from '../../../libs/middlewares/validation.middl
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 
 import { userAdminCheck } from '../middlewares/userAdminCheck';
-import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import {
+  AuthenticatedServiceRequest,
+  AuthenticatedUserRequest,
+} from '../../../libs/middlewares/types';
 import { OrgController } from '../controller/org.controller';
 import { passwordValidator } from '../../auth/utils/passwordValidator';
 import { attachContainerMiddleware } from '../../auth/middlewares/attachContainer.middleware';
@@ -13,12 +16,16 @@ import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/f
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { emailCheck } from '../../../libs/utils/zod-formats';
+import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
+import { getOrgRepository } from '../../../libs/repositories/org';
+import { NotFoundError } from '../../../libs/errors/http.errors';
 
 export const OrgCreationBody = z
   .object({
     accountType: z.enum(['individual', 'business']),
     shortName: z.string().optional(),
-    contactEmail: z.string().email('Invalid email format'),
+    contactEmail: z.string().check(emailCheck('Invalid email format')),
     registeredName: z.string().optional(), // Will be enforced conditionally
     adminFullName: z.string().min(1, 'Admin full name required'),
     password: z
@@ -29,6 +36,9 @@ export const OrgCreationBody = z
           'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character, and be no longer than 72 bytes',
       }),
     sendEmail: z.boolean().optional(),
+    // Where the signup came from; a malformed value is dropped, never a 400.
+    ref: z.string().optional().catch(undefined),
+    referrerDomain: z.string().optional().catch(undefined),
     permanentAddress: z
       .object({
         addressLine1: z.string().optional(),
@@ -79,7 +89,7 @@ const UpdatePermanentAddressBody = z.object({
 // fields are optional to allow partial updates
 const UpdateBody = z
   .object({
-    contactEmail: z.string().email('Invalid email format').optional(),
+    contactEmail: z.string().check(emailCheck('Invalid email format')).optional(),
     registeredName: z.string().optional(),
     shortName: z.string().optional(),
     permanentAddress: UpdatePermanentAddressBody.optional(),
@@ -180,6 +190,8 @@ export function createOrgRouter(container: Container) {
     '/logo',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.ORG_WRITE),
+    // Before the upload, so a non-admin's body is never read.
+    userAdminCheck,
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: [
@@ -196,7 +208,6 @@ export function createOrgRouter(container: Container) {
       maxFileSize: 2 * 1024 * 1024,
       strictFileUpload: true,
     }).getMiddleware,
-    userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -278,6 +289,40 @@ export function createOrgRouter(container: Container) {
       try {
         const orgController = container.get<OrgController>('OrgController');
         await orgController.updateOnboardingStatus(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  /**
+   * GET /org/internal
+   * Internal service-to-service read of the organisation a USER_LOOKUP scoped
+   * token names (the connectors service writes a brand-new org's graph node
+   * from it). The org id comes only from the token.
+   */
+  router.get(
+    '/internal',
+    authMiddleware.scopedTokenValidator(TokenScopes.USER_LOOKUP),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const orgId = req.tokenPayload?.orgId as string | undefined;
+        const org =
+          orgId === undefined || orgId === ''
+            ? null
+            : await getOrgRepository().getLive(orgId);
+        if (!org) {
+          throw new NotFoundError('Organization not found');
+        }
+        res.json({
+          _id: org._id,
+          accountType: org.accountType,
+          registeredName: org.registeredName,
+        });
       } catch (error) {
         next(error);
       }

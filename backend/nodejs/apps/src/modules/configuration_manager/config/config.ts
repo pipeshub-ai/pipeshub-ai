@@ -33,7 +33,12 @@ export const loadConfigurationManagerConfig =
   (): ConfigurationManagerConfig => {
     // Determine store type from KV_STORE_TYPE env variable (defaults to redis)
     const kvStoreType = process.env.KV_STORE_TYPE?.toLowerCase() || 'redis';
-    const storeType = kvStoreType === 'redis' ? StoreType.Redis : StoreType.Etcd3;
+    const storeType =
+      kvStoreType === 'redis'
+        ? StoreType.Redis
+        : kvStoreType === 'postgres'
+          ? StoreType.Postgres
+          : StoreType.Etcd3;
 
     return {
       storeType: storeType,

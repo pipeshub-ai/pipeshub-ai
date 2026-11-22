@@ -1081,7 +1081,8 @@ async def drive_workspace_audit_connector(
             drive_workspace_datasource, "move-me.txt", parent_id=drive_a, content=f"audit move {suffix}\n"
         )
         state["doc_id"] = await create_drive_google_file(
-            drive_workspace_datasource, "audit-doc", parent_id=drive_a, mime_type=MimeTypes.GOOGLE_DOCS.value
+            drive_workspace_datasource, "audit-doc", parent_id=drive_a, mime_type=MimeTypes.GOOGLE_DOCS.value,
+            content=f"audit doc {suffix}: a rename or a new share must not re-index this text.\n",
         )
         admin_drive = await build_drive_datasource(sa_json, admin_email, admin_email)
         instance = pipeshub_client.create_connector(

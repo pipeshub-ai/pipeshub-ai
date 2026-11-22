@@ -1,5 +1,3 @@
-import mongoose from 'mongoose';
-
 /**
  * Enum representing different storage vendors.
  */
@@ -37,6 +35,16 @@ export interface StorageServiceResponse<T> {
  */
 export interface Document {
   /**
+   * The row id. Absent on a document that has not been created yet.
+   */
+  _id: string;
+
+  /**
+   * Row revision, as stored.
+   */
+  __v?: number;
+
+  /**
    * The name of the document.
    */
   documentName: string;
@@ -59,7 +67,7 @@ export interface Document {
   /**
    * Organization Id
    */
-  orgId: mongoose.Types.ObjectId;
+  orgId: string;
   /**
    * Mutation count
    */
@@ -72,6 +80,10 @@ export interface Document {
    * Digest of the request the key was first used for.
    */
   idempotencyFingerprint?: string;
+  /**
+   * Set once a newer stored write replaced this document; in-place buffer writes are refused.
+   */
+  retiredAt?: number | null;
   /**
    * The keyed upload attempt that owns this unfinished document, and until when.
    */
@@ -89,7 +101,7 @@ export interface Document {
   /**
    * The ID of the user who created or initiated the document.
    */
-  initiatorUserId: mongoose.Types.ObjectId | null;
+  initiatorUserId: string | null;
 
   /**
    * The size of the document in bytes.
@@ -139,7 +151,7 @@ export interface Document {
   /**
    * ID of the user who deleted the document.
    */
-  deletedByUserId?: mongoose.Schema.Types.ObjectId;
+  deletedByUserId?: string;
 
   /**
    * Indicates whether the document is deleted.
@@ -173,11 +185,32 @@ export interface Document {
   artifactSet?: ArtifactSet;
 }
 
+/**
+ * The write state kept beside a document: a counter that only grows and the writers that may be mid-write
+ * (`t` a random token, `until` the server time in ms its claim lapses). Stored, never part of `Document`:
+ * no read returns it, so it is read only by a method that asks for it by name.
+ */
+export interface FingerprintState {
+  writeSeq: number;
+  writers: { t: string; until: number }[];
+}
+
 export interface ArtifactSet {
   virtualRecordId: string;
+  /**
+   * The set's key, unique per virtual record: the revision for the revision's one shared set, or
+   * `{rev}-{writeId}` for a stored write's own set. A rev is hex only, so a write's key never equals a
+   * revision: code that looks a set up by revision alone never finds a write's set.
+   */
   rev: string;
+  /** A stored write's own set only: the content revision it holds (`rev` is then its key). */
+  contentRev?: string;
+  /** A stored write's own set only: the write it is of, so none can overwrite another's files. */
+  writeId?: string;
   /** Storage key prefix holding the revision's files. */
   root: string;
+  /** Epoch ms a delete claimed the revision; absent while it is writable. */
+  retiringAt?: number;
 }
 
 /**
@@ -193,6 +226,25 @@ export interface SignObjectUrlOptions {
   method: 'GET' | 'PUT';
   contentType?: string;
   expiresInSeconds: number;
+  /**
+   * A PUT that must not replace an object already there (`If-None-Match: *`):
+   * the uploader sends the header returned with the URL, and a lost race
+   * answers 412 or 409 and keeps the first writer's object.
+   */
+  ifAbsent?: boolean;
+}
+
+/** One object in a prefix listing. `key` is the full storage key. */
+export interface ListedObject {
+  key: string;
+  size: number;
+  lastModifiedMs: number;
+}
+
+/** One page of a prefix listing; `next` is an opaque cursor, absent on the last page. */
+export interface ObjectPage {
+  objects: ListedObject[];
+  next?: string;
 }
 
 /**
@@ -218,7 +270,7 @@ export interface DocumentVersion {
   currentVersion?: number;
   createdAt?: number;
   mutationCount?: number;
-  initiatedByUserId?: mongoose.Schema.Types.ObjectId;
+  initiatedByUserId?: string;
   size?: number;
 }
 
@@ -227,7 +279,7 @@ export interface DocumentVersion {
  */
 export interface CustomMetadata {
   key: string;
-  value: mongoose.Schema.Types.Mixed;
+  value: unknown;
 }
 
 /**

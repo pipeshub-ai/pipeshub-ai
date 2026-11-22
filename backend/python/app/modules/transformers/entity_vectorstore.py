@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import time
 import uuid
 import weakref
@@ -60,9 +61,25 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.config.constants.arangodb import QdrantCollectionNames
 from app.config.constants.service import config_node_constants
-from app.exceptions.indexing_exceptions import VectorStoreError
+from app.core import org_context
+from app.exceptions.indexing_exceptions import (
+    EmbeddingModelUnavailableError,
+    VectorStoreError,
+)
+from app.modules.indexing.embed_resume import POINT_PRECISION
+from app.services.llm_gateway.embedding_gateway import get_embedding_gateway
+from app.services.messaging.precision_flip import PrecisionFlip
+from app.services.vector_db.collection_epoch import POINT_EPOCH, Fence
+from app.services.vector_db.collection_pin import (
+    FP32,
+    INT8,
+    STAMP_TAG,
+    CollectionPinStore,
+)
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
+    EMBED_EPOCH_FIELD,
+    EMBED_PRECISION_FIELD,
     RECORD_GROUP_IDS_FIELD,
 )
 from app.services.vector_db.models import (
@@ -71,6 +88,12 @@ from app.services.vector_db.models import (
     ScrollWindowExceededError,
     SearchResult,
     VectorPoint,
+)
+from app.services.vector_db.precision_guard import (
+    UNCONFIRMED_WRITE,
+    PrecisionGuard,
+    PrecisionUnreadable,
+    run_despite_cancellation,
 )
 from app.services.vector_db.rebuild_state import (
     RebuildJobLock,
@@ -83,10 +106,13 @@ from app.services.vector_db.sparse_embeddings import (
 )
 from app.telemetry.modules import entity_index_metrics
 from app.utils.aimodels import (
+    INDEXING_SDK_RETRIES,
     embedding_config_hash,
     get_default_embedding_model,
     get_embedding_model,
 )
+from app.utils.embedding_server_client import EmbeddingServerEmbeddings
+from app.utils.error_class import log_failure
 from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
@@ -502,13 +528,16 @@ class EntityVectorStore:
         return self.collection_name
 
     async def collection_stamp(self) -> str:
-        """A token kept in the collection as a point of its own, so that it
-        goes when the collection's points go.
+        """A token that identifies this incarnation of the collection.
 
-        A collection dropped, recreated or emptied from outside (by hand, or
-        by a records rebuild in a release that took the entity index along)
-        therefore has no stamp. It is then set up again (``ensure_collection``)
-        and given a new one. The rebuild puts the stamp in its marker: what
+        Where the provider has no catalog for it, it is a point of its own, so it
+        goes when the collection's points go: a collection dropped, recreated or
+        emptied from outside (by hand, or by a records rebuild in a release that
+        took the entity index along) then has no stamp. A provider that keeps it
+        itself (``stamps_in_catalog``, pgvector) loses it only when the collection
+        is dropped and created again; emptying the points leaves it, and the
+        rebuild is then not triggered by that alone. A missing stamp is set up
+        again (``ensure_collection``) and given a new one. The rebuild puts the stamp in its marker: what
         was projected under another stamp is not in this collection, however
         many points indexing has written to it since. One read by id per call.
         For the rebuild leader only (see ``ensure_collection``).
@@ -518,21 +547,12 @@ class EntityVectorStore:
         reaches that org (``recreate_stale_collection``)."""
         if self._shared_collection is None:
             return ""
-        stamp = await self._read_stamp()
+        in_catalog = getattr(self.vector_db_service.get_capabilities(), "stamps_in_catalog", False) is True
+        stamp = await self._read_stamp(in_catalog=in_catalog)
         if stamp:
             return stamp
         await self.ensure_collection()
-        # Never all digits: Redis hands a numeric string back as a number.
-        stamp = f"s{uuid.uuid4().hex[:11]}"
-        unit = [1.0] + [0.0] * (self._embedding_size - 1)
-        await self.vector_db_service.upsert_points(
-            collection_name=self._shared_collection,
-            # No orgId and no entityType: no search, sweep or delete matches it.
-            points=[VectorPoint(
-                id=_STAMP_POINT_ID, dense_vector=unit, sparse_vector=None,
-                payload={"page_content": "", "metadata": {_STAMP_FIELD: stamp}},
-            )],
-        )
+        stamp = await self._ensure_stamp(in_catalog=in_catalog)
         self.logger.info(
             "Entity collection '%s' carried no stamp (it is new, or was dropped, recreated or "
             "emptied from outside); stamped %s, so the rebuild projects the graph into it again",
@@ -540,7 +560,28 @@ class EntityVectorStore:
         )
         return stamp
 
-    async def _read_stamp(self) -> str | None:
+    async def _ensure_stamp(self, *, in_catalog: bool) -> str:
+        """Writes a new stamp: to the provider's catalog, or as a point that carries no org, written here and nowhere else
+        under the explicit system scope."""
+        # Never all digits: Redis hands a numeric string back as a number.
+        stamp = f"s{uuid.uuid4().hex[:11]}"
+        if in_catalog:
+            return await self.vector_db_service.set_collection_stamp(self._shared_collection, stamp)
+        unit = [1.0] + [0.0] * (self._embedding_size - 1)
+        with org_context.system("entity-collection-stamp"):
+            await self.vector_db_service.upsert_points(
+                collection_name=self._shared_collection,
+                # No orgId and no entityType: no search, sweep or delete matches it.
+                points=[VectorPoint(
+                    id=_STAMP_POINT_ID, dense_vector=unit, sparse_vector=None,
+                    payload={"page_content": "", "metadata": {_STAMP_FIELD: stamp, POINT_PRECISION: STAMP_TAG}},
+                )],
+            )
+        return stamp
+
+    async def _read_stamp(self, *, in_catalog: bool = False) -> str | None:
+        if in_catalog:
+            return await self.vector_db_service.get_collection_stamp(self._shared_collection)
         try:
             points = await self.vector_db_service.retrieve_points(self._shared_collection, [_STAMP_POINT_ID])
         except Exception:
@@ -675,11 +716,19 @@ class EntityVectorStore:
                     self._sparse_embedder = embedder
 
     async def _build_dense_embeddings(self, config: dict[str, Any]) -> Any:  # noqa: ANN401
-        return get_embedding_model(config["provider"], config)
+        return get_embedding_model(config["provider"], config, sdk_retries=INDEXING_SDK_RETRIES)
 
     async def _embedding_dimension(self) -> int:
-        sample = await asyncio.to_thread(self._dense_embeddings.embed_query, "test")
-        return len(sample)
+        embeddings = self._dense_embeddings
+        if isinstance(embeddings, EmbeddingServerEmbeddings):
+            # Not paid, and its client keeps its own retry: it does not pass the gateway.
+            sample = await asyncio.to_thread(embeddings.embed_query, "test")
+            if not await embeddings._read_precision_once():
+                # Never guess fp32: the fingerprint depends on what the setting asks for.
+                raise EmbeddingModelUnavailableError("The embedding server did not say what weight precision it is set to")
+            return len(sample)
+        # Paid like any embedding request: one retry layer, and the size is kept per provider key.
+        return await get_embedding_gateway().probe_dimension(embeddings)
 
     async def _init_collection(
         self, name: str | None = None, *, recreate: bool = False, create: bool = True,
@@ -736,6 +785,15 @@ class EntityVectorStore:
                 "The indexing service recreates it.",
                 details={"collection": name},
             )
+        await self._under_recreate_lock(
+            name,
+            lambda: self._drop_and_create_under_lock(
+                name, mismatch, leader=leader, holds_entities=holds_entities, config_hash=config_hash,
+            ),
+        )
+
+    async def _under_recreate_lock(self, name: str, action: Callable[[], Awaitable[None]]) -> None:
+        """Run ``action`` holding the lock that makes one replica at a time drop and create the collection."""
         redis = await redis_from_config_service(self.config_service)
         try:
             lock = RebuildJobLock(redis, key=_recreate_lock_key(name), ttl_seconds=_RECREATE_LOCK_SECONDS)
@@ -745,9 +803,7 @@ class EntityVectorStore:
                     details={"collection": name},
                 )
             try:
-                await self._drop_and_create_under_lock(
-                    name, mismatch, leader=leader, holds_entities=holds_entities, config_hash=config_hash,
-                )
+                await action()
             finally:
                 try:
                     await lock.release()
@@ -756,6 +812,31 @@ class EntityVectorStore:
         finally:
             with contextlib.suppress(Exception):
                 await redis.aclose()
+
+    async def reset_collection(self) -> bool:
+        """Drop the collection and create it empty, with no pin; the entity index rebuild refills it from the graph.
+
+        For the cleanup that drops every index holding embedding vectors: the entity index holds them too, so it
+        goes with the records collections and its pin goes with it (the vectors first, the pin after, as for any
+        drop). The new collection carries no stamp, so the rebuild reads it as a new collection and projects the
+        graph into it again, as it does after a model change. False when this store has no one collection to reset.
+        """
+        name = self._shared_collection
+        if name is None:
+            return False
+        await self._ensure_initialized(recreate=True)
+
+        async def drop_and_create() -> None:
+            info = await self.vector_db_service.get_collection_info(name)
+            if info.exists:
+                await self._drop_collection(name)
+            await CollectionPinStore(self.config_service, self.logger).release_collection(name)
+            await self._create_collection(name)
+            self._ready_collections.discard(name)
+
+        await self._under_recreate_lock(name, drop_and_create)
+        self.logger.info("Entity collection '%s' reset; the entity index rebuild refills it", name)
+        return True
 
     def _mismatch_report_due(self, name: str) -> bool:
         now = time.monotonic()
@@ -793,10 +874,19 @@ class EntityVectorStore:
             "" if holds_entities else " (it holds no entities)",
         )
         if current.exists:
-            await self.vector_db_service.delete_collection(name)
+            await self._drop_collection(name)
         await self._create_collection(name)
 
+    async def _drop_collection(self, name: str) -> None:
+        """Drop the collection's vectors between a new epoch and the confirmation of the drop (see ``CollectionEpochs``)."""
+        epochs = CollectionPinStore(self.config_service, self.logger).epochs
+        ticket = await epochs.begin_reset(name)
+        await self.vector_db_service.delete_collection(name)
+        await epochs.confirm_reset(ticket)
+
     async def _create_collection(self, name: str) -> None:
+        guard = self._guard()
+        absent_at = CollectionPinStore(self.config_service, self.logger).now()
         try:
             await self.vector_db_service.create_collection(
                 collection_name=name,
@@ -812,6 +902,8 @@ class EntityVectorStore:
                 raise
         else:
             self.logger.info("Created entity vector collection '%s'", name)
+        # A pin left by a crash between the drop and the pin's removal; one claimed after the creation stays.
+        await guard.replace_stale_for_writer(name, getattr(self._dense_embeddings, "model", None), absent_at)
         await self._ensure_payload_indexes(name)
 
     async def _ensure_payload_indexes(self, name: str) -> None:
@@ -824,14 +916,22 @@ class EntityVectorStore:
             ("metadata.entityId", {"type": "keyword"}),
             ("metadata.level", {"type": "keyword"}),
             ("metadata.kind", {"type": "keyword"}),
+            # The guard counts points by this tag; Redis cannot filter a field its index does not have.
+            (EMBED_PRECISION_FIELD, {"type": "keyword"}),
+            (EMBED_EPOCH_FIELD, {"type": "keyword"}),
             (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
             (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
         ]:
-            await self.vector_db_service.create_index(
-                collection_name=name,
-                field_name=field,
-                field_schema=schema,
-            )
+            try:
+                await self.vector_db_service.create_index(
+                    collection_name=name,
+                    field_name=field,
+                    field_schema=schema,
+                )
+            except Exception as e:
+                # Redis reports a refused index instead of hiding it; the entity
+                # index keeps working without it, as it did before.
+                self.logger.warning("Failed to create entity index %s on %s: %s", field, name, e)
 
     async def _collection_mismatch(self, name: str, info: VectorCollectionInfo) -> str | None:
         """Why the existing collection cannot serve this model, or None.
@@ -840,6 +940,11 @@ class EntityVectorStore:
         model's queries with no error, so the model one point records counts
         as well as the dimension."""
         if not info.exists:
+            return None
+        if getattr(self._capabilities, "spaces_per_org", False) is True:
+            # The model belongs to each org's space, which a call can only see
+            # for its own org; the provider refuses a write of another model.
+            # Nothing here may read or drop the collection of every org.
             return None
         if info.dense_dimension and info.dense_dimension != self._embedding_size:
             return f"dimension {info.dense_dimension}, model now produces {self._embedding_size}"
@@ -919,7 +1024,21 @@ class EntityVectorStore:
         return self._fingerprint()
 
     def _fingerprint(self) -> str:
-        return f"{self._model_id}:{self._embedding_size}"
+        """``provider:model:dimension``, plus ``@int8-w`` when the setting asks for int8.
+
+        The setting's intent, not what happens to serve: a boot that falls back to fp32 must not change it and
+        make the whole entity index be rebuilt twice. fp32 adds nothing, so existing fingerprints are unchanged.
+        A provider with one space per org names the space by this text, so it keeps its identity unchanged.
+        """
+        base = f"{self._model_id}:{self._embedding_size}"
+        embedder = self._dense_embeddings
+        if (
+            isinstance(embedder, EmbeddingServerEmbeddings)
+            and embedder.intent == "int8-w"
+            and getattr(self._capabilities, "spaces_per_org", False) is not True
+        ):
+            return f"{base}@int8-w"
+        return base
 
     # ------------------------------------------------------------------
     # Deterministic point ID
@@ -942,7 +1061,31 @@ class EntityVectorStore:
     # asyncio.to_thread rather than run_in_executor: it carries contextvars
     # (tracing) into the worker thread.
     async def _embed(self, texts: list[str]) -> list[list[float]]:
-        return await asyncio.to_thread(self._dense_embeddings.embed_documents, texts)
+        embeddings = self._dense_embeddings
+        if isinstance(embeddings, EmbeddingServerEmbeddings):
+            return await asyncio.to_thread(embeddings.embed_documents, texts)
+        return await get_embedding_gateway().call(lambda: asyncio.to_thread(embeddings.embed_documents, texts))
+
+    async def _embed_witnessed(self, texts: list[str]) -> tuple[list[list[float]], tuple[str, bool] | None]:
+        """Vectors for entities and the precision the bundled server says made them (None for any other provider)."""
+        if isinstance(self._dense_embeddings, EmbeddingServerEmbeddings):
+            vectors, precision, fallback = await asyncio.to_thread(self._dense_embeddings.embed_documents_witnessed, texts)
+            return vectors, (precision, fallback)
+        return await self._embed(texts), None
+
+    def _guard(self) -> PrecisionGuard:
+        guard = getattr(self, "_precision_guard", None)
+        if guard is None:
+            guard = PrecisionGuard(CollectionPinStore(self.config_service, self.logger), self.vector_db_service, self.logger)
+            self._precision_guard = guard
+        return guard
+
+    async def _drain_debt(self, collection: str, org_id: str) -> None:
+        """Settle what an earlier unconfirmed batch of this organisation left owing; never delays or fails a write."""
+        try:
+            await self._guard().drain_debt(collection, org_id, throttle=True)
+        except Exception:
+            self.logger.warning("could not settle the debt of unconfirmed entity batches of '%s'", collection, exc_info=True)
 
     async def _embed_sparse(self, texts: list[str]) -> list[Any]:
         if not self._sparse_embedder:
@@ -995,11 +1138,12 @@ class EntityVectorStore:
         if not entities:
             return outcome
         failed_keys: list[str] = []
-        # A batch may span orgs, and so collections.
-        by_collection: dict[str, list[EntityRecord]] = {}
+        # A batch may span orgs, and so collections. One org per write: a
+        # provider with a space per org takes one org at a time.
+        by_collection: dict[tuple[str, str], list[EntityRecord]] = {}
         for entity in self._coalesce_by_key(entities):
             try:
-                by_collection.setdefault(self._collection_name_for(entity.org_id), []).append(entity)
+                by_collection.setdefault((self._collection_name_for(entity.org_id), entity.org_id), []).append(entity)
             except Exception as exc:
                 self.logger.error(
                     "No entity collection for org '%s'; %s/%s not written: %s",
@@ -1009,10 +1153,14 @@ class EntityVectorStore:
                 failed_keys.append(f"{entity.entity_type.value}/{entity.entity_id}")
         batches = [
             (collection, start, group[start : start + batch_size])
-            for collection, group in by_collection.items()
+            for (collection, _org), group in by_collection.items()
             for start in range(0, len(group), batch_size)
         ]
+        drained: set[str] = set()
         for collection, start, batch in batches:
+            if collection not in drained and batch:
+                drained.add(collection)
+                await self._drain_debt(collection, batch[0].org_id)
             named = [e for e in batch if e.name.strip()]
             outcome.skipped += len(batch) - len(named)
             for entity in batch:
@@ -1029,8 +1177,20 @@ class EntityVectorStore:
                 await self._upsert_batch(collection, named, outcome, settled, merge_membership=merge_membership)
             except _MembershipReadError as exc:
                 self.logger.warning("Skipping entity upsert batch, membership unknown: %s", exc)
+            except PrecisionFlip:
+                # Not a failed batch: the index holds the other precision, and the caller waits for that to end.
+                self._ready_collections.discard(collection)
+                raise
+            except PrecisionUnreadable:
+                # Not a failed write to count and move on from: nobody knows what the index holds, so the caller retries.
+                self._ready_collections.discard(collection)
+                raise
             except Exception as exc:
-                self.logger.error("Failed to upsert entity batch starting at %d: %s", start, exc)
+                # The embedding call's error carries the provider's body, which can echo the entity names.
+                log_failure(
+                    self.logger, "entity_index.upsert_failed", exc, include_error_text=False,
+                    batch_start=start, count=len(named),
+                )
             unwritten = [e for e in named if self._key_of(e) not in settled]
             if unwritten:
                 # Checked again on the next write: it may have been dropped
@@ -1040,6 +1200,11 @@ class EntityVectorStore:
             failed_keys.extend(f"{e.entity_type.value}/{e.entity_id}" for e in unwritten)
         self._report(outcome, failed_keys)
         return outcome
+
+    @staticmethod
+    def _stored_id(point_id: str, fence: Fence | None) -> str:
+        """The id a point is stored under. ``states``, ``vectors``, ``witnessed`` and ``settled`` keep the logical id."""
+        return fence.point_id(point_id) if fence is not None else point_id
 
     def _key_of(self, entity: EntityRecord) -> str:
         return self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
@@ -1061,17 +1226,22 @@ class EntityVectorStore:
         generation = self._generation
         config_hash = self._config_hash
         fingerprint = self._fingerprint()
+        # The epoch this batch is accepted under: read before anything is embedded, checked when the pin is claimed
+        # and again once the points are written, and written into every point.
+        fence = await self._guard().capture(collection)
+        # An entity stored with the other precision than the pin's is not unchanged: it is written again.
+        pinned = (await self._guard().standing(collection, named[0].org_id, fresh=True, derive=False)).precision
         # Read and embed without the locks. A failed read in merge mode skips
         # the batch: merging against an assumed-empty state would drop every
         # other writer's membership.
         try:
-            early = await self._fetch_existing_states(collection, named)
+            early = await self._fetch_existing_states(collection, named, fence)
         except _MembershipReadError as exc:
             if merge_membership:
                 raise
             self.logger.warning("Entity state read failed; rewriting %d points in full: %s", len(named), exc)
             early = {}
-        vectors = await self._embed_changed(named, early, fingerprint)
+        vectors = await self._embed_changed(named, early, fingerprint, pinned)
 
         async with contextlib.AsyncExitStack() as locks:
             # Sorted, deduped acquisition order rules out circular waits
@@ -1079,13 +1249,18 @@ class EntityVectorStore:
             for key in sorted({self._entity_key(e.org_id, e.entity_type.value, e.entity_id) for e in named}):
                 await locks.enter_async_context(self._entity_lock(key))
             try:
-                states = await self._fetch_existing_states(collection, named)
+                states = await self._fetch_existing_states(collection, named, fence)
             except _MembershipReadError as exc:
                 if merge_membership:
                     raise
                 self.logger.warning("Entity state re-read failed; rewriting %d points in full: %s", len(named), exc)
                 states = {}
 
+            # The pin read before the embed only chose what to embed. A reset can move it while this batch waited for
+            # the locks, and a stored point is judged against the pin as it is now, with the states just read. A batch
+            # that finds nothing stored has nothing to judge and costs no read.
+            if any(state.get("exists") for state in states.values()):
+                pinned = (await self._guard().standing(collection, named[0].org_id, fresh=True, derive=False)).precision
             pending: list[tuple[EntityRecord, list[str], list[str]]] = []
             for entity in named:
                 point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
@@ -1096,7 +1271,7 @@ class EntityVectorStore:
                 else:
                     connector_ids = self._union_ids([], entity.connector_ids)
                     record_group_ids = self._union_ids([], entity.record_group_ids)
-                if existing is not None and self._same_content(existing, entity, fingerprint):
+                if existing is not None and self._same_content(existing, entity, fingerprint, pinned):
                     if (
                         list(existing["connectorIds"]) != connector_ids
                         or list(existing["recordGroupIds"]) != record_group_ids
@@ -1106,8 +1281,9 @@ class EntityVectorStore:
                         # move. Written by id: a search-based update cannot
                         # see a point the index has not refreshed yet.
                         await self.vector_db_service.update_payload_by_ids(
-                            collection, [point_id],
+                            collection, [self._stored_id(point_id, fence)],
                             {CONNECTOR_IDS_FIELD: connector_ids, RECORD_GROUP_IDS_FIELD: record_group_ids},
+                            org_id=entity.org_id,
                         )
                         outcome.membership_only += 1
                     else:
@@ -1125,45 +1301,121 @@ class EntityVectorStore:
                 vectors |= await self._embed_entities(late)
             self._raise_if_model_changed(generation)
 
+            # The weights that made each vector, as the server said; checked against the index before the write.
+            witnessed = {
+                self._point_id(e.org_id, e.entity_type.value, e.entity_id): vectors[
+                    self._point_id(e.org_id, e.entity_type.value, e.entity_id)
+                ][2]
+                for e, _, _ in pending
+            }
+            # One org per batch (see upsert_entities_batch). An index with no pin is derived from its points before
+            # an int8 claim, so points written before the pins existed (fp32) are found and not mixed with.
+            batch_org = named[0].org_id
+            for precision, fallback in {w for w in witnessed.values() if w is not None}:
+                await self._guard().verify_batch(
+                    collection, batch_org, precision, fallback=fallback, intent="int8-w", fence=fence,
+                )
+
             points = []
             for entity, connector_ids, record_group_ids in pending:
                 point_id = self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id)
-                dense, sparse = vectors[point_id]
+                dense, sparse, _ = vectors[point_id]
+                tag = {POINT_PRECISION: witnessed[point_id][0], POINT_EPOCH: fence.token} if witnessed.get(point_id) else {}
                 points.append(VectorPoint(
-                    id=point_id,
+                    id=self._stored_id(point_id, fence),
                     dense_vector=dense,
                     sparse_vector=sparse,
                     payload={
                         "page_content": entity.embedding_text,
-                        "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: fingerprint},
+                        "metadata": {**entity.to_vector_payload(), EMBEDDING_MODEL_FIELD: fingerprint, **tag},
                         CONNECTOR_IDS_FIELD: connector_ids,
                         RECORD_GROUP_IDS_FIELD: record_group_ids,
                     },
                 ))
             await self._raise_if_config_moved(config_hash)
             await self.vector_db_service.upsert_points(collection_name=collection, points=points)
+            await self._confirm_precision_after_write(collection, batch_org, witnessed, [e for e, _, _ in pending], fence)
             outcome.written += len(points)
-            settled.update(point.id for point in points)
+            settled.update(
+                self._point_id(e.org_id, e.entity_type.value, e.entity_id) for e, _, _ in pending
+            )
+
+    async def _confirm_precision_after_write(
+        self, collection: str, org: str, witnessed: dict[str, tuple[str, bool] | None], written: list[EntityRecord],
+        fence: Fence,
+    ) -> None:
+        """The pin is read again after the write: a cleanup that released it, or a writer of the other precision that
+        claimed it, between the check and the write would otherwise leave these points beside the other precision.
+
+        On a definite verdict (the pin holds another precision, or the epoch moved) the entity points this batch wrote at that
+        precision and epoch are removed and the error is raised (a flip is handed back to the queue). Any other outcome (a pin that
+        cannot be read or is missing, a cancellation) removes nothing and leaves a debt entry settled later by reading the pin and the
+        epoch again: an entity point is shared, so it is never removed on a guess. The error is raised either way.
+        """
+        guard = self._guard()
+        for precision in {w[0] for w in witnessed.values() if w is not None}:
+            extras = self._written_extras(org, precision, witnessed, written)
+            try:
+                await guard.confirm_after_write(collection, org, precision, fence)
+            except UNCONFIRMED_WRITE as exc:
+                if not extras:
+                    raise
+                settled = await guard.settle_unconfirmed(collection, org, precision, fence, extras, exc)
+                if settled is None:
+                    continue
+                if settled is exc:
+                    raise
+                raise settled from exc
+            except asyncio.CancelledError:
+                for extra in extras:
+                    try:
+                        await run_despite_cancellation(guard.note_debt(collection, org, precision, fence, extra))
+                    except BaseException:
+                        self.logger.error("Could not record the %s entity points of a cancelled batch (org %s) as debt", precision, org, exc_info=True)
+                raise
+
+    def _written_extras(
+        self, org: str, precision: str, witnessed: dict[str, tuple[str, bool] | None], written: list[EntityRecord],
+    ) -> list[dict]:
+        """The filter terms that name the entity points this batch wrote at *precision*, one per entity type."""
+        by_type: dict[str, list[str]] = {}
+        for entity in written:
+            point = witnessed.get(self._point_id(entity.org_id, entity.entity_type.value, entity.entity_id))
+            if point is not None and point[0] == precision:
+                by_type.setdefault(entity.entity_type.value, []).append(entity.entity_id)
+        if not by_type:
+            self.logger.error("The %s entity points of an unconfirmed batch (org %s) were not removed: the batch names no entity", precision, org)
+        return [
+            {"metadata.entityType": [entity_type], "metadata.entityId": sorted(ids)} for entity_type, ids in sorted(by_type.items())
+        ]
 
     async def _embed_changed(
         self, entities: list[EntityRecord], states: dict[str, dict[str, Any]], fingerprint: str,
-    ) -> dict[str, tuple[list[float], Any]]:
+        precision: str | None = None,
+    ) -> dict[str, tuple[list[float], Any, tuple[str, bool] | None]]:
         """Vectors, by point id, for the entities whose stored content does
         not already match (per ``states``)."""
         changed = [
             e for e in entities
             if not self._same_content(
-                states.get(self._point_id(e.org_id, e.entity_type.value, e.entity_id)) or {}, e, fingerprint,
+                states.get(self._point_id(e.org_id, e.entity_type.value, e.entity_id)) or {}, e, fingerprint, precision,
             )
         ]
         return await self._embed_entities(changed) if changed else {}
 
-    async def _embed_entities(self, entities: list[EntityRecord]) -> dict[str, tuple[list[float], Any]]:
+    async def _embed_entities(
+        self, entities: list[EntityRecord],
+    ) -> dict[str, tuple[list[float], Any, tuple[str, bool] | None]]:
+        """Vectors by point id, each with the precision the server said made it (None for a provider that does not say).
+
+        The witness travels with its vector: this runs before the entity locks, so concurrent batches of the same
+        entity must not hand their witnesses to each other through the store.
+        """
         texts = [e.embedding_text for e in entities]
-        dense = await self._embed(texts)
+        dense, witnessed = await self._embed_witnessed(texts)
         sparse = await self._embed_sparse(texts)
         return {
-            self._point_id(e.org_id, e.entity_type.value, e.entity_id): (d, sp)
+            self._point_id(e.org_id, e.entity_type.value, e.entity_id): (d, sp, witnessed)
             for e, d, sp in zip(entities, dense, sparse)
         }
 
@@ -1267,10 +1519,18 @@ class EntityVectorStore:
             self._entity_locks[lock_map_key] = lock
         return lock
 
+    async def _retrieve(self, collection: str, org_id: str, ids: list[str]) -> list[VectorPoint]:
+        """A read by id, which names no org itself: it takes the one bound for the
+        call (a job such as the rebuild has none; a bound other org is refused)."""
+        with org_context.for_org(org_id, job="entity_store"):
+            return await self.vector_db_service.retrieve_points(collection, ids)
+
     async def _fetch_existing_states(
-        self, collection: str, entities: list[EntityRecord]
+        self, collection: str, entities: list[EntityRecord], fence: Fence | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Each entity's stored membership and text, keyed by point id.
+        """Each entity's stored membership and text, keyed by its logical point id (the one ``_point_id`` gives).
+
+        The point is read under the id it is stored with: the logical one made specific to the epoch of *fence*.
 
         Read by id, not by search: a search does not see writes an OpenSearch
         index has not refreshed yet, so a merge against it would drop an
@@ -1284,8 +1544,9 @@ class EntityVectorStore:
         ids = [
             self._point_id(e.org_id, e.entity_type.value, e.entity_id) for e in entities
         ]
+        stored_ids = {point_id: self._stored_id(point_id, fence) for point_id in ids}
         try:
-            points = await self.vector_db_service.retrieve_points(collection, ids)
+            points = await self._retrieve(collection, entities[0].org_id, list(stored_ids.values()))
         except Exception as exc:
             raise _MembershipReadError(
                 f"membership read failed for {len(ids)} entities"
@@ -1293,7 +1554,7 @@ class EntityVectorStore:
         by_id = {point.id: point.payload or {} for point in points}
         states: dict[str, dict[str, Any]] = {}
         for point_id in ids:
-            payload = by_id.get(point_id)
+            payload = by_id.get(stored_ids[point_id])
             if payload is None:
                 states[point_id] = {
                     "exists": False,
@@ -1313,13 +1574,22 @@ class EntityVectorStore:
         return states
 
     @staticmethod
-    def _same_content(existing: dict[str, Any], entity: EntityRecord, fingerprint: str) -> bool:
+    def _same_content(
+        existing: dict[str, Any], entity: EntityRecord, fingerprint: str, precision: str | None = None,
+    ) -> bool:
         """True when the stored text and metadata are what ``entity`` would
         write and the stored vector came from the current model, so it needs
-        no re-embedding."""
+        no re-embedding.
+
+        With *precision* (the index's pin), a point tagged with the other precision is not the same: it is written
+        again, over the same id, so a point left by a writer that died before it confirmed is replaced, not kept."""
         if not existing.get("exists") or existing.get("page_content") != entity.embedding_text:
             return False
         metadata = dict(existing.get("metadata") or {})
+        stored = metadata.pop(POINT_PRECISION, None)  # which weights made the vector is not content: the fingerprint carries the setting
+        if precision and stored in (FP32, INT8) and stored != precision:
+            return False
+        metadata.pop(POINT_EPOCH, None)
         return (
             metadata.pop(EMBEDDING_MODEL_FIELD, None) == fingerprint
             and metadata == entity.to_vector_payload()
@@ -1370,9 +1640,12 @@ class EntityVectorStore:
             self.logger.error("Failed to delete entity %s: %s", entity_id, exc)
 
     async def delete_entities(
-        self, org_id: str, entity_type: str, entity_ids: list[str],
+        self, org_id: str, entity_type: str, entity_ids: list[str], *, precision: str | None = None,
+        epoch: str | None = None,
     ) -> None:
         """Delete ``entity_ids`` of one type in one org. Raises on failure.
+
+        With *precision*, only the points that carry that precision's tag go.
 
         Needs no embeddings."""
         ids = [i for i in entity_ids if i]
@@ -1383,7 +1656,7 @@ class EntityVectorStore:
         if collection is None:
             return
         await self.vector_db_service.delete_points(
-            collection, await self._entities_filter(org_id, entity_type, ids),
+            collection, await self._entities_filter(org_id, entity_type, ids, precision=precision, epoch=epoch),
         )
 
     async def delete_unreached_entities(
@@ -1708,9 +1981,7 @@ class EntityVectorStore:
                 await locks.enter_async_context(self._entity_lock(key))
             fresh = {
                 point.id: point.payload or {}
-                for point in await self.vector_db_service.retrieve_points(
-                    collection, [point_id for point_id, _, _ in refs],
-                )
+                for point in await self._retrieve(collection, org_id, [point_id for point_id, _, _ in refs])
             }
             stripped: dict[tuple[tuple[str, ...], tuple[str, ...]], list[str]] = {}
             exclusive: dict[str, list[str]] = {}
@@ -1746,6 +2017,7 @@ class EntityVectorStore:
                 await self.vector_db_service.update_payload_by_ids(
                     collection, point_ids,
                     {CONNECTOR_IDS_FIELD: list(connectors), RECORD_GROUP_IDS_FIELD: list(groups)},
+                    org_id=org_id,
                 )
             if exclusive and membership_lookup is not None:
                 exclusive = await self._rewrite_still_reached(
@@ -1793,19 +2065,24 @@ class EntityVectorStore:
                 await self.vector_db_service.update_payload_by_ids(
                     collection, [point_id],
                     {CONNECTOR_IDS_FIELD: connectors, RECORD_GROUP_IDS_FIELD: groups},
+                    org_id=org_id,
                 )
         return to_delete
 
     async def _entities_filter(
-        self, org_id: str, entity_type: str, entity_ids: list[str],
+        self, org_id: str, entity_type: str, entity_ids: list[str], *, precision: str | None = None,
+        epoch: str | None = None,
     ) -> FilterExpression:
-        return await self.vector_db_service.filter_collection(
-            must={
-                "metadata.orgId": org_id,
-                "metadata.entityType": entity_type,
-                "metadata.entityId": entity_ids,
-            },
-        )
+        must: dict[str, Any] = {
+            "metadata.orgId": org_id,
+            "metadata.entityType": entity_type,
+            "metadata.entityId": entity_ids,
+        }
+        if precision:
+            must[EMBED_PRECISION_FIELD] = [precision]
+        if epoch:
+            must[EMBED_EPOCH_FIELD] = [epoch]
+        return await self.vector_db_service.filter_collection(must=must)
 
     # ------------------------------------------------------------------
     # Public API — search
@@ -1942,6 +2219,20 @@ class EntityVectorStore:
             results[index] = _interleave(per_group)[:top_k]
         return results
 
+    async def dense_similarities(self, query: str, texts: list[str]) -> list[float]:
+        """Cosine similarity of ``query`` to each of ``texts`` under the dense model
+        that embeds the stored entities. Search scores are rank fused, so they
+        cannot say how close a hit really is."""
+        if not texts:
+            return []
+        await self._ensure_initialized()
+        query_vec, _ = await self._query_vectors(query)
+        query_norm = math.sqrt(sum(x * x for x in query_vec)) or 1.0
+        return [
+            sum(x * y for x, y in zip(query_vec, vec)) / (query_norm * (math.sqrt(sum(y * y for y in vec)) or 1.0))
+            for vec in await self._embed(texts)
+        ]
+
     async def _search_failed(self, collection: str) -> None:
         # Checked again on the next use: it may have been dropped or recreated.
         self._ready_collections.discard(collection)
@@ -1971,7 +2262,13 @@ class EntityVectorStore:
             self._query_vector_cache.move_to_end(text)
             return cached
         generation = self._generation
-        dense_vec = await asyncio.to_thread(self._dense_embeddings.embed_query, text)
+        embeddings = self._dense_embeddings
+        if isinstance(embeddings, EmbeddingServerEmbeddings):
+            dense_vec = await asyncio.to_thread(embeddings.embed_query, text)
+        else:
+            # The model is built without SDK retries (it is shared with indexing): a remote provider's transient failure is
+            # repeated by the gateway, the one retry layer, instead of escaping from the first 503.
+            dense_vec = await get_embedding_gateway().call(lambda: asyncio.to_thread(embeddings.embed_query, text))
         sparse_vec = None
         if self._sparse_embedder:
             sparse_results = await self._sparse_embedder.embed_documents([query])

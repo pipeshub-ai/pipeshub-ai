@@ -32,6 +32,8 @@ import {
   getFilterFieldOptions,
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
+  CONNECTOR_TOGGLE_TIMEOUT_MS,
+  CONNECTOR_TOGGLE_READ_TIMEOUT_MS,
   getConnectorSchema,
   testConnectorConnection,
   getConnectorEgressIps,
@@ -926,7 +928,7 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(warn.calledWithMatch(sinon.match('Deprecated POST /api/v1/connectors/c1/filters'))).to.be.true
+      expect(warn.calledWithMatch(sinon.match('Deprecated POST /api/v1/connectors/:connectorId/filters'))).to.be.true
     })
 
     it('should return an async handler function', () => {
@@ -1093,6 +1095,24 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.calledWith({ success: false, message: 'Timed out' })).to.be.true
       expect(next.called).to.be.false
+    })
+
+    it('forwards the chosen auth type', async () => {
+      const handler = testConnectorConnection(mockAppConfig)
+      req.params = { connectorType: 'Snowflake' }
+      req.body = { auth: { user: 'svc' }, authType: 'KEY_PAIR' }
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { success: true, message: 'Connected' },
+      })
+
+      await handler(req, res, next)
+
+      expect(execute.firstCall.args[3]).to.deep.equal({
+        auth: { user: 'svc' },
+        connectorId: undefined,
+        authType: 'KEY_PAIR',
+      })
     })
 
     it('passes a backend rejection to next', async () => {
@@ -2305,5 +2325,106 @@ describe('toggleConnectorInstance - Local FS desktop presence guard', () => {
 
     expect(execStub.calledTwice).to.be.true
     expect(presence.isLocalFsDeviceOnline.called).to.be.false
+  })
+})
+
+describe('toggleConnectorInstance - requested state, timeout and retries', () => {
+  let req: AuthenticatedUserRequest
+  let res: StubbedResponse
+  let next: sinon.SinonStub
+  let mockAppConfig: AppConfig
+  let mockScheduler: CrawlingSchedulerService
+
+  beforeEach(() => {
+    req = createToggleRequest()
+    res = createToggleResponse()
+    next = sinon.stub()
+    mockAppConfig = createToggleAppConfig()
+    mockScheduler = sinon.createStubInstance(CrawlingSchedulerService)
+  })
+
+  afterEach(() => {
+    sinon.restore()
+    registerDesktopPresence(null)
+  })
+
+  function stubInstanceThenToggle(instance: Record<string, unknown>, toggle: unknown = { statusCode: 200, data: { success: true } }) {
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand')
+    execStub.onFirstCall().resolves({ statusCode: 200, data: { connector: { _key: 'conn-1', ...instance } } })
+    if (toggle instanceof Error) execStub.onSecondCall().rejects(toggle)
+    else execStub.onSecondCall().resolves(toggle as any)
+    return execStub
+  }
+
+  it('sends the requested state and allows a retry, since a second copy changes nothing', async () => {
+    req.body = { type: 'sync', enabled: true }
+    const execStub = stubInstanceThenToggle({ type: 'Confluence', isActive: false })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    // The instance read before it is bounded too, so the two stay under the proxy's wait.
+    expect(execStub.firstCall.args[4]).to.deep.equal({ timeoutMs: CONNECTOR_TOGGLE_READ_TIMEOUT_MS })
+    const toggle = execStub.secondCall
+    expect(toggle.args[0]).to.match(/\/api\/v1\/connectors\/conn-1\/toggle$/)
+    expect(toggle.args[3]).to.deep.equal({ type: 'sync', enabled: true })
+    expect(toggle.args[4]).to.deep.equal({ timeoutMs: CONNECTOR_TOGGLE_TIMEOUT_MS, retries: 3 })
+    expect(res.status.calledWith(200)).to.be.true
+  })
+
+  it('sends a flip only once, since a retried flip turns the connector back', async () => {
+    req.body = { type: 'sync' }
+    const execStub = stubInstanceThenToggle({ type: 'Confluence', isActive: true })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    const toggle = execStub.secondCall
+    expect(toggle.args[3]).to.deep.equal({ type: 'sync' })
+    expect(toggle.args[4]).to.deep.equal({ timeoutMs: CONNECTOR_TOGGLE_TIMEOUT_MS, retries: 1 })
+  })
+
+  it('sends an agent toggle with its state and timeout, without reading the instance', async () => {
+    req.body = { type: 'agent', enabled: false }
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200, data: { success: true } })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(execStub.calledOnce).to.be.true
+    expect(execStub.firstCall.args[3]).to.deep.equal({ type: 'agent', enabled: false })
+    expect(execStub.firstCall.args[4]).to.deep.equal({ timeoutMs: CONNECTOR_TOGGLE_TIMEOUT_MS, retries: 3 })
+  })
+
+  it('does not ask for a desktop when an off Local FS connector is asked to stay off', async () => {
+    registerDesktopPresence(makePresence(false))
+    req.body = { type: 'sync', enabled: false }
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false, ownerDeviceId: 'dev-a' })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(execStub.calledTwice).to.be.true
+    expect(res.status.calledWith(409)).to.be.false
+  })
+
+  it('still asks for a desktop when an off Local FS connector is asked to turn on', async () => {
+    registerDesktopPresence(makePresence(false))
+    req.body = { type: 'sync', enabled: true }
+    const execStub = stubInstanceThenToggle({ type: 'Local FS', createdBy: 'owner-1', isActive: false, ownerDeviceId: 'dev-a' })
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(execStub.calledOnce).to.be.true
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_OFFLINE')
+  })
+
+  it('answers a toggle that timed out with a 504', async () => {
+    req.body = { type: 'sync', enabled: true }
+    stubInstanceThenToggle(
+      { type: 'Confluence', isActive: false },
+      new DOMException('The operation was aborted due to timeout', 'TimeoutError'),
+    )
+
+    await toggleConnectorInstance(mockAppConfig, mockScheduler)(req, res, next)
+
+    expect(next.calledOnce).to.be.true
+    expect(next.firstCall.args[0].statusCode).to.equal(504)
   })
 })

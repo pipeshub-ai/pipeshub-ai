@@ -44,7 +44,15 @@ def _stored(email: str, *, is_active: bool) -> User:
 
 
 def _wire(provider, stored_users: list) -> None:
-    provider.get_user_by_email = AsyncMock(side_effect=stored_users)
+    answers = iter(stored_users)
+
+    async def by_email(email: str, transaction: str | None = None, *, org_id: str) -> User | None:
+        assert org_id == ORG, "every lookup names the batch's org"
+        stored = next(answers)
+        assert stored is None or stored.email == email
+        return stored
+
+    provider.get_user_by_email = AsyncMock(side_effect=by_email)
     provider.batch_upsert_nodes = AsyncMock()
     provider.batch_create_edges = AsyncMock()
     provider.delete_edge = AsyncMock()
@@ -61,11 +69,38 @@ async def test_a_new_guest_is_saved_and_linked_to_the_app_but_not_the_org(make_p
     guest = _app_user("bob_partner.com#EXT#@contoso.com", is_guest=True)
     _wire(provider, [None, _stored(guest.email, is_active=False)])
 
-    await provider.batch_upsert_app_users([guest])
+    await provider.batch_upsert_app_users([guest], org_id=ORG)
 
     provider.batch_upsert_nodes.assert_awaited_once()
     assert _edge_collections(provider) == [CollectionNames.USER_APP_RELATION.value]
     provider.delete_edge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make_provider", PROVIDERS)
+async def test_a_new_users_job_title_is_saved_as_their_designation(make_provider) -> None:
+    provider = make_provider()
+    member = _app_user("ana@contoso.com", is_guest=False)
+    member.title = "Staff Engineer"
+    _wire(provider, [None, _stored(member.email, is_active=False)])
+
+    await provider.batch_upsert_app_users([member], org_id=ORG)
+
+    saved = provider.batch_upsert_nodes.await_args.args[0][0]
+    assert saved["designation"] == "Staff Engineer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make_provider", PROVIDERS)
+async def test_an_existing_user_is_not_rewritten_with_the_synced_title(make_provider) -> None:
+    provider = make_provider()
+    member = _app_user("ana@contoso.com", is_guest=False)
+    member.title = "Staff Engineer"
+    _wire(provider, [_stored(member.email, is_active=True)])
+
+    await provider.batch_upsert_app_users([member], org_id=ORG)
+
+    provider.batch_upsert_nodes.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -75,7 +110,7 @@ async def test_a_new_member_still_joins_the_org(make_provider) -> None:
     member = _app_user("ana@contoso.com", is_guest=False)
     _wire(provider, [None, _stored(member.email, is_active=False)])
 
-    await provider.batch_upsert_app_users([member])
+    await provider.batch_upsert_app_users([member], org_id=ORG)
 
     assert _edge_collections(provider) == [
         CollectionNames.BELONGS_TO.value, CollectionNames.USER_APP_RELATION.value,
@@ -92,7 +127,7 @@ async def test_an_existing_guest_who_never_joined_pipeshub_loses_the_org_edge(ma
     stored = _stored(guest.email, is_active=False)
     _wire(provider, [stored])
 
-    await provider.batch_upsert_app_users([guest])
+    await provider.batch_upsert_app_users([guest], org_id=ORG)
 
     provider.delete_edge.assert_awaited_once_with(
         stored.id, CollectionNames.USERS.value, ORG, CollectionNames.ORGS.value,
@@ -106,13 +141,14 @@ async def test_an_existing_guest_who_never_joined_pipeshub_loses_the_org_edge(ma
 async def test_an_invited_guest_keeps_the_org_edge(make_provider) -> None:
     provider = make_provider()
     guest = _app_user("bob_partner.com#EXT#@contoso.com", is_guest=True)
-    _wire(provider, [_stored(guest.email, is_active=True)])
+    stored = _stored(guest.email, is_active=True)
+    _wire(provider, [stored])
 
-    await provider.batch_upsert_app_users([guest])
+    await provider.batch_upsert_app_users([guest], org_id=ORG)
 
     provider.delete_edge.assert_not_awaited()
     provider.logger.info.assert_any_call(
-        f"Guest {guest.email} is active in PipesHub; keeping their organization membership"
+        "Guest user %s is active in PipesHub; keeping their organization membership", stored.id
     )
 
 
@@ -123,7 +159,7 @@ async def test_an_existing_member_is_left_as_before(make_provider) -> None:
     member = _app_user("ana@contoso.com", is_guest=False)
     _wire(provider, [_stored(member.email, is_active=False)])
 
-    await provider.batch_upsert_app_users([member])
+    await provider.batch_upsert_app_users([member], org_id=ORG)
 
     provider.delete_edge.assert_not_awaited()
     assert _edge_collections(provider) == [CollectionNames.USER_APP_RELATION.value]

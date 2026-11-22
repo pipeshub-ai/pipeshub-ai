@@ -281,6 +281,106 @@ async def test_an_unparseable_document_is_not_retried_and_leaves_the_breaker_clo
 
 
 @pytest.mark.asyncio
+async def test_a_password_required_answer_becomes_the_typed_error_and_is_not_retried() -> None:
+    from app.exceptions.indexing_exceptions import PasswordProtectedError
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+    from app.utils.user_errors import (
+        PASSWORD_PROTECTED,
+        is_password_protected,
+        to_user_reason,
+    )
+
+    client = ParsingClient(
+        service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0,
+        config_service=_SecretsConfigService(),
+    )
+    calls = 0
+
+    async def _request(method, url, **kwargs) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _make_response(
+            422,
+            {"success": False, "error": {
+                "code": "PASSWORD_REQUIRED", "message": "needs a password", "details": {"format": "pdf"},
+            }},
+        )
+
+    fake_httpx = AsyncMock()
+    fake_httpx.__aenter__ = AsyncMock(return_value=fake_httpx)
+    fake_httpx.__aexit__ = AsyncMock(return_value=False)
+    fake_httpx.request = _request
+
+    with patch.object(client, "_make_client", return_value=fake_httpx):
+        with pytest.raises(PasswordProtectedError) as exc_info:
+            await client.parse(file_content=b"data", record_name="locked.pdf")
+
+    assert calls == 1
+    assert not client.circuit_breaker.is_open
+    assert client.circuit_breaker._consecutive_failures == 0
+    assert is_password_protected(exc_info.value)
+    assert to_user_reason(exc_info.value) == PASSWORD_PROTECTED
+    assert MessageErrorClassifier.classify_by_exception(exc_info.value) == MessageErrorType.TERMINAL
+
+
+@pytest.mark.asyncio
+async def test_no_model_that_reads_images_is_not_retried_and_tells_what_to_fix() -> None:
+    """The parse route's answer when OCR has no multimodal model: one call,
+    terminal, and the record stores the reason the route sent."""
+    from app.config.constants.arangodb import OriginTypes, RecordTypes
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+    from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR, to_user_reason
+
+    client = ParsingClient(
+        service_url="http://fake-parsing:8092", max_retries=3, retry_delay=0.0,
+        config_service=_SecretsConfigService(),
+    )
+    calls = 0
+
+    async def _request(method, url, **kwargs) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _make_response(
+            422,
+            {"success": False, "error": {
+                "code": "PARSE_FAILED",
+                "message": SCANNED_DOCUMENT_NEEDS_OCR,
+                "details": {"required": "multimodal LLM"},
+            }},
+        )
+
+    fake_httpx = AsyncMock()
+    fake_httpx.__aenter__ = AsyncMock(return_value=fake_httpx)
+    fake_httpx.__aexit__ = AsyncMock(return_value=False)
+    fake_httpx.request = _request
+
+    with patch.object(client, "_make_client", return_value=fake_httpx):
+        with pytest.raises(ParsingClientError) as exc_info:
+            await client.parse(file_content=b"data", record_name="scan.pdf")
+
+    assert calls == 1
+    assert not client.circuit_breaker.is_open
+    assert client.circuit_breaker._consecutive_failures == 0
+    # How the record handler sees it (record.py wraps unknown errors this way).
+    try:
+        raise Exception(str(exc_info.value)) from exc_info.value
+    except Exception as wrapped:
+        handled = wrapped
+    assert MessageErrorClassifier.classify_by_exception(handled) == MessageErrorType.TERMINAL
+    assert to_user_reason(handled) == SCANNED_DOCUMENT_NEEDS_OCR
+    uploaded = {"origin": OriginTypes.UPLOAD.value, "recordType": RecordTypes.FILE.value}
+    synced = {"origin": OriginTypes.CONNECTOR.value, "recordType": RecordTypes.FILE.value}
+    assert to_user_reason(handled, record=uploaded) == SCANNED_DOCUMENT_NEEDS_OCR
+    assert to_user_reason(handled, record=synced, source="Drive") == SCANNED_DOCUMENT_NEEDS_OCR
+
+
+@pytest.mark.asyncio
 async def test_an_unexpected_parser_failure_is_retried_and_stored_as_temporary() -> None:
     """The parsing service answers an unexpected exception with a 500 and a
     generic body. The client retries it as transient, and the record is told
@@ -441,3 +541,43 @@ async def test_the_per_call_read_timeout_reaches_the_request() -> None:
         )
 
     assert seen["timeout"]["read"] == pytest.approx(4320.0)
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_run_tells_the_parsing_service_to_bypass_its_stored_outputs() -> None:
+    from app.services.paid_cache.run import begin_run, clear_run
+
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+    post = AsyncMock(return_value=_make_response(200, _success_response()))
+
+    async def parse() -> None:
+        await client.parse(file_content=b"data", record_name="test.csv", mime_type="text/csv", extension="csv")
+
+    with patch.object(client, "_post_multipart", new=post):
+        await parse()                                                    # no run: nothing is sent
+        begin_run("org-1", "rec-1", None, "index", refresh=True)
+        try:
+            await parse()
+        finally:
+            clear_run()
+
+    sent = [call.kwargs["data"] for call in post.await_args_list]
+    assert "refresh_paid_outputs" not in sent[0] and "refresh_token" not in sent[0]
+    assert sent[1]["refresh_paid_outputs"] == "true" and sent[1]["refresh_token"]
+
+
+@pytest.mark.asyncio
+async def test_every_parse_request_carries_the_record_budget_the_client_applies() -> None:
+    from app.services.messaging.config import messaging_env
+
+    client = ParsingClient(service_url="http://fake-parsing:8092", max_retries=1)
+    post = AsyncMock(return_value=_make_response(200, _success_response()))
+    with patch.object(client, "_post_multipart", new=post):
+        await client.parse(file_content=b"d", record_name="a.pdf", mime_type="application/pdf", extension="pdf")
+        await client.parse(file_content=b"d", record_name="a.csv", mime_type="text/csv", extension="csv")
+
+    sent = [float(call.kwargs["data"]["record_budget_s"]) for call in post.await_args_list]
+    assert sent == [
+        messaging_env.record_processing_timeout_for("pdf", "application/pdf"),
+        messaging_env.record_processing_timeout_for("csv", "text/csv"),
+    ]

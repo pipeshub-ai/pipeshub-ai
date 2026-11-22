@@ -2,6 +2,7 @@
 
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { Flex, Text, IconButton } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KbNodeNameIcon } from '@/app/(main)/knowledge-base/utils/kb-node-name-icon';
 import type { NodeType } from '@/app/(main)/knowledge-base/types';
@@ -33,6 +34,7 @@ interface CollectionPillProps {
  * Replaces the old 150×84 card style.
  */
 function CollectionPill({ item, removable = false, onRemove }: CollectionPillProps) {
+  const { t } = useTranslation();
   return (
     <Flex
       align="center"
@@ -75,6 +77,8 @@ function CollectionPill({ item, removable = false, onRemove }: CollectionPillPro
         <IconButton
           variant="ghost"
           size="1"
+          className="touch-hit"
+          aria-label={t('chat.removeSelectedSource', { name: item.name })}
           onClick={() => onRemove(item.id)}
           style={{
             width: 16,

@@ -1,11 +1,17 @@
 import { randomUUID } from 'crypto';
 import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
+import { injectRequestHeaders } from '../../../libs/context/request-context';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
 import {
+  abortOnClientClose,
+  releaseOnClientClose,
+} from '../../../libs/utils/release-on-close';
+import {
   BadRequestError,
   ForbiddenError,
+  HttpError,
   InternalServerError,
   NotFoundError,
   UnauthorizedError,
@@ -37,15 +43,24 @@ import {
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
 import { safeParsePagination } from '../../../utils/safe-integer';
+import { KB_BEING_DELETED_MESSAGE } from '../../../libs/errors/backend-error';
 
 /** Shape of the KB detail response used during pre-upload permission checks. */
 interface KbCheckData {
   userRole?: string;
+  /** `DELETING` while the knowledge base is being deleted. */
+  status?: string;
 }
+
+/** A pushed record's revision id, as the Python service writes it (`pb1:...`). */
+export const PUSHED_REVISION = /^pb[0-9]+:/;
+
+const kbBeingDeleted = (): HttpError =>
+  new HttpError('KB_BEING_DELETED', KB_BEING_DELETED_MESSAGE, 409);
 
 /** Fields of the record detail response read before a file replace. */
 interface RecordDetailData {
-  record?: { externalRecordId?: string };
+  record?: { externalRecordId?: string; externalRevisionId?: string };
   knowledgeBase?: { id?: string };
 }
 import {
@@ -61,6 +76,8 @@ const logger = Logger.getInstance({
 
 const KNOWLEDGE_HUB_MIN_QUERY_LENGTH = 2;
 const KNOWLEDGE_HUB_MAX_QUERY_LENGTH = 500;
+/** Under the ~90 s a browser or proxy waits, so a slow listing fails with a 504 the page can show. */
+export const KNOWLEDGE_HUB_NODES_TIMEOUT_MS = 60_000;
 
 /**
  * The search text for a knowledge-hub listing, after trim.
@@ -195,6 +212,8 @@ export const getKnowledgeHubNodes =
         url,
         HttpMethod.GET,
         req.headers as Record<string, string>, // Forwards auth headers
+        undefined,
+        { timeoutMs: KNOWLEDGE_HUB_NODES_TIMEOUT_MS },
       );
 
       handleConnectorResponse(
@@ -1170,11 +1189,16 @@ const assertKbWritePermission = async (
   if (kbCheckResponse.statusCode !== 200) {
     throw handleBackendError(kbCheckResponse, 'verify knowledge base access');
   }
-  const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
+  const kbCheck = kbCheckResponse.data as KbCheckData | undefined;
+  const kbUserRole = kbCheck?.userRole;
   if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
     throw new ForbiddenError(
       'You do not have permission to upload to this knowledge base',
     );
+  }
+  // After the role check, so a caller with no access cannot learn the state of the KB.
+  if (kbCheck.status === 'DELETING') {
+    throw kbBeingDeleted();
   }
 };
 
@@ -1403,6 +1427,18 @@ export const updateRecord =
           req.headers as Record<string, string>,
         );
 
+        // A pushed record's content is whatever its pusher sent; a file replaced here would be
+        // overwritten by the next push and would break the revision the record names.
+        if (
+          PUSHED_REVISION.test(recordDetail.record?.externalRevisionId ?? '')
+        ) {
+          throw new HttpError(
+            'RECORD_IS_PUSHED',
+            'This record was pushed through the API, so its file cannot be replaced here. Push a new version instead.',
+            409,
+          );
+        }
+
         storageDocumentId = recordDetail?.record?.externalRecordId;
 
         if (!storageDocumentId) {
@@ -1571,7 +1607,16 @@ export const getRecordById =
       const responseForClient: Record<string, any> = { ...response, data: { ...(response?.data || {}) } };
 
       if (responseForClient.statusCode === 404) {
-        throw new NotFoundError(`Record ${recordId} not found`);
+        // A record whose connector was deleted answers 404 with its own detail (content-open intent);
+        // a missing record keeps the generic message.
+        const detail: unknown = (
+          responseForClient.data as { detail?: unknown } | undefined
+        )?.detail;
+        throw new NotFoundError(
+          typeof detail === 'string' && /connector/i.test(detail)
+            ? detail
+            : `Record ${recordId} not found`,
+        );
       }
 
       if (responseForClient.data?.record) {
@@ -1845,14 +1890,32 @@ export const listTrash =
         );
       }
       const { kbId } = req.params as { kbId: string };
-      const { page, limit } = req.query as { page?: string; limit?: string };
+      const { page, limit, cursor } = req.query as {
+        page?: string;
+        limit?: string;
+        cursor?: string;
+      };
       const query = new URLSearchParams({ page: page ?? '1', limit: limit ?? '25' });
+      if (cursor) query.set('cursor', cursor);
 
-      const response = await executeConnectorCommand(
+      const response = await executeConnectorCommand<{
+        detail?: string;
+        errorCode?: string;
+      }>(
         `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/trash?${query.toString()}`,
         HttpMethod.GET,
         req.headers as Record<string, string>,
       );
+      if (
+        response.statusCode === 400 &&
+        response.data?.errorCode === 'PAGE_BEYOND_LIMIT'
+      ) {
+        throw new HttpError(
+          'PAGE_BEYOND_LIMIT',
+          response.data.detail ?? 'Follow nextCursor to page further.',
+          400,
+        );
+      }
 
       handleConnectorResponse(
         response,
@@ -2140,6 +2203,37 @@ export const listKBPermissions =
     }
   };
 
+/** Request headers the stream proxy passes to the connector service, which judges them after its access checks. */
+const RECORD_STREAM_FORWARDED_HEADERS: Array<[string, string]> = [
+  ['if-none-match', 'If-None-Match'],
+  ['range', 'Range'],
+  ['if-range', 'If-Range'],
+  ['x-record-content-open', 'X-Record-Content-Open'],
+];
+
+/** Response headers of the connector service's answer that the gateway passes on to the client. */
+const RECORD_STREAM_RELAYED_HEADERS = [
+  'etag',
+  'cache-control',
+  'accept-ranges',
+  'content-range',
+];
+
+/**
+ * A refusal of the record stream. It is written without `res.json`, because Express derives an
+ * `ETag` from a JSON body and a refusal must carry no validator; it is never cacheable.
+ */
+function refuseRecordStream(
+  res: Response,
+  status: number,
+  error: string,
+): void {
+  res.status(status);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify({ error }));
+}
+
 export const getRecordBuffer =
   (connectorUrl: string) =>
   async (
@@ -2167,19 +2261,57 @@ export const getRecordBuffer =
         // Already validated as `^\d+$` by getRecordByIdSchema.
         queryParams.append('version', version);
       }
-      const headers: Record<string, string> = {
+      const forwarded: Record<string, string> = {
         Authorization: req.headers.authorization as string,
         'Content-Type': 'application/json',
       };
+      // The validator is the connector service's to judge, after its access checks.
+      for (const [incoming, outgoing] of RECORD_STREAM_FORWARDED_HEADERS) {
+        const value = req.headers[incoming];
+        if (typeof value === 'string' && value.length > 0) {
+          forwarded[outgoing] = value;
+        }
+      }
+      const headers = injectRequestHeaders(forwarded);
 
-      // Make request to FastAPI backend
+      // Make request to FastAPI backend. The request is cancelled when the client leaves before it answers.
+      const clientGone = abortOnClientClose(res);
       const response = await axios.get(
         `${connectorUrl}/api/v1/stream/record/${encodeURIComponent(recordId)}?${queryParams.toString()}`,
         {
           responseType: 'stream',
           headers,
+          signal: clientGone,
+          // A 304 is an answer, not a failure.
+          validateStatus: (status) =>
+            (status >= 200 && status < 300) || status === 304,
         },
       );
+
+      if (res.destroyed) {
+        // The client left while the upstream was answering: the body has nobody to go to.
+        (response.data as { destroy?: () => void }).destroy?.();
+        return;
+      }
+      const upstreamHeaders = response.headers as Record<string, unknown>;
+      for (const name of RECORD_STREAM_RELAYED_HEADERS) {
+        const value = upstreamHeaders[name];
+        if (typeof value === 'string' && value.length > 0) {
+          res.set(name, value);
+        }
+      }
+      if (response.status === 304) {
+        (response.data as { destroy?: () => void }).destroy?.();
+        res.status(304).end();
+        return;
+      }
+      if (response.status === 206) {
+        res.status(206);
+      }
+      const contentLength = upstreamHeaders['content-length'];
+      if (typeof contentLength === 'string' && contentLength.length > 0) {
+        res.set('Content-Length', contentLength);
+      }
 
       // Set appropriate headers from the FastAPI response
       const contentType = response.headers['content-type'];
@@ -2193,9 +2325,18 @@ export const getRecordBuffer =
 
       // Pipe the streaming response directly to the client
       response.data.pipe(res);
+      // A client that leaves (an aborted preview, a range reader that got a 200) must not leave the upstream read open.
+      releaseOnClientClose(res, response.data);
 
       // Handle any errors in the stream
       response.data.on('error', (error: any) => {
+        if (axios.isCancel(error) || res.destroyed) {
+          // The client left on purpose and the abort signal tore the upstream stream down: not a failure.
+          logger.debug('Client left while proxying record buffer', {
+            recordId,
+          });
+          return;
+        }
         logger.error('Stream error while proxying record buffer', {
           error: error?.message,
           recordId,
@@ -2216,21 +2357,35 @@ export const getRecordBuffer =
         res.destroy(error);
       });
     } catch (error: any) {
-      logger.error('Error fetching record buffer', {
+      if (axios.isCancel(error)) {
+        // The client left before the upstream answered; there is nobody to answer.
+        return;
+      }
+      // A range past the end is a normal answer of the range contract, not a failure.
+      const log =
+        error?.response?.status === 416
+          ? logger.info.bind(logger)
+          : logger.error.bind(logger);
+      log('Error fetching record buffer', {
         error: error?.message,
         recordId: req.params.recordId,
       });
       if (!res.headersSent) {
-        if (error.response) {
+        const upstream = error.response as
+          | {
+              status: number;
+              headers?: Record<string, unknown>;
+              data: NodeJS.ReadableStream;
+            }
+          | undefined;
+        if (upstream) {
           let errorMessage = 'Error from AI backend';
           try {
             const chunks: Buffer[] = [];
             await new Promise<void>((resolve, reject) => {
-              error.response.data.on('data', (chunk: Buffer) =>
-                chunks.push(chunk),
-              );
-              error.response.data.on('end', resolve);
-              error.response.data.on('error', reject);
+              upstream.data.on('data', (chunk: Buffer) => chunks.push(chunk));
+              upstream.data.on('end', resolve);
+              upstream.data.on('error', reject);
             });
             const body = Buffer.concat(chunks).toString('utf8');
             const parsed = JSON.parse(body);
@@ -2242,15 +2397,20 @@ export const getRecordBuffer =
           }
           // A 429 is only actionable with the source's own backoff hint, which
           // the connector service put on the response for us to relay.
-          const retryAfter = error.response.headers?.['retry-after'];
-          if (retryAfter) {
-            res.set('Retry-After', String(retryAfter));
+          const retryAfter = upstream.headers?.['retry-after'];
+          if (typeof retryAfter === 'string' && retryAfter.length > 0) {
+            res.set('Retry-After', retryAfter);
           }
-          res.status(error.response.status).json({ error: errorMessage });
+          const upstreamStatus = upstream.status;
+          const contentRange: unknown = upstream.headers?.['content-range'];
+          if (upstreamStatus === 416 && typeof contentRange === 'string') {
+            res.set('Content-Range', contentRange);
+          }
+          refuseRecordStream(res, upstreamStatus, errorMessage);
           return;
         } else {
           // Don't throw here to avoid uncaughtException shutdown during streams
-          res.status(500).json({ error: 'Failed to retrieve record data' });
+          refuseRecordStream(res, 500, 'Failed to retrieve record data');
           return;
         }
       }

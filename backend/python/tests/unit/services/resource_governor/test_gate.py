@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
 from app.services.resource_governor.gate import AdmissionGate
-from app.services.resource_governor.models import Limits, Pool
+from app.services.resource_governor.models import Limits, Pool, PoolDemand
 from app.services.resource_governor.registry import LimitRegistry
+from tests.support.loop_clock import virtual_loop_time
 
 
 def _registry(limit: int, pool: Pool = Pool.HEAVY_PARSE) -> LimitRegistry:
@@ -108,7 +108,8 @@ class TestAdmissionGateBasics:
 
 @pytest.mark.asyncio
 class TestAdmissionGateWaking:
-    async def test_waiters_wake_promptly_when_limit_rises(self) -> None:
+    async def test_waiters_wake_promptly_when_limit_rises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        virtual_loop_time(monkeypatch)  # the 0.5 s below is then exact: a missed wake is served only by the 1 s safety net
         registry = _registry(limit=1)
         gate = AdmissionGate(Pool.HEAVY_PARSE, registry)
         await gate.acquire(cost=1)  # occupy the only slot
@@ -125,7 +126,8 @@ class TestAdmissionGateWaking:
         result = await asyncio.wait_for(task, timeout=0.5)
         assert result is True
 
-    async def test_waiters_wake_on_release(self) -> None:
+    async def test_waiters_wake_on_release(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        virtual_loop_time(monkeypatch)
         registry = _registry(limit=1)
         gate = AdmissionGate(Pool.HEAVY_PARSE, registry)
         await gate.acquire(cost=1)
@@ -199,33 +201,36 @@ class TestAdmissionGateDemandAccounting:
         demand = gate.drain_demand()
         assert demand.permit_seconds == pytest.approx(12.0)
 
-    def test_massively_concurrent_short_holds_are_visible_to_demand(self) -> None:
+    def test_massively_concurrent_short_holds_are_visible_to_demand(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The aliasing regression (plan section 4.1): 300 concurrent
         ~5ms acquisitions against a limit of 2 must show blocked_acquires
         and high utilisation even though in_use is back to 0 by the time
         the controller drains — proving demand is not point-sampled.
         """
-        registry = _registry(limit=2)
-        gate = AdmissionGate(Pool.HEAVY_PARSE, registry, clock=time.monotonic)
 
-        async def worker() -> None:
-            async with gate.slot(timeout=30.0) as admitted:
-                assert admitted
-                await asyncio.sleep(0.005)
+        # On a loop clock the test controls: on the wall clock a busy runner's delay between a release and the next
+        # admission counted as idle permit time (the same test in test_demand_accounting.py failed at 0.34).
+        async def scenario() -> tuple[AdmissionGate, PoolDemand, float]:
+            virtual_loop_time(monkeypatch)
+            loop = asyncio.get_running_loop()
+            gate = AdmissionGate(Pool.HEAVY_PARSE, _registry(limit=2), clock=loop.time)
 
-        async def scenario() -> None:
+            async def worker() -> None:
+                async with gate.slot(timeout=30.0) as admitted:
+                    assert admitted
+                    await asyncio.sleep(0.005)
+
+            start = loop.time()
             await asyncio.gather(*(worker() for _ in range(300)))
+            elapsed = loop.time() - start
+            return gate, gate.drain_demand(), elapsed
 
-        wall_start = time.monotonic()
-        asyncio.run(scenario())
-        wall_elapsed = time.monotonic() - wall_start
-
-        demand = gate.drain_demand()
+        gate, demand, elapsed = asyncio.run(scenario())
         assert gate.in_use == 0  # point-in-time read would see no contention at all
-        assert demand.blocked_acquires > 0
-        # Fully back-to-back at limit=2 for the whole run -> mean occupancy
-        # over the wall-clock window is near the limit, i.e. high utilisation.
-        assert demand.utilisation(limit=2, interval=wall_elapsed) >= 0.7
+        assert demand.blocked_acquires == 298
+        # Fully back-to-back at limit=2 for the whole run: both permits held all the time.
+        assert elapsed == pytest.approx(300 * 0.005 / 2)
+        assert demand.utilisation(limit=2, interval=elapsed) == pytest.approx(1.0)
         # A controller sampling once at the end still sees demand: with 300
         # tasks and a limit of 2, the large majority had to wait.
         assert demand.blocked_acquires >= 290

@@ -9,6 +9,7 @@ import {
   getNextMillis,
 } from 'bullmq';
 import { Logger } from '../../../libs/services/logger.service';
+import { withCause } from '../../../libs/errors/base.error';
 import {
   BadRequestError,
   InternalServerError,
@@ -18,6 +19,8 @@ import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import { IRedisConnectionProvider } from '../../../libs/services/redis/connectionProvider.interface';
 import { crawlingQueuePrefix, crawlingRedisProvider } from './crawling_queue';
+import { pgReconcilePending, usesPgScheduler } from './crawling_pg';
+import { PgJobQueue } from '../../../libs/services/pg-job-queue.service';
 import {
   CrawlingJobData,
   ScheduleJobOptions,
@@ -69,13 +72,34 @@ export class CrawlingSchedulerService {
   private readonly logger: Logger;
   private repeatableJobMap: Map<string, string> = new Map(); // customJobId -> repeatableJobKey
   private pausedJobs: Map<string, PausedJobInfo> = new Map(); // jobId -> PausedJobInfo
-  private readonly provider: IRedisConnectionProvider;
+  // undefined when the scheduler runs on PostgreSQL (no Redis at all)
+  private readonly provider: IRedisConnectionProvider | undefined;
   // One hash, so it lives in one Redis Cluster slot: connector id -> {orgId, at}.
-  private readonly reconcilePendingKey: string;
+  private readonly reconcilePendingKey: string = '';
 
   constructor(@inject('RedisConfig') redisConfig: RedisConfig) {
     this.logger = Logger.getInstance({ service: 'CrawlingSchedulerService' });
 
+    const defaultJobOptions = {
+      removeOnComplete: 10, // Keep only last 10 completed jobs per connector type
+      removeOnFail: 10, // Keep only last 10 failed jobs per connector type
+      attempts: 3,
+      backoff: {
+        type: 'exponential' as const,
+        delay: 5000,
+      },
+    };
+    if (usesPgScheduler()) {
+      this.provider = undefined;
+      this.queue = new PgJobQueue(
+        'crawling-scheduler',
+        defaultJobOptions,
+      ) as unknown as Queue;
+      this.logger.info(
+        'CrawlingSchedulerService initialized (PostgreSQL scheduler)',
+      );
+      return;
+    }
     const provider = crawlingRedisProvider(redisConfig);
     this.provider = provider;
     this.reconcilePendingKey = `${crawlingQueuePrefix(provider)}:schedule-reconcile-pending`;
@@ -86,15 +110,7 @@ export class CrawlingSchedulerService {
       // on this connection.
       connection: provider.createClient({ blocking: true }),
       prefix: crawlingQueuePrefix(provider),
-      defaultJobOptions: {
-        removeOnComplete: 10, // Keep only last 10 completed jobs per connector type
-        removeOnFail: 10, // Keep only last 10 failed jobs per connector type
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 5000,
-        },
-      },
+      defaultJobOptions,
     };
 
     this.queue = new Queue('crawling-scheduler', queueOptions);
@@ -109,6 +125,8 @@ export class CrawlingSchedulerService {
     connectorId: string,
     orgId: string,
   ): Promise<void> {
+    if (this.provider === undefined)
+      return pgReconcilePending.mark(connectorId, orgId);
     await this.provider
       .getClient()
       .hset(
@@ -123,6 +141,8 @@ export class CrawlingSchedulerService {
     connectorId: string,
     since: number,
   ): Promise<void> {
+    if (this.provider === undefined)
+      return pgReconcilePending.clear(connectorId, since);
     const client = this.provider.getClient();
     const raw = await client.hget(this.reconcilePendingKey, connectorId);
     if (raw === null || (JSON.parse(raw) as { at: number }).at > since) return;
@@ -139,6 +159,7 @@ export class CrawlingSchedulerService {
   async listReconcilesPending(): Promise<
     { connectorId: string; orgId: string; at: number }[]
   > {
+    if (this.provider === undefined) return pgReconcilePending.list();
     const all = await this.provider
       .getClient()
       .hgetall(this.reconcilePendingKey);
@@ -269,12 +290,11 @@ export class CrawlingSchedulerService {
   ): Promise<Job<CrawlingJobData>> {
     const jobId = this.buildJobId(connector, connectorId, orgId);
 
-    this.logger.info('Scheduling crawling job', {
-      jobId,
-      connector,
-      connectorId,
-      orgId,
-      userId,
+    this.logger.debug('Scheduling crawling job', {
+      job_id: jobId,
+      connector_type: connector,
+      connector_id: connectorId,
+      org_id: orgId,
       scheduleType: scheduleConfig.scheduleType,
       isEnabled: scheduleConfig.isEnabled,
     });
@@ -283,7 +303,6 @@ export class CrawlingSchedulerService {
     if (!scheduleConfig.isEnabled) {
       await this.removeJobInternal(connector, connectorId, orgId);
       this.pausedJobs.delete(jobId);
-      this.logger.info('Schedule is disabled, not creating job', { jobId });
       throw new BadRequestError('Cannot schedule a disabled job');
     }
 
@@ -321,8 +340,8 @@ export class CrawlingSchedulerService {
       jobOptions.delay = delay;
       jobOptions.jobId = jobId; // Use custom job ID for one-time jobs
 
-      this.logger.info('Scheduling one-time job', {
-        jobId,
+      this.logger.debug('Scheduling one-time job', {
+        job_id: jobId,
         scheduledTime: scheduledTime.toISOString(),
         delay,
       });
@@ -333,8 +352,8 @@ export class CrawlingSchedulerService {
         this.assertSchedulable(repeatOptions);
         jobOptions.repeat = repeatOptions;
 
-        this.logger.info('Scheduling repeating job', {
-          jobId,
+        this.logger.debug('Scheduling repeating job', {
+          job_id: jobId,
           pattern: repeatOptions.pattern,
           timezone: repeatOptions.tz,
         });
@@ -373,11 +392,11 @@ export class CrawlingSchedulerService {
     }
 
     this.logger.info('Crawling job scheduled successfully', {
-      jobId,
+      job_id: jobId,
       actualJobId: job.id,
-      connector,
-      connectorId,
-      orgId,
+      connector_type: connector,
+      connector_id: connectorId,
+      org_id: orgId,
       scheduleType: scheduleConfig.scheduleType,
     });
 
@@ -395,130 +414,119 @@ export class CrawlingSchedulerService {
   ): Promise<void> {
     const jobId = this.buildJobId(connector, connectorId, orgId);
 
-    try {
-      // First, remove any repeatable jobs for this connector/org
-      const repeatableJobs = await this.queue.getRepeatableJobs();
+    // Callers report success once this returns, so a queue that could not
+    // be read must not look like a schedule that was removed.
+    // First, remove any repeatable jobs for this connector/org
+    const repeatableJobs = await this.queue.getRepeatableJobs();
 
-      // Get all jobs to find which repeatable job belongs to our connector/org
-      const allJobs = await this.queue.getJobs([...PENDING_STATES, 'active']);
-      const matchingJobs = allJobs.filter(
-        (job) =>
-          job.data.connector === connector &&
-          job.data.connectorId === connectorId &&
-          job.data.orgId === orgId,
-      );
-
-      // Remove repeatable jobs that match our connector/org
-      for (const repeatableJob of repeatableJobs) {
-        // Check if any of our matching jobs uses this repeatable schedule
-        const jobUsesThisSchedule = matchingJobs.some((job) =>
-          this.repeatOptsMatch(job.opts?.repeat as any, repeatableJob as any),
-        );
-
-        if (jobUsesThisSchedule) {
-          try {
-            await this.queue.removeRepeatable(
-              this.buildJobName(connector, connectorId),
-              this.buildRemoveRepeatableOpts(repeatableJob),
-            );
-
-            this.logger.debug('Removed repeatable job', {
-              jobId,
-              pattern: repeatableJob.pattern,
-              key: repeatableJob.key,
-            });
-          } catch (error) {
-            this.logger.warn('Error removing repeatable job', {
-              pattern: repeatableJob.pattern,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            });
-            // Stop before its queued run goes too, so the schedule is left
-            // whole and a retry still finds it.
-            throw new InternalServerError(SCHEDULE_NOT_REMOVED_MESSAGE);
-          }
-        }
-      }
-
-      const belongsToConnector = (job: Job<CrawlingJobData>): boolean =>
+    // Get all jobs to find which repeatable job belongs to our connector/org
+    const allJobs = await this.queue.getJobs([...PENDING_STATES, 'active']);
+    const matchingJobs = allJobs.filter(
+      (job) =>
         job.data.connector === connector &&
         job.data.connectorId === connectorId &&
-        job.data.orgId === orgId;
+        job.data.orgId === orgId,
+    );
 
-      // Runs still waiting to fire go, whatever their number: a one-time run
-      // has no repeatable entry, so nothing else removes it. A due run with a
-      // priority sits in `prioritized`, not `waiting`.
-      const pendingRuns = (
-        (await this.queue.getJobs(PENDING_STATES)) as Job<CrawlingJobData>[]
-      ).filter(belongsToConnector);
+    // Remove repeatable jobs that match our connector/org
+    for (const repeatableJob of repeatableJobs) {
+      // Check if any of our matching jobs uses this repeatable schedule
+      const jobUsesThisSchedule = matchingJobs.some((job) =>
+        this.repeatOptsMatch(job.opts?.repeat as any, repeatableJob as any),
+      );
 
-      const history = (
-        (await this.queue.getJobs([
-          'completed',
-          'failed',
-        ] as JobType[])) as Job<CrawlingJobData>[]
-      )
-        .filter(belongsToConnector)
-        .sort((a, b) => b.timestamp - a.timestamp);
+      if (jobUsesThisSchedule) {
+        try {
+          await this.queue.removeRepeatable(
+            this.buildJobName(connector, connectorId),
+            this.buildRemoveRepeatableOpts(repeatableJob),
+          );
 
-      // BullMQ ignores an add under a job id that is still taken, and a
-      // one-time run keeps its fixed id after it finishes or while it runs.
-      const pendingIds = new Set(pendingRuns.map((job) => job.id));
-      const onceIdHolders = freeOnceJobId
-        ? [...(allJobs as Job<CrawlingJobData>[]), ...history].filter(
-            (job) => job.id === jobId && !pendingIds.has(job.id),
-          )
-        : [];
-      const holderIds = new Set(onceIdHolders.map((job) => job.id));
-
-      // Finished runs are history; keep the last 10.
-      const oldHistory = history
-        .filter((job) => !holderIds.has(job.id))
-        .slice(10);
-
-      const stillQueued: Job<CrawlingJobData>[] = [];
-      for (const job of pendingRuns) {
-        if (!(await this.removeJobInstance(job))) {
-          if (await this.stillQueuedAfterFailedRemove(job)) {
-            stillQueued.push(job);
-          }
+          this.logger.debug('Removed repeatable job', {
+            job_id: jobId,
+            pattern: repeatableJob.pattern,
+            key: repeatableJob.key,
+          });
+        } catch (error) {
+          // Stop before its queued run goes too, so the schedule is left
+          // whole and a retry still finds it. Logged once, with this cause, by whoever handles it.
+          throw withCause(
+            new InternalServerError(SCHEDULE_NOT_REMOVED_MESSAGE),
+            error,
+          );
         }
       }
-      const stillHoldingId: Job<CrawlingJobData>[] = [];
-      for (const job of onceIdHolders) {
-        if (!(await this.removeJobInstance(job))) {
-          if ((await this.readState(job)) !== 'unknown') {
-            stillHoldingId.push(job);
-          }
-        }
-      }
-      for (const job of oldHistory) {
-        await this.removeJobInstance(job);
-      }
-
-      if (stillQueued.length > 0) {
-        throw new InternalServerError(RUN_NOT_CANCELLED_MESSAGE, {
-          jobIds: stillQueued.map((job) => job.id),
-        });
-      }
-      if (stillHoldingId.length > 0) {
-        throw new InternalServerError(ONCE_ID_TAKEN_MESSAGE, {
-          jobIds: stillHoldingId.map((job) => job.id),
-        });
-      }
-
-      // Clean up the mapping
-      this.repeatableJobMap.delete(jobId);
-    } catch (error) {
-      this.logger.warn('Error during job removal', {
-        jobId,
-        connector,
-        orgId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      // Callers report success once this returns, so a queue that could not
-      // be read must not look like a schedule that was removed.
-      throw error;
     }
+
+    const belongsToConnector = (job: Job<CrawlingJobData>): boolean =>
+      job.data.connector === connector &&
+      job.data.connectorId === connectorId &&
+      job.data.orgId === orgId;
+
+    // Runs still waiting to fire go, whatever their number: a one-time run
+    // has no repeatable entry, so nothing else removes it. A due run with a
+    // priority sits in `prioritized`, not `waiting`.
+    const pendingRuns = (
+      (await this.queue.getJobs(PENDING_STATES)) as Job<CrawlingJobData>[]
+    ).filter(belongsToConnector);
+
+    const history = (
+      (await this.queue.getJobs([
+        'completed',
+        'failed',
+      ] as JobType[])) as Job<CrawlingJobData>[]
+    )
+      .filter(belongsToConnector)
+      .sort((a, b) => b.timestamp - a.timestamp);
+
+    // BullMQ ignores an add under a job id that is still taken, and a
+    // one-time run keeps its fixed id after it finishes or while it runs.
+    const pendingIds = new Set(pendingRuns.map((job) => job.id));
+    const onceIdHolders = freeOnceJobId
+      ? [...(allJobs as Job<CrawlingJobData>[]), ...history].filter(
+          (job) => job.id === jobId && !pendingIds.has(job.id),
+        )
+      : [];
+    const holderIds = new Set(onceIdHolders.map((job) => job.id));
+
+    // Finished runs are history; keep the last 10.
+    const oldHistory = history
+      .filter((job) => !holderIds.has(job.id))
+      .slice(10);
+
+    const stillQueued: Job<CrawlingJobData>[] = [];
+    for (const job of pendingRuns) {
+      if (!(await this.removeJobInstance(job))) {
+        if (await this.stillQueuedAfterFailedRemove(job)) {
+          stillQueued.push(job);
+        }
+      }
+    }
+    const stillHoldingId: Job<CrawlingJobData>[] = [];
+    for (const job of onceIdHolders) {
+      if (!(await this.removeJobInstance(job))) {
+        if ((await this.readState(job)) !== 'unknown') {
+          stillHoldingId.push(job);
+        }
+      }
+    }
+    for (const job of oldHistory) {
+      await this.removeJobInstance(job);
+    }
+
+    if (stillQueued.length > 0) {
+      throw new InternalServerError(RUN_NOT_CANCELLED_MESSAGE, {
+        jobIds: stillQueued.map((job) => job.id),
+      });
+    }
+    if (stillHoldingId.length > 0) {
+      throw new InternalServerError(ONCE_ID_TAKEN_MESSAGE, {
+        jobIds: stillHoldingId.map((job) => job.id),
+      });
+    }
+
+    // Clean up the mapping
+    this.repeatableJobMap.delete(jobId);
   }
 
   // Null when the state could not be read, which is not the same as BullMQ's
@@ -543,12 +551,12 @@ export class CrawlingSchedulerService {
   private async removeJobInstance(job: Job<CrawlingJobData>): Promise<boolean> {
     try {
       await job.remove();
-      this.logger.debug('Removed old job instance', { jobId: job.id });
+      this.logger.debug('Removed old job instance', { job_id: job.id });
       return true;
     } catch (error) {
       this.logger.warn('Failed to remove job instance', {
-        jobId: job.id,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        job_id: job.id,
+        error,
       });
       return false;
     }
@@ -644,11 +652,11 @@ export class CrawlingSchedulerService {
   ): Promise<void> {
     const jobId = this.buildJobId(connector, connectorId, orgId);
 
-    this.logger.info('Removing crawling job', {
-      jobId,
-      connector,
-      connectorId,
-      orgId,
+    this.logger.debug('Removing crawling job', {
+      job_id: jobId,
+      connector_type: connector,
+      connector_id: connectorId,
+      org_id: orgId,
     });
 
     await this.removeJobInternal(connector, connectorId, orgId);
@@ -657,10 +665,10 @@ export class CrawlingSchedulerService {
     this.pausedJobs.delete(jobId);
 
     this.logger.info('Successfully removed crawling job', {
-      jobId,
-      connector,
-      connectorId,
-      orgId,
+      job_id: jobId,
+      connector_type: connector,
+      connector_id: connectorId,
+      org_id: orgId,
     });
   }
 
@@ -698,10 +706,10 @@ export class CrawlingSchedulerService {
       } catch (error) {
         notRemoved.push(connector);
         this.logger.warn('Could not remove a schedule of a deleted connector', {
-          connector,
-          connectorId,
-          orgId,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          connector_type: connector,
+          connector_id: connectorId,
+          org_id: orgId,
+          error,
         });
       }
     }
@@ -724,30 +732,173 @@ export class CrawlingSchedulerService {
     const jobId = this.buildJobId(connector, connectorId, orgId);
 
     this.logger.debug('Getting job status', {
-      jobId,
-      connector,
-      connectorId,
-      orgId,
+      job_id: jobId,
+      connector_type: connector,
+      connector_id: connectorId,
+      org_id: orgId,
     });
 
-    try {
-      // First check if the job is paused
-      const pausedJob = this.pausedJobs.get(jobId);
-      if (pausedJob) {
-        this.logger.debug('Job is paused', {
-          jobId,
+    // First check if the job is paused
+    const pausedJob = this.pausedJobs.get(jobId);
+    if (pausedJob) {
+      this.logger.debug('Job is paused', {
+        job_id: jobId,
+        connector_type: connector,
+        connector_id: connectorId,
+        org_id: orgId,
+      });
+      return {
+        id: jobId,
+        name: this.buildJobName(connector, connectorId),
+        data: {
           connector,
           connectorId,
+          scheduleConfig: pausedJob.scheduleConfig,
           orgId,
+          userId: pausedJob.userId,
+          timestamp: pausedJob.pausedAt,
+          metadata: pausedJob.options.metadata,
+        },
+        progress: 0,
+        delay: undefined,
+        timestamp: pausedJob.pausedAt.getTime(),
+        attemptsMade: 0,
+        finishedOn: undefined,
+        processedOn: undefined,
+        failedReason: undefined,
+        state: 'paused',
+      };
+    }
+
+    // Get all *active-schedule* jobs for this connector/org combination.
+    // We intentionally exclude 'completed' because BullMQ keeps the last
+    // completed record in Redis even after the repeatable schedule has been
+    // removed (it is cleaned up by removeOnComplete TTL, not by removeJob).
+    // Including 'completed' would make getJobStatus return a stale history
+    // record and falsely report the job as still scheduled after it has been
+    // deleted.
+    const allJobs = await this.queue.getJobs([
+      ...PENDING_STATES,
+      'active',
+      'failed',
+    ]);
+
+    const matchingJobs = allJobs.filter(
+      (job) =>
+        job.data.connector === connector &&
+        job.data.connectorId === connectorId &&
+        job.data.orgId === orgId,
+    );
+
+    const mostRecentJob = matchingJobs.sort(
+      (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
+    )[0];
+
+    if (!mostRecentJob) {
+      this.logger.debug('No jobs found', {
+        job_id: jobId,
+        connector_type: connector,
+        connector_id: connectorId,
+        org_id: orgId,
+      });
+      return null;
+    }
+
+    const jobState = await mostRecentJob.getState();
+
+    const jobStatus: JobStatus = {
+      id: mostRecentJob.id,
+      name: mostRecentJob.name,
+      data: mostRecentJob.data,
+      progress: mostRecentJob.progress,
+      delay: mostRecentJob.delay,
+      timestamp: mostRecentJob.timestamp,
+      attemptsMade: mostRecentJob.attemptsMade,
+      finishedOn: mostRecentJob.finishedOn,
+      processedOn: mostRecentJob.processedOn,
+      failedReason: mostRecentJob.failedReason,
+      state: jobState,
+    };
+
+    this.logger.debug('Job status retrieved', {
+      job_id: jobId,
+      actualJobId: mostRecentJob.id,
+      state: jobState,
+      progress: mostRecentJob.progress,
+    });
+
+    return jobStatus;
+  }
+
+  /**
+   * Get all jobs for an organization (limited to last 10 per connector type)
+   */
+  async getAllJobs(orgId: string): Promise<JobStatus[]> {
+    this.logger.debug('Getting all jobs for organization', { org_id: orgId });
+
+    // Exclude 'completed' for the same reason as getJobStatus: after a
+    // repeatable schedule is removed, BullMQ keeps the last completed record
+    // in Redis until removeOnComplete TTL expires. Including 'completed' would
+    // make deleted jobs still appear in this listing.
+    const jobs = await this.queue.getJobs([
+      ...PENDING_STATES,
+      'active',
+      'failed',
+    ]);
+
+    // Filter jobs by orgId
+    const orgJobs = jobs.filter((job) => job.data.orgId === orgId);
+
+    // Group jobs by connector type
+    const jobsByConnector = new Map<string, Job<CrawlingJobData>[]>();
+
+    for (const job of orgJobs) {
+      const connector = job.data.connector;
+      if (!jobsByConnector.has(connector)) {
+        jobsByConnector.set(connector, []);
+      }
+      jobsByConnector.get(connector)!.push(job);
+    }
+
+    const jobStatuses: JobStatus[] = [];
+
+    // For each connector type, keep only the last 10 jobs
+    for (const [_connector, connectorJobs] of jobsByConnector) {
+      const sortedJobs = connectorJobs.sort(
+        (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
+      );
+      const last10Jobs = sortedJobs.slice(0, 10);
+
+      for (const job of last10Jobs) {
+        const jobState = await job.getState();
+
+        jobStatuses.push({
+          id: job.id,
+          name: job.name,
+          data: job.data,
+          progress: job.progress,
+          delay: job.delay,
+          timestamp: job.timestamp,
+          attemptsMade: job.attemptsMade,
+          finishedOn: job.finishedOn,
+          processedOn: job.processedOn,
+          failedReason: job.failedReason,
+          state: jobState,
         });
-        return {
+      }
+    }
+
+    // Add paused jobs for this organization
+    for (const [jobId, pausedJob] of this.pausedJobs) {
+      if (pausedJob.orgId === orgId) {
+        jobStatuses.push({
           id: jobId,
-          name: this.buildJobName(connector, connectorId),
+          name: this.buildJobName(pausedJob.connector, pausedJob.connectorId),
           data: {
-            connector,
-            connectorId,
+            connector: pausedJob.connector,
+            connectorId: pausedJob.connectorId,
             scheduleConfig: pausedJob.scheduleConfig,
-            orgId,
+            orgId: pausedJob.orgId,
             userId: pausedJob.userId,
             timestamp: pausedJob.pausedAt,
             metadata: pausedJob.options.metadata,
@@ -760,221 +911,52 @@ export class CrawlingSchedulerService {
           processedOn: undefined,
           failedReason: undefined,
           state: 'paused',
-        };
-      }
-
-      // Get all *active-schedule* jobs for this connector/org combination.
-      // We intentionally exclude 'completed' because BullMQ keeps the last
-      // completed record in Redis even after the repeatable schedule has been
-      // removed (it is cleaned up by removeOnComplete TTL, not by removeJob).
-      // Including 'completed' would make getJobStatus return a stale history
-      // record and falsely report the job as still scheduled after it has been
-      // deleted.
-      const allJobs = await this.queue.getJobs([
-        ...PENDING_STATES,
-        'active',
-        'failed',
-      ]);
-
-      const matchingJobs = allJobs.filter(
-        (job) =>
-          job.data.connector === connector &&
-          job.data.connectorId === connectorId &&
-          job.data.orgId === orgId,
-      );
-
-      const mostRecentJob = matchingJobs.sort(
-        (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
-      )[0];
-
-      if (!mostRecentJob) {
-        this.logger.debug('No jobs found', {
-          jobId,
-          connector,
-          connectorId,
-          orgId,
         });
-        return null;
       }
-
-      const jobState = await mostRecentJob.getState();
-
-      const jobStatus: JobStatus = {
-        id: mostRecentJob.id,
-        name: mostRecentJob.name,
-        data: mostRecentJob.data,
-        progress: mostRecentJob.progress,
-        delay: mostRecentJob.delay,
-        timestamp: mostRecentJob.timestamp,
-        attemptsMade: mostRecentJob.attemptsMade,
-        finishedOn: mostRecentJob.finishedOn,
-        processedOn: mostRecentJob.processedOn,
-        failedReason: mostRecentJob.failedReason,
-        state: jobState,
-      };
-
-      this.logger.debug('Job status retrieved', {
-        jobId,
-        actualJobId: mostRecentJob.id,
-        state: jobState,
-        progress: mostRecentJob.progress,
-      });
-
-      return jobStatus;
-    } catch (error) {
-      this.logger.error('Failed to get job status', {
-        jobId,
-        connector,
-        orgId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
     }
-  }
 
-  /**
-   * Get all jobs for an organization (limited to last 10 per connector type)
-   */
-  async getAllJobs(orgId: string): Promise<JobStatus[]> {
-    this.logger.debug('Getting all jobs for organization', { orgId });
+    this.logger.debug('Retrieved all jobs for organization', {
+      org_id: orgId,
+      jobCount: jobStatuses.length,
+    });
 
-    try {
-      // Exclude 'completed' for the same reason as getJobStatus: after a
-      // repeatable schedule is removed, BullMQ keeps the last completed record
-      // in Redis until removeOnComplete TTL expires. Including 'completed' would
-      // make deleted jobs still appear in this listing.
-      const jobs = await this.queue.getJobs([
-        ...PENDING_STATES,
-        'active',
-        'failed',
-      ]);
-
-      // Filter jobs by orgId
-      const orgJobs = jobs.filter((job) => job.data.orgId === orgId);
-
-      // Group jobs by connector type
-      const jobsByConnector = new Map<string, Job<CrawlingJobData>[]>();
-
-      for (const job of orgJobs) {
-        const connector = job.data.connector;
-        if (!jobsByConnector.has(connector)) {
-          jobsByConnector.set(connector, []);
-        }
-        jobsByConnector.get(connector)!.push(job);
-      }
-
-      const jobStatuses: JobStatus[] = [];
-
-      // For each connector type, keep only the last 10 jobs
-      for (const [_connector, connectorJobs] of jobsByConnector) {
-        const sortedJobs = connectorJobs.sort(
-          (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
-        );
-        const last10Jobs = sortedJobs.slice(0, 10);
-
-        for (const job of last10Jobs) {
-          const jobState = await job.getState();
-
-          jobStatuses.push({
-            id: job.id,
-            name: job.name,
-            data: job.data,
-            progress: job.progress,
-            delay: job.delay,
-            timestamp: job.timestamp,
-            attemptsMade: job.attemptsMade,
-            finishedOn: job.finishedOn,
-            processedOn: job.processedOn,
-            failedReason: job.failedReason,
-            state: jobState,
-          });
-        }
-      }
-
-      // Add paused jobs for this organization
-      for (const [jobId, pausedJob] of this.pausedJobs) {
-        if (pausedJob.orgId === orgId) {
-          jobStatuses.push({
-            id: jobId,
-            name: this.buildJobName(pausedJob.connector, pausedJob.connectorId),
-            data: {
-              connector: pausedJob.connector,
-              connectorId: pausedJob.connectorId,
-              scheduleConfig: pausedJob.scheduleConfig,
-              orgId: pausedJob.orgId,
-              userId: pausedJob.userId,
-              timestamp: pausedJob.pausedAt,
-              metadata: pausedJob.options.metadata,
-            },
-            progress: 0,
-            delay: undefined,
-            timestamp: pausedJob.pausedAt.getTime(),
-            attemptsMade: 0,
-            finishedOn: undefined,
-            processedOn: undefined,
-            failedReason: undefined,
-            state: 'paused',
-          });
-        }
-      }
-
-      this.logger.debug('Retrieved all jobs for organization', {
-        orgId,
-        jobCount: jobStatuses.length,
-      });
-
-      return jobStatuses;
-    } catch (error) {
-      this.logger.error('Failed to get all jobs', {
-        orgId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
-    }
+    return jobStatuses;
   }
 
   /**
    * Get repeatable jobs, optionally filtered by organization
    */
   async getRepeatableJobs(orgId?: string): Promise<RepeatableJob[]> {
-    this.logger.debug('Getting repeatable jobs', { orgId });
+    this.logger.debug('Getting repeatable jobs', { org_id: orgId });
 
-    try {
-      const repeatableJobs = await this.queue.getRepeatableJobs();
+    const repeatableJobs = await this.queue.getRepeatableJobs();
 
-      if (orgId) {
-        // We need to check the actual job data to filter by orgId
-        const filteredJobs: RepeatableJob[] = [];
+    if (orgId) {
+      // We need to check the actual job data to filter by orgId
+      const filteredJobs: RepeatableJob[] = [];
 
-        for (const repeatableJob of repeatableJobs) {
-          // Get a sample job to check the data
-          const jobs = await this.queue.getJobs([
-            'waiting',
-            'active',
-            'delayed',
-          ] as JobType[]);
-          const sampleJob = jobs.find(
-            (job) =>
-              job.data.orgId === orgId &&
-              this.repeatOptsMatch(job.opts?.repeat as any, repeatableJob as any),
-          );
+      for (const repeatableJob of repeatableJobs) {
+        // Get a sample job to check the data
+        const jobs = await this.queue.getJobs([
+          'waiting',
+          'active',
+          'delayed',
+        ] as JobType[]);
+        const sampleJob = jobs.find(
+          (job) =>
+            job.data.orgId === orgId &&
+            this.repeatOptsMatch(job.opts?.repeat as any, repeatableJob as any),
+        );
 
-          if (sampleJob) {
-            filteredJobs.push(repeatableJob);
-          }
+        if (sampleJob) {
+          filteredJobs.push(repeatableJob);
         }
-
-        return filteredJobs;
       }
 
-      return repeatableJobs;
-    } catch (error) {
-      this.logger.error('Failed to get repeatable jobs', {
-        orgId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
+      return filteredJobs;
     }
+
+    return repeatableJobs;
   }
 
   /**
@@ -987,56 +969,52 @@ export class CrawlingSchedulerService {
   ): Promise<void> {
     const jobId = this.buildJobId(connector, connectorId, orgId);
 
-    this.logger.info('Pausing job', { jobId, connector, orgId });
+    this.logger.debug('Pausing job', {
+      job_id: jobId,
+      connector_type: connector,
+      org_id: orgId,
+    });
 
-    try {
-      // First, get the current job to store its configuration
-      const currentJobStatus = await this.getJobStatus(
-        connector,
-        connectorId,
-        orgId,
-      );
+    // First, get the current job to store its configuration
+    const currentJobStatus = await this.getJobStatus(
+      connector,
+      connectorId,
+      orgId,
+    );
 
-      if (!currentJobStatus) {
-        throw new BadRequestError('No active job found to pause');
-      }
-
-      if (currentJobStatus.state === 'paused') {
-        throw new BadRequestError('Job is already paused');
-      }
-
-      // Store the job configuration for later resume
-      const pausedJobInfo: PausedJobInfo = {
-        connector,
-        connectorId,
-        scheduleConfig: currentJobStatus.data.scheduleConfig,
-        orgId,
-        userId: currentJobStatus.data.userId,
-        options: {
-          metadata: currentJobStatus.data.metadata,
-        },
-        pausedAt: new Date(),
-      };
-
-      // Marked paused only once its runs are gone, so a failed removal
-      // leaves a schedule that still runs and says so.
-      await this.removeJobInternal(connector, connectorId, orgId);
-      this.pausedJobs.set(jobId, pausedJobInfo);
-
-      this.logger.info('Job paused successfully', {
-        jobId,
-        connector,
-        connectorId,
-        orgId,
-        pausedAt: pausedJobInfo.pausedAt,
-      });
-    } catch (error) {
-      this.logger.error('Failed to pause job', {
-        jobId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
+    if (!currentJobStatus) {
+      throw new BadRequestError('No active job found to pause');
     }
+
+    if (currentJobStatus.state === 'paused') {
+      throw new BadRequestError('Job is already paused');
+    }
+
+    // Store the job configuration for later resume
+    const pausedJobInfo: PausedJobInfo = {
+      connector,
+      connectorId,
+      scheduleConfig: currentJobStatus.data.scheduleConfig,
+      orgId,
+      userId: currentJobStatus.data.userId,
+      options: {
+        metadata: currentJobStatus.data.metadata,
+      },
+      pausedAt: new Date(),
+    };
+
+    // Marked paused only once its runs are gone, so a failed removal
+    // leaves a schedule that still runs and says so.
+    await this.removeJobInternal(connector, connectorId, orgId);
+    this.pausedJobs.set(jobId, pausedJobInfo);
+
+    this.logger.info('Job paused successfully', {
+      job_id: jobId,
+      connector_type: connector,
+      connector_id: connectorId,
+      org_id: orgId,
+      pausedAt: pausedJobInfo.pausedAt,
+    });
   }
 
   /**
@@ -1049,236 +1027,217 @@ export class CrawlingSchedulerService {
   ): Promise<void> {
     const jobId = this.buildJobId(connector, connectorId, orgId);
 
-    this.logger.info('Resuming job', { jobId, connector, orgId });
+    this.logger.debug('Resuming job', {
+      job_id: jobId,
+      connector_type: connector,
+      org_id: orgId,
+    });
 
-    try {
-      // Get the paused job configuration
-      const pausedJobInfo = this.pausedJobs.get(jobId);
+    // Get the paused job configuration
+    const pausedJobInfo = this.pausedJobs.get(jobId);
 
-      if (!pausedJobInfo) {
-        throw new BadRequestError('No paused job found to resume');
-      }
-
-      // Create a new job with the stored configuration
-      await this.scheduleJob(
-        connector,
-        connectorId,
-        pausedJobInfo.scheduleConfig,
-        orgId,
-        pausedJobInfo.userId,
-        pausedJobInfo.options,
-      );
-
-      // Remove from paused jobs
-      this.pausedJobs.delete(jobId);
-
-      this.logger.info('Job resumed successfully', {
-        jobId,
-        connector,
-        connectorId,
-        orgId,
-        resumedAt: new Date(),
-      });
-    } catch (error) {
-      this.logger.error('Failed to resume job', {
-        jobId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
+    if (!pausedJobInfo) {
+      throw new BadRequestError('No paused job found to resume');
     }
+
+    // Create a new job with the stored configuration
+    await this.scheduleJob(
+      connector,
+      connectorId,
+      pausedJobInfo.scheduleConfig,
+      orgId,
+      pausedJobInfo.userId,
+      pausedJobInfo.options,
+    );
+
+    // Remove from paused jobs
+    this.pausedJobs.delete(jobId);
+
+    this.logger.info('Job resumed successfully', {
+      job_id: jobId,
+      connector_type: connector,
+      connector_id: connectorId,
+      org_id: orgId,
+      resumedAt: new Date(),
+    });
   }
 
   /**
    * Get queue statistics
    */
   async getQueueStats(orgId: string): Promise<any> {
-    this.logger.debug('Getting queue statistics', { orgId });
+    this.logger.debug('Getting queue statistics', { org_id: orgId });
 
-    try {
-      const ofOrg = (jobs: Job[]): Job<CrawlingJobData>[] =>
-        (jobs as Job<CrawlingJobData>[]).filter(
-          (job) => job.data.orgId === orgId,
-        );
-      const waiting = ofOrg(await this.queue.getWaiting());
-      const active = ofOrg(await this.queue.getActive());
-      const completed = ofOrg(await this.queue.getCompleted());
-      const failed = ofOrg(await this.queue.getFailed());
-      const delayed = ofOrg(await this.queue.getDelayed());
-      // A schedule carries no job data: it is the org's when one of the org's
-      // queued runs has its name and repeat options. The name matters because
-      // orgs often pick the same cron pattern.
-      const orgRuns = ofOrg(
-        await this.queue.getJobs([...PENDING_STATES, 'active']),
+    const ofOrg = (jobs: Job[]): Job<CrawlingJobData>[] =>
+      (jobs as Job<CrawlingJobData>[]).filter(
+        (job) => job.data.orgId === orgId,
       );
-      const orgRunsByName = new Map<string, Job<CrawlingJobData>[]>();
-      for (const job of orgRuns) {
-        const runs = orgRunsByName.get(job.name);
-        if (runs) runs.push(job);
-        else orgRunsByName.set(job.name, [job]);
-      }
-      const repeatableJobs = (await this.queue.getRepeatableJobs()).filter(
-        (repeatableJob) =>
-          (orgRunsByName.get(repeatableJob.name) ?? []).some((job) =>
-            this.repeatOptsMatch(job.opts.repeat, repeatableJob),
-          ),
-      );
-      const paused = [...this.pausedJobs.values()].filter(
-        (pausedJob) => pausedJob.orgId === orgId,
-      ).length;
-
-      const stats = {
-        waiting: waiting.length,
-        active: active.length,
-        completed: completed.length,
-        failed: failed.length,
-        delayed: delayed.length,
-        paused,
-        repeatable: repeatableJobs.length,
-        total:
-          waiting.length +
-          active.length +
-          completed.length +
-          failed.length +
-          delayed.length +
-          paused,
-      };
-
-      this.logger.debug('Queue statistics retrieved', stats);
-      return stats;
-    } catch (error) {
-      this.logger.error('Failed to get queue stats', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
+    const waiting = ofOrg(await this.queue.getWaiting());
+    const active = ofOrg(await this.queue.getActive());
+    const completed = ofOrg(await this.queue.getCompleted());
+    const failed = ofOrg(await this.queue.getFailed());
+    const delayed = ofOrg(await this.queue.getDelayed());
+    // A schedule carries no job data: it is the org's when one of the org's
+    // queued runs has its name and repeat options. The name matters because
+    // orgs often pick the same cron pattern.
+    const orgRuns = ofOrg(
+      await this.queue.getJobs([...PENDING_STATES, 'active']),
+    );
+    const orgRunsByName = new Map<string, Job<CrawlingJobData>[]>();
+    for (const job of orgRuns) {
+      const runs = orgRunsByName.get(job.name);
+      if (runs) runs.push(job);
+      else orgRunsByName.set(job.name, [job]);
     }
+    const repeatableJobs = (await this.queue.getRepeatableJobs()).filter(
+      (repeatableJob) =>
+        (orgRunsByName.get(repeatableJob.name) ?? []).some((job) =>
+          this.repeatOptsMatch(job.opts.repeat, repeatableJob),
+        ),
+    );
+    const paused = [...this.pausedJobs.values()].filter(
+      (pausedJob) => pausedJob.orgId === orgId,
+    ).length;
+
+    const stats = {
+      waiting: waiting.length,
+      active: active.length,
+      completed: completed.length,
+      failed: failed.length,
+      delayed: delayed.length,
+      paused,
+      repeatable: repeatableJobs.length,
+      total:
+        waiting.length +
+        active.length +
+        completed.length +
+        failed.length +
+        delayed.length +
+        paused,
+    };
+
+    this.logger.debug('Queue statistics retrieved', stats);
+    return stats;
   }
 
   /**
    * Remove all jobs for an organization
    */
   async removeAllJobs(orgId: string): Promise<void> {
-    this.logger.info('Removing all jobs for organization', { orgId });
+    this.logger.debug('Removing all jobs for organization', { org_id: orgId });
 
-    try {
-      // Remove all repeatable jobs for this org
-      const repeatableJobs = await this.queue.getRepeatableJobs();
-      const processedJobNames = new Set<string>();
-      // A schedule that could not be removed keeps its queued run, so it is
-      // left whole and a retry still finds it.
-      const keptJobNames = new Set<string>();
-      let notRemoved = 0;
+    // Remove all repeatable jobs for this org
+    const repeatableJobs = await this.queue.getRepeatableJobs();
+    const processedJobNames = new Set<string>();
+    // A schedule that could not be removed keeps its queued run, so it is
+    // left whole and a retry still finds it.
+    const keptJobNames = new Set<string>();
+    let notRemoved = 0;
 
-      for (const repeatableJob of repeatableJobs) {
-        // Check if this repeatable job belongs to the org
-        const jobs = (await this.queue.getJobs([
-          ...PENDING_STATES,
-          'active',
-        ])) as Job<CrawlingJobData>[];
-        const matchingJob = jobs.find(
-          (job) =>
-            job.data.orgId === orgId &&
-            this.repeatOptsMatch(job.opts.repeat as any, repeatableJob as any),
-        );
-
-        if (matchingJob) {
-          // Get the job name for this connector type
-          const jobName = this.buildJobName(
-            matchingJob.data.connector,
-            matchingJob.data.connectorId,
-          );
-          try {
-            // Skip if we already processed this job name
-            if (processedJobNames.has(jobName)) continue;
-            processedJobNames.add(jobName);
-
-            await this.queue.removeRepeatable(
-              jobName,
-              this.buildRemoveRepeatableOpts(repeatableJob),
-            );
-            this.logger.debug('Removed repeatable job', {
-              jobId: repeatableJob.id,
-              jobName,
-              orgId,
-            });
-          } catch (error) {
-            notRemoved += 1;
-            keptJobNames.add(jobName);
-            this.logger.warn('Failed to remove repeatable job', {
-              jobId: repeatableJob.id,
-              jobName,
-              orgId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            });
-          }
-        }
-      }
-
-      const ofOrg = (jobs: Job<CrawlingJobData>[]): Job<CrawlingJobData>[] =>
-        jobs.filter((job) => job.data.orgId === orgId);
-      const pendingRuns = ofOrg(
-        (await this.queue.getJobs(PENDING_STATES)) as Job<CrawlingJobData>[],
-      ).filter((job) => !keptJobNames.has(job.name));
-      // A running job is locked by its worker and finished ones are history,
-      // so failing to remove those does not fail the request.
-      const otherRuns = ofOrg(
-        (await this.queue.getJobs([
-          'active',
-          'completed',
-          'failed',
-        ])) as Job<CrawlingJobData>[],
+    for (const repeatableJob of repeatableJobs) {
+      // Check if this repeatable job belongs to the org
+      const jobs = (await this.queue.getJobs([
+        ...PENDING_STATES,
+        'active',
+      ])) as Job<CrawlingJobData>[];
+      const matchingJob = jobs.find(
+        (job) =>
+          job.data.orgId === orgId &&
+          this.repeatOptsMatch(job.opts.repeat as any, repeatableJob as any),
       );
 
-      for (const job of pendingRuns) {
-        if (
-          !(await this.removeJobInstance(job)) &&
-          (await this.stillQueuedAfterFailedRemove(job))
-        ) {
+      if (matchingJob) {
+        // Get the job name for this connector type
+        const jobName = this.buildJobName(
+          matchingJob.data.connector,
+          matchingJob.data.connectorId,
+        );
+        try {
+          // Skip if we already processed this job name
+          if (processedJobNames.has(jobName)) continue;
+          processedJobNames.add(jobName);
+
+          await this.queue.removeRepeatable(
+            jobName,
+            this.buildRemoveRepeatableOpts(repeatableJob),
+          );
+          this.logger.debug('Removed repeatable job', {
+            job_id: repeatableJob.id,
+            jobName,
+            org_id: orgId,
+          });
+        } catch (error) {
           notRemoved += 1;
+          keptJobNames.add(jobName);
+          this.logger.warn('Failed to remove repeatable job', {
+            job_id: repeatableJob.id,
+            jobName,
+            org_id: orgId,
+            error,
+          });
         }
       }
-      for (const job of otherRuns) {
-        await this.removeJobInstance(job);
-      }
-
-      // Remove all paused jobs for this org
-      const pausedJobsToRemove: string[] = [];
-      for (const [jobId, pausedJob] of this.pausedJobs) {
-        if (pausedJob.orgId === orgId) {
-          pausedJobsToRemove.push(jobId);
-        }
-      }
-
-      pausedJobsToRemove.forEach((jobId) => this.pausedJobs.delete(jobId));
-
-      // Clean up mappings for this org
-      const keysToDelete: string[] = [];
-      for (const [customJobId] of this.repeatableJobMap) {
-        if (customJobId.includes(orgId)) {
-          keysToDelete.push(customJobId);
-        }
-      }
-      keysToDelete.forEach((key) => this.repeatableJobMap.delete(key));
-
-      this.logger.debug('Cleaned up job mappings', {
-        orgId,
-        mappingsRemoved: keysToDelete.length,
-        pausedJobsRemoved: pausedJobsToRemove.length,
-      });
-
-      if (notRemoved > 0) {
-        throw new InternalServerError(ORG_SCHEDULES_NOT_REMOVED_MESSAGE, {
-          notRemoved,
-        });
-      }
-
-      this.logger.info('All jobs removed successfully', { orgId });
-    } catch (error) {
-      this.logger.error('Failed to remove all jobs', {
-        orgId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
     }
+
+    const ofOrg = (jobs: Job<CrawlingJobData>[]): Job<CrawlingJobData>[] =>
+      jobs.filter((job) => job.data.orgId === orgId);
+    const pendingRuns = ofOrg(
+      (await this.queue.getJobs(PENDING_STATES)) as Job<CrawlingJobData>[],
+    ).filter((job) => !keptJobNames.has(job.name));
+    // A running job is locked by its worker and finished ones are history,
+    // so failing to remove those does not fail the request.
+    const otherRuns = ofOrg(
+      (await this.queue.getJobs([
+        'active',
+        'completed',
+        'failed',
+      ])) as Job<CrawlingJobData>[],
+    );
+
+    for (const job of pendingRuns) {
+      if (
+        !(await this.removeJobInstance(job)) &&
+        (await this.stillQueuedAfterFailedRemove(job))
+      ) {
+        notRemoved += 1;
+      }
+    }
+    for (const job of otherRuns) {
+      await this.removeJobInstance(job);
+    }
+
+    // Remove all paused jobs for this org
+    const pausedJobsToRemove: string[] = [];
+    for (const [jobId, pausedJob] of this.pausedJobs) {
+      if (pausedJob.orgId === orgId) {
+        pausedJobsToRemove.push(jobId);
+      }
+    }
+
+    pausedJobsToRemove.forEach((jobId) => this.pausedJobs.delete(jobId));
+
+    // Clean up mappings for this org
+    const keysToDelete: string[] = [];
+    for (const [customJobId] of this.repeatableJobMap) {
+      if (customJobId.includes(orgId)) {
+        keysToDelete.push(customJobId);
+      }
+    }
+    keysToDelete.forEach((key) => this.repeatableJobMap.delete(key));
+
+    this.logger.debug('Cleaned up job mappings', {
+      org_id: orgId,
+      mappingsRemoved: keysToDelete.length,
+      pausedJobsRemoved: pausedJobsToRemove.length,
+    });
+
+    if (notRemoved > 0) {
+      throw new InternalServerError(ORG_SCHEDULES_NOT_REMOVED_MESSAGE, {
+        notRemoved,
+      });
+    }
+
+    this.logger.info('All jobs removed successfully', { org_id: orgId });
   }
 
   /**
@@ -1287,17 +1246,10 @@ export class CrawlingSchedulerService {
   async close(): Promise<void> {
     this.logger.info('Closing CrawlingSchedulerService');
 
-    try {
-      await this.queue.close();
-      this.repeatableJobMap.clear();
-      this.pausedJobs.clear();
-      this.logger.info('CrawlingSchedulerService closed successfully');
-    } catch (error) {
-      this.logger.error('Error closing CrawlingSchedulerService', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      throw error;
-    }
+    await this.queue.close();
+    this.repeatableJobMap.clear();
+    this.pausedJobs.clear();
+    this.logger.info('CrawlingSchedulerService closed successfully');
   }
 
   /** Name every repeatable job for this connector is registered under. */

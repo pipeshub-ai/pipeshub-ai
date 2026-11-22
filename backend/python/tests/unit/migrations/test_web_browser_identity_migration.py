@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.core import org_context
 from app.migrations.web_browser_identity_migration import (
     MIGRATION_FLAG_KEY,
     backfill_sync_settings,
@@ -25,9 +26,12 @@ class _MemoryConfigService:
         self.store = store
         self.failing = failing
         self.writes: list[str] = []
+        self.read_in: dict[str, str] = {}
 
     async def get_config(self, path: str, default: object = None, use_cache: bool = True, *,
                          raise_on_error: bool = False) -> object:
+        if path.startswith("/services/connectors/"):
+            self.read_in[path] = org_context.current_org_id()
         if path in self.failing:
             if raise_on_error:
                 raise ConnectionError(f"store did not answer for {path}")
@@ -41,13 +45,29 @@ class _MemoryConfigService:
 
 
 class _Graph:
-    def __init__(self, ids: list[str]) -> None:
+    def __init__(self, ids: list[str], *, org_id: str | None = "org-1", edge_org: str | None = None,
+                 edge_read_fails: bool = False) -> None:
         self.ids = ids
+        self.org_id = org_id
+        self.edge_org = edge_org
+        self.edge_read_fails = edge_read_fails
+
+    async def get_all_orgs(self, **_: object) -> list[dict]:
+        # Like Arango and Neo4j, the app read below answers for every org.
+        return [{"_key": "org-1"}, {"_key": "org-2"}]
 
     async def get_nodes_by_field_in(self, collection: str, field: str, values: list, fields: list, *,
                                     raise_on_error: bool = False) -> list[dict]:
         assert (field, values) == ("type", ["Web"])
-        return [{"id": i, "orgId": "org-1"} for i in self.ids]
+        return [{"id": i, "orgId": self.org_id} for i in self.ids]
+
+    async def get_edges_to_node(self, node_id: str, edge_collection: str, *,
+                                raise_on_error: bool = False) -> list[dict]:
+        if self.edge_read_fails:
+            if raise_on_error:
+                raise ConnectionError("graph did not answer")
+            return []
+        return [{"from_id": self.edge_org}] if self.edge_org else []
 
 
 def _container(config: _MemoryConfigService) -> SimpleNamespace:
@@ -70,6 +90,47 @@ async def test_a_connector_from_before_the_setting_is_stored_as_browser_like() -
     assert sync["customValues"]["browser_like_identity"] is True
     assert result == {"success": True, "skipped": False, "connectors_updated": 1, "failures": 0}
     assert config.store[MIGRATION_FLAG_KEY]["done"] is True
+
+
+async def test_each_connector_is_backfilled_inside_its_org() -> None:
+    config = _MemoryConfigService({_path("old"): _web_config()})
+
+    await run_web_browser_identity_backfill(_container(config), _Graph(["old"]), LOGGER)
+
+    assert config.read_in == {_path("old"): "org-1"}
+
+
+async def test_an_app_saved_without_its_org_takes_it_from_the_org_edge() -> None:
+    config = _MemoryConfigService({_path("old"): _web_config()})
+
+    result = await run_web_browser_identity_backfill(
+        _container(config), _Graph(["old"], org_id=None, edge_org="org-2"), LOGGER,
+    )
+
+    assert result["connectors_updated"] == 1
+    assert config.read_in == {_path("old"): "org-2"}
+
+
+async def test_an_app_with_no_org_is_skipped_and_the_flag_is_still_set() -> None:
+    config = _MemoryConfigService({_path("old"): _web_config()})
+
+    result = await run_web_browser_identity_backfill(_container(config), _Graph(["old"], org_id=None), LOGGER)
+
+    assert result == {"success": True, "skipped": False, "connectors_updated": 0, "failures": 0}
+    assert config.read_in == {}
+    assert config.store[MIGRATION_FLAG_KEY]["done"] is True
+
+
+async def test_an_unreadable_org_edge_is_a_failure_and_the_flag_stays_unset() -> None:
+    config = _MemoryConfigService({_path("old"): _web_config()})
+
+    result = await run_web_browser_identity_backfill(
+        _container(config), _Graph(["old"], org_id=None, edge_read_fails=True), LOGGER,
+    )
+
+    # One failure per org's pass: the app names no org, so each org's pass looks for it.
+    assert result == {"success": False, "skipped": False, "connectors_updated": 0, "failures": 2}
+    assert MIGRATION_FLAG_KEY not in config.store
 
 
 async def test_a_stored_choice_is_kept_and_copied_to_the_form_values() -> None:
@@ -183,3 +244,19 @@ def test_the_backfill_never_changes_what_the_crawler_uses(raw: object, name: str
 
     assert _crawled(sync[name], default, high) == _crawled(raw, default, high)
     assert _crawled(sync[name], default, high) == sync[name] or isinstance(sync[name], str)
+
+
+async def test_an_org_list_that_fails_quietly_still_leaves_the_flag_unset() -> None:
+    """Arango and Neo4j log a failed org list and answer no orgs unless asked to raise."""
+    config = _MemoryConfigService({_path("old"): _web_config()})
+    graph = _Graph(["old"])
+
+    async def orgs(**kwargs: object) -> list[dict]:
+        if kwargs.get("raise_on_error"):
+            raise ConnectionError("graph did not answer")
+        return []
+    graph.get_all_orgs = orgs
+
+    with pytest.raises(ConnectionError):
+        await run_web_browser_identity_backfill(_container(config), graph, LOGGER)
+    assert MIGRATION_FLAG_KEY not in config.store

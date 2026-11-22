@@ -14,6 +14,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.sources.localKB.handlers.kh_merge import key_for
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 from .fixture_graph import (
     DRIVE,
@@ -702,14 +703,15 @@ async def test_names_sort_by_utf16_unit_and_sizes_keep_zero(shapes, backend, req
     """Lowercased names sort by UTF-16 unit, as Cypher
     orders them (an astral name before U+FF5A), ties by id, nulls last; a size of
     0 is a size, a missing one is not. Arango sorts in Python with the merge's
-    comparator, so the two agree."""
+    comparator, so the two agree. A name query's "_" reads as a space, never as
+    a wildcard: "a_b" finds "a b" and "a_b", not "a%b"."""
     provider = request.getfixturevalue(f"{backend}_provider")
     by_name = await _page(provider, app_id=SO)
     assert _ids(by_name) == SO_NAME_ASC
     assert {r["id"]: r["sortKey"] for r in by_name["rows"]}["so-02"] == "alpha"
     assert _ids(await _page(provider, app_id=SO, sort_field="sizeInBytes")) == SO_SIZE_ASC
     assert set(_ids(await _page(provider, app_id=SO, filters={"size": {"gte": 0}}))) == SO_SIZED
-    assert _ids(await _page(provider, app_id=SO, filters={"search_query": "a_b"})) == ["so-15"]
+    assert _ids(await _page(provider, app_id=SO, filters={"search_query": "a_b"})) == ["so-17", "so-15"]
     assert _ids(await _page(provider, app_id=SO, filters={"search_query": "%"})) == ["so-16"]
 
 
@@ -844,6 +846,16 @@ async def test_the_deep_pages_agree(shapes, neo4j_provider, arango_provider) -> 
     await _same(shapes, neo4j_provider, arango_provider, app_id=DP)
     await _same(shapes, neo4j_provider, arango_provider, app_id=DP, sort_field="name", sort_dir="DESC", limit=25)
     await _same(shapes, neo4j_provider, arango_provider, app_id=HD)
+    split = Neo4jProvider.kh_browse_mode() == "split"
     for start in ("dp-49", "dp-50", "dp-s", "dp-s-50", "hd-c21", "hd-c25"):
+        past_the_bound = {"dp-49": "dp-50", "dp-s-50": "dp-s-51"}.get(start)
+        if split and past_the_bound:
+            # The child lies past the 50-hop bound (from the App, or from the seed), so the check refuses it and a browse of it is refused.
+            # The legacy statements still list it (the conformance layer's `refused_by_cap` gap); the split browse lists only what the
+            # check admits.
+            kw = {"start_id": start, "start_type": "record", "flatten": False, "include_scope": True}
+            assert _ids(await _page(neo4j_provider, **kw)) == []
+            assert _ids(await _page(arango_provider, **kw)) == [past_the_bound]
+            continue
         await _same(shapes, neo4j_provider, arango_provider, start_id=start, start_type="record",
                     flatten=False, include_scope=True)

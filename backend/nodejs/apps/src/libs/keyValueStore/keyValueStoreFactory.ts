@@ -5,6 +5,7 @@ import {
   RedisDistributedKeyValueStore,
   RedisStoreConfig,
 } from './providers/RedisDistributedKeyValueStore';
+import { PostgresDistributedKeyValueStore } from './providers/PostgresDistributedKeyValueStore';
 import { StoreType } from './constants/KeyValueStoreType';
 import { ConfigurationManagerStoreConfig } from '../../modules/configuration_manager/config/config';
 import { DeserializationFailedError, SerializationFailedError } from '../errors/serialization.error';
@@ -64,6 +65,17 @@ export class KeyValueStoreFactory {
       case StoreType.InMemory:
         this.logger.debug('Creating in-memory key-value store');
         return new InMemoryKeyValueStore<T>();
+      case StoreType.Postgres:
+        if (!serializer || !deserializer) {
+          throw new SerializationFailedError(
+            'Serializer and deserializer functions must be provided for PostgreSQL store.',
+          );
+        }
+        this.logger.debug('Creating PostgreSQL key-value store');
+        return new PostgresDistributedKeyValueStore<T>(
+          serializer,
+          deserializer,
+        );
       case StoreType.Redis:
         if (!serializer) {
           throw new SerializationFailedError('Serializer function must be provided for Redis store.');

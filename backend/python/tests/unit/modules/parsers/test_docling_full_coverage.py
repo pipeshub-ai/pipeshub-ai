@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.pool_worker import run_and_release
 
 
 # ---------------------------------------------------------------------------
@@ -32,12 +33,12 @@ def _make_mock_config():
 
 def _make_processor():
     """Create a DoclingProcessor with mocked converter."""
-    with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter") as MockConverter, \
-         patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions"), \
-         patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
+    with patch("docling.document_converter.DocumentConverter") as MockConverter, \
+         patch("docling.document_converter.PdfFormatOption"), \
+         patch("docling.document_converter.WordFormatOption"), \
+         patch("docling.document_converter.MarkdownFormatOption"), \
+         patch("docling.datamodel.pipeline_options.ThreadedPdfPipelineOptions"), \
+         patch("docling.backend.pypdfium2_backend.PyPdfiumDocumentBackend"):
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
         processor = DoclingProcessor(_make_mock_logger(), _make_mock_config())
     return processor
@@ -144,7 +145,7 @@ class TestParseDocumentInWorker:
         mock_converter.convert.return_value = mock_conv_result
 
         with patch("app.modules.parsers.pdf.docling_processor._get_converter", return_value=mock_converter), \
-             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
+             patch("docling.datamodel.base_models.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
             from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
             result = _parse_document_in_worker("test.pdf", b"pdf content")
@@ -162,7 +163,7 @@ class TestParseDocumentInWorker:
         mock_converter.convert.return_value = mock_conv_result
 
         with patch("app.modules.parsers.pdf.docling_processor._get_converter", return_value=mock_converter), \
-             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
+             patch("docling.datamodel.base_models.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
             from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
             with pytest.raises(DocumentProcessingError, match="Failed to parse document"):
@@ -178,7 +179,7 @@ class TestParseDocumentInWorker:
         mock_converter.convert.return_value = mock_conv_result
 
         with patch("app.modules.parsers.pdf.docling_processor._get_converter", return_value=mock_converter), \
-             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream:
+             patch("docling.datamodel.base_models.DocumentStream") as MockStream:
             MockStream.return_value = MagicMock()
             from app.modules.parsers.pdf.docling_processor import _parse_document_in_worker
             _parse_document_in_worker("report.pdf", b"content here")
@@ -220,8 +221,9 @@ class TestParseDocumentMultiWorker:
             mock_loop.run_in_executor.assert_awaited_once()
             call_args = mock_loop.run_in_executor.call_args
             assert call_args[0][0] is mock_pool()  # pool argument
-            assert call_args[0][2] == "test.pdf"   # doc_name
-            assert call_args[0][3] == b"pdf bytes"  # content
+            assert call_args[0][1] is run_and_release  # trims the worker once done
+            assert call_args[0][3] == "test.pdf"   # doc_name
+            assert call_args[0][4] == b"pdf bytes"  # content
             MockDoclingDoc.model_validate_json.assert_called_once_with(mock_serialized)
             assert result is mock_doc
 
@@ -249,7 +251,7 @@ class TestParseDocumentMultiWorker:
             mock_loop.run_in_executor.assert_awaited_once()
             call_args = mock_loop.run_in_executor.call_args
             # The raw_content should be bytes extracted from BytesIO
-            assert call_args[0][3] == b"bytesio content"
+            assert call_args[0][4] == b"bytesio content"
             assert result is mock_doc
 
     @pytest.mark.asyncio
@@ -279,13 +281,13 @@ class TestGetConverter:
 
     def test_get_converter_creates_document_converter(self):
         """_get_converter returns a DocumentConverter instance."""
-        with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter") as MockConverter, \
-             patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions") as MockPipelineOpts, \
-             patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend") as MockBackend, \
-             patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption") as MockPdfFmt, \
-             patch("app.modules.parsers.pdf.docling_processor.WordFormatOption") as MockWordFmt, \
-             patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption") as MockMdFmt, \
-             patch("app.modules.parsers.pdf.docling_processor.InputFormat") as MockInputFmt:
+        with patch("docling.document_converter.DocumentConverter") as MockConverter, \
+             patch("docling.datamodel.pipeline_options.ThreadedPdfPipelineOptions") as MockPipelineOpts, \
+             patch("docling.backend.pypdfium2_backend.PyPdfiumDocumentBackend") as MockBackend, \
+             patch("docling.document_converter.PdfFormatOption") as MockPdfFmt, \
+             patch("docling.document_converter.WordFormatOption") as MockWordFmt, \
+             patch("docling.document_converter.MarkdownFormatOption") as MockMdFmt, \
+             patch("docling.datamodel.base_models.InputFormat") as MockInputFmt:
 
             mock_converter = MagicMock()
             MockConverter.return_value = mock_converter
@@ -297,6 +299,18 @@ class TestGetConverter:
             MockConverter.assert_called_once()
             assert result is mock_converter
             _get_converter.cache_clear()
+
+    def test_docling_stops_a_conversion_at_the_service_timeout(self) -> None:
+        """The service cannot cancel the conversion thread, so Docling must stop it."""
+        from docling.datamodel.base_models import InputFormat
+
+        from app.modules.parsers.pdf import docling_processor as mod
+        mod._get_converter.cache_clear()
+        try:
+            options = mod._get_converter().format_to_options[InputFormat.PDF].pipeline_options
+        finally:
+            mod._get_converter.cache_clear()
+        assert options.document_timeout == mod.DOCUMENT_TIMEOUT_SECONDS
 
 
 # ===========================================================================

@@ -29,6 +29,12 @@ class TestParse:
             "https://a.test/sitemap_index.xml", "https://a.test/news.xml",
         ]
 
+    def test_a_sitemap_line_that_is_not_a_url_is_dropped_alone(self) -> None:
+        text = "Sitemap: https://[bad\nSitemap: /feeds/pages.xml\nUser-agent: *\nDisallow: /private/\n"
+        rules = RobotsRules.parse(text, "PipesHub")
+        assert rules.sitemaps == ["/feeds/pages.xml"]
+        assert not rules.allows("https://a.test/private/x")
+
     @pytest.mark.parametrize("value", ["soon", "-3", ""])
     def test_a_broken_delay_is_ignored(self, value: str) -> None:
         assert RobotsRules.parse(f"User-agent: *\nCrawl-delay: {value}\n", "PipesHub").crawl_delay is None

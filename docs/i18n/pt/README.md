@@ -53,6 +53,19 @@
 
 <strong>[PipesHub](https://www.pipeshub.com/)</strong> é uma camada de execução nativa de IA, de código aberto e auto-hospedável, que conecta o conhecimento corporativo, oferece busca explicável com citações e automatiza fluxos de trabalho em todos os seus sistemas.
 
+### Como o PipesHub funciona
+
+O PipesHub constrói uma **camada de contexto unificada** sobre documentos, conversas, dados estruturados, wikis, tickets e código. Os conectores sincronizam cada fonte junto com suas permissões. O pipeline de indexação analisa, fragmenta e gera embeddings do conteúdo, e conecta registros, pessoas e entidades em um grafo de conhecimento.
+
+As perguntas são respondidas por um **loop de agente**, e não por uma única passada de "recuperar e depois gerar". O agente planeja, chama ferramentas, lê os resultados e continua até ter as evidências:
+
+- **Busca híbrida** — recuperação semântica e por palavras-chave, para encontrar tanto o significado quanto os termos exatos.
+- **Grep / correspondência de padrões** — identificadores exatos, mensagens de erro, chaves de tickets e símbolos de código.
+- **Navegação no grafo de conhecimento** — segue os vínculos entre documentos, pessoas, tickets, pull requests e threads.
+- **Leitura de documentos** — abre a fonte completa em vez de confiar em um único trecho correspondente.
+
+Cada chamada de ferramenta é filtrada pelas permissões do usuário que pergunta, e cada resposta cita os blocos de onde veio.
+
 
 ## Funcionalidades
 

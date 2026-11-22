@@ -25,7 +25,12 @@ logger = create_logger(__name__)
 #   - legacy full block web URL (/record/<id>/preview#blockIndex=N)
 #   - any http(s):// URL used as a web citation target
 # Kept permissive because web citations are arbitrary external URLs.
-_MD_LINK_PATTERN = r'\[([^\]]*?)\]\((ref\d+|https?://[^)]+)\)'
+# Link text may hold a few "[", but a scan gives up past them. Answers carry model output, and
+# scanning from every "[" of a long run to the next "]" takes quadratic time.
+_LINK_TEXT = r'[^\[\]]*(?:\[[^\[\]]*){0,8}'
+# The same for a target, whose unclosed "(" would otherwise be scanned from every link start.
+_LINK_URL = r'https?://(?!\))[^)\[]*(?:\[[^)\[]*){0,8}'
+_MD_LINK_PATTERN = rf'\[({_LINK_TEXT})\]\((ref\d+|{_LINK_URL})\)'
 
 # Tiny web-ref URL format exposed to the LLM when the real URL exceeds TINY_URL_THRESHOLD.
 # The embedded refN resolves through the shared CitationRefMapper, same as internal-search refs.
@@ -40,7 +45,7 @@ TINY_URL_THRESHOLD = 0
 #   [source](https://example.com/page) (https://ref123.xyz)
 #   [source](ref5) (https://example.com/page)
 _TRAILING_PAREN_URL_RE = re.compile(
-    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 1: md link; Grp 2: target
+    rf'(\[(?!\]){_LINK_TEXT}\]\((ref\d+|{_LINK_URL})\))'   # Grp 1: md link; Grp 2: target
     r'\s*'
     r'\((https?://[^\s)]+|ref\d+)\)'              # Grp 3: trailing URL/ref
 )
@@ -49,25 +54,26 @@ _TRAILING_PAREN_URL_RE = re.compile(
 #   [Bellandur Restaurants](https://ref6.xyz) [source](https://ref6.xyz)
 #   [Title](ref3)[source](ref3)
 _CONSECUTIVE_MD_LINKS_RE = re.compile(
-    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 1: first md link; Grp 2: first target
+    rf'(\[(?!\]){_LINK_TEXT}\]\((ref\d+|{_LINK_URL})\))'   # Grp 1: first md link; Grp 2: first target
     r'(\s*)'                                       # Grp 3: optional whitespace between links
-    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 4: second md link; Grp 5: second target
+    rf'(\[(?!\]){_LINK_TEXT}\]\((ref\d+|{_LINK_URL})\))'   # Grp 4: second md link; Grp 5: second target
 )
 
 # ── Malformed citation normalization ──────────────────────────────────────────
 # Matches a markdown link whose target is a comma- or whitespace-separated list
 # of two or more refs/URLs — a common LLM slip-up e.g. [source](ref1, ref2).
+_LIST_URL = r'https?://(?![\s,)])[^\s,)\[]*(?:\[[^\s,)\[]*){0,8}'
 _MULTI_REF_IN_LINK_RE = re.compile(
-    r'\[([^\]]*?)\]\(('
-    r'(?:ref\d+|https?://[^\s,)]+)'
-    r'(?:(?:\s*,\s*|\s+)(?:ref\d+|https?://[^\s,)]+))+'
+    rf'\[({_LINK_TEXT})\]\(('
+    rf'(?:ref\d+|{_LIST_URL})'
+    rf'(?:(?:\s*,\s*|\s+)(?:ref\d+|{_LIST_URL}))+'
     r')\)'
 )
 
 # Any markdown link, whatever its target. Matched first by the bare-ref passes
 # so a ref inside an existing link's text or URL is never rewritten into a
 # nested link.
-_ANY_MD_LINK = r'\[[^\]]*?\]\([^)\n]*\)'
+_ANY_MD_LINK = rf'\[{_LINK_TEXT}\]\([^)\n\[]*(?:\[[^)\n\[]*){{0,8}}\)'
 
 # Matches [refN] — a bracketed bare ref without a link target — which LLMs
 # commonly emit instead of proper [source](refN).  Must run BEFORE
@@ -107,7 +113,8 @@ _REF_TOKEN = rf'(?:https?://ref\d+\.xyz/?|{_ANY_REF_TARGET})'
 # e.g. [source]([ref2]], [source](<ref2>), [source](ref1, [source](ref2)),
 # [[source](ref2)]. Parsed by _parse_cited_link, not one regex, because the
 # wrapping nests to any depth and a sentence paren after it must be kept.
-_CITED_LINK_START_RE = re.compile(r'(\[*)\[[^\[\]\n]*\]\(')
+# Only the first "[" of a run can start a match: a later one has the same tail to fail on.
+_CITED_LINK_START_RE = re.compile(r'(?<!\[)(\[*)\[[^\[\]\n]*\]\(')
 _CITED_LINK_HEAD_RE = re.compile(r'\[([^\[\]\n]*)\]\(')
 _TARGET_GAP_RE = re.compile(r'[ \t.,;:]*')
 _TARGET_SEP_RE = re.compile(r'[ \t]*[,;]?[ \t]*')
@@ -492,9 +499,11 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
 # A ``[text](ref…)`` or ``[text](https://refN.xyz)`` link.  Resolvable refs were already
 # rewritten to ``[N](url)`` by the time this runs, so whatever still matches is dead.  One
 # pattern, so a later link sees every earlier one already stripped.
-_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _REF_TOKEN + r'\)')
+_UNRESOLVED_REF_LINK_RE = re.compile(rf'\[({_LINK_TEXT})\]\(' + _REF_TOKEN + r'\)')
+# Matched against stripped text, and no two whitespace runs here can reach the same spaces:
+# overlapping runs make a failed match cubic in the length of the text.
 _CITATION_LABEL_RE = re.compile(
-    r'^\s*(?:(?:sources?|refs?|links?|citations?)\s*#?\s*\d*|\d+(?:\s*[,;]\s*\d+)*)?\s*$', re.IGNORECASE,
+    r'(?:(?:sources?|refs?|links?|citations?)(?:\s*#)?(?:\s*\d+)?|\d+(?:\s*[,;]\s*\d+)*)?', re.IGNORECASE,
 )
 # Link text that only names the target: a ref token or a record id.  Meaningless to a reader,
 # so it goes even when the link is dead and no badge replaces it.
@@ -512,7 +521,7 @@ _LINK_TEXT_ECHO_WINDOW = 2000
 
 
 def _is_label_or_id(link_text: str) -> bool:
-    return bool(_CITATION_LABEL_RE.match(link_text) or _LINK_ID_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+    return bool(_CITATION_LABEL_RE.fullmatch(link_text.strip()) or _LINK_ID_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
 
 
 def _is_url_text(link_text: str) -> bool:
@@ -645,8 +654,15 @@ def _find_record_by_id(
     record_id: str,
     records: list[dict[str, Any]],
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None,
+    *,
+    listed: bool = False,
 ) -> dict[str, Any] | None:
-    
+    # A listing's citation quotes what the listing showed, even when a search
+    # or a read in the same turn holds the record too.
+    if listed:
+        for r in records:
+            if r.get("id") == record_id and LISTED_FACTS_KEY in r:
+                return r
     if virtual_record_id_to_result:
         for rec in virtual_record_id_to_result.values():
             if rec and rec.get("id") == record_id:
@@ -657,12 +673,28 @@ def _find_record_by_id(
     return None
 
 
-# `blockType` of a record-page citation, which cites no block: its text is the
+# `blockType` of a record-page citation, which cites no block: its text is
+# what a listing (navigate, lookup_record) stated about the record, the
 # record's summary (`BlockType.RECORD_SUMMARY`), the text the keyword (grep)
 # search matched in the record, or only the record's name. Only matched text
 # is quoted from the record itself.
+RECORD_PAGE_LISTED_FACTS = "listed_facts"
 RECORD_PAGE_MATCHED_TEXT = "matched_text"
 RECORD_PAGE_NAME_ONLY = "record_name"
+
+# On a record a listing made citable: what the listing said about it.
+LISTED_FACTS_KEY = "_listed_facts"
+# Marks a listing's record-page citation URL, so it never shares a Citation ID
+# with that record's summary citation, which quotes the record itself.
+_LISTING_URL_SUFFIX = "?cited=listing"
+
+
+def listing_citation_url(record_page_url: str) -> str:
+    return f"{record_page_url}{_LISTING_URL_SUFFIX}" if record_page_url else ""
+
+
+def is_listing_citation_url(url: str) -> bool:
+    return url.endswith(_LISTING_URL_SUFFIX)
 
 
 def _record_page_text(record: dict[str, Any]) -> tuple[str, str]:
@@ -672,7 +704,11 @@ def _record_page_text(record: dict[str, Any]) -> tuple[str, str]:
     # says more than its name, which the citation already shows as its title.
     summary = (record.get("semantic_metadata") or {}).get("summary")
     matched = record.get("_match_snippet")
-    if summary:
+    # A listed record is cited for what the listing said, and a listing that
+    # showed only the name (list_files) is cited by the name.
+    if LISTED_FACTS_KEY in record:
+        snippet, kind = record[LISTED_FACTS_KEY] or name, RECORD_PAGE_LISTED_FACTS
+    elif summary:
         snippet, kind = summary, BlockType.RECORD_SUMMARY.value
     elif matched:
         snippet, kind = matched, RECORD_PAGE_MATCHED_TEXT
@@ -699,7 +735,7 @@ def _append_record_page_citation(
     meta = get_enhanced_metadata(
         record,
         None,
-        {"webUrl": url, "blockText": display_content, },
+        {"webUrl": url.removesuffix(_LISTING_URL_SUFFIX), "blockText": display_content, },
     )
     # Set after the metadata is built, so the citation's link is made exactly
     # as before: a caller can tell the record's own words from a summary.
@@ -1120,7 +1156,9 @@ def _normalize_markdown_link_citations(
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
             if record_id is not None and block_index is None:
-                rec = _find_record_by_id(record_id, records, virtual_record_id_to_result)
+                rec = _find_record_by_id(
+                    record_id, records, virtual_record_id_to_result, listed=is_listing_citation_url(url),
+                )
                 if rec and url not in url_to_citation_num:
                     new_citation_num = _append_record_page_citation(
                         rec, url, new_citations, url_to_citation_num, new_citation_num
@@ -1312,7 +1350,9 @@ def _normalize_markdown_link_citations_for_agent(
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
             if record_id is not None and block_index is None:
-                rec = _find_record_by_id(record_id, records, virtual_record_id_to_result)
+                rec = _find_record_by_id(
+                    record_id, records, virtual_record_id_to_result, listed=is_listing_citation_url(url),
+                )
                 if rec and url not in url_to_citation_num:
                     new_citation_num = _append_record_page_citation(
                         rec, url, new_citations, url_to_citation_num, new_citation_num

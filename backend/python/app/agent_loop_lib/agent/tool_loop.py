@@ -17,6 +17,7 @@ from app.agent_loop_lib.core.scope import StateSlot, ToolScope
 from app.agent_loop_lib.core.types import Artifact, Confidence, Goal, Message, ToolCall, ToolResult
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
 from app.agent_loop_lib.tools.budget import MAX_TOOLS_PER_REQUEST
+from app.agent_loop_lib.tools.executor import log_tool_call_end
 from app.agent_loop_lib.tools.special_route import RouteContext, SpecialRouteRegistry
 from app.agent_loop_lib.tools.tags import TAG_DEDUP_EXACT, TAG_LIFECYCLE_TERMINAL
 
@@ -191,6 +192,19 @@ def _result_view(agent, call: ToolCall, tr: ToolResult) -> dict[str, Any] | None
     return view if isinstance(view, dict) else None
 
 
+def _result_failed(agent, call: ToolCall, tr: ToolResult) -> bool:
+    """Whether the step card shows the call as failed. A failure to decide leaves it as `tr` says."""
+    if tr.is_error:
+        return True
+    tool = _resolve_quietly(agent, call.name)
+    if tool is None:
+        return False
+    try:
+        return tool.result_failed(call.arguments, tr) is True
+    except Exception:
+        return False
+
+
 class _PendingApprovalHolder:
     """Shared by reference across a spawn tree (`inherit=True`): when any run in it leaves a call
     waiting for a person, every run above it ends its turn too, instead of carrying on without
@@ -363,6 +377,9 @@ async def execute_tool_call(
             f"Arguments received (truncated): {str(raw_args)[:300]!r}"
         )
         tr = ToolResult(tool_call_id=call.id, name=call.name, content=content, is_error=True)
+        log_tool_call_end(
+            outcome="failure", reason="malformed_args", error_class="bad_request", tool=call.name, tool_call_id=call.id,
+        )
         if not _silent:
             await agent.emit(EventType.TOOL_RESULT, {
                 "tool": tr.name, "is_error": True, "content": _result_preview(content), "tool_call_id": call.id,
@@ -385,6 +402,7 @@ async def execute_tool_call(
             ),
             is_error=False,
         )
+        log_tool_call_end(outcome="skipped", reason="duplicate", tool=call.name, tool_call_id=call.id)
         if not _silent:
             await agent.emit(EventType.TOOL_RESULT, {
                 "tool": tr.name, "is_error": tr.is_error,
@@ -466,11 +484,12 @@ async def execute_tool_call(
         return ToolCallOutcome(result=tr)
 
     if not _silent:
+        failed = _result_failed(agent, call, tr)
         result_event: dict[str, Any] = {
-            "tool": tr.name, "is_error": tr.is_error,
+            "tool": tr.name, "is_error": failed,
             "content": _result_preview(tr.content), "tool_call_id": call.id,
             "result_summary": _result_summary(agent, runtime, call, tr),
-            "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
+            "status": ToolCallStatus.ERROR if failed else ToolCallStatus.SUCCESS,
         }
         if tr.artifact_meta is not None:
             result_event["artifact_id"] = tr.artifact_meta.artifact_id

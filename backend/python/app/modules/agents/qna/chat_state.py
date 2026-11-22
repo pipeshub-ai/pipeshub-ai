@@ -8,7 +8,6 @@ from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
 from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
-from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import (
@@ -51,7 +50,7 @@ class ChatState(TypedDict):
 
     retrieval_service: RetrievalService
     graph_provider: IGraphDBProvider
-    reranker_service: RerankerService
+    reranker_service: object | None  # unused; always None
     config_service: ConfigurationService
     entity_vector_store: Any | None  # EntityVectorStore, optional for graceful degradation
 
@@ -100,6 +99,7 @@ class ChatState(TypedDict):
     instructions: str | None  # Agent-specific instructions for the LLM
     custom_instructions: str | None  # Org-level Chat Assistant / Universal Agent Mode instructions
     project_instructions: str | None  # Author-set instructions from a linked Project (Node ProjectService)
+    project_tools_selected: bool  # A project chat whose tools are the ones enabled on the project
     timezone: str | None  # User's timezone (e.g., "America/New_York")
     current_time: str | None  # Current time in user's timezone (ISO 8601)
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
@@ -112,6 +112,7 @@ class ChatState(TypedDict):
     tools: list[str] | None  # List of tool names to enable for this agent
     web_search_config: dict[str, Any] | None  # Runtime web_search tool config (provider + configuration payload)
     deep_research: bool  # Deep research on: research method in the prompt, more turns, a larger web budget
+    web_search_unset: bool  # The org has no web search provider: the prompt tells the model so
     output_file_path: str | None  # Optional file path for saving responses
     tool_to_connector_map: dict[str, str] | None  # Mapping from app_name (tool) to connector instance ID
 
@@ -190,7 +191,7 @@ class ChatState(TypedDict):
     known_record_ids: set[str] | None  # Record IDs the model has been shown — see remember_record_ids()
     known_record_names: dict[str, str] | None  # The same ids with their names, in the order shown (latest last)
     retrieved_by: dict[str, Any] | None  # Which layer found each record — see modules/retrieval/provenance.py
-    usage_ledger: Any | None  # Opt-in per-request LLM usage — see agents/agent_loop/protocol/run_usage.py
+    usage_ledger: Any | None  # Per-request LLM usage — see agents/agent_loop/protocol/run_usage.py
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
@@ -209,6 +210,7 @@ class ChatState(TypedDict):
     keyword_search_budget: str | None
     record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
+    attachment_record_ids: list[str] | None  # The attachments' virtual record ids the user may read (set by chat modes; also in filters["kb"])
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
 
     # Reflection and retry fields (for intelligent error recovery)
@@ -392,11 +394,16 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
         configuration = resolved_config.get("configuration", {})
         if provider:
             others = resolved_config.get("providers")
+            from app.web.config import image_settings
+
             return {
                 "provider": provider,
                 "configuration": configuration if isinstance(configuration, dict) else {},
                 # The other stored providers: search fallbacks and page readers (`app.web.config`).
                 "providers": [p for p in others if isinstance(p, dict)] if isinstance(others, list) else [],
+                # "Send images to LLM": agent runs build their tools from this dict, not from the
+                # resolved config chat mode keeps, so without it they never send images.
+                "settings": image_settings(resolved_config.get("settings")),
             }
 
 
@@ -520,7 +527,7 @@ _CARD_CLIENTS = frozenset({"pipeshub-ai", "slack"})
 
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
+                        reranker_service: object | None, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -547,6 +554,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     # its own prompt section, never merged into system_prompt/instructions,
     # so it never touches a real Agent Builder agent's identity.
     project_instructions = chat_query.get("projectInstructions")
+    project_tools_selected = bool(chat_query.get("projectToolsSelected"))
     timezone = chat_query.get("timezone")
     current_time = chat_query.get("currentTime")
     output_file_path = chat_query.get("outputFilePath")
@@ -641,6 +649,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "instructions": instructions,
         "custom_instructions": custom_instructions,
         "project_instructions": project_instructions,
+        "project_tools_selected": project_tools_selected,
         "timezone": timezone,
         "current_time": current_time,
         "apps": apps,  # Extracted from knowledge connector IDs
@@ -654,6 +663,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "web_search_config": _build_web_search_tool_config(chat_query),
         # Applies only with web search on; AgentContext.from_chat_state checks that.
         "deep_research": bool(chat_query.get("deepResearch")),
+        "web_search_unset": bool(chat_query.get("webSearchUnset")),
         "output_file_path": output_file_path,
         "tool_to_connector_map": None,  # Deprecated - use tool_to_toolset_map
 

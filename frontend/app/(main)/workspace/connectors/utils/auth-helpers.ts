@@ -78,6 +78,7 @@ export function isCredentialAuthType(authType: string): boolean {
     'CONNECTION_STRING',
     'ENTRA_ID',
     'CUSTOM',
+    'KEY_PAIR',
   ].includes(upper);
 }
 

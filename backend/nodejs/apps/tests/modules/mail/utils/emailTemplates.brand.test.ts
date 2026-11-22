@@ -3,7 +3,7 @@ import { loginWithOTPRequest, appUserInvite } from '../../../../src/modules/mail
 import { DEFAULT_BRAND, setBrandResolver } from '../../../../src/libs/branding';
 
 const FOOTER =
-  'Where your team and AI work together. PipesHub is a fully extensible and explainable workplace AI platform for enterprise search and workflow automation.';
+  'Where your team and AI work together. PipesHub is an open-source context layer for AI agents and an enterprise search platform, with permission-aware, cited answers across your work apps.';
 
 const text = (html: string): string => html.replace(/\s+/g, ' ');
 

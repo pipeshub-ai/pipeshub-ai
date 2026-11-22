@@ -224,7 +224,9 @@ export class FileProcessorService implements IFileUploadService {
     const mb = Math.round(this.configuration.maxFileSize / (1024 * 1024));
     switch (err?.code) {
       case 'LIMIT_FILE_SIZE':
-        return `One of the files is larger than the ${mb} MB limit. Remove it or make it smaller, then upload again.`;
+        return this.configuration.maxFilesAllowed > 1
+          ? `One of the files is larger than the ${mb} MB limit. Remove it or make it smaller, then upload again.`
+          : `This file is larger than the ${mb} MB limit. Make it smaller or split it, then upload it again.`;
       case 'LIMIT_FILE_COUNT':
         return `You can upload up to ${this.configuration.maxFilesAllowed} files at a time. Upload the rest in another batch.`;
       case 'LIMIT_PART_COUNT':

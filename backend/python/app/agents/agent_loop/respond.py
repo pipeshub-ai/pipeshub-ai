@@ -69,10 +69,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
     maybe_start_named_span,
     record_named_span_output,
 )
-from app.agents.agent_loop.error_classification import (
-    classify_error,
-    redact_error_for_log,
-)
+from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
 from app.agents.agent_loop.mcp_sign_in import sign_in_part
@@ -83,6 +80,8 @@ from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.citations import normalize_citations_and_chunks
+from app.utils.error_class import failure_reason
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.streaming import parse_confidence_from_answer
 
 if TYPE_CHECKING:
@@ -198,7 +197,8 @@ class AnswerFinalizer:
 
         if not agent_success:
             error_msg = agent_error or "An error occurred"
-            log.error(
+            # The turn's `agent_turn.end` (and `llm_call.failed`) already say why, once.
+            log.debug(
                 "AnswerFinalizer: agent run failed, answering with an error message "
                 "(error_code=%s org_id=%s conversation_id=%s run_id=%s): %s",
                 classify_error(error_msg)[0], self._context.org_id,
@@ -226,7 +226,7 @@ class AnswerFinalizer:
                 )
             except Exception as exc:
                 log.error("AnswerFinalizer failed: %s", exc, exc_info=True)
-                record_named_span_output(span, {"error": str(exc)})
+                record_named_span_output(span, {"error": failure_reason(exc)})
                 return await self._emit_error_response(
                     "I encountered an issue. Please try again.", event_sink=event_sink
                 )
@@ -474,7 +474,7 @@ class AnswerFinalizer:
         await self._emit_ask_user_question_fallback(state, event_sink)
         for evt in self._context.formatter.answer_final(self._context, completion_data=completion_data):
             await event_sink.write(evt)
-        log.info(
+        log.debug(
             "AnswerFinalizer: finalized response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
@@ -559,7 +559,7 @@ class AnswerFinalizer:
         await self._emit_ask_user_question_fallback(state, event_sink)
         for evt in self._context.formatter.answer_final(self._context, completion_data=completion_data):
             await event_sink.write(evt)
-        log.info(
+        log.debug(
             "AnswerFinalizer: finalized STOPPED response (%d chars, %d citations)",
             len(normalized), len(citations),
         )

@@ -229,7 +229,8 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   },
   'project:write': {
     name: 'project:write',
-    description: 'Create, update and share projects',
+    description:
+      'Create, update and share projects. Adding files to a project also needs kb:write',
     category: 'Projects',
     requiresUserConsent: true,
   },
@@ -270,6 +271,12 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   'code:read': {
     name: 'code:read',
     description: 'Read indexed code repositories and their code graph',
+    category: 'Code',
+    requiresUserConsent: true,
+  },
+  'code:write': {
+    name: 'code:write',
+    description: 'Push local repositories to be indexed into the code graph',
     category: 'Code',
     requiresUserConsent: true,
   },
@@ -369,7 +376,12 @@ export const DefaultMcpScopes = [
   'agent:read',
   'agent:execute',
   'connector:read',
+  'connector:write',
+  'connector:sync',
   'code:read',
+  'project:read',
+  'project:write',
+  'project:delete',
 ];
 
 /**
@@ -393,8 +405,48 @@ export const AgentMcpScopes = [
   'kb:upload',
   'user:read',
   'connector:read',
+  // Lets an agent add a web source (pipeshub_add_web_source): create the
+  // connector, save its start URL and start the crawl.
+  'connector:write',
+  'connector:sync',
+  'code:read',
+  // Lets the CLI push a local repository to be indexed (pipeshub index).
+  'code:write',
+] as const;
+
+/**
+ * The scopes the `/mcp` tools use: the scope each route they call requires,
+ * both in Node and in the Python service it forwards to, plus `offline_access`
+ * so MCP clients get a refresh token. Clients such as Claude Code request
+ * every scope in `scopes_supported`, so discovery advertises only these.
+ * MCP_SCOPES stays the cap on what any token may hold.
+ */
+export const McpToolScopes = [
+  'offline_access',
+  // pipeshub_search: Node accepts semantic:read too, but the Python search
+  // route it forwards to requires semantic:write.
+  'semantic:write',
+  'conversation:chat',
+  'agent:read',
+  'agent:execute',
+  'kb:read',
+  'kb:write',
+  'kb:upload',
+  'connector:read',
+  'connector:write',
+  'connector:sync',
+  'config:read',
+  'user:read',
+  'team:read',
+  'usergroup:read',
   'code:read',
 ] as const;
+
+/** The MCP_SCOPES the `/mcp` tools use, in MCP_SCOPES order. */
+export function mcpDiscoveryScopes(mcpScopes: readonly string[]): string[] {
+  const used = new Set<string>(McpToolScopes);
+  return mcpScopes.filter((scope) => used.has(scope));
+}
 
 export const ScopeCategories = [
   'Identity',

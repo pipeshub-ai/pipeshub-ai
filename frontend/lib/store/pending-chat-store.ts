@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import type { AttachmentRef, ChatSettings } from '@/chat/types';
 
 // ─────────────────────────────────────────────────────────
@@ -82,3 +83,6 @@ export const usePendingChatStore = create<PendingChatStore>((set, get) => ({
     return current;
   },
 }));
+
+// A message handed over but not yet sent must not be sent by the next person to sign in.
+resetStoreOnSessionEnd(usePendingChatStore);

@@ -1,0 +1,159 @@
+- id: RULE-S01
+  title: OPEN granted file under an inaccessible folder is a seed
+  source: rule cases R1-R13 (spec)
+  rule: drive
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: folder, kind: record, connector: A, rule: OPEN, parents: [S], belongs: [S]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [folder], belongs: [S]}
+    grants:
+      - [u, f]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, drive]
+- id: RULE-S02
+  title: STRICT granted node under an inaccessible parent is not a seed
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: STRICT, parents: [S], belongs: [S]}
+    grants:
+      - [u, f]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]
+  comment: Only OPEN nodes seed; STRICT means 'every ancestor must pass'.
+- id: RULE-S03
+  title: OPEN inheriting child below a seed
+  source: rule cases R1-R13 (spec)
+  rule: drive
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: folder, kind: record, connector: A, rule: OPEN, parents: [S], belongs: [S]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [folder], inherits: [folder], belongs: [S]}
+    grants:
+      - [u, folder]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, drive]
+- id: RULE-S04
+  title: STRICT inheriting child below a seed is denied
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: folder, kind: record, connector: A, rule: OPEN, parents: [S], belongs: [S]}
+      - {id: f, kind: record, connector: A, rule: STRICT, parents: [folder], inherits: [folder], belongs: [S]}
+    grants:
+      - [u, folder]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]
+- id: RULE-S05
+  title: Seed in a connector the user is not gated into
+  source: rule cases R1-R13 (spec)
+  rule: any
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [S], belongs: [S]}
+    grants:
+      - [u, f]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, any]
+- id: RULE-S06
+  title: Seed reached by a non-inheriting OPEN child that is itself granted (chain of grants)
+  source: rule cases R1-R13 (spec)
+  rule: drive
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: folder, kind: record, connector: A, rule: OPEN, parents: [S], belongs: [S]}
+      - {id: mid, kind: record, connector: A, rule: OPEN, parents: [folder], belongs: [S]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [mid], inherits: [mid], belongs: [S]}
+    grants:
+      - [u, folder]
+      - [u, mid]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, drive]
+- id: RULE-S07
+  title: Deleted seed opens nothing below it
+  source: rule cases R1-R13 (spec)
+  rule: lifecycle
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: folder, kind: record, connector: A, rule: OPEN, deleted: true, parents: [S], belongs: [S]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [folder], inherits: [folder], belongs: [S]}
+    grants:
+      - [u, folder]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: deny}
+  tags: [rules, lifecycle]
+- id: RULE-S08
+  title: Granted OPEN group (record group seed), records inherit
+  source: rule cases R1-R13 (spec)
+  rule: box
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: BOX}
+      - {id: top, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: sub, kind: group, connector: A, rule: OPEN, parents: [top]}
+      - {id: f, kind: record, connector: A, rule: OPEN, parents: [sub], inherits: [sub], belongs: [sub]}
+    grants:
+      - [u, sub]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {f: admit}
+  tags: [rules, box]

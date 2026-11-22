@@ -6,9 +6,12 @@ Every test runs on Neo4j and ArangoDB (NEO4J_IT_URI / ARANGO_IT_URL) against the
 GitHub in ``sim/``; see README.md.
 """
 
+from uuid import uuid4
+
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.sources.github_teams.repos import ReposSync
 from tests.integration.github_teams.helpers import hook_nth, issues_listing
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
@@ -59,6 +62,12 @@ async def test_code_prune_that_fails_is_redone_next_sync(world, org, monkeypatch
     await world.sync()
     gh.commit(repo, {"README.md": "# slim\n"}, branch="slim", replace=True, parent=None)
     repo.default_branch = "slim"
+
+    async def no_delta(*_args: object) -> bool:
+        return False
+
+    # A branch switch is synced from the delta when it can be; the walk is the fallback.
+    monkeypatch.setattr(ReposSync, "_incremental_sync", no_delta)
     original = world.processor.on_records_deleted_cascade
     calls = {"n": 0}
 
@@ -334,6 +343,7 @@ async def test_upgrade_removes_url_keyed_attachments_without_waiting_for_the_iss
         legacy = world.connector.comments._attachment_file_update(
             {"type": name.rsplit(".", 1)[1], "href": link, "filename": name}, ticket, None, ticket.id).record
         legacy.external_record_id = link
+        legacy.id = str(uuid4())  # older versions gave every new record a random id
         await world.processor.on_new_records([(legacy, [])])
     await _forget_issue_total(world, repo)
     await world.sync()

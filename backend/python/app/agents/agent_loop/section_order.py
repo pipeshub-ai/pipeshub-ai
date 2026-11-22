@@ -105,6 +105,8 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("goal_brief",                 Volatility.TURN),
     ("time_context",               Volatility.TURN),
     ("request_context",            Volatility.TURN),
+    # Per request: a client can send a different entity filter on every turn.
+    ("entity_filter",              Volatility.TURN),
     ("attachments",                Volatility.TURN),
     # Citation rules for an agent that cites only what a question brought
     # (retrieved results, attachments); see `citation_rules` above otherwise.

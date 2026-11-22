@@ -83,7 +83,7 @@ class TestOpeningAFile:
 
         error = await open_error(connector, db)
 
-        assert error.headers == {"Retry-After": "30"}
+        assert error.headers["Retry-After"] == "30"
 
     async def test_a_box_outage_asks_to_try_again_later(self, box_api, db, checkpoints) -> None:
         connector = await synced(box_api, db, checkpoints)

@@ -1,3 +1,5 @@
+import json
+
 import aiohttp  # type: ignore
 from tenacity import (  # type: ignore
     retry,
@@ -7,6 +9,8 @@ from tenacity import (  # type: ignore
 )
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import SOURCE_REFUSAL_HEADER
+from app.exceptions.non_retryable import NonRetryableError
 from app.services.base_client import parse_retry_after
 from app.utils.request_context import inject_request_headers
 
@@ -21,6 +25,30 @@ _MAX_ATTEMPTS = 3
 _MAX_RETRY_WAIT_SECONDS = 15
 
 
+class ResponseTooLargeError(NonRetryableError):
+    """A response larger than the caller will hold: refused for its size, never retried."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"The response is larger than {limit} bytes")
+        self.limit = limit
+
+
+_LIMITED_READ_CHUNK = 1024 * 1024
+
+
+async def read_limited(response: aiohttp.ClientResponse, max_bytes: int) -> bytes:
+    """*response*'s body, stopping with ResponseTooLargeError once it passes *max_bytes*."""
+    length = response.headers.get("Content-Length")
+    if length is not None and length.isdigit() and int(length) > max_bytes:
+        raise ResponseTooLargeError(max_bytes)
+    body = bytearray()
+    async for chunk in response.content.iter_chunked(_LIMITED_READ_CHUNK):
+        body.extend(chunk)
+        if len(body) > max_bytes:
+            raise ResponseTooLargeError(max_bytes)
+    return bytes(body)
+
+
 class ApiCallError(Exception):
     """Raised when an upstream HTTP call fails.
 
@@ -29,6 +57,8 @@ class ApiCallError(Exception):
     Carries ``status_code`` (when known) so callers can branch on the
     upstream HTTP status without parsing the message, and
     ``retry_after_seconds`` when the response said how long to wait.
+    ``source_reason`` is set when the answer relayed the source's own refusal
+    (``SOURCE_REFUSAL_HEADER``): its detail, written for people.
     """
 
     def __init__(
@@ -36,10 +66,23 @@ class ApiCallError(Exception):
         message: str,
         status_code: int | None = None,
         retry_after_seconds: float | None = None,
+        source_reason: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.retry_after_seconds = retry_after_seconds
+        self.source_reason = source_reason
+
+
+def _source_reason(headers: object, body: str) -> str | None:
+    """The detail of an answer marked as the source's refusal, else None."""
+    if not hasattr(headers, "get") or headers.get(SOURCE_REFUSAL_HEADER) is None:
+        return None
+    try:
+        detail = json.loads(body).get("detail")
+    except (ValueError, AttributeError):
+        return None
+    return detail if isinstance(detail, str) and detail.strip() else None
 
 
 def _should_retry(exc: BaseException) -> bool:
@@ -75,7 +118,7 @@ def _should_retry(exc: BaseException) -> bool:
     wait=wait_exponential(multiplier=1, min=4, max=_MAX_RETRY_WAIT_SECONDS),
     retry=retry_if_exception(_should_retry),
 )
-async def make_api_call(route: str, token: str) -> dict:
+async def make_api_call(route: str, token: str, *, max_bytes: int | None = None) -> dict:
     """
     Make an API call with the JWT token.
 
@@ -104,9 +147,20 @@ async def make_api_call(route: str, token: str) -> dict:
                         f"API call to {url} failed with status {response.status}: {error_text}",
                         status_code=response.status,
                         retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")),
+                        source_reason=_source_reason(response.headers, error_text),
                     )
 
                 content_type = response.headers.get("Content-Type", "").lower()
+
+                if max_bytes is not None:
+                    # Held to a size: the body is read in chunks and refused once it passes it.
+                    body = await read_limited(response, max_bytes)
+                    if "application/json" in content_type:
+                        try:
+                            return {"is_json": True, "data": json.loads(body)}
+                        except ValueError:
+                            pass
+                    return {"is_json": False, "data": body}
 
                 if response.status == HttpStatusCode.SUCCESS.value and "application/json" in content_type:
                     try:
@@ -125,8 +179,8 @@ async def make_api_call(route: str, token: str) -> dict:
         # logs the original parser error (e.g. TransferEncodingError) with
         # its traceback intact.
         raise
-    except ApiCallError:
-        # Re-raise unwrapped; the generic handler below would hide status_code.
+    except (ApiCallError, ResponseTooLargeError):
+        # Re-raise unwrapped; the generic handler below would hide status_code or the size refusal.
         raise
     except Exception as e:
         raise ApiCallError(f"Failed to make API call to {route}: {e}") from e

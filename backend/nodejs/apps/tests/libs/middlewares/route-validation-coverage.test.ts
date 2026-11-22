@@ -24,6 +24,12 @@ const ROUTES_WITHOUT_VALIDATION = new Set<string>([
   'createUserRouter POST /updateAppConfig',
   'createUserAccountRouter POST /updateAppConfig',
 
+  // Forwarded unchanged to the connectors service, whose request models refuse any field they do not name; no Node code reads these bodies.
+  'createLocalReposRouter PUT /:repoKey',
+  'createLocalReposRouter POST /:repoKey/manifest',
+  'createLocalReposRouter PUT /:repoKey/files',
+  'createLocalReposRouter POST /:repoKey/commit',
+
   // Multipart uploads: the file processor checks the file, and no field of the
   // body reaches a query.
   'createConfigurationManagerRouter POST /connectors/googleWorkspaceCredentials',
@@ -52,6 +58,7 @@ const ROUTES_WITHOUT_VALIDATION = new Set<string>([
   'createMcpServersRouter POST /oauth/discover',
   'createMcpServersRouter POST /instances',
   'createMcpServersRouter PUT /instances/:instanceId',
+  'createMcpServersRouter PUT /instances/:instanceId/logo',
   'createMcpServersRouter PUT /instances/:instanceId/my-tool-rules',
   'createMcpServersRouter POST /instances/:instanceId/authenticate',
   'createMcpServersRouter PUT /instances/:instanceId/credentials',

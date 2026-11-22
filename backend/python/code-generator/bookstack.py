@@ -946,17 +946,31 @@ def _generate_method(method_name: str, endpoint_info: Dict) -> str:
     elif has_body_params and method in ['POST', 'PUT']:
         body_lines.append("        headers['Content-Type'] = 'application/json'")
 
+    method_arg = f'"{method}"'
+    if has_file_params and method == 'PUT':
+        body_lines.append('')
+        body_lines.append('        # PHP parses a multipart body only on POST: BookStack takes a file update as a')
+        body_lines.append('        # POST with "_method" set to PUT.')
+        body_lines.append('        method = "PUT"')
+        body_lines.append('        if files:')
+        body_lines.append('            method = "POST"')
+        body_lines.append('            body["_method"] = "PUT"')
+        method_arg = 'method'
+
     # Create request
     body_lines.append('')
     body_lines.append('        request = HTTPRequest(')
-    body_lines.append(f'            method="{method}",')
+    body_lines.append(f'            method={method_arg},')
     body_lines.append('            url=url,')
     body_lines.append('            headers=headers,')
     body_lines.append('            query_params=params,')
 
     if has_file_params:
         body_lines.append('            body=body,')
-        body_lines.append('            files=files')
+        # HTTPRequest.files takes (field, (filename, bytes, mime)) parts; None keeps a JSON body.
+        body_lines.append(
+            '            files=[(part, (part, data, "application/octet-stream")) for part, data in files.items()] or None,'
+        )
     elif has_body_params:
         body_lines.append('            body=body')
     else:

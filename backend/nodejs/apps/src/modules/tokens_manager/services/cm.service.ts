@@ -8,6 +8,10 @@ import { loadConfigurationManagerConfig } from '../../configuration_manager/conf
 import { configPaths } from '../../configuration_manager/paths/paths';
 import { DefaultMcpScopes } from '../../oauth_provider/config/scopes.config';
 import { normalizeUrl } from '../utils/utils';
+import { safeCause } from '../../../libs/errors/backend-error';
+
+// JSON.parse's message quotes the start of what it read: here, decrypted config. Log `safeCause(error)`, never the error.
+const logger = Logger.getInstance({ service: 'ConfigService' });
 
 // Define interfaces for all service configurations
 export interface SmtpConfig {
@@ -16,6 +20,8 @@ export interface SmtpConfig {
   username?: string;
   password?: string;
   fromEmail: string;
+  /** Absent means on; only an explicit `false` turns sending off. */
+  enabled?: boolean;
 }
 
 export const SIGNING_SECRET_BYTES = 32;
@@ -130,6 +136,10 @@ export class ConfigService {
 
       return fallbackConfig;
     } catch (error) {
+      logger.warn('Stored config unreadable; using the environment defaults', {
+        path: configPath,
+        error: safeCause(error),
+      });
       return fallbackEnvVars as T;
     }
   }
@@ -158,7 +168,11 @@ export class ConfigService {
       configPaths.smtp,
     );
     if (encryptedConfig) {
-      return JSON.parse(this.encryptionService.decrypt(encryptedConfig));
+      const config = JSON.parse(
+        this.encryptionService.decrypt(encryptedConfig),
+      ) as SmtpConfig;
+      // An admin turned email off: the mail service must behave as if none is set.
+      return config.enabled === false ? null : config;
     }
     return null;
   }
@@ -613,7 +627,7 @@ export class ConfigService {
     parsedKeys.scopedJwtSecret = randomKeyGenerator();
     parsedKeys.cookieSecret = randomKeyGenerator();
     parsedKeys[SIGNING_SECRETS_ROTATE_ID_FIELD] = rotateId;
-    Logger.getInstance({ service: 'ConfigService' }).warn(
+    logger.warn(
       'Rotated JWT/cookie signing secrets (ROTATE_SIGNING_SECRETS). Existing sessions and service tokens are now invalid.',
     );
     return true;
@@ -749,7 +763,11 @@ export class ConfigService {
           config = parsed;
         }
       }
-    } catch {
+    } catch (error) {
+      logger.warn(
+        'Deployment config unreadable; rewriting it with the Node-owned keys only',
+        { error: safeCause(error) },
+      );
       config = {};
     }
 

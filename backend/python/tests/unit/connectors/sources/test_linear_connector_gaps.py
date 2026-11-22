@@ -15,7 +15,7 @@ from app.connectors.sources.linear.api_gateway import (
     LinearRateLimited,
     LinearTransientError,
 )
-from app.connectors.sources.linear.connector import LinearConnector, file_record_id
+from app.connectors.sources.linear.connector import PROJECTS_CHECKPOINT_KEY, LinearConnector, file_record_id
 from app.models.blocks import BlockGroup, BlocksContainer, ChildRecord, ChildType, GroupSubType, GroupType
 from app.models.entities import (
     AppUser,
@@ -86,6 +86,7 @@ def _make_connector() -> LinearConnector:
     dep.org_id = "org-linear-gaps"
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.on_new_app_users = AsyncMock()
+    dep.get_all_app_users = AsyncMock(return_value=[])
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
@@ -287,7 +288,7 @@ class TestFilterOptionsAndUsers:
         conn.data_source = None
         conn.init = AsyncMock(return_value=True)
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_teams_resp([
+        mock_ds.execute_operation = AsyncMock(return_value=_teams_resp([
             {"id": "t1", "name": "Eng", "key": "ENG"},
         ]))
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
@@ -1232,7 +1233,7 @@ class TestSyncIssuesForTeamsExtended:
         conn = _make_connector()
         conn._now = MagicMock(return_value=1704070000000)
         rg, perms = _make_team_rg()
-        conn.issues_sync_point.store["team_issues_team-1"] = {"last_sync_time": 1700000000000}
+        conn.issues_sync_point.store["team_issues_v2_team-1"] = {"last_sync_time": 1700000000000}
 
         ticket = _ticket_record(source_updated_at=1704067200000)
         file_rec = _file_record()
@@ -1250,7 +1251,7 @@ class TestSyncIssuesForTeamsExtended:
         assert (full_sync_team_ids, failed) == (set(), [])
         # The checkpoint is when this run started, not the newest updatedAt it saw:
         # an issue changed while the list was being read is picked up next time.
-        assert conn.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1704070000000
+        assert conn.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_skips_empty_batches_from_fetch(self):
@@ -2065,7 +2066,7 @@ class TestFetchBatchEdgeCases:
         conn.notify = AsyncMock()
         conn.indexing_filters = None
         conn.organization_url_key = "org"
-        conn.projects_sync_point.store["projects"] = {"last_sync_time": 1700000000000}
+        conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1700000000000}
         rg, perms = _make_team_rg()
         project_summary = {
             "id": "proj-1",
@@ -2090,7 +2091,7 @@ class TestFetchBatchEdgeCases:
         # checkpoint stays and the failure is reported.
         conn.data_entities_processor.on_new_records.assert_not_called()
         conn.notify.assert_awaited_once()
-        assert conn.projects_sync_point.store["projects"]["last_sync_time"] == 1700000000000
+        assert conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1700000000000
 
 
 class TestApplyDateFiltersExtended:
@@ -2864,7 +2865,7 @@ class TestCoverageBoostFinal:
         conn._now = MagicMock(return_value=1704070000000)
         conn.sync_filters = None
         conn.indexing_filters = None
-        conn.projects_sync_point.store["projects"] = {"last_sync_time": 1704067200000}
+        conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1704067200000}
         rg, perms = _make_team_rg()
         mock_ds = MagicMock()
         mock_ds.projects = AsyncMock(return_value=_projects_resp([]))
@@ -2872,12 +2873,12 @@ class TestCoverageBoostFinal:
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
             await conn._sync_projects_for_teams([(rg, perms)])
 
-        mock_ds.projects.assert_awaited_once_with(first=10, after=None, filter={
+        mock_ds.projects.assert_awaited_once_with(first=10, after=None, includeArchived=True, filter={
             "accessibleTeams": {"some": {"id": {"in": ["team-1"]}}},
             "updatedAt": {"gt": conn._linear_datetime_from_timestamp(1704067200000 - 60_000)},
         })
         conn.data_entities_processor.on_new_records.assert_not_called()
-        assert conn.projects_sync_point.store["projects"]["last_sync_time"] == 1704070000000
+        assert conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_process_issue_attachments_creates_record_with_indexing_off(self):
@@ -3213,7 +3214,7 @@ class TestCoverageBoostFinal:
         assert [(type(r).__name__, r.external_record_id, r.external_record_group_id) for r, _ in batch] == [
             ("ProjectRecord", "proj-1", "team-1"),
         ]
-        assert conn.projects_sync_point.store["projects"]["last_sync_time"] == 1704070000000
+        assert conn.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1704070000000
 
     @pytest.mark.asyncio
     async def test_connection_inits_when_datasource_missing(self):

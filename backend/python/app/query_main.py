@@ -1,24 +1,31 @@
 import asyncio
+import gc
 import logging
 import os
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.admin_gate import require_admin_caller
-from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.middlewares.request_log import (
+    install_request_logging,
+    mark_request_failure,
+)
 from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.api.routes.records import router as records_router
+from app.core.envelope import configure_from_config as configure_envelope
+from app.core.org_context import spawn_detached, system
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
+    ai_models_registry_router,
     authMiddleware,
     chatbot_router,
     ensure_org_context,
@@ -32,13 +39,16 @@ from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
-from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
-from app.api.routes.openai_models import router as openai_models_router
+from app.api.routes.entity_tools import router as entity_tools_router  # noqa: E402 - after set_service_suffix(), like the imports around it
+from app.api.routes.graph_view import router as graph_view_router  # noqa: E402
 from app.api.routes.health import router as health_router
+from app.api.routes.knowledge_search import router as knowledge_search_router  # noqa: E402 - after set_service_suffix(), like the imports around it
+from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
+from app.edition import check_runtime_settings  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.edition_containers import QueryAppContainer
 from app.edition_services import (  # noqa: E402 - like the imports around it, after set_service_suffix()
     configure_app,
@@ -52,10 +62,17 @@ from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.process_hardening import mark_process_non_dumpable
+from app.utils.route_template import route_template
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.url_redaction import redact_sensitive_query_params
+from app.utils.user_lookup import (  # noqa: E402 - after set_service_suffix(), like the imports around it
+    connectors_user_node_ensurer,
+    register_caller_node_ensurer,
+)
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = QueryAppContainer.init("query_service")
 
@@ -183,6 +200,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.debug("🚀 Starting retrieval application")
 
+    await configure_envelope(app_container.config_service())
+
     from app.agents.actions.storage_search.storage_search import (
         sweep_orphan_views_at_startup,
     )
@@ -202,6 +221,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # Chat attachments parse PDFs in parse workers sized from this governor, so
+    # one slow or huge file costs only its own upload: a worker can be killed on
+    # a deadline and is what runs out of memory, where a thread is neither. No
+    # admission gates are taken here, so its sampling loop is not started.
+    from app.modules.parsers import parse_pool
+    from app.modules.parsers.pdf.pdf_rasterizer import (
+        set_resource_governor as set_pdf_rasterizer_governor,
+    )
+    from app.services.messaging.config import messaging_env
+    from app.services.resource_governor import ResourceGovernor
+    from app.utils.llm import is_local_cpu_embedding_configured
+
+    governor = ResourceGovernor(
+        logger=logger,
+        env_parse=messaging_env.env_max_concurrent_parsing,
+        worker_count=configured_worker_count(),
+        reserve_embedding_cpus=await is_local_cpu_embedding_configured(
+            app_container.config_service(), logger
+        ),
+    )
+    set_pdf_rasterizer_governor(governor)
+    parse_pool.set_resource_governor(governor)
+
     # KB uploads made through chat index in this process, so it invalidates too.
     try:
         from app.services.cache.invalidation_hooks import (
@@ -213,6 +255,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
 
+    from app.services.permissions.wiring import register_viewer_scope_version
+
+    await register_viewer_scope_version(app_container.config_service(), logger)
+    from app.services.permissions.wiring import register_scope_generation
+
+    await register_scope_generation(app_container.config_service(), logger)
+    # A brand-new caller's graph user is written by the connectors service (it also registers their private
+    # knowledge base's connector); this service asks it when a route finds the caller missing.
+    register_caller_node_ensurer(connectors_user_node_ensurer(app_container.config_service()))
+
     # Start all message consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
@@ -222,8 +274,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
-    # Get all organizations
-    orgs = await graph_provider.get_all_orgs()
+    # Only the list is cross-org: tasks started below must not inherit this scope.
+    with system("query_startup"):
+        orgs = await graph_provider.get_all_orgs()
     if not orgs:
         logger.info("No organizations found in the system")
     else:
@@ -254,7 +307,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     f"❌ Embedding model warmup failed (will retry on first use): {warmup_error}"
                 )
 
-        app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
+        app.state.embedding_warmup_task = spawn_detached(_warmup_embedding_model())
 
         # Builtin skill packs are seeded here, once per org per pack version,
         # instead of being checked on every agent request.
@@ -268,7 +321,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
 
                 app.state.skills_seed_task = asyncio.create_task(
-                    reconcile_builtin_skills_for_orgs(graph_provider, orgs)
+                    reconcile_builtin_skills_for_orgs(graph_provider)
                 )
         except Exception as e:
             logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")
@@ -299,9 +352,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     f"k-NN index warmup failed (non-fatal, search will still work): {warmup_error}"
                 )
 
-        app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
+        app.state.knn_warmup_task = spawn_detached(_warmup_knn_index())
 
-        app.state.entity_store_warmup_task = asyncio.create_task(
+        app.state.entity_store_warmup_task = spawn_detached(
             warm_up_entity_vector_store(app_container, logger)
         )
 
@@ -310,6 +363,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # serves search never reaches the indexing write path that would
         # otherwise do it, so it has to happen here too.
         async def _reconcile_lexical_scoring() -> None:
+            # Same reason: the payload indexes of a collection from an older release are added here, not by a first write.
+            await retrieval_service.collection_registry.reconcile_payload_indexes()
             try:
                 changed = await retrieval_service.collection_registry.reconcile_lexical_scoring()
                 if changed:
@@ -317,7 +372,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except Exception as reconcile_error:
                 logger.warning(f"Keyword-scoring reconcile failed (non-fatal): {reconcile_error}")
 
-        app.state.lexical_reconcile_task = asyncio.create_task(_reconcile_lexical_scoring())
+        app.state.lexical_reconcile_task = spawn_detached(_reconcile_lexical_scoring())
 
     # Prepare the coding sandbox backend before a user needs it. On Docker
     # that means pulling the sandbox image and creating the egress network —
@@ -368,7 +423,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 warmup_error,
             )
 
-    app.state.sandbox_warmup_task = asyncio.create_task(_warmup_coding_sandbox())
+    app.state.sandbox_warmup_task = spawn_detached(_warmup_coding_sandbox())
 
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
@@ -394,6 +449,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mcp_registry.auto_discover_templates()
     app.state.mcp_registry = mcp_registry
     logger.info(f"✅ Loaded {len(mcp_registry.list_templates())} MCP server templates in memory")
+
+    # Each answer allocates and drops many short-lived objects; a gen-0 threshold
+    # of 10,000 (default 700) makes young collections rarer while generations 1
+    # and 2 keep their default ratios.
+    gc.set_threshold(10_000, 10, 10)
 
     yield
     # Shutdown
@@ -430,11 +490,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error closing configuration service: {e}")
 
     try:
+        from app.modules.parsers import parse_pool
+        parse_pool.set_resource_governor(None)
+        if parse_pool.shutdown_parse_pool():
+            logger.info("✅ Parse worker pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down the parse worker pool: {e}")
+
+    try:
         from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
         if shutdown_pdf_raster_pool():
             logger.info("✅ PDF rasterization process pool shut down")
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
+
+    try:
+        from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher
+        await close_shared_fetcher()
+    except Exception as e:
+        logger.error(f"❌ Error closing the shared headless browser: {e}")
 
     try:
         from app.modules.transformers.blob_storage import (
@@ -473,39 +547,40 @@ configure_app(app, "query")
 EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
 
 
-@app.middleware("http")
-async def authenticate_requests(request: Request, call_next) -> JSONResponse:
-    # Check if path should be excluded from authentication
-    if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
-        return await call_next(request)
+class AuthenticateRequests:
+    """Authenticates every request outside EXCLUDE_PATHS.
 
-    try:
-        # Apply authentication
-        authenticated_request = await authMiddleware(request)
-        # Continue with the request
-        return await call_next(authenticated_request)
+    Plain ASGI rather than ``@app.middleware("http")``: ``BaseHTTPMiddleware``
+    pushes every chunk of a streamed answer through an anyio memory stream.
+    A route's exception is logged and answered by http.request.end (request_log).
+    """
 
-    except HTTPException as exc:
-        # Handle authentication errors
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    except Exception:
-        # Handle unexpected errors. This wraps every route, so an uncaught
-        # exception anywhere in the app ends up here: log it with its
-        # traceback, otherwise the only trace of a crashing route is a
-        # generic 500 and nothing in the server logs.
-        container.logger().exception(
-            "Unhandled exception while processing %s %s",
-            request.method,
-            request.url.path,
-        )
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"},
-        )
+    def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope, receive)
+        if any(request.url.path.startswith(path) for path in EXCLUDE_PATHS):
+            await self.app(scope, receive, send)
+            return
+        try:
+            # request.state lives in the scope, so the route sees what auth set.
+            await authMiddleware(request)
+        except HTTPException as exc:
+            mark_request_failure(request, exc)
+            await JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
-# Trace context — outermost, before auth.
-app.add_middleware(RequestContextMiddleware)
+app.add_middleware(AuthenticateRequests)
+
+
+# Trace context and the request line — outside auth, so both see every request.
+install_request_logging(app)
 telemetry = setup_telemetry(app, service_name="query_service")
 
 
@@ -534,11 +609,11 @@ async def health_check() -> JSONResponse:
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
     """Answer a malformed request in plain words, keeping FastAPI's ``detail`` list shape."""
     errors = jsonable_encoder(exc.errors())
+    # No URL: its query can carry an email or a token. The request's http.request.end has the method and status.
     logging.getLogger(__name__).warning(
-        "Request validation failed for %s %s: %s",
-        request.method,
-        redact_sensitive_query_params(str(request.url)),
+        "Request validation failed: %s",
         log_safe_validation_errors(errors),
+        extra={"route": route_template(request.scope)},
     )
     message, detail = friendly_validation_errors(errors)
     return JSONResponse(status_code=422, content={"message": message, "detail": detail})
@@ -546,6 +621,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(knowledge_search_router, prefix="/api/v1")
+app.include_router(entity_tools_router, prefix="/api/v1")
 app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
@@ -553,6 +630,7 @@ app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
 app.include_router(code_graph_router, prefix="/api/v1")
+app.include_router(graph_view_router, prefix="/api/v1")
 # These routes call whatever provider URL the body names, so only admins may reach them.
 app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
 app.include_router(ai_models_registry_router, prefix="/api/v1")
@@ -590,9 +668,13 @@ def configured_worker_count() -> int:
     return 1
 
 
-def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, reload: bool = True) -> None:
+def run(host: str | None = None, port: int | None = None, *, workers: int | None = None, reload: bool = True) -> None:
     """Run the application"""
     import warnings
+
+    from app.utils.env_utils import bind_host, bind_port
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8000)
     workers = workers or configured_worker_count()
     if reload and workers > 1:
         warnings.warn(
@@ -632,7 +714,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         argv = [
             sys.executable, "-m", "uvicorn", "app.query_main:app",
             "--host", host, "--port", str(port),
-            "--log-level", "info", "--workers", str(workers),
+            "--log-level", "info", "--no-access-log", "--workers", str(workers),
             "--timeout-worker-healthcheck", str(uvicorn_worker_healthcheck_timeout()),
         ]
         try:
@@ -651,6 +733,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         host=host,
         port=port,
         log_level="info",
+        access_log=False,
         reload=reload,
         workers=workers,
         timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),

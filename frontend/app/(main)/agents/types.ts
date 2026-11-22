@@ -2,6 +2,8 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationPagination,
+  ForkChild,
+  ForkOrigin,
   ModelInfo,
   ReasoningEffort,
   SharedWithEntry,
@@ -59,6 +61,12 @@ export interface AgentListRecord {
   instructions?: string;
   /** Omitted on some agents (e.g. legacy rows) */
   isServiceAccount?: boolean;
+  /**
+   * The service account this agent searches knowledge as, by `userId`. Absent
+   * or null means it searches as its creator, which is how every service agent
+   * made before binding existed still behaves.
+   */
+  serviceAccountUserId?: string | null;
   /** e.g. `INDIVIDUAL` */
   access_type: string;
   /** e.g. `OWNER` */
@@ -183,6 +191,7 @@ export interface AgentDetail {
   name: string;
   id: string;
   isServiceAccount?: boolean;
+  serviceAccountUserId?: string | null;
   _key: string;
   _id: string;
   toolsets: AgentToolset[];
@@ -388,6 +397,8 @@ export interface AgentConversationDetailApi {
   status: string;
   messages: ConversationMessage[];
   modelInfo: ModelInfo;
+  forkedFrom?: ForkOrigin;
+  forks?: ForkChild[];
   access: { isOwner: boolean; accessLevel: string };
   /** Optional: present when the API returns paginated messages. */
   pagination?: ConversationPagination;

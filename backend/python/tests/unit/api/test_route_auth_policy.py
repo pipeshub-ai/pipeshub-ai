@@ -28,7 +28,10 @@ _ROUTERS = {
     "health": ("app.api.routes.health", "router"),
     "ai_models_registry": ("app.api.routes.ai_models_registry", "router"),
     "code_graph": ("app.api.routes.code_graph", "router"),
+    "graph_view": ("app.api.routes.graph_view", "router"),
     "entity": ("app.api.routes.entity", "router"),
+    "knowledge_search": ("app.api.routes.knowledge_search", "router"),
+    "entity_tools": ("app.api.routes.entity_tools", "router"),
     "mcp_servers": ("app.api.routes.mcp_servers", "router"),
     "api_toolsets": ("app.api.routes.api_toolsets", "router"),
     "kb": ("app.connectors.sources.localKB.api.kb_router", "kb_router"),
@@ -51,6 +54,7 @@ _SERVICE_TOKEN_ROUTES = {
     ("chatbot", "DELETE", "/chat/attachments/permissions"): {"conversation:permissions"},
     ("chatbot", "POST", "/chat/artifacts/permissions"): {"conversation:permissions"},
     ("chatbot", "DELETE", "/chat/artifacts/permissions"): {"conversation:permissions"},
+    ("chatbot", "POST", "/chat/records/access"): {"conversation:permissions"},
     (
         "connectors",
         "GET",
@@ -66,6 +70,7 @@ _SERVICE_TOKEN_ROUTES = {
     ("parsing", "GET", "/api/v1/parse/providers"): {"document:parse"},
     ("extraction", "POST", "/api/v1/extract/classify"): {"document:classify"},
     ("entity", "PATCH", "/api/v1/entity/user/email"): {"entity:user:write"},
+    ("entity", "POST", "/api/v1/entity/internal/user-node"): {"entity:user:ensure"},
     ("extraction", "POST", "/api/v1/extract/entities"): {"document:classify"},
 }
 

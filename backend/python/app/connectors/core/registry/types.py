@@ -100,6 +100,11 @@ class AuthField:
     accepted_file_types: list[str] = field(default_factory=list)
     validation_rules: list[FileContentValidationRule] = field(default_factory=list)
     options: list[str] = field(default_factory=list)
+    # Shown only on an instance that already has a value saved for it, never on a new one:
+    # a way of signing in kept for instances set up with it, offered to no new ones.
+    saved_only: bool = False
+    # Required, except on an instance that has a value saved for this other field.
+    required_unless_saved: str = ""
 
 
 @dataclass

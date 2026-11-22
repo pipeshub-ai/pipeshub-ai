@@ -118,6 +118,8 @@ def format_connector_filter_lines(filters: dict[str, Any] | None) -> list[str]:
 #: (some of its folders or files). The prompt names such a source without its
 #: id: the id would let a tool reach the rest of it by name.
 PARTLY_SHARED_KEY = "partlyShared"
+# Marks the knowledge entry for a project's own (hidden) file collection.
+PROJECT_FILES_KEY = "projectFiles"
 
 def classify_knowledge_sources(
     agent_knowledge: list[dict[str, Any]],
@@ -175,6 +177,7 @@ def classify_knowledge_sources(
                 "connector_id": connector_id,
                 "source_type": "kb",
                 **({"partly_shared": True} if k.get(PARTLY_SHARED_KEY) else {}),
+                **({"project_files": True} if k.get(PROJECT_FILES_KEY) else {}),
             })
         elif connector_id:
             type_key = ktype.lower().split()[0] if ktype else ""

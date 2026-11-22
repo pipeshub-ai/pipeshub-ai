@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
@@ -42,11 +43,22 @@ for _p in (_ROOT, _RV_HELPER):
 from helper.clients.conversations_client import ConversationsClient
 from helper.clients.kb_client import KBClient
 from helper.clients.projects_client import ProjectsClient
+from helper.feature_flags import feature_flag
+from helper.pipeshub_client import PipeshubClient
 from helper.second_user import SecondUser
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
 )
+
+# The Labs flag is org-wide, and one worker's teardown turning it off would
+# refuse another worker's projects mid-test, so the whole module runs on one.
+pytestmark = pytest.mark.xdist_group("projects")
+
+PROJECTS_FLAG = "ENABLE_PROJECTS"
+# The API reads the flag through a cache of a few seconds (projects-feature.ts),
+# so a test waits for a change to take effect instead of assuming it has.
+_FLAG_SETTLE_SECONDS = 30
 
 # ---------------------------------------------------------------------------
 # Part 1 — offline OpenAPI contract tests (no network, no live stack needed)
@@ -260,13 +272,36 @@ def _response_json(resp: requests.Response) -> dict[str, Any]:
     return data
 
 
+def _wait_for_projects_status(projects: ProjectsClient, expected: int) -> requests.Response:
+    """List projects until the answer has ``expected`` status, or the settle time runs out."""
+    deadline = time.monotonic() + _FLAG_SETTLE_SECONDS
+    while True:
+        resp = projects.list_projects(limit=1)
+        if resp.status_code == expected or time.monotonic() >= deadline:
+            return resp
+        time.sleep(1)
+
+
+@pytest.fixture(scope="module")
+def projects_enabled(pipeshub_client: PipeshubClient, projects_client: ProjectsClient) -> Iterator[None]:
+    """Projects are behind the ENABLE_PROJECTS Labs flag, off by default; it is put back afterwards."""
+    with feature_flag(pipeshub_client, PROJECTS_FLAG, True):
+        resp = _wait_for_projects_status(projects_client, 200)
+        assert resp.status_code == 200, (
+            f"Projects were still refused after turning on {PROJECTS_FLAG}: {resp.status_code}: {resp.text[:300]}"
+        )
+        yield
+
+
 class ProjectTestBase:
     @pytest.fixture(autouse=True)
     def _setup(
         self,
+        projects_enabled: None,
         projects_client: ProjectsClient,
         conversations_client: ConversationsClient,
     ) -> None:
+        del projects_enabled
         self.projects = projects_client
         self.conversations = conversations_client
         self.timeout = int(os.getenv("PIPESHUB_TEST_TIMEOUT", "60"))
@@ -591,4 +626,27 @@ class TestProjectScopedStream(ProjectTestBase):
             "expected the newly streamed conversation to already be linked to "
             "the project (Node links it inside the create transaction, before "
             "the AI payload is even sent)"
+        )
+
+
+@pytest.mark.integration
+class TestProjectsLabsSwitch(ProjectTestBase):
+    def test_projects_are_refused_while_the_labs_switch_is_off(self, pipeshub_client: PipeshubClient) -> None:
+        with feature_flag(pipeshub_client, PROJECTS_FLAG, False):
+            listed = _wait_for_projects_status(self.projects, 403)
+            created = self.projects.create_project(name=f"it-project-{uuid4().hex[:8]}")
+        # The rest of this module expects Projects on again.
+        back_on = _wait_for_projects_status(self.projects, 200)
+        if created.status_code == 201:
+            self.projects.delete_project(_response_json(created)["project"]["_id"])
+
+        for what, resp in (("listing projects", listed), ("creating a project", created)):
+            assert resp.status_code == 403, f"{what} with Projects off: {resp.status_code}: {resp.text[:300]}"
+            error = _response_json(resp).get("error") or {}
+            assert error.get("code") == "HTTP_FORBIDDEN", f"{what} with Projects off: {error!r}"
+            assert "Labs" in str(error.get("message")), (
+                f"{what} with Projects off does not say where to turn them on: {error.get('message')!r}"
+            )
+        assert back_on.status_code == 200, (
+            f"Projects were still refused after turning them back on: {back_on.status_code}: {back_on.text[:300]}"
         )

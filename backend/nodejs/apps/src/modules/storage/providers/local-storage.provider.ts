@@ -10,6 +10,7 @@ import {
   FilePayload,
   StorageServiceResponse,
   Document,
+  ObjectPage,
 } from '../types/storage.service.types';
 import {
   StorageError,
@@ -22,6 +23,7 @@ import {
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
 import { LocalStorageConfig } from '../config/storage.config';
+import { localEtagOf, type ObjectStat } from '../utils/storage-fingerprint';
 
 // Local filesystems cap one name at 255 bytes; object stores do not, so their
 // keys keep the full name. Names that fit are kept byte for byte.
@@ -64,6 +66,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
   private readonly mountPath: string;
   private readonly baseUrl: string;
   private readonly mountName: string;
+  private mountReady?: Promise<void>;
   private readonly logger = Logger.getInstance({
     service: 'LocalStorageAdapter',
   });
@@ -92,8 +95,6 @@ class LocalStorageAdapter implements StorageServiceInterface {
       // This mirrors how sync services like Dropbox typically work
       this.mountPath = this.createMountPath();
 
-      // Ensure mount directory exists
-      this.ensureMountExists();
       if (process.env.NODE_ENV == 'development') {
         this.logger.info('Local storage adapter initialized', {
           mountPath: this.mountPath,
@@ -133,6 +134,20 @@ class LocalStorageAdapter implements StorageServiceInterface {
   }
 
   /**
+   * Resolves once the mount folder exists (made once, mode 0700, before any
+   * operation touches it) and rejects with the reason when it cannot be made;
+   * a later call tries again. Not started by the constructor: a background
+   * mkdir there raced the first write and, on failure, was an unhandled rejection.
+   */
+  ensureReady(): Promise<void> {
+    this.mountReady ??= this.ensureMountExists().catch((error: unknown) => {
+      this.mountReady = undefined;
+      throw error;
+    });
+    return this.mountReady;
+  }
+
+  /**
    * Ensures the mount directory exists with proper permissions
    */
   private async ensureMountExists(): Promise<void> {
@@ -152,17 +167,35 @@ class LocalStorageAdapter implements StorageServiceInterface {
   /**
    * Writes beside the target and renames over it, so a write that fails part
    * way (disk full, storage gone) leaves the previous file whole instead of cut short.
+   * With `ifAbsent`, the finished file is linked into place instead: a second
+   * writer's link fails with EEXIST rather than replacing the first one's file,
+   * and the call answers false.
    */
   private async writeFileAtomically(
     fullPath: string,
     data: Buffer,
-  ): Promise<void> {
+    options: { ifAbsent?: boolean } = {},
+  ): Promise<boolean> {
     // Named independently of the target: a long but valid filename plus a suffix
     // can pass the filesystem's limit for one name component.
     const tempPath = path.join(path.dirname(fullPath), `.${randomUUID()}.tmp`);
     try {
       await fs.writeFile(tempPath, data, { mode: 0o600 });
+      if (options.ifAbsent) {
+        try {
+          await fs.link(tempPath, fullPath);
+        } catch (error) {
+          if ((error as { code?: string }).code === 'EEXIST') {
+            return false;
+          }
+          throw error;
+        } finally {
+          await fs.rm(tempPath, { force: true }).catch(() => undefined);
+        }
+        return true;
+      }
       await fs.rename(tempPath, fullPath);
+      return true;
     } catch (error) {
       await fs.rm(tempPath, { force: true }).catch(() => undefined);
       throw error;
@@ -184,6 +217,33 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if ((error as { code?: string }).code === 'ENOENT') {
         return false;
       }
+      throw error;
+    }
+  }
+
+  /**
+   * Size and synthetic ETag (`dev:ino:size:mtimeNs`) of the document's current file, through the same path guard as a read. Null
+   * when the file or its recorded location is absent.
+   */
+  async statObject(document: Document): Promise<ObjectStat | null> {
+    const relative = this.getLocalPathFromUrl(
+      document.local?.localPath ?? document.local?.url,
+    );
+    if (relative === null || relative === '') return null;
+    const located = await this.locateInsideRealMount(
+      this.objectPathInMount(relative),
+    );
+    if (located === null) return null;
+    try {
+      const st = await fs.stat(located.target, { bigint: true });
+      if (!st.isFile()) return null;
+      return {
+        size: Number(st.size),
+        etag: localEtagOf(st),
+        lastModified: new Date(Number(st.mtimeMs)).toISOString(),
+      };
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') return null;
       throw error;
     }
   }
@@ -224,6 +284,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
   private async locateInsideRealMount(
     fullPath: string,
   ): Promise<{ target: string; mountRoot: string } | null> {
+    await this.ensureReady();
     let folder: string;
     try {
       folder = await fs.realpath(path.dirname(fullPath));
@@ -279,6 +340,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       }
 
       // Ensure directory exists
+      await this.ensureReady();
       await fs.mkdir(dirPath, { recursive: true });
 
       await this.writeFileAtomically(fullPath, documentInPayload.buffer);
@@ -322,6 +384,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         path.join(this.mountPath, localPath),
       );
 
+      await this.ensureReady();
       await this.writeFileAtomically(fullPath, bufferDataInPayLoad);
 
       const fileUrl = this.getFileUrl(localPath);
@@ -503,6 +566,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
   async writeObject(storageKey: string, data: Buffer): Promise<void> {
     try {
       const fullPath = this.objectPathInMount(storageKey);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       // A symlinked folder on the way must not carry the write out of the mount.
       const located = await this.locateInsideRealMount(fullPath);
@@ -515,6 +579,101 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError('Failed to write object to local storage', {
         originalError: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  }
+
+  /**
+   * Writes only when no file is stored at the key. The bytes are written
+   * beside the target and hard-linked into place, so the key is never seen
+   * half written and a second writer's link fails instead of replacing the
+   * first one's file.
+   */
+  async writeObjectIfAbsent(
+    storageKey: string,
+    data: Buffer,
+  ): Promise<boolean> {
+    try {
+      const fullPath = this.objectPathInMount(storageKey);
+      await this.ensureReady();
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      const located = await this.locateInsideRealMount(fullPath);
+      if (located === null) {
+        throw new StorageNotFoundError('Local folder not found');
+      }
+      return await this.writeFileAtomically(located.target, data, {
+        ifAbsent: true,
+      });
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to write object to local storage', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * One page of the files under a key prefix, in key order; the cursor is the
+   * last key of the previous page. Files still being written (dot-prefixed
+   * temporaries) are not listed.
+   */
+  async listObjects(
+    prefix: string,
+    options: { after?: string; limit: number },
+  ): Promise<ObjectPage> {
+    const folder = this.objectPathInMount(prefix);
+    const root = path.resolve(this.mountPath);
+    let entries: string[];
+    try {
+      entries = await fs.readdir(folder, { recursive: true });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ENOENT') {
+        return { objects: [] };
+      }
+      throw error;
+    }
+    // Keys first, sorted, so only the requested page (and one more, to know whether there is a next) is statted.
+    const candidates: { key: string; full: string }[] = [];
+    for (const entry of entries) {
+      if (path.basename(entry).startsWith('.')) continue;
+      const full = path.join(folder, entry);
+      const key = path.relative(root, full).split(path.sep).join('/');
+      if (options.after !== undefined && key <= options.after) continue;
+      candidates.push({ key, full });
+    }
+    candidates.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const listed: { key: string; size: number; lastModifiedMs: number }[] = [];
+    for (const { key, full } of candidates) {
+      if (listed.length > options.limit) break;
+      let stat;
+      try {
+        stat = await fs.lstat(full);
+      } catch (error) {
+        // Gone since the directory was read: skip it. Any other failure stops the listing, so a sweep never
+        // works from a reference set with a manifest silently missing.
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (!stat.isFile()) continue;
+      listed.push({
+        key,
+        size: stat.size,
+        lastModifiedMs: Math.floor(stat.mtimeMs),
+      });
+    }
+    const objects = listed.slice(0, options.limit);
+    const last = objects[objects.length - 1];
+    return last !== undefined && listed.length > options.limit
+      ? { objects, next: last.key }
+      : { objects };
+  }
+
+  async deleteObjects(storageKeys: string[]): Promise<void> {
+    for (const key of storageKeys) {
+      const relative = this.sanitizePath(key);
+      await fs.rm(this.assertInsideMount(path.join(this.mountPath, relative)), {
+        force: true,
+      });
+      await this.pruneEmptyAncestors(relative);
     }
   }
 
@@ -578,12 +737,31 @@ class LocalStorageAdapter implements StorageServiceInterface {
     );
   }
 
+  /**
+   * A write that lands in a folder while it is being removed leaves it non-empty
+   * (ENOTEMPTY): removing it again takes what arrived. A purge is idempotent, so
+   * a few more passes are the same operation, not a failure.
+   */
+  private async removeTree(fullPath: string): Promise<void> {
+    for (let pass = 1; ; pass++) {
+      try {
+        await fs.rm(fullPath, { recursive: true, force: true });
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if ((code !== 'ENOTEMPTY' && code !== 'EBUSY') || pass >= 5) {
+          throw error;
+        }
+      }
+    }
+  }
+
   async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
     try {
       const relativePath = this.sanitizePath(storagePath);
       const fullPath = path.join(this.mountPath, relativePath);
       this.assertInsideMount(fullPath);
-      await fs.rm(fullPath, { recursive: true, force: true });
+      await this.removeTree(fullPath);
       await this.pruneEmptyAncestors(relativePath);
       this.logger.info('Local storage delete successful', { path: relativePath });
       return { statusCode: 200, data: undefined };
@@ -604,6 +782,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPath);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       await fs.copyFile(srcFull, dstFull);
       const destUrl = this.getFileUrl(dstRelative);
@@ -626,6 +805,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPath);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       try {
         await fs.rename(srcFull, dstFull);
@@ -662,6 +842,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPrefix);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       await fs.cp(srcFull, dstFull, { recursive: true });
       this.logger.info('Local storage tree copy successful', { src: srcRelative, dst: dstRelative });
@@ -690,6 +871,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPrefix);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       try {
         await fs.rename(srcFull, dstFull);
@@ -769,11 +951,10 @@ class LocalStorageAdapter implements StorageServiceInterface {
   private async pruneEmptyAncestors(relativePath: string): Promise<void> {
     let current = path.dirname(relativePath);
     while (current && current !== '.' && current !== '/') {
-      const full = path.join(this.mountPath, current);
       try {
-        const entries = await fs.readdir(full);
-        if (entries.length > 0) break;
-        await fs.rmdir(full);
+        // rmdir removes only an empty directory, so a non-empty one ends the walk without listing it: a knowledge
+        // base's root can hold hundreds of thousands of entries, and listing it made every move take seconds.
+        await fs.rmdir(path.join(this.mountPath, current));
       } catch {
         break;
       }

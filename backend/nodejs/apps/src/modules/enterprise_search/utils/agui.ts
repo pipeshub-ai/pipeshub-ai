@@ -13,6 +13,8 @@
  * `resolveProtocol()`.
  */
 
+import type { IAIResponse } from '../types/conversation.interfaces';
+
 export const AGUI_PROTOCOL = 'agui' as const;
 export const LEGACY_PROTOCOL = 'legacy' as const;
 export type SSEProtocol = typeof AGUI_PROTOCOL | typeof LEGACY_PROTOCOL;
@@ -62,7 +64,9 @@ export const aguiErrorCodeFromPayload = (
   errorData: Record<string, unknown>,
 ): string => {
   const code = errorData.code;
-  return typeof code === 'string' && code.trim() ? code.trim() : 'streaming_error';
+  return typeof code === 'string' && code.trim()
+    ? code.trim()
+    : 'streaming_error';
 };
 
 /** Same `type` + `code` Node sends on the wire, stored on `conversationErrors.metadata`. */
@@ -71,3 +75,54 @@ export const aguiRunErrorMetadata = (code: string): Map<string, string> =>
     ['type', AGUIEventType.RUN_ERROR],
     ['code', code],
   ]);
+
+/** What a RUN_FINISHED / RUN_ERROR frame means for the user's run. */
+export type RunFrame =
+  /** The root run's RUN_FINISHED: its `result` is the answer. */
+  | { kind: 'answer'; result: IAIResponse }
+  /** The root run's RUN_ERROR. */
+  | { kind: 'error'; data: Record<string, unknown> }
+  /** A sub-agent's frame, or a root RUN_FINISHED without a `result`: forwarded, no outcome. */
+  | { kind: 'pass' }
+  /**
+   * A frame Node cannot read: data that is empty or does not parse, a payload
+   * that is not an object, or a root `result` without a string `answer` or with
+   * `citations` that are not a list. It is not forwarded and decides no outcome,
+   * so the run ends on Node's own awaited no-answer path: the browser would
+   * otherwise settle the turn from it (or show an error with no message) ahead
+   * of Node's error that carries the saved text.
+   */
+  | { kind: 'bad' };
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Only the root run's frames end or fail the user's run. A sub-agent's
+ * (`parentRunId` set) is handed back to its parent as a tool result
+ * (agui_emitter.py), the same rule the frontend applies (agui-event-handler.ts).
+ */
+export const readRunFrame = (
+  eventType: typeof AGUIEventType.RUN_FINISHED | typeof AGUIEventType.RUN_ERROR,
+  dataLine: string,
+): RunFrame => {
+  let data: unknown;
+  try {
+    data = JSON.parse(dataLine);
+  } catch {
+    return { kind: 'bad' };
+  }
+  if (!isObject(data)) return { kind: 'bad' };
+  const fromSubAgent = Boolean(data.parentRunId);
+  if (fromSubAgent) return { kind: 'pass' };
+  if (eventType === AGUIEventType.RUN_ERROR) return { kind: 'error', data };
+  const { result } = data;
+  if (!isObject(result)) return { kind: 'pass' };
+  // An empty answer is valid (a run waiting for the user's input).
+  const readable =
+    typeof result.answer === 'string' &&
+    (result.citations === undefined || Array.isArray(result.citations));
+  return readable
+    ? { kind: 'answer', result: result as unknown as IAIResponse }
+    : { kind: 'bad' };
+};

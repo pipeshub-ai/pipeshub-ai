@@ -297,7 +297,8 @@ class TestDocumentedScopes:
 
 @pytest.mark.integration
 class TestMalformedBodies:
-    """A body of the wrong JSON type is answered with the documented 500, or 400 where the route checks it."""
+    """A body of the wrong JSON type: refused 400 by the JSON parser when it is not an object or
+    array, and inside an object answered 400 where the route checks the field, 500 where it does not."""
 
     @pytest.mark.parametrize(
         ("operation_id", "method", "path"),
@@ -327,8 +328,10 @@ class TestMalformedBodies:
             active=active_rss_connector.connector_id,
         )
         resp = _send(connectors_api, method, path, '"not-an-object"')
-        assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
-        assert_error_response_matches_openapi_operation(resp.json(), operation_id, 500)
+        assert resp.status_code == 400, f"{resp.status_code}: {resp.text}"
+        assert resp.json()["error"]["message"] == "The request body is not valid JSON."
+        assert resp.json()["error"]["code"] == "HTTP_BAD_REQUEST"
+        assert_error_response_matches_openapi_operation(resp.json(), operation_id, 400)
 
     def test_update_auth_with_array_auth(
         self, connectors_api: ConnectorsClient, postgres_connector: Any

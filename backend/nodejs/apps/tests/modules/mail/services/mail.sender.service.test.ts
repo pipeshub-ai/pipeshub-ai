@@ -2,8 +2,14 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import nodemailer from 'nodemailer';
-import { MailSenderService } from '../../../../src/modules/mail/services/mail.sender.service';
+import {
+  MailSenderService,
+  SmtpSettingsUnreadableError,
+} from '../../../../src/modules/mail/services/mail.sender.service';
 import { MailModel } from '../../../../src/modules/mail/schema/mailInfo.schema';
+import { setMailLogRepository } from '../../../../src/libs/repositories/mail-log';
+import { setIdentityPort } from '../../../../src/libs/repositories/identity';
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
 
 describe('MailSenderService', () => {
   let mockLogger: any;
@@ -37,7 +43,12 @@ describe('MailSenderService', () => {
     sinon.stub(MailModel.prototype, 'save').resolves({} as any);
   });
 
-  afterEach(() => sinon.restore());
+  afterEach(() => {
+    setMailLogRepository();
+    setIdentityPort();
+    delete process.env.DOC_STORE;
+    sinon.restore();
+  });
 
   it('reads SMTP config through the provider so a rebind is picked up', async () => {
     // AppConfig is rebound on an SMTP update; a captured config would go stale.
@@ -93,6 +104,86 @@ describe('MailSenderService', () => {
 
     expect(result.status).to.equal('sent');
     expect((MailModel.prototype.save as sinon.SinonStub).calledOnce).to.be.true;
+  });
+
+  it('sends nothing when the stored SMTP settings were turned off or deleted on another replica', async () => {
+    // This process still holds the settings it loaded; only the stored copy says email is off.
+    const readStored = sinon.stub().resolves(null);
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger, readStored);
+
+    const result = await sender.send(body, smtp);
+
+    expect(result.status).to.equal('permanent');
+    expect(readStored.calledOnce).to.be.true;
+    expect(sendMailStub.called).to.be.false;
+  });
+
+  it('sends nothing, and asks for a retry, when the stored SMTP settings cannot be read', async () => {
+    const readStored = sinon.stub().rejects(new Error('kv down'));
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger, readStored);
+
+    const result = await sender.send(body, smtp);
+
+    expect(result.status).to.equal('transient');
+    expect(sendMailStub.called).to.be.false;
+  });
+
+  it('delivers with the stored SMTP settings, not the copy the caller passed', async () => {
+    // Another replica saved a new host; this one still passes the settings it loaded.
+    const stored = { ...smtp, host: 'smtp.new.example.com' };
+    const createTransport = nodemailer.createTransport as sinon.SinonStub;
+    const sender = new MailSenderService(
+      () => ({ smtp }) as any,
+      mockLogger,
+      sinon.stub().resolves(stored),
+    );
+
+    expect((await sender.send(body, smtp)).status).to.equal('sent');
+    expect(createTransport.firstCall.args[0]).to.include({ host: 'smtp.new.example.com' });
+  });
+
+  it('resolves the stored SMTP settings, so a replica that loaded none sees email turned on', async () => {
+    const sender = new MailSenderService(
+      () => ({ smtp: null }) as any,
+      mockLogger,
+      sinon.stub().resolves(smtp),
+    );
+
+    expect(await sender.getSmtpConfig()).to.deep.equal(smtp);
+  });
+
+  it('says the store could not be read, rather than that nothing is configured, when there is no loaded copy', async () => {
+    const sender = new MailSenderService(
+      () => ({ smtp: null }) as any,
+      mockLogger,
+      sinon.stub().rejects(new Error('kv down')),
+    );
+
+    let thrown: unknown;
+    try {
+      await sender.getSmtpConfig();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).to.be.instanceOf(SmtpSettingsUnreadableError);
+  });
+
+  it('falls back to the loaded SMTP settings when the store cannot be read', async () => {
+    const sender = new MailSenderService(
+      () => ({ smtp }) as any,
+      mockLogger,
+      sinon.stub().rejects(new Error('kv down')),
+    );
+
+    expect(await sender.getSmtpConfig()).to.deep.equal(smtp);
+  });
+
+  it('sends when the stored SMTP settings are on', async () => {
+    const readStored = sinon.stub().resolves(smtp);
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger, readStored);
+
+    expect((await sender.send(body, smtp)).status).to.equal('sent');
+    expect(sendMailStub.calledOnce).to.be.true;
   });
 
   it('classifies an SMTP 5xx rejection as permanent', async () => {
@@ -217,6 +308,46 @@ describe('MailSenderService', () => {
     await sender.send({ ...body, orgId: '507f1f77bcf86cd799439012' }, smtp);
 
     expect(savedOrgId).to.equal('507f1f77bcf86cd799439012');
+  });
+
+  it('writes the audit entry in the org named on the mail when the caller bound none', async () => {
+    // The route is reached with a service token only, so nothing is bound when the audit write runs.
+    let boundDuringRecord: string | undefined;
+    const written = new Promise<void>((resolve) =>
+      setMailLogRepository({
+        record: async () => {
+          boundDuringRecord = getCurrentOrgId();
+          resolve();
+        },
+      } as any),
+    );
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    await sender.send({ ...body, orgId: '507f1f77bcf86cd799439012' }, smtp);
+    await written;
+
+    expect(boundDuringRecord).to.equal('507f1f77bcf86cd799439012');
+  });
+
+  it('writes the audit entry in the install organisation when the mail names none (PostgreSQL)', async () => {
+    // A sign-in code is sent before any user is known, so there is neither a bound org nor one on the mail.
+    process.env.DOC_STORE = 'postgres';
+    setIdentityPort({ oldestOrgId: async () => 'org-1' } as any);
+    let boundDuringRecord: string | undefined;
+    const written = new Promise<void>((resolve) =>
+      setMailLogRepository({
+        record: async () => {
+          boundDuringRecord = getCurrentOrgId();
+          resolve();
+        },
+      } as any),
+    );
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    await sender.send(body, smtp);
+    await written;
+
+    expect(boundDuringRecord).to.equal('org-1');
   });
 
   it('fails fast after repeated connection failures, then probes again after the cooldown', async () => {

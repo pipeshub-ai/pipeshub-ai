@@ -34,21 +34,45 @@ from app.api.middlewares.auth import (
     deny_service_tokens,
     require_scopes,
 )
+from app.api.routes.chatbot import load_entity_vector_store
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
+from app.core.org_context import current_org_id, spawn_in_request
 from app.edition_config import resolve_llm_for_search
-from app.modules.retrieval.filter_schema import validate_request_filters
+from app.exceptions.fastapi_responses import Status
+from app.modules.demo_data.chat import demo_exclusions_for_run
+from app.modules.retrieval.entity_permissions import (
+    SEARCH_DEADLINE_SECONDS as ENTITY_SEARCH_DEADLINE_SECONDS,
+)
+from app.modules.retrieval.entity_permissions import get_entity_access_context
+from app.modules.retrieval.filter_schema import (
+    ENTITY_FILTERS_KEY,
+    TAXONOMY_FILTER_KEYS,
+    validate_request_filters,
+)
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.retrieval.selection_scope import within_connection
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.modules.retrieval.selection_scope import (
+    limits_rows,
+    resolve_request_scopes,
+    resolve_user_key,
+    within_connection,
+)
+from app.modules.retrieval.title_hits import UnindexedMatch, find_unindexed_matches
+from app.services.graph_db.common.utils import api_records
+from app.services.graph_db.interface.graph_db_provider import (
+    STRICT_SCOPE_FILTER_KEY,
+    IGraphDBProvider,
+)
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.utils.error_class import log_failure
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
-from app.utils.stage_timer import StageTimer
+from app.utils.request_deadline import deadline_after, search_deadline_seconds
+from app.utils.stage_timer import StageTimer, collect_spans, format_spans
 from app.utils.user_errors import provider_error_code
 from app.utils.user_messages import action_failed
 
@@ -102,6 +126,40 @@ class SearchQuery(BaseModel):
     _validate_filters = field_validator("filters")(validate_request_filters)
 
 
+DEFAULT_RETRIEVE_LIMIT = 8
+MAX_RETRIEVE_LIMIT = 50
+# With maxChunksPerRecord set, a page of `limit` passages is often only a couple
+# of records (knowledge search keeps up to four each). Read this many times
+# `limit`, bounded, so the cap can fill the page from later records.
+RETRIEVE_CAP_OVERFETCH = 4
+MAX_RETRIEVE_CANDIDATES = 200
+
+
+def _retrieve_fetch_limit(limit: int, max_per_record: int | None) -> int:
+    """How many passages to read for a page of ``limit`` chunks."""
+    if max_per_record is None:
+        return limit
+    return min(limit * RETRIEVE_CAP_OVERFETCH, MAX_RETRIEVE_CANDIDATES)
+
+
+class RetrieveQuery(BaseModel):
+    """``POST /retrieve``: ranked chunks with citations for a developer's own RAG or agent."""
+
+    query: str = Field(min_length=1)
+    limit: int = Field(DEFAULT_RETRIEVE_LIMIT, ge=1, le=MAX_RETRIEVE_LIMIT)
+    filters: dict[str, Any] | None = {}
+    createdAfter: str | None = None
+    createdBefore: str | None = None
+    modifiedAfter: str | None = None
+    modifiedBefore: str | None = None
+    maxChunksPerRecord: int | None = Field(None, ge=1, le=MAX_RETRIEVE_LIMIT)
+    # Off by default, unlike /search: a retrieval call is latency-bound, and the
+    # caller usually wrote the query itself.
+    rewriteQuery: bool = False
+
+    _validate_filters = field_validator("filters")(validate_request_filters)
+
+
 # The parser names the assistant tool's parameters; this route receives the
 # camelCase fields of the request body.
 _REQUEST_FIELD_NAMES = {
@@ -133,7 +191,7 @@ _TIMELINE_SPAN = {
 }
 
 
-def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
+def _search_time_range(body: "SearchQuery | RetrieveQuery") -> dict[str, int] | None:
     """The request's date bounds as the retrieval service's ``time_range``.
 
     Parsed by the same function as the assistant's search tool and the
@@ -205,18 +263,15 @@ async def _transform_query(
 def _queries_for_search(
     original: str, rewritten: str | None, expanded: str | None
 ) -> list[str]:
-    """The queries to retrieve with; what the user typed covers a failed step."""
-    original = original.strip()
-    # A rewrite that failed is replaced by the original; one that came back
-    # blank is not, so the expansions stand alone as they always have.
-    first = original if rewritten is None else rewritten.strip()
-    queries = [first] if first else []
-    for line in (expanded or "").split("\n"):
-        q = line.strip()
+    """The queries to retrieve with: what the user typed, then the model's versions."""
+    # The typed query is always searched. A rewrite can paraphrase away an
+    # exact identifier (an invoice number, a ticket key, a made-up word), and
+    # then no leg of the hybrid search matches the one file that holds it.
+    queries: list[str] = []
+    for candidate in [original, rewritten or "", *(expanded or "").split("\n")]:
+        q = candidate.strip()
         if q and q not in queries:
             queries.append(q)
-    if not queries and original:
-        queries = [original]
     return queries
 
 
@@ -306,6 +361,9 @@ async def _rewritten_queries(
 ) -> list[str]:
     """The query rewritten and expanded by the model, for retrieval."""
     llm = await resolve_llm_for_search(request, retrieval_service)
+    if llm is None:
+        # Retrieval needs only the embedding model, so search runs on the typed query.
+        return _queries_for_search(query, None, None)
     rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
     # OpikTracer is invoke-config only (not a constructor callback); without
@@ -394,6 +452,27 @@ async def _timeline_search(
     return results
 
 
+# Said when a search is stopped at SEARCH_DEADLINE_SECONDS. A vector store that
+# timed out answers SEARCH_INDEX_UNAVAILABLE before this, from retrieval. One
+# fixed sentence: Node passes a 503's message on only when it is listed word for
+# word in READER_WRITTEN_MESSAGES (backend/nodejs/apps/src/libs/errors/
+# reader-friendly.ts), so the deadline itself is logged, not said.
+SEARCH_TIMED_OUT_MESSAGE = (
+    "This search took too long, so it was stopped and no results are shown. "
+    "Try again, or narrow it with filters or a shorter date range."
+)
+
+
+def _timed_out_response(seconds: float) -> dict[str, Any]:
+    return {
+        "searchResults": [],
+        "records": [],
+        "status": Status.SEARCH_TIMED_OUT.value,
+        "status_code": 503,
+        "message": SEARCH_TIMED_OUT_MESSAGE,
+    }
+
+
 # A date-bounded search that found nothing in its dates answers 404 (no
 # accessible records); with matches from outside them it answers 200.
 _NOTHING_IN_DATES_STATUS = 404
@@ -445,6 +524,76 @@ async def _with_search_without_dates(
     return _with_outside_dates(results, unbounded, time_range)
 
 
+# Said with the matches a search found only by name, when no content matched.
+_ONLY_BY_NAME_MESSAGE = (
+    "No indexed content matched; {n} record(s) matched by name only, content not indexed yet. "
+    "They are in unindexedMatches."
+)
+
+
+async def _unindexed_matches(
+    request: Request, graph_provider: IGraphDBProvider, filter_groups: dict[str, Any], query: str, logger: "Logger",
+) -> list[UnindexedMatch] | None:
+    """Records matching the query by name whose content is not indexed yet,
+    for the caller's sources and limits. None when the lookup failed: the
+    search answers without it."""
+    user = request.state.user
+    user_id = user.get("userId")
+    try:
+        org_id = current_org_id()
+        container = request.app.container
+        store = await load_entity_vector_store(container, logger, org_id)
+        if store is None:
+            return []
+        source_ids = [*(filter_groups.get("apps") or []), *(filter_groups.get("kb") or [])]
+        if limits_rows(filter_groups):
+            # Apps a selection or limit reaches only through folders or records
+            # are not in ``apps``; without them a strict scope reaches nothing.
+            user_key = await resolve_user_key(graph_provider, user_id)
+            if user_key:
+                _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, filter_groups)
+                source_ids += [c for sc in scopes for c in sorted(sc.connector_ids - sc.app_ids)]
+        context = await get_entity_access_context(
+            None,
+            graph_provider,
+            org_id=org_id,
+            user_id=user_id,
+            source_ids=source_ids,
+            strict=bool(filter_groups.get(STRICT_SCOPE_FILTER_KEY)),
+            exclude_app_ids=await demo_exclusions_for_run(graph_provider, container.config_service(), user, logger),
+            filters=filter_groups,
+        )
+        return await asyncio.wait_for(
+            find_unindexed_matches(store, graph_provider, context, query),
+            timeout=ENTITY_SEARCH_DEADLINE_SECONDS + 2.0,
+        )
+    except Exception as exc:
+        # The search answers without it. Text-free: the title check's embedding error is the provider's body.
+        log_failure(logger, "title_lookup.failed", exc, include_error_text=False)
+        return None
+
+
+def _with_unindexed_matches(results: dict[str, Any], matches: list[UnindexedMatch]) -> dict[str, Any]:
+    """The results with an ``unindexedMatches`` field: the records found by name
+    only, apart from the passages and without a record the passages already cite.
+    A search that found no indexed content (404, or an empty 200) answers a 200 success instead, as a search
+    with matches outside its dates does."""
+    if results.get("status_code") not in (200, 404):
+        return results
+    _, shown_record_ids = shown_ids(results.get("searchResults") or [], results.get("virtual_to_record_map"))
+    shown_record_ids |= {r.get("_key") for r in results.get("records") or [] if isinstance(r, dict)}
+    by_name = [m for m in matches if m.record_id not in shown_record_ids]
+    if not by_name:
+        return results
+    payload = {**results, "unindexedMatches": [m.payload() for m in by_name]}
+    if results.get("status_code") == 404 or (
+        results.get("status") == Status.EMPTY_RESPONSE.value and not results.get("searchResults")
+    ):
+        n = len(by_name)
+        payload.update(status="success", status_code=200, message=_ONLY_BY_NAME_MESSAGE.format(n=n))
+    return payload
+
+
 @router.post("/search", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
 @inject
 async def search(
@@ -461,9 +610,197 @@ async def search(
     span = _timeline_span(timeline, time_range) if timeline else None
     timer = StageTimer()
     limit = body.limit or DEFAULT_SEARCH_RESULT_LIMIT
+    # Inside the MCP server's wait for an answer (PIPESHUB_MCP_TIMEOUT_MS), so a
+    # slow search still answers: the vector search fits its budget inside it
+    # (app/services/vector_db/search_retry.py), and the rest is stopped here.
+    deadline = search_deadline_seconds()
+    guard = asyncio.timeout(deadline)
+    stages: dict[str, list[float]] = {}
+    by_name_task: asyncio.Future[list[UnindexedMatch] | None] | None = None
+    try:
+        with collect_spans() as stages, deadline_after(deadline):
+            async with guard, call_scope(
+                principal_from_request_user(request.state.user),
+                Workload.SEARCH,
+                config_service=container.config_service(),
+                container=container,
+            ):
+                if body.rewriteQuery:
+                    queries = await _rewritten_queries(request, retrieval_service, body.query, logger)
+                else:
+                    queries = _queries_for_search(body.query, None, None)
+                timer.mark("query_transform")
+                filter_groups = within_connection(body.filters, connection_limit(request.state.user))
+
+                async def run_search(bounds: dict[str, int] | None, limit: int | None) -> dict[str, Any]:
+                    return await retrieval_service.search_with_filters(
+                        queries=queries,
+                        org_id=request.state.user.get("orgId"),
+                        user_id=request.state.user.get("userId"),
+                        limit=limit,
+                        filter_groups=filter_groups,
+                        knowledge_search=True,
+                        time_range=bounds,
+                    )
+
+                # Names are not matched by date or entity filters, so a search with
+                # either would list records outside it. Runs beside the content search.
+                if span is None and not time_range and not any(
+                    filter_groups.get(key) for key in (ENTITY_FILTERS_KEY, *TAXONOMY_FILTER_KEYS)
+                ):
+                    by_name_task = spawn_in_request(
+                        _unindexed_matches(request, graph_provider, filter_groups, body.query, logger)
+                    )
+                if span is None:
+                    searched = run_search(time_range, limit)
+                else:
+                    # ``limit`` is the matches per period when the caller set it. A
+                    # caller who did not ask for a timeline meant it for the whole
+                    # search, so it does not raise each period's above the default.
+                    period_limit = body.limit if "limit" in body.model_fields_set and body.limit else PERIOD_SEARCH_LIMIT
+                    if automatic:
+                        period_limit = min(period_limit, PERIOD_SEARCH_LIMIT)
+                    searched = _timeline_search(span, period_limit, run_search, logger, automatic=automatic)
+                results = await _with_search_without_dates(searched, run_search, time_range, logger)
+                if span is None:
+                    # A timeline's ``limit`` is per period, so only a ranked search is cut.
+                    results = _apply_result_limit(results, limit, body.query)
+                if by_name_task is not None and (matches := await by_name_task):
+                    results = _with_unindexed_matches(results, matches)
+                await hide_record_parents_outside_connection(
+                    request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
+                )
+                hide_record_source_paths(request, results)
+                for key in ("records", "virtual_to_record_map"):
+                    if results.get(key):
+                        results[key] = api_records(results[key])
+                outside_dates = results.get("outsideDates")
+                if isinstance(outside_dates, dict) and outside_dates.get("records"):
+                    results["outsideDates"] = {**outside_dates, "records": api_records(outside_dates["records"])}
+                timer.mark("retrieval")
+                timer.emit(
+                    logger, "search", detail=format_spans(stages),
+                    rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
+                    timeline=timeline, timeline_auto=automatic or None,
+                )
+                custom_status_code = results.get("status_code", 500)
+                logger.info(f"Custom status code: {custom_status_code}")
+
+                _su_email = request.state.user.get("email")
+                record_event("search_performed", {
+                    "orgId": request.state.user.get("orgId"),
+                    "userId": request.state.user.get("userId"),
+                    "email": _su_email,
+                    "domain": domain_from_email(_su_email),
+                    "status_code": custom_status_code,
+                    "num_queries": len(queries),
+                    "search_type": "timeline" if timeline else "search",
+                })
+
+                return JSONResponse(status_code=custom_status_code, content=results)
+
+    except HTTPException:
+        raise
+    except TimeoutError as e:
+        if deadline is None or not guard.expired():
+            # Not this route's deadline: a step's own timeout that got out.
+            logger.error("Search failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=action_failed("run this search")) from e
+        timer.mark("retrieval")
+        timer.emit(logger, "search", detail=format_spans(stages), timed_out=f"{deadline:g}s")
+        logger.warning("Search stopped at its %gs deadline", deadline)
+        return JSONResponse(status_code=503, content=_timed_out_response(deadline))
+    except Exception as e:
+        logger.error("Search failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("run this search")) from e
+    finally:
+        if by_name_task is not None and not by_name_task.done():
+            by_name_task.cancel()
+
+
+@router.get("/health", dependencies=[Depends(deny_service_tokens)])
+async def health_check() -> dict[str, str]:
+    """Health check endpoint"""
+    return {"status": "healthy"}
+
+
+_EMPTY_RETRIEVAL_STATUSES = {
+    Status.EMPTY_RESPONSE.value,
+    Status.ACCESSIBLE_RECORDS_NOT_FOUND.value,
+    Status.VECTOR_DB_EMPTY.value,
+}
+
+
+def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> list[dict[str, Any]]:
+    """The search response as a flat, ranked chunk list with a citation each."""
+    records = {r.get("_key"): r for r in results.get("records") or [] if isinstance(r, dict)}
+    per_record: dict[str, int] = {}
+    chunks: list[dict[str, Any]] = []
+    # Ordered by score only, an expanded section's passages share its score in
+    # document order; the passage that matched (distanceFromMatch 0) goes first
+    # so a per-record cap keeps it over its neighbours.
+    hits = sorted(
+        results.get("searchResults") or [],
+        key=lambda h: (-(h.get("score") or 0.0), h.get("distanceFromMatch") or 0),
+    )
+    for hit in hits:
+        md = hit.get("metadata") or {}
+        record_id = md.get("recordId")
+        if not record_id or not hit.get("content"):
+            continue
+        if max_per_record is not None and per_record.get(record_id, 0) >= max_per_record:
+            continue
+        per_record[record_id] = per_record.get(record_id, 0) + 1
+        doc = records.get(record_id) or {}
+        # Object-store records (S3, Azure Blob/Files, GCS) store a console URL
+        # naming bucket and key; search links to the record page instead.
+        hidden = bool(md.get("hideWeburl") or doc.get("hideWeburl"))
+        record_page = f"/record/{record_id}"
+        # Records without pages are indexed with pageNum [None]; older indexes stored
+        # a bare page number. The contract is a list of integers, or null.
+        pages = md.get("pageNum")
+        pages = [p for p in (pages if isinstance(pages, list) else [pages]) if p is not None] or None
+        chunks.append({
+            # Stable across calls for the same indexed block, so callers can dedupe and cache.
+            "id": f"{hit.get('virtual_record_id') or md.get('virtualRecordId')}:{hit.get('block_index')}",
+            "text": hit["content"],
+            "score": hit.get("score"),
+            "record": {
+                "recordId": record_id,
+                "name": doc.get("recordName") or md.get("recordName"),
+                "connector": doc.get("connectorName") or md.get("connector"),
+                "mimeType": md.get("mimeType"),
+                "updatedAt": md.get("updatedAt"),
+            },
+            "citation": {
+                # Built by app/utils/text_fragments; never rebuilt here.
+                "url": record_page if hidden else md.get("webUrl"),
+                "recordUrl": record_page if hidden else (doc.get("webUrl") or md.get("webUrl")),
+                "pageNum": pages,
+                "blockIndex": hit.get("block_index"),
+            },
+        })
+    return chunks
+
+
+@router.post("/retrieve", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
+@inject
+async def retrieve(
+    request: Request,
+    body: RetrieveQuery,
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> JSONResponse:
+    """Permission-filtered chunks with citations. Unlike /search, nothing is
+    stored: no search history and no citation documents."""
+    container = request.app.container
+    logger = container.logger()
+    time_range = _search_time_range(body)
+    user = request.state.user
+    fetch_limit = _retrieve_fetch_limit(body.limit, body.maxChunksPerRecord)
     try:
         async with call_scope(
-            principal_from_request_user(request.state.user),
+            principal_from_request_user(user),
             Workload.SEARCH,
             config_service=container.config_service(),
             container=container,
@@ -472,68 +809,49 @@ async def search(
                 queries = await _rewritten_queries(request, retrieval_service, body.query, logger)
             else:
                 queries = _queries_for_search(body.query, None, None)
-            timer.mark("query_transform")
-            filter_groups = within_connection(body.filters, connection_limit(request.state.user))
-
-            async def run_search(bounds: dict[str, int] | None, limit: int | None) -> dict[str, Any]:
-                return await retrieval_service.search_with_filters(
-                    queries=queries,
-                    org_id=request.state.user.get("orgId"),
-                    user_id=request.state.user.get("userId"),
-                    limit=limit,
-                    filter_groups=filter_groups,
-                    knowledge_search=True,
-                    time_range=bounds,
-                )
-
-            if span is None:
-                searched = run_search(time_range, limit)
-            else:
-                # ``limit`` is the matches per period when the caller set it. A
-                # caller who did not ask for a timeline meant it for the whole
-                # search, so it does not raise each period's above the default.
-                period_limit = body.limit if "limit" in body.model_fields_set and body.limit else PERIOD_SEARCH_LIMIT
-                if automatic:
-                    period_limit = min(period_limit, PERIOD_SEARCH_LIMIT)
-                searched = _timeline_search(span, period_limit, run_search, logger, automatic=automatic)
-            results = await _with_search_without_dates(searched, run_search, time_range, logger)
-            if span is None:
-                # A timeline's ``limit`` is per period, so only a ranked search is cut.
-                results = _apply_result_limit(results, limit, body.query)
+            results = await retrieval_service.search_with_filters(
+                queries=queries,
+                org_id=user.get("orgId"),
+                user_id=user.get("userId"),
+                limit=fetch_limit,
+                filter_groups=within_connection(body.filters, connection_limit(user)),
+                knowledge_search=True,
+                time_range=time_range,
+            )
+            if body.maxChunksPerRecord is None:
+                results = _apply_result_limit(results, body.limit, body.query)
+            # With a cap, nothing is cut here: _retrieve_chunks caps each record
+            # over every candidate, then the page is cut to `limit`. Cutting first
+            # lets one expanded section fill the window and leaves the page short.
             await hide_record_parents_outside_connection(
-                request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
+                request, graph_provider, user.get("orgId"), user.get("userId"), results,
             )
             hide_record_source_paths(request, results)
-            timer.mark("retrieval")
-            timer.emit(
-                logger, "search",
-                rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
-                timeline=timeline, timeline_auto=automatic or None,
-            )
-            custom_status_code = results.get("status_code", 500)
-            logger.info(f"Custom status code: {custom_status_code}")
-
-            _su_email = request.state.user.get("email")
-            record_event("search_performed", {
-                "orgId": request.state.user.get("orgId"),
-                "userId": request.state.user.get("userId"),
-                "email": _su_email,
-                "domain": domain_from_email(_su_email),
-                "status_code": custom_status_code,
+            status_code = results.get("status_code", 500)
+            record_event("retrieve_performed", {
+                "orgId": user.get("orgId"),
+                "userId": user.get("userId"),
+                "domain": domain_from_email(user.get("email")),
+                "status_code": status_code,
                 "num_queries": len(queries),
-                "search_type": "timeline" if timeline else "search",
             })
-
-            return JSONResponse(status_code=custom_status_code, content=results)
-
+            if not results.get("searchResults"):
+                # Nothing matched, nothing accessible, nothing indexed yet: still an
+                # answer. A failure (index or permission check down, bad filter) is not.
+                if status_code == 200 or results.get("status") in _EMPTY_RETRIEVAL_STATUSES:
+                    return JSONResponse(status_code=200, content={
+                        "chunks": [],
+                        # A source that did not run makes "nothing found" unreliable.
+                        "incomplete": bool(results.get("searchIncomplete")),
+                        "message": results.get("message"),
+                    })
+                return JSONResponse(status_code=status_code, content={"message": results.get("message")})
+            return JSONResponse(status_code=200, content={
+                "chunks": _retrieve_chunks(results, body.maxChunksPerRecord)[: body.limit],
+                "incomplete": bool(results.get("searchIncomplete")),
+            })
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("Search failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=500, detail=action_failed("run this search")) from e
-
-
-@router.get("/health", dependencies=[Depends(deny_service_tokens)])
-async def health_check() -> dict[str, str]:
-    """Health check endpoint"""
-    return {"status": "healthy"}
+        logger.error("Retrieve failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=action_failed("retrieve passages")) from e

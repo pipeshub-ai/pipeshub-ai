@@ -1,0 +1,23 @@
+-- generated from the manifest by python -m db.lib.vetted render: edit the manifest, not this file
+GRANT pipeshub_vetted_retrieval TO pipeshub_owner WITH SET TRUE;
+GRANT USAGE ON SCHEMA retrieval TO pipeshub_vetted_retrieval;           -- the body names objects of its own schema
+GRANT CREATE ON SCHEMA retrieval TO pipeshub_vetted_retrieval;
+SET LOCAL ROLE pipeshub_vetted_retrieval;
+CREATE FUNCTION retrieval.collection_mark_deleting(p_name text)
+RETURNS TABLE (gone_id smallint) LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+SET search_path = pg_catalog, retrieval, pg_temp
+SET standard_conforming_strings = on
+AS $fn$
+BEGIN
+  IF p_name IS NULL THEN RAISE EXCEPTION 'collection_mark_deleting: p_name is required' USING ERRCODE = '22023'; END IF;
+  IF length(p_name) NOT BETWEEN 1 AND 200 THEN RAISE EXCEPTION 'collection_mark_deleting: p_name length must be 1..200' USING ERRCODE = '22023'; END IF;
+  RETURN QUERY WITH u AS (
+    UPDATE retrieval.collections c SET status = 'deleting' WHERE c.name = p_name AND c.status <> 'deleting' RETURNING c.collection_id)
+    SELECT u.collection_id FROM u LIMIT 1;
+END $fn$;
+REVOKE ALL ON FUNCTION retrieval.collection_mark_deleting(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION retrieval.collection_mark_deleting(text) TO pipeshub_jobs;
+SET LOCAL ROLE pipeshub_owner;
+REVOKE CREATE ON SCHEMA retrieval FROM pipeshub_vetted_retrieval;
+REVOKE pipeshub_vetted_retrieval FROM pipeshub_owner;
+SELECT kernel.register_function('retrieval.collection_mark_deleting(text)', 'jobs', NULL, 'global', false);

@@ -111,21 +111,21 @@ async def test_a_repo_the_caller_cannot_read_is_never_named() -> None:
     assert "admin" not in str(out)
 
 
-class _RustRepo(FakeGraphProvider):
+class _KotlinRepo(FakeGraphProvider):
     def __init__(self) -> None:
         super().__init__()
         for block in self.blocks.values():
             block["connectorId"] = CONN
             block["language"] = "python"
-        self.blocks["k_target"]["language"] = "rust"
+        self.blocks["k_target"]["language"] = "kotlin"
 
 
 async def test_a_walk_in_a_language_without_edges_says_coverage_is_missing() -> None:
-    graph = _RustRepo()
-    rust = await get_neighbour_impl(graph_provider=graph, connector_id=CONN, org_id=ORG,
-                                    user_id=USER, file_path="src/b.py",
-                                    qualified_name="function:target")
-    assert rust["coverage"]["languages"] == ["rust"]
+    graph = _KotlinRepo()
+    kotlin = await get_neighbour_impl(graph_provider=graph, connector_id=CONN, org_id=ORG,
+                                      user_id=USER, file_path="src/b.py",
+                                      qualified_name="function:target")
+    assert kotlin["coverage"]["languages"] == ["kotlin"]
     py = await get_neighbour_impl(graph_provider=graph, connector_id=CONN, org_id=ORG,
                                   user_id=USER, file_path="src/a.py",
                                   qualified_name="function:caller")
@@ -134,9 +134,9 @@ async def test_a_walk_in_a_language_without_edges_says_coverage_is_missing() -> 
 
 async def test_a_missed_path_through_such_a_language_says_so() -> None:
     out = await find_symbol_path_impl(
-        graph_provider=_RustRepo(), connector_id=CONN, org_id=ORG, user_id=USER,
+        graph_provider=_KotlinRepo(), connector_id=CONN, org_id=ORG, user_id=USER,
         file_path_a="src/b.py", qualified_name_a="function:target",
         file_path_b="web/ui/panel.ts", qualified_name_b="function:renderPanel",
     )
     assert out["found"] is False
-    assert out["coverage"]["languages"] == ["rust"]
+    assert out["coverage"]["languages"] == ["kotlin"]

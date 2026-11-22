@@ -93,6 +93,7 @@ class TestDocumentSchemaInventory:
             "pull_request_record_schema",
             "sql_table_record_schema",
             "sql_view_record_schema",
+            "sql_column_record_schema",
             "stage_state_schema",
             "product_record_schema",
             "deal_record_schema",
@@ -160,9 +161,10 @@ class TestEmailFieldPolicy:
         assert email_prop == {"type": "string"}
         assert "format" not in email_prop
 
-    def test_people_schema_email_is_string_without_format(self):
+    def test_people_schema_email_is_optional_string_without_format(self):
+        # A person a source names only by its own user id has no email (sourceKey instead).
         email_prop = documents.people_schema["rule"]["properties"]["email"]
-        assert email_prop == {"type": "string"}
+        assert email_prop == {"type": ["string", "null"]}
         assert "format" not in email_prop
 
     @pytest.mark.parametrize("schema_name,schema", sorted(ALL_DOCUMENT_SCHEMAS.items()))
@@ -190,6 +192,38 @@ class TestEmailFieldPolicy:
 
 
 # ---------------------------------------------------------------------------
+# A synced person's graph document (job title) against the strict user schema
+# ---------------------------------------------------------------------------
+class TestSyncedUserDocument:
+    TITLES = [None, "", " ", "Staff Engineer", "Ünïcødé 职位 🚀", "x" * 100_000, "a\nb\x00c"]
+
+    @staticmethod
+    def _doc(title: str | None, *, node: bool = False) -> dict:
+        from app.config.constants.arangodb import Connectors
+        from app.models.entities import AppUser
+
+        user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                       email="u@test.com", full_name="U", title=title)
+        doc = {**user.to_arango_base_user(), "orgId": "o", "isActive": False}
+        # The graph-node form keys the user by ``id``, the Arango form by ``_key``.
+        return {**{k: v for k, v in doc.items() if k != "_key"}, "id": user.id} if node else doc
+
+    @pytest.mark.parametrize("title", TITLES, ids=lambda t: f"title-{len(t) if t else t!r}")
+    def test_the_user_schema_accepts_the_document(self, title: str | None) -> None:
+        Draft4Validator(documents.user_schema["rule"]).validate(self._doc(title))
+
+    @pytest.mark.parametrize("title", TITLES, ids=lambda t: f"title-{len(t) if t else t!r}")
+    def test_the_node_validator_accepts_the_document(self, title: str | None) -> None:
+        from app.schema.node_validator import NodeSchemaValidator
+
+        NodeSchemaValidator().validate_node_update(CollectionNames.USERS.value, self._doc(title, node=True))
+
+    def test_a_null_designation_is_what_the_schema_rejects(self) -> None:
+        with pytest.raises(ValidationError):
+            Draft4Validator(documents.user_schema["rule"]).validate({**self._doc("T"), "designation": None})
+
+
+# ---------------------------------------------------------------------------
 # Required fields on key collections
 # ---------------------------------------------------------------------------
 class TestRequiredFields:
@@ -197,7 +231,6 @@ class TestRequiredFields:
         ("schema_name", "required_field"),
         [
             ("user_schema", "email"),
-            ("people_schema", "email"),
             ("orgs_schema", "accountType"),
             ("app_schema", "name"),
             ("record_schema", "recordName"),
@@ -207,6 +240,12 @@ class TestRequiredFields:
     def test_required_fields_present(self, schema_name: str, required_field: str):
         rule = ALL_DOCUMENT_SCHEMAS[schema_name]["rule"]
         assert required_field in rule.get("required", [])
+
+    def test_a_person_is_valid_with_an_email_or_with_only_a_source_key(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.people_schema))
+        base = {"orgId": "o", "createdAtTimestamp": 1, "updatedAtTimestamp": 1}
+        assert validator.is_valid({**base, "email": "a@b.com"})
+        assert validator.is_valid({**base, "sourceKey": "conn:acc-1"})
 
     def test_user_schema_disallows_extra_properties(self):
         rule = documents.user_schema["rule"]
@@ -379,7 +418,7 @@ class TestArtifactVersionsField:
         ])
 
         NodeSchemaValidator().validate_node_update(
-            CollectionNames.ARTIFACTS.value, {"version": 2, "versions": payload},
+            CollectionNames.ARTIFACTS.value, {"versions": payload},
         )
 
     def test_still_accepts_arrays_written_before_serialization(self):

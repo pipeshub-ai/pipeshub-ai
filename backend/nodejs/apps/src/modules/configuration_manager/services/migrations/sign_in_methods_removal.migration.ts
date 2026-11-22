@@ -1,3 +1,4 @@
+import type { Types } from 'mongoose';
 import { Logger } from '../../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../../libs/services/keyValueStore.service';
 import { configPaths } from '../../paths/paths';
@@ -122,7 +123,7 @@ export class SignInMethodsRemovalMigration {
       ];
       try {
         await OrgAuthConfig.updateOne(
-          { _id: policy._id },
+          { _id: policy._id as Types.ObjectId },
           {
             $set: {
               authSteps: steps,

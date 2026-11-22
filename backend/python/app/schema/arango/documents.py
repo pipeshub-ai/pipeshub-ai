@@ -28,6 +28,11 @@ orgs_schema = {
             "phone": {"type": ["string", "null"]},
             "dunsId": {"type": ["string", "null"]},
             "isExternal": {"type": "boolean", "default": False},
+            # The org an external organisation (a CRM account) belongs to.
+            "parentOrgId": {"type": ["string", "null"]},
+            # organization_key of the name (app.modules.entity_resolution.organizations):
+            # how an extracted name finds an external organisation.
+            "normalizedName": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
@@ -72,6 +77,27 @@ user_schema = {
                 "minItems": 0,
             },
             "isActive": {"type": "boolean", "default": False},
+            # What sort of principal this is. Absent on nodes written before
+            # this field existed and on anything an older producer sends, so
+            # readers treat absence as "human" rather than as unknown.
+            #
+            # Always carried on the event, never worked out here. The user
+            # management service decides what is a service account, and a
+            # second rule in this process — reading the address, say — would
+            # be a copy of that one, free to drift. Nodes that predate the
+            # field are stamped by ServiceAccountKindMigrationService from a
+            # list that service stages, which writes this field and nothing
+            # else; replaying the creation event for them would do far more.
+            "kind": {"type": "string", "enum": ["human", "service"]},
+            # Whether an administrator has switched this service account off.
+            # Separate from `isActive`, which soft-delete owns and which a
+            # rename sets back to true — a disable stored there would not
+            # survive one. Absent means not disabled, so a node that predates
+            # this field, or a person, reads as usable.
+            "isDisabled": {"type": "boolean"},
+            # The user's default knowledge base. Claimed here, in one conditional write, before the knowledge base is
+            # written, so two writers of one user's default agree on its key and a key is never used twice.
+            "defaultKnowledgeBaseId": {"type": "string"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -179,17 +205,45 @@ app_schema = {
             # app.connectors.core.sync.sync_runner: when the last run started and ended, and how.
             "lastSyncStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
+            # app.services.messaging.kafka.handlers.entity: rewritten while a user-link pass runs, left to go stale after it.
+            "userLinkStartedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncOutcome": {"type": ["string", "null"]},
             "lastSyncSummary": {"type": ["string", "null"]},
+            # What the connector's admin has to do (JSON text, see ActionItem); null when nothing.
+            "actionItems": {"type": ["string", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},
+            # Moves with every sync toggle, whose events carry the value (_handle_app_disabled). Incremented in AQL, which computes in doubles.
+            "toggleSeq": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
             "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            # app.services.permissions.structure_generation: moves with every structural write of the connector
+            "scopeProjectionGeneration": {"type": ["number", "null"]},  # incremented in AQL, which computes in doubles
+            "scopeProjectionUnsafe": {"type": ["boolean", "number", "null"]},  # a mark: true (older code) or a time
+            "scopeProjectionPendingRoots": {"type": ["string", "null"]},  # {root: generation} awaiting a rewrite (see permissions.pending)
+            "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
+            "scopeProjectionClosed": {"type": ["number", "null"]},
+            "scopeProjectionOpenWrites": {"type": ["string", "null"]},  # {token: {deadline, roots}} of the writes counted as opened (see open_write)
+            "scopeSweepState": {"type": ["string", "null"]},  # {failures, error, retry time} of the sweep of this connector (see scope_sweep)
+            "scopeRewriteLease": {"type": ["string", "null"]},  # {holder, deadline} of the rewriter that holds the connector (see permissions.rewrite_lease)
+            "aclFilterMode": {"type": ["string", "null"]},  # the admin's permission filter mode for this connector (see permissions.currency.MODE_KEY)
+            # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
+            "scopeBackfillState": {"type": ["string", "null"]},
+            "scopeBackfillAfter": {"type": ["string", "null"]},
+            "scopeBackfillVersion": {"type": ["integer", "null"]},
+            "scopeBackfillGeneration": {"type": ["integer", "null"]},
+            "scopeBackfillStructureGeneration": {"type": ["number", "null"]},  # what the pass read first
+            "scopeBackfillUnsafe": {"type": ["boolean", "number", "null"]},
+            "scopeBackfillRecords": {"type": ["integer", "null"]},
+            "scopeBackfillStale": {"type": ["integer", "null"]},
+            "scopeBackfillError": {"type": ["string", "null"]},
+            "scopeBackfillLegacy": {"type": ["integer", "null"]},
+            "scopeBackfillExact": {"type": ["boolean", "null"]},  # the pass ended with no stale or legacy point (see currency.app_is_exact)
             # app.modules.indexing.entity_index_rebuild
             "entityIndexState": {"type": ["string", "null"]},
             "entityIndexPhase": {"type": ["string", "null"]},
@@ -244,6 +298,10 @@ app_schema = {
             # Excludes this KB from list/browse/unscoped-search surfaces even
             # though it is a normal KB app; explicit filters.kb still resolves it.
             "isHidden": {"type": ["boolean", "null"]},
+            # JWT user who POSTed a hidden create. The project owner is
+            # createdBy; this is who may delete an empty unused copy after a
+            # lost link race (they are WRITER, not OWNER).
+            "initiatedBy": {"type": ["string", "null"]},
         },
         "required": [
             "name",
@@ -258,6 +316,11 @@ app_schema = {
     "level": "strict",
     "message": "Document does not match the app schema.",
 }
+
+# Raised by one with every change to ``app_schema``; applied as ``RECORD_SCHEMA_GENERATION`` is (see below).
+# tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
+APP_SCHEMA_GENERATION = 1
+app_schema["rule"]["$comment"] = f"pipeshub-app-schema gen={APP_SCHEMA_GENERATION}"
 
 # Record schema for ArangoDB
 record_schema = {
@@ -303,7 +366,7 @@ record_schema = {
             "uploadSourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
-            "isVLMOcrProcessed": {"type": "boolean", "default": False},
+            "isVLMOcrProcessed": {"type": ["boolean", "null"], "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             # Soft delete: when the record entered the trash, who put it there,
             # the batch a restore brings back together, and the purge's retries.
@@ -325,11 +388,24 @@ record_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
             "republishCount": {"type": ["number", "null"]},
+            # Record processing diagnostics (internal; never returned by the API):
+            # when the record first went in line for the current run, when its
+            # last run failed, how many attempts it has had, and the PDF page count.
+            "firstQueuedAt": {"type": ["number", "null"]},
+            "failedAt": {"type": ["number", "null"]},
+            "indexingAttempts": {"type": ["integer", "null"], "minimum": 0},
+            "pageCount": {"type": ["integer", "null"], "minimum": 1},
             # A record whose source rate-limited its content fetch: when it may
             # be sent again, and when this run of waits began (see
             # app/modules/indexing/rate_limit_deferral.py).
             "retryNotBefore": {"type": ["number", "null"]},
             "rateLimitedSince": {"type": ["number", "null"]},
+            # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message
+            # fires. The recovery scans skip it until then (``processingStartedAt`` stays the real start).
+            "deferredUntilMs": {"type": ["number", "null"]},
+            # When (ms) a record was first handed back for a model provider's rate limit, set once and never moved:
+            # ``RATE_LIMIT_MAX_WAIT_S`` of wall time since then ends the record. Cleared when the record ends.
+            "rateLimitedSinceMs": {"type": ["number", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",
@@ -340,10 +416,14 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # How the record was indexed, e.g. that only part of a large text file is (not a failure).
+            "indexingNote": {"type": ["string", "null"]},
             # Credentials redacted from the content before indexing (S-2).
             "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.
             "duplicateReconcilePending": {"type": "boolean"},
+            # Classification waits for the record's first use (ENABLE_CLASSIFY_ON_FIRST_USE).
+            "extractionDeferred": {"type": "boolean"},
             # app.modules.indexing.duplicate_reconcile
             "duplicateReconcileAttempts": {"type": ["integer", "null"]},
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
@@ -366,6 +446,8 @@ record_schema = {
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
             "isPlaceholder": {"type": "boolean", "default": False},
+            # Set by an API push (see Record.push_origin); absent on every other record.
+            "pushOrigin": {"type": "boolean"},
             # Permission traversal input, read per visited node. Per node and
             # mixable within a connector; RESTRICTED applies to the node it is
             # on and is never inherited by its children. Absent reads as OPEN,
@@ -384,6 +466,37 @@ record_schema = {
             "rowCount": {"type": ["number", "null"]},
             # sha256(source bytes)[:16] of the revision being processed; stage status writes CAS on it.
             "contentRev": {"type": ["string", "null"]},
+            # Typed property values projected for filtering (record properties); written by indexing.
+            "recordProps": {"type": ["object", "null"]},
+            # 16-hex hash of the property names projected, the schema generation that
+            # defined them, the source stamp they were taken from, and an optimistic counter.
+            "propsSet": {"type": ["string", "null"]},
+            "propsGen": {"type": ["number", "null"]},
+            "propsSrc": {"type": ["number", "null"]},
+            "propsVer": {"type": ["number", "null"]},
+            # The parse-now marker (app.modules.indexing.parse_now_marker). A pattern, not an
+            # enum, for the same reason as entityExtractionStatus.
+            "parseNowStatus": {"type": ["string", "null"], "pattern": "^[A-Z_]{1,32}$"},
+            "parseNowRev": {"type": ["string", "null"]},
+            "parseNowReason": {"type": ["string", "null"]},
+            "parseNowAt": {"type": ["number", "null"]},
+            # The in-flight embedding marker (see app/modules/indexing/embed_resume.py): flat scalars, so
+            # a partial write leaves the others alone on every graph provider. Null once the record is indexed.
+            # The virtual record the record is indexing a replacement copy into; it keeps serving `virtualRecordId` until the
+            # copy commits, and the field is removed (never null) by the commit and by every other end of the run.
+            "pendingVirtualRecordId": {"type": ["string", "null"]},
+            "embedVrid": {"type": ["string", "null"]},
+            "embedRev": {"type": ["string", "null"]},
+            "embedKey": {"type": ["string", "null"]},
+            "embedDigest": {"type": ["string", "null"]},
+            "embedTotal": {"type": ["number", "null"]},
+            "embedDeliveryId": {"type": ["string", "null"]},
+            "embedStartedMs": {"type": ["number", "null"]},
+            # Seconds of embedding spent by cut attempts of this chain, how many of those cuts were not
+            # counted as failures, and how many points are done (display only; never read to decide).
+            "embedSeconds": {"type": ["number", "null"]},
+            "embedUncounted": {"type": ["number", "null"]},
+            "embedDone": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
@@ -399,11 +512,24 @@ record_schema = {
     "message": "Document does not match the record schema.",
 }
 
+# Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
+# collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
+# tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
+RECORD_SCHEMA_GENERATION = 3
+record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
+
 
 # Pipeline stage state: one document per (virtual record, content revision, stage).
 # ``_key`` is ``{virtualRecordId}:{rev}:{stage}``; see app/modules/pipeline/models.py.
 STAGE_TIERS = ["heavy", "light"]
 STAGE_PRIORITIES = ["interactive", "bulk"]
+#
+# Forward-compatible (expand-then-contract): a later release may add a field, or a status, tier or
+# priority value, and a pod still on this schema must accept the row. So unknown properties are
+# allowed and ``status``, ``tier`` and ``priority`` are plain strings; ``StageState`` keeps the closed
+# sets in code. Required fields and the types of the declared ones are still checked. Record nodes
+# (``record_schema``) stay strict. Once a later release has written a new field or value, rolling back
+# past the release that carries this schema is unsupported for the stage collections.
 stage_state_schema = {
     "rule": {
         "type": "object",
@@ -412,12 +538,12 @@ stage_state_schema = {
             "virtualRecordId": {"type": "string"},
             "rev": {"type": "string"},
             "stage": {"type": "string"},
-            "status": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
+            "status": {"type": "string"},
             "stageVersion": {"type": "integer", "minimum": 1},
             "recordIds": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "connectorId": {"type": "string"},
-            "tier": {"type": "string", "enum": STAGE_TIERS},
-            "priority": {"type": "string", "enum": STAGE_PRIORITIES},
+            "tier": {"type": "string"},
+            "priority": {"type": "string"},
             "trigger": {"type": "string"},
             "force": {"type": "boolean"},
             "mimeType": {"type": ["string", "null"]},
@@ -455,7 +581,7 @@ stage_state_schema = {
             "hasImages",
             "updatedAtMs",
         ],
-        "additionalProperties": False,
+        "additionalProperties": True,
     },
     "level": "strict",
     "message": "Document does not match the stage state schema.",
@@ -638,6 +764,7 @@ ticket_record_schema = {
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
@@ -679,6 +806,7 @@ meeting_record_schema = {
             "startTime": {"type": ["string", "null"]},
             "endTime": {"type": ["string", "null"]},
             "timezone": {"type": ["string", "null"]},
+            "recordingUrl": {"type": ["string", "null"]},
         },
         "additionalProperties": False,
     },
@@ -741,6 +869,7 @@ pull_request_record_schema = {
             },
             "mergeable":{"type": ["string", "null"]},
             "mergedBy": {"type": ["string", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
@@ -760,8 +889,8 @@ code_file_record_schema={
             "orgId": {"type": "string"},
             "summary": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
-            "filePath": {"type": "string", "minLength": 0},
-            "fileHash": {"type": "string", "minLength": 0},
+            "filePath": {"type": ["string", "null"]},
+            "fileHash": {"type": ["string", "null"]},
             "language": {"type": ["string", "null"]},
             # source | test | config | build | migration | script |
             # type_definition | generated -- see parsers/code_parser/file_role.py
@@ -799,8 +928,11 @@ block_schema = {
             "parserVersion": {"type": ["string", "null"]},
             "kind": {"type": ["string", "null"]},
             "subType": {"type": ["string", "null"]},
+            "modifiers": {"type": ["array", "null"], "items": {"type": "string"}},
+            "typeParamCount": {"type": ["number", "null"]},
             "isBlockGroup": {"type": "boolean"},
             "isExternal": {"type": "boolean"},
+            "isAccessor": {"type": ["boolean", "null"]},
             "index": {"type": ["number", "null"]},
             "startLine": {"type": ["number", "null"]},
             "endLine": {"type": ["number", "null"]},
@@ -809,7 +941,11 @@ block_schema = {
             "parentBlockId": {"type": ["string", "null"]},
             "pendingEdges": {"type": ["array", "null"], "items": {"type": "object"}},
             "typeTable": {"type": ["object", "null"]},
+            # C/C++ function-like macro -> [line, names its body calls], on the file-summary block.
+            "macroTable": {"type": ["object", "null"]},
             "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            # `specifier:name` of the library calls the block makes, rewritten by each edge build.
+            "externalRefs": {"type": ["array", "null"], "items": {"type": "string"}},
             "createdAtTimestamp": {"type": ["number", "null"]},
             "updatedAtTimestamp": {"type": ["number", "null"]},
         },
@@ -826,6 +962,8 @@ sql_table_record_schema = {
             "schemaName": {"type": ["string", "null"]},
             "fqn": {"type": ["string", "null"]},  # fully qualified name: database.schema.table
             "rowCount": {"type": ["number", "null"]},
+            "dbRowCount": {"type": ["number", "null"]},
+            "indexedRowCount": {"type": ["number", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
             "columnCount": {"type": ["number", "null"]},
             "ddl": {"type": ["string", "null"]},  # CREATE TABLE statement
@@ -846,6 +984,46 @@ sql_table_record_schema = {
     "message": "Document does not match the SQL table record schema.",
 }
 
+sql_column_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "fqn": {"type": "string", "minLength": 1},
+            "tableFqn": {"type": "string", "minLength": 1},
+            "dataType": {"type": ["string", "null"]},
+            "nullable": {"type": "boolean", "default": False},
+            "isPrimaryKey": {"type": "boolean", "default": False},
+            "isUnique": {"type": "boolean", "default": False},
+            "isPartOfCompositePrimaryKey": {"type": "boolean", "default": False},
+            "isPartOfCompositeUnique": {"type": "boolean", "default": False},
+            "default": {"type": ["string", "null"]},
+            "ordinalPosition": {"type": ["number", "null"]},
+            "distinctCount": {"type": ["number", "null"]},
+            "nullCount": {"type": ["number", "null"]},
+            "cardinalityRatio": {"type": ["number", "null"]},
+            "confidenceScore": {"type": ["string", "null"]},
+            "topValues": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+            "topValueFrequencies": {
+                "type": ["array", "null"],
+                "items": {"type": "number"},
+            },
+            "minValue": {"type": ["string", "null"]},
+            "maxValue": {"type": ["string", "null"]},
+            "numericText": {"type": ["boolean", "null"]},
+            "profiledAt": {"type": ["number", "null"]},
+        },
+        "required": ["name", "fqn", "tableFqn"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the SQL column record schema.",
+}
+
 sql_view_record_schema = {
     "rule": {
         "type": "object",
@@ -862,6 +1040,7 @@ sql_view_record_schema = {
             },
             "isSecure": {"type": "boolean", "default": False},
             "comment": {"type": ["string", "null"]},
+            "ddl": {"type": ["string", "null"]},  # CREATE VIEW statement, or synthetic column-based DDL
         },
         "required": ["name"],
         "additionalProperties": False,
@@ -932,6 +1111,7 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            "accessOnly": {"type": ["boolean", "null"], "default": False},
             # Permission traversal input, as on records: per node, and
             # RESTRICTED never cascades to children.
             "accessRule": {
@@ -963,6 +1143,8 @@ record_group_schema = {
             "deletedAtSourceTimestamp": {"type": ["number", "null"]},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # Code repository groups: the commit the git connector last synced the repo to.
+            "lastSyncedCommit": {"type": ["string", "null"]},
         },
         "required": [
             "groupName",
@@ -1002,6 +1184,7 @@ named_entity_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},
@@ -1039,6 +1222,7 @@ value_mention_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},
@@ -1121,7 +1305,6 @@ agent_template_schema = {
                         "name": {"type": "string", "minLength": 1},
                         "description": {"type": "string", "minLength": 1},
                     },
-                    "nullable": True,
                     "required": ["name"],
                     "additionalProperties": True,
                 },
@@ -1137,7 +1320,6 @@ agent_template_schema = {
                         "provider": {"type": "string", "minLength": 1},
                         "config": {"type": "object"},
                     },
-                    "nullable": True,
                     "required": ["name", "role", "provider"],
                     "additionalProperties": True,
                 },
@@ -1148,7 +1330,6 @@ agent_template_schema = {
                 "properties": {
                     "type": {"type": "array", "items": {"type": "string", "enum": ["CONVERSATIONS", "KNOWLEDGE_BASE", "APPS", "ACTIVITIES", "VECTOR_DB"]}},
                 },
-                "nullable": True,
                 "required": ["type"],
                 "additionalProperties": True,
             },
@@ -1207,6 +1388,11 @@ agent_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
+            # The service account this agent searches knowledge as, by user
+            # node key. Absent on agents made before binding existed, and on
+            # any agent that is not a service agent; those still search as
+            # their creator. See _enrich_user_info_for_service_account_agent_chat.
+            "serviceAccountUserId": {"type": ["string", "null"]},
             "sendUserContext": {"type": "boolean", "default": True},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},
@@ -1519,8 +1705,10 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # uuid4; (orgId, email) is the business key (composite unique index)
-            "email": {"type": "string"},
+            "_key": {"type": "string"},  # uuid4; (orgId, email), else (orgId, sourceKey), is the business key
+            "email": {"type": ["string", "null"]},
+            # "<connector id>:<source user id>" for a person a source names without an email
+            "sourceKey": {"type": ["string", "null"]},
             # Not in "required": pre-existing documents written before org-scoping
             # was added have no orgId and must stay schema-valid.
             "orgId": {"type": ["string", "null"]},
@@ -1531,7 +1719,7 @@ people_schema = {
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},
         },
-        "required": ["email", "createdAtTimestamp", "updatedAtTimestamp"],
+        "required": ["createdAtTimestamp", "updatedAtTimestamp"],
         "additionalProperties": False,
     },
     "level": "strict",
@@ -1661,7 +1849,7 @@ agent_skills_schema = {
             "concepts": {"type": "array", "items": {"type": "string"}, "default": []},
             "related": {"type": "array", "items": {"type": "string"}, "default": []},
             "requires": {"type": "array", "items": {"type": "string"}, "default": []},
-            "status": {"type": "string", "enum": ["active", "deprecated", "disabled"]},
+            "status": {"type": "string", "enum": ["active", "draft", "candidate", "deprecated", "disabled"]},
             "source": {"type": "string"},
             "version": {"type": "string"},
             "deprecatedReason": {"type": ["string", "null"]},

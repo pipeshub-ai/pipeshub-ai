@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Avatar,
@@ -19,9 +19,11 @@ import {
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PermissionLockIcon } from '@/config';
 import { useTranslation } from 'react-i18next';
-import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { userDisplayName } from '@/lib/utils/formatters';
 import { useIsBelowDesktop, useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { touchTarget } from '@/app/components/ui/responsive';
+import { ServiceAgentIdentityControl } from './service-agent-identity-control';
 
 export function AgentBuilderHeader(props: {
   agentName: string;
@@ -46,6 +48,9 @@ export function AgentBuilderHeader(props: {
   /** Any other reason save is blocked, shown as the save button's tooltip. */
   saveBlockedReason?: string;
   isServiceAccount: boolean;
+  /** The service account this agent searches as, by `userId`; null means its creator. */
+  serviceAccountUserId?: string | null;
+  onServiceAccountUserIdChange?: (next: string | null) => void;
   editing: boolean;
   /** An existing agent is still loading or failed to load: name, share, convert and save are off. */
   loading?: boolean;
@@ -61,6 +66,8 @@ export function AgentBuilderHeader(props: {
   createdBy?: string | null;
   onShare?: () => void;
   hideShareControls?: boolean;
+  /** The convert tooltip leaves out organization-wide sharing, for builds that share service agents with chosen people instead. */
+  hideOrgAccess?: boolean;
 }) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -82,6 +89,8 @@ export function AgentBuilderHeader(props: {
     saveBlockedByDeprecatedTools = false,
     saveBlockedReason,
     isServiceAccount,
+    serviceAccountUserId = null,
+    onServiceAccountUserIdChange,
     editing,
     loading = false,
     onEnableServiceAccount,
@@ -92,37 +101,14 @@ export function AgentBuilderHeader(props: {
     createdBy = null,
     onShare,
     hideShareControls = false,
+    hideOrgAccess = false,
     sharePermissionDenied = false,
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
-  const [creatorName, setCreatorName] = useState<string | null>(null);
-  const [creatorAvatarUrl, setCreatorAvatarUrl] = useState<string | undefined>(undefined);
-
-  useEffect(() => {
-    if (!createdBy) {
-      setCreatorName(null);
-      setCreatorAvatarUrl(undefined);
-      return;
-    }
-    let cancelled = false;
-    UsersApi.getUsersByIds([createdBy])
-      .then((users) => {
-        if (cancelled) return;
-        const user = users[0];
-        setCreatorName(user?.name?.trim() || user?.email?.trim() || null);
-        setCreatorAvatarUrl(user?.profilePicture ?? undefined);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setCreatorName(null);
-          setCreatorAvatarUrl(undefined);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [createdBy]);
+  const creator = useUserDirectoryEntry(createdBy);
+  const creatorName = userDisplayName(creator);
+  const creatorAvatarUrl = creator?.profilePicture;
 
   const showDeleteOption = Boolean(editing && canDeleteAgent && onRequestDeleteAgent);
   const showConvertOption = Boolean(!isServiceAccount && onEnableServiceAccount);
@@ -375,12 +361,24 @@ export function AgentBuilderHeader(props: {
             </Flex>
           </Tooltip>
         ))}
+        {isServiceAccount && onServiceAccountUserIdChange ? (
+          <ServiceAgentIdentityControl
+            value={serviceAccountUserId}
+            onChange={onServiceAccountUserIdChange}
+            disabled={isFlowStructureLocked || loading || saving}
+            permissionDenied={serviceAccountPermissionDenied}
+          />
+        ) : null}
         {showConvertOption && !showConvertInMenu ? (
           <Tooltip
             content={
               editing
-                ? t('agentBuilder.convertToServiceAgentTooltip')
-                : t('agentBuilder.convertToServiceAgentTooltipNewAgent')
+                ? t(hideOrgAccess ? 'agentBuilder.convertToServiceAgentTooltipNoOrg' : 'agentBuilder.convertToServiceAgentTooltip')
+                : t(
+                    hideOrgAccess
+                      ? 'agentBuilder.convertToServiceAgentTooltipNewAgentNoOrg'
+                      : 'agentBuilder.convertToServiceAgentTooltipNewAgent'
+                  )
             }
           >
             <Button

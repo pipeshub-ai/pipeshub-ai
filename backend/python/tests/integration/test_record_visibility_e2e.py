@@ -488,7 +488,6 @@ EXERCISED_HERE: dict[str, str] = {
     "get_records_by_record_group": "test_reindex_walks",
     "get_records_by_parent_record": "test_reindex_walks",
     "get_linked_records": "test_linked_records",
-    "list_kb_records": "test_kb_listings",
     "get_kb_children": "test_kb_listings",
     "get_folder_children": "test_kb_listings",
     "get_connector_stats": "test_connector_stats",
@@ -504,11 +503,13 @@ EXERCISED_HERE: dict[str, str] = {
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
+    "page_record_ids_by_type": "test_record_ids_by_type",
     "get_records_for_named_entities": "test_named_entity_records",
     "get_knowledge_hub_connector_page_v3": "test_knowledge_hub_listing",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "get_file_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "filter_nodes_with_permission_role": "test_location_trail_stops_at_a_trashed_folder",
+    "get_organization_record_reach": "test_organization_record_reach",
 }
 
 
@@ -759,6 +760,11 @@ async def test_entity_candidate_records(world: _World) -> None:
     assert got[("record", world.ids["trashed"])] == []
 
 
+async def test_record_ids_by_type(world: _World) -> None:
+    got = await world.graph.page_record_ids_by_type(world.org_id, [RecordType.FILE.value], limit=1000)
+    assert set(got) & {world.ids["live"], world.ids["trashed"]} == {world.ids["live"]}
+
+
 async def test_permitted_entity_records(world: _World) -> None:
     refs = [
         {"id": world.ids[name], "type": "record", "connectorIds": [world.connector_id]}
@@ -891,16 +897,24 @@ async def test_linked_records(world: _World) -> None:
     assert world.ids["live_shared"] in got and world.ids["trashed_shared"] not in got
 
 
+async def test_organization_record_reach(world: _World) -> None:
+    orgs = CollectionNames.ORGS.value
+    key = f"named-{world.connector_id}"
+    await world.graph.create_organization_if_absent(world.org_id, {"id": key, "name": "Named", "normalizedName": "named"})
+    try:
+        await world.graph.batch_create_entity_relations([
+            {"_from": f"{CollectionNames.RECORDS.value}/{world.ids[name]}", "_to": f"{orgs}/{key}",
+             "edgeType": "MENTIONS", "origin": "EXTRACTED", "createdAtTimestamp": 1}
+            for name in ("live", "trashed")
+        ])
+        reach = await world.graph.get_organization_record_reach(world.org_id, [key])
+        assert reach[key]["records"] == 1
+    finally:
+        await world.graph.delete_nodes_and_edges([key], orgs)
+
+
 async def test_kb_listings(world: _World) -> None:
     g = world.graph
-    kb_records, _, _ = await g.list_kb_records(
-        world.kb_id, world.user_key, world.org_id, 0, 100,
-        None, None, None, None, None, None, None, "recordName", "asc",
-    )
-    got = _ids_anywhere(kb_records)
-    assert world.ids["kb_live"] in got and world.ids["kb_child_live"] in got
-    assert not {world.ids["kb_trashed"], world.ids["kb_child_trashed"]} & got
-
     root = _ids_anywhere(await g.get_kb_children(world.kb_id, 0, 100))
     assert world.ids["kb_live"] in root and world.ids["kb_trashed"] not in root
 

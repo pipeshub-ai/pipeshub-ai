@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, RecordRelations
 from app.connectors.sources.localKB.api.knowledge_hub_models import OriginType
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    MAX_PAGE_WALK,
     KnowledgeHubService,
 )
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
@@ -21,7 +22,30 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 from .models import NavigationView, NodeRef, NodeRow, PaginationInfo
 
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
+    from app.connectors.sources.localKB.api.knowledge_hub_models import (
+        KnowledgeHubNodesResponse,
+    )
+
 logger = logging.getLogger(__name__)
+
+
+class ListingFailedError(RuntimeError):
+    """The listing under a node did not complete. Rendered as an empty listing, it read as "(no children)"."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def cursor_keeps_to(response: KnowledgeHubNodesResponse, source_ids: list[str]) -> bool:
+    """Whether a page read by cursor stayed inside ``source_ids``. The cursor's own
+    filters decide the page, so one issued for wider sources must not resume here."""
+    applied = getattr(getattr(response, "filters", None), "applied", None)
+    issued = getattr(applied, "connectorIds", None)
+    return bool(issued) and set(issued) <= set(source_ids)
+
 
 # All RecordRelations that represent containment (excluded from "Related" section)
 _CONTAINMENT_RELATIONS = frozenset({
@@ -157,6 +181,7 @@ class GraphNavigator:
         org_id: str,
         frontend_url: str | None = None,
         excluded_app_ids: frozenset[str] = frozenset(),
+        config_service: ConfigurationService | None = None,
     ) -> None:
         self._graph = graph_provider
         self._user_id = user_id
@@ -168,6 +193,8 @@ class GraphNavigator:
             logger=logger,
             graph_provider=graph_provider,
             excluded_app_ids=excluded_app_ids,
+            # Signs the cursors a page hands out; without it pages go by number only.
+            config_service=config_service,
         )
 
     async def _context_block(self, node_id: str) -> str | None:
@@ -239,6 +266,7 @@ class GraphNavigator:
         updated_at: dict[str, int | None] | None = None,
         node_types: list[str] | None = None,
         app_names: dict[str, str] | None = None,
+        cursor: str | None = None,
     ) -> NavigationView:
         """Build a NavigationView for the given node.
 
@@ -249,10 +277,20 @@ class GraphNavigator:
 
         `created_at`/`updated_at` are optional `{"gte": epoch_ms|None,
         "lte": epoch_ms|None}` filters on the child's source timestamps.
+
+        `cursor` is a previous page's `next_cursor`: it decides the page, the
+        filters and the sort, and `page` is ignored.
         """
         limit = min(max(_MIN_LIMIT, limit), _MAX_LIMIT)
         page = max(1, page)
         depth = min(max(1, depth), _MAX_DEPTH)
+        if page > MAX_PAGE_WALK and not cursor:
+            raise ListingFailedError(
+                f"Page {page} is past the last page reached by number ({MAX_PAGE_WALK}). Pass the cursor "
+                "printed with a previous page to go further; a larger limit "
+                f"(up to {_MAX_LIMIT}) or a created or modified date range also reaches the children in fewer pages.",
+                400,
+            )
 
         current: NodeRef | None = None
         breadcrumbs: list[NodeRef] = []
@@ -314,7 +352,9 @@ class GraphNavigator:
         # Breadcrumbs and record metadata only on page 1 to save tokens. The
         # breadcrumbs are the placement trail the listing computes for this
         # user: the raw hierarchy would name ancestors they cannot open.
-        crumbs_wanted = page == 1 and node_id is not None
+        # A cursor page is never the first one.
+        first_page = page == 1 and not cursor
+        crumbs_wanted = first_page and node_id is not None
 
         # ── Fetch children via unified get_nodes() ────────────────────
         nodes = self._service.get_nodes(
@@ -334,12 +374,18 @@ class GraphNavigator:
             include_typed_records=True,
             node_types=node_types,
             include=["breadcrumbs"] if crumbs_wanted else None,
+            cursor=cursor,
         )
         # Gathered so the extra record read costs no extra latency.
         if crumbs_wanted and parent_type in ("record", "folder"):
             response, context_block = await asyncio.gather(nodes, self._context_block(node_id))
         else:
             response = await nodes
+        if not response.success:
+            raise ListingFailedError(response.error or "The listing did not complete.", response.errorCode)
+        if cursor and connector_ids and not cursor_keeps_to(response, connector_ids):
+            # The cursor's own filters decide the page, so one issued for wider sources must not resume here.
+            raise ListingFailedError("Invalid cursor: issued for a different listing", 400)
         if crumbs_wanted:
             breadcrumbs = [
                 _node_ref(crumb.id, crumb.name, crumb.nodeType, crumb.subType)
@@ -367,11 +413,15 @@ class GraphNavigator:
         pagination: PaginationInfo | None = None
         if pag_raw:
             pagination = PaginationInfo(
-                page=pag_raw.page,
+                # A page reached by cursor has no number: after a short page, one worked out from its position would be wrong.
+                page=None if cursor else pag_raw.page,
+                start_index=pag_raw.startIndex,
                 limit=pag_raw.limit,
                 total=pag_raw.totalItems,
+                total_capped=pag_raw.totalCapped,
                 has_next=pag_raw.hasNext,
                 has_prev=pag_raw.hasPrev,
+                next_cursor=pag_raw.nextCursor,
             )
 
         # Enrich rows with typed record context
@@ -379,7 +429,7 @@ class GraphNavigator:
             self._enrich_rows_from_typed_records(rows, response.typed_records)
 
         # ── Linked records (page 1, record/folder nodes only) ──────────
-        if page == 1 and node_id and parent_type in ("record", "folder"):
+        if first_page and node_id and parent_type in ("record", "folder"):
             try:
                 linked = await self._graph.get_linked_records(
                     record_id=node_id,
@@ -406,4 +456,5 @@ class GraphNavigator:
             indexing_status=indexing_status,
             connector=connector,
             context_block=context_block,
+            preparing=getattr(response, "preparing", None) is True,
         )

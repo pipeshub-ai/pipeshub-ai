@@ -14,12 +14,18 @@ verbatim to the LLM, which then echoes it in the user-facing answer.
 These helpers replace every known sandbox path with a stable placeholder
 (``<output>`` / ``<workdir>``) so the model still sees *what* was produced
 but not *where* on the host it lives. Filenames are preserved.
+
+User code can also print credentials it can read (this process's env through
+``/proc``, a key in a file), so the same pass masks secrets with
+``redact_secrets_in_text``.
 """
 
 from __future__ import annotations
 
 import re
 from typing import Final
+
+from app.utils.log_redaction import redact_secrets_in_text
 
 # /tmp/pipeshub_sandbox/<id>/output[/...]  — also matches the macOS realpath
 # form (/private/tmp/...). Must run before the workdir pattern below so the
@@ -57,7 +63,8 @@ _DOCKER_OUTPUT_RE: Final[re.Pattern[str]] = re.compile(
 
 
 def redact_sandbox_paths(text: str | None) -> str:
-    """Replace sandbox host/container paths with stable placeholders.
+    """Replace sandbox host/container paths with stable placeholders and
+    mask secrets (``[REDACTED]``).
 
     Safe to call on ``None`` or empty input -- returns ``""`` in that case.
     The substitutions are idempotent: calling the function twice yields the
@@ -70,7 +77,8 @@ def redact_sandbox_paths(text: str | None) -> str:
     text = _ALCS_OUTPUT_RE.sub("<output>", text)
     text = _ALCS_WORKDIR_RE.sub("<workdir>", text)
     text = _DOCKER_OUTPUT_RE.sub("<output>", text)
-    return text
+    # shortcut: encoded or split secrets get through; the real fix for the local backend is confinement.
+    return redact_secrets_in_text(text)
 
 
 __all__ = ["redact_sandbox_paths"]

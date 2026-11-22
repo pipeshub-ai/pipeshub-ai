@@ -55,8 +55,8 @@ export function sseFrame(event: string, data: unknown): string {
 }
 
 /** An unsigned JWT whose only claim is `exp`, `secondsFromNow` ahead. */
-export function jwtExpiringIn(secondsFromNow: number): string {
-  const payload = btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + secondsFromNow }))
+export function jwtExpiringIn(secondsFromNow: number, claims: Record<string, unknown> = {}): string {
+  const payload = btoa(JSON.stringify({ ...claims, exp: Math.floor(Date.now() / 1000) + secondsFromNow }))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');

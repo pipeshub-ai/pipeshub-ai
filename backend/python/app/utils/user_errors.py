@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from app.agents.agent_loop.error_classification import classify_error
+from app.config.constants.arangodb import Connectors, OriginTypes, RecordTypes
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     BlockContainerValidationError,
     ChunkingError,
     DocumentProcessingError,
@@ -22,16 +24,21 @@ from app.exceptions.indexing_exceptions import (
     EmbeddingModelUnavailableError,
     EmbeddingNotConfiguredError,
     ExtractionError,
+    MultimodalModelNotConfiguredError,
+    PasswordProtectedError,
     ProcessingError,
+    ProviderRateLimitedTooLongError,
     RecordStatusUpdateError,
     VectorStoreError,
 )
 from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
+from app.utils.api_call import ApiCallError
+from app.utils.embedding_retry import is_quota_exhausted
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
 
 # "Reindex" is the action's label in the knowledge base.
 GENERIC_FAILURE = (
@@ -120,6 +127,14 @@ EPUB_NO_READABLE_CHAPTERS = (
     "This e-book has no chapters we could read. Check that it opens in an e-book reader, "
     "save a fresh copy from there, and upload it again."
 )
+EXCEL_TOO_LARGE = (
+    "This spreadsheet is too large to index: it holds more data than PipesHub reads from one workbook. "
+    "Split it into several smaller workbooks, or remove unused rows and columns, and upload it again."
+)
+PARSE_WORKER_UNAVAILABLE = (
+    "PipesHub could not start the process that reads this file, so it wasn't indexed. "
+    "Try Reindex; if it keeps failing, ask your admin for help."
+)
 GENERATED_FILE_SKIPPED = (
     "This is a generated file (a lock file, minified bundle, source map, test snapshot or "
     "a file its generator marked DO NOT EDIT), "
@@ -149,7 +164,10 @@ _STORED_AS_WRITTEN = frozenset({
     EPUB_TOO_LARGE,
     EPUB_UNSAFE_PATHS,
     EPUB_NO_READABLE_CHAPTERS,
+    EXCEL_TOO_LARGE,
+    UNREADABLE_FILE,
     PARSE_WORKER_OUT_OF_MEMORY,
+    PARSE_WORKER_UNAVAILABLE,
     PROCESSING_TIMED_OUT,
 })
 
@@ -158,6 +176,130 @@ def unsupported_file_type(extension: str | None) -> str:
     ext = (extension or "").strip().lstrip(".").lower()
     what = f".{ext} files" if ext and ext not in {"unknown", "none"} else "this type of file"
     return f"PipesHub can't read {what} yet. Convert the file to PDF, DOCX or TXT to make it searchable."
+
+
+def _size_label(size: int) -> str:
+    return f"{size // (1024 * 1024)} MB" if size >= 1024 * 1024 else f"{size // 1024} KiB"
+
+
+def file_too_large_to_read(extension: str | None) -> str:
+    from app.config.file_types import TEXT_LOG_HARD_LIMIT_BYTES
+
+    ext = (extension or "").strip().lstrip(".").lower()
+    what = f".{ext} file" if ext and ext not in {"unknown", "none"} else "file"
+    return (
+        f"This {what} is too large to index (over {_size_label(TEXT_LOG_HARD_LIMIT_BYTES)}). "
+        "It can still be found by its name."
+    )
+
+
+# The record field for a note on how a record was indexed (shown on a COMPLETED record), kept apart
+# from `reason`, which says why a record or one of its stages was not done.
+INDEXING_NOTE_FIELD = "indexingNote"
+
+
+def partly_indexed_text() -> str:
+    from app.config.file_types import TEXT_LOG_MAX_BYTES
+
+    return (
+        "Only the first and last part of this file is indexed "
+        f"(file is larger than {_size_label(TEXT_LOG_MAX_BYTES)})."
+    )
+
+
+def binary_text_file(extension: str | None) -> str:
+    ext = (extension or "").strip().lstrip(".").lower()
+    what = f".{ext} file" if ext and ext not in {"unknown", "none"} else "file"
+    return f"This {what} holds binary data, not text, so PipesHub can't read it."
+
+
+# What a synced item is called in a reason. Some sources let a file be fixed
+# where it lives, but not all (a mail attachment can't be edited), so reasons
+# say what a new copy in the source leads to rather than asking for an edit.
+_SYNCED_FILE_TYPES = frozenset({RecordTypes.FILE.value, RecordTypes.CODE_FILE.value})
+_SYNCED_ITEM_KINDS = {
+    RecordTypes.ATTACHMENT.value: "attachment",
+    RecordTypes.MAIL.value: "email",
+    RecordTypes.GROUP_MAIL.value: "email",
+    RecordTypes.MESSAGE.value: "message",
+    RecordTypes.TICKET.value: "ticket",
+    RecordTypes.PULL_REQUEST.value: "pull request",
+    RecordTypes.WEBPAGE.value: "page",
+    RecordTypes.SHAREPOINT_PAGE.value: "page",
+    RecordTypes.COMMENT.value: "comment",
+    RecordTypes.WEBPAGE_COMMENT.value: "comment",
+    RecordTypes.MEETING.value: "meeting",
+    RecordTypes.CASE.value: "case",
+    RecordTypes.TASK.value: "task",
+}
+# The app refuses Reindex on one record of a code repository and points at a
+# reindex of the whole repository instead (isRecordReindexBlocked in
+# frontend/app/(main)/knowledge-base/utils/reindex-label.ts).
+_CODE_REPO_CONNECTORS = frozenset({
+    Connectors.GITHUB.value, Connectors.GITHUB_TEAMS.value,
+    Connectors.GITLAB.value, Connectors.GITLAB_PERSONAL.value,
+})
+
+
+def for_synced_item(
+    reason: str, record_type: str | None, source: str | None, connector: str | None = None,
+) -> str:
+    """``reason`` for an item a connector synced from ``source``.
+
+    The reasons below tell someone to upload the file again, which they never
+    did and can't do for a synced item. Any other reason is returned as it is.
+    ``connector`` is the record's connector type, which decides whether the
+    item can be reindexed on its own.
+    """
+    src = source or "the source"
+    code_repo = (connector or "").strip().upper() in _CODE_REPO_CONNECTORS
+    retry = "Reindex the whole repository from the knowledge hub" if code_repo else "Try Reindex"
+    if record_type in _SYNCED_FILE_TYPES:
+        return {
+            UNREADABLE_FILE: (
+                f"We couldn't read this file from {src}. It may be damaged or in a format we "
+                f"can't open, so it isn't searchable. A fresh copy (or a PDF export) added to "
+                f"{src} is indexed on the next sync."
+            ),
+            FILE_TOO_LARGE: (
+                f"This file from {src} is too large to index, so it isn't searchable. Smaller "
+                f"files split from it and added to {src} are indexed on the next sync."
+            ),
+            PASSWORD_PROTECTED: (
+                f"This file from {src} is password-protected, so we can't read it and it isn't "
+                f"searchable. A copy without the password added to {src} is indexed on the "
+                "next sync."
+            ),
+            PROCESSING_TIMED_OUT: (
+                f"This file from {src} took too long to process. {retry}; if it keeps "
+                "failing, ask your admin for help."
+            ),
+        }.get(reason, reason)
+    kind = _SYNCED_ITEM_KINDS.get(record_type or "", "item")
+    after_change = (
+        f"It's indexed again on the next sync after it changes in {src}" if code_repo
+        else f"Try Reindex after it changes in {src}"
+    )
+    return {
+        UNREADABLE_FILE: (
+            f"We couldn't read this {kind} from {src}: part of its content is in a form "
+            f"PipesHub can't process, so it isn't searchable. {after_change}; if it keeps "
+            "failing, ask your admin for help."
+        ),
+        FILE_TOO_LARGE: (
+            f"This {kind} from {src} is larger than PipesHub can index, so it isn't "
+            f"searchable. Nothing is wrong with it in {src}; if you need it in search, "
+            "ask your admin for help."
+        ),
+        PASSWORD_PROTECTED: (
+            f"This {kind} from {src} is password-protected, so we can't read it and it "
+            "isn't searchable. If you need it in search, ask your admin for help."
+        ),
+        PROCESSING_TIMED_OUT: (
+            f"This {kind} from {src} took too long to process. {retry}; if it keeps "
+            "failing, ask your admin for help."
+        ),
+    }.get(reason, reason)
 
 
 def _megabytes(size_bytes: int, *, round_up: bool = False) -> str:
@@ -181,6 +323,11 @@ def text_file_too_large(size_bytes: int, limit_bytes: int, *, repository_file: b
         "files, or ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then "
         f"{after_raising}."
     )
+
+
+def duplicate_password_protected(primary_reason: str | None) -> str:
+    base = "An identical file is password-protected, so this copy was skipped."
+    return f"{base} {primary_reason}" if primary_reason else base
 
 
 def duplicate_failed(primary_reason: str | None) -> str:
@@ -228,6 +375,11 @@ def _ai_messages(model: str) -> dict[str, str]:
         "rate_limit": (
             f"The {model} is busy right now, so this file wasn't indexed. Reindex it in "
             "a few minutes."
+        ),
+        "quota_exceeded": (
+            f"The {model}'s provider account is out of credit, so this file wasn't indexed. "
+            "An admin can add credit with the provider or choose another model in "
+            "Workspace → AI Models, then Reindex the file."
         ),
         "auth_error": (
             f"The {model} rejected PipesHub's API key, so this file wasn't indexed. An "
@@ -422,6 +574,9 @@ def _provider_code(chain: list[BaseException]) -> str:
         if _aws_error_code(e) == "NotAuthorized":
             return "auth_error"
         status = _status_code(e)
+        # An empty balance: OpenAI answers it 429 and Anthropic 400, and neither is fixed by waiting.
+        if status in (400, 402, 429) and is_quota_exhausted(e):
+            return "quota_exceeded"
         if status == 429:
             return "rate_limit"
         if status in (401, 403):
@@ -437,7 +592,7 @@ def _provider_code(chain: list[BaseException]) -> str:
     for e in theirs:
         name = type(e).__name__
         if "RateLimit" in name:
-            return "rate_limit"
+            return "quota_exceeded" if is_quota_exhausted(e) else "rate_limit"
         if "Authentication" in name or "PermissionDenied" in name:
             return "auth_error"
         if "ContextWindow" in name or "ContextLength" in name:
@@ -496,6 +651,11 @@ def provider_error_code(exc: BaseException) -> str:
     return _provider_code(list(_chain(exc)))
 
 
+def provider_response_status(exc: BaseException) -> int | None:
+    """The HTTP status of the response an AI provider sent, or ``None`` when no response arrived."""
+    return next((status for e in _chain(exc) if not _ours(e) and (status := _status_code(e)) is not None), None)
+
+
 def _llm_not_configured(exc: BaseException) -> bool:
     try:
         from app.utils.llm import LLMNotConfiguredError
@@ -533,29 +693,86 @@ def too_large_refusal(exc: BaseException | None) -> StorageRequestRejectedError 
     )
 
 
-def to_user_reason(exc: BaseException | None) -> str:
+def to_user_reason(
+    exc: BaseException | None,
+    *,
+    record: Mapping[str, object] | None = None,
+    source: str | None = None,
+) -> str:
     """The reason to store on a record that failed to index because of ``exc``.
 
     The outermost PipesHub error says what was being done (embedding, storing,
     reading the file); the errors under it say why. Checked in that order, so a
     processing timeout reads as a slow file and a storage timeout as an outage.
+
+    Several reasons tell someone to upload the file again. For a ``record``
+    synced by a connector they say what to do in ``source`` (the connector's
+    name) instead, see ``for_synced_item``.
     """
+    reason = _reason(exc)
+    if record is not None and record.get("origin") == OriginTypes.CONNECTOR.value:
+        record_type = record.get("recordType")
+        connector = record.get("connectorName")
+        return for_synced_item(
+            reason,
+            record_type if isinstance(record_type, str) else None,
+            source,
+            connector if isinstance(connector, str) else None,
+        )
+    return reason
+
+
+def is_password_protected(exc: BaseException | None) -> bool:
+    """Whether the file itself was found to need a password, which ends its indexing as
+    ``PASSWORD_PROTECTED`` rather than ``FAILED``.
+
+    Only the typed error counts, or the parsing service's PASSWORD_REQUIRED code.
+    The wording of an error does not: a reason can still read "password-protected"
+    from ``_PASSWORD_HINTS`` for a file nothing recognised as encrypted.
+    """
+    if exc is None:
+        return False
+    return any(
+        isinstance(e, PasswordProtectedError)
+        or getattr(e, "code", None) == ParseErrorCode.PASSWORD_REQUIRED
+        for e in _chain(exc)
+    )
+
+
+def _reason(exc: BaseException | None) -> str:
     if exc is None:
         return GENERIC_FAILURE
     chain = list(_chain(exc))
 
     for e in chain:
+        # The source refused the item, and the connector said why in its own words.
+        if isinstance(e, ApiCallError) and e.source_reason:
+            return e.source_reason
+        if isinstance(e, PasswordProtectedError):
+            return PASSWORD_PROTECTED
         # ParseError raised in-process, or ParsingClientError carrying the
         # parsing service's answer: the same code and details either way.
         if getattr(e, "code", None) == ParseErrorCode.UNSUPPORTED_FORMAT:
             details = getattr(e, "details", None) or {}
             return unsupported_file_type(details.get("extension"))
+        # A file found damaged says why in its own words, ahead of the processing error
+        # that wraps it in-process (which would read as a generic unreadable file).
+        if getattr(e, "code", None) == ParseErrorCode.PARSE_FAILED:
+            user_reason = (getattr(e, "details", None) or {}).get("user_reason")
+            if isinstance(user_reason, str) and user_reason:
+                return user_reason
+        if isinstance(e, ProviderRateLimitedTooLongError):
+            return str(e)
         if _llm_not_configured(e):
             return str(e)
         if e.args and isinstance(e.args[0], str) and e.args[0] in _STORED_AS_WRITTEN:
             return e.args[0]
         if isinstance(e, EmbeddingNotConfiguredError):
             return EMBEDDING_NOT_CONFIGURED
+        if isinstance(e, MultimodalModelNotConfiguredError):
+            return SCANNED_DOCUMENT_NEEDS_OCR
+        if isinstance(e, AISettingsUnavailableError):
+            return TEMPORARY_PROBLEM
         if isinstance(e, StorageRequestRejectedError):
             # Refused for what it is, not for when it was sent: not a temporary problem.
             return FILE_TOO_LARGE if e.too_large else GENERIC_FAILURE

@@ -9,6 +9,8 @@ export interface SmtpConfig {
   username?: string;
   password?: string;
   inherited?: boolean;
+  /** Absent means on; `false` means an admin turned email off. */
+  enabled?: boolean;
 }
 
 export type SmtpFormData = {

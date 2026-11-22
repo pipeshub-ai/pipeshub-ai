@@ -25,6 +25,7 @@ Targets uncovered lines/branches:
 - 711-713: outer exception in generate_stream
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -261,6 +262,69 @@ class TestAskAIStreamGenericError:
         assert "unexpected crash" not in combined
         assert "Try another model" in combined
         assert "llm_initialization_failed" in combined
+
+
+    @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
+    async def test_llm_init_failure_logs_one_failure_and_one_turn_end(self, mock_get_llm, caplog) -> None:
+        from app.api.routes.chatbot import askAIStream
+        from app.utils.logger import log_record_fields
+
+        mock_get_llm.side_effect = RuntimeError("unexpected crash")
+        mock_request = MagicMock()
+        mock_request.state.user = {"orgId": "org-1", "userId": "user-1"}
+        mock_request.query_params = {"sendUserInfo": True}
+        run_id = "3e4f5a6b-7c8d-4e9f-8a0b-1c2d3e4f5a6b"
+        mock_request.json = AsyncMock(return_value={"query": "test", "protocol": "agui", "runId": run_id})
+        mock_container = MagicMock()
+        mock_container.logger.return_value = logging.getLogger("tests.chatbot")
+        mock_request.app.container = mock_container
+
+        with caplog.at_level(logging.INFO):
+            response = await askAIStream(
+                request=mock_request, retrieval_service=AsyncMock(),
+                graph_provider=AsyncMock(), config_service=AsyncMock(),
+                cancellation_registry=AsyncMock(is_active=AsyncMock(return_value=False)),
+            )
+            _ = [chunk async for chunk in response.body_iterator]
+
+        ours = [r for r in caplog.records if r.getMessage().startswith("agent_turn.")]
+        assert [(r.getMessage(), r.levelno) for r in ours] == [
+            ("agent_turn.failed", logging.ERROR), ("agent_turn.end", logging.INFO),
+        ]
+        end = log_record_fields(ours[1])
+        assert (end["stop_reason"], end["code"], end["run_id"]) == ("error", "llm_initialization_failed", run_id)
+
+    @pytest.mark.asyncio
+    @patch("app.api.routes.chatbot.keep_accessible_attachments", new_callable=AsyncMock)
+    @patch("app.api.routes.chatbot.get_llm_for_chat", new_callable=AsyncMock)
+    async def test_a_failure_outside_the_agent_loop_still_ends_the_turn(
+        self, mock_get_llm, mock_keep, caplog,
+    ) -> None:
+        """An attachment check that raises (graph DB down) leaves the route, as before, but not unlogged."""
+        from app.api.routes.chatbot import askAIStream
+        from app.utils.logger import log_record_fields
+
+        mock_get_llm.return_value = (MagicMock(), {"provider": "openai"}, {})
+        mock_keep.side_effect = ConnectionError("graph db unavailable")
+        mock_request = MagicMock()
+        mock_request.state.user = {"orgId": "org-1", "userId": "user-1"}
+        mock_request.query_params = {"sendUserInfo": True}
+        run_id = "4f5a6b7c-8d9e-4f0a-9b1c-2d3e4f5a6b7c"
+        mock_request.json = AsyncMock(return_value={"query": "test", "protocol": "agui", "runId": run_id})
+        mock_request.app.container.logger.return_value = logging.getLogger("tests.chatbot")
+
+        with caplog.at_level(logging.INFO):
+            response = await askAIStream(
+                request=mock_request, retrieval_service=AsyncMock(),
+                graph_provider=AsyncMock(), config_service=AsyncMock(),
+                cancellation_registry=AsyncMock(is_active=AsyncMock(return_value=False)),
+            )
+            with pytest.raises(ConnectionError):
+                _ = [chunk async for chunk in response.body_iterator]
+
+        ends = [log_record_fields(r) for r in caplog.records if r.getMessage() == "agent_turn.end"]
+        assert [(e["stop_reason"], e["error_class"], e["run_id"]) for e in ends] == [("error", "unavailable", run_id)]
 
 
 # ===================================================================

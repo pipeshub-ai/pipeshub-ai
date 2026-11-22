@@ -238,6 +238,11 @@ class AnthropicTransport(LLMTransport):
         previous_was_tool = False
         for msg in messages:
             entry = self._format_message(msg)
+            if entry["role"] == "assistant" and entry["content"] == [{"type": "text", "text": ""}]:
+                # An empty reply (no text, no tool calls) has nothing to replay;
+                # Anthropic rejects an empty text block with a 400.
+                logger.debug("anthropic: skipped an empty assistant turn")
+                continue
             is_tool = msg.role == MessageRole.TOOL
             if is_tool and previous_was_tool:
                 formatted[-1]["content"].extend(entry["content"])

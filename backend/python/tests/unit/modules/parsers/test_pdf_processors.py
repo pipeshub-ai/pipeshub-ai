@@ -666,6 +666,7 @@ class TestVLMOCRStrategy:
             strategy.logger = _mock_logger()
             strategy.config = _mock_config()
             strategy.doc = None
+            strategy._page_images = {}
             strategy.llm = None
             strategy.llm_config = None
             strategy.document_analysis_result = None
@@ -760,7 +761,7 @@ class TestVLMOCRStrategy:
         with patch("app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model") as mock_get:
             mock_get.return_value = MagicMock()
             result = strategy._create_llm_from_config(config)
-            mock_get.assert_called_once_with("openai", config, "gpt-4o")
+            mock_get.assert_called_once_with("openai", config, "gpt-4o", sdk_retries=0)
             assert strategy.llm_config == config
 
     def test_create_llm_from_config_no_model(self):
@@ -769,7 +770,7 @@ class TestVLMOCRStrategy:
         with patch("app.modules.parsers.pdf.vlm_ocr_strategy.get_generator_model") as mock_get:
             mock_get.return_value = MagicMock()
             strategy._create_llm_from_config(config)
-            mock_get.assert_called_once_with("openai", config, None)
+            mock_get.assert_called_once_with("openai", config, None, sdk_retries=0)
 
     @pytest.mark.asyncio
     async def test_get_multimodal_llm_default(self):

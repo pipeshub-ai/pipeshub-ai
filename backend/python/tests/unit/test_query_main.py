@@ -1,13 +1,18 @@
 """Unit tests for app.query_main — Query service FastAPI entrypoint."""
 
 import asyncio
+import json
+import logging
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
+from app.modules.parsers import parse_pool
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
 
@@ -384,8 +389,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = ["t1"]
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = ["tool1", "tool2"]
 
         mock_app = MagicMock()
         mock_app.container = None
@@ -399,25 +402,20 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[("aiconfig", AsyncMock())]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
-            patch("app.query_main.get_toolset_registry", return_value=mock_toolset_registry, create=True),
-            patch("app.query_main._global_tools_registry", mock_tools_registry, create=True),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.retrieval_service = AsyncMock(return_value=mock_retrieval)
             mock_container.config_service.return_value = mock_config_service
 
-            # We need to mock the in-lifespan imports
-            with (
-                patch.dict("sys.modules", {
-                    "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                    "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                }),
-            ):
-                async with lifespan(mock_app):
-                    # Inside lifespan — app should have container set
-                    assert mock_app.container is mock_container
+            async with lifespan(mock_app):
+                # Inside lifespan — app should have container set
+                assert mock_app.container is mock_container
+                # Chat attachment PDFs parse in killable worker processes.
+                assert parse_pool.parse_pool_workers() > 0
 
             # After shutdown, config_service.close should be called
             mock_config_service.close.assert_awaited_once()
+            assert parse_pool.parse_pool_workers() == 0
 
     async def test_startup_no_orgs(self):
         """When no orgs found, retrieval_service is NOT invoked."""
@@ -429,8 +427,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
 
         mock_app = MagicMock()
         mock_app.state = MagicMock()
@@ -443,10 +439,7 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.config_service.return_value = mock_config_service
             mock_container.retrieval_service = AsyncMock()
@@ -456,6 +449,78 @@ class TestLifespan:
 
             # retrieval_service should NOT have been awaited (no orgs)
             mock_container.retrieval_service.assert_not_awaited()
+
+    async def test_startup_lists_orgs_in_a_system_scope_that_ends_after_the_list(self) -> None:
+        """The PostgreSQL graph refuses an org list with no context (the service then could not start); the
+        scope must end with the list, or every task started after it would inherit a cross-org context."""
+        from app.core import org_context
+        from app.query_main import lifespan
+
+        mock_container = _make_container()
+        seen: list = []
+
+        async def _orgs(*_a: object, **_k: object) -> list:
+            seen.append(org_context.peek())
+            return []
+
+        gp = _make_graph_provider()
+        gp.get_all_orgs = AsyncMock(side_effect=_orgs)
+        mock_container._graph_provider = gp
+        mock_registry = MagicMock()
+        mock_registry.list_toolsets.return_value = []
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_registry),
+        ):
+            mock_container.config_service.return_value = mock_config_service
+            async with lifespan(MagicMock()):
+                assert org_context.peek() is None
+
+        assert len(seen) == 1 and seen[0] is not None
+        assert (seen[0].kind, seen[0].source) == ("system", "system:query_startup")
+
+    async def test_startup_seed_task_starts_with_no_org_context(self) -> None:
+        """With orgs present the seeding task is started after the list; it must not inherit the list's cross-org scope."""
+        from types import SimpleNamespace
+
+        from app.core import org_context
+        from app.query_main import lifespan
+
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider(orgs=[{"_key": "org-1"}])
+        mock_container.retrieval_service = AsyncMock(return_value=AsyncMock())
+        mock_registry = MagicMock()
+        mock_registry.list_toolsets.return_value = []
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+        mock_container.config_service.return_value = mock_config_service
+        seen: list = []
+
+        async def _seed(*_a: object, **_k: object) -> None:
+            seen.append(org_context.peek())
+
+        app = MagicMock()
+        app.state = SimpleNamespace()
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch("app.agents.agent_loop.skills_wiring.skills_enabled", return_value=True),
+            patch("app.services.featureflag.platform_settings.is_skills_enabled", new_callable=AsyncMock, return_value=True),
+            patch("app.agents.agent_loop.skills.manager_factory.reconcile_builtin_skills_for_orgs", side_effect=_seed),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_registry),
+        ):
+            async with lifespan(app):
+                await app.state.skills_seed_task
+
+        assert seen == [None]
 
     async def test_startup_graph_provider_fallback(self):
         """When _graph_provider is not set, lifespan falls back to await graph_provider()."""
@@ -469,8 +534,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
 
         mock_app = MagicMock()
         mock_app.state = MagicMock()
@@ -483,10 +546,7 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.config_service.return_value = mock_config_service
 
@@ -522,8 +582,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
 
         mock_app = MagicMock()
         mock_app.state = MagicMock()
@@ -536,10 +594,7 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock, side_effect=Exception("stop err")),
             patch("app.query_main.container", mock_container),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.config_service.return_value = mock_config_service
 
@@ -557,8 +612,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
 
         mock_app = MagicMock()
         mock_app.state = MagicMock()
@@ -571,10 +624,7 @@ class TestLifespan:
             patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
             patch("app.query_main.container", mock_container),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-            }),
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=mock_toolset_registry),
         ):
             mock_container.config_service.return_value = mock_config_service
 
@@ -584,103 +634,152 @@ class TestLifespan:
 
 
 # ===========================================================================
-# authenticate_requests middleware
+# AuthenticateRequests middleware
 # ===========================================================================
 
 
+def _http_scope(path: str = "/api/v1/search") -> dict:
+    return dict(request_with_host(path).scope)
+
+
+async def _run_asgi(middleware, scope: dict) -> list[dict]:
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await middleware(scope, receive, send)
+    return sent
+
+
+def _status_and_json(sent: list[dict]) -> tuple[int, dict]:
+    import json
+
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return sent[0]["status"], json.loads(body)
+
+
+class _InnerApp:
+    """Stands in for the routes below the middleware; records what it saw."""
+
+    def __init__(self, fail: BaseException | None = None, fail_after_start: bool = False) -> None:
+        self.calls: list[dict] = []
+        self.fail = fail
+        self.fail_after_start = fail_after_start
+
+    async def __call__(self, scope, receive, send) -> None:
+        from starlette.requests import Request
+
+        self.calls.append(scope)
+        if self.fail is not None and not self.fail_after_start:
+            raise self.fail
+        user = getattr(Request(scope).state, "user", None)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"chunk", "more_body": True})
+        if self.fail is not None:
+            raise self.fail
+        await send({"type": "http.response.body", "body": repr(user).encode(), "more_body": False})
+
+
 class TestAuthenticateRequests:
-    """Tests for the authenticate_requests HTTP middleware."""
+    """Tests for the AuthenticateRequests ASGI middleware."""
 
-    async def test_excluded_path_skips_auth(self):
+    def _middleware(self, inner: object) -> object:
+        from app.query_main import AuthenticateRequests
+
+        return AuthenticateRequests(inner)
+
+    async def test_excluded_path_skips_auth(self) -> None:
         """Requests to /health bypass authentication entirely."""
-        from app.query_main import authenticate_requests
+        inner = _InnerApp()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
+            sent = await _run_asgi(self._middleware(inner), _http_scope("/health"))
+        auth.assert_not_awaited()
+        assert len(inner.calls) == 1 and sent[0]["status"] == 200
 
-        mock_request = MagicMock()
-        mock_request.url.path = "/health"
-        mock_response = MagicMock()
-        call_next = AsyncMock(return_value=mock_response)
+    async def test_authenticated_request_reaches_the_route_with_its_state(self) -> None:
+        """The route sees request.state.user as set by authMiddleware."""
+        inner = _InnerApp()
 
-        result = await authenticate_requests(mock_request, call_next)
-        assert result is mock_response
-        call_next.assert_awaited_once_with(mock_request)
+        async def _auth(request: object) -> object:
+            request.state.user = {"orgId": "org-1"}
+            return request
 
-    async def test_authenticated_request_succeeds(self):
-        """Successful authMiddleware passes request to call_next."""
-        from app.query_main import authenticate_requests
+        with patch("app.query_main.authMiddleware", side_effect=_auth):
+            sent = await _run_asgi(self._middleware(inner), _http_scope())
 
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        authed_request = MagicMock()
-        mock_response = MagicMock()
-        call_next = AsyncMock(return_value=mock_response)
+        assert sent[0]["status"] == 200
+        assert sent[-1]["body"] == repr({"orgId": "org-1"}).encode()
 
-        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, return_value=authed_request):
-            result = await authenticate_requests(mock_request, call_next)
+    async def test_streamed_chunks_pass_through_unchanged(self) -> None:
+        inner = _InnerApp()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock):
+            sent = await _run_asgi(self._middleware(inner), _http_scope())
+        assert [m["type"] for m in sent] == [
+            "http.response.start", "http.response.body", "http.response.body",
+        ]
+        assert sent[1] == {"type": "http.response.body", "body": b"chunk", "more_body": True}
 
-        assert result is mock_response
-        call_next.assert_awaited_once_with(authed_request)
-
-    async def test_http_exception_returns_error_json(self):
-        """HTTPException from authMiddleware returns proper JSON error."""
-        from app.query_main import authenticate_requests
-
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        call_next = AsyncMock()
-
-        with patch(
-            "app.query_main.authMiddleware",
-            new_callable=AsyncMock,
-            side_effect=HTTPException(status_code=401, detail="Unauthorized"),
+    async def test_http_exception_returns_error_json(self) -> None:
+        """HTTPException from authMiddleware returns proper JSON error and marks the request's failure."""
+        inner = _InnerApp()
+        refusal = HTTPException(status_code=401, detail="Unauthorized")
+        with (
+            patch("app.query_main.authMiddleware", new_callable=AsyncMock, side_effect=refusal),
+            patch("app.query_main.mark_request_failure") as hand_over,
         ):
-            result = await authenticate_requests(mock_request, call_next)
+            sent = await _run_asgi(self._middleware(inner), _http_scope())
 
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == 401
+        assert _status_and_json(sent) == (401, {"detail": "Unauthorized"})
+        hand_over.assert_called_once()
+        assert hand_over.call_args.args[1] is refusal
+        assert inner.calls == [], "the route never runs"
 
-    async def test_unexpected_exception_returns_500(self):
-        """Unexpected exception returns 500 Internal Server Error."""
-        from app.query_main import authenticate_requests
-
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/v1/search"
-        call_next = AsyncMock()
-
+    async def test_unexpected_exception_propagates_to_the_request_line(self) -> None:
+        """Not caught here: the request's http.request.end logs it once and answers the 500."""
         with patch(
             "app.query_main.authMiddleware",
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
-        ):
-            result = await authenticate_requests(mock_request, call_next)
+        ), pytest.raises(RuntimeError, match="boom"):
+            await _run_asgi(self._middleware(_InnerApp()), _http_scope())
 
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == 500
+    async def test_route_exception_propagates_to_the_request_line(self) -> None:
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock),              pytest.raises(RuntimeError, match="route exploded"):
+            await _run_asgi(self._middleware(_InnerApp(fail=RuntimeError("route exploded"))), _http_scope())
+
+    async def test_route_exception_after_the_response_started_propagates(self) -> None:
+        """Nothing can replace a response already on the wire; the server
+        closes the connection, as it did under BaseHTTPMiddleware."""
+        inner = _InnerApp(fail=RuntimeError("mid-stream"), fail_after_start=True)
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock),              pytest.raises(RuntimeError, match="mid-stream"):
+            await _run_asgi(self._middleware(inner), _http_scope())
+
+    async def test_non_http_scopes_pass_through(self) -> None:
+        inner = AsyncMock()
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
+            await self._middleware(inner)({"type": "lifespan"}, AsyncMock(), AsyncMock())
+        auth.assert_not_awaited()
+        inner.assert_awaited_once()
+
+    async def test_registered_on_the_app(self) -> None:
+        from app.query_main import AuthenticateRequests, app
+
+        assert AuthenticateRequests in [m.cls for m in app.user_middleware]
 
     @pytest.mark.parametrize("host", POISONED_HOSTS)
-    async def test_poisoned_host_header_does_not_skip_auth(self, host):
+    async def test_poisoned_host_header_does_not_skip_auth(self, host) -> None:
         """A Host header naming an excluded path does not replace the request path."""
-        from app.query_main import authenticate_requests
-
-        request = request_with_host("/api/v1/x", host)
-        call_next = AsyncMock()
-
-        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, return_value=request) as auth:
-            await authenticate_requests(request, call_next)
-
-        auth.assert_awaited_once_with(request)
-
-    async def test_health_path_of_a_real_request_skips_auth(self):
-        """The exclusion still applies to a real request for /health."""
-        from app.query_main import authenticate_requests
-
-        request = request_with_host("/health")
-        call_next = AsyncMock()
+        scope = dict(request_with_host("/api/v1/x", host).scope)
 
         with patch("app.query_main.authMiddleware", new_callable=AsyncMock) as auth:
-            await authenticate_requests(request, call_next)
+            await _run_asgi(self._middleware(_InnerApp()), scope)
 
-        auth.assert_not_awaited()
-        call_next.assert_awaited_once_with(request)
+        auth.assert_awaited_once()
+        assert auth.await_args.args[0].url.path == "/api/v1/x"
 
 
 # ===========================================================================
@@ -772,24 +871,28 @@ class TestValidationExceptionHandler:
         assert body["detail"][0]["loc"] == ["body", "query"]
         assert body["detail"][1]["type"] == "int_parsing"
 
-    async def test_logged_url_has_no_credentials(self, caplog):
-        """The warning logs the request URL; a token in its query must not reach the log."""
+    async def test_logs_the_route_template_not_the_url(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The URL can carry an email or a token in its query; the route template names the endpoint."""
         import logging
+        from types import SimpleNamespace
 
         from app.query_main import validation_exception_handler
 
         mock_request = MagicMock()
         mock_request.method = "GET"
-        mock_request.url = "http://test/api/v1/search?token=fake-token-value&page=2"
+        mock_request.url = "http://test/api/v1/search?token=fake-token-value&email=alice@example.com"
+        mock_request.scope = {"route": SimpleNamespace(path_format="/api/v1/search", path="/api/v1/search")}
         mock_exc = MagicMock(spec=RequestValidationError)
         mock_exc.errors.return_value = [{"loc": ["query", "q"], "msg": "field required"}]
 
         with caplog.at_level(logging.WARNING):
             await validation_exception_handler(mock_request, mock_exc)
 
-        assert "Request validation failed" in caplog.text
+        (record,) = [r for r in caplog.records if "Request validation failed" in r.getMessage()]
+        assert record.route == "/api/v1/search"
         assert "fake-token-value" not in caplog.text
-        assert "page=2" in caplog.text
+        assert "alice" not in caplog.text and "http://" not in caplog.text
+        assert "q" in record.getMessage()
 
     async def test_logged_errors_do_not_echo_the_rejected_input(self, caplog) -> None:
         """Each error carries the rejected value as ``input``, which for a
@@ -808,13 +911,16 @@ class TestValidationExceptionHandler:
             "loc": ["body", "password"],
             "msg": "String should have at most 4 characters",
             "input": "SENTINEL-422-pw",
-            "ctx": {"max_length": 4, "value": "SENTINEL-422-ctx"},
+            "ctx": {"max_length": 4},
         }]
 
         with caplog.at_level(logging.WARNING, logger="app.query_main"):
             result = await validation_exception_handler(mock_request, mock_exc)
 
         assert result.status_code == 422
+        # Nor does the body: Node logs it and relays it verbatim on the skills routes.
+        assert b"SENTINEL-422" not in result.body
+        assert "input" not in json.loads(result.body)["detail"][0]
         records = [r for r in caplog.records if "Request validation failed" in r.getMessage()]
         assert records
         formatter = RedactingFormatter("%(name)s - %(levelname)s - %(message)s")
@@ -822,6 +928,30 @@ class TestValidationExceptionHandler:
             assert "SENTINEL-422" not in text
             assert "password" in text
             assert "string_too_long" in text
+
+    def test_a_real_422_keeps_its_wording_and_constraint_but_not_the_input(self) -> None:
+        from fastapi import FastAPI
+        from pydantic import BaseModel, Field
+
+        from app.query_main import validation_exception_handler
+
+        class _Body(BaseModel):
+            name: str = Field(max_length=4)
+
+        app = FastAPI()
+        app.add_exception_handler(RequestValidationError, validation_exception_handler)
+
+        @app.post("/x")
+        async def _route(body: _Body) -> None:  # pragma: no cover - never reached
+            return None
+
+        response = TestClient(app).post("/x", json={"name": "F47SEED-ada@example.com"})
+        assert response.status_code == 422
+        assert response.json() == {
+            "message": "Name must be at most 4 characters.",
+            "detail": [{"type": "string_too_long", "loc": ["body", "name"], "msg": "Name must be at most 4 characters.",
+                        "ctx": {"max_length": 4}}],
+        }
 
     async def test_body_parse_failure_still_returns_422(self):
         """When request.json() raises, handler still returns 422."""
@@ -878,6 +1008,7 @@ class TestRun:
             host="127.0.0.1",
             port=9000,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -904,6 +1035,7 @@ class TestRun:
             host="0.0.0.0",
             port=8000,
             log_level="info",
+            access_log=False,
             reload=True,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -941,6 +1073,7 @@ class TestRunWorkersWarning:
                 host="0.0.0.0",
                 port=8000,
                 log_level="info",
+                access_log=False,
                 reload=True,
                 workers=1,
                 timeout_worker_healthcheck=60,
@@ -1031,6 +1164,7 @@ class TestRunWorkersWarning:
         mock_execvp.assert_called_once()
         argv = mock_execvp.call_args[0][1]
         assert argv[1:4] == ["-m", "uvicorn", "app.query_main:app"]
+        assert "--no-access-log" in argv
         assert argv[-4:] == ["--workers", "4", "--timeout-worker-healthcheck", "60"]
 
     def test_single_worker_does_not_exec(self) -> None:
@@ -1188,3 +1322,74 @@ class TestCorsPolicy:
         )
         assert response.headers.get("access-control-allow-origin") is None
         assert response.headers.get("access-control-allow-credentials") is None
+
+
+class TestRequestLogging:
+    """query_main writes http.request.end through request_log, inside the request context."""
+
+    def test_the_line_sits_just_inside_the_request_context(self) -> None:
+        from app.api.middlewares.request_context import RequestContextMiddleware
+        from app.api.middlewares.request_log import RequestLogMiddleware
+        from app.query_main import app
+
+        classes = [m.cls for m in app.user_middleware]
+        assert classes.index(RequestContextMiddleware) + 1 == classes.index(RequestLogMiddleware)
+        assert Exception not in app.exception_handlers
+
+    @pytest.fixture
+    def client(self, caplog: pytest.LogCaptureFixture) -> Iterator[TestClient]:
+        import logging
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import app.query_main as qm
+        from app.api.middlewares.request_log import install_request_logging
+
+        mini = FastAPI()
+        mini.add_middleware(qm.AuthenticateRequests)
+        install_request_logging(mini)  # same order as query_main
+
+        @mini.get("/api/v1/kb/{kb_id}")
+        async def kb(kb_id: str) -> dict:
+            return {"kb_id": kb_id}
+
+        @mini.get("/health/boom")
+        async def health_boom() -> None:
+            raise RuntimeError("probe exploded")
+
+        caplog.set_level(logging.DEBUG, logger="app.api.middlewares.request_log")
+        with TestClient(mini, raise_server_exceptions=True) as test_client:
+            yield test_client
+
+    @staticmethod
+    def _end(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+        (record,) = [r for r in caplog.records if r.getMessage() == "http.request.end"]
+        return record
+
+    def test_a_refusal_reaches_the_line_with_its_reason(self, client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        from app.api.middlewares.auth import AuthRejected
+
+        refusal = AuthRejected(401, "Could not validate credentials", reason="expired",
+                               headers={"WWW-Authenticate": "Bearer"})
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, side_effect=refusal):
+            response = client.get("/api/v1/kb/65f0?email=alice@example.com")
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Could not validate credentials"}
+        record = self._end(caplog)
+        assert record.levelno == logging.INFO
+        assert (record.route, record.error_class, record.reason) == ("/api/v1/kb/{kb_id}", "auth_expired", "expired")
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_an_exempt_path_crash_is_one_line_and_the_json_500(self, client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        response = client.get("/health/boom")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        record = self._end(caplog)
+        assert record.levelno == logging.ERROR and "probe exploded" in record.exc_text

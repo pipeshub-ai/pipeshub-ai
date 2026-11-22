@@ -52,3 +52,25 @@ export const PatApi = {
     });
   },
 };
+
+export interface AgentSignIn {
+  id: string;
+  status: 'claimed' | 'consumed';
+  created_at: string;
+  updated_at: string;
+}
+
+export const AgentSignInApi = {
+  /** GET /api/v1/agent/registrations: the agents the calling user approved. */
+  async list(): Promise<AgentSignIn[]> {
+    const { data } = await apiClient.get<{ registrations: AgentSignIn[] }>(
+      '/api/v1/agent/registrations'
+    );
+    return data.registrations ?? [];
+  },
+
+  /** DELETE /api/v1/agent/registrations/:id */
+  async revoke(id: string): Promise<void> {
+    await apiClient.delete(`/api/v1/agent/registrations/${id}`);
+  },
+};

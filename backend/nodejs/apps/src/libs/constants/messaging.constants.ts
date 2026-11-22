@@ -20,7 +20,11 @@ export const MESSAGE_BROKER_ERROR_CODE = 'MESSAGE_BROKER_ERROR' as const;
 
 export const MESSAGING_ERRORS = {
   unsupportedBrokerType: (brokerType: string) =>
-    `Unsupported ${ENV_MESSAGE_BROKER} type: ${brokerType}. Must be '${MessageBrokerType.KAFKA}' or '${MessageBrokerType.REDIS}'.`,
+    `Unsupported ${ENV_MESSAGE_BROKER} type: ${brokerType}. Must be one of: ${Object.values(
+      MessageBrokerType,
+    )
+      .map((t) => `'${t}'`)
+      .join(', ')}.`,
   kafkaConfigRequired: `Kafka config is required when ${ENV_MESSAGE_BROKER}=${MessageBrokerType.KAFKA}`,
   redisConfigRequired: `Redis config is required when ${ENV_MESSAGE_BROKER}=${MessageBrokerType.REDIS}`,
   kafkaBrokersRequired: 'Kafka brokers are required in app configuration',

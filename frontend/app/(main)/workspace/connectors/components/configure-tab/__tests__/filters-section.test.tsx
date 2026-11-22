@@ -355,6 +355,87 @@ describe('FiltersSection — dynamic options', () => {
   });
 });
 
+describe('FiltersSection — branch picker', () => {
+  const selectField = (name: string, displayName: string, required = false): FilterSchemaField => ({
+    name,
+    displayName,
+    filterType: 'select',
+    operators: ['in'],
+    optionSourceType: 'dynamic',
+    required,
+  });
+  const branch = selectField('branch', 'Branch');
+
+  it.each([
+    ['GitHub', 'repo_ids', 'acme/api'],
+    ['GitLab', 'project_ids', 'acme/platform/api'],
+  ])('asks %s for the branches of the selected repository', async (_name, parent, repoId) => {
+    getFilterFieldOptions.mockResolvedValue(page([{ id: 'main', label: 'main (default)' }]));
+    setup({
+      sync: [selectField(parent, 'Repository', true), branch],
+      syncValues: {
+        [parent]: { operator: 'in', value: [{ id: repoId, label: repoId }] },
+      },
+    });
+    fireEvent.keyDown(screen.getByRole('button', { name: /add filter/i }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Branch' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select branch' }));
+
+    await waitFor(() =>
+      expect(getFilterFieldOptions).toHaveBeenCalledWith('conn-1', 'branch', {
+        limit: 20,
+        page: 1,
+        contextGroupPath: [repoId],
+      }),
+    );
+  });
+
+  it('clears the branch when another repository is picked', async () => {
+    getFilterFieldOptions.mockImplementation(async (_id, key) =>
+      key === 'repo_ids'
+        ? page([
+            { id: 'acme/api', label: 'acme/api' },
+            { id: 'acme/web', label: 'acme/web' },
+          ])
+        : page([]),
+    );
+    setup({
+      sync: [selectField('repo_ids', 'Repository', true), branch],
+      syncValues: {
+        repo_ids: { operator: 'in', value: [{ id: 'acme/api', label: 'acme/api' }] },
+        branch: { operator: 'in', value: [{ id: 'release/1.x', label: 'release/1.x' }] },
+      },
+    });
+    expect(screen.getByRole('button', { name: 'release/1.x' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'acme/api' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'acme/web' }));
+
+    expect(syncValue('repo_ids')).toMatchObject({ value: [{ id: 'acme/web', label: 'acme/web' }] });
+    expect(syncValue('branch')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'release/1.x' })).toBeNull();
+  });
+
+  it('keeps the branch when the same repository is picked again', async () => {
+    getFilterFieldOptions.mockImplementation(async (_id, key) =>
+      key === 'repo_ids' ? page([{ id: 'acme/api', label: 'acme/api' }]) : page([]),
+    );
+    setup({
+      sync: [selectField('repo_ids', 'Repository', true), branch],
+      syncValues: {
+        repo_ids: { operator: 'in', value: [{ id: 'acme/api', label: 'acme/api' }] },
+        branch: { operator: 'in', value: [{ id: 'release/1.x', label: 'release/1.x' }] },
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'acme/api' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'acme/api' }));
+
+    expect(syncValue('branch')).toMatchObject({ value: [{ id: 'release/1.x', label: 'release/1.x' }] });
+  });
+});
+
 describe('FiltersSection — single choice, free text, booleans, numbers', () => {
   const project: FilterSchemaField = {
     name: 'project',
@@ -652,5 +733,82 @@ describe('FiltersSection — indexing filters and manual indexing', () => {
   it('locks the manual indexing switch when read-only', () => {
     setup({ indexing: [manual], readOnly: true });
     expect((screen.getByRole('switch') as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('FiltersSection — folder patterns', () => {
+  const shareFolders: FilterSchemaField = {
+    name: 'folder_paths',
+    displayName: 'Folders',
+    filterType: 'list',
+    operators: ['in', 'not_in'],
+    optionSourceType: 'manual',
+    required: true,
+    pathStyle: 'windows',
+    folderWildcards: true,
+  };
+
+  function type(value: string) {
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+  }
+
+  it('explains patterns, and that a share ignores case, on a field that takes them', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    expect(screen.getByTestId('folder-pattern-help')).toBeTruthy();
+    expect(screen.getByText(/\*\* matches any number of folders/)).toBeTruthy();
+    expect(screen.getByText('customer/*/quotes: the quotes folder of every customer')).toBeTruthy();
+    expect(screen.getByText(/Names match whatever their case/)).toBeTruthy();
+  });
+
+  it('says names are case-sensitive on an object store', () => {
+    setup({
+      sync: [{ ...shareFolders, pathStyle: 'posix' }],
+      syncValues: { folder_paths: { operator: 'in', value: [] } },
+    });
+
+    expect(screen.getByText(/Names are case-sensitive/)).toBeTruthy();
+  });
+
+  it('shows no pattern help on a field that takes none', () => {
+    setup({
+      sync: [{ ...shareFolders, folderWildcards: undefined }],
+      syncValues: { folder_paths: { operator: 'in', value: [] } },
+    });
+
+    expect(screen.queryByTestId('folder-pattern-help')).toBeNull();
+  });
+
+  it('says why a new folder with an empty name in it cannot be saved', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    type('reports//2026');
+
+    expect(screen.getByText('Folder "reports//2026" has an empty folder name between two slashes. Remove the extra "/".')).toBeTruthy();
+  });
+
+  it('says that excluding every folder leaves nothing to sync', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'not_in', value: [] } } });
+
+    type('**');
+
+    expect(screen.getByText('Excluding "**" leaves nothing to sync. Remove it, or switch to Include.')).toBeTruthy();
+  });
+
+  it('leaves a folder saved before alone, whatever the newer checks say', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'in', value: ['a//b'] } } });
+
+    expect(screen.queryByText(/empty folder name/)).toBeNull();
+    expect(screen.queryByText(/email/)).toBeNull();
+  });
+
+  it('points a file type typed as a folder to the extensions filter', () => {
+    setup({ sync: [shareFolders], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    type('reports/*.pdf');
+
+    expect(screen.getByText(/Patterns pick folders, not files/)).toBeTruthy();
   });
 });

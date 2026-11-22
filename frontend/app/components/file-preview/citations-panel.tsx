@@ -73,7 +73,7 @@ export function CitationsPanel({
         style={{
           height: '40px',
           padding: '0 var(--space-2)',
-          backdropFilter: 'blur(8px)',
+          backdropFilter: 'var(--frost-filter-subtle)',
           backgroundColor: 'var(--color-panel-translucent)',
           borderBottom: '1px solid var(--olive-3)',
           flexShrink: 0,

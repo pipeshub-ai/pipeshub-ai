@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { createMockQuery } from '../../../helpers/mock-mongo';
 import bcrypt from 'bcryptjs';
 import {
   UserAccountController,
@@ -8,6 +9,7 @@ import {
   WRONG_SIGN_IN_CODE,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+import { MAX_WRONG_CREDENTIAL_ATTEMPTS } from '../../../../src/libs/repositories/credential/types';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
@@ -60,32 +62,34 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
 
   const setupWrongPassword = (controllerRef: any) => {
     sinon.stub(Org, 'findOne').resolves({ shortName: 'Corp' } as any);
-    sinon.stub(Users, 'findOne').resolves({ fullName: 'Test User' } as any);
+    sinon.stub(Users, 'findOne').returns(createMockQuery({ fullName: 'Test User' }) as any);
     sinon.stub(UserActivities, 'create').resolves({} as any);
     sinon.stub(UserCredentials, 'findOne').resolves({
       userId: 'u1',
       orgId: 'o1',
       hashedPassword: 'hashed',
-      wrongCredentialCount: 4,
+      wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1,
       isBlocked: false,
       save: sinon.stub().resolves(),
     } as any);
     // Drive straight to the wrong-password branch that raises the alert.
     sinon.stub(controllerRef, 'ensureBlockStatus').resolves(false);
     sinon.stub(controllerRef, 'verifyPassword').resolves(false);
-    sinon.stub(controllerRef, 'reserveCredentialAttempt').resolves({
+    const reserved = {
       userId: 'u1',
       orgId: 'o1',
       hashedPassword: 'hashed',
-      wrongCredentialCount: 5,
+      wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
       isBlocked: false,
       save: sinon.stub().resolves(),
-    });
+    };
+    sinon.stub(UserCredentials, 'findById').resolves(reserved as any);
+    sinon.stub(controllerRef, 'reserveCredentialAttempt').resolves(reserved);
   };
 
   const setupFifthWrongOtp = (controllerRef: any) => {
     sinon.stub(Org, 'findOne').resolves({ shortName: 'Corp' } as any);
-    sinon.stub(Users, 'findOne').resolves({ fullName: 'Test User' } as any);
+    sinon.stub(Users, 'findOne').returns(createMockQuery({ fullName: 'Test User' }) as any);
     sinon.stub(UserActivities, 'create').resolves({} as any);
     // A real hash of a different OTP, so bcrypt.compare genuinely misses.
     const hashedOTP = bcrypt.hashSync('999999', 4);
@@ -94,19 +98,21 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
       orgId: 'o1',
       otpValidity: Date.now() + 60_000,
       hashedOTP,
-      wrongCredentialCount: 4,
+      wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1,
       isBlocked: false,
       save: sinon.stub().resolves(),
     } as any);
     sinon.stub(controllerRef, 'ensureBlockStatus').resolves(false);
-    sinon.stub(controllerRef, 'reserveCredentialAttempt').resolves({
+    const reserved = {
       userId: 'u1',
       orgId: 'o1',
       hashedOTP,
-      wrongCredentialCount: 5,
+      wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
       isBlocked: false,
       save: sinon.stub().resolves(),
-    });
+    };
+    sinon.stub(UserCredentials, 'findById').resolves(reserved as any);
+    sinon.stub(controllerRef, 'reserveCredentialAttempt').resolves(reserved);
   };
 
   const runPasswordLogin = () =>

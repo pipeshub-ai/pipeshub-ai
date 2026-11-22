@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from app.utils import pdf_stream_conversion
+from app.utils import libreoffice_convert, pdf_stream_conversion
 from app.utils.pdf_stream_conversion import (
     convert_file_to_pdf_stream,
     libreoffice_to_pdf,
@@ -109,6 +109,30 @@ async def test_a_missing_pdf_raises_the_output_not_found_error(tmp_path: Path, m
     assert raised.value.detail == "PDF conversion failed - output file not found"
 
 
+async def test_a_failed_conversion_logs_libreoffice_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class _Process:
+        returncode = 77
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"", b"javaldx: could not find a Java Runtime"
+
+    async def fake_exec(*_args: str, **_kwargs: object) -> _Process:
+        return _Process()
+
+    monkeypatch.setattr(pdf_stream_conversion.asyncio, "create_subprocess_exec", fake_exec)
+    source = tmp_path / "file.bin"
+    source.write_bytes(b"a")
+
+    with caplog.at_level("ERROR", logger=pdf_stream_conversion.__name__), pytest.raises(HTTPException) as raised:
+        await libreoffice_to_pdf(str(source), str(tmp_path))
+
+    assert raised.value.detail == "Failed to convert file to PDF"
+    assert "exit code 77" in caplog.text
+    assert "could not find a Java Runtime" in caplog.text
+
+
 def _run_instead_of_soffice(
     monkeypatch: pytest.MonkeyPatch, script: str
 ) -> tuple[list[asyncio.subprocess.Process], asyncio.Event]:
@@ -142,7 +166,7 @@ async def test_a_cancelled_conversion_stops_libreoffice(tmp_path: Path, monkeypa
 
 async def test_a_conversion_that_ignores_terminate_is_killed_and_reaped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     started, _ = _run_instead_of_soffice(monkeypatch, "trap '' TERM; exec sleep 60")
-    monkeypatch.setattr(pdf_stream_conversion, "_STOP_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(libreoffice_convert, "_STOP_GRACE_SECONDS", 0.5)
     source = tmp_path / "file.bin"
     source.write_bytes(b"a")
 

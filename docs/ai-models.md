@@ -99,8 +99,11 @@ curl -X POST "$NODE_URL/api/v1/configurationManager/ai-models/providers" \
 | OpenAI | `gpt-6-luna` | `POST {base}/decisions` (default base `https://api.openai.com/v1`) |
 | Azure OpenAI (Microsoft Foundry) | a `Microsoft-Decision-1` deployment, addressed by deployment name | `POST {endpoint}/providers/microsoft/v1/systemone` (System One format), `api-key` header |
 | TypeSafe | `jev-latest`, `jev-preview`, `jev-1.14.0`, `jev-1.13.0` | `POST {base}/v1/systemone` (default base `https://api.typesafe.ai`) |
+| OpenRouter | `typesafe/jev-1.13` and other decision models OpenRouter serves | `POST https://openrouter.ai/api/alpha/decisions` (System One format). Its chat completions endpoint refuses decision models |
+| LiteLLM Proxy | a decision model in the proxy's `model_list`, by its alias | `POST {endpoint}/decisions` (OpenAI format); LiteLLM translates for TypeSafe, OpenRouter and Azure |
+| OpenAI Compatible | any model a server serves on the OpenAI Decisions API | `POST {endpoint}/decisions` |
 
-Saving a model runs one yes/no question against it. Model discovery (`POST .../ai-models/discover` with `capability: "decision"`) lists TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI, which is then no longer offered as a chat model. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
+Saving a model runs one yes/no question against it. Model discovery (`POST .../ai-models/discover` with `capability: "decision"`) lists TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI, which is then no longer offered as a chat model. The gateways don't say which of their models are decision models, so on OpenRouter, LiteLLM Proxy and OpenAI Compatible you type the model name. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
 
 ```python
 from app.services.ai_models.decision import ChoiceQuestion, DecisionOption
@@ -119,6 +122,15 @@ if built:
 ```
 
 All questions in one `decide` call share the input; a question that depends on an earlier answer needs a second call. An answer the provider declines comes back with `refused=True`; one the response does not contain comes back with `missing=True` (usually a wrong endpoint or format). Failures raise `DecisionModelError`. Rate limits and overload (429, 500, 502, 503, 504, 529) are retried up to twice, unless the provider asks to wait more than 5 seconds.
+
+## Local embedding model memory
+
+The bundled embedding server (`app/embedding_main.py`) holds a local model in memory only while something uses it.
+
+- **Startup.** It reads the saved embedding settings and warms the default local model only when the default entry (else the first) uses a local provider (`default`, `huggingFace`, `sentenceTransformers`), or when no embedding model is saved. With a hosted provider, or when the settings cannot be read, it skips the warm-up and loads the model on the first request that needs it (the first request pays the load, a few seconds for the default model).
+- **Idle unload.** A model unused for `EMBEDDING_SERVER_MODEL_IDLE_SECONDS` (default 900; `0` keeps it loaded) is dropped, then `gc` and `malloc_trim` hand the memory back. A request in flight keeps its model; the next request reloads it. `/health` reports `healthy` whenever the server is up; `loaded_models` lists what is resident.
+- **Weight precision.** `EMBEDDING_SERVER_PRECISION=int8` is an explicit opt-in (`auto`, the default, keeps the usual 32-bit floating-point weights, called fp32). It stores the large weight matrices of the transformer as 8-bit integers in a file that is memory-mapped: about 0.85 GiB less memory in use for `BAAI/bge-large-en-v1.5` (1.27 GiB against 2.13 GiB after encoding, no higher peak) and about 12 percent slower encoding (14.4 s against 12.8 s for one batch). Search stays close to fp32 but is not identical: the top result is the same as fp32 for 96.4 to 98.4 percent of queries (about 3.5 percent get another first result), top-10 overlap is 0.97 to 0.98, and accuracy on near-duplicate hard negatives is within noise. An index remembers the precision it was built with: while the embedding server and the index disagree, events that write vectors wait (nothing fails), and the Services page says so. To switch, set the value, restart the embedding server, then in Workspace > Connectors run "Clean up embeddings" and "Reindex embeddings"; the cleanup deletes the whole search index, and search finds nothing until the reindex has finished. To go back, set the old value again and the waiting events continue within ten minutes. Stop indexing instances of an older version before opting in: they do not check. See [indexing-service.md](./indexing-service.md#414-embedding-weight-precision).
+- **One copy per model.** The cache is keyed by model name alone, so `trust_remote_code` never loads the same weights twice. Requests that set it are still refused with 403 unless `EMBEDDING_SERVER_ALLOW_REMOTE_CODE=true`.
 
 ## Query instruction (BGE, experimental, off by default)
 

@@ -1,11 +1,15 @@
 'use client';
 
 import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback, useState } from 'react';
-import { useThread, useThreadRuntime } from '@assistant-ui/react';
+import { useAui, useAuiState } from '@assistant-ui/react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
+import { ForkedIntoLine, ForkOriginHeader, ForkOriginLine } from './fork-origin-line';
 import { useChatStore } from '../../store';
+import { useCompareStore } from '../../compare/compare-store';
+import { useCompareLifecycle } from '../../compare/use-compare-lifecycle';
+import { CompareColumns } from '../../compare/components/compare-columns';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -45,6 +49,8 @@ const IDLE_SCROLLED_UP_ZONE_PX = 96;
 const IDLE_SCROLL_LOCK_GRACE_MS = 160;
 /** Distance from top (px) at which we trigger loading older messages */
 const LOAD_OLDER_THRESHOLD_PX = 120;
+/** Most older pages fetched to find a linked message before giving up and opening at the latest */
+const FOCUS_MESSAGE_MAX_PAGES = 10;
 
 function isStreamingFlushWithBottom(el: HTMLElement): boolean {
   const { scrollTop, scrollHeight, clientHeight } = el;
@@ -99,6 +105,18 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const messagePagination = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messagePagination ?? null : null
   );
+  const forkedFrom = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.forkedFrom ?? null : null
+  );
+  const forks = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.forks : undefined
+  );
+  const threadAgentId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId ?? null : null
+  );
+  const slotProjectId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.projectId ?? null : null
+  );
   const hasOlderMessages = messagePagination?.hasOlderMessages ?? false;
   const isLoadingOlder = messagePagination?.isLoadingOlder ?? false;
   // ── Render-reason tracking ──────────────────────────────────────
@@ -120,6 +138,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── Active slot ID (needed for save/restore on conversation switch) ──
   const activeSlotId = useChatStore((s) => s.activeSlotId);
+  const compareTurn = useCompareStore((s) => (activeSlotId ? s.turns[activeSlotId] : undefined));
+  useCompareLifecycle(activeSlotId);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const spacerRef = useRef<HTMLDivElement>(null);
@@ -156,6 +176,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const isAutoScrollingRef = useRef(false);
   const autoScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasPerformedInitialScrollRef = useRef(false);
+  /** Older pages fetched so far while looking for the fork-point message of a `?messageId=` link. */
+  const focusPagesLoadedRef = useRef(0);
   const prevActiveSlotIdRef = useRef<string | null>(null);
   const wasStreamingRef = useRef(isStreaming);
   /** Detects isStreaming false→true so we clear scroll lock before tail sync (layout phase). */
@@ -189,15 +211,15 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
 
-  // Use useThread to get reactive thread state
-  const thread = useThread();
-  const threadRuntime = useThreadRuntime();
+  // Reactive thread messages plus the client used to append follow-up messages
+  const threadMessages = useAuiState((s) => s.thread.messages);
+  const aui = useAui();
 
-  // Track thread.messages changes as a render reason
-  const prevThreadMsgsRef = useRef(thread.messages);
-  if (thread.messages !== prevThreadMsgsRef.current) {
-    debugLog.reason('[chat] [MessageList]', ['thread.messages']);
-    prevThreadMsgsRef.current = thread.messages;
+  // Track threadMessages changes as a render reason
+  const prevThreadMsgsRef = useRef(threadMessages);
+  if (threadMessages !== prevThreadMsgsRef.current) {
+    debugLog.reason('[chat] [MessageList]', ['threadMessages']);
+    prevThreadMsgsRef.current = threadMessages;
   }
 
   // Callback ref setter for message elements
@@ -212,14 +234,14 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // Build message pairs (user question + assistant answer) in chronological order
   const messagePairs = useMemo<MessagePair[]>(
     () =>
-      buildMessagePairs(thread.messages, {
+      buildMessagePairs(threadMessages, {
         isStreaming,
         streamingQuestion,
         pendingCollections,
         regenerateMessageId,
         emptyCitationMaps: EMPTY_CITATION_MAPS,
       }),
-    [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
+    [threadMessages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
   );
 
   // The highest version any message in this conversation has shown for a
@@ -294,12 +316,12 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── Diagnostic: log message pair count for rendering pipeline debugging ──
   if (process.env.NODE_ENV === 'development') {
-    const assistantMsgs = thread.messages.filter(m => m.role === 'assistant').length;
-    const userMsgs = thread.messages.filter(m => m.role === 'user').length;
-    if (messagePairs.length === 0 && thread.messages.length > 0) {
+    const assistantMsgs = threadMessages.filter(m => m.role === 'assistant').length;
+    const userMsgs = threadMessages.filter(m => m.role === 'user').length;
+    if (messagePairs.length === 0 && threadMessages.length > 0) {
       console.warn(
         '[debugging] [MessageList] 0 pairs but',
-        thread.messages.length, 'thread msgs (user:', userMsgs, ', assistant:', assistantMsgs, ')',
+        threadMessages.length, 'thread msgs (user:', userMsgs, ', assistant:', assistantMsgs, ')',
         'isStreaming:', isStreaming
       );
     }
@@ -381,9 +403,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
    * @param options.chatBecameActive If true, resets isScrolledUp (new context)
    */
   const executeScroll = useCallback((options: {
-    target: 'top-of-last-message' | 'bottom-of-container';
+    target: 'top-of-last-message' | 'bottom-of-container' | 'message';
     behavior: 'auto' | 'smooth' | '80/20-jump';
     chatBecameActive?: boolean;
+    /** Row key of the message to put at the top; used with target 'message'. */
+    messageKey?: string;
   }) => {
     if (!scrollContainerRef.current) {
       return;
@@ -399,9 +423,10 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     const container = scrollContainerRef.current;
     let targetScrollTop = 0;
 
-    if (options.target === 'top-of-last-message') {
-      if (messageRefs.current.size === 0 || !lastMessageKeyRef.current) return;
-      const element = messageRefs.current.get(lastMessageKeyRef.current);
+    if (options.target === 'top-of-last-message' || options.target === 'message') {
+      const key = options.target === 'message' ? options.messageKey : lastMessageKeyRef.current;
+      if (messageRefs.current.size === 0 || !key) return;
+      const element = messageRefs.current.get(key);
       if (!element) return;
 
       const containerRect = container.getBoundingClientRect();
@@ -734,6 +759,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
       hasPerformedInitialScrollRef.current = false;
       isScrolledUpRef.current = false;
       lockClearedAtMsRef.current = 0;
+      focusPagesLoadedRef.current = 0;
       lastTailSyncScrollTopRef.current = -1;
       // Align wasStreamingRef with the incoming slot's current streaming state
       // so Effect #5 (streaming-completion handler) doesn't fire spuriously.
@@ -755,12 +781,37 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     if (!isInitialized || messagePairs.length === 0) return;
     if (hasPerformedInitialScrollRef.current) return;
 
+    // A link from a fork (`?messageId=`) opens the chat at the message it was forked
+    // from, ahead of any saved position. Only the newest page is loaded at first, so
+    // an older fork point is looked for page by page, up to FOCUS_MESSAGE_MAX_PAGES.
+    const focusId = new URLSearchParams(window.location.search).get('messageId');
+    const focusPair = focusId ? messagePairs.find((p) => p.messageId === focusId) : undefined;
+    if (
+      focusId && !focusPair && activeSlotId &&
+      hasOlderMessages && focusPagesLoadedRef.current < FOCUS_MESSAGE_MAX_PAGES
+    ) {
+      // Wait out a load already in flight; the effect re-runs when it settles.
+      if (!isLoadingOlder) {
+        focusPagesLoadedRef.current += 1;
+        void loadOlderMessagesForSlot(activeSlotId);
+      }
+      return;
+    }
+
     hasPerformedInitialScrollRef.current = true;
 
     // Check for saved scroll position (returning to a previously viewed chat)
     const store = useChatStore.getState();
     const slot = activeSlotId ? store.slots[activeSlotId] : null;
     const savedTop = slot?.savedScrollTop;
+
+    if (focusPair) {
+      recalcSpacerHeight();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        executeScroll({ target: 'message', messageKey: focusPair.key, behavior: 'auto', chatBecameActive: true });
+      }));
+      return;
+    }
 
     // Determine whether the last message is actively streaming RIGHT NOW.
     // Hoisted above the savedTop block so it can be used in both branches.
@@ -808,7 +859,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
         chatBecameActive: true,
       });
     }));
-  }, [isInitialized, messagePairs.length, activeSlotId, recalcSpacerHeight, executeScroll]);
+  }, [isInitialized, messagePairs.length, activeSlotId, hasOlderMessages, isLoadingOlder, recalcSpacerHeight, executeScroll]);
 
   // ── 2. ResizeObserver on last message element ─────────────────────
   // Tracks the last message's DOM size changes (streaming content growing,
@@ -816,8 +867,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // bottom-tracking scroll.
   //
   // IMPORTANT: `messagePairs` (the full array) is intentionally NOT in the
-  // deps — only `messagePairs.length` is. During streaming, `useThread()` may
-  // return a new `thread.messages` reference on every render (even with the
+  // deps — only `messagePairs.length` is. During streaming, `useAuiState()` may
+  // return a new `threadMessages` reference on every render (even with the
   // same logical content), which would invalidate the `messagePairs` useMemo
   // and produce a new array reference ~60fps. If the full array were a dep,
   // this effect would re-run on every render, its cleanup would cancel the
@@ -892,6 +943,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── 3. ResizeObserver on scroll container (window resize) and composer dock ──
   const hasComposer = composer != null;
+  // Measured before paint: the blur is capped at this height, so a first frame at 0 would show
+  // the last lines of the transcript unblurred until the effect below ran.
+  useLayoutEffect(() => {
+    setComposerDockHeight(composerDockRef.current?.offsetHeight ?? 0);
+  }, [hasComposer]);
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -1037,13 +1093,13 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // Handle Ask More question click — send through runtime
   const handleAskMoreClick = useCallback(
     (question: string) => {
-      threadRuntime.append({
+      aui.thread().append({
         role: 'user',
         content: [{ type: 'text', text: question }],
         startRun: true,
       });
     },
-    [threadRuntime]
+    [aui]
   );
 
   // Lands on the end of the latest message and, if an answer is streaming, re-arms tail-follow.
@@ -1105,23 +1161,22 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
             </Flex>
           )}
 
+          {forkedFrom && (
+            <ForkOriginHeader origin={forkedFrom} agentId={threadAgentId} projectId={slotProjectId} />
+          )}
+
           {messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;
-            return (
-              <div
-                key={pair.key}
-                ref={(el) => setMessageRef(pair.key, el)}
-              >
-                <ErrorBoundary
-                  resetKeys={[pair.key, pair.messageId]}
-                  fallback={(error, reset) => <ErrorFallback error={error} reset={reset} compact />}
-                >
+            const compared = isLast ? compareTurn : undefined;
+            const response = (extra?: Partial<React.ComponentProps<typeof ChatResponse>>) => (
                   <ChatResponse
                     question={pair.question}
                     answer={pair.answer}
                     citationMaps={pair.citationMaps}
                     citationCallbacks={citationCallbacks}
                     confidence={pair.confidence}
+                    searchDegraded={pair.searchDegraded}
+                    accessNotices={pair.accessNotices}
                     isStreaming={pair.isStreaming}
                     modelInfo={pair.modelInfo}
                     collections={pair.collections}
@@ -1144,9 +1199,44 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                     feedbackInfo={pair.feedbackInfo}
                     status={pair.status}
                     streamError={pair.streamError}
+                    answerHidden={pair.answerHidden}
                     unanswered={pair.unanswered}
+                    {...extra}
                   />
+            );
+            return (
+              <div
+                key={pair.key}
+                ref={(el) => setMessageRef(pair.key, el)}
+              >
+                <ErrorBoundary
+                  resetKeys={[pair.key, pair.messageId]}
+                  fallback={(error, reset) => <ErrorFallback error={error} reset={reset} compact />}
+                >
+                  {compared && activeSlotId ? (
+                    <CompareColumns
+                      slotId={activeSlotId}
+                      turn={compared}
+                      question={response({ unanswered: true })}
+                      primary={response({ columnMode: true })}
+                      citationCallbacks={citationCallbacks}
+                    />
+                  ) : (
+                    response()
+                  )}
                 </ErrorBoundary>
+
+                {forkedFrom?.atMessageId && pair.messageId === forkedFrom.atMessageId && (
+                  <ForkOriginLine />
+                )}
+
+                {pair.messageId && forks?.some((f) => f.fromMessageId === pair.messageId) && (
+                  <ForkedIntoLine
+                    forks={forks.filter((f) => f.fromMessageId === pair.messageId)}
+                    agentId={threadAgentId}
+                    projectId={slotProjectId}
+                  />
+                )}
 
                 {/* Ask More — follow-up suggestions after the last bot response.
                     Placed inside the last message wrapper so the ResizeObserver
@@ -1203,7 +1293,10 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
             pointerEvents: 'none',
           }}
         >
-          <ProgressiveBlur height={COMPOSER_BLUR_HEIGHT_PX} />
+          {/* Capped at the dock: a viewer with no input has only the footer links here, and a
+              taller blur would sit over the last lines of the transcript, which cannot scroll
+              clear of it. */}
+          <ProgressiveBlur height={Math.min(COMPOSER_BLUR_HEIGHT_PX, composerDockHeight)} />
           <Flex
             direction="column"
             align="center"

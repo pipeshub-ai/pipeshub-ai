@@ -27,6 +27,7 @@ from app.services.llm_gateway.gateway import (
     provider_key,
 )
 from app.telemetry.modules.named_entity_metrics import record_step_down
+from app.utils.llm import is_provider_unavailable
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -185,7 +186,7 @@ class SingleCallExtractionStrategy:
         if not windows:
             return StrategyResult(termination_reason="single_call")
         kinds = ", ".join(sorted(kind.value for kind in ctx.enabled))
-        failed = 0
+        failed = unavailable = 0
         for window in windows:
             prompt = (
                 f"Enabled kinds: {kinds}.\n"
@@ -197,6 +198,12 @@ class SingleCallExtractionStrategy:
             except Exception as exc:
                 logger.warning("Named-entity single call failed: %s", type(exc).__name__)
                 failed += 1
+                # The gateway turns a provider's timeout into ProviderUnavailableError; a bare
+                # TimeoutError is this call's own budget, which a slow document can hit every time.
+                if isinstance(exc, ProviderUnavailableError) or (
+                    not isinstance(exc, TimeoutError) and is_provider_unavailable(exc)
+                ):
+                    unavailable += 1
                 continue
             items = raw.entities if isinstance(raw, EntitySubmission) else parse_submission_text(str(raw or ""))
             await session.staged(lambda items=items[:_MAX_ITEMS_PER_WINDOW]: [
@@ -207,6 +214,7 @@ class SingleCallExtractionStrategy:
             "windows_total": len(all_windows),
             "windows_run": len(windows),
             "windows_failed": failed,
+            "windows_unavailable": unavailable,
         }
         if failed and not session.staging:
             return StrategyResult(termination_reason="llm_error", failed_before_first_turn=True, **coverage)

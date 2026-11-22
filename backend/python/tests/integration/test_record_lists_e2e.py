@@ -1,16 +1,10 @@
-"""The All Records and KB record lists, against a real Neo4j and a real ArangoDB.
+"""The All Records list, against a real Neo4j and a real ArangoDB.
 
 Seeds one user with a knowledge base (a root file and a folder holding a file)
 and one connector record shared with them directly, then lists them the way the
 product does: All Records is the knowledge hub's global flatten
-(``KnowledgeHubService.get_nodes``), the KB list is ``list_kb_records`` with the
-user's graph key. Each list must return the seeded records, a total that agrees
-with the page, and honour pagination and a search filter.
-
-On ArangoDB the KB list used to answer every request with an empty page: the
-count query was sent bind parameters it never declared, and it read
-``user_permission`` as a collection name. The error was logged and swallowed,
-so users saw an empty list rather than a failure.
+(``KnowledgeHubService.get_nodes``). The list must return the seeded records, a
+total that agrees with the page, and honour pagination and a search filter.
 
 Needs Docker services. A backend whose env var is set but cannot be reached
 fails, naming it; one that is not configured skips, so the bare unit job can
@@ -254,10 +248,15 @@ async def _seed(w: _World) -> None:
         collection=teams,
     )
     await g.batch_create_edges(
+        # Nothing this user is a member of is worth more than READER, and
+        # neither is their direct grant. The only WRITER anywhere is on team
+        # A's grant, so the expected role is unreachable unless the grant is
+        # what counts — which is the rule this is here to hold.
         [edge(w.team_user_key, users, w.team_ids[0], teams, role="READER", type="USER"),
-         edge(w.team_user_key, users, w.team_ids[1], teams, role="WRITER", type="USER"),
+         edge(w.team_user_key, users, w.team_ids[1], teams, role="READER", type="USER"),
          edge(w.team_user_key, users, w.kb_id, apps, role="FILEORGANIZER", type="USER"),
-         *(edge(t, teams, w.kb_id, apps, role="READER", type="TEAM") for t in w.team_ids)],
+         edge(w.team_ids[0], teams, w.kb_id, apps, role="WRITER", type="TEAM"),
+         edge(w.team_ids[1], teams, w.kb_id, apps, role="READER", type="TEAM")],
         collection=CollectionNames.PERMISSION.value,
     )
 
@@ -270,17 +269,6 @@ async def _all_records(w: _World, **overrides: object) -> KnowledgeHubNodesRespo
     listing = await KnowledgeHubService(logger, w.graph).get_nodes(**args)
     assert listing.success, listing.error
     return listing
-
-
-def _kb_args(w: _World, **overrides: object) -> dict:
-    args: dict = {
-        "kb_id": w.kb_id, "user_id": w.user_key, "org_id": w.org_id, "skip": 0, "limit": 50,
-        "search": None, "record_types": None, "origins": None, "connectors": None,
-        "indexing_status": None, "date_from": None, "date_to": None,
-        "sort_by": "recordName", "sort_order": "asc",
-    }
-    args.update(overrides)
-    return args
 
 
 async def test_all_records_lists_kb_and_connector_records(world: _World) -> None:
@@ -309,28 +297,6 @@ async def test_all_records_paginates_and_filters(world: _World) -> None:
     assert {world.ids["kb_root"], world.ids["kb_file"]} <= kb_only and world.ids["drive_file"] not in kb_only
 
 
-async def test_kb_records_lists_the_folder_contents(world: _World) -> None:
-    g = world.graph
-    records, total, available = await g.list_kb_records(**_kb_args(world))
-    assert sorted(r["id"] for r in records) == sorted([world.ids["kb_root"], world.ids["kb_file"]])
-    assert total == len(records)
-    assert world.ids["kb_folder"] in {f["id"] for f in available["folders"]}
-    assert {r["id"]: r["folder"] for r in records}[world.ids["kb_root"]] is None
-
-    first, first_total, _ = await g.list_kb_records(**_kb_args(world, limit=1))
-    second, _, _ = await g.list_kb_records(**_kb_args(world, skip=1, limit=1))
-    assert len(first) == 1 and len(second) == 1 and first_total == total
-    assert [r["id"] for r in first + second] == [r["id"] for r in records]
-
-    in_folder, folder_total, _ = await g.list_kb_records(**_kb_args(world, folder_id=world.ids["kb_folder"]))
-    assert [r["id"] for r in in_folder] == [world.ids["kb_file"]]
-    assert folder_total == len(in_folder)
-
-    found, found_total, _ = await g.list_kb_records(**_kb_args(world, search="kb_file"))
-    assert [r["id"] for r in found] == [world.ids["kb_file"]]
-    assert found_total == 1
-
-
 async def test_all_records_answers_404_for_an_unknown_caller(world: _World) -> None:
     listing = await KnowledgeHubService(logger, world.graph).get_nodes(
         user_id=f"nobody-{uuid.uuid4().hex[:8]}", org_id=world.org_id, flattened=True,
@@ -342,8 +308,19 @@ async def test_all_records_answers_404_for_an_unknown_caller(world: _World) -> N
 async def test_a_kb_reached_through_several_grants_is_listed_once(world: _World) -> None:
     """Each team grant used to add another copy of every record in the KB.
 
-    The strongest grant wins. FILEORGANIZER is a retired role and reads as
-    READER, so the WRITER membership of the second team is the strongest here.
+    The strongest of them wins, and what a team grant is worth is the role on
+    the team's own grant rather than the member's role inside the team (see
+    graph_db/common/team_grant_role.py).
+
+    This user reaches the same knowledge base three ways, and is a READER
+    everywhere they could be read as one: a READER in both teams, and directly
+    a FILEORGANIZER, a retired role that reads as READER. The only WRITER in
+    reach is on team A's grant.
+
+    So WRITER is the answer only if the grant is what counts. Read the
+    member's role instead, as this did before #4626, and every path gives
+    READER and this fails — which is the point, since that reading is what let
+    a team OWNER own every knowledge base shared with the team.
     """
     listing = await _all_records(world, user_id=world.team_user_id)
     ids = [item.id for item in listing.items]

@@ -28,6 +28,11 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import type { FilterSchemaField } from '../../types';
 import { isMeaningfulFilterRow } from '../../utils/sync-filter-save-guards';
+import {
+  FOLDER_PATH_PROBLEM_KEYS,
+  folderPathProblems,
+  looksLikeAFileType,
+} from '../../utils/folder-path-rules';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
@@ -341,13 +346,33 @@ function listFilterLabelsById(raw: unknown): Record<string, string> {
 }
 
 /**
- * Repository pickers that narrow to a parent container the user already picked,
- * keyed by the child filter name -> the parent filter supplying the scope.
+ * Pickers that narrow to a parent the user already picked, keyed by the child
+ * filter name -> the candidate parent filters; the first one the connector has wins.
  */
-const OPTION_SCOPE_PARENT_FIELD: Record<string, string> = {
-  project_ids: 'group_ids', // GitLab: projects under the selected groups
-  repo_ids: 'org_ids', // GitHub: repos under the selected orgs
+const OPTION_SCOPE_PARENT_FIELDS: Record<string, string[]> = {
+  project_ids: ['group_ids'], // GitLab: projects under the selected groups
+  repo_ids: ['org_ids'], // GitHub: repos under the selected orgs
+  branch: ['repo_ids', 'project_ids'], // GitHub / GitLab: branches of the selected repository
 };
+
+/** Sync filters that only make sense for one parent selection, cleared when it changes. */
+const CLEARED_ON_PARENT_CHANGE: Record<string, string[]> = {
+  repo_ids: ['branch'],
+  project_ids: ['branch'],
+};
+
+function optionsScopeParent(
+  childFieldName: string,
+  syncValues: Record<string, unknown> | undefined
+): string | undefined {
+  const parents = OPTION_SCOPE_PARENT_FIELDS[childFieldName];
+  if (!parents || !syncValues) return undefined;
+  return parents.find((p) => syncValues[p] !== undefined && syncValues[p] !== null);
+}
+
+function rowIds(raw: unknown): string[] {
+  return isFilterRowValue(raw) ? listFilterIds(raw.value) : [];
+}
 
 /** Scope a repository picker based on the parent container currently selected. */
 function groupPathsForOptionsScope(
@@ -363,7 +388,8 @@ function groupPathsForOptionsScope(
     .toLowerCase();
   const ids = listFilterIds(raw.value);
   if (ids.length === 0) return undefined;
-  if (op === 'in') return { include: ids };
+  // A single-select parent (repository) is saved with `in`, or `is` in older configs.
+  if (op === 'in' || op === 'is') return { include: ids };
   if (op === 'not_in') return { exclude: ids };
   return undefined;
 }
@@ -502,14 +528,14 @@ function useDynamicFilterOptions(
               : { page: pageRef.current + 1 }),
         };
         if (
-          OPTION_SCOPE_PARENT_FIELD[field.name] &&
+          OPTION_SCOPE_PARENT_FIELDS[field.name] &&
           optionContextGroupPaths &&
           optionContextGroupPaths.length > 0
         ) {
           params.contextGroupPath = optionContextGroupPaths;
         }
         if (
-          OPTION_SCOPE_PARENT_FIELD[field.name] &&
+          OPTION_SCOPE_PARENT_FIELDS[field.name] &&
           optionExcludeContextGroupPaths &&
           optionExcludeContextGroupPaths.length > 0
         ) {
@@ -923,13 +949,48 @@ function tagItemsFromIds(ids: string[]): TagItem[] {
 // Folder paths may contain spaces and commas, so they can't be split on them.
 const FREE_TEXT_FILTER_NAMES = new Set(['folder_paths']);
 
+const FOLDER_PATHS_FIELD = 'folder_paths';
+
+/** How the Folders filter of a connector that takes patterns reads them, under its field. */
+function FolderPatternHelp({ field }: { field: FilterSchemaField }) {
+  const { t } = useTranslation();
+  if (field.name !== FOLDER_PATHS_FIELD || !field.folderWildcards) return null;
+  const muted = { color: 'var(--gray-10)', lineHeight: 1.55 };
+  return (
+    <Flex direction="column" gap="1" data-testid="folder-pattern-help">
+      <Text size="1" style={muted}>
+        {t('workspace.connectors.filters.folderPaths.help')}
+      </Text>
+      <Box asChild style={{ margin: 0, paddingInlineStart: 18 }}>
+        <ul>
+          {(['oneLevel', 'anyDepth', 'exclude'] as const).map((example) => (
+            <li key={example}>
+              <Text size="1" style={muted}>
+                {t(`workspace.connectors.filters.folderPaths.examples.${example}`)}
+              </Text>
+            </li>
+          ))}
+        </ul>
+      </Box>
+      <Text size="1" style={muted}>
+        {field.pathStyle === 'windows'
+          ? t('workspace.connectors.filters.folderPaths.caseInsensitive')
+          : t('workspace.connectors.filters.folderPaths.caseSensitive')}
+      </Text>
+    </Flex>
+  );
+}
+
 function ConnectorFilterTagInput({
   field,
   value,
+  operator,
   onValueChange,
 }: {
   field: FilterSchemaField;
   value: unknown;
+  /** The row's operator, which some folder checks depend on (Exclude of the whole store). */
+  operator?: string;
   onValueChange: (v: unknown) => void;
 }) {
   const { t } = useTranslation();
@@ -959,13 +1020,39 @@ function ConnectorFilterTagInput({
     onValueChange(next.map((t) => t.value));
   };
 
+  // Only a value typed in this panel is checked: one saved before (its id is its value) keeps
+  // syncing as it did, and the server never refuses a save that keeps it.
+  const checksFolders = field.name === FOLDER_PATHS_FIELD;
+  const problemOf = (tag: TagItem) =>
+    checksFolders && tag.id !== tag.value
+      ? folderPathProblems(tag.value, {
+          exclude: operator === 'not_in',
+          pathStyle: field.pathStyle,
+          wildcards: field.folderWildcards,
+        })[0]
+      : undefined;
+  const shown = checksFolders ? tags.map((tag) => ({ ...tag, isValid: problemOf(tag) === undefined })) : tags;
+  const firstBad = shown.find((tag) => tag.isValid === false);
+  const firstProblem = firstBad ? problemOf(firstBad) : undefined;
+  const error = firstBad && firstProblem ? t(FOLDER_PATH_PROBLEM_KEYS[firstProblem], { value: firstBad.value }) : undefined;
+  const fileTypeHint =
+    checksFolders && field.folderWildcards && tags.some((tag) => tag.id !== tag.value && looksLikeAFileType(tag.value));
+
   return (
-    <TagInput
-      tags={tags}
-      onTagsChange={handleTagsChange}
-      placeholder={t('workspace.connectors.filters.addFieldValue', { field: field.displayName })}
-      freeText={FREE_TEXT_FILTER_NAMES.has(field.name)}
-    />
+    <Flex direction="column" gap="1">
+      <TagInput
+        tags={shown}
+        onTagsChange={handleTagsChange}
+        placeholder={t('workspace.connectors.filters.addFieldValue', { field: field.displayName })}
+        freeText={FREE_TEXT_FILTER_NAMES.has(field.name)}
+        error={error}
+      />
+      {fileTypeHint && !error ? (
+        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          {t('workspace.connectors.filters.folderPaths.notFiles')}
+        </Text>
+      ) : null}
+    </Flex>
   );
 }
 
@@ -1248,7 +1335,7 @@ function FilterCategoryBlock({
   activeFieldNames,
   setActiveFieldNames,
   connectorId,
-  onChange,
+  onChange: onChangeRaw,
   showConfiguredPreview = true,
   readOnly = false,
 }: {
@@ -1268,6 +1355,21 @@ function FilterCategoryBlock({
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   /** Indexing filters are always-on (legacy); sync filters stay add/remove. */
   const allowRemoveFilter = section === 'sync' && !readOnly;
+
+  // A branch picked for the old repository must not be saved against a new one.
+  const onChange = (changedSection: FilterSection, name: string, value: unknown) => {
+    onChangeRaw(changedSection, name, value);
+    const dependents = changedSection === 'sync' ? CLEARED_ON_PARENT_CHANGE[name] : undefined;
+    if (!dependents) return;
+    const before = rowIds(values[name]);
+    const after = rowIds(value);
+    if (before.length === after.length && before.every((id, i) => id === after[i])) return;
+    for (const dep of dependents) {
+      if (values[dep] === undefined || values[dep] === null) continue;
+      onChangeRaw('sync', dep, null);
+      setActiveFieldNames((prev) => prev.filter((n) => n !== dep));
+    }
+  };
   const availableToAdd = allowRemoveFilter
     ? fields.filter((f) => !f.required && !activeFieldNames.includes(f.name))
     : [];
@@ -1557,7 +1659,7 @@ function FilterFieldRow({
   const listLike = isListLikeField(field);
   const freeTextList = isFreeTextListField(field);
   const isBooleanField = field.filterType === 'boolean';
-  const optionsScopeParentField = OPTION_SCOPE_PARENT_FIELD[field.name];
+  const optionsScopeParentField = optionsScopeParent(field.name, allSyncValues);
   const projectOptionsScope =
     section === 'sync' && optionsScopeParentField
       ? groupPathsForOptionsScope(allSyncValues, optionsScopeParentField)
@@ -1677,6 +1779,7 @@ function FilterFieldRow({
             {field.description}
           </Text>
         ) : null}
+        <FolderPatternHelp field={field} />
 
         <Box
           style={{
@@ -1762,6 +1865,7 @@ function FilterFieldRow({
               <ConnectorFilterTagInput
                 field={field}
                 value={row.value}
+                operator={row.operator}
                 onValueChange={(v) => commit({ ...row, value: v })}
               />
             ) : listLike ? (

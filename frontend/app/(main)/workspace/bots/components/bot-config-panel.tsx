@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useContext } from 'react';
+import React, { useState, useEffect, useCallback, useContext, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -15,6 +15,7 @@ import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret
 import { useBotsStore } from '../store';
 import { BotsApi } from '../api';
 import type { BotType, BotTypeInfo, SlackBotConfig } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const DEFAULT_ASSISTANT_ID = '__default_assistant__';
 
@@ -30,6 +31,7 @@ export function BotConfigPanel() {
     editingBotId,
     slackBotConfigs,
     agents,
+    agentsComplete,
     closePanel,
     setPanelView,
     setConfigs,
@@ -111,6 +113,7 @@ export function BotConfigPanel() {
           <SlackBotFormView
             editingConfig={editingConfig}
             agents={agents}
+            agentsComplete={agentsComplete}
             onClose={closePanel}
             onSaved={handleSaved}
             onRequestDelete={() => setShowDeleteDialog(true)}
@@ -240,12 +243,13 @@ function BotTypeRow({ bot, onClick }: { bot: BotTypeInfo; onClick: () => void })
 interface SlackBotFormViewProps {
   editingConfig: SlackBotConfig | null;
   agents: { id: string; name: string }[];
+  agentsComplete: boolean;
   onClose: () => void;
   onSaved: () => void;
   onRequestDelete: () => void;
 }
 
-function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDelete }: SlackBotFormViewProps) {
+function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSaved, onRequestDelete }: SlackBotFormViewProps) {
   const { t } = useTranslation();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isEditMode = !!editingConfig;
@@ -272,6 +276,16 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
       setAgentId(DEFAULT_ASSISTANT_ID);
     }
   }, [editingConfig]);
+
+  // Resolved against the agent list as it stands, so a list that arrives or refreshes later never
+  // resets what the user typed. An agent missing from a complete list was deleted: the bot shows the
+  // default assistant. Missing from a partial list it is unknown, so it stays selected and is saved.
+  const linkedKnown = agentId === DEFAULT_ASSISTANT_ID || agents.some((agent) => agent.id === agentId);
+  const selectedAgentId = linkedKnown || !agentsComplete ? agentId : DEFAULT_ASSISTANT_ID;
+  const agentOptions = useMemo(
+    () => (linkedKnown || agentsComplete ? agents : [...agents, { id: agentId, name: agentId }]),
+    [agents, agentId, agentsComplete, linkedKnown],
+  );
 
   const isValid = name.trim().length > 0 && botToken.trim().length > 0 && signingSecret.trim().length > 0;
 
@@ -311,12 +325,12 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
 
     setIsSaving(true);
     try {
-      const isDefaultAssistant = agentId === DEFAULT_ASSISTANT_ID;
+      const isDefaultAssistant = selectedAgentId === DEFAULT_ASSISTANT_ID;
       const payload = {
         name: name.trim(),
         botToken: botToken.trim(),
         signingSecret: signingSecret.trim(),
-        ...(!isDefaultAssistant ? { agentId } : {}),
+        ...(!isDefaultAssistant ? { agentId: selectedAgentId } : {}),
       };
 
       if (isEditMode && editingConfig) {
@@ -339,7 +353,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
     } finally {
       setIsSaving(false);
     }
-  }, [isValid, isSaving, name, botToken, signingSecret, agentId, isEditMode, editingConfig, onSaved]);
+  }, [isValid, isSaving, name, botToken, signingSecret, selectedAgentId, isEditMode, editingConfig, onSaved]);
 
   return (
     <Flex direction="column" style={{ height: '100%' }}>
@@ -377,9 +391,9 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
         ) : null}
 
         <FormField label={t('workspace.bots.form.botToken')}>
-          <TextField.Root
+          <SecretTextField
             size="2"
-            type={showBotToken ? 'text' : 'password'}
+            masked={!showBotToken}
             placeholder="xoxb-..."
             value={botToken}
             onChange={(e) => setBotToken(e.target.value)}
@@ -399,13 +413,13 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
                 />
               </IconButton>
             </TextField.Slot>
-          </TextField.Root>
+          </SecretTextField>
         </FormField>
 
         <FormField label={t('workspace.bots.form.signingSecret')}>
-          <TextField.Root
+          <SecretTextField
             size="2"
-            type={showSigningSecret ? 'text' : 'password'}
+            masked={!showSigningSecret}
             placeholder={t('workspace.bots.form.signingSecretPlaceholder')}
             value={signingSecret}
             onChange={(e) => setSigningSecret(e.target.value)}
@@ -425,13 +439,13 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
                 />
               </IconButton>
             </TextField.Slot>
-          </TextField.Root>
+          </SecretTextField>
         </FormField>
 
         <FormField label={t('workspace.bots.form.agent')}>
           <Select.Root
             size="2"
-            value={agentId}
+            value={selectedAgentId}
             onValueChange={setAgentId}
           >
             <Select.Trigger style={{ width: '100%', height: 32 }} placeholder={t('workspace.bots.form.agentPlaceholder')} />
@@ -440,7 +454,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
               container={panelBodyPortal ?? undefined}
             >
               <Select.Item value={DEFAULT_ASSISTANT_ID}>{t('workspace.bots.defaultAssistant')}</Select.Item>
-              {agents.map((agent) => (
+              {agentOptions.map((agent) => (
                 <Select.Item key={agent.id} value={agent.id}>
                   {agent.name}
                 </Select.Item>

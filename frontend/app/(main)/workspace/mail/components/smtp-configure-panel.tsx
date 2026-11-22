@@ -13,6 +13,7 @@ import { InheritedConfigNotice } from '@/config';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { SmtpApi } from '../api';
 import type { SmtpConfig, SmtpFormData, SmtpFormErrors } from '../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const INHERITABLE_SECRET_KEYS = ['host', 'username', 'fromEmail', 'password'] as const;
 
@@ -239,7 +240,7 @@ export function SmtpConfigurePanel({
         {/* ── Info banner ── */}
         <Box
           style={{
-            background: 'var(--olive-2)',
+            background: 'var(--olive-a2)',
             border: '1px solid var(--accent-3)',
             borderRadius: 'var(--radius-2)',
             overflow: 'hidden',
@@ -275,7 +276,7 @@ export function SmtpConfigurePanel({
         {/* ── Fields box ── */}
         <Box
           style={{
-            background: 'var(--olive-2)',
+            background: 'var(--olive-a2)',
             border: '1px solid var(--olive-3)',
             borderRadius: 'var(--radius-2)',
             padding: 'var(--space-4)',
@@ -385,8 +386,8 @@ export function SmtpConfigurePanel({
                 label={t('workspace.mail.fields.password')}
                 hint={t('workspace.mail.fields.passwordHint')}
               />
-              <TextField.Root
-                type={showPassword ? 'text' : 'password'}
+              <SecretTextField
+                masked={!showPassword}
                 placeholder="••••••••••••••••••••"
                 value={form.password}
                 onChange={handleChange('password')}
@@ -406,7 +407,7 @@ export function SmtpConfigurePanel({
                     />
                   </Box>
                 </TextField.Slot>
-              </TextField.Root>
+              </SecretTextField>
             </Box>
           </Flex>
         </Box>

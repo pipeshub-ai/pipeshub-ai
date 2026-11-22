@@ -20,7 +20,9 @@ export type IndexingStatus =
   | 'AUTO_INDEX_OFF'
   | 'EMPTY'
   | 'ENABLE_MULTIMODAL_MODELS'
-  | 'QUEUED';
+  | 'QUEUED'
+  | 'SKIPPED'
+  | 'PASSWORD_PROTECTED';
 
 // Interface for a generic record document.
 export interface IRecordDocument {
@@ -61,6 +63,8 @@ export interface IRecordDocument {
   isLatestVersion?: boolean; // default: false
   isDirty?: boolean; // default: false, indicates need for re-indexing
   reason?: string;
+  // How a COMPLETED record was indexed (e.g. only part of a large text file); not a failure.
+  indexingNote?: string | null;
   virtualRecordId?: string;
   summaryDocumentId?:string;
   webUrl?: string;

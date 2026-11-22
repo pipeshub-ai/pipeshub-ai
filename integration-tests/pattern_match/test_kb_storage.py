@@ -10,6 +10,7 @@ Tracker ids (L01, L02...) name the audit finding a test guards.
 from __future__ import annotations
 
 import pytest
+import requests
 
 from helper.storage_layout import (
     MAX_PATH_BYTES,
@@ -42,14 +43,22 @@ class TestWhereContentIsStored:
         await layout.assert_connector_consistent(graph_provider, kb_tree.kb_id)
 
     async def test_unsafe_characters_become_underscores(self, kb_tree, layout):
-        # "<...>" is stripped as markup by the KB API, so it is not used here.
-        name = 'Q1: "plan"? a*b|c\\d/e'
+        # "<...>" is stripped as markup by the KB API, and "/" and "\\" are
+        # refused in folder names (see the next test), so neither is used here.
+        name = 'Q1: "plan"? a*b|c'
         folder = kb_tree.folder(name)
         doc = await kb_tree.file("what? now*.md", folder=folder)
 
         path = expected_path(kb_tree.kb_id, name, doc.name)
-        assert path == f"{connector_root(kb_tree.kb_id)}/Q1_ _plan__ a_b_c_d_e/what_ now_"
+        assert path == f"{connector_root(kb_tree.kb_id)}/Q1_ _plan__ a_b_c/what_ now_"
         await layout.assert_stored_at(doc.virtual_record_id, path)
+
+    @pytest.mark.parametrize("name", ["c/d", "c\\d"])
+    async def test_a_folder_name_with_a_path_separator_is_refused(self, kb_tree, name):
+        # A separator in a stored name would read back as two folders.
+        with pytest.raises(requests.HTTPError) as refused:
+            kb_tree.folder(name)
+        assert refused.value.response.status_code == 400, refused.value.response.text
 
     async def test_long_multibyte_names_fit_the_filesystem(self, kb_tree, layout, graph_provider):
         # L02 (folder) and L29 (file): 120 CJK characters are 360 bytes.

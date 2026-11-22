@@ -1,6 +1,6 @@
 """Unit tests for text_splitting helpers."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.modules.parsers.text_splitting import (
     MAX_TEXT_BLOCK_CHARS,
@@ -87,6 +87,45 @@ class TestSplitIntoSentences:
         ):
             result = split_into_sentences("First sentence. Second sentence.", "en")
         assert len(result) == 2
+
+    def test_text_at_block_cap_uses_pysbd(self) -> None:
+        text = ("Dr. Smith went home. " * (MAX_TEXT_BLOCK_CHARS // 21))[:MAX_TEXT_BLOCK_CHARS]
+        segmenter = MagicMock()
+        segmenter.segment.return_value = [text]
+        with patch(
+            "app.modules.parsers.text_splitting._get_segmenter",
+            return_value=segmenter,
+        ):
+            split_into_sentences(text, "en")
+        segmenter.segment.assert_called_once_with(text)
+
+    def test_text_over_block_cap_skips_pysbd(self) -> None:
+        text = "First sentence. Second sentence. " * (MAX_TEXT_BLOCK_CHARS // 33 + 1)
+        assert len(text) > MAX_TEXT_BLOCK_CHARS
+        segmenter = MagicMock()
+        with patch(
+            "app.modules.parsers.text_splitting._get_segmenter",
+            return_value=segmenter,
+        ):
+            result = split_into_sentences(text, "en")
+        segmenter.segment.assert_not_called()
+        assert result[:2] == ["First sentence.", "Second sentence."]
+        assert len(result) == text.count("sentence.")
+
+    def test_large_flattened_json_returns_quickly(self) -> None:
+        # The JSON parser renders an object's scalar fields as one
+        # "key: value, key: value" block. pysbd runs one substitution over the
+        # whole text for every word that starts like one of its abbreviations
+        # (keys such as "ALC-", "COR-", "DRS-"), so its cost grows with the
+        # square of the length: on about 1 MB it runs past pytest's 30 s timeout.
+        def key(i: int) -> str:
+            return "".join(chr(65 + (i // 26**n) % 26) for n in range(3)) + "-AGP"
+
+        fields = (f"{key(i)}.median_duration: {i}.0, {key(i)}.flag: True" for i in range(26_000))
+        text = ", ".join(fields)
+        assert len(text) > 1_000_000
+        result = split_into_sentences(text, "en")
+        assert "".join(result) == text
 
 
 class TestDetectLanguage:

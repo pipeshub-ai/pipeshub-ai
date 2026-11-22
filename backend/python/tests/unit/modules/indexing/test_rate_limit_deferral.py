@@ -78,6 +78,18 @@ class TestPlan:
         plan = plan_deferral({}, DAY_S + 60, now_ms=NOW, max_total_seconds=DAY_S)
         assert plan.give_up is True
 
+    def test_a_new_run_starts_now_for_a_record_waiting_its_turn(self) -> None:
+        record = {RATE_LIMITED_SINCE_FIELD: NOW - 23 * HOUR_MS - 50 * 60_000, RETRY_NOT_BEFORE_FIELD: NOW - 60_000}
+        plan = plan_deferral(record, 1800, now_ms=NOW, max_total_seconds=DAY_S, new_run=True)
+        assert plan.since_ms == NOW
+        assert plan.not_before_ms == NOW + 1800 * 1000
+        assert plan.give_up is False
+
+    def test_a_new_run_still_gives_up_on_one_wait_longer_than_the_allowance(self) -> None:
+        record = {RATE_LIMITED_SINCE_FIELD: NOW - 5 * HOUR_MS, RETRY_NOT_BEFORE_FIELD: NOW - 60_000}
+        plan = plan_deferral(record, DAY_S + 60, now_ms=NOW, max_total_seconds=DAY_S, new_run=True)
+        assert plan.give_up is True
+
     def test_a_wait_left_alone_longer_than_the_allowance_starts_over(self) -> None:
         record = {RATE_LIMITED_SINCE_FIELD: NOW - 30 * 24 * HOUR_MS, RETRY_NOT_BEFORE_FIELD: NOW - 25 * HOUR_MS}
         plan = plan_deferral(record, 1800, now_ms=NOW, max_total_seconds=DAY_S)
@@ -97,9 +109,31 @@ class TestPlan:
             "parsingStatus": "NOT_STARTED",
             RETRY_NOT_BEFORE_FIELD: NOW + 1800 * 1000,
             RATE_LIMITED_SINCE_FIELD: NOW,
+            # a record that is in no run starts one
+            "firstQueuedAt": NOW,
+            "indexingAttempts": 0,
         }
         assert is_deferred(updates)
         assert not is_deferred({})
+
+
+class TestDeferralKeepsTheRun:
+    def test_a_record_inside_a_run_keeps_its_start_and_its_attempts(self) -> None:
+        record = {"indexingStatus": "IN_PROGRESS", "firstQueuedAt": NOW - 5000, "indexingAttempts": 3}
+        plan = plan_deferral(record, 60, now_ms=NOW, max_total_seconds=DAY_S)
+
+        updates = deferral_updates(plan, reason="paused", record=record, now_ms=NOW)
+
+        assert updates["firstQueuedAt"] == NOW - 5000
+        assert "indexingAttempts" not in updates
+
+    def test_a_record_from_before_the_run_fields_gains_its_queue_time_as_a_start(self) -> None:
+        record = {"indexingStatus": "IN_PROGRESS", "queuedAtTimestamp": NOW - 9000}
+        plan = plan_deferral(record, 60, now_ms=NOW, max_total_seconds=DAY_S)
+
+        updates = deferral_updates(plan, reason="paused", record=record, now_ms=NOW)
+
+        assert updates["firstQueuedAt"] == NOW - 9000
 
 
 class TestDue:

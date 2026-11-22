@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import threading
+import weakref
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
+
+import httpx
+import orjson
 
 # Private SDK symbol, imported deliberately rather than reimplemented: SSE
 # framing is fiddly (multi-line data, chunk boundaries) and the SDK's decoder is
@@ -79,6 +86,61 @@ from app.utils.llm_api_mode_store import LLMApiMode, get_llm_api_mode_store
 logger = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504, 529}
+
+# A stream that opened with HTTP 200 can still fail with an `error` event: the
+# provider's own transient failure ("server_error"), or a gateway in front of it
+# losing the upstream connection ("upstream connect error or disconnect/reset
+# before headers. reset reason: connection termination"). Both are worth a retry.
+# Compared lowercased without "_", so Azure's "InternalServerError" matches too.
+_TRANSIENT_STREAM_ERROR_TYPES = frozenset({
+    "servererror", "internalservererror", "serviceunavailable", "apierror",
+    "ratelimitexceeded", "ratelimiterror", "overloadederror",
+})
+# Labels that name no cause: an event's own kind, and gateways' placeholders.
+_NON_LABELS = frozenset({"", "error", "none", "null"})
+_TRANSIENT_STREAM_ERROR_MARKERS = (
+    "upstream connect error", "disconnect/reset before headers", "connection termination",
+    "connection reset",
+)
+
+
+def _is_transient_stream_error(error: Any) -> bool:
+    """Whether a stream `error` payload (a dict, an SDK event/error object, or
+    an `openai.APIError` raised for one) reports a transient failure."""
+    labels: list[Any] = []
+    body = getattr(error, "body", None)
+    # The SDK hands a gateway's plain-text stream error over as a str `body`.
+    texts: list[Any] = [error if isinstance(error, str) else None, body if isinstance(body, str) else None]
+    for source in (error, body, body.get("error") if isinstance(body, dict) else None):
+        if isinstance(source, dict):
+            labels += [source.get("type"), source.get("code")]
+            texts.append(source.get("message"))
+        elif source is not None and not isinstance(source, str):
+            labels += [getattr(source, "type", None), getattr(source, "code", None)]
+            texts.append(getattr(source, "message", None))
+    codes: list[str] = []
+    types: list[str] = []
+    for i, v in enumerate(labels):
+        if isinstance(v, int) and not isinstance(v, bool):
+            v = str(v)
+        if not isinstance(v, str):
+            continue
+        v = v.strip().lower()
+        if v in _NON_LABELS or v.startswith("response."):
+            continue
+        # labels alternate type, code (see the loop above).
+        (codes if i % 2 else types).append(v)
+    # The code is the specific cause; a generic type ("api_error") must not override it.
+    for group in (codes, types):
+        if not group:
+            continue
+        if any(v.isdigit() and int(v) in _RETRYABLE_STATUS_CODES for v in group):  # an HTTP status ("500")
+            return True
+        # A labelled error is judged by its label alone: "invalid_image_url" whose
+        # message mentions a connection reset is still the caller's error.
+        return any(v.replace("_", "") in _TRANSIENT_STREAM_ERROR_TYPES for v in group if not v.isdigit())
+    text = " ".join(t for t in texts if isinstance(t, str)).lower()
+    return any(marker in text for marker in _TRANSIENT_STREAM_ERROR_MARKERS)
 
 # Reasoning values a provider may reject outright when it refuses to let
 # reasoning be disabled. Matches LangChainTransport._reasoning_mandatory_fallback,
@@ -204,6 +266,38 @@ def client_timeout(timeout: float | None) -> Any:
     return httpx.Timeout(timeout, connect=min(15.0, stall), read=stall, write=stall, pool=stall)
 
 
+_CLIENT_CACHE_MAX = 32
+_client_cache: weakref.WeakKeyDictionary[Any, OrderedDict[tuple, Any]] = weakref.WeakKeyDictionary()
+_client_cache_lock = threading.Lock()
+
+
+def shared_client(factory: Callable[..., Any], **client_kwargs: Any) -> Any:
+    """An SDK client shared by every transport with the same settings.
+
+    Transports are built per answer; a fresh client per answer meant a new
+    connection pool and a new TLS handshake to the provider every time. The
+    httpx pool binds to the event loop it is first used on, so clients are
+    kept per loop, and built fresh outside one. Evicted clients are not
+    closed: an in-flight request may still hold one.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return factory(**client_kwargs)
+    # repr: httpx.Timeout is unhashable, and its repr carries every phase.
+    key = (factory, tuple(sorted((k, repr(v)) for k, v in client_kwargs.items())))
+    with _client_cache_lock:
+        clients = _client_cache.setdefault(loop, OrderedDict())
+        client = clients.get(key)
+        if client is not None:
+            clients.move_to_end(key)
+            return client
+        client = clients[key] = factory(**client_kwargs)
+        if len(clients) > _CLIENT_CACHE_MAX:
+            clients.popitem(last=False)
+        return client
+
+
 class OpenAITransport(LLMTransport):
     """OpenAI Chat Completions API via the official SDK.
 
@@ -256,7 +350,7 @@ class OpenAITransport(LLMTransport):
         # (an egress guard, request hooks); the SDK does not close it.
         if http_client is not None:
             client_kwargs["http_client"] = http_client
-        self._client = _openai.AsyncOpenAI(**client_kwargs)
+        self._client = shared_client(_openai.AsyncOpenAI, **client_kwargs)
         self._init_prompt_cache(cache_plan, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; see AnthropicTransport's equivalent fields.
@@ -462,13 +556,21 @@ class OpenAITransport(LLMTransport):
             {"role": "system", "content": [_marked({"type": "text", "text": text})] if marked else text}
             for text, marked in _system_parts(system, system_blocks, mark_stable=plan.breakpoint)
         ]
-        formatted.extend(self._format_message(m) for m in messages)
+        for m in messages:
+            entry = self._format_message(m)
+            if entry["role"] == "assistant" and not entry["content"] and not entry["tool_calls"]:
+                # An empty reply (no text, no tool calls) has nothing to replay;
+                # the API rejects an assistant message with neither content nor
+                # tool_calls with a 400.
+                logger.debug("openai: skipped an empty assistant turn")
+                continue
+            formatted.append(entry)
         # The images `_format_message` left out of tool results, sent the way
         # the LangChain arm sends them, so this transport loses none.
         relocated = relocated_tool_images(messages)
         if relocated is not None:
             formatted.append(self._format_message(relocated))
-        if plan.last_message and messages:
+        if plan.last_message and messages and formatted:
             _mark_last(formatted[-1], "text")
         return formatted
 
@@ -544,7 +646,7 @@ class OpenAITransport(LLMTransport):
             messages, tools, system, system_blocks, stream=False, tool_choice=tool_choice,
         )
         try:
-            response = await self._client.responses.create(**kwargs)
+            response = await self._create_response(kwargs)
         except Exception as exc:
             raise self._wrap_error(exc, "complete") from exc
 
@@ -558,6 +660,63 @@ class OpenAITransport(LLMTransport):
             message=message, usage=usage, stop_reason=stop_reason,
             model=self._responses_model_id(),
         )
+
+    async def _create_response(self, kwargs: dict[str, Any]) -> Any:
+        """One non-streaming Responses call. Split out so a transport with a
+        different client (`litellm.py`) swaps only the wire call."""
+        body = self._encoded_body(kwargs)
+        if body is None:
+            return await self._client.responses.create(**kwargs)
+        from openai._base_client import make_request_options
+        from openai.types.responses import Response
+
+        return await self._client.post(
+            "/responses", content=body, cast_to=Response,
+            options=make_request_options(security={"bearer_auth": True}),
+        )
+
+    def _open_responses_stream(self, kwargs: dict[str, Any]) -> Any:
+        """`responses.with_streaming_response.create(**kwargs)`, sending
+        `kwargs` pre-encoded when it can be."""
+        body = self._encoded_body(kwargs)
+        if body is None:
+            return self._client.responses.with_streaming_response.create(**kwargs)
+        from openai import AsyncStream
+        from openai._base_client import make_request_options
+        from openai._constants import RAW_RESPONSE_HEADER
+        from openai._response import AsyncResponseContextManager
+        from openai.types.responses import Response, ResponseStreamEvent
+
+        # Same options `with_streaming_response.create` builds; only the body
+        # differs, so auth, retries, timeouts and status errors are the SDK's.
+        return AsyncResponseContextManager(self._client.post(
+            "/responses", content=body, cast_to=Response, stream=True,
+            stream_cls=AsyncStream[ResponseStreamEvent],
+            options=make_request_options(
+                extra_headers={RAW_RESPONSE_HEADER: "stream"}, security={"bearer_auth": True},
+            ),
+        ))
+
+    def _encoded_body(self, kwargs: dict[str, Any]) -> bytes | None:
+        """The request body as JSON bytes, or None to let the SDK build it.
+
+        `responses.create` walks the whole input through its type transform and
+        then encodes it with stdlib json; on a long agent turn that is ~23 ms of
+        CPU per answer. The kwargs here are already plain JSON data (no aliased
+        or base64-formatted fields on the Responses params), so the transform is
+        a no-op for them. None for a client that is not the SDK's (test stubs)
+        and for data orjson refuses (non-str keys, ints over 64 bits). One
+        difference: orjson writes NaN as null, where json wrote a NaN token the
+        API rejects.
+        """
+        if not isinstance(self._client, self._openai.AsyncOpenAI):
+            return None
+        import orjson
+
+        try:
+            return orjson.dumps(kwargs)
+        except TypeError:
+            return None
 
     async def _raw_response_events(self, kwargs: dict[str, Any]) -> AsyncIterator[Any]:
         """Responses stream events as `RawEvent`, skipping the SDK's per-event
@@ -578,18 +737,22 @@ class OpenAITransport(LLMTransport):
           mid-stream failure would look like a short answer.
         """
         decoder = SSEDecoder()
-        async with self._client.responses.with_streaming_response.create(**kwargs) as response:
+        async with self._open_responses_stream(kwargs) as response:
             async for sse in decoder.aiter_bytes(response.iter_bytes()):
                 if sse.data.startswith("[DONE]"):
                     break
-                data = json.loads(sse.data)
+                try:
+                    data = orjson.loads(sse.data)
+                except orjson.JSONDecodeError:
+                    # json also accepts NaN/Infinity tokens and lone surrogates
+                    data = json.loads(sse.data)
                 if isinstance(data, dict) and data.get("error"):
                     error = data["error"]
                     message = error.get("message") if isinstance(error, dict) else None
                     raise TransportError(
                         "OpenAI API error (stream): "
                         f"{message or 'An error occurred during streaming'}",
-                        retryable=False,
+                        retryable=_is_transient_stream_error(error),
                     )
                 yield RawEvent(data)
 
@@ -660,7 +823,7 @@ class OpenAITransport(LLMTransport):
                     raise TransportError(
                         "OpenAI API error (stream): "
                         f"{detail or getattr(event, 'message', event)}",
-                        retryable=False,
+                        retryable=_is_transient_stream_error(detail or event),
                     )
         except TransportError:
             raise
@@ -824,12 +987,20 @@ class OpenAITransport(LLMTransport):
         # OSError included to match LangChainTransport._is_network_error: a
         # dropped socket surfaces as a bare OSError often enough that treating
         # it as fatal here would retry-gap the direct path against that one.
+        # httpx errors reach here raw when the body breaks off while it is being
+        # read: "peer closed connection without sending complete message body".
         is_network = isinstance(
             exc,
-            (self._openai.APIConnectionError, self._openai.APITimeoutError, OSError),
+            (
+                self._openai.APIConnectionError, self._openai.APITimeoutError, OSError,
+                httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError,
+            ),
         )
         retryable = is_network or (
-            status_code is not None and status_code in _RETRYABLE_STATUS_CODES
+            status_code in _RETRYABLE_STATUS_CODES
+            if status_code is not None
+            # The SDK raises an `error` event inside a 200 stream as a bare `APIError`.
+            else _is_transient_stream_error(exc)
         )
         return TransportError(
             f"OpenAI API error ({context}): {exc}",
@@ -1207,6 +1378,11 @@ class OpenAITransport(LLMTransport):
             except Exception as exc:
                 # Retrying after deltas reached the client would replay them.
                 if emitted:
+                    if isinstance(exc, TransportError):
+                        # Same as constructing it with `partial_output=True`: not
+                        # retryable until the agent retracts what was shown.
+                        exc.partial_output = True
+                        exc.retryable = False
                     raise
                 if self._drop_cache_params(exc):
                     continue

@@ -2,18 +2,60 @@ import base64
 import json
 import logging
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from typing import Any, Dict, Optional, Union
 
 from app.sources.client.http.http_request import HTTPRequest
 
 try:
     from dropbox import Dropbox, DropboxTeam  # type: ignore
+    from dropbox.stone_base import Union as StoneUnion  # type: ignore
 except ImportError:
     raise ImportError("dropbox is not installed. Please install it with `pip install dropbox`")
 
 from app.config.configuration_service import ConfigurationService
+from app.sources.client.dropbox.endpoint import session_for_base_url
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
+
+
+def to_plain(value: Any) -> Any:  # noqa: ANN401 - any SDK value
+    """A Dropbox SDK value as plain JSON data.
+
+    The SDK returns Stone structs and unions (``FileMetadata``, ``ListFolderResult``), which ``json`` cannot
+    write: every tool answer built from one failed. Structs become objects of their set fields; unions become
+    ``{".tag": tag}`` with their value; datetimes become ISO strings. A raw HTTP response (``files/download``
+    returns one with the metadata) carries nothing to show and is dropped.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (bytes, bytearray)):
+        return None
+    if isinstance(value, (list, tuple)):
+        return [to_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): to_plain(v) for k, v in value.items()}
+    if isinstance(value, StoneUnion):
+        out: dict[str, Any] = {".tag": value._tag}
+        if value._value is not None:
+            out[value._tag] = to_plain(value._value)
+        return out
+    fields = getattr(type(value), "_all_field_names_", None)
+    if fields is not None:
+        out = {}
+        kind = type(value).__name__
+        if kind in ("FileMetadata", "FolderMetadata", "DeletedMetadata"):
+            out[".tag"] = kind[: -len("Metadata")].lower()
+        for name in sorted(fields):
+            field_value = getattr(value, name, None)
+            if field_value is not None and type(field_value).__name__ != "NotSet":
+                out[name] = to_plain(field_value)
+        return out
+    if type(value).__name__ == "Response" and hasattr(value, "status_code"):
+        return None
+    return str(value)
 
 
 @dataclass
@@ -25,7 +67,7 @@ class DropboxResponse:
     message: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return {"success": self.success, "data": to_plain(self.data), "error": self.error, "message": self.message}
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
@@ -52,13 +94,17 @@ class DropboxRESTClientViaToken:
 
     def create_client(self) -> Dropbox: # type: ignore[valid-type]
         # `timeout` is supported by SDK constructor
+        # A test stack's simulator, when DROPBOX_API_BASE_URL names one; the SDK's own session otherwise.
+        session = session_for_base_url()
+        extra = {"session": session} if session is not None else {}
         if self.is_team:
             self.dropbox_client = DropboxTeam(
                 oauth2_access_token=self.access_token,
                 timeout=self.timeout,
                 oauth2_refresh_token=self.refresh_token,
                 app_key=self.app_key,
-                app_secret=self.app_secret
+                app_secret=self.app_secret,
+                **extra,
             ) # type: ignore[valid-type]
         else:
             self.dropbox_client = Dropbox(
@@ -66,7 +112,8 @@ class DropboxRESTClientViaToken:
                 timeout=self.timeout,
                 oauth2_refresh_token=self.refresh_token,
                 app_key=self.app_key,
-                app_secret=self.app_secret
+                app_secret=self.app_secret,
+                **extra,
             ) # type: ignore[valid-type]
         return self.dropbox_client
 

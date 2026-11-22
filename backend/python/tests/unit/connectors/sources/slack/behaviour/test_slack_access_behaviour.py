@@ -203,31 +203,73 @@ class TestFailedReads:
 
 
 class TestArchivedAndDirectConversations:
-    async def test_an_archived_channel_is_no_longer_read_but_keeps_what_was_stored(self, workspace, store, checkpoints) -> None:
+    async def test_a_channel_archived_after_a_sync_keeps_its_records_and_its_readers(self, workspace, store, checkpoints) -> None:
         kept = ts_minutes_ago(100)
         workspace.post(SECRET, kept, ALICE, "before archiving")
         connector, _ = await workspace_connector(store, checkpoints)
         await connector.run_sync()
 
         workspace.channels[SECRET]["is_archived"] = True
-        workspace.post(SECRET, ts_minutes_ago(10), BOB, "after archiving")
-        history_before = len(workspace.calls_to("conversations.history"))
+        after = ts_minutes_ago(10)
+        workspace.post(SECRET, after, BOB, "after archiving")
         await connector.run_sync()
 
-        assert all(c.params.get("exclude_archived") == "1" for c in workspace.calls_to("conversations.list"))
-        assert not any(
-            c.params.get("channel") == SECRET for c in workspace.calls_to("conversations.history")[history_before:]
-        )
+        assert not any(c.params.get("exclude_archived") for c in workspace.calls_to("conversations.list"))
         assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
-        assert kept in store.message_ts_count()
+        assert {kept, after} <= set(store.message_ts_count())
 
-    async def test_a_channel_archived_before_the_first_sync_is_not_synced(self, workspace, store, checkpoints) -> None:
+    async def test_an_archived_public_channel_is_granted_like_any_public_channel(self, workspace, store, checkpoints) -> None:
+        workspace.channels[GENERAL]["is_archived"] = True
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        (role_grant,) = [p for p in store.group_access[GENERAL] if p.entity_type == EntityType.ROLE]
+        assert role_grant.external_id == "workspace_member"
+
+    async def test_an_archived_private_channel_is_granted_to_its_members_only(self, workspace, store, checkpoints) -> None:
         workspace.channels[SECRET]["is_archived"] = True
         connector, _ = await workspace_connector(store, checkpoints)
 
         await connector.run_sync()
 
-        assert SECRET not in store.record_groups
+        assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
+        assert all(p.entity_type == EntityType.USER for p in store.group_access[SECRET])
+
+    async def test_an_archived_private_channel_whose_members_cannot_be_read_keeps_its_stored_grants(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        workspace.channels[SECRET]["is_archived"] = True
+
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == SECRET)
+        await connector.run_sync()
+
+        assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
+
+    async def test_a_live_private_channel_whose_members_cannot_be_read_still_grants_nobody(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == SECRET)
+        await connector.run_sync()
+
+        assert store.access_emails(SECRET) == set()
+
+    async def test_an_archived_channel_the_bot_is_not_in_is_not_joined(self, workspace, store, checkpoints) -> None:
+        workspace.channels[GENERAL].update(is_archived=True, is_member=False)
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert not workspace.calls_to("conversations.join")
+        assert connector._unreadable_archived_channels == ["general"]
+        assert GENERAL in store.record_groups
 
     async def test_the_workspace_connector_reads_only_public_and_private_channels(self, workspace, store, checkpoints) -> None:
         workspace.add_channel("D0ALICEBOB", "", kind="im", members=[ALICE, BOB], dm_with=BOB)

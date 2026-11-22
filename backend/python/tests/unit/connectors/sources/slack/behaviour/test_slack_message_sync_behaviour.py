@@ -199,11 +199,6 @@ class TestThreads:
         assert store.message_ts_count().get(late) == 1
         assert checkpoints.value(f"slack_thread/{GENERAL}_{parent}")["last_reply_ts"] == late
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "A reply to a thread whose first message is older than the previous sync is never "
-        "synced: both the message pass and the thread-growth pass only list messages posted "
-        "after their last checkpoint, so the old parent (and its new reply) is never seen again."
-    ))
     async def test_a_new_reply_to_an_older_thread_arrives_on_the_next_sync(self, workspace, store, checkpoints) -> None:
         parent = ts_minutes_ago(300)
         workspace.post(GENERAL, parent, ALICE, "incident thread")

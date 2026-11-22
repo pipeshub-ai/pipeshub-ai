@@ -37,7 +37,13 @@ export function extractAgentConfigFromFlow(
   }[],
   currentAgent?: AgentDetail | null,
   shareWithOrg?: boolean,
-  isServiceAccount?: boolean
+  isServiceAccount?: boolean,
+  /**
+   * The service account to search as, by `userId`; `null` clears an existing
+   * binding. `undefined` leaves whatever is stored alone, which is what every
+   * caller that does not offer the choice wants.
+   */
+  serviceAccountUserId?: string | null
 ): AgentFormPayload {
   const toolsetsInternal: ToolsetDataInternal[] = [];
   const knowledgeInternal: KnowledgeDataInternal[] = [];
@@ -408,5 +414,13 @@ export function extractAgentConfigFromFlow(
         : isServiceAccount !== undefined
           ? isServiceAccount
           : false,
+    // Only a service agent has an identity to bind, and only when the choice
+    // was actually offered. Sent as null to clear, omitted to leave alone —
+    // sending undefined-as-empty would unbind an agent whose builder never
+    // showed the control.
+    ...(serviceAccountUserId !== undefined &&
+    (currentAgent?.isServiceAccount === true || isServiceAccount === true)
+      ? { serviceAccountUserId }
+      : {}),
   };
 }

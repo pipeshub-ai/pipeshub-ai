@@ -847,7 +847,10 @@ def compare(s, viewer, p, q) -> Response:
 def list_commits(s, viewer, p, q) -> Response:
     ws = s.ws
     repo = _repo(s, viewer, p)
-    history = ws.path_history(repo, q["path"]) if q.get("path") else [repo.commits[c] for c in ws.ancestors(repo, repo.head().sha)]
+    start = ws.resolve(repo, q.get("sha"))
+    if start is None:  # live, 2026-10-26: an unknown ``sha`` is a plain 404
+        raise not_found()
+    history = ws.path_history(repo, q["path"], start) if q.get("path") else [repo.commits[c] for c in ws.ancestors(repo, start)]
     page, links = paginate([commit_obj(repo, c.sha) for c in history], q, f"/repos/{p['owner']}/{p['repo']}/commits")
     return 200, page, links
 

@@ -18,6 +18,7 @@ from app.connectors.sources.microsoft.outlook_individual.connector import (
     OutlookIndividualConnector,
 )
 from app.models.entities import RecordType
+from tests.support.data_store import runs_in_its_transaction
 
 
 @pytest.fixture
@@ -42,7 +43,7 @@ def mock_data_store_provider():
     tx.get_record_by_external_id = AsyncMock(return_value=None)
     tx.delete_record_by_external_id = AsyncMock()
     provider.transaction.return_value = tx
-    return provider
+    return runs_in_its_transaction(provider)
 
 
 @pytest.fixture

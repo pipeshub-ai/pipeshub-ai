@@ -5,6 +5,8 @@ import {
   createAIModelsConfig,
   createGoogleWorkspaceCredentials,
   createSmtpConfig,
+  deleteSmtpConfig,
+  setSmtpConfigEnabled,
   createStorageConfig,
   getAIModelsConfig,
   getInternalAIModelsConfig,
@@ -84,6 +86,7 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
   smtpConfigSchema,
+  smtpEnabledSchema,
   aiModelsConfigSchema,
   storageValidationSchema,
   azureAdConfigSchema,
@@ -136,6 +139,12 @@ import {
   SyncEventProducer,
 } from '../services/kafka_events.service';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import {
+  getMcpAccessPolicy,
+  listMcpAccessTools,
+  putMcpAccessPolicy,
+  putMcpAccessPolicySchema,
+} from '../../mcp/routes/mcp-access.routes';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
@@ -368,6 +377,41 @@ export function createConfigurationManagerRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.CONFIG_READ),
     userAdminCheck,
     getSmtpConfig(keyValueStoreService),
+  );
+
+  /**
+   * DELETE /smtpConfig
+   * Removes the SMTP configuration. Admin only.
+   */
+  router.delete(
+    '/smtpConfig',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    deleteSmtpConfig(
+      keyValueStoreService,
+      appConfig.communicationBackend,
+      appConfig.scopedJwtSecret,
+    ),
+  );
+
+  /**
+   * PUT /smtpConfig/enabled
+   * Turns email sending off or back on, keeping the settings. Admin only.
+   */
+  router.put(
+    '/smtpConfig/enabled',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(smtpEnabledSchema),
+    setSmtpConfigEnabled(
+      keyValueStoreService,
+      appConfig.communicationBackend,
+      appConfig.scopedJwtSecret,
+    ),
   );
 
   router.get(
@@ -874,6 +918,35 @@ export function createConfigurationManagerRouter(container: Container): Router {
       aiConfigEventService,
       appConfig,
     ),
+  );
+
+  // What an admin allows on the org's inbound /mcp endpoint.
+  router.get(
+    '/mcp/access',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- the route guards compare this exact function, as on every route here
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    getMcpAccessPolicy,
+  );
+
+  router.put(
+    '/mcp/access',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- the route guards compare this exact function, as on every route here
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(putMcpAccessPolicySchema),
+    putMcpAccessPolicy,
+  );
+
+  router.get(
+    '/mcp/access/tools',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- the route guards compare this exact function, as on every route here
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    listMcpAccessTools,
   );
 
   router.get(

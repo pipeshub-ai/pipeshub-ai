@@ -2376,6 +2376,7 @@ class TestFullListingMisses:
         await connector._sync_spaces_content([ENG])
 
         rewritten = {r.external_record_id for batch in db.record_batches[writes_before:] for r in batch}
+        rewritten.update(r.external_record_id for r in db.content_updates)
         assert {"10", "11"} <= rewritten, "the missed page is written again, so the full sync sees it"
         assert connector.full_sync_coverage().complete is True
 
@@ -2790,6 +2791,29 @@ class TestRestrictionsWithoutTheAuditLog:
         assert db.records["10"].access_rule == AccessRule.RESTRICTED
         assert [p.email for p in db.record_permissions["10"]] == ["ana@acme.com"]
         assert any("audit log (HTTP 403)" in p for p in connector._sync_problems)
+
+    async def test_a_restriction_removed_without_an_edit_opens_the_page_again(self, api, db, checkpoints, search) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        restricted = self._with_read_restriction(v1_page("10"), "acc-ana")
+        search.by_cursor[None] = search_page([self._with_read_restriction(v1_page("10"))])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        await self._refused_audit_log(api, connector)
+        search.by_cursor = {None: search_page([restricted])}
+        search.indexed = {"10": restricted}
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
+        await connector._sync_permission_changes_from_audit_log([ENG])
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
+
+        # The restriction is lifted, page not edited: the listing shows no restriction any more.
+        unrestricted = self._with_read_restriction(v1_page("10"))
+        search.by_cursor = {None: search_page([unrestricted])}
+        search.indexed = {"10": unrestricted}
+        api.on("GET", f"{V1}/content/10/restriction", read_restricted_to())
+        await connector._sync_permission_changes_from_audit_log([ENG])
+
+        assert db.records["10"].access_rule == AccessRule.STRICT
+        assert db.record_permissions["10"] == [] or all(p.email != "ana@acme.com" for p in db.record_permissions["10"])
 
     async def _refused_audit_log(self, api, connector) -> None:
         await connector._open_audit_window()

@@ -27,7 +27,7 @@
  * are valuable.
  */
 
-import { useAuthStore, logoutAndRedirect } from '@/config';
+import { useAuthStore } from '@/config';
 import {
   CHAT_STREAM_ERROR_MESSAGES,
   STREAM_ERROR_MESSAGES,
@@ -38,7 +38,7 @@ import {
 import {
   isTokenExpired,
   isRefreshInProgress,
-  refreshAccessToken,
+  refreshOrSignOut,
 } from './token-refresh';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { streamingFetch, isElectron } from '@/lib/electron';
@@ -126,9 +126,9 @@ async function readUploadHttpError(response: Response): Promise<UploadHttpError>
  * - if a refresh is already in flight (timer or 401 retry), await the
  *   shared promise so we don't send the about-to-be-rotated token
  *
- * Returns the token (possibly refreshed) or, on refresh failure,
- * `{ sessionExpired: true }` after `logoutAndRedirect()` has been
- * triggered. Caller should `onError` and bail.
+ * Returns the token (possibly refreshed), or `{ sessionExpired: true }` when
+ * the refresh failed (the person has been signed out) or the session ended
+ * while it was out. Caller should `onError` and bail.
  */
 async function ensureFreshToken(): Promise<
   { token: string | null; sessionExpired: false } | { token: null; sessionExpired: true }
@@ -139,9 +139,7 @@ async function ensureFreshToken(): Promise<
   }
 
   if (isRefreshInProgress() || isTokenExpired(token)) {
-    const ok = await refreshAccessToken();
-    if (!ok) {
-      logoutAndRedirect();
+    if ((await refreshOrSignOut()) !== 'refreshed') {
       return { token: null, sessionExpired: true };
     }
     token = useAuthStore.getState().accessToken;
@@ -277,39 +275,43 @@ function parseSSEBuffer(buffer: string): {
   let i = 0;
   let lastCompleteLineIndex = -1;
 
-  while (i < lines.length) {
-    const line = lines[i];
+  // The last split entry is incomplete until another newline arrives.
+  while (i < lines.length - 1) {
+    const rawLine = lines[i];
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
 
     // Empty line marks end of event
-    if (line.trim() === '') {
-      if (currentEvent.event && currentEvent.data) {
+    if (line === '') {
+      if (currentEvent.data) {
         try {
           complete.push({
-            event: currentEvent.event,
+            event: currentEvent.event || 'message',
             data: JSON.parse(currentEvent.data),
           });
-          lastCompleteLineIndex = i;
         } catch (e) {
           console.error('Failed to parse SSE data:', currentEvent.data, e);
         }
-        currentEvent = {};
       }
+      currentEvent = {};
+      lastCompleteLineIndex = i;
       i++;
       continue;
     }
 
-    // Parse event field
-    if (line.startsWith('event: ')) {
-      currentEvent.event = line.substring(7).trim();
+    const colonIndex = line.indexOf(':');
+    const field = colonIndex >= 0 ? line.substring(0, colonIndex) : line;
+    const rawValue = colonIndex >= 0 ? line.substring(colonIndex + 1) : '';
+    const value = rawValue.startsWith(' ') ? rawValue.substring(1) : rawValue;
+
+    if (field === 'event') {
+      currentEvent.event = value;
       i++;
       continue;
     }
 
-    // Parse data field
-    if (line.startsWith('data: ')) {
+    if (field === 'data') {
       // A frame may carry several data lines; the SSE format joins them with a newline.
-      const chunk = line.substring(6).trim();
-      currentEvent.data = currentEvent.data === undefined ? chunk : `${currentEvent.data}\n${chunk}`;
+      currentEvent.data = currentEvent.data === undefined ? value : `${currentEvent.data}\n${value}`;
       i++;
       continue;
     }

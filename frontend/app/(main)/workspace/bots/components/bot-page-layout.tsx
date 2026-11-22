@@ -10,7 +10,7 @@ import type { SlackBotConfig, AgentOption } from '../types';
 import { BotCard } from './bot-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import { HeaderOverflowMenu } from '@/app/(main)/workspace/components/header-overflow-menu';
 import { WorkspaceDocsButton } from '@/app/(main)/workspace/components/workspace-docs-button';
 
@@ -23,6 +23,8 @@ const DEFAULT_ASSISTANT_ID = '__default_assistant__';
 interface BotPageLayoutProps {
   configs: SlackBotConfig[];
   agents: AgentOption[];
+  /** The agent list arrived whole, so an agent absent from it is a deleted one. */
+  agentsComplete: boolean;
   isLoading: boolean;
   onCreateBot: () => void;
   onRefresh: () => void;
@@ -36,6 +38,7 @@ interface BotPageLayoutProps {
 export function BotPageLayout({
   configs,
   agents,
+  agentsComplete,
   isLoading,
   onCreateBot,
   onRefresh,
@@ -51,7 +54,7 @@ export function BotPageLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',
@@ -105,7 +108,10 @@ export function BotPageLayout({
           style={{ width: '100%' }}
         >
           {configs.map((config) => {
-            const isDefault = !config.agentId || config.agentId === DEFAULT_ASSISTANT_ID;
+            const isDefault =
+              !config.agentId ||
+              config.agentId === DEFAULT_ASSISTANT_ID ||
+              (agentsComplete && !agentMap.has(config.agentId));
             const agentName = isDefault
               ? t('workspace.bots.defaultAssistant')
               : agentMap.get(config.agentId!) ?? config.agentId;

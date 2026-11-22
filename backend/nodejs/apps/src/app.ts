@@ -5,30 +5,33 @@ import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
-import morgan from 'morgan';
-import { IncomingMessage } from 'http';
-import { redactSensitiveQueryParams } from './libs/utils/log-redaction.utils';
 import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
+import { createLocalReposRouter } from './modules/local_repos/routes/local_repos.routes';
+import { createGraphViewRouter } from './modules/enterprise_search/routes/graph-view.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
+import { accessLog } from './libs/middlewares/access-log.middleware';
 import {
   runWithRequestContext,
   newSystemRoot,
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
+import { configureEnvelopeFromSecret } from './libs/context/envelope';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import { TtlSweeper } from './libs/services/ttl-sweeper.service';
+import { docStore } from './libs/repositories/store-select';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
-import { isApiPath } from './libs/utils/api-path.utils';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -57,6 +60,7 @@ import {
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
+  createRetrieveRouter,
   createAgentConversationalRouter,
   createChatSpeechRouter,
   KnowledgeBaseContainer,
@@ -71,6 +75,7 @@ import {
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
+  dynamicClientOrg,
 } from './config';
 import type { EditionContainers } from './libs/edition/edition-boot';
 import { NotificationContainer } from './modules/notification/container/notification.container';
@@ -80,6 +85,7 @@ import { MailSenderService } from './modules/mail/services/mail.sender.service';
 import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import { createOpenAIModelsRouter } from './modules/configuration_manager/routes/openai_models.routes';
+import { createOpenAICompatRouter } from './modules/openai_compat/routes/openai_compat.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -94,6 +100,10 @@ import {
   createSlackEventsRateLimiter,
   slackEventsRateLimitPerMinute,
 } from './libs/middlewares/rate-limit.middleware';
+import {
+  noFraming,
+  UNFRAMEABLE_PAGE_PATHS,
+} from './libs/middlewares/no-framing.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
@@ -104,13 +114,17 @@ import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
+import { createAgentRegistrationRouter } from './modules/oauth_provider/routes/agent-registration.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
 import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
 import { ServiceAccountsService } from './modules/user_management/services/service-accounts.service';
 import { ServiceTokenService } from './modules/oauth_provider/services/service-token.service';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
-import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
+import {
+  createAuthMdRouter,
+  createOIDCDiscoveryRouter,
+} from './modules/oauth_provider/routes/oid.provider.routes';
 import {
   resolveMessageBrokerConfig,
   ensureMessageTopicsExist,
@@ -131,8 +145,10 @@ import {
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
+import { createAgentActivityRouter } from './modules/agent_activity/agent-activity.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 import { mcpJsonBodyParser } from './modules/mcp/middlewares/mcp-body.middleware';
+import { releaseOnClientClose } from './libs/utils/release-on-close';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
 import {
@@ -169,6 +185,7 @@ export class Application {
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
+  private ttlSweeper: TtlSweeper | null = null;
   private scheduleRepairTimer: NodeJS.Timeout | null = null;
   private scheduleRepairPass: Promise<void> | null = null;
   private crawlingManagerContainer!: Container;
@@ -220,6 +237,9 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
+      configureEnvelopeFromSecret(appConfig.scopedJwtSecret, () =>
+        ConfigService.getInstance().getScopedJwtSecret(),
+      );
 
       // Ensure message broker topics/streams exist
       try {
@@ -355,6 +375,12 @@ export class Application {
       );
       this.outboxDispatcher.start();
 
+      // Mongo expires old notifications by itself; on PostgreSQL this does it (as the jobs role).
+      if (docStore() === 'postgres' && process.env.PG_JOBS_URL) {
+        this.ttlSweeper = new TtlSweeper(this.logger);
+        this.ttlSweeper.start();
+      }
+
       this.notificationContainer
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
@@ -366,6 +392,8 @@ export class Application {
       this.bootstrapNotificationBrokerConsumer();
       this.bootstrapMailBrokerConsumer();
       editionBoot.startWorkers(this.logger);
+
+      this.app.use(UNFRAMEABLE_PAGE_PATHS, noFraming);
 
       // Serve static frontend files\
       const publicDir = path.join(__dirname, 'public');
@@ -435,6 +463,16 @@ export class Application {
         if (_req.path.startsWith('/_next/') || buildAssetPath.test(_req.path)) {
           res.setHeader('Cache-Control', 'no-store');
           res.status(404).type('text/plain').send('Not Found');
+          return;
+        }
+
+        // Every workspace page is pre-rendered, so an unmatched /workspace/
+        // URL is a page this build does not have. The root shell would
+        // hydrate as `/` and redirect to /chat; serve the not-found page.
+        if (/^\/workspace\//.test(_req.path)) {
+          res.status(404).sendFile(path.join(publicDir, '404.html'), {
+            headers: { 'Cache-Control': 'no-cache' },
+          });
           return;
         }
 
@@ -521,11 +559,31 @@ export class Application {
       cors({
         origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
-        exposedHeaders: ['x-session-token', 'content-disposition'],
+        exposedHeaders: [
+          'x-session-token',
+          'content-disposition',
+          'etag',
+          'accept-ranges',
+          'content-range',
+          'content-length',
+        ],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'x-request-id', 'client-name']
+        allowedHeaders: [
+          'Content-Type',
+          'Authorization',
+          'x-session-token',
+          'x-request-id',
+          'client-name',
+          'x-record-content-open',
+          'if-none-match',
+          'range',
+          'if-range',
+        ]
       }),
     );
+
+    // One access line per request; before the body parsers so their 400/413 are logged too.
+    this.app.use(accessLog());
 
     // Body parsing. /mcp has its own, smaller limit, and it must come first:
     // a JSON parser skips a body an earlier one has read, and one that came
@@ -534,36 +592,6 @@ export class Application {
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
-
-    // Logging — only log API requests, skip static assets.
-    // 'combined' logs the full request URL, and OAuth callbacks arrive as
-    // ?code=<authorization code> — a credential exchangeable for tokens by
-    // whoever reads the log. Same format, with those values redacted.
-    morgan.token('url-redacted', (req: IncomingMessage) =>
-      redactSensitiveQueryParams((req as { originalUrl?: string; url?: string }).originalUrl ?? req.url ?? ''),
-    );
-    // The Referer is client-supplied and can itself be an OAuth callback or a
-    // presigned URL, so it carries the same credentials the request line does.
-    morgan.token('referrer-redacted', (req: IncomingMessage) => {
-      const referrer = req.headers.referer ?? req.headers.referrer;
-      return typeof referrer === 'string'
-        ? redactSensitiveQueryParams(referrer)
-        : '-';
-    });
-    const combinedRedacted =
-      ':remote-addr - :remote-user [:date[clf]] ":method :url-redacted ' +
-      'HTTP/:http-version" :status :res[content-length] ":referrer-redacted" ' +
-      '":user-agent"';
-    this.app.use(
-      morgan(combinedRedacted, {
-        stream: {
-          write: (message: string) => this.logger.info(message.trim()),
-        },
-        // Evaluated after the response: a mounted router has rewritten req.path
-        // to its own mount-relative path by then, originalUrl keeps the full one.
-        skip: (req) => !isApiPath(req.originalUrl.split('?')[0] ?? ''),
-      }),
-    );
 
     // Global rate limiter - applies to all routes
     this.app.use(
@@ -671,11 +699,26 @@ export class Application {
       createSemanticSearchRouter(this.esAgentContainer),
     );
 
+    // chunks with citations for developers' own RAG; stores nothing
+    this.app.use(
+      '/api/v1/retrieve',
+      createRetrieveRouter(this.esAgentContainer),
+    );
+
     // code-graph status for the dashboard (repos and their graph status)
     this.app.use(
       '/api/v1/code-graph',
       createCodeGraphRouter(this.esAgentContainer),
     );
+
+    // push a local repository to be indexed into the code graph (proxy to the connectors service)
+    this.app.use(
+      '/api/v1/local-repos',
+      createLocalReposRouter(this.tokenManagerContainer),
+    );
+
+    // the graph explorer's reads: expand and revalidate (permission-aware, never cached)
+    this.app.use('/api/v1/graph', createGraphViewRouter(this.esAgentContainer));
 
     // enterprise search connectors routes — pass the crawling container
     // whole so the route factory can resolve any crawling-side service it
@@ -723,6 +766,11 @@ export class Application {
     this.app.use(
       '/v1',
       createOpenAIModelsRouter(this.configurationManagerContainer),
+    );
+    // OpenAI-compatible chat (models = configured chat LLMs); base URL `{origin}/api/v1/openai`.
+    this.app.use(
+      '/api/v1/openai',
+      createOpenAICompatRouter(this.esAgentContainer),
     );
     this.app.use(
       '/api/v1',
@@ -790,6 +838,12 @@ export class Application {
       createOAuthProviderRouter(this.oauthProviderContainer),
     );
 
+    // auth.md agent registration (service_auth)
+    this.app.use(
+      '/api/v1/agent',
+      createAgentRegistrationRouter(this.oauthProviderContainer),
+    );
+
     // OAuth Clients routes (OAuth app management)
     this.app.use(
       '/api/v1/oauth-clients',
@@ -832,6 +886,11 @@ export class Application {
     );
 
     this.app.use(
+      '/api/v1/agent-activity',
+      createAgentActivityRouter(this.oauthProviderContainer),
+    );
+
+    this.app.use(
       '/api/v1/personal-access-tokens',
       createPatRouter(this.oauthProviderContainer),
     );
@@ -847,6 +906,11 @@ export class Application {
     //          GET /.well-known/oauth-authorization-server
     //          GET /.well-known/oauth-protected-resource
     //          GET /.well-known/jwks.json
+    // How an agent gets a credential, for agents that look for /auth.md.
+    const authMd = createAuthMdRouter(this.oauthProviderContainer, (origin) =>
+      editionBoot.authMdSections(origin),
+    );
+    this.app.use(['/auth.md', '/.well-known/auth.md'], authMd);
     this.app.use(
       '/.well-known',
       createOIDCDiscoveryRouter(this.oauthProviderContainer),
@@ -900,11 +964,22 @@ export class Application {
 
   async start(): Promise<void> {
     try {
-      await new Promise<void>((resolve) => {
-        this.server.listen(this.port, () => {
+      await new Promise<void>((resolve, reject) => {
+        // listen reports a bind failure (port in use, address not available) as an 'error' event, not a throw.
+        const onError = (error: Error): void => {
+          this.server.off('error', onError);
+          reject(error);
+        };
+        const onListening = (): void => {
+          this.server.off('error', onError);
           this.logger.info(`Server started on port ${this.port}`);
           resolve();
-        });
+        };
+        this.server.once('error', onError);
+        // Every interface unless told otherwise (right inside a container); a process outside one sets loopback.
+        const host = process.env.PIPESHUB_BIND_HOST?.trim();
+        if (host) this.server.listen(this.port, host, onListening);
+        else this.server.listen(this.port, onListening);
       });
       await editionBoot.afterListen(this.logger, this.editionContainers());
     } catch (error) {
@@ -1040,6 +1115,8 @@ export class Application {
       // containers below are about to disconnect.
       await this.outboxDispatcher?.stop();
       this.outboxDispatcher = null;
+      await this.ttlSweeper?.stop();
+      this.ttlSweeper = null;
 
       await NotificationContainer.dispose();
       await StorageContainer.dispose();
@@ -1100,7 +1177,11 @@ export class Application {
             });
           }, SCHEDULE_REPAIR_INTERVAL_MS);
           this.scheduleRepairTimer.unref();
-          await migrations.runMigration({ scheduler, appConfig });
+          await migrations.runMigration({
+            scheduler,
+            appConfig,
+            dynamicClientOrg: () => dynamicClientOrg(),
+          });
           this.logger.info('Migration completed successfully');
         } catch (error) {
           this.logger.error('Failed to run migration', {
@@ -1182,6 +1263,13 @@ export class Application {
         slackEventsRateLimitPerMinute(),
       ),
       (req, res) => {
+        // A reset errors both proxyReq and proxyRes: log and close once.
+        const fail = (err: Error): void => {
+          if (res.destroyed) return;
+          this.logger.error('Slack events proxy error', { error: err.message });
+          if (res.headersSent) res.destroy();
+          else res.status(502).json({ error: 'Slack bot service unavailable' });
+        };
         const proxyReq = http.request(
           {
             hostname: 'localhost',
@@ -1192,17 +1280,17 @@ export class Application {
           },
           (proxyRes) => {
             res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+            // pipe() leaves `res` open when the bot's answer is cut midway.
+            proxyRes.on('error', fail);
             proxyRes.pipe(res);
+            // A client that leaves mid-answer must not leave the upstream read open.
+            releaseOnClientClose(res, proxyRes);
           },
         );
-
-        proxyReq.on('error', (err) => {
-          this.logger.error('Slack events proxy error', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          if (!res.headersSent) {
-            res.status(502).json({ error: 'Slack bot service unavailable' });
-          }
+        proxyReq.on('error', fail);
+        // A client that leaves before the bot answers must not leave the upstream request open.
+        res.on('close', () => {
+          if (!res.writableFinished && !proxyReq.destroyed) proxyReq.destroy();
         });
 
         req.pipe(proxyReq);

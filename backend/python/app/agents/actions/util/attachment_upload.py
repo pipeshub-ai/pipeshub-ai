@@ -21,6 +21,7 @@ __all__ = [
     "AttachmentTarget",
     "AttachmentUploadResult",
     "IAttachmentUploader",
+    "SupportsPreflight",
 ]
 
 
@@ -51,6 +52,19 @@ class AttachmentUploadResult:
     success: bool
     platform_id: str | None = None  # e.g. Slack file ID, SF ContentDocument ID
     error: str | None = None
+    # Link a person can open, when the platform returns one.
+    platform_url: str | None = None
+    # Name the platform stored the file under, when it differs from `filename`.
+    stored_filename: str | None = None
+    mime_type: str | None = None
+
+    @property
+    def is_image(self) -> bool:
+        return bool(self.mime_type and self.mime_type.startswith("image/"))
+
+    @property
+    def display_name(self) -> str:
+        return self.stored_filename or self.filename
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -60,6 +74,10 @@ class AttachmentUploadResult:
         }
         if self.platform_id is not None:
             d["platform_id"] = self.platform_id
+        if self.platform_url:
+            d["url"] = self.platform_url
+        if self.stored_filename and self.stored_filename != self.filename:
+            d["stored_as"] = self.stored_filename
         if self.error:
             d["error"] = self.error
         return d
@@ -84,4 +102,17 @@ class IAttachmentUploader(Protocol):
         attachments: Sequence[ResolvedRecordContent],
     ) -> list[AttachmentUploadResult]:
         """Upload `attachments` to `target`. Returns one result per attachment."""
+        ...
+
+
+@runtime_checkable
+class SupportsPreflight(Protocol):
+    """Optional uploader capability: check the destination before anything is written.
+
+    Returns an error message when uploads cannot succeed at all (e.g. attachments
+    are turned off on the site), else None. May lower `max_single_bytes` to the
+    destination's own limit so oversize files fail before the record is created.
+    """
+
+    async def preflight(self) -> str | None:
         ...

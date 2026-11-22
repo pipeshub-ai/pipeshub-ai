@@ -675,7 +675,6 @@ class TestGetServices:
         retrieval.llm = MagicMock()
         container.retrieval_service = AsyncMock(return_value=retrieval)
         container.graph_provider = AsyncMock(return_value=AsyncMock())
-        container.reranker_service.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
         container.logger.return_value = MagicMock()
         request.app.container = container
@@ -1367,8 +1366,8 @@ class TestGetWebSearchProviderUsage:
         assert body["agents"] == []
 
     @pytest.mark.asyncio
-    async def test_provider_exception_raises_400(self) -> None:
-        """Generic exception path returns 400 (matches the existing endpoint contract)."""
+    async def test_provider_exception_raises_500(self) -> None:
+        """A failure of ours is a 500 raised from it (it was a 400, which read as the caller's mistake)."""
         from app.api.routes.agent import get_web_search_provider_usage
 
         graph_provider = AsyncMock()
@@ -1383,7 +1382,8 @@ class TestGetWebSearchProviderUsage:
             with pytest.raises(HTTPException) as exc_info:
                 await get_web_search_provider_usage(request, "serper")
 
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 500
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
 
     @pytest.mark.asyncio
     async def test_http_exception_propagates_unchanged(self) -> None:

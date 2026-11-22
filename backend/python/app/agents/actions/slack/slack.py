@@ -39,6 +39,7 @@ from app.connectors.core.registry.tool_builder import (
 from app.connectors.core.registry.types import DocumentationLink
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
+from app.utils.oauth_errors import RATE_LIMITED_ERROR_CODES, TEMPORARY_ERROR_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -210,18 +211,17 @@ _SLACK_ERROR_EXPLANATIONS: Dict[str, str] = {
     "time_in_past": "The scheduled time is in the past. Pick a time in the future.",
     "time_too_far": "Slack can only schedule messages up to 120 days ahead. Pick an earlier time.",
 }
-_SLACK_TEMPORARY_ERRORS = {"fatal_error", "internal_error", "service_unavailable", "request_timeout"}
 _SLACK_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _explain_slack_error(code: str, status_code: int | None, retry_after: str | None) -> str:
     """Plain-language failure with a next step, keyed on Slack's error code."""
-    if code in ("ratelimited", "rate_limited") or status_code == HTTPStatus.TOO_MANY_REQUESTS:
+    if code in RATE_LIMITED_ERROR_CODES or status_code == HTTPStatus.TOO_MANY_REQUESTS:
         wait = f"Wait {retry_after} seconds" if str(retry_after or "").isdigit() else "Wait a minute"
         return f"Slack is limiting how fast requests can be made. {wait} and try again."
     if code in _SLACK_ERROR_EXPLANATIONS:
         return _SLACK_ERROR_EXPLANATIONS[code]
-    if code in _SLACK_TEMPORARY_ERRORS or (status_code or 0) >= HTTPStatus.INTERNAL_SERVER_ERROR:
+    if code in TEMPORARY_ERROR_CODES or (status_code or 0) >= HTTPStatus.INTERNAL_SERVER_ERROR:
         return "Slack is having a temporary problem. Try again in a moment."
     return f"Slack refused the request (error code '{code}')."
 
@@ -1050,23 +1050,26 @@ class Slack:
         channel_id: str,
         thread_ts: Optional[str] = None,
         initial_comment: Optional[str] = None,
-    ) -> None:
+    ) -> tuple[int, list[str]]:
         """Resolve PipesHub records and upload them to Slack as files.
 
-        Failures are logged but do not raise — the parent tool has already
-        posted its primary message and any partial upload is still useful.
+        Failures do not raise — the parent tool has already posted its
+        primary message and any partial upload is still useful — but they are
+        returned, as ``(files uploaded, one line per failure)``, so the tool
+        can tell the model which files never reached Slack.
         """
         from app.agents.actions.util.attachment_upload import AttachmentTarget
         from app.agents.actions.util.attachments import emit_attachment_audit
 
         bundle = await resolve_attachments(self.chat_state, attachment_record_ids)
+        failures = [f"{f.ref}: {f.error}" for f in bundle.failures]
         if bundle.failures:
             logger.warning(
                 "Slack attachment resolution failures: %s",
                 [f.to_dict() for f in bundle.failures],
             )
         if not bundle.resolved:
-            return
+            return 0, failures
 
         uploader = SlackAttachmentUploader(client=self.client)
         target = AttachmentTarget(
@@ -1096,6 +1099,8 @@ class Slack:
             )
             if not r.success:
                 logger.warning("Slack file upload failed for %s: %s", r.filename, r.error)
+                failures.append(f"{r.filename}: {r.error}")
+        return sum(1 for r in results if r.success), failures
 
     async def _resolve_channel(self, channel: str) -> str:
         """Resolve a channel name (e.g., '#testing' or 'testing') to a channel ID (e.g., 'C1234567890').
@@ -3411,8 +3416,9 @@ class Slack:
         description=(
             "Upload files to a Slack channel. To upload inline text content (transcript, "
             "log, snippet) pass file_content and filename. To upload PipesHub records "
-            "(chat attachments, artifacts, KB files) pass their record IDs in "
-            "attachment_record_ids — you can use both in the same call. "
+            "(chat attachments, project files, artifacts, KB files) pass their record IDs in "
+            "attachment_record_ids: the original file is uploaded as stored, so never copy a "
+            "record's text into file_content to send it. You can use both in the same call. "
             "For plain text messages without files, use send_message instead."
         ),
         parameters=[
@@ -3467,8 +3473,9 @@ class Slack:
                 if not last_response.success:
                     return (last_response.success, last_response.to_json())
 
+            uploaded, failures = 0, []
             if attachment_record_ids:
-                await self._upload_attachments_to_slack(
+                uploaded, failures = await self._upload_attachments_to_slack(
                     attachment_record_ids=attachment_record_ids,
                     channel_id=chan,
                     initial_comment=initial_comment if not file_content else None,
@@ -3477,8 +3484,13 @@ class Slack:
             if last_response is None:
                 if not attachment_record_ids:
                     return (False, SlackResponse(success=False, error="Provide file_content+filename or attachment_record_ids.").to_json())
-                last_response = SlackResponse(success=True, data={"message": "Attachments uploaded"})
+                if not uploaded:
+                    error = "No file was uploaded: " + "; ".join(failures or ["unknown error"])
+                    return (False, SlackResponse(success=False, error=error).to_json())
+                last_response = SlackResponse(success=True, data={"message": f"{uploaded} file(s) uploaded"})
 
+            if failures:
+                last_response.message = "Some files were not uploaded: " + "; ".join(failures)
             return (last_response.success, last_response.to_json())
         except Exception as e:
             if "not_in_channel" in str(e):

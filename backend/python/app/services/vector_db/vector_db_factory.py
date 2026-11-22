@@ -28,6 +28,8 @@ class VectorDBFactory:
             return await VectorDBProviderFactory._create_opensearch(logger, config)
         if _type == "redis":
             return await VectorDBProviderFactory._create_redis(logger, config)
+        if _type == "pgvector":
+            return await VectorDBProviderFactory._create_pgvector(logger, config)
         raise ValueError(f"Unsupported vector DB service type: {service_type}")
 
     @staticmethod

@@ -1,6 +1,7 @@
 'use client';
 
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import type { AvailableFlag } from './api';
@@ -131,3 +132,5 @@ export const useLabsStore = create<LabsStore>()(
     { name: 'LabsStore' }
   )
 );
+
+resetStoreOnSessionEnd(useLabsStore);

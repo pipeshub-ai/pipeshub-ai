@@ -1,6 +1,7 @@
 """Bounded-concurrency helpers for the indexing pipeline."""
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -25,7 +26,43 @@ MAX_CONCURRENT_TABLES = 15
 MAX_CONCURRENT_ROW_BATCHES = 8
 MAX_CONCURRENT_PAGE_BUILDS = 4
 
+# Graph queries one fan-out (one query per record or per relation pair) runs at
+# once. Each concurrent query can open a new database connection, and a burst
+# wider than the server's accept backlog has its connects dropped until
+# aiohttp's 30s sock_connect fails them together ("Connection timeout to host").
+GRAPH_FANOUT_CONCURRENCY = 16
+
+# Default rows per row-description call; INDEXING_TABLE_ROW_BATCH_SIZE overrides it.
 TABLE_ROW_BATCH_SIZE = 50
+TABLE_ROW_BATCH_SIZE_MAX = 500
+
+
+_warned_bad_batch_size = False
+
+
+def table_row_batch_size() -> int:
+    """Rows per row-description call (``INDEXING_TABLE_ROW_BATCH_SIZE``, default 50).
+
+    A blank or non-numeric value reads as the default, a number above 500 is clamped to 500,
+    and a number below 1 (a typo that would mean one call per row) uses the default and logs a
+    warning, once. Smaller batches fail less often and cost more calls, each repeating the
+    table summary.
+    """
+    from app.utils.env_utils import env_int
+
+    global _warned_bad_batch_size  # noqa: PLW0603
+    value = env_int("INDEXING_TABLE_ROW_BATCH_SIZE", None)
+    if value is None:
+        return TABLE_ROW_BATCH_SIZE
+    if value < 1:
+        if not _warned_bad_batch_size:
+            _warned_bad_batch_size = True
+            logging.getLogger(__name__).warning(
+                "INDEXING_TABLE_ROW_BATCH_SIZE=%d is not a positive number; using the default %d",
+                value, TABLE_ROW_BATCH_SIZE,
+            )
+        return TABLE_ROW_BATCH_SIZE
+    return min(value, TABLE_ROW_BATCH_SIZE_MAX)
 
 
 def max_table_rows_for_llm() -> int:

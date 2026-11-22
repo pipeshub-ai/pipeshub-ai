@@ -43,6 +43,7 @@ from app.utils.pattern_match import (
     validate_grep_command,
     validate_pattern_match_command,
 )
+from tests.support.loop_clock import virtual_loop_time
 
 
 @pytest.fixture(autouse=True)
@@ -349,6 +350,20 @@ class TestResolveConnectorIds:
         )
         assert result == ["app-1", "app-3"]
 
+    @pytest.mark.asyncio
+    async def test_org_apps_are_listed_once_per_turn_and_an_empty_listing_is_not_kept(self) -> None:
+        from app.utils import turn_memo
+
+        graph_provider = AsyncMock()
+        graph_provider.get_org_apps = AsyncMock(side_effect=[[], [{"_key": "app-1"}]])
+
+        async def turn() -> list[list[str]]:
+            turn_memo.begin_turn()
+            return [await resolve_connector_ids_for_search(graph_provider, "org-1", None) for _ in range(3)]
+
+        assert await asyncio.create_task(turn()) == [[], ["app-1"], ["app-1"]]
+        assert graph_provider.get_org_apps.await_count == 2
+
     @staticmethod
     def _org_with_switched_off_connector() -> MagicMock:
         apps = [
@@ -461,6 +476,31 @@ class TestRunPatternMatch:
         assert len(result) == 2
         vrids = {r["virtual_record_id"] for r in result}
         assert vrids == {"vr-1", "vr-2"}
+
+    @pytest.mark.asyncio
+    async def test_logs_one_info_line_however_many_connectors(self) -> None:
+        """Per-connector lines go to DEBUG; an answer greps ~74 connectors."""
+        mock_storage = AsyncMock()
+        mock_storage.find_records = AsyncMock(return_value=(True, json.dumps({"records": []})))
+        log = MagicMock()
+
+        with patch(
+            "app.utils.pattern_match.StoragePatternMatch",
+            return_value=mock_storage,
+        ):
+            await run_pattern_match(
+                config_service=AsyncMock(),
+                org_id="org-1",
+                user_id="user-1",
+                graph_provider=AsyncMock(),
+                command='grep -rli "test" .',
+                connector_ids=[f"conn-{i}" for i in range(5)],
+                logger_instance=log,
+            )
+
+        assert [c.args[0] for c in log.info.call_args_list] == [
+            "Pattern match total raw records: %d"
+        ]
 
     @pytest.mark.asyncio
     async def test_unsuccessful_find_records_skipped(self):
@@ -1809,8 +1849,8 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
             )
 
         command_used = mock_run.call_args.kwargs["command"]
-        # Zero-count lines are dropped so real matches are not crowded out of the output cap.
-        assert command_used == 'grep -rli "budget" . | grep -v \':0$\''
+        # A file listing has no zero-count lines to crowd real matches out of the output cap.
+        assert command_used == 'grep -rli "budget" .'
 
 
     @pytest.mark.asyncio
@@ -2007,7 +2047,7 @@ class TestValidatePatternMatchCommand:
         'grep -rci "deploy\\|deployment\\|ci.cd\\|pipeline" .',
         'grep -rliZ "invoice\\|billing" . | xargs -0 grep -Hci "recurring\\|subscri"',
         'grep -rliZ "hierarch" . | xargs -0 grep -liZ "storage" | xargs -0 grep -Hci "pattern"',
-        'grep "$HOME" .',
+        'grep -r "$HOME" .',
         'rg -i "term" .',
         'egrep -rci "term" .',
         'fgrep -rci "term" .',
@@ -2052,6 +2092,8 @@ class TestValidatePatternMatchCommand:
         'grep -rli "x" "."',
         'grep -rli "x" . .',
         'grep -rli "x"',
+        'grep -rl "invoice" . | grep -l "overdue"',  # filters file names, not contents
+        'grep -l "invoice" .',  # not recursive: '.' is read as a file
     ])
     def test_rejects_everything_else(self, cmd):
         ok, reason = validate_pattern_match_command(cmd)
@@ -2517,7 +2559,7 @@ class TestExecutePatternMatchPipelineSkipValidation:
         mock_run.assert_called_once()
         command_used = mock_run.call_args.kwargs["command"]
         assert "xargs -0" in command_used
-        assert command_used.startswith('grep -rliZ "MCP" . | xargs -0 grep -ciH "server"')
+        assert command_used == 'grep -rliZ "MCP" . | xargs -0 grep -ciHl "server"'
 
     @pytest.mark.asyncio
     async def test_xargs_command_rejected_without_skip_validation(self):
@@ -3590,9 +3632,11 @@ class TestRunPatternMatchWithLlmGrep:
             await caller
 
     @pytest.mark.asyncio
-    async def test_a_slow_grep_cleanup_does_not_stretch_the_short_wait(self) -> None:
+    async def test_a_slow_grep_cleanup_does_not_stretch_the_short_wait(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The budget plus a bounded grace is all the caller waits; the rest of
         a slow teardown carries on in the background."""
+        # On a loop clock the test controls, so the wait is exact and a busy runner's stall cannot stretch it.
+        virtual_loop_time(monkeypatch)
         cleanup_done = asyncio.Event()
 
         async def _very_slow_cleanup() -> list[dict]:
@@ -3613,7 +3657,7 @@ class TestRunPatternMatchWithLlmGrep:
             )
         elapsed = asyncio.get_running_loop().time() - started
         assert result == [{"virtual_record_id": "vr-1"}]
-        assert elapsed < 1.0
+        assert elapsed == pytest.approx(0.25)  # the 0.05 s budget and the 0.2 s grace, not the 2.5 s teardown
         assert not cleanup_done.is_set()
         await asyncio.wait_for(cleanup_done.wait(), timeout=5)
 

@@ -18,7 +18,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import Connectors, PermissionModel
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.address_policy import public_only_for_scope
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    replace_action_item,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -38,6 +42,10 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     load_connector_filters,
 )
+from app.connectors.core.registry.folder_filter_action_item import (
+    FOLDER_FILTER_UNMATCHED_CODE,
+)
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.cifs.common.apps import CifsApp
 from app.connectors.sources.network_share.entities_processor import (
     NetworkShareEntitiesProcessor,
@@ -47,10 +55,12 @@ from app.connectors.sources.network_share.errors import (
     DirectoryListingError,
     NetworkShareAuthError,
     ShareListingError,
+    ShareWalkIncompleteError,
 )
 from app.connectors.sources.network_share.operations import (
     create_share_groups,
     reindex_records,
+    requeue_parked_records,
     stream_file,
     walk_shares,
 )
@@ -170,7 +180,7 @@ if TYPE_CHECKING:
             "https://docs.pipeshub.com/connectors/cifs/cifs",
             "pipeshub",
         ))
-        .add_filter_field(CommonFields.folder_paths_filter("share"))
+        .add_filter_field(CommonFields.folder_paths_filter("share", path_style="windows", wildcards=True))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files by creation date. Uses last-write time when the server omits created time."))
@@ -182,6 +192,10 @@ if TYPE_CHECKING:
     )\
     .build_decorator()
 class CifsConnector(BaseConnector):
+    REQUEUE_PARKED = True
+    # ConnectorFactory builds this connector's processor from this class.
+    processor_cls: type[NetworkShareEntitiesProcessor] = NetworkShareEntitiesProcessor
+
     def __init__(
         self,
         logger: Logger,
@@ -251,6 +265,7 @@ class CifsConnector(BaseConnector):
                 logger=self.logger,
                 config_service=self.config_service,
                 connector_instance_id=self.connector_id,
+                public_only=public_only_for_scope(self.scope),
             )
             self.data_source = CifsDataSource(client)
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -292,10 +307,30 @@ class CifsConnector(BaseConnector):
             data_source=self.data_source,
             record=record,
             display_name=self.display_name,
+            logger=self.logger,
         )
 
     async def run_sync(self) -> None:
-        await self._sync(prune=True)
+        try:
+            await self._sync(prune=True)
+        except NetworkShareAuthError as exc:
+            # The walk stops on a refused sign-in and removes nothing; say so, then fail the run.
+            await self._auth_error("Sign-in refused", str(exc))
+            raise
+        except ShareWalkIncompleteError as exc:
+            title = (
+                "Sync could not read the share"
+                if self._last_walk is not None and self._last_walk.unreadable
+                else "Some folders could not be read"
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title(title),
+                message=exc.message,
+                payload={"connectorId": self.connector_id, "connectorName": Connectors.CIFS.value},
+            )
+            raise
 
     async def run_incremental_sync(self) -> None:
         # The scheduler calls run_sync. There is no change journal, and a
@@ -303,6 +338,7 @@ class CifsConnector(BaseConnector):
         await self.run_sync()
 
     async def _sync(self, *, prune: bool) -> None:
+        self._last_walk = None
         if not self.data_source:
             raise ConnectionError("CIFS connector is not initialized.")
         self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -323,7 +359,7 @@ class CifsConnector(BaseConnector):
             creator_email=self.creator_email,
             description_prefix="CIFS share",
         )
-        unreadable = await walk_shares(
+        report = await walk_shares(
             data_source=self.data_source,
             processor=self.data_entities_processor,
             mapper=self.mapper,
@@ -340,17 +376,26 @@ class CifsConnector(BaseConnector):
             record_sync_point=self.record_sync_point,
             prune=prune,
         )
-        if unreadable:
-            await self.notify(
-                type=NotificationType.CONNECTOR_SYNC_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title=self._notification_title("Sync could not read the share"),
-                message=(
-                    f"Nothing could be listed in {', '.join(unreadable)}. "
-                    "Check that the server is reachable and the account still has access."
-                ),
-                payload={"connectorId": self.connector_id, "connectorName": Connectors.CIFS.value},
+        self._last_walk = report
+        if report.complete:
+            # Only a walk that read everything knows a pattern matched nothing.
+            replace_action_item(self, FOLDER_FILTER_UNMATCHED_CODE, report.unmatched_patterns_item())
+        if report.unreadable:
+            raise ShareWalkIncompleteError(
+                f"Nothing could be listed in {', '.join(report.unreadable)}. "
+                "Check that the server is reachable and the account still has access."
             )
+        if report.unread:
+            count = len(report.unread)
+            raise ShareWalkIncompleteError(
+                f"{count} {'folder or file' if count == 1 else 'folders or files'} could not be read. "
+                "What was synced from them before was kept; the next sync tries them again."
+            )
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """Only a walk that read everything may let a full sync unlink what it did not see."""
+        report = getattr(self, "_last_walk", None)
+        return report.coverage() if report is not None else FullSyncCoverage(complete=False)
 
     def handle_webhook_notification(self, notification: dict) -> None:
         raise NotImplementedError("CIFS change notify is not a webhook strategy")
@@ -360,6 +405,17 @@ class CifsConnector(BaseConnector):
             await self.data_source.close()
         self.data_source = None
         await self._release_thread_lease()
+
+    async def requeue_records(self, records: list[Record]) -> None:
+        if not self.data_source:
+            raise ConnectionError("CIFS connector is not initialized.")
+        await requeue_parked_records(
+            data_source=self.data_source,
+            processor=self.data_entities_processor,
+            records=records,
+            indexing_filters=self.indexing_filters,
+            logger=self.logger,
+        )
 
     async def reindex_records(self, record_results: list[Record]) -> None:
         if not self.data_source:
@@ -422,14 +478,11 @@ class CifsConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         **kwargs: object,
     ) -> CifsConnector:
-        processor = NetworkShareEntitiesProcessor(logger, data_store_provider, config_service)
-        org_id = kwargs.get("org_id")
-        if org_id:
-            processor.org_id = org_id
-        await processor.initialize()
+        # ConnectorFactory builds and initializes the processor from processor_cls.
+        # Building a second one here orphaned the factory's, and its Redis connection.
         return cls(
             logger,
-            processor,
+            data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,

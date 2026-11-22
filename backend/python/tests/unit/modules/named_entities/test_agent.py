@@ -20,6 +20,7 @@ from app.modules.named_entities.strategies.base import (
 )
 from app.modules.named_entities.strategies.single_call import parse_submission_text
 from app.modules.named_entities.text import TextUnit
+from app.services.llm_gateway.gateway import ProviderUnavailableError
 from app.utils.concurrency import indexing_llm_slots_remaining
 from tests.unit.agents.adapter.support.scripted_transport import (
     ScriptedStep,
@@ -288,6 +289,16 @@ async def test_llm_error_before_first_turn_is_flagged() -> None:
     assert result.termination_reason == "llm_error"
     assert result.failed_before_first_turn is True
     assert result.mentions == []
+    # Not the provider: a failure of this kind is retried, not waited out.
+    assert (result.windows_failed, result.windows_unavailable) == (0, 0)
+
+
+async def test_a_run_ended_by_a_provider_outage_counts_as_one_unavailable_call() -> None:
+    transport = ScriptedTransport([ScriptedStep(error=ProviderUnavailableError("down", provider="agent-outage-test"))])
+    doc = ExtractionDocument(units=[TextUnit(0, "b", "Acme signed")], token_estimate=4)
+    result = await AgenticExtractionStrategy().extract(doc, [], _ctx(transport))
+    assert result.termination_reason == "llm_error"
+    assert (result.windows_failed, result.windows_unavailable) == (1, 1)
 
 
 def test_truncated_submission_keeps_complete_items() -> None:
@@ -444,3 +455,29 @@ async def test_a_rejected_last_submit_gets_a_turn_to_fix_it() -> None:
     result = await AgenticExtractionStrategy().extract(doc, [], _ctx(transport))
     assert (result.termination_reason, result.turns) == ("finish_ok", 2)
     assert [mention.surface for mention in result.mentions] == ["Acme"]
+
+
+async def test_agent_turns_are_sized_by_their_input_for_the_breaker(monkeypatch) -> None:
+    """The size class of a call is its input's: a big agent turn is not "small"."""
+    from app.services.llm_gateway import gateway as gateway_module
+    from app.services.llm_gateway.fleet_breaker import LARGE, SMALL, size_class
+
+    seen: list[int] = []
+
+    class Spy:
+        async def call(self, call, **kwargs):  # noqa: ANN202
+            seen.append(kwargs["est_tokens"])
+            return await call()
+
+    class Probe:
+        provider, model_name = "p", "m"
+
+        async def complete(self, messages, **kwargs):  # noqa: ANN202
+            return "ok"
+
+    monkeypatch.setattr("app.modules.named_entities.strategies.agent.transport.get_llm_gateway", lambda: Spy())
+    transport = SlottedTransport(Probe())
+    await transport.complete([UserMessage(content="hi")])
+    await transport.complete([UserMessage(content="x" * 40_000)], system="s" * 100)
+    assert [size_class(n) for n in seen] == [SMALL, LARGE]
+    assert gateway_module.estimate_tokens({"type": "object", "properties": {"a": {"type": "string"}} }) > 0

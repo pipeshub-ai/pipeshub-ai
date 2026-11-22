@@ -13,7 +13,19 @@ env var has a typo in it is worse than falling back to the shipped default.
 
 from __future__ import annotations
 
+import logging
 import os
+
+
+def hf_hub_offline() -> bool:
+    """True iff `huggingface_hub` would run in offline mode.
+
+    Mirrors its own parsing: `HF_HUB_OFFLINE`, falling back to
+    `TRANSFORMERS_OFFLINE` when the former is unset or empty, upper-cased and
+    compared to `1/ON/YES/TRUE` with no `strip()`.
+    """
+    value = os.environ.get("HF_HUB_OFFLINE") or os.environ.get("TRANSFORMERS_OFFLINE") or ""
+    return value.upper() in {"1", "ON", "YES", "TRUE"}
 
 
 def env_bool(name: str, default: bool) -> bool:  # noqa: FBT001
@@ -91,6 +103,27 @@ def env_int(
     return value
 
 
+def env_positive_int(name: str, default: int) -> int:
+    """Value of the env var `name` when it is an integer >= 1, else `default`.
+
+    For caps, where clamping a typo'd 0 to some floor would silently reject
+    nearly all traffic. A set but unusable value is logged; blank counts as unset.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        value = 0
+    if value < 1:
+        logging.getLogger(__name__).warning(
+            "%s=%r is not a positive integer; using the default %d", name, raw, default,
+        )
+        return default
+    return value
+
+
 def uvicorn_worker_healthcheck_timeout() -> int:
     """Seconds a uvicorn worker may go without answering its supervisor before
     it is killed and replaced (`UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS`).
@@ -103,4 +136,20 @@ def uvicorn_worker_healthcheck_timeout() -> int:
     return env_int("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", 60, lo=5) or 60
 
 
-__all__ = ["env_bool", "env_int", "uvicorn_worker_healthcheck_timeout"]
+def bind_host() -> str:
+    """Address a service listens on: ``PIPESHUB_BIND_HOST``, else every interface (right inside a container, whose network
+    is its own). A process started outside a container sets loopback here."""
+    return (os.getenv("PIPESHUB_BIND_HOST") or "").strip() or "0.0.0.0"
+
+
+def bind_port(default: int, service_var: str | None = None) -> int:
+    """Port a service listens on: ``PIPESHUB_BIND_PORT`` (one per process, so a supervisor can pick it), else the service's own
+    port variable, else ``default``. A blank or malformed value counts as unset, so it never stops the service."""
+    for name in ("PIPESHUB_BIND_PORT", service_var):
+        port = env_int(name) if name else None
+        if port is not None and 0 < port < 65536:
+            return port
+    return default
+
+
+__all__ = ["bind_host", "bind_port", "env_bool", "env_int", "env_positive_int", "uvicorn_worker_healthcheck_timeout"]

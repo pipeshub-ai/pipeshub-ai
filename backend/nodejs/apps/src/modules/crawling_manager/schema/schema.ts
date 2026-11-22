@@ -393,19 +393,17 @@ CrawlingManagerConfigSchema.index({ isGloballyEnabled: 1 });
 CrawlingManagerConfigSchema.index({ lastStatusUpdate: 1 });
 
 // Validation middleware
-CrawlingManagerConfigSchema.pre('save', function (next) {
+CrawlingManagerConfigSchema.pre('save', function () {
   // Validate schedule configuration
   const schedule = this.crawlingSchedule;
   if (!Object.values(CrawlingScheduleType).includes(schedule.scheduleType)) {
-    return next(new Error(`Invalid schedule type: ${schedule.scheduleType}`));
+    throw new Error(`Invalid schedule type: ${schedule.scheduleType}`);
   }
 
   // Update lastStatusUpdate when status changes
   if (this.isModified('currentStatus')) {
     this.lastStatusUpdate = new Date();
   }
-
-  next();
 });
 
 

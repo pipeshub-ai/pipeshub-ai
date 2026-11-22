@@ -1,0 +1,364 @@
+"""Which members of the indexing consumer groups follow the stored-write protocol.
+
+An indexing pod that writes the stored record by compare-and-set names its Kafka ``client_id`` and
+its Redis consumer with ``/sp4`` (``storage_protocol``). A live member without it is an older pod
+whose in-place writes do not invalidate a servable run first. This module finds such members and
+publishes the result, so that:
+
+* Node refuses a Labs save that turns artifact reads on while one is live (409);
+* artifact readers fall back to the stored record (``membership_hold``) while one is live;
+* the retirement sweep and the stray pass pause.
+
+The result is published to ``/services/platform/artifactRollout/membership/<holder>``: one entry
+per writer, ``{checkedAt, untagged, groupsChecked, groupsExpected}``, ``checkedAt`` being when the
+check *started*, each with a TTL. ``groupsExpected`` is every indexing consumer group the writer is
+configured to run, whether its consumer has started or not (``expect_groups``). A reader takes the
+union of untagged members over the fresh entries, so a clean entry written by an ex-leader cannot
+hide the new leader's finding; a clean result needs a fresh entry that checked every group it
+expected. Without one the result is stale, which fails safe. The entries are plaintext (``UNENCRYPTED_PREFIXES``) so Node can read
+them without the Python encryption.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+import weakref
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+from uuid import uuid4
+
+from app.services.messaging.storage_protocol import is_tagged
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+    from logging import Logger
+
+MEMBERSHIP_DIRECTORY = "/services/platform/artifactRollout/membership/"
+#: One check every this many seconds, on its own timer.
+CHECK_PERIOD_SECONDS = 30.0
+#: An entry older than this (ms, on the checker's clock) is stale: three periods.
+STALE_AFTER_MS = 90_000
+#: Entries expire on their own, so a dead holder drops out.
+ENTRY_TTL_SECONDS = 300
+#: A Redis consumer with nothing pending and idle at least this long is not live.
+REDIS_IDLE_LIVE_MS = 10 * 60 * 1000
+#: How long an evaluated result is reused by a reader.
+READER_CACHE_SECONDS = 30.0
+
+#: Kafka's answer for a group that does not exist (no consumer has ever joined it).
+GROUP_ID_NOT_FOUND = 69
+
+_registered: dict[str, set[str]] = {}
+_expected: dict[str, set[str]] = {}
+
+
+def register_group(group_id: str, topics: list[str]) -> None:
+    """Record that this process consumes *topics* in *group_id* (every indexing consumer calls this)."""
+    _registered.setdefault(group_id, set()).update(topics)
+
+
+def registered_groups() -> dict[str, list[str]]:
+    return {group: sorted(topics) for group, topics in _registered.items()}
+
+
+def expect_groups(groups: dict[str, list[str]]) -> None:
+    """Declare every indexing consumer group this process is configured to run, from its configuration rather than from the
+    consumers started so far (a stage consumer whose topics are missing starts later). Nothing is published before this."""
+    for group, topics in groups.items():
+        _expected.setdefault(group, set()).update(topics)
+
+
+def expected_groups() -> dict[str, list[str]]:
+    return {group: sorted(topics) for group, topics in _expected.items()}
+
+
+def groups_to_check() -> dict[str, list[str]]:
+    """The expected groups and any other registered one; none until the expected groups are declared."""
+    if not _expected:
+        return {}
+    merged: dict[str, set[str]] = {}
+    for source in (_expected, _registered):
+        for group, topics in source.items():
+            merged.setdefault(group, set()).update(topics)
+    return {group: sorted(topics) for group, topics in merged.items()}
+
+
+def reset_registered_groups() -> None:
+    _registered.clear()
+    _expected.clear()
+
+
+@dataclass(frozen=True)
+class MembershipResult:
+    checked_at: int
+    untagged: list[str] = field(default_factory=list)
+    groups_checked: list[str] = field(default_factory=list)
+    groups_expected: list[str] = field(default_factory=list)
+    #: Untagged members with idle consumers counted as live (``None``: not measured, which fails closed for the swap check).
+    untagged_any: list[str] | None = None
+
+    def entry(self) -> dict[str, Any]:
+        entry = {
+            "checkedAt": self.checked_at, "untagged": self.untagged,
+            "groupsChecked": self.groups_checked, "groupsExpected": self.groups_expected,
+        }
+        if self.untagged_any is not None:
+            entry["untaggedAny"] = self.untagged_any
+        return entry
+
+
+@dataclass(frozen=True)
+class MembershipVerdict:
+    ok: bool
+    untagged: tuple[str, ...] = ()
+    reason: str | None = None  # "stale" or "untagged"
+
+
+def _proves_every_expected_group(entry: dict[str, Any]) -> bool:
+    """An entry that does not name what it expected (an older writer), or checked fewer groups than that, proves nothing
+    about the groups it left out."""
+    expected, checked = entry.get("groupsExpected"), entry.get("groupsChecked")
+    if not isinstance(expected, list) or not expected or not isinstance(checked, list):
+        return False
+    return {str(g) for g in expected} <= {str(g) for g in checked}
+
+
+def _names(value: Any) -> set[str]:  # noqa: ANN401
+    return {str(n) for n in value} if isinstance(value, list) else set()
+
+
+def evaluate(entries: list[Any], now_ms: int, stale_ms: int = STALE_AFTER_MS) -> MembershipVerdict:
+    """The union of the untagged members over the fresh entries. Stale when no fresh entry checked every group it expected,
+    or when a group some fresh entry expects was checked by none (a new leader expects a group an ex-leader's entry did not)."""
+    untagged: set[str] = set()
+    expected: set[str] = set()
+    checked: set[str] = set()
+    proven = 0
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("checkedAt"), (int, float)):
+            continue
+        if now_ms - entry["checkedAt"] > stale_ms:
+            continue
+        proven += _proves_every_expected_group(entry)
+        untagged |= _names(entry.get("untagged"))
+        expected |= _names(entry.get("groupsExpected"))
+        checked |= _names(entry.get("groupsChecked"))
+    if untagged:
+        return MembershipVerdict(False, tuple(sorted(untagged)), "untagged")
+    if proven == 0 or not expected <= checked:
+        return MembershipVerdict(False, (), "stale")
+    return MembershipVerdict(True)
+
+
+def evaluate_strict(entries: list[Any], now_ms: int, stale_ms: int = STALE_AFTER_MS) -> MembershipVerdict:
+    """:func:`evaluate`, with idle consumers counted as live, for the checks that guard a deletion. An entry that did not
+    measure that (an older writer) proves nothing, so the verdict is stale."""
+    fresh = [
+        e for e in entries
+        if isinstance(e, dict) and isinstance(e.get("checkedAt"), (int, float)) and now_ms - e["checkedAt"] <= stale_ms
+    ]
+    if any(not isinstance(e.get("untaggedAny"), list) for e in fresh):
+        return MembershipVerdict(False, (), "stale")
+    any_untagged = sorted({n for e in fresh for n in _names(e.get("untaggedAny"))})
+    if any_untagged:
+        return MembershipVerdict(False, tuple(any_untagged), "untagged")
+    return evaluate(entries, now_ms, stale_ms)
+
+
+async def kafka_untagged(admin_factory: Callable[[], Any], groups: list[str]) -> list[str]:
+    """Client ids of live members of *groups* without the tag.
+
+    aiokafka 0.14's ``describe_consumer_groups`` returns the raw ``DescribeGroupsResponse_v<N>``
+    objects, one per coordinator. ``to_object()`` names the fields the same way in every version:
+    ``groups`` is a list of ``{error_code, group, members: [{member_id, client_id, ...}]}``. A group
+    the broker reports with an error, or a response of another shape, raises: the check then
+    publishes nothing and readers hold.
+    """
+    admin = admin_factory()
+    await admin.start()
+    try:
+        # One group per request: aiokafka 0.14 decodes a v3 answer with the v2 layout (``DescribeGroupsRequest_v3``'s
+        # RESPONSE_TYPE), which lacks authorized_operations, so every group after the first in one answer is misread.
+        described = [response for group in groups for response in await admin.describe_consumer_groups([group])]
+    finally:
+        await admin.close()
+    names: list[str] = []
+    for response in described:
+        for group in response.to_object()["groups"]:
+            if group["error_code"] == GROUP_ID_NOT_FOUND:
+                continue  # a stage group no consumer has joined yet has no members
+            if group["error_code"] != 0:
+                raise RuntimeError(
+                    f"describing consumer group {group['group']!r} failed with error code {group['error_code']}"
+                )
+            for member in group["members"]:
+                client_id = str(member["client_id"] or "")
+                if client_id and not is_tagged(client_id):
+                    names.append(client_id)
+    return sorted(set(names))
+
+
+async def redis_untagged(
+    redis: Any, group_streams: dict[str, list[str]], *, idle_live_ms: int | None = REDIS_IDLE_LIVE_MS  # noqa: ANN401
+) -> list[str]:
+    """Names of live consumers without the tag. A consumer is live when it has entries pending,
+    or was idle for less than ten minutes (a parked blocking read shows a small idle time).
+    ``idle_live_ms=None`` counts every consumer of the group as live, however long it has been idle: an idle older
+    pod can still hold a sweep lease and run its sweeps."""
+    names: set[str] = set()
+    for group, streams in group_streams.items():
+        for stream in streams:
+            try:
+                consumers = await redis.xinfo_consumers(stream, group)
+            except Exception as exc:
+                # A stream with no such group yet has no members.
+                if "NOGROUP" in str(exc) or "no such key" in str(exc).lower():
+                    continue
+                raise
+            for consumer in consumers:
+                raw = consumer.get("name", consumer.get(b"name"))
+                name = raw.decode() if isinstance(raw, bytes) else str(raw)
+                pending = int(consumer.get("pending", consumer.get(b"pending", 0)))
+                idle = int(consumer.get("idle", consumer.get(b"idle", 0)))
+                if is_tagged(name):
+                    continue
+                if pending > 0 or idle_live_ms is None or idle < idle_live_ms:
+                    names.add(name)
+    return sorted(names)
+
+
+class MembershipPublisher:
+    """Runs the check on its own timer and publishes the holder's entry.
+
+    ``check`` returns the untagged names for the groups registered in this process. ``put`` stores
+    ``(key, value, ttl)``. The timer does not depend on any sweep or lap, so a slow or paused sweep
+    never makes the entry stale.
+    """
+
+    def __init__(
+        self,
+        logger: Logger,
+        check: Callable[[dict[str, list[str]]], Awaitable[list[str]]],
+        put: Callable[[str, dict[str, Any], int], Awaitable[None]],
+        *,
+        holder: str | None = None,
+        is_leader: Callable[[], Awaitable[bool]] | None = None,
+        check_any: Callable[[dict[str, list[str]]], Awaitable[list[str]]] | None = None,
+        now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+        groups: Callable[[], dict[str, list[str]]] = groups_to_check,
+        expected: Callable[[], dict[str, list[str]]] = expected_groups,
+    ) -> None:
+        self.logger = logger
+        self._check = check
+        self._check_any = check_any
+        self._put = put
+        self.holder = holder or uuid4().hex[:12]
+        self._is_leader = is_leader
+        self._now_ms = now_ms
+        self._groups = groups
+        self._expected = expected
+
+    async def publish_once(self) -> MembershipResult | None:
+        """One check and one write. None when this process is not the leader, has no registered group or the check failed
+        (nothing is written then, so the entry goes stale and readers hold)."""
+        if self._is_leader is not None and not await self._is_leader():
+            return None
+        started = self._now_ms()
+        groups, expected = self._groups(), sorted(self._expected())
+        if not groups or not expected or not set(expected) <= set(groups):
+            # The configured groups are not declared yet: a check of fewer groups would publish "all clear" about members
+            # of the others it never looked at.
+            self.logger.warning("Indexing membership not published: this process has not declared its consumer groups yet")
+            return None
+        try:
+            untagged = await self._check(groups)
+        except Exception as exc:
+            self.logger.warning("Indexing membership check failed: %s: %s", type(exc).__name__, exc)
+            return None
+        untagged_any = None
+        if self._check_any is not None:
+            try:
+                untagged_any = sorted(set(await self._check_any(groups)))
+            except Exception as exc:
+                self.logger.warning("Indexing membership check (idle members included) failed: %s: %s", type(exc).__name__, exc)
+        result = MembershipResult(started, sorted(set(untagged)), sorted(groups), expected, untagged_any)
+        await self._put(f"{MEMBERSHIP_DIRECTORY}{self.holder}", result.entry(), ENTRY_TTL_SECONDS)
+        if result.untagged:
+            self.logger.warning(
+                "Indexing members that do not follow the stored-write protocol: %s", ", ".join(result.untagged),
+            )
+        return result
+
+    async def run(self, period_seconds: float = CHECK_PERIOD_SECONDS) -> None:
+        while True:
+            try:
+                await self.publish_once()
+            except Exception as exc:
+                # The entry was not stored: it goes stale and readers hold, so say why.
+                self.logger.warning("Indexing membership publish failed: %s: %s", type(exc).__name__, exc)
+            await asyncio.sleep(period_seconds)
+
+
+class MembershipReader:
+    """The evaluated membership result for artifact readers, cached for ``READER_CACHE_SECONDS``.
+
+    Caches the verdict, not the entries. ``read_entries`` lists and reads the directory.
+    """
+
+    def __init__(
+        self,
+        read_entries: Callable[[], Awaitable[list[Any]]],
+        *,
+        now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._read = read_entries
+        self._now_ms = now_ms
+        self._monotonic = monotonic
+        self._cached: tuple[float, MembershipVerdict] | None = None
+        self._strict = MembershipVerdict(False, (), "stale")
+
+    async def verdict(self) -> MembershipVerdict:
+        now = self._monotonic()
+        if self._cached is not None and now - self._cached[0] < READER_CACHE_SECONDS:
+            return self._cached[1]
+        try:
+            entries = await self._read()
+            verdict = evaluate(entries, self._now_ms())
+            self._strict = evaluate_strict(entries, self._now_ms())
+        except Exception:
+            verdict = self._strict = MembershipVerdict(False, (), "stale")
+        self._cached = (now, verdict)
+        return verdict
+
+    async def strict_verdict(self) -> MembershipVerdict:
+        """The verdict with idle consumers counted as live (see :func:`evaluate_strict`), cached with :meth:`verdict`."""
+        await self.verdict()
+        return self._strict
+
+
+async def read_entries_from_config(config_service: Any) -> list[Any]:  # noqa: ANN401
+    """The membership entries, read through the configuration service (uncached: the reader caches the verdict)."""
+    keys = await config_service.list_keys_in_directory(MEMBERSHIP_DIRECTORY)
+    return [await config_service.get_config(key, use_cache=False) for key in keys]
+
+
+async def publish_entry(config_service: Any, key: str, entry: dict[str, Any], ttl_seconds: int) -> None:  # noqa: ANN401
+    """Store one holder's entry with its TTL."""
+    if not await config_service.set_config(key, entry, ttl_seconds=ttl_seconds, keep_in_cache=False):
+        raise RuntimeError("the membership entry was not stored")
+
+
+_READERS: weakref.WeakKeyDictionary[Any, MembershipReader] = weakref.WeakKeyDictionary()
+
+
+def reader_for(config_service: Any) -> MembershipReader | None:  # noqa: ANN401
+    """The process-wide reader for a configuration service (None without one)."""
+    if config_service is None:
+        return None
+    reader = _READERS.get(config_service)
+    if reader is None:
+        reader = MembershipReader(lambda: read_entries_from_config(config_service))
+        _READERS[config_service] = reader
+    return reader

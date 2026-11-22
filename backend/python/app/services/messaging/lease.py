@@ -18,6 +18,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from app.core.org_context import spawn_detached
 from app.services.messaging.redis_errors import report_redis_error
 
 if TYPE_CHECKING:
@@ -128,7 +129,7 @@ class LeaseRenewer:
     def start(self) -> None:
         if self._task is None or self._task.done():
             self._generation += 1
-            self._task = asyncio.create_task(self._run(self._generation))
+            self._task = spawn_detached(self._run(self._generation))
 
     # Stopping only cancels the renewal task; this bounds a cancellation that hangs.
     STOP_TIMEOUT_S = 10.0

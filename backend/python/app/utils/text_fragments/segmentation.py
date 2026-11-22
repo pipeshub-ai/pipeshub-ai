@@ -10,8 +10,10 @@ terms are never cut inside a unit.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
+from itertools import islice
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,6 +29,11 @@ _UNSPACED_RANGES: tuple[tuple[int, int], ...] = (
     (0x20000, 0x2FA1F),  # CJK extensions B and beyond
 )
 
+# One match per character for which `str.isalnum()` is true.
+_ALNUM = re.compile(r"[^\W_]")
+_UNSPACED_CHAR = re.compile("[" + "".join(f"{chr(low)}-{chr(high)}" for low, high in _UNSPACED_RANGES) + "]")
+_ASCII_NON_WORD = "".join(chr(code) for code in range(128) if not (chr(code).isalnum() or chr(code) == "_"))
+
 
 def is_unspaced_script(char: str) -> bool:
     code = ord(char)
@@ -40,6 +47,16 @@ def is_word_char(char: str) -> bool:
     trimming either off a term edge would leave the edge inside a word.
     """
     return char.isalnum() or char == "_" or unicodedata.category(char).startswith("M")
+
+
+def _is_internal_apostrophe(token: str, index: int) -> bool:
+    return (
+        token[index] in ("'", "\u2019")
+        and index > 0
+        and index + 1 < len(token)
+        and is_word_char(token[index - 1])
+        and is_word_char(token[index + 1])
+    )
 
 
 @dataclass(frozen=True)
@@ -78,11 +95,16 @@ class WordSegmenter:
                 units.extend(self._units_of_token(token, token_start))
         if not units:
             return None
-        alnum = sum(1 for ch in block if ch.isalnum())
+        alnum = sum(map(str.isalnum, block))
         return SegmentedBlock(text=block, units=tuple(units), alnum_count=alnum)
 
     def is_eligible(self, block: SegmentedBlock) -> bool:
         return block.alnum_count >= self._config.min_term_alnum_chars
+
+    def is_eligible_text(self, block: str) -> bool:
+        """`is_eligible(segment(block))` without segmenting: enough alphanumerics imply a unit."""
+        needed = self._config.min_term_alnum_chars
+        return sum(1 for _ in islice(_ALNUM.finditer(block), needed)) >= needed
 
     def head_span(self, block: SegmentedBlock) -> tuple[int, int]:
         """Unit indexes `(first, last)` of the leading term."""
@@ -119,7 +141,13 @@ class WordSegmenter:
 
     @staticmethod
     def _units_of_token(token: str, offset: int) -> list[Unit]:
-        if any(is_unspaced_script(ch) for ch in token):
+        if token.isascii():
+            # ASCII has no unspaced scripts or marks, so word characters are [A-Za-z0-9_].
+            first = len(token) - len(token.lstrip(_ASCII_NON_WORD))
+            if first == len(token):
+                return []
+            return [Unit(offset + first, offset + len(token.rstrip(_ASCII_NON_WORD)), unspaced=False)]
+        if _UNSPACED_CHAR.search(token):
             return _runs_of_word_chars(token, offset)
         first = next((i for i, ch in enumerate(token) if is_word_char(ch)), None)
         if first is None:
@@ -132,7 +160,9 @@ def _runs_of_word_chars(token: str, offset: int) -> list[Unit]:
     units: list[Unit] = []
     run_start: int | None = None
     for index, char in enumerate(token + "\0"):
-        if index < len(token) and is_word_char(char):
+        if index < len(token) and (
+            is_word_char(char) or _is_internal_apostrophe(token, index)
+        ):
             if run_start is None:
                 run_start = index
             continue

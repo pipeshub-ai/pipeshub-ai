@@ -7,10 +7,11 @@ behaviour:
   - __init__ (URL, timeout, retry config)
   - _validate_pdf_binary (type / size guards)
   - parse_pdf / parse_pdf_batched: request shape, response translation,
-    and failure-to-None mapping
+    and which typed error each failure raises
 """
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -21,6 +22,7 @@ from app.services.base_client import ServiceCallError, ServiceUnavailableError
 from app.services.docling.client import (
     MAX_PDF_BYTES,
     DoclingClient,
+    DoclingParseError,
     DoclingUnavailableError,
     within_docling_size_limit,
 )
@@ -105,14 +107,18 @@ class TestInit:
 
 class TestValidatePdfBinary:
     def test_rejects_non_bytes(self, client):
-        assert client._validate_pdf_binary("not bytes") is False  # type: ignore
+        with pytest.raises(DoclingParseError) as raised:
+            client._validate_pdf_binary("not bytes")  # type: ignore
+        assert raised.value.reason == "invalid_input"
 
     def test_rejects_too_large(self, client):
         huge = b"x" * (101 * 1024 * 1024)
-        assert client._validate_pdf_binary(huge) is False
+        with pytest.raises(DoclingParseError) as raised:
+            client._validate_pdf_binary(huge)
+        assert raised.value.reason == "too_large"
 
     def test_accepts_valid_binary(self, client, small_pdf):
-        assert client._validate_pdf_binary(small_pdf) is True
+        client._validate_pdf_binary(small_pdf)
 
 
 # ===========================================================================
@@ -122,15 +128,15 @@ class TestValidatePdfBinary:
 
 class TestParsePdfBatched:
     @pytest.mark.asyncio
-    async def test_invalid_type_returns_none(self, client):
-        result = await client.parse_pdf_batched("doc.pdf", "not bytes")  # type: ignore
-        assert result is None
+    async def test_invalid_type_raises(self, client):
+        with pytest.raises(DoclingParseError):
+            await client.parse_pdf_batched("doc.pdf", "not bytes")  # type: ignore
 
     @pytest.mark.asyncio
-    async def test_too_large_returns_none(self, client):
+    async def test_too_large_raises(self, client):
         huge = b"x" * (101 * 1024 * 1024)
-        result = await client.parse_pdf_batched("doc.pdf", huge)
-        assert result is None
+        with pytest.raises(DoclingParseError):
+            await client.parse_pdf_batched("doc.pdf", huge)
 
     @pytest.mark.asyncio
     async def test_single_batch_skips_concatenate(self, client, small_pdf):
@@ -182,17 +188,18 @@ class TestParsePdfBatched:
         assert merged.name == "doc.pdf"
 
     @pytest.mark.asyncio
-    async def test_service_error_response_returns_none(self, client, small_pdf):
+    async def test_service_error_response_raises(self, client, small_pdf):
         with (
             patch("app.services.docling.client.get_pdf_page_count", return_value=1),
             patch.object(
                 client, "_post_multipart",
                 new=AsyncMock(return_value=_make_response(200, {"success": False, "error": "process fail"})),
             ),
+            pytest.raises(DoclingParseError) as raised,
         ):
-            result = await client.parse_pdf_batched("doc.pdf", small_pdf)
+            await client.parse_pdf_batched("doc.pdf", small_pdf)
 
-        assert result is None
+        assert raised.value.status_code == 200
 
     @pytest.mark.asyncio
     async def test_an_unreachable_service_is_raised_so_the_record_is_retried(self, client, small_pdf) -> None:
@@ -205,9 +212,10 @@ class TestParsePdfBatched:
             ),
             pytest.raises(DoclingUnavailableError) as raised,
         ):
-            await client.parse_pdf_batched("doc.pdf", small_pdf)
+            await client.parse_pdf_batched("Quarterly-Secret-Plan.pdf", small_pdf)
 
         assert isinstance(raised.value, IndexingError)
+        assert "Quarterly-Secret-Plan" not in str(raised.value)  # its text can reach index.end
         assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
 
 
@@ -218,15 +226,15 @@ class TestParsePdfBatched:
 
 class TestParsePdf:
     @pytest.mark.asyncio
-    async def test_invalid_type_returns_none(self, client):
-        result = await client.parse_pdf("doc.pdf", "not bytes")  # type: ignore
-        assert result is None
+    async def test_invalid_type_raises(self, client):
+        with pytest.raises(DoclingParseError):
+            await client.parse_pdf("doc.pdf", "not bytes")  # type: ignore
 
     @pytest.mark.asyncio
-    async def test_too_large_returns_none(self, client):
+    async def test_too_large_raises(self, client):
         huge = b"x" * (101 * 1024 * 1024)
-        result = await client.parse_pdf("doc.pdf", huge)
-        assert result is None
+        with pytest.raises(DoclingParseError):
+            await client.parse_pdf("doc.pdf", huge)
 
     @pytest.mark.asyncio
     async def test_successful_parse(self, client, small_pdf):
@@ -247,10 +255,8 @@ class TestParsePdf:
 
         with patch.object(
             client, "_post_multipart", new=AsyncMock(return_value=_make_response(200, response_body)),
-        ):
-            result = await client.parse_pdf("doc.pdf", small_pdf)
-
-        assert result is None
+        ), pytest.raises(DoclingParseError):
+            await client.parse_pdf("doc.pdf", small_pdf)
 
     @pytest.mark.asyncio
     async def test_a_service_shedding_load_is_raised_so_the_record_is_retried(self, client, small_pdf) -> None:
@@ -276,24 +282,34 @@ class TestParsePdf:
         ), pytest.raises(DoclingUnavailableError):
             await client.parse_pdf("doc.pdf", small_pdf)
 
-    @pytest.mark.parametrize("status", [502, 503, 504])
     @pytest.mark.asyncio
-    async def test_a_gateway_or_unavailable_status_is_raised(self, client, small_pdf, status: int) -> None:
+    async def test_the_operation_does_not_name_the_record(self, client, small_pdf) -> None:
+        post = AsyncMock(side_effect=ServiceCallError("failed", status_code=503))
+        with patch.object(client, "_post_multipart", new=post), pytest.raises(DoclingUnavailableError):
+            await client.parse_pdf("Quarterly-Secret-Plan.pdf", small_pdf)
+        assert "Quarterly-Secret-Plan" not in post.await_args.kwargs["operation"]
+
+    @pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 599])
+    @pytest.mark.asyncio
+    async def test_a_status_the_retries_gave_up_on_is_raised_as_unavailable(self, client, small_pdf, status: int) -> None:
         with patch.object(
             client, "_post_multipart",
             new=AsyncMock(side_effect=ServiceCallError("failed", status_code=status)),
         ), pytest.raises(DoclingUnavailableError):
             await client.parse_pdf("doc.pdf", small_pdf)
 
-    @pytest.mark.parametrize("status", [400, 413, 422, 500])
+    @pytest.mark.parametrize("status", [400, 413, 422, 501])
     @pytest.mark.asyncio
-    async def test_a_failure_on_this_file_returns_none(self, client, small_pdf, status: int) -> None:
-        """Docling answered and could not parse it: the caller reads it another way."""
+    async def test_a_failure_on_this_file_is_a_parse_error_not_an_outage(self, client, small_pdf, status: int) -> None:
+        """A status the base client does not retry is never an outage (501 included: not every 5xx is)."""
         with patch.object(
             client, "_post_multipart",
             new=AsyncMock(side_effect=ServiceCallError("failed", status_code=status)),
-        ):
-            assert await client.parse_pdf("doc.pdf", small_pdf) is None
+        ), pytest.raises(DoclingParseError) as raised:
+            await client.parse_pdf("doc.pdf", small_pdf)
+
+        assert not isinstance(raised.value, DoclingUnavailableError)
+        assert raised.value.status_code == status
 
     def test_the_size_limit_is_inclusive(self) -> None:
         assert within_docling_size_limit(MAX_PDF_BYTES) is True
@@ -346,3 +362,20 @@ class TestHealthCheck:
             result = await client.health_check()
 
         assert result is False
+
+
+class TestDoclingMaxPages:
+    def test_a_negative_limit_falls_back_to_30_and_warns_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from app.services.docling import client
+
+        monkeypatch.setattr(client, "_warned_negative_max_pages", set())
+        monkeypatch.setenv(client.MAX_PAGES_ENV, "-1")
+
+        with caplog.at_level(logging.WARNING, logger=client.__name__):
+            assert client.docling_max_pages() == 30
+            assert client.docling_max_pages() == 30
+
+        warnings = [r for r in caplog.records if "PDF_DOCLING_MAX_PAGES" in r.getMessage()]
+        assert len(warnings) == 1

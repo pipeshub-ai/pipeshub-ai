@@ -141,3 +141,65 @@ test('resolveInsideRoot accepts nested paths and rejects traversal', () => {
 
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('an empty file streams as one empty final frame', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-content-'));
+  await fsp.writeFile(path.join(root, 'a.txt'), '');
+
+  const { serve, capture } = setup(root);
+  const ack = await serve({});
+  assert.equal(ack.ok, true);
+  assert.equal((ack as { size: number }).size, 0);
+
+  await waitForCompletion(capture);
+  assert.equal(capture.aborts.length, 0, `an empty file aborted: ${JSON.stringify(capture.aborts)}`);
+  assert.deepEqual(capture.chunks.map((c) => [c.seq, c.data.length, c.final]), [[0, 0, true]]);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a file that exists but cannot be opened is retryable, not gone', async (t) => {
+  if (process.platform === 'win32' || process.getuid?.() === 0) {
+    t.skip('needs POSIX permissions and a non-root user');
+    return;
+  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-content-'));
+  const file = path.join(root, 'a.txt');
+  await fsp.writeFile(file, 'locked');
+  fs.chmodSync(file, 0);
+
+  const { serve, capture } = setup(root);
+  const ack = await serve({});
+  // stat succeeds, the open fails: the error arrives as an abort after the ack.
+  if (ack.ok) {
+    await waitForCompletion(capture);
+    assert.equal(capture.aborts.length, 1);
+    assert.equal(capture.aborts[0].retryable, true, 'a permission error must be retried later');
+  } else {
+    assert.equal((ack as { error: { retryable: boolean } }).error.retryable, true);
+  }
+
+  fs.chmodSync(file, 0o644);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a file whose name is stored in NFD is found from its NFC path', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pipeshub-content-'));
+  const nfdDir = 'Résumés';
+  const nfdName = 'café.txt';
+  fs.mkdirSync(path.join(root, nfdDir));
+  await fsp.writeFile(path.join(root, nfdDir, nfdName), 'nfd bytes');
+
+  const { serve, capture } = setup(root);
+  const ack = await serve({ relPath: `${nfdDir}/${nfdName}`.normalize('NFC') });
+  if (fs.existsSync(path.join(root, `${nfdDir}/${nfdName}`.normalize('NFC')))) {
+    // A normalisation-insensitive filesystem (APFS, HFS+) finds it either way.
+    assert.equal(ack.ok, true);
+  } else {
+    assert.equal(ack.ok, true, `NFD name not found from NFC: ${JSON.stringify(ack)}`);
+    await waitForCompletion(capture);
+    assert.equal(Buffer.concat(capture.chunks.map((c) => c.data)).toString(), 'nfd bytes');
+  }
+
+  fs.rmSync(root, { recursive: true, force: true });
+});

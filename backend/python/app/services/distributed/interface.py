@@ -66,14 +66,12 @@ class IRetryTracker(ABC):
     async def cleanup(self) -> None: ...
 
     async def record_delivery(self, message_id: str) -> int:
-        """Count one delivery of *message_id* and return the total so far.
+        """Count one hand-back of *message_id* without an attempt and return the total so far.
 
-        Distinct from the failure counter: that one is written only after
-        processing has failed, which a process crash or kill mid-handler
-        skips, so a message that keeps crashing its consumer never
-        accumulates failures. Deliveries are counted *before* the handler
-        runs. Trackers that cannot count deliveries return 0, which leaves
-        the backstop disarmed rather than tripping it.
+        A message re-queued because it never got a parse slot fails nothing,
+        so the failure counter cannot stop it coming back for ever; this
+        counter does. Trackers that cannot count deliveries return 0, which
+        leaves the backstop disarmed rather than tripping it.
         """
         return 0
 
@@ -93,3 +91,23 @@ class IRetryTracker(ABC):
     async def get_handbacks(self, message_id: str) -> int:
         """Hand-backs counted for *message_id*; 0 for a tracker that does not count them."""
         return 0
+
+    async def unfinished_attempts(self, work_key: str) -> int:
+        """Attempts at *work_key* that started and have not finished.
+
+        Keyed by the unit of work (a record), not the message: a record that
+        crashes the process comes back on several messages (the claimed
+        original, stale recovery's re-publish). The failure counter cannot
+        see these, since a crash skips the code that writes it. Trackers that
+        cannot count attempts return 0.
+        """
+        return 0
+
+    async def start_attempt(self, work_key: str) -> int:
+        """Mark an attempt at *work_key* as started; returns ``unfinished_attempts`` before it."""
+        return 0
+
+    async def finish_attempt(self, work_key: str, *, settled: bool) -> None:
+        """Mark one attempt at *work_key* finished. ``settled``: nothing will run it
+        again (indexed, or given up on), so every earlier unfinished attempt is
+        forgotten with it."""

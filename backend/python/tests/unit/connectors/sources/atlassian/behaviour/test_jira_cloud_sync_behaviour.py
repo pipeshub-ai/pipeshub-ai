@@ -5,6 +5,7 @@ request is answered by an in-memory stub and our databases are in-memory fakes.
 Retry waits are recorded rather than slept (see conftest ``backoff_sleeps``).
 """
 
+import contextlib
 import json
 import logging
 from collections.abc import Callable, Iterator
@@ -37,9 +38,14 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
-from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.atlassian.jira_cloud.connector import (
+    IncompleteSyncError,
+    JiraConnector,
+)
+from app.connectors.utils.record_ids import new_record_id
 from app.models.entities import (
     FileRecord,
+    Record,
     RecordGroup,
     RecordGroupType,
     RecordType,
@@ -81,17 +87,34 @@ class IssueSearch:
 
     def __init__(self) -> None:
         self.pages: dict[tuple[str, Optional[str]], Any] = {}
+        self.issues_by_id: dict[str, dict[str, Any]] = {}
         self.bodies: list[dict[str, Any]] = []
         self.tokens: list[str] = []
 
     def add(self, project_key: str, token: Optional[str], response: object) -> None:
         self.pages[(project_key, token)] = response
+        for page in response if isinstance(response, list) else [response]:
+            for found in page.get("issues", []) if isinstance(page, dict) else []:
+                self.issues_by_id[str(found.get("id"))] = found
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.bodies.append(body)
         self.tokens.append(bearer(request))
         key = body["jql"].split('project = "')[1].split('"')[0]
+        if "id in (" in body["jql"]:
+            # As Jira does: only the named issues, as last queued for the project, without using up its pages.
+            ids = {i.strip() for i in body["jql"].split("id in (")[1].split(")")[0].split(",")}
+            return json_response({"issues": [i for i in self.issues_by_id.values() if str(i.get("id")) in ids]})
+        if "parent in (" in body["jql"]:
+            # As Jira does: only the children of the named issues, without using up the
+            # pages queued for the project's own search.
+            ids = {i.strip() for i in body["jql"].split("parent in (")[1].split(")")[0].split(",")}
+            pool = self.pages.get((key, None), {"issues": []})
+            pool = pool[0] if isinstance(pool, list) else pool
+            issues = pool.get("issues", []) if isinstance(pool, dict) else []
+            return json_response({"issues": [
+                i for i in issues if str(((i.get("fields") or {}).get("parent") or {}).get("id")) in ids]})
         answer = self.pages.get((key, body.get("nextPageToken")), {"issues": []})
         if isinstance(answer, list):
             answer = answer.pop(0) if len(answer) > 1 else answer[0]
@@ -164,18 +187,25 @@ class TestOAuthClient:
 
 class TestIssuePagination:
     async def test_all_pages_are_read_and_the_next_run_starts_after_the_last_issue(self, api, db, checkpoints, search) -> None:
+        subtask = issue(4, "2024-05-02T09:00:00.000+0000")
+        subtask["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        subtask["fields"]["parent"] = {"id": "1", "key": "ENG-1"}
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), issue(2, "2024-05-01T11:00:00.000+0000")], "nextPageToken": "T2"})
-        search.add("ENG", "T2", {"issues": [issue(3, "2024-05-02T15:30:00.000+0000", attachments=[
+        search.add("ENG", "T2", {"issues": [subtask, issue(3, "2024-05-02T15:30:00.000+0000", attachments=[
             {"id": "900", "filename": "log.txt", "mimeType": "text/plain", "size": 12, "created": "2024-05-02T15:00:00.000+0000"},
         ])]})
         connector, _ = await ready_connector(db, checkpoints)
 
         stats = await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert set(tickets(db)) == {"1", "2", "3"}
-        assert stats["total_synced"] >= 3 and stats["failed_project_keys"] == []
-        assert [b.get("nextPageToken") for b in search.bodies] == [None, "T2"]
+        assert set(tickets(db)) == {"1", "2", "3", "4"}
+        assert stats["total_synced"] >= 4 and stats["failed_project_keys"] == []
+        assert [b.get("nextPageToken") for b in search.bodies if "parent in (" not in b["jql"]] == [None, "T2"]
         assert search.bodies[0]["jql"] == 'project = "ENG" ORDER BY updated ASC, id ASC'
+        # A project's first read reaches every sub-task itself, so none is read a second time.
+        assert not [b for b in search.bodies if "parent in (" in b["jql"]]
+        assert tickets(db)["4"].parent_external_record_id == "1"
+        assert sum(r.external_record_id == "4" for batch in db.record_batches for r in batch) == 1
         attachment = db.records["attachment_900"]
         assert isinstance(attachment, FileRecord) and attachment.parent_external_record_id == "3"
         assert db.records["1"].weburl == f"{SITE}/browse/ENG-1"
@@ -300,7 +330,11 @@ class TestRateLimits:
         eng_attempts = [b for b in search.bodies if '"ENG"' in b["jql"]]
         assert len(eng_attempts) == 4, "gives up after the retry cap"
         assert len(backoff_sleeps) == 3 and all(0 < s <= 60 for s in backoff_sleeps)
-        assert checkpoints.values_for("project_ENG") is None
+        # No cursor is saved, so the next sync reads the project from the start; the holders it could not read are
+        # marked unknown before the walk.
+        saved = checkpoints.values_for("project_ENG")
+        assert saved["last_sync_time"] is None and saved["last_issue_updated"] is None
+        assert saved["browse_holders"] == "?"
 
     async def test_a_failure_part_way_resumes_from_the_last_saved_page(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")], "nextPageToken": "T2"})
@@ -364,8 +398,15 @@ class SiteDb(CloudRecordsDb):
         for role, members in roles:
             self.app_roles[role.source_role_id] = list(members)
 
+    async def open_app_to_org_team(self, connector_id: str) -> None:
+        self.team_gate_open = True
+
+    async def withdraw_team_app_edge(self, connector_id: str) -> None:
+        self.team_gate_open = False
+
     async def get_nodes_by_filters(
-        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None, *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """The stored project and role nodes, with the fields the connector asks for."""
         if collection == "roles":
@@ -389,6 +430,9 @@ def stub_site(api: AtlassianApiStub) -> None:
         {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
     ]})
     api.on("GET", f"{JIRA}/project/ENG/role", {"Developers": f"{SITE}{JIRA}/project/ENG/role/10002"})
+    # Jira product access: one role, granted through one group (whose members the group/member route answers).
+    api.on("GET", f"{JIRA}/applicationrole", json_response([{"key": "jira-software", "groupDetails": [
+        {"groupId": "grp-sw", "name": "jira-software-users"}]}]))
     api.on("GET", f"{JIRA}/project/ENG/role/10002", {
         "name": "Developers", "actors": [{"type": "atlassian-group-role-actor", "name": "devs", "groupId": "grp-dev"}],
     })
@@ -1022,6 +1066,26 @@ class TestUnfinishedUserRead:
         assert after["lead"] == []
         assert ("EntityType.USER", "bo@acme.com") not in after["project"]
 
+    async def test_a_short_read_that_shows_a_user_deactivated_withdraws_them(self, api, site_db, checkpoints, search) -> None:
+        """Absence from a list cut short says nothing, but a row marked inactive does: Bo is withdrawn with his own
+        grants, so a later read listing him active again finds him newly listed and reads his issues again."""
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        bo_inactive = {**person("acc-bo", "bo@acme.com"), "active": False}
+
+        def users(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("startAt") == "0":
+                return json_response([bo_inactive, *self.FIRST_PAGE[:49]])
+            return json_response({"errorMessages": ["expired"]}, status=401)
+
+        api.on("GET", f"{JIRA}/users/search", users)
+        await connector.run_sync()
+        assert connector._user_read_unfinished is True
+        assert [u.source_user_id for u in site_db.withdrawn_users] == ["acc-bo"]
+
     async def test_a_user_list_refused_from_the_first_page_fails_closed(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
         self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
@@ -1034,6 +1098,8 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert saved_members(site_db, "grp-dev") == []
+        # A refused list says nothing about who left Jira: nobody is withdrawn, nor loses their own grants.
+        assert site_db.withdrawn_users == []
 
     async def test_a_first_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
@@ -1660,22 +1726,28 @@ class TestUnfinishedUserRead:
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert sorted(site_db.kept_records) == stored, "the project's stored records are noted as seen"
 
-    @pytest.mark.parametrize(("status", "complete"), [(500, False), (400, True), (404, True)])
-    async def test_a_full_sync_whose_issue_search_fails_is_classed_by_its_status(
-        self, api, site_db, checkpoints, search, status, complete
+    @pytest.mark.parametrize(("status", "kept"), [(500, True), (400, False), (404, False)])
+    async def test_a_full_sync_whose_issue_search_fails_keeps_the_records_only_when_the_read_may_pass(
+        self, api, site_db, checkpoints, search, status, kept
     ) -> None:
         self._stub_bo_everywhere(api)
         self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
+        stored = sorted(r.id for r in site_db.records.values() if r.external_record_group_id == "10000")
 
         checkpoints.sync_points.clear()
         search.add("ENG", None, json_response({"errorMessages": ["no"]}, status=status))
-        await run_full_sync(connector, site_db)
+        if status == 500:
+            # The run fails, but the removal after it still runs: the project's records are noted as seen.
+            with pytest.raises(IncompleteSyncError):
+                await run_full_sync(connector, site_db)
+        else:
+            await run_full_sync(connector, site_db)
 
-        assert connector.full_sync_coverage().complete is complete
-        assert site_db.kept_records == [], "only a refusal keeps the records"
+        assert connector.full_sync_coverage().complete is True
+        assert (sorted(site_db.kept_records) == stored) if kept else (site_db.kept_records == [])
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
@@ -1723,6 +1795,33 @@ class TestUnreadApplicationRoles:
 
         assert acl(site_db) == before
         assert "1" in tickets(site_db), "the project's issues are still synced"
+
+    @pytest.mark.parametrize("answer", [
+        pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="roles unread"),
+        pytest.param(json_response({"errorMessages": ["no"]}, status=403), id="roles refused"),
+    ])
+    async def test_while_product_access_is_unknown_no_new_account_is_linked_and_none_is_withdrawn(
+        self, api, site_db, checkpoints, search, answer,
+    ) -> None:
+        """Bo joins the site while the application roles cannot be read: Jira may not license him, so he is not
+        linked (and reads nothing); Ana, linked before, keeps the connector; nobody is withdrawn as unlicensed."""
+        stub_site(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert [u.source_user_id for u in site_db.app_users] == ["acc-ana"]
+
+        two_users(api)
+        api.on("GET", f"{JIRA}/group/member", {"values": [{"accountId": "acc-ana"}, {"accountId": "acc-bo"}], "isLast": True})
+        api.on("GET", f"{JIRA}/applicationrole", answer)
+        await connector.run_sync()
+
+        assert "acc-bo" not in {u.source_user_id for u in site_db.app_users}
+        assert site_db.withdrawn_users == []
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response([{"key": "jira-software", "groupDetails": [
+            {"groupId": "grp-sw", "name": "jira-software-users"}]}]))
+        await connector.run_sync()
+        assert "acc-bo" in {u.source_user_id for u in site_db.app_users}, "linked once his product access is read"
 
     async def test_an_unread_application_role_list_still_updates_projects_that_do_not_use_one(
         self, api, site_db, checkpoints, search
@@ -1972,6 +2071,11 @@ def commented(num: int, updated: str, comments: list[dict[str, Any]], *, total: 
     return ticket
 
 
+def under(db: CloudRecordsDb, external_id: str) -> str | None:
+    """The external id of the record a stored record is filed under."""
+    return db.records[external_id].parent_external_record_id
+
+
 def jira_has_comments(api: AtlassianApiStub, num: int, comments: list[dict[str, Any]]) -> None:
     """The comment listing of an issue, and its rendered description."""
     api.on("GET", f"{JIRA}/issue/{num}/comment", {"comments": comments, "total": len(comments)})
@@ -2014,7 +2118,10 @@ class TestRestrictedComments:
         assert "ROOT CAUSE" not in served, "a comment for Administrators only is served to every reader of the issue"
         assert "INTERNAL" not in served, "an internal note is served to every reader of the issue"
 
-    async def test_a_file_attached_in_a_restricted_comment_gets_no_record(self, api, db, checkpoints, search) -> None:
+    async def test_a_file_attached_in_a_restricted_comment_is_filed_under_that_comment(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """Jira shows it only to those who can read the comment (JRACLOUD-80445)."""
         comments = [comment("c1", "see the figures", file=SALARIES, **ADMINS_ONLY)]
         search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", comments)]})
         jira_has_comments(api, 1, comments)
@@ -2022,9 +2129,9 @@ class TestRestrictedComments:
 
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert "1" in tickets(db)
-        assert "attachment_901" not in db.records, "readable by fewer people than the issue"
-        assert "attachment_902" in db.records, "a file attached to the issue itself stays"
+        assert "1" in tickets(db) and "comment_c1" in db.records
+        assert under(db, "attachment_901") == "comment_c1", "readable by those who read the comment, not the whole issue"
+        assert under(db, "attachment_902") == "1", "a file attached to the issue itself stays on the issue"
 
     async def test_an_issue_without_restricted_comments_costs_no_extra_request(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [comment("c1", "figures", file=SALARIES)])]})
@@ -2048,7 +2155,9 @@ class TestRestrictedComments:
 
         assert "attachment_901" in db.records
 
-    async def test_a_file_stored_before_its_comment_was_restricted_is_removed(self, api, db, checkpoints, search) -> None:
+    async def test_a_file_stored_before_its_comment_was_restricted_moves_under_that_comment(
+        self, api, db, checkpoints, search
+    ) -> None:
         restricted = [comment("c1", "figures", file=SALARIES, **ADMINS_ONLY)]
         search.add("ENG", None, [
             {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [comment("c1", "figures", file=SALARIES)])]},
@@ -2057,11 +2166,13 @@ class TestRestrictedComments:
         jira_has_comments(api, 1, restricted)
         connector, _ = await ready_connector(db, checkpoints)
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
-        assert "attachment_901" in db.records
+        stored_id = db.records["attachment_901"].id
+        assert under(db, "attachment_901") == "1"
 
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert "attachment_901" not in db.records and "attachment_902" in db.records
+        assert under(db, "attachment_901") == "comment_c1" and db.records["attachment_901"].id == stored_id
+        assert under(db, "attachment_902") == "1"
 
     async def test_a_restricted_comment_the_search_did_not_embed_is_still_read(self, api, db, checkpoints, search) -> None:
         restricted = comment("c1", "figures", file=SALARIES, **ADMINS_ONLY)
@@ -2074,7 +2185,7 @@ class TestRestrictedComments:
 
         (listing_call,) = api.calls("GET", f"{JIRA}/issue/1/comment")
         assert AtlassianApiStub.query(listing_call)["expand"] == "renderedBody"
-        assert "attachment_901" not in db.records and "attachment_902" in db.records
+        assert under(db, "attachment_901") == "comment_c1" and under(db, "attachment_902") == "1"
 
     async def test_comments_that_cannot_be_read_leave_the_attachments_as_they_are(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [comment("c2", "thanks")], total=2)]})
@@ -2087,6 +2198,128 @@ class TestRestrictedComments:
         assert "attachment_901" not in db.records and "attachment_902" not in db.records, (
             "no attachment is given a record while it is unknown which of them a restricted comment holds"
         )
+
+    async def test_an_issue_whose_comments_could_not_be_read_is_read_again_by_the_next_sync_though_the_cursor_passed_it(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """The comment list fails, so the restricted comment has no record and the issue is left to retry. The next incremental
+        sync's search starts after the issue's `updated` (the cursor moved past it), yet the issue is read again by id and its
+        restricted comment gets its record; once it does, nothing is left to retry."""
+        restricted = comment("c1", "figures", visibility={"type": "group", "value": "admins", "identifier": "g-admins"})
+        latest = comment("c2", "thanks")
+        search.add("ENG", None, [{"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [latest], total=2)]}, {"issues": []}])
+        api.on("GET", f"{JIRA}/issue/1/comment", json_response({"errorMessages": ["boom"]}, status=500))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "comment_c1" not in db.records and "1" in tickets(db)
+
+        jira_has_comments(api, 1, [restricted, latest])
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "comment_c1" in db.records, "the issue is read again although the incremental search no longer lists it"
+        assert any("id in (1)" in b["jql"] for b in search.bodies)
+        reads = len(search.bodies)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert not any("id in (" in b["jql"] for b in search.bodies[reads:]), "nothing is left to retry"
+
+    async def test_an_issue_that_failed_to_build_is_read_again_by_the_next_sync_though_the_cursor_passed_it(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """Building the issue raises (the page goes on without it, and the cursor moves past it). The next incremental sync's search
+        no longer lists it, yet it is read again by id and written; then nothing is left to retry."""
+        search.add("ENG", None, [{"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]}, {"issues": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        build = connector._build_records_for_issue
+        calls = {"n": 0}
+
+        async def fails_once(*args: object, **kwargs: object) -> object:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("malformed issue")
+            return await build(*args, **kwargs)
+        connector._build_records_for_issue = fails_once
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "1" not in tickets(db)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "1" in tickets(db), "the issue is read again although the incremental search no longer lists it"
+        reads = len(search.bodies)
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert not any("id in (" in b["jql"] for b in search.bodies[reads:]), "nothing is left to retry"
+
+    async def test_an_issue_that_failed_to_build_on_a_page_that_wrote_nothing_is_saved_with_the_cursor(
+        self, api, db, checkpoints, search
+    ) -> None:
+        """The only issue of the first page fails to build, so the page writes nothing but still moves the cursor past it; then the
+        next page's search fails and the sync stops. The issue was saved with that cursor, so the next sync reads it by id."""
+        search.add("ENG", None, [{"issues": [issue(1, "2024-05-01T10:00:00.000+0000")], "nextPageToken": "T2"}, {"issues": []}])
+        search.add("ENG", "T2", json_response({"errorMessages": ["bad request"]}, status=400))
+        connector, _ = await ready_connector(db, checkpoints)
+        build = connector._build_records_for_issue
+        calls = {"n": 0}
+
+        async def fails_once(*args: object, **kwargs: object) -> object:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("malformed issue")
+            return await build(*args, **kwargs)
+        connector._build_records_for_issue = fails_once
+        with contextlib.suppress(Exception):
+            await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "1" not in tickets(db)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "1" in tickets(db), "the issue the cursor passed is read again by id"
+
+    async def test_an_issue_read_again_by_id_reads_its_sub_tasks_again(self, api, db, checkpoints, search) -> None:
+        """The parent failed to build, so the next sync reads it by id. Its level may be new, which Jira copies onto its sub-tasks
+        without moving their `updated`, so its stored sub-tasks are read again with it."""
+        child = issue(2, "2024-05-01T10:00:00.000+0000")
+        child["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True}
+        child["fields"]["parent"] = {"id": "1", "key": "ENG-1", "fields": {"summary": "Issue 1"}}
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), child]})
+        connector, _ = await ready_connector(db, checkpoints)
+        build = connector._build_records_for_issue
+        calls = {"n": 0}
+
+        async def fails_once(*args: object, **kwargs: object) -> object:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("malformed issue")
+            return await build(*args, **kwargs)
+        connector._build_records_for_issue = fails_once
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "1" not in tickets(db) and "2" in tickets(db)
+        reads = len(search.bodies)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        jql = [b["jql"] for b in search.bodies[reads:]]
+        replay = next(i for i, q in enumerate(jql) if "id in (1)" in q)
+        assert any("parent in (1)" in q for q in jql[replay + 1:]), "the replayed issue's sub-tasks are read again"
+
+    async def test_an_attachment_that_failed_to_build_keeps_the_issue_to_be_read_again(self, api, db, checkpoints, search) -> None:
+        """The file's record could not be built this read, so it is left out; the issue stays changed and the next sync reads it by
+        id (the incremental search no longer lists it) and writes the file."""
+        search.add("ENG", None, [{"issues": [issue(1, "2024-05-01T10:00:00.000+0000", attachments=[NOTES])]}, {"issues": []}])
+        connector, _ = await ready_connector(db, checkpoints)
+        create = connector._create_attachment_file_record
+        calls = {"n": 0}
+
+        def fails_once(*args: object, **kwargs: object) -> object:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("attachment lookup timed out")
+            return create(*args, **kwargs)
+        connector._create_attachment_file_record = fails_once
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        assert "1" in tickets(db) and "attachment_902" not in db.records
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert "attachment_902" in db.records, "the issue is read again and its file written"
 
     async def test_opening_an_issue_does_not_offer_a_file_from_a_restricted_comment(self, api, db, checkpoints, search) -> None:
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
@@ -2125,7 +2358,6 @@ def titles(connector: JiraConnector) -> list[str]:
 class TestWhatASyncKeptAsStored:
     # A kept project access or a short user read is noted as seen instead (see TestUnfinishedUserRead).
     @pytest.mark.parametrize("break_jira", [
-        pytest.param(lambda api, search: search.add("ENG", None, json_response({"errorMessages": ["boom"]}, status=500)), id="an-issue-read-failed"),
         pytest.param(lambda api, search: groups_in_two_pages(api, json_response({}, status=503)), id="the-group-list-was-cut-short"),
         pytest.param(lambda api, search: api.on("GET", f"{JIRA}/project/ENG/role/10002", json_response({}, status=500)), id="a-role-read-failed"),
     ])
@@ -2455,10 +2687,23 @@ class TestPlaceholderParents:
         await connector.run_sync()
         assert connector._synced_project_keys is None, "a reindex afterwards goes by what is stored, not a stale project set"
 
+    async def test_a_sub_task_stays_under_its_parent(self, api, db, checkpoints, search) -> None:
+        child = issue(1, "2024-05-01T10:00:00.000+0000")
+        child["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True}
+        child["fields"]["parent"] = {"id": "77", "key": "ENG-77", "fields": {"summary": "Roadmap"}}
+        search.add("ENG", None, {"issues": [child]})
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._synced_project_keys = {"ENG"}
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert db.records["1"].parent_external_record_id == "77"
+
     @pytest.mark.parametrize("parent_key", ["ENG-77", "OPS-77"])
-    async def test_a_parent_in_its_own_or_another_synced_project_stays_its_parent(
+    async def test_a_story_under_an_epic_in_any_synced_project_hangs_off_its_own_project(
         self, api, db, checkpoints, search, parent_key,
     ) -> None:
+        """Jira does not give a story its epic's level, so it is not filed under the epic."""
         child = issue(1, "2024-05-01T10:00:00.000+0000")
         child["fields"]["parent"] = {"id": "77", "key": parent_key, "fields": {"summary": "Roadmap"}}
         search.add("ENG", None, {"issues": [child]})
@@ -2467,4 +2712,79 @@ class TestPlaceholderParents:
 
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert db.records["1"].parent_external_record_id == "77"
+        assert db.records["1"].parent_external_record_id is None
+
+
+class LookupsBeforeEitherStores(CloudRecordsDb):
+    """The sync and the stream of an issue each look for its attachment before either
+    has stored it, and every record either one writes is kept, as the graph keeps it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids_written: dict[str, set[str]] = {}
+
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+        if external_record_id.startswith("attachment_"):
+            return None
+        return await super().get_record_by_external_id(connector_id, external_record_id)
+
+    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+        await super().on_new_records(records_with_permissions)
+        for record, _ in records_with_permissions:
+            self.ids_written.setdefault(record.external_record_id, set()).add(record.id)
+
+
+async def children_of_streamed(connector: JiraConnector, record: TicketRecord) -> set[str]:
+    container = json.loads(await connector._process_issue_blockgroups_for_streaming(record))
+    return {c["child_id"] for g in container["block_groups"] for c in g.get("children_records") or []}
+
+
+class TestAttachmentMetByTwoWritersAtOnce:
+    """Each writer that found the attachment unstored created its own record, so the
+    graph held two records for one attachment. The next full sync rewrote the one its
+    lookup found and unlinked the other, which lost its issue and the access it inherits."""
+
+    COMMENTS = [comment("c1", "see the notes", file=NOTES)]
+
+    async def test_the_sync_and_the_stream_store_one_record(self, api, checkpoints, search) -> None:
+        db = LookupsBeforeEitherStores()
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", self.COMMENTS)]})
+        api.on("GET", f"{JIRA}/issue/1", opened_issue(1, self.COMMENTS))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        linked = await children_of_streamed(connector, db.records["1"])
+
+        assert sum(r.external_record_id == "attachment_902" for b in db.record_batches for r in b) == 2, (
+            "both writers created the attachment")
+        doubled = {ext: ids for ext, ids in db.ids_written.items() if len(ids) > 1}
+        assert set(db.ids_written) >= {"attachment_901", "attachment_902"} and not doubled, (
+            f"attachments stored as more than one record: {doubled}")
+        assert linked == {db.records["attachment_901"].id, db.records["attachment_902"].id}, (
+            "the blocks link the records that are stored")
+
+    async def test_a_stored_attachment_keeps_its_id(self, api, db, checkpoints, search) -> None:
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", self.COMMENTS)]})
+        api.on("GET", f"{JIRA}/issue/1", opened_issue(1, self.COMMENTS))
+        connector, _ = await ready_connector(db, checkpoints)
+        stored = connector._create_attachment_file_record(
+            attachment_id="902", filename="notes.txt", mime_type="text/plain", file_size=20, created_at=0,
+            parent_issue_id="1", parent_node_id=None, project_id="10000", weburl=None, record_id="f-902",
+        )
+        db.records["attachment_902"] = stored
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+        linked = await children_of_streamed(connector, db.records["1"])
+
+        assert db.records["attachment_902"].id == "f-902"
+        assert linked == {db.records["attachment_901"].id, "f-902"}
+
+    async def test_a_new_attachment_gets_the_same_id_from_every_writer(self, api, checkpoints) -> None:
+        async def new_id() -> str:
+            connector, _ = await ready_connector(CloudRecordsDb(), checkpoints)
+            return connector._create_attachment_file_record(
+                attachment_id="902", filename="notes.txt", mime_type="text/plain", file_size=20, created_at=0,
+                parent_issue_id="1", parent_node_id=None, project_id="10000", weburl=None,
+            ).id
+
+        assert await new_id() == await new_id() == new_record_id(CONNECTOR_ID, "attachment_902")

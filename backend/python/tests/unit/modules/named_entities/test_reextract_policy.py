@@ -24,9 +24,10 @@ def _extraction(status: str, strategy: str = "single_call", reason: str = "singl
     (_extraction("PARTIAL", windows_total=7, windows_run=5), True),
     (_extraction("PARTIAL", strategy="agent", reason="budget_turns"), True),
     (_extraction("COMPLETED", windows_total=2, windows_run=2), False),
-    # Failed calls are not unread text: a re-extraction would fail the same way.
+    # A failed call is the entities stage's to retry, not a completion job's.
     (_extraction("PARTIAL", windows_total=3, windows_run=3, windows_failed=1), False),
     (_extraction("PARTIAL", strategy="agent", reason="llm_error"), False),
+    (_extraction("PARTIAL", strategy="deterministic", reason="llm_error", windows_total=4, windows_run=1), False),
     # A re-extraction that used its whole budget settles instead of looping.
     (_extraction("PARTIAL", windows_total=80, windows_run=REEXTRACT_MAX_WINDOWS), False),
 ])
@@ -46,7 +47,7 @@ async def test_a_reextraction_reads_in_single_calls_with_the_larger_budget() -> 
     extract = AsyncMock(return_value=_extraction("COMPLETED"))
     client = MagicMock()
     with patch.object(stage, "load_named_entity_config", AsyncMock(return_value=NamedEntityConfig())), \
-            patch.object(stage, "indexing_llm", AsyncMock(return_value=(None, None, "p", "m"))), \
+            patch.object(stage, "indexing_llm_or_none", AsyncMock(return_value=(None, None, "p", "m", frozenset()))), \
             patch.object(stage.NamedEntityExtractor, "extract", extract):
         await stage.extract_named_entities(_ctx(), config_service=None, client=client, enabled=True, reextract=True)
 
@@ -59,10 +60,73 @@ async def test_a_reextraction_reads_in_single_calls_with_the_larger_budget() -> 
 async def test_indexing_keeps_the_configured_budget_and_the_agent() -> None:
     extract = AsyncMock(return_value=_extraction("COMPLETED"))
     with patch.object(stage, "load_named_entity_config", AsyncMock(return_value=NamedEntityConfig())), \
-            patch.object(stage, "indexing_llm", AsyncMock(return_value=(None, None, "p", "m"))), \
+            patch.object(stage, "indexing_llm_or_none", AsyncMock(return_value=(None, None, "p", "m", frozenset()))), \
             patch.object(stage.NamedEntityExtractor, "extract", extract):
         await stage.extract_named_entities(_ctx(), config_service=None, enabled=True)
 
     request = extract.await_args.args[0]
     assert request.budgets.max_llm_windows == NamedEntityConfig().budgets.max_llm_windows
     assert request.supports_tools is None
+
+
+_CONFIGURED = {"llm": [{"provider": "openAI", "modelKey": "k1", "isDefault": True, "configuration": {"model": "m"}}]}
+
+
+@pytest.mark.parametrize(("ai_models", "build_error", "semantic_looked_for"), [
+    # No model configured: the deterministic kinds are the whole run, so it completes.
+    ({}, None, False),
+    # The config store cannot be read: not "no model", or the run would settle without names.
+    (OSError("store down"), None, True),
+    # A configured model that cannot be built now (bad provider or key): retried, not narrowed.
+    (_CONFIGURED, ValueError("No LLM found"), True),
+    (_CONFIGURED, None, True),
+])
+async def test_only_a_model_that_is_not_configured_narrows_the_run(
+    ai_models: object, build_error: Exception | None, semantic_looked_for: bool,
+) -> None:
+    from app.modules.named_entities import extractor
+    from app.modules.named_entities.domain.kinds import EntityKind, semantic_kinds
+
+    load = AsyncMock(side_effect=ai_models) if isinstance(ai_models, Exception) else AsyncMock(return_value=ai_models)
+    build = AsyncMock(side_effect=build_error) if build_error else AsyncMock(return_value=("llm", "t", "p", "m"))
+    enabled = frozenset({EntityKind.PERSON, EntityKind.ORGANIZATION, EntityKind.CURRENCY, EntityKind.DATE})
+    with patch("app.utils.llm.load_ai_models", load), patch.object(extractor, "indexing_llm", build):
+        llm, _, _, _, kinds = await extractor.indexing_llm_or_none(None, enabled)
+
+    assert load.await_args.kwargs == {"raise_on_error": True}
+    assert bool(semantic_kinds(kinds)) is semantic_looked_for
+    assert EntityKind.CURRENCY in kinds and EntityKind.DATE in kinds
+    assert (llm == "llm") is (ai_models is _CONFIGURED and build_error is None)
+
+
+async def test_the_kinds_the_model_lookup_settles_on_are_the_ones_extracted() -> None:
+    narrowed = frozenset({"currency"})
+    extract = AsyncMock(return_value=_extraction("COMPLETED"))
+    with patch.object(stage, "load_named_entity_config", AsyncMock(return_value=NamedEntityConfig())), \
+            patch.object(stage, "indexing_llm_or_none", AsyncMock(return_value=(None, None, "p", "m", narrowed))), \
+            patch.object(stage.NamedEntityExtractor, "extract", extract):
+        await stage.extract_named_entities(_ctx(), config_service=None, enabled=True)
+
+    assert extract.await_args.args[0].enabled is narrowed
+
+
+async def test_an_unconfigured_model_completes_with_the_deterministic_entities() -> None:
+    from app.models.blocks import Block, BlockType, DataFormat
+    from app.modules.named_entities import extractor
+    from app.modules.named_entities.domain.kinds import EntityKind
+    from app.modules.named_entities.extractor import (
+        NamedEntityExtractor,
+        NamedEntityRequest,
+    )
+
+    enabled = frozenset({EntityKind.PERSON, EntityKind.CURRENCY})
+    with patch("app.utils.llm.load_ai_models", AsyncMock(return_value={})):
+        llm, transport, provider, model, kinds = await extractor.indexing_llm_or_none(None, enabled)
+    block = Block(index=0, type=BlockType.TEXT, format=DataFormat.TXT, data="Ana Diaz approved USD 1,250.00.")
+    extraction = await NamedEntityExtractor().extract(NamedEntityRequest(
+        blocks=[block], org_id="o1", enabled=kinds, llm=llm, transport=transport,
+        provider_name=provider, model_name=model,
+    ))
+
+    assert extraction.status == "COMPLETED" and extraction.termination_reason == "deterministic"
+    assert [entity.kind for entity in extraction.entities] == [EntityKind.CURRENCY]

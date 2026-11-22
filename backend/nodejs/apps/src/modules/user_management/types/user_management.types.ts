@@ -1,5 +1,3 @@
-import { FilterQuery } from 'mongoose';
-
 // ── Graph API response types (from Python backend) ──
 
 export interface GraphUser {
@@ -84,18 +82,3 @@ export interface TeamsListResponse {
 export interface TeamUsersResponse {
   members: TeamMemberResponse[];
 }
-
-// ── MongoDB filter types ──
-
-export type UserGroupFilter = FilterQuery<{
-  orgId: string;
-  isDeleted: boolean;
-  name?: { $regex: string; $options: string };
-}>;
-
-export type UserFilter = FilterQuery<{
-  _id: { $in: string[] };
-  orgId?: string;
-  isDeleted: { $ne: boolean };
-  $or?: Array<{ fullName?: { $regex: string; $options: string }; email?: { $regex: string; $options: string } }>;
-}>;

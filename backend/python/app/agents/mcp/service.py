@@ -321,7 +321,10 @@ def instance_config_from_dict(instance: dict[str, Any]) -> MCPServerConfig:
     template = catalog_template(instance.get("typeId"))
     if template:
         launch = template_connection_fields(template)
-        instance = {**instance, **{k: launch[k] for k in ("transport", "command", "args", "requiredEnv", "optionalEnv", "url")}}
+        locked = ["transport", "command", "args", "requiredEnv", "optionalEnv"]
+        if template.url_editable is not True:
+            locked.append("url")
+        instance = {**instance, **{k: launch[k] for k in locked}}
     return MCPServerConfig(
         _id=instance.get("_id"),
         org_id=instance.get("orgId"),

@@ -315,7 +315,7 @@ describe('editing a turn that went through a question card', () => {
     expect(questionOf(slotId)).toBe('Old question');
   });
 
-  it('keeps the card on a plain regenerate, as before', async () => {
+  it('puts the card back when a plain regenerate fails', async () => {
     const slotId = cardSlot();
     fetchMock.mockImplementationOnce(async () => sseResponse([frame('RUN_ERROR', { message: 'stop', code: 'stream_error' })]));
 
@@ -323,6 +323,144 @@ describe('editing a turn that went through a question card', () => {
 
     expect(slot(slotId).pendingAskUserQuestion).toEqual(pending);
     expect(answerCustom(slotId)).toHaveProperty('persistedAskUserQuestion');
+  });
+
+  describe('a plain regenerate', () => {
+    const newCard = {
+      name: 'ask_user_question',
+      questions: [{ uuid: 'q-new', question: 'Which quarter?', options: [{ id: 'q3', label: 'Q3' }, { id: 'q4', label: 'Q4' }] }],
+    };
+    /** The saved turn once the new run asked again: the card rides on the regenerated answer. */
+    const askedAgain = () => ({
+      ...conversationWith('Old question', ''),
+      messages: [
+        stored({ _id: 'q1', messageType: 'user_query', content: 'Old question' }),
+        stored({
+          _id: 'a1',
+          messageType: 'bot_response',
+          content: '',
+          tools: [{ toolName: 'ask_user_question', toolResult: newCard }],
+        } as never),
+      ],
+    });
+
+    it('drops the old card and its answers while the turn is asked again, and sends no question', async () => {
+      const slotId = cardSlot();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      fetchMock.mockImplementationOnce(async () => {
+        await gate;
+        return sseResponse([frame('RUN_FINISHED', { result: {} })]);
+      });
+      vi.spyOn(apiClient, 'get').mockResolvedValueOnce({ data: { conversation: conversationWith('Old question', 'new answer') } });
+
+      const run = streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+      expect(slot(slotId).pendingAskUserQuestion).toBeNull();
+      expect(answerCustom(slotId)).not.toHaveProperty('persistedAskUserQuestion');
+      expect(answerCustom(slotId)).not.toHaveProperty('persistedAskUserQuestionAnswers');
+      release();
+      await run;
+
+      expect(sentBody()).not.toHaveProperty('query');
+      expect(slot(slotId).pendingAskUserQuestion).toBeNull();
+      expect(slot(slotId).messages.map((m) => getThreadMessagePlainText(m))).toEqual(['Old question', 'new answer']);
+    });
+
+    it('opens the new card unanswered when the run asks again, not merged into the old one', async () => {
+      const slotId = cardSlot();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      fetchMock.mockImplementationOnce(async () => {
+        await gate;
+        return sseResponse([
+          frame('CUSTOM', { name: 'ask_user_question', value: { toolData: newCard } }),
+          frame('RUN_FINISHED', { result: { answer: '', status: 'waiting_input' } }),
+        ]);
+      });
+      let reload!: () => void;
+      const reloaded = new Promise<void>((r) => (reload = r));
+      vi.spyOn(apiClient, 'get').mockImplementationOnce(async () => {
+        await reloaded;
+        return { data: { conversation: askedAgain() } };
+      });
+
+      const run = streamRegenerateForSlot(slotId, 'a1', MODEL);
+      release();
+      await vi.waitFor(() => expect(slot(slotId).pendingAskUserQuestion?.payload).toEqual(newCard));
+
+      // Live, before the reload: only the new question, nothing answered, ready to answer.
+      expect(slot(slotId).pendingAskUserQuestion).toMatchObject({ assistantMessageId: 'a1', answers: {}, status: 'pending' });
+      expect(slot(slotId).pendingAskUserQuestion).not.toHaveProperty('sentAnswers');
+      reload();
+      await run;
+      await vi.waitFor(() => expect(slot(slotId).isStreaming).toBe(false));
+
+      expect(slot(slotId).pendingAskUserQuestion).toMatchObject({ answers: {}, status: 'pending' });
+      expect(slot(slotId).pendingAskUserQuestion?.payload.questions.map((q) => q.question)).toEqual(['Which quarter?']);
+      expect(answerCustom(slotId)).not.toHaveProperty('persistedAskUserQuestionAnswers');
+    });
+
+    it('keeps the card on screen when the regenerate carries changed answers, and sends them', async () => {
+      const slotId = cardSlot();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      fetchMock.mockImplementationOnce(async () => {
+        await gate;
+        return sseResponse([frame('RUN_ERROR', { message: 'stop', code: 'stream_error' })]);
+      });
+
+      const run = streamRegenerateForSlot(slotId, 'a1', MODEL, undefined, undefined, 'User selections:\n1. "Q" → B');
+
+      expect(answerCustom(slotId)).toHaveProperty('persistedAskUserQuestion');
+      expect(answerCustom(slotId)).toHaveProperty('persistedAskUserQuestionAnswers');
+      release();
+      await run;
+
+      expect(sentBody().answers).toBe('User selections:\n1. "Q" → B');
+      expect(sentBody()).not.toHaveProperty('query');
+    });
+
+    it('leaves a card closed by a typed reply alone: only the reply is redone', async () => {
+      const slotId = newSlot();
+      const messages = threadWith('Old question');
+      messages[1] = {
+        ...messages[1],
+        metadata: { custom: { messageId: 'a1', persistedAskUserQuestion: { ...card, repliedInChat: true } } },
+      } as ThreadMessageLike;
+      useChatStore.getState().updateSlot(slotId, { messages });
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      fetchMock.mockImplementationOnce(async () => {
+        await gate;
+        return sseResponse([frame('RUN_ERROR', { message: 'stop', code: 'stream_error' })]);
+      });
+
+      const run = streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+      expect(slot(slotId).messages).toBe(messages);
+      expect(answerCustom(slotId)).toHaveProperty('persistedAskUserQuestion');
+      release();
+      await run;
+    });
+
+    it('leaves a row without a card as it was', async () => {
+      const slotId = newSlot();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      fetchMock.mockImplementationOnce(async () => {
+        await gate;
+        return sseResponse([frame('RUN_ERROR', { message: 'stop', code: 'stream_error' })]);
+      });
+      const before = slot(slotId).messages;
+
+      const run = streamRegenerateForSlot(slotId, 'a1', MODEL);
+
+      expect(slot(slotId).messages).toBe(before);
+      release();
+      await run;
+      expect(questionOf(slotId)).toBe('Old question');
+    });
   });
 });
 

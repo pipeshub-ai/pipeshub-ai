@@ -236,8 +236,8 @@ export function IndexingStatsPanel({
                 onClick={onNavigateToRecords ? () => onNavigateToRecords(['AUTO_INDEX_OFF']) : undefined}
               />
             </Grid>
-            {/* Row 3: Empty, Unsupported, Not started */}
-            <Grid columns={{ initial: '2', sm: '3' }} gap="2" width="100%">
+            {/* Row 3: Empty, Unsupported, Password protected, Not started */}
+            <Grid columns={{ initial: '2', sm: '4' }} gap="2" width="100%">
               <StatCard
                 label={t('workspace.connectors.overview.statEmpty')}
                 value={recordsStatus.empty}
@@ -249,6 +249,12 @@ export function IndexingStatsPanel({
                 value={recordsStatus.unsupported}
                 subtitle={t('workspace.connectors.overview.statUnsupportedSub')}
                 onClick={onNavigateToRecords ? () => onNavigateToRecords(['FILE_TYPE_NOT_SUPPORTED']) : undefined}
+              />
+              <StatCard
+                label={t('workspace.connectors.overview.statPasswordProtected')}
+                value={recordsStatus.passwordProtected}
+                subtitle={t('workspace.connectors.overview.statPasswordProtectedSub')}
+                onClick={onNavigateToRecords ? () => onNavigateToRecords(['PASSWORD_PROTECTED']) : undefined}
               />
               <StatCard
                 label={t('workspace.connectors.overview.statNotStarted')}

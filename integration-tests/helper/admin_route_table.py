@@ -34,7 +34,7 @@ from helper import suite_extensions
 ABSENT_ID = "65f0c0ffee00000000000000"
 INVALID_ID = "not-an-id"
 
-# userAdminCheck and adminValidator both throw ForbiddenError with
+# userAdminCheck throws ForbiddenError with
 # ADMIN_ACCESS_REQUIRED_MESSAGE (user_management/services/user-admin.service.ts).
 NODE_REFUSAL_STATUS = 403
 NODE_REFUSAL_MESSAGE = "You need admin access to do this. Ask an admin in your organisation."
@@ -77,7 +77,7 @@ def _no_admin(method: str, path: str, why: str, **kw: Any) -> AdminRoute:
 _CM = "/api/v1/configurationManager"
 
 NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
-    # orgAuthConfig.routes.ts (adminValidator)
+    # orgAuthConfig.routes.ts (router-level userAdminCheck)
     AdminRoute("GET", "/api/v1/orgAuthConfig/authMethods"),
     AdminRoute("GET", "/api/v1/orgAuthConfig/signInRemoval"),
     _no_admin("POST", "/api/v1/orgAuthConfig",
@@ -94,6 +94,9 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("POST", f"{_CM}/connectors/sharepoint/config", admin="invalid"),
     AdminRoute("POST", f"{_CM}/connectors/onedrive/config", admin="invalid"),
     AdminRoute("GET", f"{_CM}/smtpConfig"),
+    _no_admin("DELETE", f"{_CM}/smtpConfig",
+              "deletes the org's SMTP settings; nothing after the check stops it"),
+    AdminRoute("PUT", f"{_CM}/smtpConfig/enabled", member_body={"enabled": True}, admin="invalid"),
     AdminRoute("GET", f"{_CM}/authConfig/microsoft"),
     AdminRoute("POST", f"{_CM}/authConfig/microsoft", admin="invalid"),
     AdminRoute("GET", f"{_CM}/authConfig/google"),
@@ -107,6 +110,10 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("PUT", f"{_CM}/slack-bot/:configId", admin="invalid"),
     AdminRoute("DELETE", f"{_CM}/slack-bot/:configId", admin="invalid"),
     AdminRoute("GET", f"{_CM}/prompts/system"),
+    # mcp/routes/mcp-access.routes.ts
+    AdminRoute("GET", f"{_CM}/mcp/access"),
+    AdminRoute("PUT", f"{_CM}/mcp/access", admin="invalid"),
+    AdminRoute("GET", f"{_CM}/mcp/access/tools"),
     _no_admin("PUT", f"{_CM}/prompts/system",
               "replaces the org's system prompt; nothing after the check stops a write"),
     _no_admin("POST", f"{_CM}/connectors/googleWorkspaceCredentials",
@@ -149,6 +156,8 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("GET", f"{_CM}/metricsCollection"),
     AdminRoute("PATCH", f"{_CM}/metricsCollection/pushInterval", admin="invalid"),
     AdminRoute("PATCH", f"{_CM}/metricsCollection/serverUrl", admin="invalid"),
+    # agent_activity/agent-activity.routes.ts
+    AdminRoute("GET", "/api/v1/agent-activity"),
     # crawling_manager/routes/cm_routes.ts
     AdminRoute("GET", "/api/v1/crawlingManager/schedule/all"),
     _no_admin("DELETE", "/api/v1/crawlingManager/schedule/all",
@@ -227,6 +236,10 @@ _OAUTH_BODY = {"oauthInstanceName": "it-admin-probe", "config": {"clientId": "x"
 # Python handlers that refuse every member, called through the Node gateway the
 # way the web app calls them. Python answers 403; Node passes it through.
 PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
+    # A member gets the 404 of a route that does not exist, not a 403, so the route does not confirm it is there.
+    _py("GET", "/api/v1/connectors/:connectorId/permissions/explain",
+        "connectors/api/permission_explain_router.py::explain_permission",
+        refusal_status=404, refusal_words="not found"),
     # Python checks the admin before it reads the body, so an admin sending an
     # empty config gets "config is required" and nothing is written.
     _py("POST", "/api/v1/oauth/:connectorType", "connectors/api/router.py::create_oauth_config",
@@ -261,6 +274,23 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         member_body={"clientId": "x"}),
     _py("DELETE", f"{_TOOLSETS}/oauth-configs/:toolsetType/:oauthConfigId",
         "api/routes/toolsets.py::delete_toolset_oauth_config"),
+    # A member gets the 404 of a missing connector, so the route does not confirm the connector exists.
+    _py("GET", "/api/v1/connectors/:connectorId/permissions/status",
+        "connectors/api/router.py::get_permission_status", refusal_status=404, refusal_words="removed"),
+    # The same 404 for a member; an admin's request names a connector that does not exist, so nothing is written.
+    _py("PATCH", "/api/v1/connectors/:connectorId/permissions/filter",
+        "connectors/api/router.py::set_permission_filter", member_body={"mode": "legacy"}, refusal_status=404, refusal_words="removed"),
+    # Per-user access: Node answers a member with the 404 of a route that does not exist. The admin's
+    # request names no connector, so the connector service answers 404 and nothing is sent or removed.
+    _py("GET", "/api/v1/connectors/:connectorId/user-access/roster",
+        "connectors/api/user_access_router.py::get_roster", refusal_status=404, refusal_words="not found"),
+    _py("POST", "/api/v1/connectors/:connectorId/user-access/invites",
+        "connectors/api/user_access_router.py::send_invites", member_body={"all": True},
+        refusal_status=404, refusal_words="not found"),
+    _py("GET", "/api/v1/connectors/:connectorId/user-access/users",
+        "connectors/api/user_access_router.py::list_connected_users", refusal_status=404, refusal_words="not found"),
+    _py("DELETE", "/api/v1/connectors/:connectorId/user-access/users/:userId",
+        "connectors/api/user_access_router.py::remove_connected_user", refusal_status=404, refusal_words="not found"),
 )
 
 # The admin body for rows marked ``admin="admin_body"``: past the admin check,
@@ -352,11 +382,32 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/mcp_servers.py::get_oauth_config": "a personal server is its owner's",
     "api/routes/mcp_servers.py::update_oauth_config": "a personal server is its owner's",
     "api/routes/mcp_servers.py::delete_instance": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::set_instance_logo": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::remove_instance_logo": "a personal server is its owner's",
     # A member checks the URL of a server they could add: a personal one, public only.
     "api/routes/mcp_servers.py::discover_oauth_metadata_endpoint": "a member's URL must be public",
     # Everyone gets the listing; only admins see how an org server is reached.
     "api/routes/mcp_servers.py::get_my_mcp_servers": "connection details for admins",
     "api/routes/mcp_servers.py::get_agent_mcp_servers": "connection details for admins",
+    # Members make and edit their own agents, and nothing here refuses them.
+    # One field needs an admin: the service account the agent searches as,
+    # because binding spends the access an administrator granted that account.
+    "api/routes/agent.py::create_agent": "only a service-account binding needs admin",
+    "api/routes/agent.py::update_agent": "only a service-account binding needs admin",
+    # The directory of people. Everyone gets it; an administrator asking for
+    # service accounts gets those too, and nobody else does.
+    "api/routes/entity.py::get_users": "admin widens the directory",
+    # Every account joins the All team when it is created, service accounts
+    # included, so these answer a member a shorter member list than an
+    # administrator. An administrator also sees every team in the org; a member
+    # sees, and can read, only the teams they belong to.
+    "api/routes/entity.py::get_team": "admin widens the member list",
+    "api/routes/entity.py::get_user_teams": "admin widens the member list",
+    "api/routes/entity.py::get_team_users": "admin widens the member list",
+    # A team's OWNER may change or delete it, admin or not; an administrator may
+    # also change or delete any team in their org.
+    "api/routes/entity.py::update_team": "owner or admin",
+    "api/routes/entity.py::delete_team": "owner or admin",
 }
 
 

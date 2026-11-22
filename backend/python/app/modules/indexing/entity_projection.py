@@ -1,5 +1,5 @@
-"""Project taxonomy nodes of one org into the entity index, with membership
-read from the graph. Shared by the background rebuild
+"""Project taxonomy nodes and people of one org into the entity index, with
+membership read from the graph. Shared by the background rebuild
 (``entity_index_rebuild``) and taxonomy consolidation
 (``app.modules.entity_resolution.consolidation``), so a node is written the
 same way whichever of them touched it last.
@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
 from app.modules.entity_resolution.models import KINDS_BY_COLLECTION
+from app.modules.entity_resolution.organizations import searchable_organizations
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -21,10 +22,18 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
+# Written as the index path writes them (EntityRecord.for_linked).
+_LINKED_TYPES = frozenset({EntityType.PERSON, EntityType.ORGANIZATION})
+
+
 def taxonomy_entity_type(collection: str) -> tuple[EntityType, str | None]:
     """The entity type and subcategory level of points from ``collection``."""
     if collection == CollectionNames.DEPARTMENTS.value:
         return EntityType.DEPARTMENT, None
+    if collection == CollectionNames.USERS.value:
+        return EntityType.PERSON, None
+    if collection == CollectionNames.ORGS.value:
+        return EntityType.ORGANIZATION, None
     kind = KINDS_BY_COLLECTION.get(collection)
     if kind is None:
         raise ValueError(f"{collection!r} is not a taxonomy collection")
@@ -59,6 +68,11 @@ async def project_taxonomy_nodes(
         membership = await graph.get_taxonomy_entity_membership(
             [{"id": key, "type": entity_type.value} for key in nodes], org_id,
         )
+        # An organisation only extraction knows needs enough records naming it.
+        searchable = (
+            await searchable_organizations(graph, org_id, list(nodes))
+            if entity_type is EntityType.ORGANIZATION else set(nodes)
+        )
     except Exception:
         logger.warning(
             "entity_projection: membership lookup failed | org=%s collection=%s nodes=%d",
@@ -68,18 +82,28 @@ async def project_taxonomy_nodes(
     if before_write is not None:
         await before_write()
 
-    entities, unreached = [], []
+    entities, unreached, unnamed = [], [], []
     for key, row in nodes.items():
         reach = membership.get((entity_type.value, key)) or {}
         connector_ids = [c for c in reach.get("connectorIds") or [] if c]
         if not connector_ids:
             unreached.append(key)
             continue
+        if key not in searchable:
+            unnamed.append(key)
+            continue
+        record_group_ids = [g for g in reach.get("recordGroupIds") or [] if g]
+        if entity_type in _LINKED_TYPES:
+            linked = EntityRecord.for_linked(entity_type, key, row["name"], org_id, None, None)
+            entities.append(linked.model_copy(update={
+                "connector_ids": connector_ids, "record_group_ids": record_group_ids,
+            }))
+            continue
         entities.append(EntityRecord(
             entity_id=key, entity_type=entity_type, name=row["name"], org_id=org_id,
             aliases=[str(a) for a in row.get("aliases") or [] if a], level=level,
             connector_ids=connector_ids,
-            record_group_ids=[g for g in reach.get("recordGroupIds") or [] if g],
+            record_group_ids=record_group_ids,
             type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
         ))
     failed = 0
@@ -107,6 +131,17 @@ async def project_taxonomy_nodes(
                 org_id, collection, len(unreached), exc_info=True,
             )
             failed += len(unreached)
+    if unnamed:
+        try:
+            # Re-read, as above: a record naming it since may have made it searchable.
+            again = await searchable_organizations(graph, org_id, unnamed)
+            await store.delete_entities(org_id, entity_type.value, [k for k in unnamed if k not in again])
+        except Exception:
+            logger.warning(
+                "entity_projection: delete of rarely named organisations failed | org=%s n=%d",
+                org_id, len(unnamed), exc_info=True,
+            )
+            failed += len(unnamed)
     return failed
 
 

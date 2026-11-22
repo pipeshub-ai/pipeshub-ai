@@ -7,6 +7,9 @@ from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
+from app.sources.client.resilience import ResiliencePolicy
+
+HTTP_ERROR_STATUS = 400
 
 
 class BookStackResponse(BaseModel):
@@ -35,11 +38,13 @@ class BookStackRESTClientViaToken(HTTPClient):
         token_secret: The token secret from BookStack
     """
 
-    def __init__(self, base_url: str, token_id: str, token_secret: str) -> None:
+    def __init__(
+        self, base_url: str, token_id: str, token_secret: str, resilience: ResiliencePolicy | None = None
+    ) -> None:
         # Combine token_id and token_secret into BookStack's format
         token = f"{token_id}:{token_secret}"
         # Initialize with the combined token and "Token" as the auth type
-        super().__init__(token, "Token")
+        super().__init__(token, "Token", resilience=resilience)
         self.base_url = base_url.rstrip('/')
         self.token_id = token_id
         self.token_secret = token_secret
@@ -68,9 +73,9 @@ class BookStackTokenConfig(BaseModel):
     token_secret: str
     ssl: bool = True
 
-    def create_client(self) -> BookStackRESTClientViaToken:
-        """Create a BookStack client"""
-        return BookStackRESTClientViaToken(self.base_url, self.token_id, self.token_secret)
+    def create_client(self, resilience: ResiliencePolicy | None = None) -> BookStackRESTClientViaToken:
+        """Create a BookStack client; ``resilience`` retries 429 and 5xx answers under the connector's policy."""
+        return BookStackRESTClientViaToken(self.base_url, self.token_id, self.token_secret, resilience)
 
     def to_dict(self) -> dict:
         """Convert the configuration to a dictionary"""
@@ -93,24 +98,29 @@ class BookStackClient(IClient):
         return self.client.get_base_url()
 
     @classmethod
-    def build_with_config(cls, config: BookStackTokenConfig) -> "BookStackClient":
+    def build_with_config(
+        cls, config: BookStackTokenConfig, resilience: ResiliencePolicy | None = None
+    ) -> "BookStackClient":
         """Build BookStackClient with configuration
         Args:
             config: BookStackTokenConfig instance
+            resilience: the connector's retry and rate-limit policy, if any
         Returns:
             BookStackClient instance
         """
-        return cls(config.create_client())
+        return cls(config.create_client(resilience))
 
     @classmethod
-    async def build_and_validate(cls, config: BookStackTokenConfig) -> "BookStackClient":
+    async def build_and_validate(
+        cls, config: BookStackTokenConfig, resilience: ResiliencePolicy | None = None
+    ) -> "BookStackClient":
         """
         Builds the BookStackClient and validates credentials by making a test API call.
         Raises:
             ValueError: If the API token is invalid or the connection fails.
         """
         # 1. Build the client (synchronously)
-        client_instance = cls.build_with_config(config)
+        client_instance = cls.build_with_config(config, resilience)
 
         # 2. Perform a validation call
         http_client = client_instance.get_client()
@@ -133,7 +143,10 @@ class BookStackClient(IClient):
             response = await http_client.execute(request)
             data = response.json() # Get the response data
 
-            # Check for BookStack's error format in the JSON response
+            # Check for BookStack's error format in the JSON response. BookStack sends that body with
+            # every HTTP error; an error status without it (a proxy page) is a failure too.
+            if response.status >= HTTP_ERROR_STATUS and not (isinstance(data, dict) and 'error' in data):
+                raise ValueError(f"BookStack token validation failed: HTTP {response.status}")
             if isinstance(data, dict) and 'error' in data:
                 # Validation failed, parse the error
                 error_data = data['error']

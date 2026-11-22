@@ -8,6 +8,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
+import { ConnectAccountAction } from '@/app/(main)/workspace/connectors/components/user-access/connect-account';
 
 export type NotificationRowAction =
   | 'markRead'
@@ -101,6 +102,28 @@ const titleWrapStyle: CSSProperties = {
   whiteSpace: 'normal',
   overflowWrap: 'anywhere',
 };
+
+/**
+ * A "chat shared with you" notification is stored with plain English text, so it is built here
+ * from its payload in the viewer's language. A row without a sharer name keeps the stored text.
+ */
+function sharedChatText(
+  n: NotificationListItem,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): { title: string; message: string } | null {
+  const payload = n.payload ?? {};
+  const name = typeof payload.sharerName === 'string' && payload.sharerName.trim()
+    ? payload.sharerName.trim()
+    : t('notifications.chatShared.someone');
+  if (typeof payload.conversationId !== 'string') return null;
+  const chat = typeof payload.chatTitle === 'string' ? payload.chatTitle.trim() : '';
+  return {
+    title: t(payload.agentKey ? 'notifications.chatShared.titleAgent' : 'notifications.chatShared.title', { name }),
+    message: chat
+      ? t('notifications.chatShared.body', { chat })
+      : t('notifications.chatShared.bodyNoTitle', { place: t('nav.shared') }),
+  };
+}
 
 function NotificationTitle({
   title,
@@ -228,7 +251,7 @@ export function NotificationRow({
   compactTime?: boolean;
   pendingAction?: NotificationRowAction | null;
 }) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isTruncated, setIsTruncated] = useState(false);
   // Hidden unclamped clone used solely for measuring the natural text height.
@@ -240,9 +263,13 @@ export function NotificationRow({
 
   const timeLabel = formatRelativeTime(n.createdAt, i18n.language, compactTime);
   const severity = n.severity ?? 'error';
-  const title = n.title ?? '';
-  const message = n.message ?? '';
+  const shared = n.type === 'chatShared' ? sharedChatText(n, t) : null;
+  const title = shared?.title ?? n.title ?? '';
+  const message = shared?.message ?? n.message ?? '';
   const href = notificationHref(n.redirectLink ?? '');
+  // An admin asked this user to connect their own account to a team connector: the row carries the button.
+  const connectId =
+    n.payload?.action === 'connect_account' && typeof n.payload.connectorId === 'string' ? n.payload.connectorId : null;
 
   const isRead = n.status === 'read' || n.status === 'archived';
   const readOpacity = isRead ? 0.65 : 1;
@@ -399,6 +426,11 @@ export function NotificationRow({
                 show less
               </span>
             )}
+            {connectId ? (
+              <Box mt="1">
+                <ConnectAccountAction connectorId={connectId} onConnected={() => !isRead && onMarkRead(n)} />
+              </Box>
+            ) : null}
           </Flex>
 
           <Box data-ph-notification-row-meta="">

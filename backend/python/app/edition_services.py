@@ -14,14 +14,18 @@ from app.connectors.core.registry.oauth_config_registry import (
     get_oauth_config_registry,
 )
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
-# Which indexing lane a connector is given on Redis Streams, and whether an
-# administrator may move it. An edition can replace either: pin a connector to
-# a lane of its own, weight lanes, or allow admin moves.
+# Which indexing lane a connector is given on Redis Streams, whether an
+# administrator may move it, and which pool of lanes an org belongs in. An
+# edition can replace any of them: pin a connector to a lane of its own, weight
+# lanes, allow admin moves, or keep a group of orgs on lanes of their own.
 from app.services.messaging.lanes.assignment_policy import (
     admin_lane_move_allowed as admin_lane_move_allowed,
 )
 from app.services.messaging.lanes.assignment_policy import (
     choose_connector_lane as choose_connector_lane,
+)
+from app.services.messaging.lanes.assignment_policy import (
+    lane_pool_for_org as lane_pool_for_org,
 )
 
 
@@ -40,6 +44,27 @@ def __getattr__(name: str) -> Any:
 
         return RecordEventHandler
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def admission_backlog() -> "AdmissionBacklog":
+    """The recorder of records waiting at each admission stage, one per indexing consumer.
+
+    OSS: counts per tier, stage and lease pool. An edition may return an ``AdmissionBacklog`` built with an
+    observer (``entered``/``left`` called with the tier, stage and message) to keep a breakdown of its own.
+    """
+    from app.services.messaging.consumer_concurrency import AdmissionBacklog
+
+    return AdmissionBacklog()
+
+
+def indexing_fairness(slot_limit: "Callable[[str], int]") -> "IndexingFairness | None":
+    """Optional parts for the record consumer: a key extractor, weights, a slot planner, a buffer room rule, a read
+    budget for extra topics, an observer, extra topics and PostgreSQL claim steps.
+
+    ``slot_limit(pool)`` is the slot limit the consumer's own planner is given for a pool; call it only once the
+    consumer is built. OSS: none, so the consumer keeps its defaults.
+    """
+    return None
 
 
 def get_connector_registry_cls():
@@ -79,11 +104,15 @@ def get_data_entities_processor_cls():
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fastapi import FastAPI
     from langchain_core.embeddings import Embeddings
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.registry.toolset_registry import ToolsetRegistry
+    from app.services.messaging.consumer_concurrency import AdmissionBacklog
+    from app.services.messaging.scheduling.interface import IndexingFairness
     from app.services.model_identity.forwarders.registry import ForwarderRegistry
     from app.services.model_identity.groups import GroupMembershipResolver
     from app.web.ports import WebAccessGate
@@ -158,6 +187,11 @@ def bootstrap_guard(logger, config_service, **kwargs):
         yield True
 
     return _single_process()
+
+
+async def bootstrap_leased_ids(connector_ids: list[str]) -> set[str]:
+    """One process, so a restart has no live peer whose flag must stay."""
+    return set()
 
 
 def build_sync_dispatcher(logger, producer):

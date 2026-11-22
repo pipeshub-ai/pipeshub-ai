@@ -1,0 +1,14 @@
+- id: LIN-S-01
+  title: Teams and guests, the worked example (Ann, Ben, Gus)
+  source: permission model doc, linear section
+  rule: override
+  comment: >
+    A public team is granted to the workspace-members group, which holds the active accounts that are not guests
+    (linear/team_access.py:62-70, connector.py:929-941), so Gus, a guest added to Support, sees only Support.
+  world: golden/linear_teams
+  expect:
+    verdicts:
+      ann: {PLAT-7: admit, PAY-12: admit, SUP-3: admit}
+      ben: {PLAT-7: admit, PAY-12: deny, SUP-3: admit}
+      gus: {PLAT-7: deny, PAY-12: deny, SUP-3: admit}
+  tags: [linear, "cell:linear/public-team", "cell:linear/private-team", "cell:linear/guest"]

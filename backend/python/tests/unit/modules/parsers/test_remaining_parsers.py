@@ -5,8 +5,6 @@
 - PPTParser (app/modules/parsers/pptx/ppt_parser.py)
 """
 
-import subprocess
-from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,104 +20,6 @@ class TestDocParser:
     def _make_parser(self):
         from app.modules.parsers.docx.docparser import DocParser
         return DocParser()
-
-    @patch("app.modules.parsers.docx.docparser.subprocess.run")
-    def test_convert_doc_to_docx_success(self, mock_run):
-        """Successful conversion returns BytesIO with docx content."""
-        parser = self._make_parser()
-
-        # Mock 'which libreoffice' check
-        mock_run.side_effect = [
-            MagicMock(returncode=0),  # which libreoffice
-            MagicMock(returncode=0),  # libreoffice convert
-        ]
-
-        # We need to mock the file operations too
-        fake_docx_content = b"PK\x03\x04fake docx content"
-
-        with patch("builtins.open", create=True) as mock_open, \
-             patch("os.path.exists", return_value=True):
-            # Setup mock for writing input file (wb mode)
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-
-            # Setup mock for reading output file (rb mode)
-            mock_read_handle = MagicMock()
-            mock_read_handle.__enter__ = MagicMock(return_value=mock_read_handle)
-            mock_read_handle.__exit__ = MagicMock(return_value=False)
-            mock_read_handle.read.return_value = fake_docx_content
-
-            mock_open.side_effect = [mock_write_handle, mock_read_handle]
-
-            result = parser.convert_doc_to_docx(b"fake doc binary")
-            assert isinstance(result, BytesIO)
-            assert result.read() == fake_docx_content
-
-    @patch("app.modules.parsers.docx.docparser.subprocess.run")
-    def test_libreoffice_not_installed_raises(self, mock_run):
-        """When LibreOffice is not installed, CalledProcessError is raised."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = subprocess.CalledProcessError(
-            returncode=1, cmd=["which", "libreoffice"],
-            output=b"", stderr=b"not found"
-        )
-
-        with pytest.raises(subprocess.CalledProcessError):
-            parser.convert_doc_to_docx(b"fake doc binary")
-
-    @patch("app.modules.parsers.docx.docparser.subprocess.run")
-    def test_conversion_file_not_found_raises(self, mock_run):
-        """When converted file is not found, FileNotFoundError is raised."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),  # which libreoffice
-            MagicMock(returncode=0),  # libreoffice convert
-        ]
-
-        with patch("builtins.open", create=True) as mock_open, \
-             patch("os.path.exists", return_value=False):
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-            mock_open.return_value = mock_write_handle
-
-            with pytest.raises(Exception, match="output file not found"):
-                parser.convert_doc_to_docx(b"fake doc binary")
-
-    @patch("app.modules.parsers.docx.docparser.subprocess.run")
-    def test_conversion_timeout_raises(self, mock_run):
-        """When conversion times out, Exception is raised."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),  # which libreoffice
-            subprocess.TimeoutExpired(cmd="libreoffice", timeout=60),
-        ]
-
-        with patch("builtins.open", create=True) as mock_open:
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-            mock_open.return_value = mock_write_handle
-
-            with pytest.raises(Exception, match="timed out"):
-                parser.convert_doc_to_docx(b"fake doc binary")
-
-    @patch("app.modules.parsers.docx.docparser.subprocess.run")
-    def test_conversion_generic_error_raises(self, mock_run):
-        """Generic errors during conversion are wrapped."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),  # which libreoffice
-        ]
-
-        with patch("builtins.open", create=True, side_effect=PermissionError("denied")):
-            with pytest.raises(Exception, match="Error converting .doc to .docx"):
-                parser.convert_doc_to_docx(b"fake doc binary")
 
     def test_init(self):
         """DocParser can be instantiated."""
@@ -139,126 +39,16 @@ class TestXLSParser:
         from app.modules.parsers.excel.xls_parser import XLSParser
         return XLSParser(excel_parser=MagicMock())
 
-    @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
-    def test_convert_xls_to_xlsx_success(self, mock_run):
-        """Successful conversion returns xlsx bytes."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),  # which libreoffice
-            MagicMock(returncode=0),  # libreoffice convert
-        ]
-
-        fake_xlsx_content = b"PK\x03\x04fake xlsx content"
-
-        with patch("builtins.open", create=True) as mock_open, \
-             patch("os.path.exists", return_value=True):
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-
-            mock_read_handle = MagicMock()
-            mock_read_handle.__enter__ = MagicMock(return_value=mock_read_handle)
-            mock_read_handle.__exit__ = MagicMock(return_value=False)
-            mock_read_handle.read.return_value = fake_xlsx_content
-
-            mock_open.side_effect = [mock_write_handle, mock_read_handle]
-
-            result = parser.convert_xls_to_xlsx(b"fake xls binary")
-            assert isinstance(result, bytes)
-            assert result == fake_xlsx_content
-
-    @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
-    def test_libreoffice_not_installed_raises(self, mock_run):
-        """When LibreOffice is not installed, CalledProcessError is raised."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = subprocess.CalledProcessError(
-            returncode=1, cmd=["which", "libreoffice"],
-            output=b"", stderr=b"not found"
-        )
-
-        with pytest.raises(subprocess.CalledProcessError):
-            parser.convert_xls_to_xlsx(b"fake xls binary")
-
-    @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
-    def test_conversion_file_not_found_raises(self, mock_run):
-        """When converted file is not found, FileNotFoundError is raised."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),
-            MagicMock(returncode=0),
-        ]
-
-        with patch("builtins.open", create=True) as mock_open, \
-             patch("os.path.exists", return_value=False):
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-            mock_open.return_value = mock_write_handle
-
-            with pytest.raises(Exception, match="output file not found"):
-                parser.convert_xls_to_xlsx(b"fake xls binary")
-
-    @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
-    def test_conversion_timeout_raises(self, mock_run):
-        """When conversion times out, Exception is raised."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),
-            subprocess.TimeoutExpired(cmd="libreoffice", timeout=60),
-        ]
-
-        with patch("builtins.open", create=True) as mock_open:
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-            mock_open.return_value = mock_write_handle
-
-            with pytest.raises(Exception, match="timed out"):
-                parser.convert_xls_to_xlsx(b"fake xls binary")
-
-    @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
-    def test_conversion_generic_error_raises(self, mock_run):
-        """Generic errors during conversion are wrapped."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),
-        ]
-
-        with patch("builtins.open", create=True, side_effect=PermissionError("denied")):
-            with pytest.raises(Exception, match="Error converting .xls to .xlsx"):
-                parser.convert_xls_to_xlsx(b"fake xls binary")
-
     def test_init(self):
         """XLSParser can be instantiated."""
         parser = self._make_parser()
         assert parser is not None
 
-    @patch("app.modules.parsers.excel.xls_parser.subprocess.run")
-    def test_libreoffice_conversion_error_with_stderr(self, mock_run):
-        """CalledProcessError with stderr includes error details."""
-        parser = self._make_parser()
-
-        error = subprocess.CalledProcessError(
-            returncode=1, cmd=["libreoffice"],
-            output=b"", stderr=b"conversion error details"
-        )
-        mock_run.side_effect = error
-
-        with pytest.raises(subprocess.CalledProcessError) as exc:
-            parser.convert_xls_to_xlsx(b"fake xls binary")
-        assert exc.value.returncode == 1
-
     @pytest.mark.asyncio
     async def test_parse_uses_async_libreoffice_subprocess_path(self):
         """Regression test: .parse() (the entry point used by the parsing
-        service) must go through the async LibreOffice conversion helper —
-        not the sync subprocess.run-based convert_xls_to_xlsx — so it never
-        blocks the event loop.
+        service) must go through the async LibreOffice conversion helper so it
+        never blocks the event loop.
         """
         mock_excel_parser = MagicMock()
         mock_result = MagicMock()
@@ -444,146 +234,8 @@ class TestPPTParser:
         from app.modules.parsers.pptx.ppt_parser import PPTParser
         return PPTParser()
 
-    @patch("app.modules.parsers.pptx.ppt_parser.subprocess.run")
-    def test_convert_ppt_to_pptx_success(self, mock_run):
-        """Successful conversion returns pptx bytes."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),  # which libreoffice
-            MagicMock(returncode=0),  # libreoffice convert
-        ]
-
-        fake_pptx_content = b"PK\x03\x04fake pptx content"
-
-        with patch("builtins.open", create=True) as mock_open, \
-             patch("os.path.exists", return_value=True):
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-
-            mock_read_handle = MagicMock()
-            mock_read_handle.__enter__ = MagicMock(return_value=mock_read_handle)
-            mock_read_handle.__exit__ = MagicMock(return_value=False)
-            mock_read_handle.read.return_value = fake_pptx_content
-
-            mock_open.side_effect = [mock_write_handle, mock_read_handle]
-
-            result = parser.convert_ppt_to_pptx(b"fake ppt binary")
-            assert isinstance(result, bytes)
-            assert result == fake_pptx_content
-
-    @patch("app.modules.parsers.pptx.ppt_parser.subprocess.run")
-    def test_libreoffice_not_installed_raises(self, mock_run):
-        """When LibreOffice is not installed, CalledProcessError is raised."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = subprocess.CalledProcessError(
-            returncode=1, cmd=["which", "libreoffice"],
-            output=b"", stderr=b"not found"
-        )
-
-        with pytest.raises(subprocess.CalledProcessError):
-            parser.convert_ppt_to_pptx(b"fake ppt binary")
-
-    @patch("app.modules.parsers.pptx.ppt_parser.subprocess.run")
-    def test_conversion_file_not_found_raises(self, mock_run):
-        """When converted file is not found, FileNotFoundError is raised."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),
-            MagicMock(returncode=0),
-        ]
-
-        with patch("builtins.open", create=True) as mock_open, \
-             patch("os.path.exists", return_value=False):
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-            mock_open.return_value = mock_write_handle
-
-            with pytest.raises(Exception, match="output file not found"):
-                parser.convert_ppt_to_pptx(b"fake ppt binary")
-
-    @patch("app.modules.parsers.pptx.ppt_parser.subprocess.run")
-    def test_conversion_timeout_raises(self, mock_run):
-        """When conversion times out, Exception is raised."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),
-            subprocess.TimeoutExpired(cmd="libreoffice", timeout=60),
-        ]
-
-        with patch("builtins.open", create=True) as mock_open:
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-            mock_open.return_value = mock_write_handle
-
-            with pytest.raises(Exception, match="timed out"):
-                parser.convert_ppt_to_pptx(b"fake ppt binary")
-
-    @patch("app.modules.parsers.pptx.ppt_parser.subprocess.run")
-    def test_conversion_generic_error_raises(self, mock_run):
-        """Generic errors during conversion are wrapped."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),
-        ]
-
-        with patch("builtins.open", create=True, side_effect=PermissionError("denied")):
-            with pytest.raises(Exception, match="Error converting .ppt to .pptx"):
-                parser.convert_ppt_to_pptx(b"fake ppt binary")
-
     def test_init(self):
         """PPTParser can be instantiated."""
         parser = self._make_parser()
         assert parser is not None
 
-    @patch("app.modules.parsers.pptx.ppt_parser.subprocess.run")
-    def test_libreoffice_error_with_stderr(self, mock_run):
-        """CalledProcessError with stderr includes error details in message."""
-        parser = self._make_parser()
-
-        error = subprocess.CalledProcessError(
-            returncode=1, cmd=["libreoffice"],
-            output=b"", stderr=b"detailed error info"
-        )
-        mock_run.side_effect = error
-
-        with pytest.raises(subprocess.CalledProcessError) as exc:
-            parser.convert_ppt_to_pptx(b"fake ppt binary")
-        assert exc.value.returncode == 1
-
-    @patch("app.modules.parsers.pptx.ppt_parser.subprocess.run")
-    def test_writes_input_binary_to_temp_file(self, mock_run):
-        """Input binary is written to temporary file correctly."""
-        parser = self._make_parser()
-
-        mock_run.side_effect = [
-            MagicMock(returncode=0),
-            MagicMock(returncode=0),
-        ]
-
-        input_binary = b"test ppt content"
-        written_data = []
-
-        with patch("builtins.open", create=True) as mock_open, \
-             patch("os.path.exists", return_value=True):
-            mock_write_handle = MagicMock()
-            mock_write_handle.__enter__ = MagicMock(return_value=mock_write_handle)
-            mock_write_handle.__exit__ = MagicMock(return_value=False)
-            mock_write_handle.write = MagicMock(side_effect=lambda d: written_data.append(d))
-
-            mock_read_handle = MagicMock()
-            mock_read_handle.__enter__ = MagicMock(return_value=mock_read_handle)
-            mock_read_handle.__exit__ = MagicMock(return_value=False)
-            mock_read_handle.read.return_value = b"converted"
-
-            mock_open.side_effect = [mock_write_handle, mock_read_handle]
-
-            parser.convert_ppt_to_pptx(input_binary)
-            assert written_data[0] == input_binary

@@ -94,7 +94,7 @@ from app.agents.actions.util.attachments import resolve_attachments
 from app.agents.agent_loop.protocol.formatter import ArtifactSSEPayload
 from app.config.constants.arangodb import Connectors
 from app.models.entities import ArtifactType, ArtifactVisibility
-from app.sandbox.artifact_upload import MIME_TO_ARTIFACT_TYPE
+from app.sandbox.artifact_upload import infer_artifact_type
 from app.sandbox.models import SandboxLanguage
 from app.sandbox.package_policy import (
     PackageNotAllowedError,
@@ -104,6 +104,7 @@ from app.sandbox.package_policy import (
 from app.sandbox.redact import redact_sandbox_paths
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.utils.conversation_tasks import register_task
+from app.utils.log_redaction import redact_secrets_in_text
 
 # run_code's ONE user-facing deliverable directory, backed by $OUTPUT_DIR
 # (see `sanitized_subprocess_env()` / DockerCodingSandbox's container env) on
@@ -113,6 +114,8 @@ from app.utils.conversation_tasks import register_task
 _OUTPUT_DIR_NAME = "output"
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agents.agent_loop.context import AgentContext
@@ -205,6 +208,26 @@ def _curated_package_allowlist() -> list[str]:
     return sorted(get_allowlist(SandboxLanguage.PYTHON) | get_allowlist(SandboxLanguage.TYPESCRIPT))
 
 
+_SLOT_WAIT_MESSAGE = "waiting in queue"
+
+
+def _slot_wait_notice(ctx: "AgentContext | None") -> "Callable[..., Awaitable[None]] | None":
+    """Shows a generic "waiting" note on the chat's activity row while a
+    sandbox call waits for a free slot, and clears it once the slot is granted."""
+    sink = getattr(ctx, "event_sink", None) if ctx is not None else None
+    if sink is None:
+        return None
+
+    async def notice(tool: str, *, waiting: bool) -> None:
+        for event in ctx.formatter.tool_progress(
+            ctx, tool=tool, progress=0, total=None,
+            message=_SLOT_WAIT_MESSAGE if waiting else None,
+        ):
+            await sink.write(event)
+
+    return notice
+
+
 async def build_coding_sandbox_manager(
     *,
     max_concurrent: int | None = None,
@@ -248,10 +271,14 @@ async def build_coding_sandbox_manager(
     if allow_network is None:
         allow_network = settings.allow_network
 
-    manager = SandboxManager(governor=get_default_governor(GovernorLimits(
-        max_total_sandboxes=settings.governor.max_total_sandboxes,
-        max_per_org=settings.governor.max_per_org,
-    )))
+    manager = SandboxManager(
+        governor=get_default_governor(GovernorLimits(
+            max_total_sandboxes=settings.governor.max_total_sandboxes,
+            max_per_org=settings.governor.max_per_org,
+        )),
+        slot_wait_s=settings.slot_wait_s,
+        on_slot_wait=_slot_wait_notice(ctx),
+    )
 
     network_enabled = allow_network
     allowlist = _curated_package_allowlist()
@@ -852,9 +879,10 @@ async def _stage_conversation_uploads(
 
 
 def coding_sandbox_artifact_bridge(context: "AgentContext", manager: SandboxManager):
-    """POST_TOOL_USE middleware: redacts host sandbox paths out of
-    `run_code`'s stdout/stderr/error_analysis, and — when the result carries
-    `artifacts` + `sandbox_id` — fetches the artifact bytes INLINE (before
+    """POST_TOOL_USE middleware: redacts host sandbox paths and secrets out
+    of every coding-sandbox result, success or not (stdout/stderr/error/
+    error_analysis and `read_sandbox_file`'s UTF-8 `content`), and — when
+    the result carries `artifacts` + `sandbox_id` — fetches the artifact bytes INLINE (before
     this hook returns, so the sandbox can't be destroyed out from under the
     read) and registers each one SYNCHRONOUSLY through
     `ArtifactRegistryService`, right here in the hook — never as a
@@ -875,18 +903,23 @@ def coding_sandbox_artifact_bridge(context: "AgentContext", manager: SandboxMana
 
     async def _middleware(ctx: ToolResultContext, next_fn) -> None:
         response = ctx.tool_response
-        if response.success and isinstance(response.data, dict):
+        if response.error:
+            response.error = redact_sandbox_paths(response.error)
+        if isinstance(response.data, dict):
             data = response.data
-            if "stdout" in data:
-                data["stdout"] = redact_sandbox_paths(data.get("stdout"))
-            if "stderr" in data:
-                data["stderr"] = redact_sandbox_paths(data.get("stderr"))
+            for key in ("stdout", "stderr", "error"):
+                if isinstance(data.get(key), str):
+                    data[key] = redact_sandbox_paths(data[key])
+            if data.get("encoding") == "utf-8" and isinstance(data.get("content"), str):
+                data["content"] = redact_sandbox_paths(data["content"])
             error_analysis = data.get("error_analysis")
             if isinstance(error_analysis, dict):
                 for key in ("message", "stack_trace", "suggestion"):
                     if error_analysis.get(key):
                         error_analysis[key] = redact_sandbox_paths(error_analysis[key])
 
+        if response.success and isinstance(response.data, dict):
+            data = response.data
             artifacts = data.get("artifacts")
             sandbox_id = data.get("sandbox_id")
             if artifacts and sandbox_id:
@@ -1075,7 +1108,7 @@ async def _register_run_code_artifacts(
     deliverable_paths, scratch_paths = _partition_sandbox_outputs(artifact_paths)
 
     if scratch_paths:
-        data["scratch_files"] = [os.path.basename(p) for p in scratch_paths]
+        data["scratch_files"] = [redact_sandbox_paths(os.path.basename(p)) for p in scratch_paths]
         data["scratch_files_note"] = (
             "These files were written outside $OUTPUT_DIR and stayed inside the sandbox "
             "-- they were NOT uploaded or shown to the user. If one of them is actually "
@@ -1160,7 +1193,7 @@ async def _register_and_deliver(
             metadata, _version = await registry.register_output(
                 actor=actor,
                 name=file_name,
-                artifact_type=MIME_TO_ARTIFACT_TYPE.get(mime_type, ArtifactType.OTHER),
+                artifact_type=infer_artifact_type(mime_type, file_name),
                 mime_type=mime_type,
                 content=content,
                 conversation_id=context.conversation_id,
@@ -1169,7 +1202,9 @@ async def _register_and_deliver(
             )
         except Exception as exc:
             logger.exception("coding sandbox artifact registration failed for %s", rel_path)
-            failures.append({"file": file_name, "error": f"{type(exc).__name__}: {exc}"})
+            # A successful run result carries it, which the executor does not mask: a storage driver's error can quote a
+            # signed URL or a DSN.
+            failures.append({"file": file_name, "error": redact_secrets_in_text(f"{type(exc).__name__}: {exc}")})
             continue
 
         if code_artifact_id:

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ConnectorsApi } from '../../api';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import type { User } from '@/app/(main)/workspace/users/types';
+import { revalidateSwrNamespace, SWR_NS } from '@/lib/api/swr-cache';
 import { findSampleAccounts, removeDemoData } from '../remove-demo-data';
 
 vi.mock('../../api', () => ({
@@ -11,6 +12,12 @@ vi.mock('@/app/(main)/workspace/users/api', () => ({
   UsersApi: { listUsers: vi.fn(), deleteUser: vi.fn() },
 }));
 
+vi.mock('@/lib/api/swr-cache', async (importActual) => ({
+  ...(await importActual<typeof import('@/lib/api/swr-cache')>()),
+  revalidateSwrNamespace: vi.fn(),
+}));
+
+const revalidate = vi.mocked(revalidateSwrNamespace);
 const deleteConnectorInstance = vi.mocked(ConnectorsApi.deleteConnectorInstance);
 const getConnectorInstance = vi.mocked(ConnectorsApi.getConnectorInstance);
 
@@ -112,6 +119,14 @@ describe('removeDemoData', () => {
 
     expect(deleteConnectorInstance).toHaveBeenCalledWith('demo-2');
     expect(getConnectorInstance).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the cached connector list even when every connector was already gone', async () => {
+    deleteConnectorInstance.mockRejectedValue(apiError(404));
+
+    await removeDemoData(['gone'], []);
+
+    expect(revalidate).toHaveBeenCalledWith(SWR_NS.teamConnectorLists);
   });
 
   it('still stops on a 409 that is a refusal, such as an agent using the connector', async () => {

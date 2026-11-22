@@ -2,10 +2,12 @@
 Dynamic filter-option pickers for the GitHub Teams connector.
 
 Responsibilities:
-- ``get_filter_options``: public entry point for the org/repo picker fields.
+- ``get_filter_options``: public entry point for the org/repo/branch picker fields.
 - ``_org_filter_options``: org picker (``list_user_orgs`` + local search).
 - ``_repo_filter_options``: repo picker (``search_repositories`` when searching,
   ``list_org_repos``/``list_user_repos`` otherwise).
+- ``_branch_filter_options``: branch picker for the repo in the form
+  (GraphQL ``refs``, cursor-paged, default branch first).
 
 Pagination contracts (each mode has a different upstream shape):
 - Browse, single source: GitHub pages directly, ``sort=full_name`` for a
@@ -103,6 +105,8 @@ class FiltersHelper:
                 return await self._org_filter_options(page, limit, search)
             if filter_key == SyncFilterKey.REPO_IDS.value:
                 return await self._repo_filter_options(page, limit, search, cursor)
+            if filter_key == SyncFilterKey.BRANCH.value:
+                return await self._branch_filter_options(page, limit, search, cursor)
             raise ValueError(f"Unsupported filter key: {filter_key}")
         except ValueError:
             raise
@@ -457,3 +461,51 @@ class FiltersHelper:
             return [], False, res.error
         raw = list(res.data or [])
         return raw[:per_page], len(raw) >= per_page, None
+
+    # ------------------------------------------------------------------
+    # Branch picker
+    # ------------------------------------------------------------------
+
+    async def _branch_filter_options(
+        self, page: int, limit: int, search: str | None, cursor: str | None,
+    ) -> FilterOptionsResponse:
+        """Branches of the repository being picked, the default branch first.
+
+        The repository comes from the picker's ``contextGroupPath`` (the repo
+        row as it stands in the form, saved or not), so the list follows the
+        admin's current choice.
+        """
+        c = self.c
+        per_page = _clamp_per_page(limit)
+        repos = self._request_context(c, "_request_filter_context_group_paths")
+        if len(repos) != 1 or "/" not in repos[0]:
+            return FilterOptionsResponse(
+                success=True, options=[], page=page, limit=per_page, has_more=False,
+                message="Select a repository to list its branches.",
+            )
+        owner, name = repos[0].split("/", 1)
+        res = await c.runtime.ds_call(
+            c.data_source.list_branches, owner, name,
+            per_page=per_page, after=cursor or None, query=(search or "").strip() or None,
+        )
+        if not res.success:
+            self.logger.warning("list_branches failed for filter options (%s): %s", repos[0], res.error)
+            return FilterOptionsResponse(
+                success=False, options=[], page=page, limit=per_page, has_more=False, message=res.error,
+            )
+        data = res.data or {}
+        default_branch = data.get("default_branch")
+        names = [n for n in data.get("names") or [] if n != default_branch]
+        needle = (search or "").strip().casefold()
+        # Only the first page leads with the default branch; later pages skip it.
+        if default_branch and not cursor and needle in default_branch.casefold():
+            names.insert(0, default_branch)
+        opts = [
+            FilterOption(id=n, label=f"{n} (default)" if n == default_branch else n)
+            for n in names
+        ]
+        has_more = bool(data.get("has_next_page"))
+        return FilterOptionsResponse(
+            success=True, options=opts, page=page, limit=per_page,
+            has_more=has_more, cursor=data.get("end_cursor") if has_more else None,
+        )

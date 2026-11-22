@@ -1,16 +1,19 @@
 """Comprehensive unit tests for app.connectors_main module."""
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import logging
 import sys
 import types
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.testclient import TestClient
 
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
@@ -283,6 +286,36 @@ class TestResumeSyncServices:
         started = {c.kwargs["connector_id"]: c.kwargs["start_sync"] for c in create.await_args_list}
         assert started == {"owed": False, "plain": True}
         assert [c.kwargs["connector_id"] for c in publish.await_args_list] == ["owed"]
+
+    async def test_boot_logs_user_count_not_user_details(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Every boot walks every org's users; only their count may reach the log."""
+        from app.connectors_main import resume_sync_services
+
+        logger_name = "tests.connectors_main.resume_users"
+        mock_container = _make_container()
+        mock_container.logger.return_value = logging.getLogger(logger_name)
+        mock_container.connectors_map = {}
+        gp = _make_graph_provider()
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "org1"}])
+        gp.get_org_apps = AsyncMock(return_value=[{"_key": "app1", "type": "Slack"}])
+        gp.get_users = AsyncMock(return_value=[
+            {"_key": "user1", "email": "alice@example.com", "fullName": "Alice Liddell"},
+            {"_key": "user2", "email": "bob@example.com", "fullName": "Bob Builder"},
+        ])
+        ds = _make_data_store(gp)
+        caplog.set_level(logging.DEBUG, logger=logger_name)
+
+        with patch(
+            "app.connectors_main.ConnectorFactory.create_and_start_sync",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ):
+            assert await resume_sync_services(mock_container, ds) is True
+
+        messages = [r.getMessage() for r in caplog.records if r.name == logger_name]
+        assert "Found 2 users for organization org1" in messages
+        for personal in ("alice@example.com", "bob@example.com", "Alice Liddell", "Bob Builder"):
+            assert not any(personal in m for m in messages), personal
 
     async def test_connector_none_not_stored(self):
         """If ConnectorFactory returns None, it should not be stored."""
@@ -890,6 +923,43 @@ class TestShutdownContainerResources:
 class TestLifespan:
     """Tests for lifespan() context manager."""
 
+    @pytest.mark.parametrize("exit_with", [None, RuntimeError("serving failed"), asyncio.CancelledError()])
+    async def test_loop_lag_monitor_runs_while_serving_and_always_stops(self, exit_with: BaseException | None) -> None:
+        """Started before the app serves; stopped however the lifespan exits, as its watchdog is a thread."""
+        from app.connectors_main import lifespan
+
+        mock_container = _make_container()
+        mock_container.data_store = AsyncMock(return_value=_make_data_store(_make_graph_provider()))
+        mock_app = MagicMock()
+        registry = MagicMock()
+        registry._connectors = {}
+        toolsets = MagicMock()
+        toolsets.list_toolsets.return_value = []
+        monitor = MagicMock()
+
+        with (
+            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=registry),
+            patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
+            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
+            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
+            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
+            patch("os.getenv", side_effect=_mock_os_getenv("arangodb")),
+            patch("app.connectors_main.get_toolset_registry", return_value=toolsets),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=MagicMock()),
+            patch("app.connectors_main.loop_lag_monitor_from_env", return_value=monitor) as from_env,
+        ):
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                async with lifespan(mock_app):
+                    monitor.start.assert_called_once()
+                    monitor.stop.assert_not_called()
+                    if exit_with is not None:
+                        raise exit_with
+
+        assert from_env.call_args.args[1] == "connector-main"
+        monitor.stop.assert_called_once()
+
     async def test_startup_and_shutdown_arangodb(self):
         """Full lifespan cycle with arangodb data store."""
         from app.connectors_main import lifespan
@@ -906,8 +976,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -919,17 +987,15 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock) as mock_shutdown,
             patch("os.getenv", side_effect=_mock_os_getenv("arangodb")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 assert mock_app.container is mock_container
                 assert mock_app.state.connector_registry is mock_registry
 
             mock_shutdown.assert_awaited_once()
+            mock_toolset_registry.auto_discover_toolsets.assert_called_once()
 
     async def test_startup_non_arangodb_skips_migration(self):
         """Non-arangodb data store skips arango service and migration."""
@@ -947,8 +1013,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -960,11 +1024,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 assert mock_app.container is mock_container
@@ -1008,6 +1069,41 @@ class TestLifespan:
         assert calls == ["registry", "repair"]
         assert mock_repair.call_args.args[0] is mock_container.config_service.return_value
 
+    async def test_toolset_registry_is_loaded_before_token_refresh_starts(self) -> None:
+        """The first refresh scan runs in the background as soon as startup services start,
+        and a personal action's token URL comes only from the toolset registry."""
+        from app.connectors_main import lifespan
+
+        mock_container = _make_container()
+        mock_container.data_store = AsyncMock(return_value=_make_data_store())
+        mock_app = MagicMock()
+        mock_registry = MagicMock()
+        mock_registry._connectors = {}
+        calls: list[str] = []
+
+        mock_toolset_registry = MagicMock()
+        mock_toolset_registry.list_toolsets.return_value = []
+        mock_toolset_registry.auto_discover_toolsets.side_effect = lambda: calls.append("toolsets")
+
+        async def _startup(*_args: object, **_kwargs: object) -> None:
+            calls.append("refresh services")
+
+        with (
+            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=mock_registry),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.startup_service.initialize", side_effect=_startup),
+            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
+            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
+            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
+            patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
+        ):
+            async with lifespan(mock_app):
+                assert mock_app.state.toolset_registry is mock_toolset_registry
+
+        assert calls == ["toolsets", "refresh services"]
+
     async def test_startup_service_init_failure_continues(self):
         """Startup service init failure does not prevent startup."""
         from app.connectors_main import lifespan
@@ -1024,8 +1120,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1037,11 +1131,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 pass  # Startup succeeded despite init failure
@@ -1062,8 +1153,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1075,11 +1164,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, side_effect=RuntimeError("kafka fail")),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 await mock_container.post_startup_task
@@ -1100,8 +1186,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1110,11 +1194,8 @@ class TestLifespan:
             patch("app.connectors_main.startup_service.initialize", new_callable=AsyncMock),
             patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock, side_effect=RuntimeError("producer fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             with pytest.raises(RuntimeError, match="producer fail"):
                 async with lifespan(mock_app):
@@ -1136,8 +1217,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1149,11 +1228,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 pass  # Should not raise
@@ -1174,8 +1250,6 @@ class TestLifespan:
 
         mock_toolset_registry = MagicMock()
         mock_toolset_registry.list_toolsets.return_value = []
-        mock_tools_registry = MagicMock()
-        mock_tools_registry.list_tools.return_value = []
         mock_oauth_registry = MagicMock()
 
         with (
@@ -1187,11 +1261,8 @@ class TestLifespan:
             patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
             patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock, side_effect=RuntimeError("shutdown fail")),
             patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
-            patch.dict("sys.modules", {
-                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_toolset_registry)),
-                "app.agents.tools.registry": MagicMock(_global_tools_registry=mock_tools_registry),
-                "app.connectors.core.registry.oauth_config_registry": MagicMock(get_oauth_config_registry=MagicMock(return_value=mock_oauth_registry)),
-            }),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.get_oauth_config_registry", return_value=mock_oauth_registry),
         ):
             async with lifespan(mock_app):
                 pass  # Should not raise on shutdown error
@@ -1293,6 +1364,7 @@ class TestAuthenticateRequestsMiddleware:
 
         mock_call_next.assert_awaited_once_with(mock_authenticated_request)
         assert result is mock_response
+        mock_logger.debug.assert_not_called()  # the raw path is never logged
 
     async def test_auth_http_exception(self):
         """HTTPException during auth returns JSON error response."""
@@ -1307,14 +1379,20 @@ class TestAuthenticateRequestsMiddleware:
         app.container = MagicMock()
         app.container.logger.return_value = mock_logger
 
-        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, side_effect=HTTPException(status_code=401, detail="Unauthorized")):
+        refusal = HTTPException(status_code=401, detail="Unauthorized")
+        with (
+            patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, side_effect=refusal),
+            patch("app.connectors_main.mark_request_failure") as hand_over,
+        ):
             result = await authenticate_requests(mock_request, mock_call_next)
 
         assert result.status_code == 401
+        hand_over.assert_called_once_with(mock_request, refusal)
         mock_call_next.assert_not_awaited()
+        mock_logger.warning.assert_not_called()
 
     async def test_auth_unexpected_exception(self):
-        """Unexpected exception during auth returns 500 error."""
+        """Not caught here: the request's http.request.end logs it once and answers the 500."""
         from app.connectors_main import authenticate_requests, app
 
         mock_request = MagicMock()
@@ -1327,9 +1405,9 @@ class TestAuthenticateRequestsMiddleware:
         app.container.logger.return_value = mock_logger
 
         with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, side_effect=RuntimeError("unexpected")):
-            result = await authenticate_requests(mock_request, mock_call_next)
+            with pytest.raises(RuntimeError, match="unexpected"):
+                await authenticate_requests(mock_request, mock_call_next)
 
-        assert result.status_code == 500
         mock_call_next.assert_not_awaited()
 
     async def test_non_excluded_path_requires_auth(self):
@@ -1378,9 +1456,193 @@ class TestAuthenticateRequestsMiddleware:
         mock_auth.assert_not_awaited()
         mock_call_next.assert_awaited_once_with(request)
 
+    async def test_route_cancellation_is_not_logged_as_a_crash(self) -> None:
+        """CancelledError (client disconnect, shutdown) is a BaseException: re-raised, not logged."""
+        from app.connectors_main import app, authenticate_requests
+
+        request = request_with_host("/api/v1/x")
+        mock_call_next = AsyncMock(side_effect=asyncio.CancelledError)
+        mock_logger = MagicMock()
+        app.container = MagicMock()
+        app.container.logger.return_value = mock_logger
+
+        with patch("app.connectors_main.authMiddleware", new_callable=AsyncMock, return_value=request):
+            with pytest.raises(asyncio.CancelledError):
+                await authenticate_requests(request, mock_call_next)
+
+        mock_logger.exception.assert_not_called()
+        mock_logger.error.assert_not_called()
+
+
+class TestAuthenticateRequestsThroughStarlette:
+    """The real middleware on a minimal app wired like connectors_main, so call_next has Starlette's semantics.
+
+    raise_server_exceptions=True makes any exception that escapes the app fail the test: an escape makes uvicorn
+    log it a second time and close the client's keep-alive connection.
+    """
+
+    LOGGER_NAME = "tests.connectors_main.auth_mw"
+    END = "http.request.end"
+
+    @pytest.fixture
+    def client_and_auth(self, caplog: pytest.LogCaptureFixture) -> Iterator[tuple[TestClient, AsyncMock, list[str]]]:
+        import app.connectors_main as cm
+        from app.api.middlewares.request_log import install_request_logging
+
+        routes_run: list[str] = []
+        mini = FastAPI()
+        mini.middleware("http")(cm.authenticate_requests)
+        install_request_logging(mini)  # same order as connectors_main
+
+        @mini.get("/api/v1/boom")
+        async def boom() -> None:
+            raise RuntimeError("route exploded")
+
+        @mini.get("/api/v1/conflict")
+        async def conflict() -> None:
+            raise HTTPException(status_code=409, detail="already exists")
+
+        @mini.get("/api/v1/ok")
+        async def ok() -> dict[str, str]:
+            routes_run.append("ok")
+            return {"status": "ok"}
+
+        @mini.get("/api/v1/stream")
+        async def stream() -> StreamingResponse:
+            async def body() -> AsyncIterator[bytes]:
+                yield b"first"
+                raise RuntimeError("mid-stream")
+
+            return StreamingResponse(body())
+
+        @mini.get("/health")
+        async def health() -> dict[str, str]:
+            return {"status": "healthy"}
+
+        @mini.get("/drive/webhook")
+        async def webhook() -> None:
+            raise RuntimeError("webhook exploded")
+
+        caplog.set_level(logging.DEBUG, logger=self.LOGGER_NAME)
+        caplog.set_level(logging.DEBUG, logger="app.api.middlewares.request_log")
+        container = MagicMock()
+        container.logger.return_value = logging.getLogger(self.LOGGER_NAME)
+        with patch.object(cm.app, "container", container, create=True), patch(
+            "app.connectors_main.authMiddleware", new_callable=AsyncMock, side_effect=lambda request: request
+        ) as auth:
+            with TestClient(mini, raise_server_exceptions=True) as test_client:
+                yield test_client, auth, routes_run
+
+    def _auth_records(self, caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == self.LOGGER_NAME and r.levelno >= logging.WARNING]
+
+    def _end(self, caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+        (record,) = [r for r in caplog.records if r.getMessage() == self.END]
+        return record
+
+    def test_route_crash_is_logged_once_on_the_request_line_not_as_auth(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, _, _ = client_and_auth
+
+        response = client.get("/api/v1/boom", headers={"x-request-id": "rid-123"})
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        assert self._auth_records(caplog) == []
+        record = self._end(caplog)
+        assert record.levelno == logging.ERROR
+        assert (record.status, record.error_class, record.error_type, record.route) == (
+            500, "internal", "RuntimeError", "/api/v1/boom")
+        assert "route exploded" in record.exc_text
+        assert record.request_id.startswith("rid-123")
+        assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
+
+    def test_auth_crash_is_logged_once_and_route_never_runs(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, routes_run = client_and_auth
+        auth.side_effect = RuntimeError("auth bug")
+
+        response = client.get("/api/v1/ok")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        record = self._end(caplog)
+        assert record.levelno == logging.ERROR and "auth bug" in record.exc_text
+        assert routes_run == []
+
+    def test_auth_rejection_is_one_info_line_with_its_reason_and_keeps_its_status(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        from app.api.middlewares.auth import AuthRejected
+
+        client, auth, routes_run = client_and_auth
+        auth.side_effect = AuthRejected(401, "Not authenticated", reason="expired")
+
+        response = client.get("/api/v1/ok")
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Not authenticated"}
+        assert self._auth_records(caplog) == []
+        record = self._end(caplog)
+        assert record.levelno == logging.INFO
+        assert (record.status, record.error_class, record.reason, record.route) == (
+            401, "auth_expired", "expired", "/api/v1/ok")
+        assert routes_run == []
+
+    def test_excluded_path_skips_auth(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, _ = client_and_auth
+
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        auth.assert_not_awaited()
+        assert self._auth_records(caplog) == []
+        assert self._end(caplog).levelno == logging.DEBUG
+
+    def test_excluded_path_crash_gets_the_same_body_and_one_line(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, _ = client_and_auth
+
+        response = client.get("/drive/webhook")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        auth.assert_not_awaited()
+        assert self._end(caplog).levelno == logging.ERROR
+
+    def test_route_http_exception_passes_through_unchanged(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, _, _ = client_and_auth
+
+        response = client.get("/api/v1/conflict")
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": "already exists"}
+        assert self._auth_records(caplog) == []
+        assert (self._end(caplog).levelno, self._end(caplog).error_class) == (logging.INFO, "conflict")
+
+    def test_successful_route_is_untouched(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        client, auth, routes_run = client_and_auth
+
+        response = client.get("/api/v1/ok")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        auth.assert_awaited_once()
+        assert routes_run == ["ok"]
+        assert self._auth_records(caplog) == []
+        assert self._end(caplog).outcome == "success"
+
+    def test_stream_body_crash_is_logged_on_the_request_line_with_the_status_sent(self, client_and_auth: tuple[TestClient, AsyncMock, list[str]], caplog: pytest.LogCaptureFixture) -> None:
+        """The response has started, so the exception is re-raised (uvicorn closes the connection, as before)."""
+        client, _, _ = client_and_auth
+
+        with pytest.raises(RuntimeError, match="mid-stream"):
+            client.get("/api/v1/stream")
+
+        assert self._auth_records(caplog) == []
+        record = self._end(caplog)
+        assert (record.levelno, record.status, record.outcome) == (logging.ERROR, 200, "failure")
+
 
 # ---------------------------------------------------------------------------
 # health_check (connector)
+
+
 # ---------------------------------------------------------------------------
 class TestConnectorHealthCheck:
     """Tests for health_check() endpoint."""
@@ -1469,24 +1731,18 @@ class TestConnectorHealthCheck:
 # ---------------------------------------------------------------------------
 # global_exception_handler
 # ---------------------------------------------------------------------------
-class TestGlobalExceptionHandler:
-    """Tests for global_exception_handler()."""
+class TestCrashResponse:
+    """An unhandled exception is answered by request_log (one body for every service and path), not here."""
 
-    async def test_returns_500_with_error_details(self):
-        """Global handler returns 500 with error message and path."""
-        from app.connectors_main import global_exception_handler, app
+    def test_app_registers_no_exception_handler_of_its_own(self):
+        import app.connectors_main as cm
+        from app.api.middlewares.request_context import RequestContextMiddleware
+        from app.api.middlewares.request_log import RequestLogMiddleware
 
-        mock_request = MagicMock()
-        mock_request.url.path = "/api/test"
-
-        mock_logger = MagicMock()
-        app.container = MagicMock()
-        app.container.logger.return_value = mock_logger
-
-        exc = RuntimeError("something went wrong")
-        result = await global_exception_handler(mock_request, exc)
-
-        assert result.status_code == 500
+        assert Exception not in cm.app.exception_handlers
+        assert not hasattr(cm, "global_exception_handler")
+        classes = [m.cls for m in cm.app.user_middleware]
+        assert classes.index(RequestContextMiddleware) + 1 == classes.index(RequestLogMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -1507,6 +1763,7 @@ class TestRun:
             host="0.0.0.0",
             port=8088,
             log_level="info",
+            access_log=False,
             reload=True,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -1524,6 +1781,7 @@ class TestRun:
             host="127.0.0.1",
             port=9000,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=4,
             timeout_worker_healthcheck=60,
@@ -1532,8 +1790,8 @@ class TestRun:
     def test_run_defaults_to_the_edition_worker_count(self):
         """workers=None asks the edition seam, not the env var directly.
 
-        The open-source build pins to one worker whatever is set, because
-        multi-worker sync needs a cross-process lease it does not have.
+        The seam may pin the count at one whatever is set, because more than
+        one worker needs a cross-process lease the process may not have.
         """
         from app.connectors_main import run
         from app.edition_services import max_connector_workers
@@ -1543,14 +1801,19 @@ class TestRun:
             patch.dict("os.environ", {"CONNECTOR_UVICORN_WORKERS": "3"}),
         ):
             run(reload=False)
+            # Asked inside the patch: the seam may read CONNECTOR_UVICORN_WORKERS,
+            # and reading it afterwards would see the restored environment
+            # instead of the value run() just used.
+            workers = max_connector_workers()
 
         mock_uvicorn.assert_called_once_with(
             "app.connectors_main:app",
             host="0.0.0.0",
             port=8088,
             log_level="info",
+            access_log=False,
             reload=False,
-            workers=max_connector_workers(),
+            workers=workers,
             timeout_worker_healthcheck=60,
         )
 
@@ -1597,10 +1860,10 @@ class TestExcludePaths:
         assert "/admin/webhook" in EXCLUDE_PATHS
 
     def test_exclude_paths_length(self):
-        """EXCLUDE_PATHS has exactly 6 entries."""
+        """EXCLUDE_PATHS has exactly 10 entries: six service paths and the four public connect-link routes."""
         from app.connectors_main import EXCLUDE_PATHS
 
-        assert len(EXCLUDE_PATHS) == 6
+        assert len(EXCLUDE_PATHS) == 10
 
 
 # ---------------------------------------------------------------------------
@@ -1644,6 +1907,89 @@ class TestGraphDbHealthCheck:
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_healthy(self) -> None:
+        """PostgreSQL graph probe pings the provider and answers 200."""
+        from app.connectors_main import graph_db_health_check
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=AsyncMock(return_value=None))
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 200
+        request.app.state.graph_provider.ping.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_unhealthy(self) -> None:
+        """A failing PostgreSQL graph read answers 503, not the unknown-store 200."""
+        from app.connectors_main import graph_db_health_check
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=AsyncMock(side_effect=RuntimeError("down")))
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_hanging_ping_answers_503_at_the_deadline(self) -> None:
+        """A ping stuck on a saturated pool answers 503 within the deadline instead of outlasting the caller's timeout."""
+        import time
+
+        from app.connectors_main import graph_db_health_check
+
+        stop, pings = asyncio.Event(), []
+
+        async def hang() -> None:  # ignores cancellation, as a unit waiting on its rollback does, until the test lets it go
+            pings.append(asyncio.current_task())
+            end = time.monotonic() + 10  # bounds a hang
+            while not stop.is_set() and time.monotonic() < end:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.sleep(0.05)
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=hang)
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"), \
+             patch("app.connectors_main.PG_PROBE_TIMEOUT_SEC", 0.05):
+            response = await graph_db_health_check(request)
+
+        assert not pings[0].done(), "the answer waited for the ping to finish"
+        stop.set()
+        await asyncio.wait(pings)
+        assert response.status_code == 503
+        assert json.loads(response.body)["error"] == "PostgreSQL graph health check failed"
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_postgres_cancelled_handler_cancels_the_ping(self) -> None:
+        """If the request is cancelled while the probe waits, the ping is cancelled too and nothing is left unretrieved."""
+        from app.connectors_main import graph_db_health_check
+
+        started = asyncio.Event()
+        seen: list[asyncio.Task] = []
+
+        async def ping() -> None:
+            seen.append(asyncio.current_task())
+            started.set()
+            await asyncio.sleep(30)
+
+        request = MagicMock()
+        request.app.state.graph_provider = MagicMock(ping=ping)
+
+        with patch("app.connectors_main.os.getenv", return_value="postgres"):
+            handler = asyncio.create_task(graph_db_health_check(request))
+            await started.wait()
+            handler.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handler
+            await asyncio.sleep(0)
+
+        assert seen[0].cancelled()
 
     @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_healthy(self):
@@ -1939,6 +2285,98 @@ class TestVectorDbMemoryCheck:
         assert json.loads(response.body) == {"detail": "Admin access required"}
         provider.memory_report.assert_not_awaited()
 
+    @staticmethod
+    def _admin_request(provider: MagicMock) -> MagicMock:
+        from types import SimpleNamespace
+
+        request = MagicMock()
+        request.app.container = _make_container()
+        request.app.state = SimpleNamespace(_vector_db_health_provider=provider)
+        request.state = SimpleNamespace(user={"role": "admin"})
+        return request
+
+    @pytest.mark.asyncio
+    async def test_report_is_reused_within_the_ttl(self) -> None:
+        """It reads every collection (about 12s loaded), so a reload does not recompute it."""
+        from app.connectors_main import vector_db_memory_check
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+        request = self._admin_request(provider)
+
+        first = await vector_db_memory_check(request)
+        second = await vector_db_memory_check(request)
+
+        assert json.loads(first.body) == json.loads(second.body) == {"status": "unsupported"}
+        provider.memory_report.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_report_is_recomputed_after_the_ttl(self) -> None:
+        import app.connectors_main as cm
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+        request = self._admin_request(provider)
+
+        # Stored at 1000; the second call reads the clock past the TTL, then stores again.
+        later = 1000.0 + cm.VECTOR_DB_MEMORY_REPORT_TTL_SEC + 1
+        with patch("app.connectors_main.time.monotonic", side_effect=[1000.0, later, later]):
+            await cm.vector_db_memory_check(request)
+            await cm.vector_db_memory_check(request)
+
+        assert provider.memory_report.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_failure_is_not_cached(self) -> None:
+        from app.connectors_main import vector_db_memory_check
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(side_effect=[RuntimeError("qdrant busy"), None])
+        request = self._admin_request(provider)
+
+        failed = await vector_db_memory_check(request)
+        retried = await vector_db_memory_check(request)
+
+        assert failed.status_code == 503
+        assert json.loads(retried.body) == {"status": "unsupported"}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_share_one_report(self) -> None:
+        from app.connectors_main import vector_db_memory_check
+
+        release = asyncio.Event()
+
+        async def slow_report() -> None:
+            await release.wait()
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(side_effect=slow_report)
+        request = self._admin_request(provider)
+
+        both = asyncio.gather(vector_db_memory_check(request), vector_db_memory_check(request))
+        await asyncio.sleep(0)
+        release.set()
+        first, second = await both
+
+        assert first.status_code == second.status_code == 200
+        provider.memory_report.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_non_admin_is_refused_even_with_a_cached_report(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+        request = self._admin_request(provider)
+        await vector_db_memory_check(request)
+
+        request.state = SimpleNamespace(user={"role": "member"})
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 403
+
 
 class TestGraphDbHealthNeo4jUnhealthy:
     @pytest.mark.asyncio
@@ -2143,20 +2581,53 @@ class TestRefreshConnectorMetrics:
         gp.get_all_documents.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_logs_warning_when_gauge_refresh_fails(self):
+    async def test_counts_under_a_system_context_from_a_detached_task(self) -> None:
+        """The loop runs with no org bound; the count spans every org, so it is asked for under ``system``, and nothing stays bound after."""
         from app.connectors_main import refresh_connector_metrics
+        from app.core.org_context import peek
+
+        seen = []
+
+        async def count() -> dict:
+            seen.append(peek())
+            return {"KB": 2}
 
         gp = AsyncMock()
-        gp.count_active_apps_by_type = AsyncMock(side_effect=RuntimeError("graph down"))
-        logger = MagicMock()
+        gp.count_active_apps_by_type = count
+        after = []
+
+        async def stop(_s: float) -> None:
+            after.append(peek())
+            raise asyncio.CancelledError
 
         with patch("app.connectors_main.set_connector_active") as mock_set, \
-             patch("app.connectors_main.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError):
+             patch("app.connectors_main.asyncio.sleep", side_effect=stop):
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.create_task(refresh_connector_metrics(gp, MagicMock(), interval_s=60), context=contextvars.Context())
+
+        assert [(c.kind, c.source) for c in seen] == [("system", "system:connector_metrics")]
+        assert after == [None]
+        mock_set.assert_called_once_with({"KB": 2})
+
+    @pytest.mark.asyncio
+    async def test_a_failed_refresh_is_one_text_free_warning_and_the_loop_goes_on(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.connectors_main import refresh_connector_metrics
+        from tests.support.log_capture import failure_line
+
+        gp = AsyncMock()
+        gp.count_active_apps_by_type = AsyncMock(side_effect=[RuntimeError("SENTINEL-graph-text"), {"KB": 1}])
+        logger = logging.getLogger("test.connector_metrics")
+        sleeps = AsyncMock(side_effect=[None, asyncio.CancelledError])
+
+        with caplog.at_level(logging.DEBUG, logger=logger.name), \
+             patch("app.connectors_main.set_connector_active") as mock_set, \
+             patch("app.connectors_main.asyncio.sleep", sleeps):
             with pytest.raises(asyncio.CancelledError):
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
-        logger.warning.assert_called()
-        mock_set.assert_not_called()
+        fields = failure_line(caplog.records, "connector_metrics.refresh_failed", "internal", logging.WARNING, "SENTINEL-graph-text")
+        assert fields["error_type"] == "RuntimeError"
+        mock_set.assert_called_once_with({"KB": 1})      # the next round still publishes
 
 
 class TestCorsPolicy:

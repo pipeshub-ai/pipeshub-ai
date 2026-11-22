@@ -608,6 +608,56 @@ class TestNormalizeIssuesInResponse:
         assert "sp" not in out["fields"]
 
 
+    @pytest.mark.asyncio
+    async def test_custom_field_appears_once_under_readable_name(self) -> None:
+        field_schema = {"customfield_10063": {"name": "Story Points", "normalized": "story_points"}}
+        data = {"issues": [{"fields": {"customfield_10063": 5}}]}
+        out = await _build_jira()._normalize_issues_in_response(data, field_schema)
+        assert out["issues"][0]["fields"] == {"story_points": 5}
+
+    @pytest.mark.asyncio
+    async def test_single_issue_custom_field_id_is_not_repeated(self) -> None:
+        field_schema = {"customfield_10063": {"name": "Story Points", "normalized": "story_points"}}
+        out = await _build_jira()._normalize_issues_in_response({"fields": {"customfield_10063": 3}}, field_schema)
+        assert out["fields"] == {"story_points": 3}
+
+    @pytest.mark.asyncio
+    async def test_custom_field_keeps_id_when_readable_name_is_taken(self) -> None:
+        field_schema = {
+            "customfield_1": {"name": "Sprint", "normalized": "sprint"},
+            "customfield_2": {"name": "Sprint", "normalized": "sprint"},
+        }
+        data = {"fields": {"customfield_1": "A", "customfield_2": "B"}}
+        out = await _build_jira()._normalize_issues_in_response(data, field_schema)
+        assert sorted(map(str, out["fields"].values())) == ["A", "B"]
+        assert len(out["fields"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_custom_field_keeps_id_when_readable_name_is_empty(self) -> None:
+        field_schema = {"customfield_1": {"name": "???", "normalized": ""}}
+        out = await _build_jira()._normalize_issues_in_response({"fields": {"customfield_1": 1}}, field_schema)
+        assert out["fields"] == {"customfield_1": 1}
+
+    @pytest.mark.asyncio
+    async def test_custom_field_named_like_a_system_field_keeps_its_id(self) -> None:
+        # The custom field comes first, so it would take "issue_type" before issuetype's alias.
+        field_schema = {
+            "customfield_1": {"name": "Issue Type", "normalized": "issue_type"},
+            "issuetype": {"name": "Issue Type", "normalized": "issue_type"},
+        }
+        data = {"fields": {"customfield_1": "Platform", "issuetype": {"name": "Bug"}}}
+        out = await _build_jira()._normalize_issues_in_response(data, field_schema)
+        assert out["fields"]["customfield_1"] == "Platform"
+        assert out["fields"]["issue_type"] == {"name": "Bug"}
+
+    @pytest.mark.asyncio
+    async def test_custom_description_field_is_not_replaced_by_the_issue_description(self) -> None:
+        # get_issue strips "description" before this runs and writes the issue's own back after.
+        field_schema = {"customfield_1": {"name": "Description", "normalized": "description"}}
+        out = await _build_jira()._normalize_issues_in_response({"fields": {"customfield_1": "custom"}}, field_schema)
+        assert out["fields"] == {"customfield_1": "custom"}
+
+
 # ===========================================================================
 # _add_urls_to_issue_references
 # ===========================================================================
@@ -1442,13 +1492,32 @@ class TestParseAllowedValues:
         ])
         assert result == [{"id": "1", "name": "High"}, {"name": "Low"}]
 
-    def test_caps_at_twenty_entries(self):
-        jira = _build_jira()
+    def test_returns_every_entry(self) -> None:
         raw = [{"id": str(i), "name": f"Opt{i}"} for i in range(25)]
-        assert len(jira._parse_allowed_values(raw)) == 20
+        assert len(_build_jira()._parse_allowed_values(raw)) == 25
 
 
 class TestFetchCreateFields:
+    @pytest.mark.asyncio
+    async def test_lists_twenty_options_and_counts_the_rest(self) -> None:
+        jira = _build_jira()
+        jira.client.get_create_issue_meta_issue_types = AsyncMock(
+            return_value=_mock_response(200, {"issueTypes": [{"id": "10001", "name": "Bug"}]}),
+        )
+        options = [{"id": str(i), "value": f"Team {i}"} for i in range(25)]
+        jira.client.get_create_issue_meta_issue_type_id = AsyncMock(
+            return_value=_mock_response(200, {
+                "fields": [{"fieldId": "customfield_100", "name": "Team", "required": True,
+                            "schema": {"type": "array", "items": "option"}, "allowedValues": options}],
+                "total": 1,
+            }),
+        )
+        fields, err = await jira._fetch_create_fields("PROJ", "Bug")
+        assert err is None
+        assert len(fields[0]["allowed_values"]) == 20
+        assert fields[0]["allowed_values_omitted"] == 5
+        assert fields[0]["schema_items"] == "option"
+
     @pytest.mark.asyncio
     async def test_cache_hit_skips_api(self):
         jira = _build_jira()
@@ -1623,6 +1692,52 @@ class TestGetCreateIssueFields:
         assert ok is False
         assert "Something unexpected went wrong" in json.loads(payload)["error"]
         assert "boom" not in json.loads(payload)["error"]
+
+    @pytest.mark.asyncio
+    async def test_says_how_many_options_are_not_listed(self) -> None:
+        jira = _build_jira()
+        jira._fetch_create_fields = AsyncMock(return_value=([
+            {"field_id": "customfield_100", "name": "Team", "required": True,
+             "schema_type": "option", "allowed_values": [{"id": "1", "name": "Alpha"}],
+             "allowed_values_omitted": 30, "has_default_value": False},
+        ], None))
+        ok, payload = await jira.get_create_issue_fields("PROJ", "Bug")
+        field = json.loads(payload)["required_fields"][0]
+        assert ok is True
+        assert field["more_values"].startswith("30 more options are not listed")
+        assert "{'value': '<label>'}" in field["more_values"]
+
+    @pytest.mark.asyncio
+    async def test_no_note_when_every_option_is_listed(self) -> None:
+        jira = _build_jira()
+        jira._fetch_create_fields = AsyncMock(return_value=([
+            {"field_id": "customfield_100", "name": "Team", "required": True,
+             "schema_type": "option", "allowed_values": [{"id": "1", "name": "Alpha"}],
+             "allowed_values_omitted": 0, "has_default_value": False},
+        ], None))
+        _, payload = await jira.get_create_issue_fields("PROJ", "Bug")
+        assert "more_values" not in json.loads(payload)["required_fields"][0]
+
+    @pytest.mark.parametrize(
+        ("field", "shape"),
+        [
+            ({"field_id": "customfield_1", "schema_type": "option"}, "as {'value': '<label>'}"),
+            ({"field_id": "customfield_2", "schema_type": "array", "schema_items": "option"}, "as [{'value': '<label>'}]"),
+            ({"field_id": "customfield_3", "schema_type": "array", "schema_items": "version"}, "as [{'name': '<label>'}]"),
+            ({"field_id": "customfield_5", "schema_type": "array", "schema_items": "group"}, "as [{'name': '<label>'}]"),
+            ({"field_id": "priority", "schema_type": "priority"}, "pass its name to the named parameter"),
+            ({"field_id": "components", "schema_type": "array", "schema_items": "component"}, "pass its name to the named parameter"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_unlisted_option_hint_matches_the_field_shape(self, field: dict, shape: str) -> None:
+        jira = _build_jira()
+        jira._fetch_create_fields = AsyncMock(return_value=([
+            {**field, "name": "F", "required": True, "allowed_values": [{"id": "1", "name": "A"}],
+             "allowed_values_omitted": 3, "has_default_value": False},
+        ], None))
+        _, payload = await jira.get_create_issue_fields("PROJ", "Bug")
+        assert shape in json.loads(payload)["required_fields"][0]["more_values"]
 
 
 # ===========================================================================

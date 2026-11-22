@@ -1,28 +1,14 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose'
-import { generateUniqueSlug } from '../../../libs/utils/counter'
+import { generateUniqueSlug } from '../../../libs/repositories/slug/mongo'
 import { KnowledgeLimit } from '../types/oauth.types';
 import { knowledgeLimitField } from './knowledge_limit.schema';
 
-export enum OAuthAppStatus {
-  ACTIVE = 'active',
-  SUSPENDED = 'suspended',
-  REVOKED = 'revoked',
-}
+import {
+  OAuthAppStatus,
+  OAuthGrantType,
+} from '../../../libs/repositories/oauth-app/types';
 
-export enum OAuthGrantType {
-  AUTHORIZATION_CODE = 'authorization_code',
-  CLIENT_CREDENTIALS = 'client_credentials',
-  REFRESH_TOKEN = 'refresh_token',
-  DEVICE_CODE = 'urn:ietf:params:oauth:grant-type:device_code',
-  /**
-   * RFC 8693 token exchange, used only by service-account delegation.
-   *
-   * Never added to an app's `allowedGrantTypes`: the exchange authenticates
-   * with the service token itself rather than with client credentials, so
-   * there is no registered client whose grant list could permit it.
-   */
-  TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange',
-}
+export { OAuthAppStatus, OAuthGrantType };
 
 export interface IOAuthApp extends Document {
   slug: string
@@ -56,7 +42,8 @@ export interface IOAuthApp extends Document {
   termsOfServiceUrl?: string
   isConfidential: boolean
   /** RFC 7591 Dynamic Client Registration. Hidden from the developer-apps UI. */
-  isDynamic?: boolean
+  isDynamic?: boolean;
+  ownerFormat?: number;
   /** What every token of this app may reach, picked by its creator. Absent
    * means everything the connecting user can see. */
   knowledgeLimit?: KnowledgeLimit;
@@ -142,6 +129,8 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
     termsOfServiceUrl: { type: String },
     isConfidential: { type: Boolean, default: true },
     isDynamic: { type: Boolean, default: false, index: true },
+    // No default: an app an older release stored has none (see APP_OWNER_FORMAT).
+    ownerFormat: { type: Number },
     knowledgeLimit: knowledgeLimitField,
     accessTokenLifetime: { type: Number, default: 3600 },
     refreshTokenLifetime: { type: Number, default: 2592000 },
@@ -156,14 +145,10 @@ OAuthAppSchema.index({ orgId: 1, isDeleted: 1 })
 OAuthAppSchema.index({ orgId: 1, createdBy: 1, isDeleted: 1, createdAt: -1 })
 OAuthAppSchema.index({ clientId: 1, status: 1 })
 
-OAuthAppSchema.pre<IOAuthApp>('save', async function (next) {
-  try {
-    if (!this.slug) {
-      this.slug = await generateUniqueSlug('OAuthApp')
-    }
-    next()
-  } catch (error) {
-    next(error as Error)
+OAuthAppSchema.pre<IOAuthApp>('save', async function () {
+  // Mongoose 9: async hooks signal failure by throwing, with no next callback.
+  if (!this.slug) {
+    this.slug = await generateUniqueSlug('OAuthApp')
   }
 })
 

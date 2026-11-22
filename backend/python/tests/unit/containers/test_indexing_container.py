@@ -142,6 +142,31 @@ class TestInitializeContainer:
     @pytest.mark.asyncio
     @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
     @patch("app.containers.indexing.Health.system_health_check", new_callable=AsyncMock)
+    async def test_the_boot_backfill_runs_under_the_system_scope_because_boot_has_no_org(
+        self, mock_sys_health, mock_conn_health
+    ) -> None:
+        from app.core.org_context import current_or_system
+
+        seen: list[str] = []
+
+        async def backfill(*_a: object, **_k: object) -> int:
+            seen.append(current_or_system().kind)
+            return 0
+
+        container, logger = self._make_mock_container()
+        mock_gp = MagicMock()
+        mock_gp.ensure_schema = AsyncMock(return_value=True)
+        mock_gp.records_accept_indexed_copy = AsyncMock(return_value=True)
+        mock_gp.backfill_indexed_copy_flags = backfill
+        container.graph_provider = AsyncMock(return_value=mock_gp)
+
+        assert await initialize_container(container) is True
+
+        assert seen == ["system"]
+
+    @pytest.mark.asyncio
+    @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
+    @patch("app.containers.indexing.Health.system_health_check", new_callable=AsyncMock)
     async def test_records_indexed_before_the_flag_are_marked_once_the_schema_allows_it(
         self, mock_sys_health, mock_conn_health
     ) -> None:

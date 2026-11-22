@@ -311,6 +311,7 @@ class JiraCloudPersonalConnector(JiraConnector):
             # The creator's user-app link is the gate. Projects inherit from the
             # app, so this does not stamp a grant on them.
             await self.ensure_creator_user_app_relation()
+            await self.withdraw_app_users_except_creator()
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service,

@@ -6,7 +6,7 @@ operational knowledge about real-world GitHub REST/Search API limits. Do not
 change them without reading those comments first.
 """
 
-from app.config.constants.arangodb import ExtensionTypes
+from app.config import file_types
 
 # ---------------------------------------------------------------------------
 # Rate limiting
@@ -52,6 +52,17 @@ _GITHUB_OP_DEFAULT_TIMEOUT_SECONDS = 300.0
 # (visible-email phase).
 _GITHUB_USER_ENRICHMENT_CONCURRENCY = 4
 
+# How long a fetched GET /users/:login profile is reused before it is asked for
+# again. Without it, every sync of every connector re-fetched each member that
+# has no public email, and a new connector re-fetched the whole org: on a
+# 1,700-member org, a third of the hour's 5,000 calls on each sync. The cost of
+# the bound: a member with no AppUser yet whose fetched profile had no public
+# email waits up to this long to gain access after making one public. A member
+# already bound to an email keeps it (Phase A reads the stored AppUser and never
+# this cache); a connector that reuses a profile up to this old binds the email
+# it carried.
+_GITHUB_PROFILE_REUSE_SECONDS = 24 * 60 * 60.0
+
 # ---------------------------------------------------------------------------
 # Code indexing
 # ---------------------------------------------------------------------------
@@ -91,13 +102,19 @@ PR_FILE_INLINE_CONTENT_MAX_BYTES = 256 * 1024
 # of one such PR spend a whole hourly budget. Past this many, nothing more is inlined.
 PR_FILE_INLINE_MAX_FILES = 30
 
+# Diff and inlined file text kept per pull request. Parsing turns diff text into
+# blocks whose stored JSON is about ten times its size, and storage refuses a
+# record over 100 MB, so a PR whose diff deletes or re-adds the whole repository
+# (GitHub lists up to 3,000 files) failed outright. Past this, a file's change is
+# named but its text left out. 4 MiB is ~40 MB stored, and well above ordinary
+# PRs: the largest of 400 recent apache/airflow merges was 2.7 MB.
+PR_DIFF_TEXT_MAX_BYTES = 4 * 1024 * 1024
+
 # GitHub permits attachment uploads up to 25 MB; refuse anything larger so a
 # single record cannot stall the stream indefinitely.
 ATTACHMENT_MAX_SIZE_BYTES = 25 * 1024 * 1024
 
-PREVIEW_RENDERABLE_EXTENSIONS: frozenset[str] = frozenset(
-    ext.value for ext in ExtensionTypes
-)
+PREVIEW_RENDERABLE_EXTENSIONS: frozenset[str] = file_types.preview_extensions()
 
 # ---------------------------------------------------------------------------
 # Email resolution
@@ -158,6 +175,7 @@ _AUTH_ERROR_MARKERS: tuple[str, ...] = (
 
 HTTP_UNAUTHORIZED = 401
 HTTP_NOT_FOUND = 404
+HTTP_TOO_MANY_REQUESTS = 429
 
 # Transient statuses worth retrying. 403 is excluded: it is a genuine
 # permission denial by the time it gets here, because the data source reports

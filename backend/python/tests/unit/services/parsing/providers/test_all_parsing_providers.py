@@ -1,12 +1,22 @@
 """Unit tests for all parsing provider implementations."""
 from __future__ import annotations
 
+import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.models.blocks import BlocksContainer
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    MultimodalModelNotConfiguredError,
+)
+from app.exceptions.non_retryable import NonRetryableError
+from app.models.blocks import Block, BlocksContainer, BlockType
+from app.modules.parsers.parse_pool import ParseWorkerError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.services.base_client import ServiceCallError
+from app.services.docling.client import DoclingUnavailableError
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -21,6 +31,8 @@ from app.services.parsing.providers.smart_pdf_parser import (
     SmartPDFParser,
     _detect_needs_ocr,
 )
+from app.utils.user_errors import PROCESSING_TIMED_OUT
+from tests.support.raised import raised_from
 
 
 def _make_block_container() -> BlocksContainer:
@@ -62,16 +74,20 @@ class TestDoclingServiceParser:
         assert result.metadata["record_name"] == "document"
 
     @pytest.mark.asyncio
-    async def test_parse_fails_when_process_returns_none(self):
+    async def test_parse_fails_when_docling_could_not_parse(self):
+        from app.services.docling.client import DoclingParseError
+
+        cause = DoclingParseError("Docling could not parse the document (PARSE_FAILED, status 422)", status_code=422)
         mock_client = MagicMock()
-        mock_client.parse_pdf_batched = AsyncMock(return_value=None)
+        mock_client.parse_pdf_batched = AsyncMock(side_effect=cause)
 
         parser = DoclingServiceParser(mock_client)
         with pytest.raises(ParseError) as exc_info:
             await parser.parse(b"content", "test.pdf")
 
         assert exc_info.value.code == ParseErrorCode.PARSE_FAILED
-        assert "failed to parse" in exc_info.value.message.lower()
+        assert exc_info.value.__cause__ is cause
+        assert "PARSE_FAILED" in exc_info.value.message
 
     def test_supported_formats(self):
         mock_client = MagicMock()
@@ -378,7 +394,7 @@ class TestSmartPDFParser:
                 side_effect=[False, False, True, False, False],
             ),
         ):
-            assert _detect_needs_ocr(b"pdf content") is True
+            assert _detect_needs_ocr(b"pdf content") == (True, 5)
 
     def test_single_general_ocr_page_keeps_existing_threshold(self) -> None:
         """A single non-dominant OCR signal does not route the whole document."""
@@ -408,7 +424,7 @@ class TestSmartPDFParser:
                 side_effect=[False, False, True, False, False],
             ),
         ):
-            assert _detect_needs_ocr(b"pdf content") is False
+            assert _detect_needs_ocr(b"pdf content") == (False, 5)
 
     @pytest.mark.asyncio
     async def test_parse_uses_ocr_when_detected(self):
@@ -423,7 +439,7 @@ class TestSmartPDFParser:
 
         parser = SmartPDFParser(mock_primary, mock_ocr)
 
-        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=True):
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)):
             result = await parser.parse(b"scanned content", "scanned.pdf")
 
         mock_ocr.parse.assert_called_once_with(b"scanned content", "scanned.pdf", None)
@@ -444,7 +460,7 @@ class TestSmartPDFParser:
 
         parser = SmartPDFParser(mock_primary, mock_ocr)
 
-        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=False):
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 3)):
             result = await parser.parse(b"regular content", "regular.pdf")
 
         mock_primary.parse.assert_called_once_with(b"regular content", "regular.pdf", None)
@@ -467,7 +483,7 @@ class TestSmartPDFParser:
 
         parser = SmartPDFParser(mock_primary, mock_ocr)
 
-        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=False):
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 3)):
             result = await parser.parse(b"content", "test.pdf")
 
         mock_primary.parse.assert_called_once()
@@ -484,7 +500,7 @@ class TestSmartPDFParser:
 
         parser = SmartPDFParser(mock_primary, mock_ocr)
 
-        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=False):
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 3)):
             with pytest.raises(ParseError) as exc_info:
                 await parser.parse(b"content", "test.xyz")
 
@@ -501,7 +517,7 @@ class TestSmartPDFParser:
 
         parser = SmartPDFParser(mock_primary, mock_ocr)
 
-        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=False):
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 3)):
             with pytest.raises(ParseError) as exc_info:
                 await parser.parse(b"", "test.pdf")
 
@@ -518,7 +534,7 @@ class TestSmartPDFParser:
 
         parser = SmartPDFParser(mock_primary, mock_ocr)
 
-        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=False):
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 3)):
             with pytest.raises(ParseError) as exc_info:
                 await parser.parse(b"bad data", "test.pdf")
 
@@ -530,3 +546,439 @@ class TestSmartPDFParser:
         mock_ocr = MagicMock()
         parser = SmartPDFParser(mock_primary, mock_ocr)
         assert parser.supported_formats() == ["pdf"]
+
+
+def _result(provider: ParserProvider) -> ParseResult:
+    return ParseResult(block_container=_make_block_container(), provider_used=provider)
+
+
+def _docling_down() -> tuple[DoclingUnavailableError, ServiceCallError]:
+    """A fresh unavailable error raised from the client's ServiceCallError, as ``DoclingClient`` raises it."""
+    cause = ServiceCallError("Docling parse failed", status_code=503)
+    return raised_from(DoclingUnavailableError("Docling is not serving", status_code=503), cause), cause
+
+
+def _routed_parsers(
+    docling_error: Exception | None = None, layout_error: Exception | None = None
+) -> tuple[MagicMock, MagicMock, MagicMock]:
+    docling, layout, ocr = MagicMock(), MagicMock(), MagicMock()
+    docling.parse = AsyncMock(side_effect=docling_error, return_value=_result(ParserProvider.DOCLING))
+    layout.parse = AsyncMock(side_effect=layout_error, return_value=_result(ParserProvider.DEFAULT))
+    ocr.parse = AsyncMock(return_value=_result(ParserProvider.DEFAULT))
+    return docling, layout, ocr
+
+
+class TestSmartPDFParserPageRouting:
+    """Docling takes text PDFs of up to PDF_DOCLING_MAX_PAGES (30) pages; PdfPlumber the rest."""
+
+    @pytest.mark.parametrize(
+        ("page_count", "env", "uses_docling"),
+        [
+            (1, {}, True),
+            (30, {}, True),
+            (31, {}, False),
+            (300, {}, False),
+            (None, {}, True),
+            (11, {"PDF_DOCLING_MAX_PAGES": "10"}, False),
+            (1, {"PDF_DOCLING_MAX_PAGES": "0"}, False),
+            (30, {"PDF_DOCLING_MAX_PAGES": ""}, True),
+            (31, {"PDF_DOCLING_MAX_PAGES": "abc"}, False),
+            (30, {"PDF_DOCLING_MAX_PAGES": "-1"}, True),
+        ],
+        ids=["1", "30", "31", "300", "unknown", "11 of 10", "limit 0", "empty limit", "bad limit", "negative limit"],
+    )
+    @pytest.mark.asyncio
+    async def test_routes_by_page_count(
+        self, monkeypatch: pytest.MonkeyPatch, page_count: int | None, env: dict[str, str], uses_docling: bool
+    ) -> None:
+        monkeypatch.delenv("PDF_DOCLING_MAX_PAGES", raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        docling, layout, ocr = _routed_parsers()
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr",
+            return_value=(False, page_count),
+        ):
+            await parser.parse(b"%PDF", "a.pdf")
+
+        assert docling.parse.await_count == (1 if uses_docling else 0)
+        assert layout.parse.await_count == (0 if uses_docling else 1)
+        ocr.parse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_over_doclings_size_limit_goes_to_the_layout_parser(self) -> None:
+        docling, layout, ocr = _routed_parsers()
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 5)
+        ), patch("app.services.docling.client.MAX_PDF_BYTES", 3):
+            await parser.parse(b"%PDF", "a.pdf")
+
+        docling.parse.assert_not_called()
+        layout.parse.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_long_scan_still_goes_to_ocr(self) -> None:
+        docling, layout, ocr = _routed_parsers()
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 100)
+        ):
+            await parser.parse(b"%PDF", "a.pdf")
+
+        ocr.parse.assert_awaited_once()
+        docling.parse.assert_not_called()
+        layout.parse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_docling_failure_goes_to_the_layout_parser_before_ocr(self) -> None:
+        docling, layout, ocr = _routed_parsers(docling_error=ParseError(ParseErrorCode.PARSE_FAILED, "no"))
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ):
+            result = await parser.parse(b"%PDF", "a.pdf")
+
+        layout.parse.assert_awaited_once()
+        ocr.parse.assert_not_called()
+        assert result.provider_used == ParserProvider.DEFAULT
+
+    @pytest.mark.asyncio
+    async def test_ocr_is_the_last_resort_after_both_parsers_fail(self) -> None:
+        failed = ParseError(ParseErrorCode.PARSE_FAILED, "no")
+        docling, layout, ocr = _routed_parsers(docling_error=failed, layout_error=failed)
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ):
+            await parser.parse(b"%PDF", "a.pdf")
+
+        ocr.parse.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failure_about_the_file_is_not_retried_by_another_parser(self) -> None:
+        docling, layout, ocr = _routed_parsers(docling_error=ParseError(ParseErrorCode.EMPTY_CONTENT, "empty"))
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ), pytest.raises(ParseError) as raised:
+            await parser.parse(b"%PDF", "a.pdf")
+
+        assert raised.value.code == ParseErrorCode.EMPTY_CONTENT
+        layout.parse.assert_not_called()
+        ocr.parse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_docling_hands_the_pdf_to_the_layout_parser(self) -> None:
+        from app.services.docling.client import DoclingUnavailableError
+
+        docling, layout, ocr = _routed_parsers(docling_error=DoclingUnavailableError("down"))
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ):
+            result = await parser.parse(b"%PDF", "a.pdf")
+
+        layout.parse.assert_awaited_once()
+        ocr.parse.assert_not_called()
+        assert result.provider_used == ParserProvider.DEFAULT
+
+    @pytest.mark.asyncio
+    async def test_a_layout_failure_with_docling_down_retries_the_record(self) -> None:
+        """Not a verdict on the file and not OCR: Docling's unavailability is raised, so the record is retried."""
+        down, cause = _docling_down()
+        docling, layout, ocr = _routed_parsers(
+            docling_error=down, layout_error=ParseError(ParseErrorCode.PARSE_FAILED, "no")
+        )
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ), pytest.raises(DoclingUnavailableError) as raised:
+            await parser.parse(b"%PDF", "a.pdf")
+
+        assert raised.value is down
+        assert raised.value.__cause__ is cause
+        layout.parse.assert_awaited_once()
+        ocr.parse.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("waits", "level"), [(True, logging.INFO), (False, logging.WARNING)], ids=["never-received", "counted"]
+    )
+    @pytest.mark.asyncio
+    async def test_the_fallback_line_of_a_pdf_waiting_for_docling_is_info(
+        self, waits: bool, level: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hand-back repeats every minute while Docling is down; the outage is already reported at WARNING."""
+        from app.services.docling.client import (
+            DoclingNotServing,
+            DoclingUnavailableError,
+        )
+
+        down = DoclingNotServing("down") if waits else DoclingUnavailableError("down")
+        docling, layout, ocr = _routed_parsers(docling_error=down)
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with caplog.at_level(logging.DEBUG), patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ):
+            await parser.parse(b"%PDF", "a.pdf")
+
+        [line] = [r for r in caplog.records if "Docling is unavailable" in r.getMessage()]
+        assert line.levelno == level
+
+    @pytest.mark.parametrize(
+        "code", [ParseErrorCode.UNSUPPORTED_FORMAT, ParseErrorCode.EMPTY_CONTENT, ParseErrorCode.INVALID_INPUT]
+    )
+    @pytest.mark.asyncio
+    async def test_a_fact_about_the_file_from_the_layout_parser_still_fails_it(self, code: ParseErrorCode) -> None:
+        down, _ = _docling_down()
+        docling, layout, ocr = _routed_parsers(docling_error=down, layout_error=ParseError(code, "about the file"))
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ), pytest.raises(ParseError) as raised:
+            await parser.parse(b"%PDF", "a.pdf")
+
+        assert raised.value.code == code
+        ocr.parse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_deliberate_stop_from_the_layout_parser_is_raised_unchanged(self) -> None:
+        down, _ = _docling_down()
+        stop = NonRetryableError("table model refused for good")
+        docling, layout, ocr = _routed_parsers(docling_error=down, layout_error=stop)
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ), pytest.raises(NonRetryableError) as raised:
+            await parser.parse(b"%PDF", "a.pdf")
+
+        assert raised.value is stop
+        ocr.parse.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("worker_cause", "retried"),
+        [("timed_out", False), ("crashed", False), ("unavailable", True)],
+    )
+    @pytest.mark.asyncio
+    async def test_a_layout_worker_that_ran_out_of_time_or_memory_still_fails_the_file(
+        self, worker_cause: str, retried: bool
+    ) -> None:
+        """Reading it again would cost the same; a worker that could not start at all is not about the file."""
+        down, _ = _docling_down()
+        # As PdfPlumberParser wraps what the processor raised.
+        layout_error = raised_from(
+            ParseError(ParseErrorCode.PARSE_FAILED, "PdfPlumber+OpenCV failed"), ParseWorkerError("msg", worker_cause)
+        )
+        docling, layout, ocr = _routed_parsers(docling_error=down, layout_error=layout_error)
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ), pytest.raises(Exception) as raised:
+            await parser.parse(b"%PDF", "a.pdf")
+
+        assert raised.value is (down if retried else layout_error)
+        ocr.parse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_without_a_layout_parser_an_unreachable_docling_is_raised(self) -> None:
+        """The explicit Docling provider has no other parser to hand the file to: it retries."""
+        from app.services.docling.client import DoclingUnavailableError
+
+        docling, _, ocr = _routed_parsers(docling_error=DoclingUnavailableError("down"))
+        parser = SmartPDFParser(docling, ocr)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ), pytest.raises(DoclingUnavailableError):
+            await parser.parse(b"%PDF", "a.pdf")
+
+        ocr.parse.assert_not_called()
+
+    def test_a_file_pdfplumber_cannot_open_has_no_page_count(self) -> None:
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser.pdfplumber.open", side_effect=ValueError("bad")
+        ):
+            assert _detect_needs_ocr(b"%PDF") == (False, None)
+
+    def test_the_page_count_comes_from_the_ocr_pass_without_another_open(self) -> None:
+        pdf = MagicMock()
+        pdf.pages = [MagicMock() for _ in range(42)]
+        pdf_context = MagicMock()
+        pdf_context.__enter__.return_value = pdf
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser.pdfplumber.open", return_value=pdf_context
+        ) as opened, patch.object(
+            OCRStrategy, "has_dominant_image_with_limited_text", return_value=False
+        ), patch.object(OCRStrategy, "needs_ocr", return_value=False):
+            assert _detect_needs_ocr(b"%PDF") == (False, 42)
+
+        assert opened.call_count == 1
+
+
+def _docling_text(*texts: str) -> ParseResult:
+    return ParseResult(
+        raw_document=json.dumps({"texts": [{"text": t} for t in texts]}), provider_used=ParserProvider.DOCLING
+    )
+
+
+def _blocks_text(*texts: str) -> ParseResult:
+    blocks = [Block(index=i, type=BlockType.TEXT, data=t) for i, t in enumerate(texts)]
+    return ParseResult(block_container=BlocksContainer(blocks=blocks, block_groups=[]), provider_used=ParserProvider.DEFAULT)
+
+
+class TestSmartPDFParserWithoutAnImageModel:
+    """A PDF sent to OCR when no model that can read images is set up: one image-only cover page is enough to send
+    it there, so its text layer is read instead of failing the whole file."""
+
+    @staticmethod
+    def _parser(docling_result: ParseResult | None = None, docling_error: Exception | None = None,
+                ocr_error: Exception | None = None,
+                layout_error: Exception | None = None) -> tuple[SmartPDFParser, MagicMock, MagicMock]:
+        docling, ocr = MagicMock(), MagicMock()
+        docling.parse = AsyncMock(side_effect=docling_error, return_value=docling_result)
+        ocr.parse = AsyncMock(side_effect=ocr_error or MultimodalModelNotConfiguredError("no multimodal model"))
+        layout = None
+        if layout_error is not None:
+            layout = MagicMock()
+            layout.parse = AsyncMock(side_effect=layout_error)
+        return SmartPDFParser(docling, ocr, large_pdf_parser=layout), docling, ocr
+
+    @pytest.mark.asyncio
+    async def test_docling_down_and_a_failed_text_read_is_retried_not_told_to_add_a_model(self) -> None:
+        down, _ = _docling_down()
+        parser, _, _ = self._parser(docling_error=down, layout_error=ParseError(ParseErrorCode.PARSE_FAILED, "no"))
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
+                pytest.raises(DoclingUnavailableError) as raised:
+            await parser.parse(b"%PDF", "cover-and-text.pdf")
+
+        assert raised.value is down
+
+    @pytest.mark.asyncio
+    async def test_a_pdf_with_text_is_read_as_text(self) -> None:
+        parser, docling, ocr = self._parser(_docling_text("FY2026 Annual Report", "62 sponsors"))
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 34)):
+            result = await parser.parse(b"%PDF", "FY2026AnnualReport")
+
+        ocr.parse.assert_awaited_once()
+        docling.parse.assert_awaited_once()
+        assert result.raw_document is not None
+        assert result.metadata["ocr_skipped"] == "no multimodal model"
+
+    @pytest.mark.asyncio
+    async def test_built_blocks_with_text_count_as_text(self) -> None:
+        parser, _, _ = self._parser(_blocks_text("", "Sponsorship Program revenue"))
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)):
+            result = await parser.parse(b"%PDF", "report.pdf")
+
+        assert result.block_container is not None
+
+    @pytest.mark.parametrize(
+        "docling_result",
+        [_docling_text(), _docling_text("  ", ""), _blocks_text(), _blocks_text(" ")],
+        ids=["docling, no texts", "docling, blank texts", "no blocks", "blank block"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_real_scan_still_says_to_add_a_model(self, docling_result: ParseResult) -> None:
+        parser, _, _ = self._parser(docling_result)
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
+                pytest.raises(MultimodalModelNotConfiguredError):
+            await parser.parse(b"%PDF", "scan.pdf")
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ParseError(ParseErrorCode.PARSE_FAILED, "no"),
+            ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out"),
+            ParseWorkerError("The file used too much memory.", "crashed"),
+        ],
+        ids=["parse failed", "worker timed out", "worker crashed"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_text_parser_failure_keeps_its_own_error(self, error: ParseError) -> None:
+        """A timeout or a crash is not a missing model: it keeps its message, and OCR is not tried again."""
+        parser, _, ocr = self._parser(docling_error=error)
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
+                pytest.raises(ParseError) as raised:
+            await parser.parse(b"%PDF", "report.pdf")
+
+        assert raised.value is error
+        ocr.parse.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "docling_result",
+        [
+            ParseResult(
+                raw_document=json.dumps({"texts": [], "tables": [{"data": {"table_cells": [{"text": "Sponsors 62"}]}}]}),
+                provider_used=ParserProvider.DOCLING,
+            ),
+            ParseResult(
+                block_container=BlocksContainer(
+                    blocks=[Block(index=0, type=BlockType.TABLE_ROW, data={"row_natural_language_text": "Sponsors: 62"})],
+                    block_groups=[],
+                ),
+                provider_used=ParserProvider.DEFAULT,
+            ),
+        ],
+        ids=["docling table cell", "table row block"],
+    )
+    @pytest.mark.asyncio
+    async def test_text_only_in_tables_counts_as_text(self, docling_result: ParseResult) -> None:
+        parser, _, _ = self._parser(docling_result)
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)):
+            result = await parser.parse(b"%PDF", "report.pdf")
+
+        assert result.metadata["ocr_skipped"] == "no multimodal model"
+
+    @pytest.mark.parametrize(
+        "docling_result",
+        [
+            ParseResult(
+                block_container=BlocksContainer(
+                    blocks=[Block(index=0, type=BlockType.IMAGE, data={"uri": "data:image/png;base64,iVBORw0KGgo="})],
+                    block_groups=[],
+                ),
+                provider_used=ParserProvider.DEFAULT,
+            ),
+            ParseResult(
+                block_container=BlocksContainer(
+                    blocks=[Block(index=0, type=BlockType.IMAGE, data="data:image/png;base64,iVBORw0KGgo=")],
+                    block_groups=[],
+                ),
+                provider_used=ParserProvider.DEFAULT,
+            ),
+            ParseResult(
+                raw_document=json.dumps({"texts": [], "tables": [{"data": {"table_cells": [{"text": " "}]}}]}),
+                provider_used=ParserProvider.DOCLING,
+            ),
+        ],
+        ids=["image block", "image block with string data", "blank table cell"],
+    )
+    @pytest.mark.asyncio
+    async def test_pictures_and_blank_cells_are_not_text(self, docling_result: ParseResult) -> None:
+        parser, _, _ = self._parser(docling_result)
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
+                pytest.raises(MultimodalModelNotConfiguredError):
+            await parser.parse(b"%PDF", "scan.pdf")
+
+    @pytest.mark.asyncio
+    async def test_other_ocr_failures_are_not_read_as_text(self) -> None:
+        parser, docling, _ = self._parser(_docling_text("text"), ocr_error=DocumentProcessingError("model call failed"))
+        with patch("app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(True, 3)), \
+                pytest.raises(DocumentProcessingError):
+            await parser.parse(b"%PDF", "scan.pdf")
+
+        docling.parse.assert_not_called()

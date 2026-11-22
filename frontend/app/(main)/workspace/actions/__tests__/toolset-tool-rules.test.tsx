@@ -50,7 +50,7 @@ function openDialog() {
 }
 
 function ruleRow(name: string) {
-  return within(screen.getByRole('group', { name }));
+  return within(screen.getByRole('radiogroup', { name }));
 }
 
 /** The segment that is on (Radix draws each label twice, so it's found by its accessible name). */
@@ -88,7 +88,7 @@ describe('ToolsetToolRulesDialog', () => {
     toolsets.getToolRules.mockResolvedValue({ tools: { search_issues: 'block' }, canEdit: true });
     openDialog();
 
-    await screen.findByRole('group', { name: 'search_issues' });
+    await screen.findByRole('radiogroup', { name: 'search_issues' });
     expect(toolsets.getToolsetRegistrySchema).toHaveBeenCalledWith('jira');
     expect(toolsets.getToolRules).toHaveBeenCalledWith('inst-j');
     expect(screen.getByText('Tool approvals: Jira (Engineering)')).toBeTruthy();
@@ -103,8 +103,8 @@ describe('ToolsetToolRulesDialog', () => {
     toolsets.getToolRules.mockResolvedValue({ tools: { retired_tool: 'allow' }, canEdit: true });
     const onOpenChange = openDialog();
 
-    await screen.findByRole('group', { name: 'create_issue' });
-    expect(screen.queryByRole('group', { name: 'retired_tool' })).toBeNull();
+    await screen.findByRole('radiogroup', { name: 'create_issue' });
+    expect(screen.queryByRole('radiogroup', { name: 'retired_tool' })).toBeNull();
     fireEvent.click(ruleRow('create_issue').getByRole('radio', { name: 'Allow on approval' }));
     fireEvent.click(ruleRow('search_issues').getByRole('radio', { name: 'Pre-approved' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));

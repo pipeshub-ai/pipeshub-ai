@@ -8,10 +8,19 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 import requests
 from cryptography.hazmat.primitives import serialization
 
-from connectors.gmail.gmail_env import GMAIL_READONLY, GMAIL_SIM_URL, PersonalEnv, WorkspaceEnv
+from connectors.gmail.gmail_env import (
+    ENV_API_BASE_URL,
+    GMAIL_READONLY,
+    GMAIL_SIM_URL,
+    PersonalEnv,
+    WorkspaceEnv,
+    simulator_expected,
+)
+from helper.source_credentials import source_unavailable  # type: ignore[import-not-found]
 
 
 class GmailSim:
@@ -24,6 +33,15 @@ class GmailSim:
         if resp.status_code >= 400:
             raise RuntimeError(f"Gmail simulator {method} {path}: {resp.status_code} {resp.text[:400]}")
         return resp.json()
+
+    def require_reachable(self) -> None:
+        """Skip without a simulator, unless the stack was pointed at one: then it is a broken run, so fail."""
+        if self.reachable():
+            return
+        reason = f"The Gmail simulator is not reachable at {self.base_url} (compose profile gmail-sim)"
+        if simulator_expected():
+            pytest.fail(f"{reason}, though {ENV_API_BASE_URL} points the Gmail connectors at it")
+        source_unavailable(reason)
 
     def reachable(self) -> bool:
         try:
@@ -77,6 +95,6 @@ def workspace_app(env: WorkspaceEnv) -> dict[str, Any]:
 
 
 def personal_oauth(env: PersonalEnv, user_key: str) -> dict[str, Any]:
-    """The OAuth client and refresh token the simulator accepts: the Drive personal suite's own."""
+    """The OAuth client and refresh token the simulator accepts (gmail_sim.env)."""
     return {"user": user_key, "client_id": env.client_id, "client_secret": env.client_secret,
             "refresh_token": env.refresh_token, "scopes": [GMAIL_READONLY]}

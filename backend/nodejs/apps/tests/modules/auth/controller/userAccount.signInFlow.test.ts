@@ -6,7 +6,7 @@ import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import axios from 'axios';
 import nock from 'nock';
-import { LoginTicket, OAuth2Client } from 'google-auth-library';
+import { LoginTicket } from 'google-auth-library';
 import type { NextFunction, RequestHandler, Response } from 'express';
 import { Container } from 'inversify';
 import {
@@ -27,6 +27,7 @@ import { SessionService } from '../../../../src/modules/auth/services/session.se
 import type { Logger } from '../../../../src/libs/services/logger.service';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+import { MAX_WRONG_CREDENTIAL_ATTEMPTS } from '../../../../src/libs/repositories/credential/types';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
@@ -44,6 +45,7 @@ import type { AuthenticatedServiceRequest } from '../../../../src/libs/middlewar
 import { createMockRedisService } from '../../../helpers/mock-redis';
 import { createMockQuery } from '../../../helpers/mock-mongo';
 import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
+import { stubGoogleIdTokenCheck } from '../../../helpers/google-id-token';
 
 // Drives the real controller and the real SessionService through whole
 // sign-ins, step after step, the way the /initAuth and /authenticate routes do.
@@ -394,7 +396,7 @@ describe('UserAccountController sign-in flow', () => {
   }
 
   function googleSignsInAs(email: string | undefined) {
-    return sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({
+    return stubGoogleIdTokenCheck().resolves({
       getPayload: () => (email ? { email, name: 'Someone' } : { name: 'Someone' }),
     } as unknown as LoginTicket);
   }
@@ -529,13 +531,34 @@ describe('UserAccountController sign-in flow', () => {
 
       expect(error).to.be.undefined;
       expect(res.body?.message).to.equal('Fully authenticated');
-      expect(verify.firstCall.args[0]).to.deep.include({
-        idToken: 'alice-google-id-token',
-        audience: 'google-client',
-      });
+      expect(verify.firstCall.args[0]).to.equal('alice-google-id-token');
+      expect(verify.firstCall.args[2]).to.equal('google-client');
       expect(
         (jwt.verify(String(res.body?.accessToken), JWT_SECRET) as TokenClaims).userId,
       ).to.equal(alice._id);
+    });
+
+    it("signs Alice in when step two is her Google account sent as Google's { credential } response", async () => {
+      await givePassword(alice);
+      configService.getConfig.resolves({ data: { clientId: 'google-client' } });
+      const token = await initAuth([['password'], ['google']]);
+      await authenticate(token, {
+        method: 'password',
+        credentials: { password: PASSWORD },
+      });
+      const verify = googleSignsInAs(alice.email);
+
+      const { res, error } = await authenticate(token, {
+        method: 'google',
+        credentials: { credential: 'alice-google-id-token', select_by: 'btn' },
+      });
+
+      expect(error).to.be.undefined;
+      expect(res.body?.message).to.equal('Fully authenticated');
+      expect(verify.args.map((a) => a[0])).to.deep.equal([
+        'alice-google-id-token',
+        'alice-google-id-token',
+      ]);
     });
   });
 
@@ -839,7 +862,7 @@ describe('UserAccountController sign-in flow', () => {
     describe('when the account lookup is the real IAM client', () => {
       beforeEach(() => {
         const realIam = new IamService(
-          ...([{ iamBackend: IAM_BACKEND }, logger] as unknown as ConstructorParameters<typeof IamService>),
+          ...([{ iamBackend: IAM_BACKEND }] as unknown as ConstructorParameters<typeof IamService>),
         );
         iamService.getUserById.callsFake((id: string, token: string) =>
           realIam.getUserById(id, token),
@@ -892,7 +915,9 @@ describe('UserAccountController sign-in flow', () => {
         expect(error).to.be.instanceOf(InternalServerError);
         expect(error.message).to.include('refresh your session');
         expect(error.message).to.not.include('ECONNREFUSED');
-        expect(logger.error.calledWithMatch('Looking up the account to refresh a session failed')).to.be.true;
+        // Logged once, by the error middleware, with the network error as the cause.
+        expect((error as { cause?: Error }).cause?.name).to.equal('AxiosError');
+        expect(logger.error.called).to.be.false;
       });
     });
   });
@@ -903,18 +928,18 @@ describe('UserAccountController sign-in flow', () => {
       return authenticate(token, { method: 'password', credentials: { password } });
     }
 
-    it('locks after the fifth wrong password, warns the owner, and then refuses even the right password', async () => {
+    it('locks on the last allowed wrong password, warns the owner, and then refuses even the right password', async () => {
       await givePassword(alice);
 
-      for (let attempt = 1; attempt <= 4; attempt++) {
+      for (let attempt = 1; attempt < MAX_WRONG_CREDENTIAL_ATTEMPTS; attempt++) {
         const { error } = await tryPassword('wrong-guess');
         expect(error, `attempt ${attempt}`).to.be.instanceOf(BadRequestError);
         expect(error.message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       }
       expect(mailService.sendMail.called).to.be.false;
 
-      const fifth = await tryPassword('wrong-guess');
-      expect(fifth.error.message).to.equal(WRONG_EMAIL_OR_PASSWORD);
+      const last = await tryPassword('wrong-guess');
+      expect(last.error.message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       expect(credentialsByUser[alice._id]?.isBlocked).to.be.true;
       await settle();
       expect(mailService.sendMail.calledOnce).to.be.true;
@@ -935,7 +960,7 @@ describe('UserAccountController sign-in flow', () => {
       await givePassword(alice);
       Object.assign(credentialsByUser[alice._id] ?? {}, {
         isBlocked: true,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         blockExpiresAt: new Date(Date.now() - 1000),
       });
 
@@ -1142,7 +1167,7 @@ describe('UserAccountController sign-in flow', () => {
 
     beforeEach(() => {
       const realIam = new IamService(
-        ...([{ iamBackend: IAM_BACKEND }, logger] as unknown as ConstructorParameters<typeof IamService>),
+        ...([{ iamBackend: IAM_BACKEND }] as unknown as ConstructorParameters<typeof IamService>),
       );
       iamService.getUserByEmail.callsFake((email: string, token: string) =>
         realIam.getUserByEmail(email, token),
@@ -1214,7 +1239,7 @@ describe('UserAccountController sign-in flow', () => {
     function lock(user: DirectoryUser) {
       Object.assign(credentialsByUser[user._id] ?? {}, {
         isBlocked: true,
-        wrongCredentialCount: 5,
+        wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS,
         blockExpiresAt: new Date(Date.now() + 60 * 60 * 1000),
       });
     }
@@ -1222,8 +1247,8 @@ describe('UserAccountController sign-in flow', () => {
     it('refuses the attempt that locks an account like an unknown email, even when the lock email fails to send', async () => {
       await givePassword(alice);
       await giveOtp(mallory, '482913');
-      Object.assign(credentialsByUser[alice._id] ?? {}, { wrongCredentialCount: 4 });
-      Object.assign(credentialsByUser[mallory._id] ?? {}, { wrongCredentialCount: 4 });
+      Object.assign(credentialsByUser[alice._id] ?? {}, { wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1 });
+      Object.assign(credentialsByUser[mallory._id] ?? {}, { wrongCredentialCount: MAX_WRONG_CREDENTIAL_ATTEMPTS - 1 });
       mailService.sendMail.rejects(new Error('mail service unreachable'));
 
       const lockingPassword = await signIn(alice.email, { method: 'password', credentials: { password: 'wrong-guess' } }, [['password']]);

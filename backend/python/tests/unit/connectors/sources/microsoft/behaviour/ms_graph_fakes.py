@@ -67,8 +67,10 @@ def graph_error(status: int, code: str, message: str = "error", headers: dict[st
     return json_response({"error": {"code": code, "message": message}}, status=status, headers=headers)
 
 
-def page(values: list, *, next_link: str | None = None, delta_link: str | None = None) -> dict[str, Any]:
+def page(values: list, *, next_link: str | None = None, delta_link: str | None = None, count: int | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"value": values}
+    if count is not None:
+        body["@odata.count"] = count
     if next_link:
         body["@odata.nextLink"] = next_link
     if delta_link:
@@ -228,7 +230,11 @@ class FakeCheckpointStore:
     async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeCheckpointStore"]:
         yield self
 
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict[str, Any]]:
+    async def execute_in_transaction(self, func, *args, **kwargs) -> object:
+        async with self.transaction() as tx_store:
+            return await func(tx_store, *args, **kwargs)
+
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False) -> list[dict[str, Any]]:
         if edge_collection == "inheritPermissions" and from_node_id in self.inheriting:
             return [{"_from": from_node_id}]
         return []
@@ -249,8 +255,10 @@ class RecordingNotifications:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
 
-    async def publish_notification(self, **kwargs: object) -> None:
+    async def publish_notification(self, **kwargs: object) -> bool:
+        """Like the real service: True when the broker took it."""
         self.sent.append(kwargs)
+        return True
 
 
 
@@ -285,6 +293,9 @@ class FakeRecordsDb:
         self.content_updates: list[Any] = []
         self.permission_updates: list[tuple[Any, list[Any]]] = []
         self.reindexed: list[Any] = []
+        # Per record, whether it has an inherit edge, as the last write left it. Every write
+        # sets it from the record passed, including a permission update, as the processor does.
+        self.inherit_edges: dict[str, bool] = {}
         # The store the processor reads stored edges from (the connector's data store provider).
         self.edge_store: Any = None
 
@@ -356,10 +367,12 @@ class FakeRecordsDb:
         for record, permissions in records_with_permissions:
             self.records[record.external_record_id] = record
             self.record_permissions[record.external_record_id] = list(permissions)
+            self.inherit_edges[record.external_record_id] = bool(record.inherit_permissions)
 
     async def on_record_metadata_update(self, record: Record) -> None:
         self.metadata_updates.append(record)
         self.records[record.external_record_id] = record
+        self.inherit_edges[record.external_record_id] = bool(record.inherit_permissions)
 
     async def on_record_content_update(self, record: Record) -> None:
         self.content_updates.append(record)
@@ -368,6 +381,7 @@ class FakeRecordsDb:
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, list(permissions)))
         self.record_permissions[record.external_record_id] = list(permissions)
+        self.inherit_edges[record.external_record_id] = bool(record.inherit_permissions)
 
     async def inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
         """Whether the stored node has an inherit edge, read from the edge store as the processor
@@ -440,6 +454,16 @@ class FakeRecordsDb:
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)
+
+    async def get_all_app_users(self, connector_id: str, **_: object) -> list[Any]:
+        return list(self.app_users)
+
+    async def get_app_user_links(self, connector_id: str) -> list[Any]:
+        return list(self.app_users)
+
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
+        gone = {u.source_user_id for u in users}
+        self.app_users = [u for u in self.app_users if u.source_user_id not in gone]
 
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)

@@ -19,6 +19,8 @@ export function getSafeReturnTo(raw: string | null | undefined): string | null {
   try {
     const url = new URL(raw, PROBE_ORIGIN);
     if (url.origin !== PROBE_ORIGIN) return null;
+    // Dot segments resolve away, so `/.//host` comes out as `//host`, which the router reads as another site.
+    if (url.pathname.startsWith('//')) return null;
     return `${url.pathname}${url.search}${url.hash}`;
   } catch {
     return null;

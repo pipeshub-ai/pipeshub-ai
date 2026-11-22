@@ -13,7 +13,8 @@
     "src/modules/auth/routes/workspaceAuth.routes.ts",
     "src/modules/user_management/routes/featureFlag.routes.ts",
     "src/modules/user_management/routes/orgConfig.routes.ts",
-    "src/ee/**"
+    "src/ee/**",
+    "src/libs/repositories/*/pg.ts"
   ],
   "reporter": ["text", "lcov", "html"],
   "report-dir": "coverage",

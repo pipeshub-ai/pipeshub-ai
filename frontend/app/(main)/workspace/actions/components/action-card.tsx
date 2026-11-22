@@ -198,7 +198,6 @@ function ToolsetInstanceSummaryBar({
   const isMobile = useIsMobile();
   const { t } = useTranslation();
   const [isAddHovered, setIsAddHovered] = useState(false);
-  const onlyOnePill = (authenticatedCount > 0) !== (needsAuthCount > 0);
 
   return (
     <Flex align="center" gap="2" style={{ width: '100%', overflow: 'hidden' }}>
@@ -214,9 +213,9 @@ function ToolsetInstanceSummaryBar({
             justify="center"
             onClick={onBadgeClick}
             style={{
-              flex: onlyOnePill ? 1 : undefined,
-              flexShrink: onlyOnePill ? undefined : 0,
-              height: 28,
+              // Pills share the row equally and never shrink below their label (the row scrolls instead)
+              flex: '1 0 0', minWidth: 'max-content',
+              height: isMobile ? 44 : 32, // same as the Set up and + buttons beside it
               borderRadius: 'var(--radius-2)',
               backgroundColor: 'var(--green-a3)',
               padding: '0 8px',
@@ -236,9 +235,9 @@ function ToolsetInstanceSummaryBar({
             justify="center"
             onClick={onBadgeClick}
             style={{
-              flex: onlyOnePill ? 1 : undefined,
-              flexShrink: onlyOnePill ? undefined : 0,
-              height: 28,
+              // Pills share the row equally and never shrink below their label (the row scrolls instead)
+              flex: '1 0 0', minWidth: 'max-content',
+              height: isMobile ? 44 : 32, // same as the Set up and + buttons beside it
               borderRadius: 'var(--radius-2)',
               backgroundColor: 'var(--amber-a3)',
               padding: '0 8px',

@@ -60,7 +60,7 @@ class _StatefulVectorDB:
         for point in points:
             self.points[point.id] = dict(point.payload)
 
-    async def update_payload_by_ids(self, collection: str, ids: list[str], payload: dict) -> None:
+    async def update_payload_by_ids(self, collection: str, ids: list[str], payload: dict, *, org_id) -> None:
         for point_id in ids:
             self.points[point_id].update(payload)
 

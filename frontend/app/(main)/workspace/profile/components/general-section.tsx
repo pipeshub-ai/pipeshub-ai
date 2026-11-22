@@ -106,6 +106,7 @@ export function GeneralSection({
           <TextField.Slot side="right">
             <IconButton
               variant="ghost"
+              className="touch-hit"
               color="gray"
               size="1"
               onClick={onEditEmailClick}

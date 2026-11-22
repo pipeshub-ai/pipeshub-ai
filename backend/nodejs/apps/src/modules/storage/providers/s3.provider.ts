@@ -8,6 +8,7 @@ import {
   FilePayload,
   StorageServiceResponse,
   Document,
+  ObjectPage,
   SignObjectUrlOptions,
   SignedObjectUrl,
 } from '../types/storage.service.types';
@@ -18,11 +19,13 @@ import {
   StorageDownloadError,
   StorageNotFoundError,
   StorageValidationError,
+  StorageUrlParseError,
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
 import { Logger } from '../../../libs/services/logger.service';
 import { encodeRFC5987 } from '../utils/utils';
+import { normalizeEtag, type ObjectStat } from '../utils/storage-fingerprint';
 import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
@@ -259,6 +262,36 @@ class AmazonS3Adapter implements StorageServiceInterface {
   }
 
   /**
+   * Size and ETag of the current object (HEAD). Null when the object or the stored URL is absent. A stored URL that cannot be
+   * turned into a key rejects with `StorageUrlParseError`; any other failure rejects.
+   */
+  async statObject(document: Document): Promise<ObjectStat | null> {
+    if (!document.s3?.url) return null;
+    const key = this.extractKeyFromUrl(document.s3.url);
+    try {
+      const head = await this.s3
+        .headObject({ Bucket: this.bucketName, Key: key })
+        .promise();
+      const etag = normalizeEtag(head.ETag);
+      if (etag === '' || typeof head.ContentLength !== 'number')
+        throw new StorageDownloadError(
+          'Storage returned no size or ETag for the object',
+        );
+      return {
+        size: head.ContentLength,
+        etag,
+        lastModified: head.LastModified
+          ? new Date(head.LastModified).toISOString()
+          : null,
+      };
+    } catch (error) {
+      const { code } = error as { code?: string };
+      if (code === 'NotFound' || code === 'NoSuchKey') return null;
+      throw error;
+    }
+  }
+
+  /**
    * Retrieves the buffer content of a document from S3.
    * @param document - Metadata of the document to retrieve.
    * @param version - (Optional) The version of the document to retrieve.
@@ -471,9 +504,18 @@ class AmazonS3Adapter implements StorageServiceInterface {
           Bucket: this.bucketName,
           Key: storageKey,
           ContentType: contentType,
+          // Signed into the URL: S3 applies a conditional header only when it is a signed one, and the
+          // uploader must then send the same value.
+          ...(options.ifAbsent === true && { IfNoneMatch: '*' }),
           Expires: options.expiresInSeconds,
         });
-        return { url, headers: { 'Content-Type': contentType } };
+        return {
+          url,
+          headers: {
+            'Content-Type': contentType,
+            ...(options.ifAbsent === true && { 'If-None-Match': '*' }),
+          },
+        };
       }
       const url = await this.s3.getSignedUrlPromise('getObject', {
         Bucket: this.bucketName,
@@ -589,6 +631,102 @@ class AmazonS3Adapter implements StorageServiceInterface {
       continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
     } while (continuationToken);
     return allObjects;
+  }
+
+  async listObjects(
+    prefix: string,
+    options: { after?: string; limit: number },
+  ): Promise<ObjectPage> {
+    // A continuation token is opaque base64 this service handed out: anything else (a key, a path) is the
+    // caller's mistake and never reaches the store.
+    if (
+      options.after !== undefined &&
+      !/^[A-Za-z0-9+/=_~-]{1,2048}$/.test(options.after)
+    ) {
+      throw new StorageValidationError('The listing cursor is not valid');
+    }
+    try {
+      const response = await this.s3
+        .listObjectsV2({
+          Bucket: this.bucketName,
+          Prefix: prefix,
+          MaxKeys: options.limit,
+          ...(options.after !== undefined && {
+            ContinuationToken: options.after,
+          }),
+        })
+        .promise();
+      return {
+        objects: (response.Contents ?? []).map((o) => ({
+          key: o.Key as string,
+          size: o.Size ?? 0,
+          lastModifiedMs: o.LastModified?.getTime() ?? 0,
+        })),
+        ...(response.IsTruncated &&
+          response.NextContinuationToken && {
+            next: response.NextContinuationToken,
+          }),
+      };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      // A cursor this service did not issue: S3 rejects it with 400 InvalidArgument, MinIO with 501 or a 500
+      // whose message names the token. The caller's mistake, not an outage.
+      const {
+        statusCode: status,
+        code,
+        message,
+      } = error as {
+        statusCode?: number;
+        code?: string;
+        message?: string;
+      };
+      if (
+        options.after !== undefined &&
+        (status === 400 ||
+          status === 501 ||
+          code === 'InvalidArgument' ||
+          code === 'InvalidContinuationToken' ||
+          code === 'NotImplemented' ||
+          /continuation token|not implemented/i.test(message ?? ''))
+      ) {
+        throw new StorageValidationError('The listing cursor is not valid');
+      }
+      throw new StorageDownloadError('Failed to list objects in S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async deleteObjects(storageKeys: string[]): Promise<void> {
+    try {
+      for (let i = 0; i < storageKeys.length; i += 1000) {
+        const result = await this.s3
+          .deleteObjects({
+            Bucket: this.bucketName,
+            Delete: {
+              Objects: storageKeys.slice(i, i + 1000).map((Key) => ({ Key })),
+              Quiet: true,
+            },
+          })
+          .promise();
+        // DeleteObjects resolves even when individual keys fail.
+        if (result.Errors && result.Errors.length > 0) {
+          throw new StorageUploadError(
+            'Failed to delete some objects from S3',
+            {
+              originalError: result.Errors.slice(0, 10)
+                .map((e) => `${e.Key}: ${e.Code} ${e.Message ?? ''}`.trim())
+                .join('; '),
+            },
+          );
+        }
+      }
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to delete objects from S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
   }
 
   async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
@@ -803,7 +941,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
       // Remove any trailing slashes
       return decodedKey.replace(/\/$/, '');
     } catch (error) {
-      throw new StorageValidationError('Invalid S3 URL format', {
+      throw new StorageUrlParseError('Invalid S3 URL format', {
         url,
         bucket: this.bucketName,
         region: this.region,

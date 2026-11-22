@@ -14,6 +14,11 @@ to 300 s, which would use up any budget before a retry could start, so the
 first attempt is cut off early enough to leave room for one
 (``_first_attempt_seconds``). A healthy search answers in well under a second;
 one still running near the budget is the store failing, not a slow answer.
+
+A request with a deadline of its own (``app/utils/request_deadline``) cuts the
+budget further, so a search fails here early enough to answer its caller: with
+results from the collections that did answer, or a clear error, rather than
+nothing at all once the caller has stopped waiting.
 """
 
 from __future__ import annotations
@@ -23,9 +28,12 @@ import os
 import time
 from typing import TYPE_CHECKING
 
+from app.core.db.errors import TooManyConnections
 from app.services.vector_db.models import SearchFailureKind
 from app.telemetry.modules.vector_search_metrics import record_search_retry
+from app.utils.request_deadline import seconds_left
 from app.utils.retry import retry_async
+from app.utils.stage_timer import span
 
 if TYPE_CHECKING:
     import logging
@@ -50,6 +58,23 @@ SEARCH_RETRY_BUDGET_SECONDS = _budget_from_env()
 # the load it adds.
 MIN_RETRY_SECONDS = 5.0
 _RETRY_DELAY_SECONDS = 0.25
+
+
+def _reserve_from_env() -> float:
+    raw = os.getenv("SEARCH_DEADLINE_RESERVE_SECONDS", "10")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 10.0
+
+
+# Under a request deadline (``app/utils/request_deadline``), what the vector
+# search leaves for the rest of the search: checking access to the hits,
+# fetching their records and content, and the reply.
+DEADLINE_RESERVE_SECONDS = _reserve_from_env()
+# A vector search with less than this left would only add load to a store that
+# is already slow; it fails at once instead, as a timeout.
+MIN_DEADLINE_BUDGET_SECONDS = 1.0
 
 
 def _first_attempt_seconds(budget: float) -> float:
@@ -94,8 +119,34 @@ async def query_nearest_points_with_retry(
 
     Raises ``VectorSearchUnavailableError`` when the store still cannot answer
     (or there was no time to ask again); any other error propagates unchanged.
+
+    Under a request deadline the budget is cut to what the deadline leaves after
+    ``DEADLINE_RESERVE_SECONDS``, so the search can still answer its caller.
+    With too little left, it fails at once as a timeout.
     """
     budget = SEARCH_RETRY_BUDGET_SECONDS if budget_seconds is None else budget_seconds
+    left = seconds_left()
+    if left is not None:
+        fitted = min(budget, left - DEADLINE_RESERVE_SECONDS)
+        if fitted < MIN_DEADLINE_BUDGET_SECONDS:
+            logger.warning(
+                "Vector search on '%s' not started: %.1fs left before the request's deadline",
+                collection_name, left,
+            )
+            raise VectorSearchUnavailableError(SearchFailureKind.TIMEOUT, collection_name)
+        budget = fitted
+    with span("vector"):
+        return await _query_with_retry(service, collection_name, requests, logger=logger, budget=budget)
+
+
+async def _query_with_retry(
+    service: "IVectorDBService",
+    collection_name: str,
+    requests: list["HybridSearchRequest"],
+    *,
+    logger: "logging.Logger",
+    budget: float,
+) -> list[list["SearchResult"]]:
     started = time.monotonic()
     deadline = started + budget
     attempts = 0
@@ -108,7 +159,9 @@ async def query_nearest_points_with_retry(
         return await asyncio.wait_for(call, timeout=max(0.0, until - time.monotonic()))
 
     def _should_retry(error: Exception) -> bool:
-        if classify_search_error(service, error) is None:
+        # A full PostgreSQL (53300) is unavailable but not retried: another attempt forks a backend on it. Other connection
+        # losses are retried, as a read search can always run again.
+        if classify_search_error(service, error) is None or isinstance(error, TooManyConnections):
             return False
         if deadline - time.monotonic() < MIN_RETRY_SECONDS:
             record_search_retry(_provider_name(service), "skipped_budget")

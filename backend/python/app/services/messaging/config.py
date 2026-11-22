@@ -1,7 +1,7 @@
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, JsonValue
 
@@ -16,6 +16,7 @@ class MessageBrokerType(str, Enum):
 
     KAFKA = "kafka"
     REDIS = "redis"
+    POSTGRES = "postgres"
 
 
 class ConsumerType(str, Enum):
@@ -29,6 +30,9 @@ class Topic(str, Enum):
     """Well-known messaging topics."""
 
     RECORD_EVENTS = "record-events"
+    # Record names, published by connectors so a record is findable by name before it is indexed.
+    RECORD_TITLE_EVENTS = "record-title-events"
+    RECORD_EVENTS_PRIORITY = "record-events-priority"
     CODE_GRAPH_EVENTS = "code-graph-events"
     ENTITY_EVENTS = "entity-events"
     AI_CONFIG_EVENTS = "ai-config-events"
@@ -49,6 +53,12 @@ _LEGACY_DEFAULT_MAX_CONCURRENT_INDEXING = 7
 class IndexingEvent(str, Enum):
     """Events emitted during the indexing pipeline."""
 
+    # Handler is about to download a record of known size; its memory is
+    # reserved first, so a record waiting for memory holds no content.
+    START_DOWNLOAD = "start_download"
+    # PARSE_ADMISSION=classes: a heavy-format record is inspected (page count, text layer) on the inspect
+    # pool before it asks for its parse slot; the START_PARSING that follows carries what was found.
+    START_INSPECT = "start_inspect"
     # Handler has written IN_PROGRESS and needs the nested parse slot.
     START_PARSING = "start_parsing"
     PARSING_COMPLETE = "parsing_complete"
@@ -69,6 +79,10 @@ class StreamMessage(BaseModel):
     timestamp: int | None = None
     # Trace id propagated from the producer; optional so legacy messages parse.
     requestId: str | None = None
+    # Org propagated from the producer for log attribution only (unsigned; never an authority).
+    orgId: str | None = None
+    # Verified (or fallback) org of the message; set by the consumer's envelope wrapper, never serialised.
+    org_ctx: Any = Field(default=None, exclude=True)
     is_final_failure: bool | None = None  # Set by consumer: True = will commit/dead-letter, False = will retry
 
 
@@ -84,6 +98,10 @@ class PipelineEventData(BaseModel):
     # the payload.
     tier: ParseTier | None = None
     size_bytes: int | None = None
+    # Inspected facts (PARSE_ADMISSION=classes), carried by START_PARSING; None when nothing was inspected.
+    pages: int | None = None
+    scanned: bool | None = None
+    cells: int | None = None
 
 
 class PipelineEvent(BaseModel):
@@ -97,6 +115,7 @@ class PipelineEvent(BaseModel):
 # Handler type aliases
 # ---------------------------------------------------------------------------
 
+# True: done or skipped. False: deliver again later. Raise on failure: the consumer classifies it terminal or transient.
 MessageHandler = Callable[[StreamMessage], Awaitable[bool]]
 IndexingMessageHandler = Callable[[StreamMessage], AsyncGenerator[PipelineEvent, None]]
 
@@ -199,13 +218,11 @@ class MessagingEnvConfig:
     def record_lease_wait_seconds(self) -> float:
         """Bounded wait for the per-record lease before giving up.
 
-        This lease is only contended by *duplicate* in-flight deliveries of
-        the same record (a different, unrelated record never competes for
-        it), and the task already holds an outer indexing slot/semaphore
-        while waiting. An unbounded wait here convoys the whole pipeline if
-        several duplicates of one record arrive together; a short bounded
-        wait is enough since whoever already holds the lease is actively
-        processing that same record.
+        Only work on the same record competes for this lease (a duplicate
+        delivery, a pipeline stage, a retention sweep), and the task already
+        holds an outer indexing slot/semaphore while waiting. An unbounded wait
+        here convoys the whole pipeline if several events of one record arrive
+        together, so a delivery that waits this long is handed back instead.
         """
         return _env_seconds("INDEXING_RECORD_LEASE_WAIT_SECONDS", 10.0)
 
@@ -295,6 +312,18 @@ class MessagingEnvConfig:
         return int(os.getenv("MESSAGE_BATCH_SIZE_INDEXING", "10"))
 
     @property
+    def record_title_batch_size(self) -> int:
+        """Record names written per entity-index write by the title consumer."""
+        size = _env_int("RECORD_TITLE_BATCH_SIZE", 100)
+        return size if size >= 1 else 100
+
+    @property
+    def record_title_flush_seconds(self) -> float:
+        """How long a partial batch of record names waits for more before it is written."""
+        seconds = _env_seconds("RECORD_TITLE_FLUSH_SECONDS", 2.0)
+        return seconds if seconds >= 0.1 else 2.0
+
+    @property
     def message_timeout_ms(self) -> int:
         """Block timeout for reading messages (milliseconds)."""
         return int(os.getenv("MESSAGE_TIMEOUT_MS", "2000"))
@@ -318,6 +347,27 @@ class MessagingEnvConfig:
         if ext == "pdf" or mime == "application/pdf":
             return self.pdf_record_processing_timeout
         return self.record_processing_timeout
+
+    @property
+    def embed_stall_floor_seconds(self) -> float:
+        """The least time without a finished embedding batch before a record counts as stalled.
+        Sized above the slowest batch measured on a contended four-core host (about 120 s)."""
+        return _env_seconds("EMBED_STALL_FLOOR_SECONDS", 360.0)
+
+    @property
+    def embed_stall_ceiling_seconds(self) -> float:
+        """The most the stall timer is ever stretched to, however slow the recent batches were."""
+        return max(self.embed_stall_floor_seconds, _env_seconds("EMBED_STALL_CEILING_SECONDS", 1200.0))
+
+    @property
+    def embed_record_ceiling_seconds(self) -> float:
+        """Embedding time one chain of attempts may spend before a cut is counted again (6 h)."""
+        return _env_seconds("EMBED_RECORD_CEILING_SECONDS", 21600.0)
+
+    @property
+    def embed_cut_requeue_delay_seconds(self) -> float:
+        """How long the broker holds a record whose attempt was cut after making progress."""
+        return _env_seconds("EMBED_CUT_REQUEUE_DELAY_SECONDS", 5.0)
 
     @property
     def max_record_processing_timeout(self) -> float:
@@ -362,6 +412,13 @@ class MessagingEnvConfig:
         return self.record_processing_timeout
 
     @property
+    def embedding_gate_wait_cap_seconds(self) -> float:
+        """The most a record's budget is paused for queueing at the embedding server's gate."""
+        from app.modules.indexing.record_progress import GATE_PAUSE_LIMIT_SECONDS
+
+        return GATE_PAUSE_LIMIT_SECONDS
+
+    @property
     def stale_recovery_after_seconds(self) -> float:
         # Sized to the longest a record can legitimately sit IN_PROGRESS, so
         # the age-based cutoff cannot republish one that is still working.
@@ -371,10 +428,13 @@ class MessagingEnvConfig:
         # waited for a slot and then used its whole budget is older than the
         # budget by the length of that wait. With leases this cutoff is unused
         # (`is_stale` applies one lease interval, backed by ownership); without
-        # them it is the only guard, so it has to cover the worst case.
+        # them it is the only guard, so it has to cover the worst case. A record
+        # queues for a parse slot twice (download, then parse), and its batches
+        # may pause the budget again at the embedding gate.
         default = (
             self.max_record_processing_timeout
-            + self.parse_admission_wait_seconds
+            + 2 * self.parse_admission_wait_seconds
+            + self.embedding_gate_wait_cap_seconds
             + self.concurrency_lease_seconds
         )
         return float(os.getenv("STALE_INDEXING_RECOVERY_AFTER_SECONDS", str(default)))
@@ -401,6 +461,17 @@ class MessagingEnvConfig:
         return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 3600.0)
 
     @property
+    def stranded_record_pending_max_age_seconds(self) -> float:
+        """How long ago a pending (delivered, not acknowledged) event may have been
+        published and still hold back the stranded-record sweep on its lane.
+
+        Pending entries of a consumer that stopped are discounted anyway; this caps
+        the rest, so one entry nothing finishes cannot hold a lane's waiting records
+        for ever. Zero removes the cap.
+        """
+        return _env_seconds("STRANDED_RECORD_PENDING_MAX_AGE_SECONDS", 24 * 3600.0)
+
+    @property
     def revision_retention_grace_seconds(self) -> float:
         """How old an artifact-set revision or a revision's stage states must be before the
         retention sweep may remove them, once nothing points at or is on that revision.
@@ -412,6 +483,39 @@ class MessagingEnvConfig:
         return _env_seconds("REVISION_RETENTION_GRACE_SECONDS", 24 * 3600.0)
 
     @property
+    def revision_retention_tick_budget_seconds(self) -> float:
+        """Wall-clock time one recovery pass may spend retiring revisions.
+
+        The pass runs inline in the recovery loop (60 s interval), so slow storage
+        must not hold up stale-record recovery behind it; the walk resumes where
+        the budget stopped it. 0 or less is unbounded.
+        """
+        return _env_seconds("REVISION_RETENTION_TICK_BUDGET_SECONDS", 20.0)
+
+    @property
+    def record_deferral_fields_write(self) -> bool:
+        """Whether a record handed back for a model provider's rate limit is given ``deferredUntilMs`` and ``rateLimitedSinceMs``.
+
+        Off (the default) in the release that adds the fields: a process on an older record schema re-applies it at start and
+        refuses a write of a field it does not know, so the fields are accepted by the schema first and written one release
+        later. With it off a rate-limited record is not handed back; it is retried and failed on its delivery attempts, as
+        before. The next release turns it on by default.
+        """
+        return os.getenv("RECORD_DEFERRAL_FIELDS_WRITE", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+    @property
+    def rate_limit_max_wait_seconds(self) -> float:
+        """How long a record may be rate-limited by a model provider, counted in wall time from its first hand-back.
+
+        Each hand-back (a call past its sleep allowance, a Retry-After the gateway did not wait out) is uncounted: no delivery
+        attempt, no broker redelivery budget. What bounds them is the time since the first one (``rateLimitedSinceMs``, set
+        once): past this the record fails with a reason saying so. Not set or not positive: six hours. Needs
+        ``RECORD_DEFERRAL_FIELDS_WRITE``.
+        """
+        value = _env_seconds("RATE_LIMIT_MAX_WAIT_S", 6 * 3600.0)
+        return value if value > 0 else 6 * 3600.0
+
+    @property
     def rate_limit_defer_max_seconds(self) -> float:
         """How long a record may wait in total on its source's rate limit.
 
@@ -419,7 +523,9 @@ class MessagingEnvConfig:
         back in line until then, and the stranded sweep re-sends it (see
         ``app/modules/indexing/rate_limit_deferral.py``). Counted from the first
         such wait; a limit that would carry the record past this ends it FAILED
-        instead. Zero turns deferral off, as does a disabled stranded sweep,
+        instead, unless the connector's other records were indexed meanwhile,
+        which means the record is only waiting its turn and its count starts
+        again. Zero turns deferral off, as does a disabled stranded sweep,
         which is what re-sends the record.
         """
         return _env_seconds("INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS", 24 * 3600.0)
@@ -442,17 +548,15 @@ class MessagingEnvConfig:
 
     @property
     def redis_max_deliveries(self) -> int:
-        """Delivery-count ceiling for the Redis dead-letter backstop.
+        """How many times a message may be handed back without an attempt
+        (``RequeueWithoutAttempt``), and stale recovery may hand a record back.
 
         Distinct from ``max_delivery_attempts``, which counts *processing
-        failures*. Redis's ``times_delivered`` counts every delivery: the
-        first read, a claim after a restart, an idle-drain recovery pass. A
-        record delivered three times may have failed zero times, so sharing
-        one threshold dead-letters healthy work — especially with fair
-        scheduling, where an entry legitimately sits un-ACKed while it waits
-        its turn. The backstop only needs to bound a true poison loop that
-        kills the process before the failure counter can be written (#2992),
-        so it is deliberately slack.
+        failures*. Without a retry tracker it is also the Redis dead-letter
+        backstop on ``times_delivered`` (#2992). With one, a record that kills
+        the process is bounded by its unfinished attempts instead
+        (``consumer_concurrency.MAX_UNFINISHED_ATTEMPTS``): ``times_delivered``
+        also counts every claim after a restart, of entries that never ran.
         """
         return max(
             self.max_delivery_attempts + 1,
@@ -517,7 +621,12 @@ class MessagingEnvConfig:
     def fair_scheduling_parallel_partitions(self) -> bool:
         """Let one Kafka partition have several records in flight at once.
 
-        Off by default. The consumer holds a partition for a record's whole
+        Off by default, except with ``PARSE_ADMISSION=classes``: there it resolves to on when the per-record
+        lease (``DISTRIBUTED_INDEXING_CONCURRENCY``) and fair scheduling are on, and an explicit
+        ``FAIR_SCHEDULING_PARALLEL_PARTITIONS`` of either value always wins. Ordering within a partition is not
+        needed for correctness: the record lease and the replay guards order the work of one record.
+
+        The consumer holds a partition for a record's whole
         lifetime today, so with a single-partition ``record-events`` it
         indexes exactly one record at a time no matter how high
         ``MAX_CONCURRENT_INDEXING`` is set. Turning this on moves the
@@ -529,10 +638,11 @@ class MessagingEnvConfig:
         completing offsets out of order within a partition would commit past
         work that has not finished.
         """
-        return (
-            os.getenv("FAIR_SCHEDULING_PARALLEL_PARTITIONS", "false").lower()
-            == "true"
-        )
+        explicit = os.getenv("FAIR_SCHEDULING_PARALLEL_PARTITIONS")
+        if explicit is not None and explicit.strip():
+            return explicit.strip().lower() == "true"
+        classes = os.getenv("PARSE_ADMISSION", "legacy").strip().lower() == "classes"
+        return classes and self.distributed_concurrency_enabled and self.fair_scheduling_enabled
 
     @property
     def fair_scheduling_lane_count(self) -> int:
@@ -553,7 +663,25 @@ class MessagingEnvConfig:
         Redis Streams this is the actual number of ``record-events.N``
         streams and must match on producers and consumers.
         """
+        if os.getenv("MESSAGE_BROKER", "").strip().lower() == MessageBrokerType.POSTGRES.value:
+            # The PostgreSQL queue orders deliveries of one message key. A lane key (the connector) as that key made every record of a
+            # connector wait for the one before it; with no lanes the key is the record, and records index side by side.
+            return 1
         return max(1, _env_int("FAIR_SCHEDULING_LANE_COUNT", 8))
+
+    @property
+    def indexing_consume_lanes(self) -> frozenset[int] | None:
+        """The ``record-events`` lanes this indexing replica reads, from
+        ``INDEXING_CONSUME_LANES`` (e.g. ``0-5`` or ``6,7``); None, the
+        default, means every lane.
+
+        Redis Streams only. Run replicas with disjoint sets to give the
+        connectors placed on some lanes indexing capacity of their own; every
+        lane must be read by some replica. A malformed value stops startup
+        rather than quietly reading every lane.
+        """
+        raw = os.getenv("INDEXING_CONSUME_LANES", "").strip()
+        return parse_lane_set(raw) if raw else None
 
     @property
     def fair_scheduling_lane_assignment(self) -> str:
@@ -648,8 +776,43 @@ class MessagingEnvConfig:
         handler one by one, as before. ``0`` turns read-time settling off."""
         return _env_seconds("INDEXING_CONNECTOR_STATE_REFRESH_SECONDS", 15.0)
 
+    @property
+    def priority_lane_heavy_limit(self) -> int:
+        """Heavy-tier records the priority consumer (``record-events-priority``) runs at once,
+        per worker process. Small next to the normal pools: the lane exists to read a record
+        now, not to index faster. It also bounds the lane's heavy parses."""
+        return max(1, _env_int("PRIORITY_LANE_HEAVY_LIMIT", 1))
+
+    @property
+    def priority_lane_light_limit(self) -> int:
+        """Light-tier records the priority consumer runs at once, per worker process."""
+        return max(1, _env_int("PRIORITY_LANE_LIGHT_LIMIT", 3))
+
 
 messaging_env = MessagingEnvConfig()
+
+
+# Far above any lane count in use; it only stops a typo such as "0-1000000000"
+# from expanding into a set that exhausts memory before the range check.
+MAX_LANE = 4095
+
+
+def parse_lane_set(raw: str) -> frozenset[int]:
+    """``"0-5,7"`` -> {0, 1, 2, 3, 4, 5, 7}. Raises ValueError on anything else."""
+    lanes: set[int] = set()
+    for part in raw.split(","):
+        first, sep, last = part.strip().partition("-")
+        try:
+            low = int(first)
+            high = int(last) if sep else low
+        except ValueError:
+            raise ValueError(f"Not a lane or lane range: {part.strip()!r} in {raw!r}") from None
+        if low < 0 or high < low:
+            raise ValueError(f"Not a lane or lane range: {part.strip()!r} in {raw!r}")
+        if high > MAX_LANE:
+            raise ValueError(f"Lane {high} in {raw!r} is outside 0..{MAX_LANE}")
+        lanes.update(range(low, high + 1))
+    return frozenset(lanes)
 
 
 def get_message_broker_type() -> MessageBrokerType:
@@ -714,6 +877,14 @@ class RedisStreamsConfig(RedisConfig):
     claim_min_idle_ms: int = Field(
         default=30000,
         description="Min idle time in ms before XAUTOCLAIM can steal a pending message",
+    )
+    stopped_consumer_after_ms: int | None = Field(
+        default=None,
+        description=(
+            "How long a consumer and its pending entries may go untouched before it counts as "
+            "stopped (its entries are reclaimed and no longer hold back the stranded-record "
+            "sweep). Default: 10 x claim_min_idle_ms, at least 60s"
+        ),
     )
     client_id: str = "pipeshub"
     group_id: str = "default_group"

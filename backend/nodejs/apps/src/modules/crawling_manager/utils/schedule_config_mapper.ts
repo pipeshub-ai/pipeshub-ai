@@ -1,4 +1,5 @@
-import { Types } from 'mongoose';
+import { isValidId } from '../../../libs/repositories/ids';
+import { toDriverId } from '../../../libs/repositories/mongo';
 import { CrawlingScheduleType } from '../schema/enums';
 import { ICrawlingSchedule } from '../schema/interface';
 
@@ -26,11 +27,11 @@ export const isScheduledSyncStrategy = (
 // Stable sentinel used when a caller passes a non-ObjectId identifier such as
 // 'system'. Using a fixed zero-value keeps createdBy/lastUpdatedBy consistent
 // across calls and prevents noise in any future diff or audit log.
-const SYSTEM_OBJECT_ID = new Types.ObjectId('000000000000000000000000');
+const SYSTEM_OBJECT_ID = toDriverId('000000000000000000000000');
 
-const toObjectId = (userId: string): Types.ObjectId => {
-  if (Types.ObjectId.isValid(userId)) {
-    return new Types.ObjectId(userId);
+const toObjectId = (userId: string): ReturnType<typeof toDriverId> => {
+  if (isValidId(userId)) {
+    return toDriverId(userId);
   }
   return SYSTEM_OBJECT_ID;
 };

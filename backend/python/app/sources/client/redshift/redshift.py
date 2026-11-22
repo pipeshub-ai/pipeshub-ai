@@ -189,16 +189,27 @@ class RedshiftClient:
             self._connection = None
             return False
 
+    @staticmethod
+    def _set_statement_timeout(cursor: "redshift_connector.Cursor", timeout_s: int | None) -> None:
+        # LOCAL: the commit or rollback that ends each call drops it, so later queries keep the session's limit.
+        if timeout_s:
+            cursor.execute(f"SET LOCAL statement_timeout TO {int(timeout_s) * 1000}")
+
     def execute_query(
         self,
         query: str,
         params: Optional[dict[str, Any] | list[Any] | tuple] = None,
+        *,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> list[dict[str, Any]]:
         """Execute a SQL query and return results as list of dicts.
 
         Args:
             query: SQL query to execute
             params: Optional query parameters (for parameterized queries)
+            timeout_s: Server-side statement_timeout for this statement
+            max_rows: Read at most this many rows (the driver has already buffered the result)
 
         Returns:
             List of dictionaries containing query results
@@ -213,6 +224,7 @@ class RedshiftClient:
 
             try:
                 cursor = self._connection.cursor()
+                self._set_statement_timeout(cursor, timeout_s)
 
                 if params:
                     cursor.execute(query, params)
@@ -222,7 +234,7 @@ class RedshiftClient:
                 # For SELECT queries, fetch results
                 if cursor.description:
                     columns = [desc[0] for desc in cursor.description]
-                    rows = cursor.fetchall()
+                    rows = cursor.fetchmany(max_rows) if max_rows else cursor.fetchall()
                     results = [dict(zip(columns, row)) for row in rows]
                 else:
                     # For INSERT/UPDATE/DELETE, return affected rows count
@@ -242,12 +254,17 @@ class RedshiftClient:
         self,
         query: str,
         params: Optional[dict[str, Any] | list[Any] | tuple] = None,
+        *,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> tuple:
         """Execute a SQL query and return raw cursor results.
 
         Args:
             query: SQL query to execute
             params: Optional query parameters
+            timeout_s: Server-side statement_timeout for this statement
+            max_rows: Read at most this many rows
 
         Returns:
             Tuple of (columns, rows) where columns is list of column names
@@ -269,6 +286,7 @@ class RedshiftClient:
             try:
                 cursor = self._connection.cursor()
                 logger.debug("🔧 [RedshiftClient.execute_query_raw] Cursor created")
+                self._set_statement_timeout(cursor, timeout_s)
 
                 if params:
                     cursor.execute(query, params)
@@ -282,7 +300,7 @@ class RedshiftClient:
 
                 if cursor.description:
                     columns = [desc[0] for desc in cursor.description]
-                    rows = cursor.fetchall()
+                    rows = cursor.fetchmany(max_rows) if max_rows else cursor.fetchall()
                     logger.debug(
                         f"🔧 [RedshiftClient.execute_query_raw] Fetched {len(rows)} rows "
                         f"with columns {columns}"

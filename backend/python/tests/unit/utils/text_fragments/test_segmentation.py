@@ -65,6 +65,13 @@ class TestSegment:
         assert all(u.unspaced for u in block.units)
         assert block.unspaced_chars == 6
 
+    def test_mixed_script_contraction_stays_one_unit(self) -> None:
+        for contraction in ("don't", "don’t"):
+            block = _segment(f"日,本,語,{contraction}")
+            assert [block.slice(i, i) for i in range(len(block.units))] == [
+                "日", "本", "語", contraction
+            ]
+
     def test_mixed_script_token_marks_only_unspaced_runs(self) -> None:
         block = _segment("GPT日本語")
         assert any(u.unspaced for u in block.units)

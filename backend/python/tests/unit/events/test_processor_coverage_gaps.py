@@ -16,7 +16,11 @@ import pytest
 
 from app.config.constants.ai_models import OCRProvider
 from app.config.constants.arangodb import ProgressStatus
-from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    IndexingError,
+    RecordDeletedError,
+)
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -176,7 +180,7 @@ class TestIndexingErrorReraise:
 
         proc = _make_processor()
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx = MagicMock(
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(
             side_effect=IndexingError("xls fail", record_id="r1")
         )
         proc.parsers = {ExtensionTypes.XLS.value: xls_parser}
@@ -810,7 +814,7 @@ class TestBlockGroupHtmlAndImages:
             ExtensionTypes.PNG.value: image_parser,
         }
 
-        modified, caption_map = await proc._process_blockgroup_images("# hi", 0)
+        modified, caption_map = await proc._process_blockgroup_images("# hi", 0, allow_remote_fetch=True)
         assert modified == "md"
         assert caption_map == {}
 
@@ -819,7 +823,7 @@ class TestBlockGroupHtmlAndImages:
         proc = _make_processor()
         bg = BlockGroup(index=0, type=GroupType.TEXT_SECTION, data=None, format=DataFormat.HTML)
         with pytest.raises(ValueError, match="no valid HTML data"):
-            await proc._process_single_blockgroup_html(bg, "rec")
+            await proc._process_single_blockgroup_html(bg, "rec", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_process_single_blockgroup_html_missing_parser(self):
@@ -829,7 +833,7 @@ class TestBlockGroupHtmlAndImages:
             index=0, type=GroupType.TEXT_SECTION, data="<p>x</p>", format=DataFormat.HTML
         )
         with pytest.raises(ValueError, match="HTML parser is not configured"):
-            await proc._process_single_blockgroup_html(bg, "rec")
+            await proc._process_single_blockgroup_html(bg, "rec", allow_remote_fetch=True)
 
     @pytest.mark.asyncio
     async def test_process_single_blockgroup_html_images_and_parse(self):
@@ -869,7 +873,7 @@ class TestBlockGroupHtmlAndImages:
             name="bg",
         )
 
-        new_bgs, new_blocks = await proc._process_single_blockgroup_html(bg, "rec")
+        new_bgs, new_blocks = await proc._process_single_blockgroup_html(bg, "rec", allow_remote_fetch=True)
         assert len(new_blocks) == 1
         html_parser.parse_to_blocks.assert_awaited_once()
         call_kwargs = html_parser.parse_to_blocks.await_args.kwargs
@@ -897,11 +901,31 @@ class TestBlockGroupHtmlAndImages:
         ) as mock_html, patch.object(
             proc, "_process_single_blockgroup", new_callable=AsyncMock
         ) as mock_md:
-            result = await proc._process_blockgroups(container, "rec")
+            result = await proc._process_blockgroups(container, "rec", allow_remote_fetch=True)
 
         mock_html.assert_awaited_once()
         mock_md.assert_not_awaited()
         assert len(result.blocks) == 1
+
+
+    @pytest.mark.asyncio
+    async def test_a_failing_block_group_is_noted_as_a_block_group_not_a_page(self) -> None:
+        from app.utils import indexing_timing as timing
+
+        proc = _make_processor()
+        proc.parsers = {"md": MagicMock()}
+        bg = BlockGroup(index=3, type=GroupType.TEXT_SECTION, data="<p>hi</p>", format=DataFormat.HTML,
+                        requires_processing=True)
+        container = BlocksContainer(blocks=[], block_groups=[bg])
+        timeline, token = timing.begin_record("rec")
+        try:
+            with patch.object(proc, "_process_single_blockgroup_html", new_callable=AsyncMock,
+                              side_effect=RuntimeError("bad group")), pytest.raises(RuntimeError):
+                await proc._process_blockgroups(container, "rec", allow_remote_fetch=True)
+            noted = dict(timeline.facts)
+        finally:
+            timing.end_record(timeline, token, outcome="failed")
+        assert noted.get("block_group") == 3 and "page" not in noted
 
 
 # ---------------------------------------------------------------------------
@@ -965,7 +989,9 @@ class TestHtmlMdDocumentGaps:
                 "a.html", "r1", "1", "web", "o1", b"   \n", "vr1"
             )
         )
-        proc._mark_record.assert_awaited_once_with("r1", ProgressStatus.EMPTY)
+        proc._mark_record.assert_awaited_once_with(
+            "r1", ProgressStatus.EMPTY, event_type=None, prev_virtual_record_id=None
+        )
         assert any(e.event == IndexingEvent.PARSING_COMPLETE for e in events)
         assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
@@ -1154,7 +1180,9 @@ class TestProcessStructuredDocument:
             )
             parser.parse.assert_awaited_once()
             assert isinstance(parser.parse.await_args.args[0], bytes)
-            proc._mark_record.assert_awaited_once_with("r1", ProgressStatus.EMPTY)
+            proc._mark_record.assert_awaited_once_with(
+                "r1", ProgressStatus.EMPTY, event_type=None, prev_virtual_record_id=None
+            )
             assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
     @pytest.mark.asyncio
@@ -1193,7 +1221,7 @@ class TestProcessStructuredDocument:
         assert any(e.event == IndexingEvent.INDEXING_COMPLETE for e in events)
 
     @pytest.mark.asyncio
-    async def test_record_missing_raises_dpe(self):
+    async def test_a_deleted_record_raises_record_deleted(self):
         proc = _make_processor()
         parser = MagicMock()
         parser.parse = AsyncMock(
@@ -1214,7 +1242,7 @@ class TestProcessStructuredDocument:
         proc.parsers = {"json": parser}
         proc.graph_provider.get_document = AsyncMock(return_value=None)
 
-        with pytest.raises(DocumentProcessingError, match="Record not found"):
+        with pytest.raises(RecordDeletedError):
             await _collect(
                 proc.process_structured_document("a.json", "r1", b"{}", "vr1", "json")
             )

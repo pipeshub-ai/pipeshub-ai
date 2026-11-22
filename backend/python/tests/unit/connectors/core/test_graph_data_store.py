@@ -6,7 +6,7 @@ import logging
 import random
 from collections.abc import Callable
 from typing import Never
-from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, call, create_autospec, patch
 
 import pytest
 
@@ -19,6 +19,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphTransactionStore,
     _is_deadlock_error,
     retry_on_deadlock,
+    will_retry,
 )
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
@@ -463,17 +464,47 @@ class TestGraphTransactionStore:
 
     @pytest.mark.asyncio
     async def test_get_user_by_email(self, tx_store, mock_graph_provider) -> None:
-        result = await tx_store.get_user_by_email("test@example.com")
+        result = await tx_store.get_user_by_email("test@example.com", org_id="org-1")
         assert result is None
         mock_graph_provider.get_user_by_email.assert_awaited_once_with(
-            "test@example.com", transaction="txn-123", raise_on_error=False
+            "test@example.com", transaction="txn-123", raise_on_error=False, org_id="org-1"
         )
+        await tx_store.get_user_by_email("other@example.com", raise_on_error=True, org_id="org-1")
+        assert mock_graph_provider.get_user_by_email.await_args == call(
+            "other@example.com", transaction="txn-123", raise_on_error=True, org_id="org-1"
+        )
+        with pytest.raises(TypeError):      # no unscoped read: an address is unique only within an org
+            await tx_store.get_user_by_email("test@example.com")  # type: ignore[call-arg]
+
+    @pytest.mark.asyncio
+    async def test_get_users_by_emails_asks_once_and_remembers_the_members(self, tx_store, mock_graph_provider) -> None:
+        ann = MagicMock(id="u1")
+        mock_graph_provider.get_users_by_emails = AsyncMock(return_value={"ann@x.io": ann})
+        assert await tx_store.get_users_by_emails(["Ann@x.io", "bob@x.io"], org_id="org-1") == {"ann@x.io": ann}
+        assert await tx_store.get_users_by_emails(["ann@x.io", "bob@x.io", "cat@x.io"], org_id="org-1") == {"ann@x.io": ann}
+        assert mock_graph_provider.get_users_by_emails.await_args_list == [
+            call(["ann@x.io", "bob@x.io"], transaction="txn-123", raise_on_error=False, org_id="org-1"),
+            call(["bob@x.io", "cat@x.io"], transaction="txn-123", raise_on_error=False, org_id="org-1"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_user_by_email_in_an_org_is_scoped_and_memoised_per_org(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))
+        await tx_store.get_user_by_email("test@example.com", org_id="org-1")
+        await tx_store.get_user_by_email("test@example.com", org_id="org-1")
+        await tx_store.get_user_by_email("test@example.com", org_id="org-2")
+
+        assert mock_graph_provider.get_user_by_email.await_args_list == [
+            call("test@example.com", transaction="txn-123", raise_on_error=False, org_id="org-1"),
+            call("test@example.com", transaction="txn-123", raise_on_error=False, org_id="org-2"),
+        ]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("method", "args"),
         [
-            ("get_user_by_email", ("test@example.com",)),
             ("get_person_by_email", ("test@example.com", "org-1")),
             ("upsert_person_by_email", (Person(email="test@example.com", org_id="org-1"),)),
         ],
@@ -793,8 +824,8 @@ class TestGraphTransactionStore:
 
     @pytest.mark.asyncio
     async def test_batch_upsert_app_users(self, tx_store, mock_graph_provider) -> None:
-        await tx_store.batch_upsert_app_users([])
-        mock_graph_provider.batch_upsert_app_users.assert_awaited_once_with([], transaction="txn-123")
+        await tx_store.batch_upsert_app_users([], "org-1")
+        mock_graph_provider.batch_upsert_app_users.assert_awaited_once_with([], transaction="txn-123", org_id="org-1")
 
     @pytest.mark.asyncio
     async def test_get_first_user_with_permission_to_node(self, tx_store, mock_graph_provider) -> None:
@@ -897,6 +928,13 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_all_orgs.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_get_all_orgs_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_all_orgs(is_external=True, raise_on_error=True)
+        mock_graph_provider.get_all_orgs.assert_awaited_once_with(
+            active=True, is_external=True, transaction="txn-123", raise_on_error=True
+        )
+
+    @pytest.mark.asyncio
     async def test_create_user_groups(self, tx_store, mock_graph_provider) -> None:
         group = MagicMock()
         group.to_arango_base_user_group.return_value = {"_key": "g1"}
@@ -968,7 +1006,14 @@ class TestGraphTransactionStore:
     async def test_get_edges_from_node(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_edges_from_node("node1", "edge_coll")
         mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
-            "node1", "edge_coll", transaction="txn-123"
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edges_from_node_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_edges_from_node("node1", "edge_coll", raise_on_error=True)
+        mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio
@@ -1020,8 +1065,13 @@ class TestGraphTransactionStore:
     async def test_get_nodes_by_field_in(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_nodes_by_field_in("records", "status", ["active"], return_fields=["_key"])
         mock_graph_provider.get_nodes_by_field_in.assert_awaited_once_with(
-            "records", "status", ["active"], ["_key"], transaction="txn-123"
+            "records", "status", ["active"], ["_key"], transaction="txn-123", raise_on_error=False
         )
+
+    @pytest.mark.asyncio
+    async def test_get_nodes_by_field_in_forwards_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_nodes_by_field_in("records", "status", ["active"], raise_on_error=True)
+        assert mock_graph_provider.get_nodes_by_field_in.await_args.kwargs["raise_on_error"] is True
 
     @pytest.mark.asyncio
     async def test_remove_nodes_by_field(self, tx_store, mock_graph_provider) -> None:
@@ -1134,7 +1184,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
 
     @pytest.mark.asyncio
     async def test_empty_permissions_returns_early(self, tx_store, mock_graph_provider) -> None:
-        await tx_store.batch_upsert_record_group_permissions("grp1", [], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1144,7 +1194,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
         perm.email = "missing@example.com"
         mock_graph_provider.get_user_by_email.return_value = None
 
-        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1157,7 +1207,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
         perm.email = "user@example.com"
         perm.to_arango_permission = MagicMock(return_value={"edge": "data"})
 
-        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -1167,7 +1217,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
         perm.external_id = "missing_group"
         mock_graph_provider.get_user_group_by_external_id.return_value = None
 
-        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1180,7 +1230,7 @@ class TestGraphTransactionStoreRecordGroupPermissions:
         perm.external_id = "ext_group_1"
         perm.to_arango_permission = MagicMock(return_value={"edge": "data"})
 
-        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1")
+        await tx_store.batch_upsert_record_group_permissions("grp1", [perm], "conn1", "org-1")
         mock_graph_provider.batch_create_edges.assert_awaited_once()
 
 
@@ -1332,6 +1382,76 @@ class TestRetryOnDeadlockDecorator:
         result = await my_func()
         assert result == "success"
         assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_will_retry_until_the_last_attempt(self) -> None:
+        """A handler inside the call can tell a failure the decorator runs again
+        from the one it raises, and outside any retried call nothing retries."""
+        seen = []
+
+        @retry_on_deadlock(max_retries=3)
+        async def my_func() -> Never:
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await my_func()
+        assert seen == [True, True, False]
+        assert will_retry(None, create_deadlock_error()) is False
+
+    @pytest.mark.asyncio
+    async def test_will_retry_is_false_for_a_failure_the_decorator_raises_at_once(self) -> None:
+        seen = []
+
+        @retry_on_deadlock()
+        async def my_func() -> Never:
+            error = ValueError("bad edge")
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(ValueError):
+            await my_func()
+        assert seen == [False]
+
+    @pytest.mark.asyncio
+    async def test_a_nested_retried_call_leaves_the_outer_attempt_as_it_was(self) -> None:
+        seen = []
+
+        @retry_on_deadlock(max_retries=1)
+        async def inner() -> None:
+            return None
+
+        @retry_on_deadlock(max_retries=2)
+        async def outer() -> Never:
+            await inner()
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await outer()
+        assert seen == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_a_nested_retried_call_that_fails_leaves_the_outer_attempt_as_it_was(self) -> None:
+        seen = []
+
+        @retry_on_deadlock(max_retries=1)
+        async def inner() -> Never:
+            raise create_deadlock_error()
+
+        @retry_on_deadlock(max_retries=2)
+        async def outer() -> Never:
+            with contextlib.suppress(Exception):
+                await inner()
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await outer()
+        assert seen == [True, False]
 
     @pytest.mark.asyncio
     async def test_retries_on_single_deadlock(self) -> None:

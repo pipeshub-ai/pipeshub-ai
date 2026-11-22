@@ -58,22 +58,38 @@ def test_same_result_as_a_direct_call(text: str, base: datetime) -> None:
     assert dates._parse_date(text, base) == _direct(text, base)
 
 
-def _registered_settings() -> int:
-    registry = getattr(dateparser.conf.Settings, "__registry_dict", None)
-    assert registry is not None, "dateparser's settings registry moved; this test no longer checks it"
-    return len(registry)
+def test_new_reference_times_register_no_new_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    # dateparser <1.5 keeps every Settings it builds in a class registry; 1.5 dropped the
+    # registry. Counting constructions measures the growth on both.
+    created: list[int] = []
+    original = dateparser.conf.Settings.__init__
 
+    def counting_init(self, *args, **kwargs) -> None:
+        created.append(1)
+        original(self, *args, **kwargs)
 
-def test_new_reference_times_register_no_new_settings() -> None:
+    monkeypatch.setattr(dateparser.conf.Settings, "__init__", counting_init)
     ctx = dates.NormalizationContext(reference_time_ms=1767225600000, tz="UTC")
     dates._dateparser("tomorrow", dates.EntityKind.DATE, ctx)
-    before = _registered_settings()
+    before = len(created)
 
     for day in range(1, 40):
         ctx = dates.NormalizationContext(reference_time_ms=1767225600000 + day * 86_400_000, tz="UTC")
         dates._dateparser("Friday", dates.EntityKind.DATE, ctx)
 
-    assert _registered_settings() == before
+    assert len(created) == before
+
+
+def test_the_count_sees_a_base_passed_in_the_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The old per-record path: it must register as growth, or the test above checks nothing.
+    created: list[int] = []
+    original = dateparser.conf.Settings.__init__
+    monkeypatch.setattr(dateparser.conf.Settings, "__init__", lambda self, *a, **k: (created.append(1), original(self, *a, **k))[1])
+
+    for base in BASES:
+        dateparser.parse("Friday", settings={"RELATIVE_BASE": base})
+
+    assert len(created) >= 3
 
 
 def test_concurrent_reference_times_do_not_leak_into_each_other() -> None:

@@ -25,7 +25,9 @@ Test cases:
 Not covered: knowledge-base answers. Zammad has no REST route that creates a
 knowledge base — it is made through the web interface — so a run cannot seed
 one deterministically. The sync path for it is exercised only in that a missing
-knowledge base must not stop tickets syncing, which TC-SYNC-001 shows.
+knowledge base must not stop tickets syncing, which TC-SYNC-001 shows. The
+zammad_sim suite covers answers, access levels, roles and customers against
+the Zammad simulator (ZAMMAD_SIM_ITS.md).
 """
 
 import logging
@@ -163,7 +165,11 @@ class TestZammadConnector:
         """TC-PERM-001: Each record group carries a permission for its Zammad group.
 
         This is what decides who can find a ticket: the connector grants access
-        to the Zammad group's members, not to each ticket individually.
+        to the Zammad group's readers, not to each ticket individually. A
+        reader is an active agent with ``read`` or ``full`` on the group,
+        directly or through a role; ``change``, ``create`` or ``overview``
+        alone make an agent no reader (the scenario matrix's unshare checks
+        that). The run's groups have one reader, the admin, with ``full``.
         """
         connector_id = zammad_connector["connector_id"]
         support_id = zammad_connector["groups"][SUPPORT_GROUP]
@@ -173,18 +179,18 @@ class TestZammadConnector:
         )
         assert group_edges > 0, (
             f"TC-PERM-001: record group group_{support_id} has no permission edge; "
-            "members of the Zammad group would not find its tickets"
+            "readers of the Zammad group would not find its tickets"
         )
-        member_edges = await graph_provider.count_user_to_group_permission_edges(
+        reader_edges = await graph_provider.count_user_to_group_permission_edges(
             connector_id, str(support_id)
         )
-        assert member_edges > 0, (
-            f"TC-PERM-001: nobody is linked to Zammad group {support_id}, so the "
-            "permission above grants access to no one"
+        assert reader_edges > 0, (
+            f"TC-PERM-001: nobody is linked to Zammad group {support_id}, though the "
+            "admin has full access to it, so the permission above grants access to no one"
         )
         logger.info(
-            "TC-PERM-001 passed: %d group edge(s), %d member edge(s) on group_%s",
-            group_edges, member_edges, support_id,
+            "TC-PERM-001 passed: %d group edge(s), %d reader edge(s) on group_%s",
+            group_edges, reader_edges, support_id,
         )
 
     @pytest.mark.order(5)

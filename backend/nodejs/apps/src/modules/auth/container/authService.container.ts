@@ -1,3 +1,4 @@
+import type { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import {
@@ -68,7 +69,7 @@ export class AuthServiceContainer {
         container.get('Logger'),
       );
       container
-        .bind<RedisService>('RedisService')
+        .bind<ICacheService>('RedisService')
         .toConstantValue(redisService);
 
       // Same fingerprint `RedisService` just resolved internally (Phase 5,
@@ -105,7 +106,7 @@ export class AuthServiceContainer {
       container
         .bind<AuthMiddleware>('AuthMiddleware')
         .toConstantValue(authMiddleware);
-      const iamService = new IamService(appConfig, logger);
+      const iamService = new IamService(appConfig);
       container.bind<IamService>('IamService').toConstantValue(iamService);
       const mailService = new MailService(appConfig, logger);
       container.bind<MailService>('MailService').toConstantValue(mailService);

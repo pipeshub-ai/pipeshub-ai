@@ -1,25 +1,24 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Callout, Checkbox, Flex, Grid, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
+import { Box, Callout, Flex, Grid, IconButton, RadioGroup, Text, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { toast } from '@/lib/store/toast-store';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { apiClient, isProcessedError } from '@/lib/api';
-import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
+import { isProcessedError } from '@/lib/api';
+import { isMcpInstanceReadOnly, McpInheritedCallout, McpManageAccess } from '@/config';
 import { useWorkspaceDrawerNestedModalHost, WorkspaceRightPanel } from '../../../components/workspace-right-panel';
 import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
 import { McpServersApi } from '../../api';
-import { McpDisabledCallout, McpDisconnectDialog, isMcpInstanceDisabled } from '../../components';
-import { useToolRulesEditor } from '../../components/mcp-tool-rules-editor';
-import { mcpConnectionState, usesSharedCredential, type McpConnectionState } from '../../connection-state';
-import { useCopyText } from '@/lib/hooks/use-copy-text';
-import { McpPanelTitle, McpServerActionsMenu, type McpMenuEntry } from './mcp-panel-header';
+import { McpDisabledCallout, isMcpInstanceDisabled } from '../../components';
+import { mcpConnectionState } from '../../connection-state';
+import { McpPanelTitle } from './mcp-panel-header';
 import { McpClientSecretPrefixHint } from './mcp-client-secret-prefix-hint';
-import { McpToolsApprovalsTab, type McpToolsLoad } from './mcp-tools-approvals-tab';
+import { McpLogoField } from './mcp-logo-field';
+import { setMcpServerLogo, useMcpServerLogo } from '../../logo-store';
 import {
   isOauthClientMissing,
   isOauthClientRequired,
@@ -34,7 +33,6 @@ import {
   needsMultiEnvAuth,
 } from '../../stdio-env-auth';
 import { mcpEditCredentialImpact, type McpEditCredentialImpact } from '../../edit-impact';
-import { ruleToolsFromInfo } from '../../tool-rules';
 import type {
   McpAuthMode,
   McpInstanceScope,
@@ -51,6 +49,7 @@ import {
   MCP_TRANSPORT_LABELS,
   isPersonalMcpInstance,
 } from '../../types';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const DCR_PROBE_DEBOUNCE_MS = 500;
 
@@ -69,17 +68,11 @@ interface McpInstanceConfigPanelProps {
   /** Operator setting from `GET /catalog`; custom STDIO servers are refused when false. */
   customStdioAllowed: boolean;
   onOpenChange: (open: boolean) => void;
-  onSaved: () => void;
-  onRequestDelete: (instance: McpMyServerEntry) => void;
-  busyInstanceId: string | null;
-  onAuthenticate: (instance: McpMyServerEntry) => void;
-  onReauthenticate: (instance: McpMyServerEntry) => void;
-  onDisconnect: (instance: McpMyServerEntry) => void;
+  /** `created` is true for a new server, which the page then opens. */
+  onSaved: (saved: { id: string; created: boolean }) => void;
   /** Where a new instance is created; an existing one keeps its own. Defaults to `org`. */
   scope?: McpInstanceScope;
 }
-
-type PanelTab = 'configuration' | 'tools';
 
 // SSE is deliberately excluded here — custom servers can only be created as STDIO or
 // Streamable HTTP; SSE remains a valid `McpTransport` value for existing/catalog instances.
@@ -111,24 +104,12 @@ export function McpInstanceConfigPanel({
   customStdioAllowed,
   onOpenChange,
   onSaved,
-  onRequestDelete,
-  busyInstanceId,
-  onAuthenticate,
-  onReauthenticate,
-  onDisconnect,
   scope = 'org',
 }: McpInstanceConfigPanelProps) {
   const { t } = useTranslation();
   const { open, mode, editingInstance, prefillTemplate } = state;
   // The backend refuses a local command or a shared admin credential on a personal instance.
   const isPersonal = mode === 'edit' ? isPersonalMcpInstance(editingInstance) : scope === 'personal';
-
-  const [activeTab, setActiveTab] = useState<PanelTab>('configuration');
-  const [toolsLoad, setToolsLoad] = useState<McpToolsLoad>({ status: 'idle' });
-  const [disconnectTarget, setDisconnectTarget] = useState<McpMyServerEntry | null>(null);
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const [creatorName, setCreatorName] = useState<string | null>(null);
-  const { copy } = useCopyText();
 
   const liveInstance = useMemo(
     () => (editingInstance ? instances.find((i) => i._id === editingInstance._id) ?? editingInstance : null),
@@ -143,6 +124,12 @@ export function McpInstanceConfigPanel({
 
   const isTemplateBased = Boolean(resolvedTemplate);
   const isReadOnly = isMcpInstanceReadOnly(editingInstance);
+  // Set by a Manage Access section that saves who may use an organization server.
+  const manageAccessSave = useRef<((serverId: string) => Promise<void>) | null>(null);
+  // The server a save in this panel created: a retry after a later step failed updates it instead of creating another.
+  const createdInstanceId = useRef<string | null>(null);
+  // Bumped whenever the panel opens on a server: a save started before that touches nothing after it.
+  const saveSession = useRef(0);
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -159,7 +146,12 @@ export function McpInstanceConfigPanel({
   const [scopeTags, setScopeTags] = useState<TagItem[]>([]);
   const [connectTimeout, setConnectTimeout] = useState('');
   const [callTimeout, setCallTimeout] = useState('');
+  const savedLogo = useMcpServerLogo(mode === 'edit' ? editingInstance?._id : null);
+  /** undefined: unchanged; null: remove it; a data URL: the new logo. */
+  const [logoDraft, setLogoDraft] = useState<string | null | undefined>(undefined);
+  const [isReadingLogo, setIsReadingLogo] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [pendingImpact, setPendingImpact] = useState<McpEditCredentialImpact>('none');
   const nestedModalHost = useWorkspaceDrawerNestedModalHost(open);
 
@@ -177,16 +169,14 @@ export function McpInstanceConfigPanel({
     customStdioAllowedRef.current = customStdioAllowed;
   }, [customStdioAllowed]);
 
-  // Bumped whenever the list is asked for again or the panel reopens: an older answer is dropped.
-  const toolsRequest = useRef(0);
-
   useEffect(() => {
     if (!open) return;
-    setActiveTab('configuration');
-    toolsRequest.current += 1;
-    setToolsLoad({ status: 'idle' });
-    setConfirmDiscard(false);
+    createdInstanceId.current = null;
+    saveSession.current += 1;
+    setIsSaving(false);
     setPendingImpact('none');
+    setLogoDraft(undefined);
+    setIsReadingLogo(false);
     if (editingInstance) {
       setName(editingInstance.name);
       setDescription(editingInstance.description ?? '');
@@ -203,7 +193,18 @@ export function McpInstanceConfigPanel({
       setScopeTags(stringsToTags(editingInstance.scopes ?? []));
       setConnectTimeout(editingInstance.connectTimeoutSeconds ? String(editingInstance.connectTimeoutSeconds) : '');
       setCallTimeout(editingInstance.callTimeoutSeconds ? String(editingInstance.callTimeoutSeconds) : '');
+      setShowAdvanced(
+        Boolean(
+          editingInstance.description ||
+            editingInstance.connectTimeoutSeconds ||
+            editingInstance.callTimeoutSeconds ||
+            editingInstance.authorizationUrl ||
+            editingInstance.tokenUrl ||
+            editingInstance.scopes?.length
+        )
+      );
     } else if (prefillTemplate) {
+      setShowAdvanced(false);
       setName(prefillTemplate.displayName);
       setDescription(prefillTemplate.description);
       setTransport(prefillTemplate.transport);
@@ -220,6 +221,7 @@ export function McpInstanceConfigPanel({
       setConnectTimeout('');
       setCallTimeout('');
     } else {
+      setShowAdvanced(false);
       setName('');
       setDescription('');
       setTransport(customStdioAllowedRef.current && !isPersonal ? 'stdio' : 'streamable_http');
@@ -266,7 +268,10 @@ export function McpInstanceConfigPanel({
 
   // The URL to probe for live OAuth metadata — for catalog servers this is fixed (their
   // defaultUrl/stored url); for custom servers it's whatever the admin is currently typing.
-  const oauthProbeUrl = isTemplateBased ? (resolvedTemplate?.defaultUrl ?? editingInstance?.url ?? '') : url.trim();
+  const urlEditable = Boolean(resolvedTemplate?.urlEditable);
+  const oauthProbeUrl = urlEditable || !isTemplateBased
+    ? url.trim()
+    : (resolvedTemplate?.defaultUrl ?? editingInstance?.url ?? '');
 
   const [dcrProbe, setDcrProbe] = useState<DcrProbeState>({ status: 'idle' });
 
@@ -287,13 +292,13 @@ export function McpInstanceConfigPanel({
             if (!cancelled) setDcrProbe({ status: 'error' });
           });
       },
-      isTemplateBased ? 0 : DCR_PROBE_DEBOUNCE_MS
+      isTemplateBased && !urlEditable ? 0 : DCR_PROBE_DEBOUNCE_MS
     );
     return () => {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [open, authMode, isTemplateBased, oauthProbeUrl]);
+  }, [open, authMode, isTemplateBased, urlEditable, oauthProbeUrl]);
 
   const dcrSupported = resolveDcrSupport(dcrProbe, resolvedTemplate?.supportsDcr);
 
@@ -356,7 +361,8 @@ export function McpInstanceConfigPanel({
       setRevealingOAuthClient(false);
     }
   };
-  const oauthClientRequired = isOauthClientRequired(authMode, dcrSupported);
+  const oauthClientRequired =
+    isOauthClientRequired(authMode, dcrSupported) || Boolean(resolvedTemplate?.requireOauthClient);
   const oauthClientMissing = isOauthClientMissing(
     oauthClientRequired,
     hasExistingOAuthClient,
@@ -376,8 +382,11 @@ export function McpInstanceConfigPanel({
     connectTimeoutInput.valid &&
     callTimeoutInput.valid &&
     name.trim().length > 0 &&
-    (isTemplateBased ||
-      (transport === 'stdio' ? command.trim().length > 0 : url.trim().length > 0)) &&
+    (isTemplateBased
+      ? !urlEditable || url.trim().length > 0
+      : transport === 'stdio'
+        ? command.trim().length > 0
+        : url.trim().length > 0) &&
     !oauthPairError &&
     !oauthClientMissing &&
     !customStdioBlocked;
@@ -429,6 +438,22 @@ export function McpInstanceConfigPanel({
     }
   };
 
+  const saveLogoIfChanged = async (instanceId: string) => {
+    if (isTemplateBased || logoDraft === undefined || logoDraft === savedLogo) return;
+    try {
+      if (logoDraft) {
+        const { logo } = await McpServersApi.setLogo(instanceId, logoDraft);
+        setMcpServerLogo(instanceId, logo);
+      } else {
+        await McpServersApi.removeLogo(instanceId);
+        setMcpServerLogo(instanceId, null);
+      }
+    } catch (error) {
+      const detail = isProcessedError(error) ? error.message : undefined;
+      toast.error(t('workspace.mcpServers.toasts.logoSaveError'), detail ? { description: detail } : undefined);
+    }
+  };
+
   const buildPayload = (): McpServerInstancePayload => ({
     name: name.trim(),
     typeId: resolvedTemplate?.typeId ?? null,
@@ -438,7 +463,9 @@ export function McpInstanceConfigPanel({
     useAdminAuth: canUseAdminAuth ? useAdminAuth : false,
     description: description.trim() || null,
     ...(isTemplateBased
-      ? {}
+      ? urlEditable
+        ? { url: url.trim() }
+        : {}
       : transport === 'stdio'
         ? {
             command: command.trim(),
@@ -459,7 +486,7 @@ export function McpInstanceConfigPanel({
   });
 
   const handleSave = () => {
-    if (!isValid) return;
+    if (!isValid || isReadingLogo) return;
     if (mode === 'edit' && editingInstance) {
       const impact = mcpEditCredentialImpact(editingInstance, buildPayload());
       if (impact !== 'none') {
@@ -471,197 +498,216 @@ export function McpInstanceConfigPanel({
   };
 
   const save = async () => {
+    const session = saveSession.current;
+    // Every later step reads this session's form, so a save whose session ended stops here.
+    const ended = () => session !== saveSession.current;
     setIsSaving(true);
     try {
       const payload = buildPayload();
       let instanceId: string;
+      let reportSaved: () => void;
       if (mode === 'edit' && editingInstance) {
         const updated = await McpServersApi.updateInstance(editingInstance._id, payload);
+        if (ended()) return;
         instanceId = updated._id;
-        if (updated.credentialsReset) {
-          toast.warning(t('workspace.mcpServers.toasts.credentialsReset'));
-        } else {
-          toast.success(t('workspace.mcpServers.toasts.updated'));
-        }
+        reportSaved = updated.credentialsReset
+          ? () => toast.warning(t('workspace.mcpServers.toasts.credentialsReset'))
+          : () => toast.success(t('workspace.mcpServers.toasts.updated'));
       } else {
-        const created = await McpServersApi.createInstance(payload);
-        instanceId = created._id;
-        toast.success(t('workspace.mcpServers.toasts.created'));
+        instanceId = createdInstanceId.current
+          ? (await McpServersApi.updateInstance(createdInstanceId.current, payload))._id
+          : (await McpServersApi.createInstance(payload))._id;
+        if (ended()) return;
+        createdInstanceId.current = instanceId;
+        reportSaved = () => toast.success(t('workspace.mcpServers.toasts.created'));
       }
 
       await saveCredentialsIfProvided(instanceId);
+      if (ended()) return;
+      if (!isPersonal && manageAccessSave.current) {
+        try {
+          await manageAccessSave.current(instanceId);
+        } catch (error) {
+          if (ended()) return;
+          // The server is saved but the access chosen here is not; stay open so a retry can apply it.
+          const detail = isProcessedError(error) ? error.message : undefined;
+          toast.error(t('workspace.mcpServers.toasts.accessSaveError'), detail ? { description: detail } : undefined);
+          return;
+        }
+      }
+      await saveLogoIfChanged(instanceId);
+      if (ended()) return;
 
-      onSaved();
-      requestOpenChange(false);
+      reportSaved();
+      onSaved({ id: instanceId, created: mode === 'create' });
+      onOpenChange(false);
     } catch (error) {
+      if (ended()) return;
       const detail = isProcessedError(error) ? error.message : undefined;
       toast.error(t('workspace.mcpServers.toasts.saveError'), detail ? { description: detail } : undefined);
     } finally {
-      setIsSaving(false);
+      if (!ended()) setIsSaving(false);
     }
   };
 
-  const liveId = liveInstance?._id;
-  // Opening the tab reads the cached list; Refresh connects.
-  const loadTools = useCallback(
-    async (cached: boolean) => {
-      if (!liveId) return;
-      const request = ++toolsRequest.current;
-      setToolsLoad({ status: 'loading' });
-      try {
-        const res = await McpServersApi.getInstanceTools(liveId, { cached });
-        if (request !== toolsRequest.current) return;
-        setToolsLoad({ status: 'ready', tools: res.tools, syncedAt: res.syncedAt ?? Date.now() });
-      } catch (error) {
-        if (request !== toolsRequest.current) return;
-        const status = isProcessedError(error) ? error.statusCode : undefined;
-        setToolsLoad({
-          status: 'error',
-          code: status === 409 ? 'reauth' : status === 502 ? 'unreachable' : 'error',
-          message: isProcessedError(error) ? error.message : t('workspace.mcpServers.toasts.discoveryError'),
-        });
-      }
-    },
-    [liveId, t]
-  );
-
-  // How the server is doing, corrected by what the tool list just said.
-  const connectionState: McpConnectionState = useMemo(() => {
-    if (!liveInstance) return 'ready';
-    const base = mcpConnectionState(liveInstance, { isAdmin: !isPersonal });
-    if (base !== 'ready' || toolsLoad.status !== 'error') return base;
-    if (toolsLoad.code === 'reauth') return usesSharedCredential(liveInstance) ? 'shared_credential_missing' : 'needs_reconnect';
-    return toolsLoad.code === 'unreachable' ? 'unreachable' : base;
-  }, [liveInstance, isPersonal, toolsLoad]);
-  const canListTools =
-    connectionState !== 'needs_connect' && connectionState !== 'waiting_for_admin' && connectionState !== 'shared_credential_missing';
-
-  useEffect(() => {
-    if (open && mode === 'edit' && activeTab === 'tools' && canListTools && toolsLoad.status === 'idle') {
-      void loadTools(true);
-    }
-  }, [open, mode, activeTab, canListTools, toolsLoad.status, loadTools]);
-
-  // A personal server's owner sets their own rules here. An organization server's company-wide
-  // rules are an Enterprise Edition feature; people set their own from their MCP servers page.
-  const ruleTools = useMemo(() => ruleToolsFromInfo(toolsLoad.status === 'ready' ? toolsLoad.tools : []), [toolsLoad]);
-  const rulesEditor = useToolRulesEditor(liveId ?? '', ruleTools, open && mode === 'edit' && Boolean(liveId) && isPersonal);
-
-  // Unsaved rule changes are asked about before the panel closes.
-  const requestOpenChange = (next: boolean) => {
-    if (!next && mode === 'edit' && rulesEditor.changes > 0) {
-      setConfirmDiscard(true);
-      return;
-    }
-    onOpenChange(next);
-  };
-
-  // A new sign-in (Reauthenticate) makes a failed list worth reading again.
-  const connectedAt = liveInstance?.connectedAt;
-  useEffect(() => {
-    setToolsLoad((prev) => (prev.status === 'error' ? { status: 'idle' } : prev));
-  }, [connectedAt]);
-
-  const createdBy = liveInstance?.createdBy;
-  const creatorHidden = isMcpInstanceReadOnly(liveInstance);
-  useEffect(() => {
-    if (!open || !createdBy || creatorHidden) {
-      setCreatorName(null);
-      return;
-    }
-    let cancelled = false;
-    apiClient
-      .post('/api/v1/users/by-ids', { userIds: [createdBy] })
-      .then(({ data }) => {
-        if (cancelled) return;
-        const users = Array.isArray(data) ? data : data?.users ?? [];
-        const user = (users[0] ?? {}) as Record<string, unknown>;
-        const fullName = String(user.name ?? user.fullName ?? '').trim();
-        setCreatorName(fullName || createdBy);
-      })
-      .catch(() => {
-        if (!cancelled) setCreatorName(createdBy);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, createdBy, creatorHidden]);
-
-  const menuEntries: McpMenuEntry[] = [];
-  if (mode === 'edit' && liveInstance) {
-    const perPerson = liveInstance.authMode !== 'none' && !usesSharedCredential(liveInstance);
-    const canDisconnect = perPerson && liveInstance.isAuthenticated;
-    const canRemove = !isReadOnly;
-    if (canDisconnect) {
-      menuEntries.push({
-        kind: 'item',
-        id: 'reauthenticate',
-        icon: 'autorenew',
-        label: t('workspace.mcpServers.cta.reauthenticate'),
-        onSelect: () => onReauthenticate(liveInstance),
-      });
-    }
-    if (liveInstance.url) {
-      const serverUrl = liveInstance.url;
-      menuEntries.push({
-        kind: 'item',
-        id: 'copy-url',
-        icon: 'content_copy',
-        label: t('workspace.mcpServers.configPanel.menu.copyUrl'),
-        onSelect: () =>
-          void copy(serverUrl).then((ok) =>
-            ok
-              ? toast.success(t('workspace.mcpServers.configPanel.menu.copied'))
-              : toast.error(t('workspace.mcpServers.configPanel.menu.copyFailed'))
-          ),
-      });
-    }
-    if (creatorName) {
-      menuEntries.push({
-        kind: 'info',
-        id: 'added-by',
-        icon: 'person',
-        label: t('workspace.mcpServers.configPanel.menu.addedBy', { name: creatorName }),
-      });
-    }
-    if (canDisconnect || canRemove) menuEntries.push({ kind: 'separator', id: 'sep' });
-    if (canDisconnect) {
-      menuEntries.push({
-        kind: 'item',
-        id: 'disconnect',
-        icon: 'link_off',
-        label: t('workspace.mcpServers.cta.disconnect'),
-        description: t('workspace.mcpServers.configPanel.menu.disconnectHint'),
-        danger: true,
-        onSelect: () => setDisconnectTarget(liveInstance),
-      });
-    }
-    if (canRemove && editingInstance) {
-      const target = editingInstance;
-      menuEntries.push({
-        kind: 'item',
-        id: 'remove',
-        icon: 'delete',
-        label: t('workspace.mcpServers.configPanel.menu.remove'),
-        description: t(
-          isPersonal ? 'workspace.mcpServers.configPanel.menu.removeHintPersonal' : 'workspace.mcpServers.configPanel.menu.removeHint'
-        ),
-        danger: true,
-        onSelect: () => onRequestDelete(target),
-      });
-    }
-  }
+  const connectionState = liveInstance ? mcpConnectionState(liveInstance, { isAdmin: !isPersonal }) : 'ready';
 
   const panelTitle =
     mode === 'edit'
       ? t('workspace.mcpServers.configPanel.editTitle')
-      : t('workspace.mcpServers.configPanel.createTitle');
+      : prefillTemplate
+        ? t('workspace.mcpServers.configPanel.addTemplateTitle', { name: prefillTemplate.displayName })
+        : t('workspace.mcpServers.configPanel.createTitle');
 
   const apiTokenLabel = resolvedTemplate?.authHint?.label || t('workspace.mcpServers.form.apiToken');
   const apiTokenPlaceholder = resolvedTemplate?.authHint?.placeholder ?? undefined;
   const credentialsPlaceholder = mode === 'edit' ? t('form.leaveBlankToKeep') : undefined;
 
-  const showFooter = mode === 'create' || (activeTab === 'configuration' && !isReadOnly);
+  const showFooter = mode === 'create' || !isReadOnly;
+  // A provider that registers PipesHub by itself needs no OAuth client, so its fields wait under Advanced.
+  const oauthClientOptional =
+    authMode === 'oauth' && !oauthClientRequired && dcrSupported === true && !(mode === 'edit' && hasExistingOAuthClient);
+  // Held open while it holds what blocks Save (so the reason stays visible) or a logo still being
+  // read (closing it would unmount the field and drop the read).
+  const advancedHeldOpen =
+    !connectTimeoutInput.valid || !callTimeoutInput.valid || (oauthClientOptional && Boolean(oauthPairError)) || isReadingLogo;
+  const advancedOpen = showAdvanced || advancedHeldOpen;
+
+  const credentialsBox = (
+    <Flex
+      direction="column"
+      gap="3"
+      style={{
+        padding: 'var(--space-3)',
+        borderRadius: 'var(--radius-2)',
+        border: '1px solid var(--olive-4)',
+        backgroundColor: 'var(--olive-2)',
+      }}
+    >
+      <Flex direction="column" gap="1">
+        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+          {t('workspace.mcpServers.form.credentialsHeading')}
+        </Text>
+        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+          {t('workspace.mcpServers.form.credentialsHint')}
+        </Text>
+      </Flex>
+
+      {authMode === 'api_token' && multiEnvAuth &&
+        envKeys.map((envKey) => {
+          const isRequired = effectiveRequiredEnv.includes(envKey);
+          return (
+            <FormField key={envKey} label={envKey} optional={!isRequired}>
+              <SecretTextField
+                size="2"
+                masked={isSecretFieldName(envKey)}
+                value={envValues[envKey] ?? ''}
+                onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
+                placeholder={credentialsPlaceholder}
+              />
+            </FormField>
+          );
+        })}
+
+      {authMode === 'api_token' && !multiEnvAuth && (
+        <FormField label={apiTokenLabel} optional>
+          <SecretTextField
+            size="2"
+            value={apiToken}
+            onChange={(e) => setApiToken(e.target.value)}
+            placeholder={credentialsPlaceholder ?? apiTokenPlaceholder}
+          />
+        </FormField>
+      )}
+
+      {authMode === 'headers' && (
+        <FormField
+          label={t('workspace.mcpServers.form.headerValue', { headerName: headerName || 'Authorization' })}
+          optional
+        >
+          <SecretTextField
+            size="2"
+            value={headerValue}
+            onChange={(e) => setHeaderValue(e.target.value)}
+            placeholder={credentialsPlaceholder}
+          />
+        </FormField>
+      )}
+
+      {authMode === 'oauth' && (
+        <>
+          <McpOAuthCallbackUrlCard
+            callbackUrl={resolveMcpOAuthCallbackUrl(dcrProbe, existingOAuthConfig)}
+            dcrProbe={dcrProbe}
+            dcrSupported={dcrSupported}
+            documentationUrl={resolvedTemplate?.documentationUrl}
+          />
+          {mode === 'edit' &&
+            hasExistingOAuthClient &&
+            revealAvailable &&
+            !isReadOnly &&
+            !oauthClientRevealed && (
+              <Flex justify="end">
+                <ShowStoredValuesButton
+                  loading={revealingOAuthClient}
+                  onClick={() => void handleRevealOAuthClient()}
+                />
+              </Flex>
+            )}
+          <FormField
+            label={t('workspace.mcpServers.oauthConfig.clientId')}
+            required={oauthClientRequired}
+            optional={!oauthClientRequired}
+            error={oauthPairError}
+          >
+            <TextField.Root
+              size="2"
+              value={oauthClientId}
+              onChange={(e) => setOauthClientId(e.target.value)}
+              placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientIdPlaceholder')}
+            />
+          </FormField>
+          <FormField
+            label={t('workspace.mcpServers.oauthConfig.clientSecret')}
+            required={oauthClientRequired}
+            optional={!oauthClientRequired}
+          >
+            <SecretTextField
+              size="2"
+              masked={!showOauthClientSecret}
+              value={oauthClientSecret}
+              onChange={(e) => setOauthClientSecret(e.target.value)}
+              placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientSecretPlaceholder')}
+            >
+              <TextField.Slot side="right">
+                <IconButton
+                  type="button"
+                  variant="ghost"
+                  color="gray"
+                  size="1"
+                  onClick={() => setShowOauthClientSecret((v) => !v)}
+                  style={{ cursor: 'pointer', ...(isMobile ? { minWidth: 44, minHeight: 44 } : null) }}
+                >
+                  <MaterialIcon
+                    name={showOauthClientSecret ? 'visibility_off' : 'visibility'}
+                    size={16}
+                    color="var(--gray-10)"
+                  />
+                </IconButton>
+              </TextField.Slot>
+            </SecretTextField>
+            <McpClientSecretPrefixHint prefix={resolvedTemplate?.clientSecretPrefix} secret={oauthClientSecret} />
+          </FormField>
+          {mode === 'edit' && hasExistingOAuthClient && (
+            <Text size="1" style={{ color: 'var(--amber-11)' }}>
+              {t('workspace.mcpServers.oauthConfig.alreadyConfigured')}
+              {existingOAuthConfig?.clientId ? ` (${existingOAuthConfig.clientId})` : ''}
+            </Text>
+          )}
+        </>
+      )}
+    </Flex>
+  );
 
   const configurationForm = (
     <Flex direction="column" gap="4">
@@ -670,10 +716,6 @@ export function McpInstanceConfigPanel({
 
       <FormField label={t('workspace.mcpServers.form.name')} required>
         <TextField.Root size="2" value={name} onChange={(e) => setName(e.target.value)} />
-      </FormField>
-
-      <FormField label={t('workspace.mcpServers.form.description')} optional>
-        <TextField.Root size="2" value={description} onChange={(e) => setDescription(e.target.value)} />
       </FormField>
 
       {!isTemplateBased && (
@@ -728,14 +770,19 @@ export function McpInstanceConfigPanel({
         </>
       )}
 
-      {!isTemplateBased && transport !== 'stdio' && (
+      {(urlEditable || (!isTemplateBased && transport !== 'stdio')) && (
         <FormField label={t('workspace.mcpServers.form.url')} required>
           <TextField.Root
             size="2"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://example.com/mcp"
+            placeholder={urlEditable ? 'https://your-company.okta.com/mcp' : 'https://example.com/mcp'}
           />
+          {urlEditable && resolvedTemplate?.authHint?.helpText && (
+            <Text size="1" style={{ color: 'var(--gray-10)' }}>
+              {resolvedTemplate.authHint.helpText}
+            </Text>
+          )}
         </FormField>
       )}
 
@@ -758,219 +805,161 @@ export function McpInstanceConfigPanel({
         </FormField>
       )}
 
-      {authMode === 'oauth' && !isTemplateBased && (
-        <>
-          <FormField label={t('workspace.mcpServers.form.authorizationUrl')} optional>
-            <TextField.Root
-              size="2"
-              value={authorizationUrl}
-              onChange={(e) => setAuthorizationUrl(e.target.value)}
-              placeholder={t('workspace.mcpServers.form.dcrHint')}
-            />
-          </FormField>
-          <FormField label={t('workspace.mcpServers.form.tokenUrl')} optional>
-            <TextField.Root size="2" value={tokenUrl} onChange={(e) => setTokenUrl(e.target.value)} />
-          </FormField>
-          <FormField label={t('workspace.mcpServers.form.scopes')} optional>
-            <TagInput tags={scopeTags} onTagsChange={setScopeTags} placeholder={t('workspace.mcpServers.form.scopesPlaceholder')} />
-          </FormField>
-        </>
-      )}
-
       {canUseAdminAuth && (
-        <Flex align="center" gap="2">
-          <Checkbox checked={useAdminAuth} onCheckedChange={(v) => setUseAdminAuth(v === true)} />
-          <Text size="2" style={{ color: 'var(--slate-12)' }}>
-            {t('workspace.mcpServers.form.useAdminAuth')}
-          </Text>
-        </Flex>
+        <FormField label={t('workspace.mcpServers.form.whoSignsIn')} required>
+          <RadioGroup.Root
+            value={useAdminAuth ? 'shared' : 'personal'}
+            onValueChange={(v) => setUseAdminAuth(v === 'shared')}
+            aria-label={t('workspace.mcpServers.form.whoSignsIn')}
+          >
+            <Flex direction="column" gap="2">
+              {(['personal', 'shared'] as const).map((choice) => {
+                const on = (choice === 'shared') === useAdminAuth;
+                return (
+                  <Text
+                    as="label"
+                    key={choice}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 'var(--space-3)',
+                      padding: 'var(--space-3)',
+                      borderRadius: 'var(--radius-2)',
+                      border: `1px solid ${on ? 'var(--accent-7)' : 'var(--olive-4)'}`,
+                      background: on ? 'var(--accent-2)' : 'var(--olive-2)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <RadioGroup.Item value={choice} style={{ marginTop: 2, flexShrink: 0 }} />
+                    <Flex direction="column" gap="1">
+                      <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                        {t(`workspace.mcpServers.form.signIn.${choice}`)}
+                      </Text>
+                      <Text size="1" style={{ color: 'var(--gray-11)' }}>
+                        {t(`workspace.mcpServers.form.signIn.${choice}Hint`)}
+                      </Text>
+                    </Flex>
+                  </Text>
+                );
+              })}
+            </Flex>
+          </RadioGroup.Root>
+        </FormField>
       )}
 
-      {authMode !== 'none' && (
-        <Flex
-          direction="column"
-          gap="3"
+      {authMode !== 'none' && !oauthClientOptional && credentialsBox}
+
+      <Box>
+        <button
+          type="button"
+          className="touch-hit"
+          aria-expanded={advancedOpen}
+          // While held open a click can't close it, and it stays open once the reason is fixed.
+          onClick={() => setShowAdvanced(advancedHeldOpen || !advancedOpen)}
           style={{
-            padding: 'var(--space-3)',
-            borderRadius: 'var(--radius-2)',
-            border: '1px solid var(--olive-4)',
-            backgroundColor: 'var(--olive-2)',
+            appearance: 'none',
+            margin: 0,
+            padding: 0,
+            border: 'none',
+            background: 'none',
+            font: 'inherit',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
           }}
         >
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              {t('workspace.mcpServers.form.credentialsHeading')}
-            </Text>
-            <Text size="1" style={{ color: 'var(--gray-10)' }}>
-              {t('workspace.mcpServers.form.credentialsHint')}
-            </Text>
-          </Flex>
+          <MaterialIcon name={advancedOpen ? 'expand_more' : 'chevron_right'} size={18} color="var(--gray-11)" />
+          <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }}>
+            {t('workspace.mcpServers.form.advanced')}
+          </Text>
+        </button>
+      </Box>
 
-          {authMode === 'api_token' && multiEnvAuth &&
-            envKeys.map((envKey) => {
-              const isRequired = effectiveRequiredEnv.includes(envKey);
-              return (
-                <FormField key={envKey} label={envKey} optional={!isRequired}>
-                  <TextField.Root
-                    size="2"
-                    type={isSecretFieldName(envKey) ? 'password' : 'text'}
-                    value={envValues[envKey] ?? ''}
-                    onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
-                    placeholder={credentialsPlaceholder}
-                  />
-                </FormField>
-              );
-            })}
+      {advancedOpen && (
+        <Flex direction="column" gap="4" style={{ paddingLeft: 'var(--space-3)', borderLeft: '2px solid var(--olive-4)' }}>
+          {oauthClientOptional && credentialsBox}
+          <FormField label={t('workspace.mcpServers.form.description')} optional>
+            <TextField.Root size="2" value={description} onChange={(e) => setDescription(e.target.value)} />
+          </FormField>
 
-          {authMode === 'api_token' && !multiEnvAuth && (
-            <FormField label={apiTokenLabel} optional>
-              <TextField.Root
-                size="2"
-                type="password"
-                value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
-                placeholder={credentialsPlaceholder ?? apiTokenPlaceholder}
-              />
-            </FormField>
+          {!isTemplateBased && !isReadOnly && (
+            <McpLogoField
+              key={editingInstance?._id ?? 'new'}
+              logo={logoDraft === undefined ? savedLogo : logoDraft}
+              onChange={setLogoDraft}
+              onReadingChange={setIsReadingLogo}
+            />
           )}
 
-          {authMode === 'headers' && (
-            <FormField
-              label={t('workspace.mcpServers.form.headerValue', { headerName: headerName || 'Authorization' })}
-              optional
-            >
-              <TextField.Root
-                size="2"
-                type="password"
-                value={headerValue}
-                onChange={(e) => setHeaderValue(e.target.value)}
-                placeholder={credentialsPlaceholder}
-              />
-            </FormField>
-          )}
-
-          {authMode === 'oauth' && (
+          {authMode === 'oauth' && !isTemplateBased && (
             <>
-              <McpOAuthCallbackUrlCard
-                callbackUrl={resolveMcpOAuthCallbackUrl(dcrProbe, existingOAuthConfig)}
-                dcrProbe={dcrProbe}
-                dcrSupported={dcrSupported}
-                documentationUrl={resolvedTemplate?.documentationUrl}
-              />
-              {mode === 'edit' &&
-                hasExistingOAuthClient &&
-                revealAvailable &&
-                !isReadOnly &&
-                !oauthClientRevealed && (
-                  <Flex justify="end">
-                    <ShowStoredValuesButton
-                      loading={revealingOAuthClient}
-                      onClick={() => void handleRevealOAuthClient()}
-                    />
-                  </Flex>
-                )}
+              <FormField label={t('workspace.mcpServers.form.authorizationUrl')} optional>
+                <TextField.Root
+                  size="2"
+                  value={authorizationUrl}
+                  onChange={(e) => setAuthorizationUrl(e.target.value)}
+                  placeholder={t('workspace.mcpServers.form.dcrHint')}
+                />
+              </FormField>
+              <FormField label={t('workspace.mcpServers.form.tokenUrl')} optional>
+                <TextField.Root size="2" value={tokenUrl} onChange={(e) => setTokenUrl(e.target.value)} />
+              </FormField>
+              <FormField label={t('workspace.mcpServers.form.scopes')} optional>
+                <TagInput tags={scopeTags} onTagsChange={setScopeTags} placeholder={t('workspace.mcpServers.form.scopesPlaceholder')} />
+              </FormField>
+            </>
+          )}
+
+          <Flex direction="column" gap="3">
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              {t('workspace.mcpServers.form.timeoutsHeading')}
+            </Text>
+            <Grid columns="2" gap="3">
               <FormField
-                label={t('workspace.mcpServers.oauthConfig.clientId')}
-                required={oauthClientRequired}
-                optional={!oauthClientRequired}
-                error={oauthPairError}
+                label={t('workspace.mcpServers.form.connectTimeout')}
+                optional
+                error={
+                  connectTimeoutInput.valid
+                    ? undefined
+                    : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.connect)
+                }
               >
                 <TextField.Root
                   size="2"
-                  value={oauthClientId}
-                  onChange={(e) => setOauthClientId(e.target.value)}
-                  placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientIdPlaceholder')}
+                  type="number"
+                  inputMode="numeric"
+                  value={connectTimeout}
+                  onChange={(e) => setConnectTimeout(e.target.value)}
+                  placeholder="15"
                 />
               </FormField>
               <FormField
-                label={t('workspace.mcpServers.oauthConfig.clientSecret')}
-                required={oauthClientRequired}
-                optional={!oauthClientRequired}
+                label={t('workspace.mcpServers.form.callTimeout')}
+                optional
+                error={
+                  callTimeoutInput.valid ? undefined : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.call)
+                }
               >
                 <TextField.Root
                   size="2"
-                  type={showOauthClientSecret ? 'text' : 'password'}
-                  value={oauthClientSecret}
-                  onChange={(e) => setOauthClientSecret(e.target.value)}
-                  placeholder={credentialsPlaceholder ?? t('workspace.mcpServers.oauthConfig.clientSecretPlaceholder')}
-                >
-                  <TextField.Slot side="right">
-                    <IconButton
-                      type="button"
-                      variant="ghost"
-                      color="gray"
-                      size="1"
-                      onClick={() => setShowOauthClientSecret((v) => !v)}
-                      style={{ cursor: 'pointer', ...(isMobile ? { minWidth: 44, minHeight: 44 } : null) }}
-                    >
-                      <MaterialIcon
-                        name={showOauthClientSecret ? 'visibility_off' : 'visibility'}
-                        size={16}
-                        color="var(--gray-10)"
-                      />
-                    </IconButton>
-                  </TextField.Slot>
-                </TextField.Root>
-                <McpClientSecretPrefixHint prefix={resolvedTemplate?.clientSecretPrefix} secret={oauthClientSecret} />
+                  type="number"
+                  inputMode="numeric"
+                  value={callTimeout}
+                  onChange={(e) => setCallTimeout(e.target.value)}
+                  placeholder="60"
+                />
               </FormField>
-              {mode === 'edit' && hasExistingOAuthClient && (
-                <Text size="1" style={{ color: 'var(--amber-11)' }}>
-                  {t('workspace.mcpServers.oauthConfig.alreadyConfigured')}
-                  {existingOAuthConfig?.clientId ? ` (${existingOAuthConfig.clientId})` : ''}
-                </Text>
-              )}
-            </>
-          )}
+            </Grid>
+          </Flex>
+
         </Flex>
       )}
 
-      <Flex direction="column" gap="3">
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-          {t('workspace.mcpServers.form.timeoutsHeading')}
-        </Text>
-        <Grid columns="2" gap="3">
-          <FormField
-            label={t('workspace.mcpServers.form.connectTimeout')}
-            optional
-            error={
-              connectTimeoutInput.valid
-                ? undefined
-                : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.connect)
-            }
-          >
-            <TextField.Root
-              size="2"
-              type="number"
-              inputMode="numeric"
-              value={connectTimeout}
-              onChange={(e) => setConnectTimeout(e.target.value)}
-              placeholder="15"
-            />
-          </FormField>
-          <FormField
-            label={t('workspace.mcpServers.form.callTimeout')}
-            optional
-            error={
-              callTimeoutInput.valid ? undefined : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.call)
-            }
-          >
-            <TextField.Root
-              size="2"
-              type="number"
-              inputMode="numeric"
-              value={callTimeout}
-              onChange={(e) => setCallTimeout(e.target.value)}
-              placeholder="60"
-            />
-          </FormField>
-        </Grid>
-      </Flex>
-
-      {mode === 'create' && authMode !== 'none' && !useAdminAuth && (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
-          {t('workspace.mcpServers.form.connectAfterCreateHint')}
-        </Text>
+      {!isPersonal && (
+        <McpManageAccess serverId={editingInstance?._id ?? null} disabled={isReadOnly} saveRef={manageAccessSave} />
       )}
+
     </Flex>
   );
 
@@ -985,67 +974,29 @@ export function McpInstanceConfigPanel({
     <>
       <WorkspaceRightPanel
         open={open}
-        onOpenChange={requestOpenChange}
+        onOpenChange={(next) => {
+          // Closing mid-save would leave the server half set up (credentials, access, logo).
+          if (next || !isSaving) onOpenChange(next);
+        }}
         title={mode === 'edit' && liveInstance ? liveInstance.name : panelTitle}
         icon={mode === 'edit' && liveInstance ? undefined : 'hub'}
         titleNode={
           mode === 'edit' && liveInstance ? (
-            <McpPanelTitle instance={liveInstance} state={isMcpInstanceDisabled(liveInstance) ? 'disabled' : connectionState} />
+            <McpPanelTitle
+              instance={liveInstance}
+              state={isMcpInstanceDisabled(liveInstance) ? 'disabled' : connectionState}
+              logo={savedLogo}
+            />
           ) : undefined
         }
         primaryLabel={mode === 'edit' ? t('common.save') : t('common.create')}
         secondaryLabel={t('common.cancel')}
-        primaryDisabled={!isValid}
+        primaryDisabled={!isValid || isReadingLogo}
         primaryLoading={isSaving}
         onPrimaryClick={handleSave}
         hideFooter={!showFooter}
-        headerActions={
-          menuEntries.length > 0 ? <McpServerActionsMenu entries={menuEntries} container={nestedModalHost} /> : undefined
-        }
       >
-        {mode === 'edit' ? (
-          <Tabs.Root
-            value={activeTab}
-            onValueChange={(v) => setActiveTab(v as PanelTab)}
-            style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}
-          >
-            <Tabs.List
-              style={{ borderBottom: '1px solid var(--olive-3)', marginBottom: 'var(--space-4)', flexShrink: 0 }}
-            >
-              <Tabs.Trigger value="configuration">
-                {t('workspace.mcpServers.configPanel.tabs.configuration')}
-              </Tabs.Trigger>
-              <Tabs.Trigger value="tools">
-                {t(isPersonal ? 'workspace.mcpServers.configPanel.tabs.tools' : 'workspace.mcpServers.configPanel.tabs.toolList')}
-              </Tabs.Trigger>
-            </Tabs.List>
-
-            <Tabs.Content value="configuration" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-              {configurationForm}
-            </Tabs.Content>
-
-            <Tabs.Content value="tools" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-              {liveInstance ? (
-                <McpToolsApprovalsTab
-                  instance={liveInstance}
-                  state={connectionState}
-                  load={toolsLoad}
-                  editor={isPersonal ? rulesEditor : null}
-                  isBusy={busyInstanceId === liveInstance._id}
-                  onRefresh={() => void loadTools(false)}
-                  onAuthenticate={() => onAuthenticate(liveInstance)}
-                  onReauthenticate={() => onReauthenticate(liveInstance)}
-                />
-              ) : (
-                <Text size="2" style={{ color: 'var(--gray-10)' }}>
-                  {t('workspace.mcpServers.form.connectAfterCreateHint')}
-                </Text>
-              )}
-            </Tabs.Content>
-          </Tabs.Root>
-        ) : (
-          configurationForm
-        )}
+        {configurationForm}
       </WorkspaceRightPanel>
 
       <ConfirmationDialog
@@ -1064,32 +1015,6 @@ export function McpInstanceConfigPanel({
         container={nestedModalHost}
       />
 
-      <McpDisconnectDialog
-        instance={disconnectTarget}
-        onOpenChange={(next) => {
-          if (!next) setDisconnectTarget(null);
-        }}
-        onConfirm={() => {
-          if (disconnectTarget) onDisconnect(disconnectTarget);
-          setDisconnectTarget(null);
-        }}
-        container={nestedModalHost}
-      />
-
-      <ConfirmationDialog
-        open={confirmDiscard}
-        onOpenChange={setConfirmDiscard}
-        title={t('workspace.mcpServers.configPanel.discardTitle')}
-        message={t('workspace.mcpServers.configPanel.discardBody', { count: rulesEditor.changes })}
-        confirmLabel={t('workspace.mcpServers.configPanel.discard')}
-        confirmVariant="danger"
-        onConfirm={() => {
-          rulesEditor.discard();
-          setConfirmDiscard(false);
-          onOpenChange(false);
-        }}
-        container={nestedModalHost}
-      />
     </>
   );
 }

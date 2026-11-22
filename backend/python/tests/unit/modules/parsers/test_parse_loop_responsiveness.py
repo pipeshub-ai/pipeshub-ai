@@ -1,0 +1,322 @@
+"""Blocking parse work must not stall the event loop (heartbeat tests).
+
+The indexing pipeline shares one loop between all in-flight records, so a
+synchronous PDF open or a large table walk delays every other record.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import threading
+import time
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
+
+import pdfplumber
+import pytest
+
+from app.models.blocks import BlockType
+from app.modules.parsers.pdf import pdfplumber_opencv_processor, vlm_ocr_strategy
+from app.modules.parsers.pdf.layout_pages import ParsedPageData
+from app.modules.parsers.pdf.opencv_layout_analyzer import (
+    LayoutRegion,
+    LayoutRegionType,
+)
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+    PDFPlumberOpenCVProcessor,
+)
+from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
+from app.utils.table_enrichment import TableEnrichmentResult
+from tests.support.pdf_samples import blank_pdf
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+def _strategy() -> VLMOCRStrategy:
+    strategy = VLMOCRStrategy(logging.getLogger("test-loop"), MagicMock())
+    strategy._get_multimodal_llm = AsyncMock(return_value=MagicMock())
+    strategy._preprocess_document = AsyncMock(return_value={})
+    return strategy
+
+
+class TestVlmLoadDocument:
+    async def test_opening_the_pdf_does_not_block_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Counted, not timed: the open (slow for a scanned or damaged file) does not finish until the loop has
+        # run ten turns after it started, which it can do only while the open is off the loop. A bound on the
+        # loop's longest gap also measured every other thread on the host (2.17 s on a busy CI runner).
+        entered, release = threading.Event(), threading.Event()
+        released_while_open: list[bool] = []
+        real_open = pdfplumber.open
+
+        def held_open(*args: object, **kwargs: object) -> object:
+            entered.set()
+            released_while_open.append(release.wait(10))  # bounds a hang only: on the loop, nobody releases it
+            return real_open(*args, **kwargs)
+
+        monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", held_open)
+        turns = 0
+
+        async def heartbeat() -> None:
+            nonlocal turns
+            assert await asyncio.to_thread(entered.wait, 30)
+            while turns < 10:
+                await asyncio.sleep(0.001)
+                turns += 1
+            release.set()
+
+        beat = asyncio.create_task(heartbeat())  # test-local task, awaited below
+        await _strategy().load_document(blank_pdf(pages=2))
+        await beat
+        assert released_while_open == [True]
+
+    async def test_the_temp_file_is_removed_and_state_cleared(self) -> None:
+        strategy = _strategy()
+        seen: list[str] = []
+
+        async def preprocess() -> dict:
+            seen.append(strategy._pdf_path)
+            assert os.path.exists(strategy._pdf_path)
+            assert len(strategy.doc.pages) == 3
+            return {"ok": True}
+
+        strategy._preprocess_document = preprocess
+        await strategy.load_document(blank_pdf(pages=3))
+        assert strategy.document_analysis_result == {"ok": True}
+        assert not os.path.exists(seen[0])
+        assert strategy.doc is None and strategy._pdf_path is None
+
+    async def test_the_temp_file_is_removed_when_preprocessing_fails(self) -> None:
+        strategy = _strategy()
+        seen: list[str] = []
+
+        async def preprocess() -> dict:
+            seen.append(strategy._pdf_path)
+            raise RuntimeError("boom")
+
+        strategy._preprocess_document = preprocess
+        with pytest.raises(RuntimeError):
+            await strategy.load_document(blank_pdf(pages=1))
+        assert not os.path.exists(seen[0])
+
+    async def test_the_temp_file_is_removed_when_the_pdf_cannot_be_opened(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        paths: list[str] = []
+        def failing(path: str, *a: object, **k: object) -> object:
+            paths.append(path)
+            raise ValueError("damaged")
+
+        monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", failing)
+        with pytest.raises(ValueError):
+            await _strategy().load_document(b"%PDF-broken")
+        assert paths and not os.path.exists(paths[0])
+
+    @staticmethod
+    def _signalling_open_and_release(monkeypatch: pytest.MonkeyPatch) -> "tuple[threading.Event, threading.Event, list[str], list[int]]":
+        """Make the open slow and signal when it starts; record which thread runs each release."""
+        started, released = threading.Event(), threading.Event()
+        paths: list[str] = []
+        release_threads: list[int] = []
+        real_open = pdfplumber.open
+        real_release = VLMOCRStrategy._release_pdf_sync
+
+        def slow(path: str, *args: object, **kwargs: object) -> object:
+            paths.append(path)
+            started.set()
+            time.sleep(0.3)
+            return real_open(path, *args, **kwargs)
+
+        def recording_release(path: str | None, doc: object) -> None:
+            release_threads.append(threading.get_ident())
+            real_release(path, doc)
+            released.set()
+
+        monkeypatch.setattr(vlm_ocr_strategy.pdfplumber, "open", slow)
+        monkeypatch.setattr(VLMOCRStrategy, "_release_pdf_sync", staticmethod(recording_release))
+        return started, released, paths, release_threads
+
+    async def test_cancellation_while_opening_releases_the_file_off_the_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started, released, paths, release_threads = self._signalling_open_and_release(monkeypatch)
+        task = asyncio.create_task(_strategy().load_document(blank_pdf(pages=1)))  # test-local
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await asyncio.to_thread(released.wait, 5)
+        assert paths and not os.path.exists(paths[0])
+        assert threading.get_ident() not in release_threads
+
+    async def test_a_file_handed_over_just_before_the_cancel_is_released(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started, released, paths, release_threads = self._signalling_open_and_release(monkeypatch)
+        task = asyncio.create_task(_strategy().load_document(blank_pdf(pages=1)))  # test-local
+        assert await asyncio.to_thread(started.wait, 5)
+        time.sleep(1.0)  # block the loop: the thread finishes and hands the file over first
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await asyncio.to_thread(released.wait, 5)
+        assert paths and not os.path.exists(paths[0])
+        assert threading.get_ident() not in release_threads
+
+    def test_the_file_is_released_when_the_loop_closes_during_the_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started, released, paths, _ = self._signalling_open_and_release(monkeypatch)
+        loop = asyncio.new_event_loop()
+        try:
+            task = loop.create_task(_strategy().load_document(blank_pdf(pages=1)))  # test-local
+            loop.run_until_complete(asyncio.wait_for(asyncio.to_thread(started.wait, 5), 6))
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                loop.run_until_complete(task)
+        finally:
+            loop.close()  # a worker loop shutting down: pending callbacks never run
+        assert released.wait(5)
+        assert paths and not os.path.exists(paths[0])
+
+
+def _table_region(rows: int, cols: int = 6) -> LayoutRegion:
+    grid = [[f"h{c}" for c in range(cols)]] + [
+        [f"cell {r}-{c} " + "x" * 20 for c in range(cols)] for r in range(rows)
+    ]
+    return LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=grid)
+
+
+def _page(region: LayoutRegion) -> ParsedPageData:
+    return ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[region])
+
+
+def _processor() -> PDFPlumberOpenCVProcessor:
+    return PDFPlumberOpenCVProcessor(logging.getLogger("test-loop"), MagicMock())
+
+
+class TestTableRows:
+    async def test_a_large_table_does_not_block_the_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The row walk must run off the loop's thread. Where it ran is checked, not how long the
+        # loop stalled: a stall bound also measures every other thread the host is running.
+        loop_thread = threading.get_ident()
+        ran_on: list[int] = []
+        real_run_sized = pdfplumber_opencv_processor._run_sized
+
+        async def spy(fn: Callable[..., object], n_rows: int, *args: object) -> object:
+            def traced(*a: object) -> object:
+                ran_on.append(threading.get_ident())
+                return fn(*a)
+
+            return await real_run_sized(traced, n_rows, *args)
+
+        monkeypatch.setattr(pdfplumber_opencv_processor, "_run_sized", spy)
+        container = await _processor().create_blocks([_page(_table_region(rows=20_000))], skip_llm_enrichment=True)
+
+        assert len(container.blocks) == 20_000
+        assert ran_on
+        assert loop_thread not in ran_on
+
+    async def test_row_text_is_unchanged(self) -> None:
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 100, 100),
+            table_grid=[["A", "B"], ["1", "2"], ["3", None], ["4", "5", "6"]],
+        )
+        container = await _processor().create_blocks([_page(region)], skip_llm_enrichment=True)
+        rows = [b for b in container.blocks if b.type == BlockType.TABLE_ROW]
+        assert [b.data["row_natural_language_text"] for b in rows] == [
+            "A: 1, B: 2",
+            "A: 3, B: ",
+            "A: 4, B: 5, Column_3: 6",
+        ]
+        assert [b.data["row_number"] for b in rows] == [1, 2, 3]
+
+    async def test_an_offloaded_table_matches_an_inline_one(self) -> None:
+        def build(rows: int) -> Awaitable[object]:
+            grid = [["A", "B"]] + [[f"a{r}", f"b{r}"] for r in range(rows)]
+            region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=grid)
+            return _processor().create_blocks([_page(region)], skip_llm_enrichment=True)
+
+        small = await build(3)
+        big = await build(2500)  # above the offload threshold
+        for container, n in ((small, 3), (big, 2500)):
+            assert [b.index for b in container.blocks] == list(range(n))
+            assert [b.data["row_number"] for b in container.blocks] == list(range(1, n + 1))
+            assert container.block_groups[0].children.block_ranges[0].start == 0
+            assert container.block_groups[0].children.block_ranges[-1].end == n - 1
+        assert big.blocks[2499].data["row_natural_language_text"] == "A: a2499, B: b2499"
+        assert all(b.parent_index == 0 for b in big.blocks)
+
+    @pytest.mark.parametrize("rows", [10, 2500])  # below and above the offload threshold
+    async def test_rows_with_empty_enriched_text_are_skipped(
+        self, rows: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        texts = ["" if i % 3 == 0 else f"t{i}" for i in range(rows)]
+
+        async def enrich(llm: object, grids: list, logger: object = None) -> list[TableEnrichmentResult]:
+            return [TableEnrichmentResult(summary="s", headers=["h"], descriptions=texts) for _ in grids]
+
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), None))
+        )
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_tables", enrich)
+        region = LayoutRegion(
+            type=LayoutRegionType.TABLE,
+            bbox=(0, 0, 100, 100),
+            table_grid=[["h"]] + [["x"] for _ in range(rows)],
+        )
+        container = await _processor().create_blocks([_page(region)])
+        kept = [(i + 1, t) for i, t in enumerate(texts) if t]
+        assert [b.index for b in container.blocks] == list(range(len(kept)))
+        assert [b.data["row_number"] for b in container.blocks] == [n for n, _ in kept]
+        assert [b.data["row_natural_language_text"] for b in container.blocks] == [t for _, t in kept]
+
+
+class TestTableEnrichmentReachesThePaidResultCache:
+    async def test_the_table_prepass_makes_the_cache_ambient_before_the_model_is_called(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from app.services.paid_cache.access import ambient_cache, set_ambient_cache
+
+        seen: list[object] = []
+
+        async def enrich(llm: object, grids: list, logger: object = None) -> list[TableEnrichmentResult]:
+            seen.append(ambient_cache())
+            return [TableEnrichmentResult(summary="s", headers=["h"], descriptions=["x"]) for _ in grids]
+
+        sentinel = MagicMock(name="ambient cache")
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), None))
+        )
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_tables", enrich)
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "remember_cache", lambda *_a, **_k: set_ambient_cache(sentinel)
+        )
+        set_ambient_cache(None)
+        region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=[["h"], ["x"]])
+        try:
+            await _processor().create_blocks([_page(region)])
+        finally:
+            set_ambient_cache(None)
+        assert seen == [sentinel]
+
+
+    async def test_the_inline_fallback_for_a_table_the_prepass_missed_also_reaches_the_cache(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        remembered: list[object] = []
+
+        async def prepass_finds_nothing(llm: object, grids: list, logger: object = None) -> list[TableEnrichmentResult]:
+            return []                                              # every table is missed: the walk enriches inline
+
+        async def inline(llm: object, grid: object, **_k: object) -> TableEnrichmentResult:
+            return TableEnrichmentResult(summary="s", headers=["h"], descriptions=[])
+
+        monkeypatch.setattr(
+            pdfplumber_opencv_processor, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), None))
+        )
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_tables", prepass_finds_nothing)
+        monkeypatch.setattr(pdfplumber_opencv_processor, "enrich_table_grid", inline)
+        monkeypatch.setattr(pdfplumber_opencv_processor, "remember_cache", lambda *a, **_k: remembered.append(a))
+        region = LayoutRegion(type=LayoutRegionType.TABLE, bbox=(0, 0, 100, 100), table_grid=[["h"], ["x"]])
+        await _processor().create_blocks([_page(region)])
+        assert len(remembered) == 2                                # the pre-pass, then the inline fallback

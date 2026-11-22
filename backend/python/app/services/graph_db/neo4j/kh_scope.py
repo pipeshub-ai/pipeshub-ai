@@ -8,15 +8,16 @@ request, the open scopes come from the scope tree and the user's grants, and the
 What the walk does, per hop from parent p to child c (``_kh_v3_granted_hop`` plus the flatten's declared stop):
 - dead:  c deleted, p hides its children, or p is a RECORD_GROUP_LEVEL group of this App;
 - free:  c inherits from p and its rule is STRICT/OPEN;
-- gate:  c is STRICT/OPEN without inheriting, or RESTRICTED and inheriting;
+- gate:  c is STRICT/OPEN without inheriting, or RESTRICTED/PARENT_AND_GRANT and inheriting;
 - block: anything else.
 The walk stops after ``MAX_DEPTH`` hops from the App, so a node deeper than that is never in a scope.
 
 A connector is listed this way only when the precomputation says exactly what the walk would: a RECORD_LEVEL App,
 no RECORD_GROUP_LEVEL group, no node that hides its children, no node with several parents, and no child that
 belongs to another connector. The seed arms (granted OPEN nodes the walk does not reach, and the OPEN nodes below
-them) depend on the user's grants and stay a walk per request. Any other case, a stale stamp, or any error falls
-back to the full query, and the reason is returned so the caller can log it.
+them, or PARENT_AND_GRANT ones that inherit and are granted) depend on the user's grants and stay a walk per
+request. Any other case, a stale stamp, or any error falls back to the full query, and the reason is returned so
+the caller can log it.
 
 Freshness: a sync marks its connector stale before it writes and re-stamps when it ends. The stamp sets ``fresh``
 only if no sync started in the meantime (``generation`` is compared and set), and refuses to run while one is.
@@ -34,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Collection
 
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 
@@ -41,7 +43,7 @@ BATCH = 5000
 # The full walk's hop limit (``{1,50}`` in the flatten): a node deeper than this is only listed as a seed.
 MAX_DEPTH = 50
 # Bumped whenever what a stamp writes changes meaning; a meta of another version is restamped, never read.
-STAMP_VERSION = 2
+STAMP_VERSION = 3
 
 # The listing's sort fields and the stored property each reads. Dates are not here: the listing shows a
 # connector node's source date, which no stamped property holds, so a date sort is always the full query's.
@@ -71,7 +73,7 @@ INDEX_WAIT_SECONDS = 120
 ORDERED = """
 MATCH (n:{label}) USING INDEX n:{label}(connectorId, {prop})
 WHERE n.connectorId = $c AND n.{prop} >= {low} AND n.khScope IN $open
-  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted {keyset}
+  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted AND NOT coalesce(n.accessOnly, false) {keyset}
 RETURN n.id AS id, n.{prop} AS sortKey
 ORDER BY n.connectorId {sdir}, n.{prop} {sdir}, n.id {iddir}
 LIMIT $limit
@@ -80,7 +82,7 @@ LIMIT $limit
 SEEK = """
 MATCH (n:Record) USING INDEX n:Record(khScope, {prop})
 WHERE n.khScope IN $open AND n.{prop} >= {low} AND n.connectorId = $c
-  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted {keyset}
+  AND n.orgId = $org AND NOT n:KhPlaceholder AND NOT n:KhDeleted AND NOT coalesce(n.accessOnly, false) {keyset}
 RETURN n.id AS id, n.{prop} AS sortKey
 ORDER BY n.{prop} {sdir}, n.id {iddir}
 LIMIT $limit
@@ -92,7 +94,7 @@ CALL () {{
     MATCH (n:RecordGroup) WHERE n.connectorId = $c RETURN n
 }}
 WITH n WHERE n.khSortName IS NULL AND n.khScope IN $open AND n.orgId = $org AND NOT n:KhPlaceholder
-  AND NOT n:KhDeleted {keyset}
+  AND NOT n:KhDeleted AND NOT coalesce(n.accessOnly, false) {keyset}
 RETURN n.id AS id ORDER BY n.id LIMIT $limit
 """
 KEYSET = "AND n.{prop} {cmp}= $ks AND (n.{prop} {cmp} $ks OR n.id {idcmp} $kid)"
@@ -112,8 +114,10 @@ WHERE sd.connectorId = $c AND NOT sd:KhDeleted AND coalesce(sd.accessRule, 'OPEN
                      AND all(h IN relationships(above) WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']) }
 OPTIONAL MATCH (sd) ((pc)-[h:NODE_RELATION]->(cc)
       WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] AND NOT cc:KhDeleted AND NOT pc:KhHidesChildren
-        AND coalesce(cc.accessRule, 'OPEN') = 'OPEN'
-        AND (EXISTS { (cc)-[:INHERIT_PERMISSIONS]->(pc) } OR cc.id IN $granted)){1,50} (nc)
+        AND (coalesce(cc.accessRule, 'OPEN') = 'OPEN'
+             OR (coalesce(cc.accessRule, 'OPEN') = 'PARENT_AND_GRANT' AND cc.id IN $granted))
+        AND (EXISTS { (cc)-[:INHERIT_PERMISSIONS]->(pc) }
+             OR (coalesce(cc.accessRule, 'OPEN') = 'OPEN' AND cc.id IN $granted))){1,50} (nc)
 WITH collect(DISTINCT sd) + collect(DISTINCT nc) AS xs
 UNWIND xs AS x
 WITH DISTINCT x
@@ -132,7 +136,8 @@ K, DEL, HIDES, RULE, PM, PH, FOLDER, ORG, NULLNAME, PARENT, NPARENTS, INH, OLD, 
 _NOT_NUMBER = "NOT ({p} IS :: INTEGER NOT NULL OR {p} IS :: FLOAT NOT NULL)"
 _NODE_FIELDS = f"""
     n.id AS id, n:KhDeleted AS del, n:KhHidesChildren AS hides, coalesce(n.accessRule, 'OPEN') AS rule,
-    n.permissionModel AS pm, n:KhPlaceholder AS ph, n:KhFolder AS folder, n.orgId = $org AS sameOrg,
+    n.permissionModel AS pm, n:KhPlaceholder AS ph, n:KhFolder AS folder,
+    n.orgId = $org AND NOT coalesce(n.accessOnly, false) AS sameOrg,
     n.khSortName IS NULL AS nullName, n.khScope AS old,
     {_NOT_NUMBER.format(p="n.updatedAtTimestamp")} AS nullUpd,
     {_NOT_NUMBER.format(p="n.createdAtTimestamp")} AS nullCre, n.origin AS origin,
@@ -261,10 +266,33 @@ async def _still_current(client: Neo4jClient, connector_id: str, generation: int
     return bool(rows)
 
 
-async def reset_syncing(client: Neo4jClient) -> None:
-    """At startup, before any sync of this process starts, no sync is running: a flag left by a crash would block
-    stamping for ever. It must not run once syncs have started, or it clears their flags too."""
-    await _q(client, "MATCH (m:KhScopeMeta) WHERE m.syncing SET m.syncing = false")
+async def reset_syncing(client: Neo4jClient, keep: Collection[str] | None = None) -> None:
+    """At startup, before any sync of this process starts, a flag left by a crash would block stamping for ever.
+    ``keep`` names connectors whose flag must stay. Called with no list, the running build decides which of the
+    syncing connectors those are. It must not run once syncs of this process have started, or it clears their
+    flags too.
+
+    The ids are read before that decision, and a sync can start in the gap. ``mark_stale`` sets ``syncing`` and
+    bumps ``generation``. Clearing by id would drop that flag. Only the pairs this read saw are cleared, and a
+    row whose generation moved is left alone.
+    """
+    rows = await _q(client, """
+        MATCH (m:KhScopeMeta) WHERE coalesce(m.syncing, false)
+        RETURN m.connectorId AS id, m.generation AS generation
+    """)
+    seen = [{"id": r["id"], "generation": r.get("generation")} for r in rows if r.get("id")]
+    if keep is None:
+        from app.edition_services import bootstrap_leased_ids
+
+        keep = await bootstrap_leased_ids([row["id"] for row in seen])
+    await _q(client, """
+        UNWIND $seen AS row
+        MATCH (m:KhScopeMeta {connectorId: row.id})
+        WHERE coalesce(m.syncing, false) AND NOT row.id IN $keep
+          AND (m.generation = row.generation
+               OR (m.generation IS NULL AND row.generation IS NULL))
+        SET m.syncing = false
+    """, {"seen": seen, "keep": list(keep or ())})
 
 
 async def stale_connectors(client: Neo4jClient) -> list[str]:
@@ -295,7 +323,7 @@ def _classify(c: tuple, p: tuple) -> str:
     inherits, rule = c[INH], c[RULE]
     if inherits and rule in ("STRICT", "OPEN"):
         return "free"
-    if (not inherits and rule in ("STRICT", "OPEN")) or (inherits and rule == "RESTRICTED"):
+    if (not inherits and rule in ("STRICT", "OPEN")) or (inherits and rule in ("RESTRICTED", "PARENT_AND_GRANT")):
         return "gate"
     return "block"
 

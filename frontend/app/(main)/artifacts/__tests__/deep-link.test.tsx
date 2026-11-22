@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 
 import '@/lib/__tests__/test-i18n';
 
@@ -67,6 +67,21 @@ describe('notification deep link', () => {
     expect(router.replace).toHaveBeenCalledWith('/artifacts/?tab=shared', { scroll: false });
     expect(useArtifactsStore.getState().ownership).toBe('shared');
     await waitFor(() => expect(api.list).toHaveBeenLastCalledWith(expect.objectContaining({ ownership: 'shared' })));
+  });
+
+  it('lists once on a first visit from a link, and only the linked tab', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    search.params = new URLSearchParams('tab=shared&artifactId=a9');
+    render(<ArtifactsPage />);
+
+    expect(await screen.findByRole('dialog', { name: 'pricing.pdf' })).toBeTruthy();
+    // Past the 300 ms search debounce, the last thing that could start another list.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    vi.useRealTimers();
+    expect(api.list).toHaveBeenCalledTimes(1);
+    expect(api.list).toHaveBeenCalledWith(expect.objectContaining({ ownership: 'shared' }));
   });
 
   it('works when the page is already open on another tab', async () => {

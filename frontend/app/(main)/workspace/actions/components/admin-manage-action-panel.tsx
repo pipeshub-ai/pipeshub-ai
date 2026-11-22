@@ -16,6 +16,7 @@ import {
   TextField,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { FootNote } from '@/app/components/ui/foot-note';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
@@ -831,9 +832,7 @@ export function AdminManageActionPanel({
               ))}
             </Flex>
           ) : (
-            <Callout.Root color="amber" variant="surface" size="1">
-              <Callout.Text size="1">{t('agentBuilder.noCredentialFields')}</Callout.Text>
-            </Callout.Root>
+            <FootNote icon="warning">{t('agentBuilder.noCredentialFields')}</FootNote>
           )}
         </>
       ) : credentialsSectionLoading ? (

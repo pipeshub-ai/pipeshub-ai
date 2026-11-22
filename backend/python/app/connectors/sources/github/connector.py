@@ -50,7 +50,10 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType, OAuthScopeConfig
-from app.connectors.core.registry.code_indexing_flags import exclude_paths_filter_field
+from app.connectors.core.registry.code_indexing_flags import (
+    branch_filter_field,
+    exclude_paths_filter_field,
+)
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -219,6 +222,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
             option_source_type=OptionSourceType.DYNAMIC,
             required=True,
         ))
+        .add_filter_field(branch_filter_field())
         .add_filter_field(updated_since_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,

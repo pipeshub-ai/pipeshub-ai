@@ -16,7 +16,7 @@ from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import RunContext
-from app.agent_loop_lib.core.exceptions import AgentError
+from app.agent_loop_lib.core.exceptions import SpawnDepthError
 from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, ToolMessage, UserMessage
 from app.agent_loop_lib.core.scope import RunScope, ToolScope, TurnScope
 from app.agent_loop_lib.core.types import AgentResult, Goal
@@ -562,6 +562,50 @@ class TestSharedToolNames:
             registry.resolve_by_name("web_agent")._spec.tool_names)
         assert "codegraph__get_neighbour" in top_names
 
+    def test_entity_and_value_tools_go_to_the_explorer_and_stay_with_the_parent(self) -> None:
+        """In composed modes the explorer could only full-text search "documents over
+        $50k" or "everything naming Acme"; the parent held the tools that answer them."""
+        registry = _full_registry()
+        for short in ("search_entities", "find_records_by_value"):
+            registry.register_tool(FakeAppTool("knowledgegraph", short))
+        runtime = AgentRuntime(tool_registry=registry)
+        entity_tools = frozenset({
+            "knowledgegraph__search_entities", "knowledgegraph__find_records_by_value",
+            # Not registered this request (switch off): never granted.
+            "knowledgegraph__search_by_entities",
+        })
+
+        top_names = compose_domain_agents(
+            registry, runtime, make_context(), provider="scripted", model_name="scripted-model",
+            entity_tool_names=entity_tools,
+        )
+
+        explorer = registry.resolve_by_name("internal_exploration_agent")._spec
+        assert {"knowledgegraph__search_entities", "knowledgegraph__find_records_by_value"} <= set(explorer.tool_names)
+        assert "knowledgegraph__search_by_entities" not in explorer.tool_names
+        assert {"knowledgegraph__search_entities", "knowledgegraph__find_records_by_value"} <= set(top_names)
+        for other in ("web_agent", "coding_agent"):
+            assert not set(registry.resolve_by_name(other)._spec.tool_names) & entity_tools
+
+    def test_the_explorer_prompt_names_entity_search_only_when_it_holds_it(self) -> None:
+        """The source catalog's Entities paragraph follows the child's own grant."""
+        def explorer_prompt(entity_tools: frozenset[str]) -> str:
+            registry = _full_registry()
+            registry.register_tool(FakeAppTool("knowledgegraph", "search_entities"))
+            # A knowledge source, so the source catalog (and its Entities paragraph) renders.
+            context = make_context(
+                agent_knowledge=[{"displayName": "Confluence", "type": "confluence", "connectorId": "conn-1"}],
+            )
+            compose_domain_agents(
+                registry, AgentRuntime(tool_registry=registry), context,
+                provider="scripted", model_name="scripted-model", entity_tool_names=entity_tools,
+            )
+            return registry.resolve_by_name("internal_exploration_agent")._spec.system_prompt
+
+        held = explorer_prompt(frozenset({"knowledgegraph__search_entities"}))
+        assert "**Entities.**" in held and "knowledgegraph__search_entities(query=...)" in held
+        assert "knowledgegraph__search_entities" not in explorer_prompt(frozenset())
+
     def test_defaults_to_empty_and_changes_nothing(self) -> None:
         registry = _full_registry()
         runtime = AgentRuntime(tool_registry=registry)
@@ -818,7 +862,7 @@ class TestAgentToolHandle:
         runtime = AgentRuntime()
 
         async def _raise(*_args: Any, **_kwargs: Any) -> AgentResult:
-            raise AgentError("Maximum spawn depth (3) reached")
+            raise SpawnDepthError("Maximum spawn depth (3) reached")
 
         runtime.run_child = _raise
 
@@ -830,6 +874,26 @@ class TestAgentToolHandle:
 
         assert result.is_error is True
         assert "spawn depth" in str(result.content)
+
+    async def test_handle_reports_a_child_that_raised_by_why(self) -> None:
+        """The domain-agent route: a child that couldn't run (a store's or a provider's error) reaches the parent model
+        and the tool card as why it failed, never the error's text."""
+        from tests.support.provider_errors import MARK, SECRET
+
+        runtime = AgentRuntime()
+
+        async def _raise(*_args: object, **_kwargs: object) -> AgentResult:
+            raise RuntimeError(f"config store at db.internal: {MARK} {SECRET}")
+
+        runtime.run_child = _raise
+
+        child_spec = AgentSpec(name="child", system_prompt="x", model=ModelSpec(provider="scripted", model="m"))
+        tool = AgentTool(child_spec, runtime)
+        call = ToolCall(id="c1", name="child", arguments={"goal": "do it"})
+
+        result = await tool.handle(call, _route_context(runtime, call))
+
+        assert (result.is_error, result.content, result.end_fields["reason"]) == (True, "internal (RuntimeError)", "exception")
 
 
 class TestAgentToolInheritsParentSkills:

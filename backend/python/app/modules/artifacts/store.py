@@ -5,6 +5,8 @@ S3 or Azure (or, on local storage, to a storage-service route). A signed URL
 is a bearer credential: nothing here logs one or puts one in an error.
 """
 
+import itertools
+import json
 import logging
 import threading
 from collections.abc import Sequence
@@ -15,8 +17,11 @@ from yarl import URL
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import Routes
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.modules.artifacts.models import RevisionUploadPlan, SignedFileUrl
+from app.modules.transformers import blob_storage as blob_module
 from app.modules.transformers.blob_storage import (
+    _storage_error_detail,
     _storage_status_error,
     get_shared_session,
 )
@@ -42,6 +47,20 @@ class ArtifactRoutesUnavailable(Exception):
 
 class ArtifactStoreError(Exception):
     """A storage reply this client cannot use. Never carries a signed URL."""
+
+
+class SetPerWriteUnsupported(Exception):
+    """The storage service did not give the write a set of its own (it ignores ``writeId``, e.g. mid-upgrade).
+
+    It would file every write of the revision in one shared set, where a late or concurrent write of another
+    process can overwrite this one's files and no lock here could fence it. Nothing is written there; reads
+    keep serving the stored record. Asked again at every presign, so an upgraded storage service is used as
+    soon as it answers.
+    """
+
+
+#: Writes this process skipped because storage gave them no set of their own.
+_UNSUPPORTED_SKIPS = itertools.count(1)
 
 
 class _Availability:
@@ -73,6 +92,8 @@ class _Availability:
 
 
 ARTIFACT_ROUTES = _Availability()
+#: Whether the storage service takes ``properties.json``; one older than the file refuses it.
+PROPERTIES_FILE = _Availability()
 
 
 def artifact_writes_available() -> bool:
@@ -129,10 +150,16 @@ class NodeArtifactStore:
             raise ArtifactRoutesUnavailable(response.status)
         if response.status != HttpStatusCode.SUCCESS.value:
             # Error bodies come from the storage service itself, never with a signed URL.
-            detail = (await response.text())[:300]
-            raise _storage_status_error(
-                response.status, f"artifact request {route} failed (HTTP {response.status}): {detail}"
+            text = await response.text()
+            error = _storage_status_error(
+                response.status, f"artifact request {route} failed (HTTP {response.status}): {text[:300]}"
             )
+            if isinstance(error, StorageRequestRejectedError):
+                try:
+                    error.detail = _storage_error_detail(json.loads(text))
+                except ValueError:
+                    error.detail = None
+            raise error
         body = await response.json()
         if not isinstance(body, dict):
             raise ArtifactStoreError(f"artifact request {route} answered a non-object body")
@@ -144,11 +171,18 @@ class NodeArtifactStore:
         virtual_record_id: str,
         rev: str,
         files: Sequence[tuple[str, str]],
+        *,
+        write_id: str | None = None,
     ) -> RevisionUploadPlan:
         """Upload URLs for ``(path, content_type)`` files of one revision.
 
+        ``write_id`` names the stored write the set is of (``stored_write.write_id``): each write
+        of a revision then has a document and file root of its own, so no write can overwrite
+        another's files, and a reply that does not echo it with a root of its own raises
+        ``SetPerWriteUnsupported`` (an older storage service ignores it). Without it the files go
+        to the revision's one shared set.
         More files than one call takes are asked for in several calls; the
-        storage service files them all under the revision's one document.
+        storage service files them all under the one document.
         Raises ``ArtifactRoutesUnavailable`` (and stops asking for the rest of
         the process) when the storage service has no artifact routes.
         """
@@ -167,6 +201,7 @@ class NodeArtifactStore:
                     {
                         "virtualRecordId": virtual_record_id,
                         "rev": rev,
+                        **({"writeId": write_id} if write_id else {}),
                         "files": [{"path": p, "contentType": ct} for p, ct in chunk],
                     },
                     missing_route=True,
@@ -184,6 +219,10 @@ class NodeArtifactStore:
             if document_id is not None and chunk_doc != document_id:
                 raise ArtifactStoreError("presign calls for one revision answered different documents")
             document_id = chunk_doc
+            if write_id and (
+                body.get("writeId") != write_id or not str(body.get("root") or "").endswith(f"/{rev}-{write_id}")
+            ):
+                self._skip_unsupported(virtual_record_id, rev)
             root = body.get("root") if isinstance(body.get("root"), str) else root
             if isinstance(body.get("expiresInSeconds"), int):
                 expires = body["expiresInSeconds"]
@@ -199,6 +238,16 @@ class NodeArtifactStore:
         return RevisionUploadPlan(
             document_id=str(document_id), root=root or "", expires_in_seconds=expires, files=signed,
         )
+
+    def _skip_unsupported(self, virtual_record_id: str, rev: str) -> None:
+        skipped = next(_UNSUPPORTED_SKIPS)
+        log = self.logger.warning if skipped == 1 else self.logger.debug
+        log(
+            "Storage did not give a write of %s (rev %s) an artifact set of its own (it ignores writeId); "
+            "artifact writes are skipped and reads use the stored record until storage is upgraded "
+            "(%d skipped in this process)", virtual_record_id, rev, skipped,
+        )
+        raise SetPerWriteUnsupported
 
     async def put(self, entry: SignedFileUrl, data: bytes, content_type: str | None = None) -> None:
         """PUT ``data`` with exactly the headers the storage service signed.
@@ -283,30 +332,88 @@ class NodeArtifactStore:
 
         return await self._blob_storage._with_storage_retry("artifact download", attempt)
 
-    async def list_revisions(self, org_id: str, virtual_record_id: str) -> list[dict[str, Any]]:
+    async def list_revisions(
+        self, org_id: str, virtual_record_id: str, *, timeout_seconds: float | None = None
+    ) -> list[dict[str, Any]]:
+        """The revisions stored for the virtual record.
+
+        With ``timeout_seconds`` the listing is one attempt bounded in total by it,
+        for a caller that would rather try again later than wait out the retries.
+        """
         headers, endpoint, _ = await self._blob_storage._get_auth_and_config(org_id)
         route = Routes.STORAGE_ARTIFACTS.value
+        timeout: aiohttp.ClientTimeout | None = None
+        if timeout_seconds is not None:
+            timeout = aiohttp.ClientTimeout(
+                total=timeout_seconds,
+                sock_connect=min(timeout_seconds, blob_module.BLOB_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS),
+                sock_read=min(timeout_seconds, blob_module.BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS),
+            )
 
         async def attempt() -> dict[str, Any]:
             async with get_shared_session().get(
-                f"{endpoint}{route}", params={"virtualRecordId": virtual_record_id}, headers=headers
+                f"{endpoint}{route}",
+                params={"virtualRecordId": virtual_record_id},
+                headers=headers,
+                **({} if timeout is None else {"timeout": timeout}),
             ) as response:
                 return await self._json_reply(response, route, missing_route=True)
 
-        body = await self._blob_storage._with_storage_retry("artifact listing", attempt)
+        if timeout is None:
+            body = await self._blob_storage._with_storage_retry("artifact listing", attempt)
+        else:
+            body = await attempt()
         revisions = body.get("revisions")
         if not isinstance(revisions, list):
             raise ArtifactStoreError("artifact listing answered no revisions")
         return [r for r in revisions if isinstance(r, dict)]
 
-    async def delete_revision(self, org_id: str, document_id: str) -> int:
-        """Remove a revision's files and its document. Returns how many were removed."""
+    async def delete_revision(
+        self,
+        org_id: str,
+        document_id: str,
+        *,
+        if_unchanged_since: int | None = None,
+        timeout_seconds: float | None = None,
+    ) -> int | None:
+        """Remove a revision's files and its document. Returns how many were removed.
+
+        With ``if_unchanged_since`` (the ``updatedAt`` the revision was listed with),
+        storage removes it only if nothing wrote it since and no other delete is
+        removing it; otherwise it removes nothing and this returns None. The check
+        is storage's, so it holds for a request that outlives this call.
+
+        With ``timeout_seconds`` the delete is one attempt bounded in total by it,
+        for a caller whose own lease must outlast it; storage goes on with a
+        request this call gave up on, and the stamp is what makes that safe.
+        """
         headers, endpoint, _ = await self._blob_storage._get_auth_and_config(org_id)
         route = Routes.STORAGE_ARTIFACT_SET.value.format(documentId=document_id)
+        params = {} if if_unchanged_since is None else {"ifUnchangedSince": str(int(if_unchanged_since))}
+        timeout: aiohttp.ClientTimeout | None = None
+        if timeout_seconds is not None:
+            timeout = aiohttp.ClientTimeout(
+                total=timeout_seconds,
+                sock_connect=min(timeout_seconds, blob_module.BLOB_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS),
+                sock_read=min(timeout_seconds, blob_module.BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS),
+            )
 
-        async def attempt() -> dict[str, Any]:
-            async with get_shared_session().delete(f"{endpoint}{route}", headers=headers) as response:
+        async def attempt() -> dict[str, Any] | None:
+            async with get_shared_session().delete(
+                f"{endpoint}{route}",
+                params=params,
+                headers=headers,
+                **({} if timeout is None else {"timeout": timeout}),
+            ) as response:
+                if if_unchanged_since is not None and response.status == HttpStatusCode.CONFLICT.value:
+                    reply = await response.json(content_type=None)
+                    if isinstance(reply, dict) and reply.get("reason") == "changed":
+                        return None
+                    raise ArtifactStoreError("artifact delete answered a conflict it does not explain")
                 return await self._json_reply(response, route)
 
-        body = await self._blob_storage._with_storage_retry("artifact delete", attempt)
-        return int(body.get("purged", 0))
+        if timeout is None:
+            body = await self._blob_storage._with_storage_retry("artifact delete", attempt)
+        else:
+            body = await attempt()
+        return None if body is None else int(body.get("purged", 0))
