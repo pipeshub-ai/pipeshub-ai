@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import os
 import uuid
@@ -86,7 +87,7 @@ async def _seed(graph: object, org_id: str) -> _Sync:
 
 
 @contextlib.asynccontextmanager
-async def _postgres() -> AsyncIterator[tuple[object, str]]:
+async def _postgres(pool_max: int | None = None) -> AsyncIterator[tuple[object, str]]:
     """The PostgreSQL graph backend on a migrated database (PG_CORE_URL), with this test's org bound, as the
     service binds it; each run writes under its own org and removes it afterwards."""
     if not os.environ.get("PG_CORE_URL"):
@@ -95,7 +96,8 @@ async def _postgres() -> AsyncIterator[tuple[object, str]]:
     from app.core.org_context import OrgContext, bind
     from app.services.graph_db.postgres.provider import PostgresGraphProvider
 
-    db = KernelDB(DbConfig.from_env("connectors"))
+    config = DbConfig.from_env("connectors")
+    db = KernelDB(config if pool_max is None else dataclasses.replace(config, pool_max=pool_max, pool_min=1))
     await db.start()
     org = uuid.uuid4().hex[:24]
     try:
@@ -169,6 +171,15 @@ async def _run(sync: _Sync, script) -> None:
     task, _lease = await sync.full_sync(script)
     done, _ = await asyncio.wait({task}, timeout=120)
     assert done, "the sync did not end"
+
+
+async def _until(read, want: object, timeout: float = 30) -> None:
+    """Wait for ``await read()`` to answer ``want``: for what the detached finalizer writes after the run's task."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    while (got := await read()) != want:
+        assert loop.time() < end, f"still {got!r}"
+        await asyncio.sleep(0.2)
 
 
 async def _limit(sync: _Sync) -> object:
@@ -363,12 +374,25 @@ async def test_a_limit_that_cannot_be_set_at_the_first_skipped_write_fails_the_r
         _licence(s.processor, UNLICENSED)
         await s.processor.on_new_records([s.message("m4", readers=(s.alice,), inherit=False)])
 
+    real_set = DataSourceEntitiesProcessor.set_access_limit
+    calls: list[str] = []
+
+    async def first_write_refused(self: DataSourceEntitiesProcessor, connector_id: str, limit: object) -> None:
+        calls.append(connector_id)
+        if len(calls) == 1:
+            raise ConnectionError("the limit write was refused")
+        await real_set(self, connector_id, limit)
+
     _licence(sync.processor, LICENSED)
-    with patch.object(DataSourceEntitiesProcessor, "set_access_limit", AsyncMock(side_effect=ConnectionError("x"))):
+    with patch.object(DataSourceEntitiesProcessor, "set_access_limit", first_write_refused):
         await _run(sync, script)
+        # The end of the run (its detached finalizer) sets the limit the first skip owed.
+        await _until(lambda: _limit(sync), "CREATOR")
     assert await sync.graph.get_record_by_external_id(sync.connector_id, f"m4-{sync.connector_id}") is None, (
         "no record is written under access that could not be limited"
     )
+    assert len(calls) == 2
+    assert await _readable(sync, sync.bob) == set()
 
 
 async def test_a_licence_returning_mid_sync_writes_access_again_but_does_not_lift(sync: _Sync) -> None:
@@ -654,3 +678,33 @@ async def test_with_stamps_on_setting_and_lifting_the_limit_each_move_the_genera
     assert marks == [sync.connector_id, sync.connector_id]
     assert drops.await_count == 2
     assert await _readable(sync, sync.bob) == set(NAMES), "lifted: the stored grants decide again"
+
+
+# --- 12. PostgreSQL: the limit is not written inside the record transaction ------------------------------------
+
+async def test_on_postgres_concurrent_slices_whose_licence_lapses_limit_without_waiting_on_the_pool() -> None:
+    """Every sync in flight sees the lapse at once (the licence answer is process-wide). Four connectors write a slice
+    each at the same moment on a pool of two connections: had each taken a second connection for the limit while
+    holding its slice's, all would wait for the pool until the acquire timed out and none would be limited."""
+    async with _postgres(pool_max=2) as (graph, org):
+        syncs = [await _seed(graph, org) for _ in range(4)]
+        config = MagicMock(get_config=AsyncMock(return_value=LICENSED))
+        for s in syncs:
+            await s.processor.on_new_record_groups([s.channel(readers=())])
+            await s.processor.on_new_records([s.message("m1", readers=(s.alice, s.bob), inherit=False)])
+            s.processor._reads_licence = True
+            s.processor.config_service = config
+            assert await s.processor.apply_licence_gate(s.connector_id, full_sync=False) is False
+        lapsed = MagicMock(get_config=AsyncMock(return_value=UNLICENSED))
+        for s in syncs:
+            s.processor.config_service = lapsed
+
+        await asyncio.wait_for(asyncio.gather(*(
+            s.processor.on_new_records([s.message(n, readers=(s.alice,), inherit=False) for n in ("m1", "m2")])
+            for s in syncs
+        )), timeout=60)
+
+        for s in syncs:
+            assert await _limit(s) == "CREATOR"
+            assert await _readable(s, s.bob, ("m1", "m2")) == set()
+            assert await _readable(s, s.alice, ("m1", "m2")) == {"m1", "m2"}

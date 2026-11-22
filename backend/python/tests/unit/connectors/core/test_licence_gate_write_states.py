@@ -7,25 +7,40 @@ tests/integration/graph_db/test_licence_gate_write_real_backends.py.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
 
-from app.config.constants.arangodb import AccessLimit, Connectors, PermissionModel
+from app.config.constants.arangodb import (
+    AccessLimit,
+    AppStatus,
+    Connectors,
+    PermissionModel,
+)
 from app.connectors.core.base.data_processor import permission_sync_gate
 from app.connectors.core.base.data_processor.permission_sync_gate import (
     LICENCE_MAX_AGE_SECONDS,
     OPEN_CONNECTOR_TYPES,
+    AccessLimitOwed,
     gated,
     permission_sync_licensed,
 )
+from app.connectors.core.base.data_store.graph_data_store import _OPEN_TRANSACTION
+from app.connectors.core.sync.sync_coordinator import SyncLease
+from app.connectors.core.sync.sync_runner import run_sync_task
 from app.models.entities import AppUser
 from tests.unit.connectors.core.test_permission_sync_gate import (
     LICENSED,
     UNLICENSED,
     _app,
     _config,
+    _connector,
     _gate_processor,
+    _runner_graph,
+    _wire,
 )
 
 
@@ -119,15 +134,19 @@ async def test_a_missing_app_document_is_not_gated_and_is_not_limited() -> None:
 
 @pytest.mark.asyncio
 async def test_the_end_of_a_run_limits_a_connector_whose_limit_at_the_first_skip_failed() -> None:
-    """The backstop: the limit at the first skipped write failed (that write raised), and the run ends."""
+    """The backstop, driven through the real failure: the limit at the first skipped write raised (so did that write),
+    and the end of the run sets it."""
     proc, _ = _gate_processor(UNLICENSED, _app())
-    proc.limit_unlicensed = AsyncMock()
+    proc.limit_unlicensed = AsyncMock(side_effect=[ConnectionError("write refused"), None])
     await proc.limit_after_skipped_writes("conn-1")
     proc.limit_unlicensed.assert_not_awaited()          # nothing skipped yet
 
-    proc._permissions_skipped = {"conn-1"}               # skipped, never known limited
+    with pytest.raises(ConnectionError):
+        await proc.skips_permission_writes("conn-1")
     await proc.limit_after_skipped_writes("conn-1")
-    proc.limit_unlicensed.assert_awaited_once()
+    assert proc.limit_unlicensed.await_count == 2, "the end of the run set the limit the first skip owed"
+    await proc.limit_after_skipped_writes("conn-1")
+    assert proc.limit_unlicensed.await_count == 2, "and only once"
 
 
 @pytest.mark.asyncio
@@ -212,3 +231,78 @@ async def test_after_a_lift_the_next_skip_limits_again() -> None:
     proc.config_service = _config(UNLICENSED)
     assert await proc.skips_permission_writes("conn-1") is True
     proc.limit_unlicensed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_inside_a_store_transaction_a_skip_owing_the_limit_raises_instead_of_opening_another() -> None:
+    proc, _ = _gate_processor(UNLICENSED, _app())
+    proc.limit_unlicensed = AsyncMock()
+    token = _OPEN_TRANSACTION.set(True)
+    try:
+        with pytest.raises(AccessLimitOwed):
+            await proc.skips_permission_writes("conn-1")
+    finally:
+        _OPEN_TRANSACTION.reset(token)
+    proc.limit_unlicensed.assert_not_awaited()
+    await proc.limit_after_skipped_writes("conn-1")
+    proc.limit_unlicensed.assert_awaited_once()          # still owed: the end of the run sets it
+
+
+@pytest.mark.asyncio
+async def test_limited_before_the_transaction_a_skip_inside_it_just_skips() -> None:
+    proc, _ = _gate_processor(UNLICENSED, _app())
+    proc.limit_unlicensed = AsyncMock()
+    await proc.limit_if_licence_lapsed(["conn-1", None, "conn-1"])
+    proc.limit_unlicensed.assert_awaited_once()
+    token = _OPEN_TRANSACTION.set(True)
+    try:
+        assert await proc.skips_permission_writes("conn-1") is True
+    finally:
+        _OPEN_TRANSACTION.reset(token)
+    proc.limit_unlicensed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_licensed_the_check_before_a_transaction_writes_nothing() -> None:
+    proc, _ = _gate_processor(LICENSED, _app())
+    proc.limit_unlicensed = AsyncMock()
+    await proc.limit_if_licence_lapsed(["conn-1"])
+    proc.limit_unlicensed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_end_of_run_limit_is_written_still_writes_idle_releases_and_limits() -> None:
+    """The limit owed at the end of a run is written in the detached finalizer: a cancel of the run (a shutdown, a
+    delete) cannot skip it, nor the IDLE write and the release after it."""
+    proc, _ = _gate_processor(UNLICENSED, _app())
+    gp = _runner_graph(_app())
+    gp.batch_upsert_nodes = AsyncMock(return_value=True)
+    _wire(proc, gp)
+    entered, go, released = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    limited: list[str] = []
+
+    async def slow_backstop(connector_id: str) -> None:
+        entered.set()
+        await go.wait()
+        limited.append(connector_id)
+
+    proc.limit_after_skipped_writes = slow_backstop
+    coordinator = AsyncMock()
+
+    async def end(_lease: SyncLease) -> bool:
+        released.set()
+        return True
+
+    coordinator.end = AsyncMock(side_effect=end)
+    task = asyncio.create_task(run_sync_task(
+        _connector(proc), "conn-1", gp, logging.getLogger("t"),
+        lease=SyncLease("conn-1", "tok", 1), coordinator=coordinator,
+    ))
+    await asyncio.wait_for(entered.wait(), 5)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    go.set()
+    await asyncio.wait_for(released.wait(), 5)
+    assert limited == ["conn-1"]
+    assert any(c.args[2].get("status") == AppStatus.IDLE.value for c in gp.update_node.await_args_list)
