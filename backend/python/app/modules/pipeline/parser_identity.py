@@ -7,9 +7,10 @@ parser, and an update that carries the new name would be skipped against a copy 
 The identity is ``"<pipeline>:<route>@<rev>"`` (``inproc:txt@1``). Its **key** is the part after the pipeline, ``<route>@<rev>``:
 two copies are the same when their keys are equal. ``<route>`` is the route of the dispatch that runs (``file_types.legacy_route`` in process, ``file_types.parse_format`` in the service);
 ``<rev>`` is ``PARSER_ROUTE_REV[route]`` (default 1), bumped by hand when a change to that parser makes a re-run of
-unchanged bytes worth its cost. The pipeline (``inproc`` or ``svc``) is stored but never compared, so a fleet that is
-mixed on ``USE_PARSING_SERVICE`` does not re-run the same bytes back and forth. A change inside the parsing service is
-not detected: that is a forced reindex.
+unchanged bytes worth its cost. The pipeline (``inproc`` or ``svc``) is stored but never compared: equal route strings
+skip across pipelines (txt, pdf, md, csv, ...), unequal ones (``plain_text`` vs ``log``, ``image`` vs ``png``, the Google
+types, ``libreoffice_docx.odt`` vs ``odt``) cost one full run per crossing, never a wrong skip. A change inside the
+parsing service is not detected: that is a forced reindex.
 
 Both sides of every comparison are derived by one function from the same four inputs (``parser_key``): the type
 the event payload carries when the run starts, and the type the graph holds when a later update, a twin attach or a
