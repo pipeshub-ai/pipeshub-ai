@@ -38,6 +38,7 @@ a replay that asks for more (a forced run after a non-forced completion, another
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -295,7 +296,7 @@ def eviction_policy_warning() -> str | None:
     return _eviction_warning
 
 
-async def check_eviction_policy(redis: Redis, logger: Logger | None = None) -> str | None:
+async def check_eviction_policy(redis: Redis, logger: Logger | None = None, service: str = "indexing") -> str | None:
     """Read ``maxmemory-policy`` from ``INFO memory`` (``CONFIG GET`` is often disabled on managed Redis) and
     report a policy that can evict keys silently; the admin is told. An ``allkeys-*`` policy raises
     ``UnsafeEvictionPolicyError`` instead. A Redis that cannot be read is not a reason to stop."""
@@ -314,7 +315,7 @@ async def check_eviction_policy(redis: Redis, logger: Logger | None = None) -> s
             "policy), and put caches on their own Redis with REDIS_CACHE_URL if they need an evicting policy."
         )
     unsafe = bool(policy) and policy not in SAFE_EVICTION_POLICIES
-    EVICTION_POLICY_UNSAFE.set("indexing", value=1.0 if unsafe else 0.0)
+    EVICTION_POLICY_UNSAFE.set(service, value=1.0 if unsafe else 0.0)
     _eviction_warning = (
         f"maxmemory-policy is '{policy}': Redis may evict the replay set, pause counters and budgets silently. "
         "Use 'noeviction'."
@@ -323,3 +324,26 @@ async def check_eviction_policy(redis: Redis, logger: Logger | None = None) -> s
     if unsafe and logger is not None:
         logger.warning(_eviction_warning)
     return _eviction_warning
+
+
+async def check_main_redis_eviction_policy(config_service: Any, logger: Logger, service: str) -> None:  # noqa: ANN401
+    """Start-up check run by every service that writes to the main Redis (the configuration service's Redis config: the
+    key-value store, broker streams, leases and counters). Raises ``UnsafeEvictionPolicyError`` on ``allkeys-*``; a Redis
+    that cannot be read leaves the warning unset and the service starts. Skipped when there is no Redis server."""
+    from app.services.redis.connection_provider_factory import default_redis_mode
+    from app.services.vector_db.rebuild_state import redis_from_config_service
+
+    if default_redis_mode() in ("postgres", "inprocess"):
+        return
+    redis = None
+    try:
+        redis = await redis_from_config_service(config_service)
+        await check_eviction_policy(redis, logger, service)
+    except UnsafeEvictionPolicyError:
+        raise
+    except Exception as exc:
+        logger.warning("Redis eviction policy not checked: %s", type(exc).__name__)
+    finally:
+        if redis is not None:
+            with contextlib.suppress(Exception):
+                await redis.aclose()
