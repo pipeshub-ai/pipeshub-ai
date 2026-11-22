@@ -3906,14 +3906,19 @@ def _merge_row_tables(
                         for at in alt_tables:
                             try:
                                 at_bbox = tuple(float(v) for v in at.bbox)
-                                at_grid = _table_grid_by_words(at)
+                                at_band, at_body = _table_grid_and_band(at)
                             except Exception:
                                 continue
-                            if not _valid_bbox(at_bbox) or not at_grid:
+                            if not _valid_bbox(at_bbox) or not at_body:
                                 continue
                             if not (at_bbox[1] <= y0 + row_h and at_bbox[3] >= y1 - row_h):
                                 continue
-                            at_grid, at_bbox = _trim_paragraph_rows(at_grid, at_bbox)
+                            # Only the row-aligned body is trimmed: the header band is
+                            # headings, and its long cells would read as a paragraph. It
+                            # stays while the row it was taken from (row 0) stays.
+                            body, at_bbox = _trim_paragraph_rows(at_body, at_bbox)
+                            keeps_row0 = bool(body) and body[0] is at_body[0]
+                            at_grid = [*at_band, *body] if keeps_row0 else body
                             trimmed = _trim_empty_rows_cols(at_grid)
                             if not trimmed or not trimmed[0]:
                                 continue
@@ -4253,17 +4258,16 @@ def _split_side_by_side_tables(
         if not parts:
             result.append(r)
             continue
-        # The titles read just before the table go each right before its part.
-        pending: list[LayoutRegion] = []
-        while result and any(result[-1] is o for o in title_regions):
-            pending.insert(0, result.pop())
-
+        # Each title over a part leaves its place in the page order (the
+        # columns above can put other text between the titles) and goes right
+        # before that part. No other region moves.
         def _over(o: LayoutRegion, box: tuple[float, float, float, float]) -> bool:
             return box[0] <= (o.bbox[0] + o.bbox[2]) / 2.0 <= box[2]
 
-        result.extend(o for o in pending if not any(_over(o, p.bbox) for p in parts))
+        moved = [o for o in title_regions if any(_over(o, p.bbox) for p in parts)]
+        result = [o for o in result if not any(o is m for m in moved)]
         for p in parts:
-            result.extend(o for o in pending if _over(o, p.bbox))
+            result.extend(o for o in moved if _over(o, p.bbox))
             result.append(p)
     return result
 

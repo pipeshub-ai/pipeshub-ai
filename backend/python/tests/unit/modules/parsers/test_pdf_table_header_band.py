@@ -195,6 +195,39 @@ class TestHeaderBandIsOneRow:
         assert _find(grid, "2012")[1] == _find(grid, "2,647")[1] and _find(grid, "2,647")[0] == 1, grid
 
 
+def _ruled_rows_page(c) -> None:
+    """Rules between the rows only; the singleton rows below the first are what the row merge re-extracts."""
+    for y in (380, 432, 448, 464):
+        _rule(c, 72, 528, y)
+    for top, label, a, b in [(416, "Liabilities within 12 months", "2,647", "1,994"),
+                             (436, "Liabilities after 12 months", "469", "512"),
+                             (452, "Total deferred tax liability", "3,116", "2,506")]:
+        _text(c, 82, top, label)
+        _text(c, 435, top, a, right=True)
+        _text(c, 526, top, b, right=True)
+
+
+class TestHeaderBandInRowMerge:
+    def test_the_band_is_not_trimmed_as_a_paragraph(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A merged band cell is long ("As at 31 December\n2012"), so the paragraph trim must not see it."""
+        band = ["", "As at 31 December\n2012", "2011"]
+        real = opencv_layout_analyzer._split_merged_header_band
+
+        def with_band(grid: list[list[str | None]], *args: object) -> list[list[str | None]]:
+            out = real(grid, *args)
+            return [band, *out] if "Liabilities" in str(out[0]) else out
+
+        monkeypatch.setattr(opencv_layout_analyzer, "_split_merged_header_band", with_band)
+        with pdfplumber.open(io.BytesIO(_page(_ruled_rows_page))) as doc:
+            page = doc.pages[0]
+            singles = [((82.0, 432.0, 526.0, 448.0), [["Liabilities after 12 months", "469", "512"]]),
+                       ((82.0, 448.0, 526.0, 464.0), [["Total deferred tax liability", "3,116", "2,506"]])]
+            merged = opencv_layout_analyzer._merge_row_tables(singles, page, page.width, page.height)
+        (grid,) = [g for _bbox, g in merged]
+        assert grid[0] == band, grid
+        assert "Total deferred tax liability" in str(grid), grid
+
+
 class TestHeaderBandStackedTables:
     """The header rows taken out of row 0 must not shift which rows each stacked table takes."""
 
@@ -262,12 +295,14 @@ def _split(right_top: float, right_step: float, around: bool = False) -> list[La
             LayoutRegion(type=LayoutRegionType.TABLE, bbox=(37, 145, 533, 240), text="x", table_grid=[["x", "y"]]),
         ]
         if around:
-            # Two-column text above and below, in the page's reading order: the table cuts a band.
-            above = [LayoutRegion(type=LayoutRegionType.TEXT, bbox=(38, 60, 260, 100), text="above left"),
-                     LayoutRegion(type=LayoutRegionType.TEXT, bbox=(308, 60, 530, 100), text="above right")]
+            # Two-column text above and below, in the order the page's reading order gives a
+            # wide table: the left column of the band above, then the right column, then the table.
+            above_left = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(38, 60, 260, 100), text="above left")
+            above_right = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(308, 60, 530, 100), text="above right")
             below = [LayoutRegion(type=LayoutRegionType.TEXT, bbox=(38, 260, 260, 300), text="below left"),
                      LayoutRegion(type=LayoutRegionType.TEXT, bbox=(308, 260, 530, 300), text="below right")]
-            regions = [*above, *regions, *below]
+            left_title, right_title, table = regions
+            regions = [above_left, left_title, above_right, right_title, table, *below]
         return _split_side_by_side_tables(regions, page, page.extract_words(), page.width, page.height)
 
 
@@ -289,7 +324,10 @@ class TestSideBySideStatements:
             (LayoutRegionType.TEXT, False), (LayoutRegionType.TABLE, False),
             (LayoutRegionType.TEXT, True), (LayoutRegionType.TEXT, False),
         ], [(r.type, r.bbox) for r in regions]
-        assert [r.text for r in regions[:2]] == ["above left", "above right"]
+        assert [r.text for r in regions if r.type == LayoutRegionType.TEXT] == [
+            "above left", "above right", "Condensed Balance Sheet", "Condensed Cash Flow Statement",
+            "below left", "below right",
+        ]
 
     def test_a_part_that_loses_words_keeps_the_table_whole(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A part whose grid holds under 90% of the words in its box would drop text the whole table kept.
