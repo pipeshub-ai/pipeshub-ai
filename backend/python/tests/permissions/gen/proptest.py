@@ -70,7 +70,7 @@ def _group(b: WorldBuilder, name: str, app: str, rule: str | None, rng: random.R
         model=RGL if rng.random() < rgl else None, deleted=rng.random() < deleted))
 
 
-def random_world(rng: random.Random) -> World:
+def random_world(rng: random.Random, *, access_limits: bool = True) -> World:
     b = WorldBuilder()
     kinds = [("A", rng.choice(["RECORD", "RECORD", "APP_LEVEL", "KB"])), ("B", "RECORD")]
     apps = [b.node(Node(
@@ -142,5 +142,6 @@ def random_world(rng: random.Random) -> World:
         f = b.node(Node(f"up{i}", "record", "no-app", "OPEN", origin="UPLOAD"))
         g = rng.choice(grantees)
         b.grant(g, f, rng.choice(["ORGANIZATION", "DOMAIN"]) if g == ORG_ID else "USER")
-    with_access_limit(b, rng, apps, users)
+    if access_limits:
+        with_access_limit(b, rng, apps, users)
     return b.build()

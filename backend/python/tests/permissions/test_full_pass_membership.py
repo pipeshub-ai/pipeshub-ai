@@ -87,7 +87,7 @@ async def test_a_record_moved_into_a_group_level_group_under_a_seed_the_walk_can
     """`A-c5` is read by `u4` by a direct grant, and the walk from it to the app goes through the group-level group `A-c1`, which it skips: a
     seed. `u4` reads `A-c6` (a group-level group below that seed) but not the records filed in it, which a declared group makes readable only
     for people who reach the group from the app or by a grant."""
-    base = retyped(gen.generate("adversarial", 2091, 1)[0], "SHAREPOINT")
+    base = retyped(gen.generate("adversarial", 2091, 1, access_limits=False)[0], "SHAREPOINT")
     env, seen = await Env.make(base, chunks=3), Log()
     await env.change((Mutation("moved", "A-c9", "A-c6", "A-c6"),))
     await env.settle()

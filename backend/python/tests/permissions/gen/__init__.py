@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
     from ..model import World
 
-GENERATORS: dict[str, Callable[[random.Random], World]] = {
+GENERATORS: dict[str, Callable[..., World]] = {  # (rng, *, access_limits=True) -> World
     "proptest": random_world,
     "adversarial": adversarial_world,
 }
@@ -31,6 +31,8 @@ def seeds() -> list[int]:
     return [int(chosen)] if chosen else [7]
 
 
-def generate(kind: str, seed: int, count: int) -> list[World]:
+def generate(kind: str, seed: int, count: int, *, access_limits: bool = True) -> list[World]:
+    """``access_limits=False`` gives the worlds as they were before connectors carried an access limit, for a test that
+    pins one world of a seed for its shape."""
     rng = random.Random(seed)
-    return [GENERATORS[kind](rng) for _ in range(count)]
+    return [GENERATORS[kind](rng, access_limits=access_limits) for _ in range(count)]

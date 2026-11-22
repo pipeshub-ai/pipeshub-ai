@@ -355,9 +355,9 @@
     - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
     - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
     grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
-        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
     memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
-    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A], [org, A, PERMISSION]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
     links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
   expect:
     verdicts:
@@ -437,9 +437,9 @@
     - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
     - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
     grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
-        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
     memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
-    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A], [org, A, PERMISSION]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
     links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
   expect:
     verdicts:
@@ -519,9 +519,9 @@
     - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
     - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
     grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
-        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
     memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
-    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A], [org, A, PERMISSION]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
     links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
   expect:
     verdicts:
@@ -601,9 +601,9 @@
     - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
     - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
     grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
-        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
     memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
-    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A], [org, A, PERMISSION]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
     links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
   expect:
     verdicts:
@@ -683,9 +683,9 @@
     - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
     - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
     grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
-        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
     memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
-    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A], [org, A, PERMISSION]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
     links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
   expect:
     verdicts:
@@ -765,9 +765,9 @@
     - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
     - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
     grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
-        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
     memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
-    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A], [org, A, PERMISSION]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
     links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
   expect:
     verdicts:
@@ -847,9 +847,9 @@
     - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
     - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
     grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
-        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
     memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
-    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A], [org, A, PERMISSION]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
     links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
   expect:
     verdicts:
@@ -929,9 +929,9 @@
     - {id: e, kind: group, connector: B, rule: OPEN, parents: [B], belongs: [B], inherits: [B]}
     - {id: j, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: same}
     grants: [[u_perm, A], [u_rec, h], [u_rec, k], [u_rg, d], [u_perm, B], [u_rec, j], [u_rg, e], [x_perm, A], [x_rec, h], [x_rec, k], [x_rg, d], [x_perm, B], [x_rec, j], [x_rg, e], [g, A, GROUP], [g, B, GROUP], [r, A, ROLE], [r, B,
-        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
+        ROLE], [s, k], [s, j], [t, k], [g, h], [r, k], [org, A, ORG], [org, k, ORG], [org, h, ORGANIZATION], [org, j, ANYONE]]
     memberships: [[u_team, t], [u_grp, g], [u_role, r], [x_team, t], [x_grp, g], [x_role, r]]
-    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A], [org, A, PERMISSION]]
+    gates: [[u_uar, A], [u_uar, B], [x_uar, A], [x_uar, B], [t, A], [t, B], [i, A], [i, B], [cx, A]]
     links: [[u_src, s, A], [u_src, s, B], [x_src, s, A], [x_src, s, B]]
   expect:
     verdicts:
@@ -1008,8 +1008,7 @@
     - {id: fo, kind: group, connector: K, rule: OPEN, parents: [K], belongs: [K]}
     - {id: q, kind: record, connector: K, rule: OPEN, parents: [fo], belongs: [K]}
     memberships: [[p, t]]
-    grants: [[o, q], [org, q, ORG], [o, K]]
-    gates: [[t, K, PERMISSION], [org, K, PERMISSION]]
+    grants: [[o, q], [org, q, ORG], [o, K], [t, K, TEAM], [org, K, ORG]]
   expect:
     verdicts:
       c: {K: admit, fo: admit, q: admit}
@@ -1036,10 +1035,10 @@
     - {id: jc, kind: record, connector: B, rule: OPEN, parents: [e], inherits: [e], vrid: two}
     - {id: ja, kind: record, connector: B, rule: OPEN, parents: [fb], inherits: [fb]}
     grants: [[o, fa], [o, fb], [o, d]]
-    gates: [[o, B], [o, A], [c, B]]
+    gates: [[o, B], [o, A]]
   expect:
     verdicts:
-      c: {A: admit, B: admit, d: admit, e: admit, fa: deny, fb: admit, jb: deny, jc: admit, ja: admit}
+      c: {A: admit, B: deny, d: admit, e: deny, fa: deny, fb: admit, jb: deny, jc: deny, ja: deny}
       o: {A: deny, B: admit, d: deny, e: admit, fa: deny, fb: deny, jb: deny, jc: admit, ja: admit}
   tags: [rules, access-limit, access-limit-matrix]
-  comment: fa and fb are A's records under B's group e (o reaches B); jb and ja are B's records under A's group d and record fb. fa and jc share content.
+  comment: fa and fb are A's records under B's group e (o reaches B, the creator c only A); jb and ja are B's records under A's group d and record fb. fa and jc share content.

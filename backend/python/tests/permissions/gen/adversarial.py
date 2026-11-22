@@ -51,7 +51,7 @@ class _Adversary:
         return n
 
 
-def adversarial_world(rng: random.Random) -> World:
+def adversarial_world(rng: random.Random, *, access_limits: bool = True) -> World:
     adv = _Adversary(rng)
     b = adv.b
     apps = [
@@ -97,7 +97,8 @@ def adversarial_world(rng: random.Random) -> World:
         f = b.node(Node(f"up{i}", "record", "no-app", "OPEN", origin="UPLOAD"))
         g = rng.choice(grantees)
         b.grant(g, f, rng.choice(["ORGANIZATION", "DOMAIN"]) if g == ORG_ID else "USER")
-    with_access_limit(b, rng, apps, users)
+    if access_limits:
+        with_access_limit(b, rng, apps, users)
     return b.build()
 
 
