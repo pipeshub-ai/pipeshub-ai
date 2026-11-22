@@ -226,6 +226,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     KH_LISTING_STATE_FLAG,
+    KH_SKIP_READS,
     REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
     UNSUPPORTED_PAGE_FIELDS,
@@ -21590,6 +21591,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   WHERE {cls._kh_v3_hidden_above(og, tag, from_depth=0)}
               }}"""
 
+    @staticmethod
+    def _kh_v3_reached(start: str, hop: str, tag: str, *, child: str, parent: str, rel: str, hops: int = 50) -> str:
+        """The nodes a walk up the hierarchy from ``start`` reaches in 1 to ``hops`` steps, each step from ``child`` to ``parent`` over
+        ``rel`` passing ``hop``. Read a level at a time, each node once, so the cost follows the nodes above the start, never the routes
+        to them: matched as a path, two parents at many levels make the routes exponential (24 such levels: 2^24). A node a walk reaches
+        within ``hops`` steps is reached by a route of distinct nodes as short, whose steps are a subset of the walk's, so the nodes are
+        those the path match ``(start) ((child)<-[rel:NODE_RELATION]-(parent) WHERE hop){1,hops} (end)`` ends in."""
+        w, i, n, d, x, a = (f"kh_{v}{tag}" for v in ("w", "i", "n", "d", "x", "a"))
+        step = f"[({child})<-[{rel}:NODE_RELATION]-({parent}) WHERE {hop} | {parent}]"
+        new = (f"reduce({d} = [], {x} IN reduce({a} = [], {child} IN {w}.f | {a} + {step})"
+               f" | CASE WHEN {x} IN {d} OR {x} IN {w}.s THEN {d} ELSE {d} + {x} END)")
+        return (f"reduce({w} = {{f: [{start}], s: []}}, {i} IN range(1, {hops}) | CASE WHEN size({w}.f) = 0 THEN {w}"
+                f" ELSE [{n} IN [{new}] | {{f: {n}, s: {w}.s + {n}}}][0] END).s")
+
     async def _kh_v3_accessible_rows(
         self,
         user_key: str,
@@ -21613,6 +21628,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # The arms are the listing's, cheapest first; every rule-bearing walk
         # stops at the first hop that fails. Fragments nest, and a name reused
         # inside EXISTS binds to the outer one, so each takes its own tag.
+        # Every walk starts at its bound start and what it reaches is tested after it: a test on the walk's end (the App, a seed, a
+        # declared group) lets the planner start the walk there instead, from every node of the App for each target, and a plan chosen
+        # while an App is small stays cached for every App until the statistics change several-fold. A walk whose hop reads an edge
+        # between its two nodes (inheritance) is read a level at a time (`_kh_v3_reached`): as a path match it enumerates every route.
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
 
         def from_app(v: str, tag: str) -> str:
@@ -21624,23 +21643,27 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f" AND coalesce({p}.connectorId, '') = app.id)"
                 f" AND {self._kh_v3_granted_hop(c, p, navigation=False, grant_once=bool(access.get('probe')))}"
             )
-            return f"EXISTS {{ MATCH ({v}) (({c})<-[{h}:NODE_RELATION]-({p}) WHERE {hop}){{1,50}} (app) }}"
+            return f"app IN {self._kh_v3_reached(v, hop, tag, child=c, parent=p, rel=h)}"
 
         def in_declared_scope(v: str, tag: str) -> str:
             """A group under an admitted RECORD_GROUP_LEVEL declaration, or a
             record belonging to one, as the listing's declared arms admit."""
-            mg, bg, cb, pb, dg, h = (f"kh_{x}{tag}" for x in ("mg", "bg", "cb", "pb", "dg", "h"))
+            mg, bg, cb, pb, dg, h, de, des = (f"kh_{x}{tag}" for x in ("mg", "bg", "cb", "pb", "dg", "h", "de", "des"))
             return f"""EXISTS {{
                 UNWIND CASE WHEN {v}:RecordGroup THEN [{v}]
                             ELSE [({v})-[:BELONGS_TO]->({bg}:RecordGroup) | {bg}] END AS {mg}
                 MATCH ({mg}) (({cb}:RecordGroup)<-[{h}:NODE_RELATION]-({pb}:RecordGroup)
                                WHERE {h}.relationshipType {hierarchy}
-                                 AND NOT coalesce({cb}.isDeleted, false)){{0,50}} ({dg}:RecordGroup)
+                                 AND NOT coalesce({cb}.isDeleted, false)){{0,50}} ({de})
                 WHERE NOT coalesce({mg}.isDeleted, false)
+                WITH collect(DISTINCT {de}) AS {des}
+                UNWIND {des} AS {dg}
+                WITH {dg} WHERE {dg}:RecordGroup
                   AND {dg}.connectorId = app.id
                   AND {dg}.permissionModel = 'RECORD_GROUP_LEVEL'
                   AND NOT coalesce({dg}.isDeleted, false)
-                  AND ({dg}.id IN $grantedIds OR {from_app(dg, tag + "d")}) }}"""
+                  AND ({dg}.id IN $grantedIds OR {from_app(dg, tag + "d")})
+                RETURN 1 }}"""
 
         def seed(v: str) -> str:
             return (
@@ -21655,10 +21678,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # admits is not a seed, so its hierarchy-only children stay out.
         open_hop = f"kh_hs.relationshipType {hierarchy} AND {self._kh_v3_seed_hop('kh_cs', 'kh_ps', state=False)}"
         below_seed = f"""EXISTS {{
-                MATCH (t) ((kh_cs)<-[kh_hs:NODE_RELATION]-(kh_ps) WHERE {open_hop}){{1,50}} (kh_s)
-                WHERE {seed('kh_s')}
+                UNWIND {self._kh_v3_reached('t', open_hop, 's', child='kh_cs', parent='kh_ps', rel='kh_hs')} AS kh_s
+                WITH kh_s WHERE {seed('kh_s')}
                   AND NOT {from_app('kh_s', 'x')}
-                  AND NOT {in_declared_scope('kh_s', 'x')} }}"""
+                  AND NOT {in_declared_scope('kh_s', 'x')}
+                RETURN 1 }}"""
 
         query = f"""
         CALL () {{
@@ -21786,6 +21810,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     _KH_SPLIT_STUB_DEPTH = 50
     # Chain-top walks one arrow question runs at once (each is a few statements).
     _KH_SPLIT_WALKS_AT_ONCE = 8
+
+    @property
+    def kh_browse_skip_rows(self) -> int:
+        # A split browse reads its page by id from the listing it decided (`LISTED`), which does not grow with the rows read. Legacy holds every
+        # row it keeps against the transaction memory pool: a page at a time.
+        return 1000 if self.kh_browse_mode() == "split" else 0
 
     @staticmethod
     def kh_browse_mode() -> str:
@@ -22013,6 +22043,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if browse_mode == _KH_SPLIT_COMPARE:
             raise undecided
         self.logger.info(f"kh browse in {app_id} answered by legacy: {undecided}")
+        skip_reads = KH_SKIP_READS.get()
+        if skip_reads is not None:
+            # A read before a numbered page takes up to `kh_browse_skip_rows` rows on split; legacy holds every row it keeps in transaction
+            # memory, so it reads a page's worth and the reads before the page go on from its cursor.
+            args = {**args, "limit": min(args["limit"], skip_reads["page_rows"])}
         return await self.get_knowledge_hub_connector_page_v3(**args, browse_mode="legacy")
 
     async def _kh_split_group_ids(self, ids: list[str], *, org_id: str, transaction: str | None) -> set[str]:
@@ -23145,7 +23180,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         split_memo: dict[str, bool] = {}
         split_access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids, "by_connector": {app_id: granted_ids},
                         "probe": probe, "cross": cross}
-        if split:
+        # A read before a numbered page reuses the listing the first such read of this request decided for the same viewer's access; the page
+        # itself, read after them, decides afresh, so what it lists is as current as a page read alone.
+        skip_reads = KH_SKIP_READS.get() if split and browse_mode == "split" else None
+        decided_for = repr((start_id if scoped_start else app_id, app_id, org_id, split_access, placed_ids, sidebar, state)) if skip_reads is not None else ""
+        if skip_reads is not None and decided_for in skip_reads:
+            params["kh_listed"], params["kh_arrows"] = skip_reads[decided_for]
+        elif split:
             try:
                 listed = await self._kh_split_listed(
                     start_id if scoped_start else app_id, app_id=app_id, org_id=org_id, access=split_access, placed=placed_ids,
@@ -23160,6 +23201,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     params["kh_arrows"] = []
             except _KhSplitUndecided as undecided:
                 return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
+            if skip_reads is not None:
+                skip_reads[decided_for] = (params["kh_listed"], params["kh_arrows"])
         if not use_scope:
             try:
                 walk_started = time.monotonic()
@@ -23186,8 +23229,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for r in rows_:
                 r.pop("khAsk", None)
             try:
-                lit = await self._kh_split_lists([r["id"] for r in rows_], app_id=app_id, org_id=org_id, access=split_access,
-                                                 transaction=transaction, memo=split_memo)
+                # A read before the page only places it: none of its rows is shown, so none needs an arrow.
+                lit = set() if skip_reads is not None else await self._kh_split_lists(
+                    [r["id"] for r in rows_], app_id=app_id, org_id=org_id, access=split_access, transaction=transaction, memo=split_memo)
             except _KhSplitUndecided as undecided:
                 return await self._kh_split_answered_by_legacy(undecided, app_id, shadow_args, browse_mode)
             for r in rows_:

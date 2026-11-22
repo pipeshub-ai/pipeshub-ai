@@ -12,6 +12,7 @@ import time
 import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 
@@ -42,6 +43,11 @@ from app.utils.kh_chain_tops import place_chain_tops
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
+
+# Set by `KnowledgeHubService._walk_pages` while it reads the rows before a numbered page, for that one request: those reads only place the
+# page, so a backend may decide its listing once for all of them and leave out what only a row on show needs. The page itself is read without it.
+# ``page_rows`` is the page's own size, for a backend that must read no more than a page at a time.
+KH_SKIP_READS: ContextVar[dict[str, Any] | None] = ContextVar("kh_skip_reads", default=None)
 
 # Set once `stamp_kh_listing_state` has covered every node written before.
 KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
@@ -7761,6 +7767,11 @@ class IGraphDBProvider(ABC):
     # Rows one read of the rows before a numbered page may take (``KnowledgeHubService._walk_pages``); 0 is a page's worth, a read per page. Raised by a backend
     # whose connector page costs about the same for a large window as for one page: its cost is per read, not per row (and whose memory does not grow with it).
     kh_skip_rows = 0
+
+    @property
+    def kh_browse_skip_rows(self) -> int:
+        """``kh_skip_rows`` for a browse below a start (``flatten=False``), for a backend whose browse page costs otherwise than its flatten."""
+        return self.kh_skip_rows
 
     async def get_knowledge_hub_warm_samples(self) -> list[dict[str, str]]:
         """Samples for warming the listing statements' plans, in order of preference, at most one per App: each a user
