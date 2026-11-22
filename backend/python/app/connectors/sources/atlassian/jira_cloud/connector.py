@@ -590,6 +590,8 @@ class JiraConnector(BaseConnector):
         # full: a restricted comment names its role by name, and may name its group by name alone.
         self._role_ids: dict[str, str] = {}
         self._group_ids_by_name: dict[str, str] = {}
+        # True once this sync read the whole group list, so a group name that does not resolve names no group.
+        self._group_names_read: bool = False
         # True when /applicationrole returned 403 (sync user is not a Jira admin)
         self._app_roles_forbidden: bool = False
         # True when /applicationrole could not be read for a reason that may pass (401, 429,
@@ -3805,6 +3807,7 @@ class JiraConnector(BaseConnector):
         group list itself could not be read in full, so roles can't be resolved this run.
         """
         self._group_ids_by_name = {}
+        self._group_names_read = False
         # A group this read leaves unread is unknown to level readers, though the graph keeps its stored members.
         self._group_members = {}
         try:
@@ -3878,6 +3881,7 @@ class JiraConnector(BaseConnector):
 
             # A list cut short may miss a group that took a name since: no name resolves then.
             self._group_ids_by_name = {} if fetch_failed else group_ids_by_name
+            self._group_names_read = not fetch_failed
             return None if fetch_failed else groups_members_map
 
         except StoredAccessReadError:
@@ -4920,11 +4924,12 @@ class JiraConnector(BaseConnector):
                 self._grant_directory({user.source_user_id: user for user in jira_users if user.source_user_id}),
             )
         if stored_levels is not None and not security.defer_checkpoint:
-            # A level whose members were not read writes its issues without the grants of those who read them alone; saved
-            # before the walk, as the markers below, so a walk that fails still leaves the next sync a changed digest to re-read.
+            # A level whose members were not read writes its issues without the grants of those who read them alone. Saved before
+            # the walk with the retry marker, as the markers below: a walk that fails leaves the next sync a pass over the leveled
+            # issues, whether or not the members are read by then. The save after a clean walk clears the marker.
             unread = {lid: v for lid, v in levels_to_save.items() if v.endswith(":?") and stored_levels.get(lid) != v}
             if unread:
-                await self._record_security_levels(project_key, {**stored_levels, **unread}, force=True)
+                await self._record_security_levels(project_key, pre_walk_marker({**stored_levels, **unread}), force=True)
         # A changed level's issues are read again even when its group's write holds the change: a sub-task holds a copy of
         # its level's holders, and an OPEN issue a grant to a user holder who reads it alone (``_reads_alone``).
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
@@ -5282,10 +5287,17 @@ class JiraConnector(BaseConnector):
                 self._by_group_id(security.members_by_level.get(level_id, [])), project_key=project_key,
                 user_by_id=user_by_account_id, app_roles_mapping=self._level_roles_by_id(),
             )
+            external_id = level_group_external_id(project_id, level_id)
+            if not self._group_names_read and any(
+                    g.entity_type == EntityType.GROUP and str(g.external_id).startswith(_UNRESOLVED_GROUP) for g in grants) and \
+                    await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id) is not None:
+                # A group named only by its name, with the group list not read in full: unknown, not gone. The stored group
+                # keeps its grants until a sync reads the list.
+                await self.data_entities_processor.note_kept_record_group(self.connector_id, external_id)
+                continue
             if skipped:
                 self.logger.warning(
                     f"Security level {level_id} of {project_key}: holders of type {skipped} were not granted")
-                external_id = level_group_external_id(project_id, level_id)
                 # Only an unfinished user read leaves a user holder unknown; a role holder resolves (or not) from the role
                 # list the levels apply (``roles_for_levels``), so past its bound the group drops the roles' groups.
                 if self._user_read_unfinished and HOLDER_USER in skipped and await \

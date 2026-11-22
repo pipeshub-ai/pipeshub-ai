@@ -3339,11 +3339,23 @@ class TestLevelReadersFollowTheMembersRead:
         saved = [json.loads(call.args[1]["security_levels"]) for call in c.issues_sync_point.update_sync_point.await_args_list
                  if "security_levels" in call.args[1]]
         assert saved and saved[-1]["10102"] != stored["10102"] and saved[-1]["10102"].endswith(":?")
+        assert saved[-1]["*"] == "retry"
+        leveled = {"resume": None, "is_new_project": True, "level_ids": None, "leveled_only": True, "stored_only": True}
 
         nxt = _connector()
         self._stored_digests(nxt)  # group-1 read again, with the reporter in it
-        assert await self._next_issue_pass(nxt, saved[-1]) == [
-            {"resume": None, "is_new_project": True, "level_ids": ["10102"], "leveled_only": False, "stored_only": True}]
+        assert await self._next_issue_pass(nxt, saved[-1]) == [leveled]
+
+        # Still not read: the digest matches the one saved, yet the marker walks the leveled issues again, now without the
+        # reporter's own grant, and a clean walk clears it.
+        still = _connector()
+        self._stored_digests(still)
+        still._group_members = {}
+        assert await self._next_issue_pass(still, saved[-1]) == [leveled]
+        assert self._reporter_grant(still) == ([], [LEVEL_MEMBERS_UNREAD])
+        after = [json.loads(call.args[1]["security_levels"]) for call in still.issues_sync_point.update_sync_point.await_args_list
+                 if "security_levels" in call.args[1]]
+        assert after and "*" not in after[-1] and after[-1]["10102"] == saved[-1]["10102"]
 
     @pytest.mark.asyncio
     async def test_a_group_list_that_fails_leaves_every_group_unknown(self) -> None:
@@ -3558,6 +3570,32 @@ class TestGroupMembersAreHeldByGroupId:
         assert await written({"type": "group", "parameter": "gA"}) == {(EntityType.GROUP, "gB")}
         assert await written({"type": "group", "parameter": "Alpha"}) == {(EntityType.GROUP, "gA")}
         assert await written({"type": "group", "parameter": "Nobody"}) == {(EntityType.GROUP, "unresolved-group-name:Nobody")}
+
+    @pytest.mark.asyncio
+    async def test_a_group_list_not_read_in_full_keeps_the_stored_level_group_of_a_name_only_holder(self) -> None:
+        """No name resolves while the group list is cut short: the stored record group keeps its grant to the real group, rather
+        than being written with a grant to no group."""
+        c = _connector()
+        c._fetch_groups = AsyncMock(return_value=([{"groupId": "gA", "name": "Alpha"}], True))  # cut short
+        c._group_fetch_interrupted = True
+        c._process_group = AsyncMock(side_effect=lambda g, _users: (g["groupId"], g["name"], MagicMock(), [self.REP]))
+        c.data_entities_processor.on_new_user_groups = AsyncMock()
+        c.notify = AsyncMock()
+        await c._sync_user_groups([self.REP])
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        c.data_entities_processor.note_kept_record_group = AsyncMock()
+        await c._write_level_groups(PROJECT_ID, "PROJ", _present({"10102": [{"type": "group", "parameter": "Alpha"}]}),
+                                    ["10102"], {})
+        c.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        c.data_entities_processor.note_kept_record_group.assert_awaited_once_with("conn-sec", "level:p-1:10102")
+        # Read in full, the same holder resolves and the group is written.
+        c._fetch_groups = AsyncMock(return_value=([{"groupId": "gA", "name": "Alpha"}], False))
+        c._group_fetch_interrupted = False
+        await c._sync_user_groups([self.REP])
+        await c._write_level_groups(PROJECT_ID, "PROJ", _present({"10102": [{"type": "group", "parameter": "Alpha"}]}),
+                                    ["10102"], {})
+        (_, grants), = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert {(p.entity_type, p.external_id) for p in grants} == {(EntityType.GROUP, "gA")}
 
     @pytest.mark.asyncio
     async def test_a_reindex_does_not_take_a_group_named_by_its_name_from_the_names_the_last_sync_read(self) -> None:
