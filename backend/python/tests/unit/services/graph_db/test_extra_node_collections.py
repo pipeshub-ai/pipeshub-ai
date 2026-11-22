@@ -32,11 +32,13 @@ def test_neo4j_creates_the_indexes_an_extra_collection_declares(monkeypatch: pyt
     assert f"CREATE INDEX {label.lower()}_orgid IF NOT EXISTS FOR (n:{label}) ON (n.orgId)" in indexes
 
 
-def test_the_default_adds_no_constraint_or_index(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_extra_collections_add_exactly_their_constraint_and_indexes(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
-    before = (provider._generate_unique_id_constraints(), provider._generate_performance_indexes())
     monkeypatch.setattr(neo4j_module, "extra_node_collections", lambda: {})
-    assert (provider._generate_unique_id_constraints(), provider._generate_performance_indexes()) == before
+    constraints, indexes = provider._generate_unique_id_constraints(), provider._generate_performance_indexes()
+    monkeypatch.setattr(neo4j_module, "extra_node_collections", lambda: EXTRA)
+    assert len(provider._generate_unique_id_constraints()) == len(constraints) + 1
+    assert len(provider._generate_performance_indexes()) == len(indexes) + 2
 
 
 @pytest.mark.asyncio
