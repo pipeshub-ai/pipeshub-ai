@@ -233,6 +233,7 @@ async def _finalize(
     outcome: SyncRunOutcome | None = None,
     summary: dict[str, object] | None = None,
     action_items: "list[ActionItem] | None" = None,
+    access_gate: DataSourceEntitiesProcessor | None = None,
 ) -> None:
     """Write IDLE, then release — in that order, in one detached task.
 
@@ -264,7 +265,16 @@ async def _finalize(
 
     ``outcome`` goes in the same write too, with the finish time, so "last synced"
     means the last run that ended rather than the last write to the app doc.
+
+    ``access_gate``: the run's processor. First of all, a limit the run owes and could not set at its first skipped
+    permission write (``limit_after_skipped_writes``) is set here: in this task, so no cancel of the run skips it, and
+    before IDLE and the release, so the next run starts on a limited connector.
     """
+    if access_gate is not None:
+        try:
+            await access_gate.limit_after_skipped_writes(connector_id)
+        except Exception as e:
+            error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="limit_after_skips")
     owed = {ConnectorStateKeys.PENDING_FULL_SYNC: True} if full_sync_cut_short else {}
     still_requested = (
         {ConnectorStateKeys.PENDING_RESYNC: True}
@@ -776,6 +786,12 @@ async def _unlink_what_full_sync_missed(
     return bool(ok)
 
 
+def _access_gate(connector: "BaseConnector") -> DataSourceEntitiesProcessor | None:
+    """The connector's processor, which holds the licence gate; None for a connector without one."""
+    gate = getattr(connector, "data_entities_processor", None)
+    return gate if isinstance(gate, DataSourceEntitiesProcessor) else None
+
+
 async def _lift_access_limit(
     connector: "BaseConnector", processor: DataSourceEntitiesProcessor, connector_id: str, logger: logging.Logger
 ) -> None:
@@ -915,9 +931,7 @@ async def run_sync_task(
         except Exception as e:
             error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="clear_pending_resync")
         # The licence gate, before the source is read: raises (the run does not start) when it cannot be applied.
-        gate = getattr(connector, "data_entities_processor", None)
-        if not isinstance(gate, DataSourceEntitiesProcessor):
-            gate = None
+        gate = _access_gate(connector)
         lifts_limit = gate is not None and await gate.apply_licence_gate(connector_id, full_sync=full_sync)
         incomplete: IncompleteSyncError | None = None
         try:
@@ -955,13 +969,6 @@ async def run_sync_task(
         error = exc
         raise
     finally:
-        # Whatever the run's end: one whose licence lapsed partway skipped writes on a connector nobody limited.
-        gate = getattr(connector, "data_entities_processor", None)
-        if isinstance(gate, DataSourceEntitiesProcessor):
-            try:
-                await gate.limit_after_skipped_writes(connector_id)
-            except Exception as e:
-                error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="limit_after_skips")
         if seen is not None:
             try:
                 processor.end_full_sync_run(connector_id, seen)
@@ -1032,6 +1039,7 @@ async def run_sync_task(
                     getattr(connector, "data_entities_processor", None), "org_id", None
                 ),
                 outcome=outcome,
+                access_gate=_access_gate(connector),
                 summary=getattr(connector, "last_sync_summary", None),
                 action_items=getattr(connector, "last_action_items", None),
                 full_sync_cut_short=full_sync_cut_short,

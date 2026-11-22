@@ -32,6 +32,12 @@ OPEN_CONNECTOR_TYPES = frozenset(c.value for c in (
 ))
 
 
+class AccessLimitOwed(RuntimeError):
+    """A permission write was skipped inside a store transaction on a connector whose limit is not set yet (its licence
+    lapsed during the run). The limit is not written there, which would hold a second connection; the write fails, and
+    the limit is set before the next transaction or at the end of the run."""
+
+
 async def permission_sync_licensed(config_service: ConfigurationService) -> bool:
     """Whether the install is licensed, read at most once per ``LICENCE_MAX_AGE_SECONDS`` (a missing key included).
     Licensed means no key at all, or ``{"allowed": true}``; any other stored value (not a dict, or ``allowed`` not

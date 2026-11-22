@@ -141,6 +141,15 @@ def _is_retryable(instance: object, exception: Exception) -> bool:
     return isinstance(store, DataStoreProvider) and store.is_transient_error(exception) is True
 
 
+# True inside a ``GraphDataStore.transaction`` block of this task (``in_store_transaction``).
+_OPEN_TRANSACTION: contextvars.ContextVar[bool] = contextvars.ContextVar("graph_store_open_transaction", default=False)
+
+
+def in_store_transaction() -> bool:
+    """Whether this task is inside a store transaction: a write that opens another one now holds two connections."""
+    return _OPEN_TRANSACTION.get()
+
+
 # False while retry_on_deadlock still has an attempt left after the current one.
 _ON_LAST_ATTEMPT: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "retry_on_deadlock_on_last_attempt", default=True
@@ -1566,6 +1575,16 @@ class GraphDataStore(DataStoreProvider):
 
     @asynccontextmanager
     async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
+        """``_transaction``, with ``in_store_transaction()`` true for the block."""
+        token = _OPEN_TRANSACTION.set(True)
+        try:
+            async with self._transaction(explicit) as tx_store:
+                yield tx_store
+        finally:
+            _OPEN_TRANSACTION.reset(token)
+
+    @asynccontextmanager
+    async def _transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
         """
         Create a graph database transaction store context manager.
 
