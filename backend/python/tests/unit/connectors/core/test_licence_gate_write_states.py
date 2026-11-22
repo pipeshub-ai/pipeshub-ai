@@ -118,13 +118,22 @@ async def test_a_missing_app_document_is_not_gated_and_is_not_limited() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_run_that_skipped_writes_on_an_unlimited_connector_limits_it_at_its_end() -> None:
-    """The licence lapsed partway through a run that began licensed (the real-database test shows the reads)."""
+async def test_the_end_of_a_run_limits_a_connector_whose_limit_at_the_first_skip_failed() -> None:
+    """The backstop: the limit at the first skipped write failed (that write raised), and the run ends."""
     proc, _ = _gate_processor(UNLICENSED, _app())
     proc.limit_unlicensed = AsyncMock()
     await proc.limit_after_skipped_writes("conn-1")
     proc.limit_unlicensed.assert_not_awaited()          # nothing skipped yet
 
+    proc._permissions_skipped = {"conn-1"}               # skipped, never known limited
+    await proc.limit_after_skipped_writes("conn-1")
+    proc.limit_unlicensed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_end_of_a_run_does_not_limit_again_what_its_first_skip_limited() -> None:
+    proc, _ = _gate_processor(UNLICENSED, _app())
+    proc.limit_unlicensed = AsyncMock()
     assert await proc.skips_permission_writes("conn-1") is True
     await proc.limit_after_skipped_writes("conn-1")
     proc.limit_unlicensed.assert_awaited_once()
@@ -153,7 +162,7 @@ async def test_a_missing_key_or_allowed_true_is_licensed(value: object, licensed
     assert await permission_sync_licensed(_config(value)) is licensed
 
 
-def _unlimited_run(proc) -> None:  # noqa: ANN001
+def _unlimited_run(proc) -> None:
     """A run that began licensed on a connector with no limit (``apply_licence_gate`` limited nothing)."""
     proc.limit_unlicensed = AsyncMock()
 

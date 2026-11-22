@@ -34,8 +34,9 @@ OPEN_CONNECTOR_TYPES = frozenset(c.value for c in (
 
 async def permission_sync_licensed(config_service: ConfigurationService) -> bool:
     """Whether the install is licensed, read at most once per ``LICENCE_MAX_AGE_SECONDS`` (a missing key included).
-    A failed read raises and is not remembered: answered as "no key", it would count as licensed and copy source
-    access again."""
+    Licensed means no key at all, or ``{"allowed": true}``; any other stored value (not a dict, or ``allowed`` not
+    exactly ``true``) is not licensed. A failed read raises and is not remembered: answered as "no key", it would
+    count as licensed and copy source access again."""
     now = time.monotonic()
     answer = _licence_answers.get(config_service)
     if answer is not None and now - answer[0] <= LICENCE_MAX_AGE_SECONDS:
@@ -43,9 +44,9 @@ async def permission_sync_licensed(config_service: ConfigurationService) -> bool
     value = await config_service.get_config(
         PERMISSION_SYNC_LICENCE_KEY, use_cache=True, raise_on_error=True, max_age_seconds=LICENCE_MAX_AGE_SECONDS
     )
-    # shortcut: no key means licensed, so nothing changes before licence keys exist; the major release
-    # that turns the check on makes a missing key mean "not licensed".
-    licensed = not isinstance(value, dict) or value.get("allowed") is True
+    # shortcut: only a missing key means licensed, so nothing changes before licence keys exist; the major release
+    # that turns the check on makes a missing key mean "not licensed". A value that is there but malformed is not.
+    licensed = value is None or (isinstance(value, dict) and value.get("allowed") is True)
     _licence_answers[config_service] = (now, licensed)
     return licensed
 
