@@ -64,6 +64,8 @@ export interface MailSendHeaders {
   'List-Unsubscribe'?: string;
   'List-Unsubscribe-Post'?: string;
   'Auto-Submitted'?: string;
+  /** The message's origination date, for mail sent after the moment it describes. Unset, the transport uses the time of sending. */
+  Date?: Date;
 }
 
 const ALLOWED_MAIL_HEADERS = [
@@ -71,7 +73,15 @@ const ALLOWED_MAIL_HEADERS = [
   'List-Unsubscribe',
   'List-Unsubscribe-Post',
   'Auto-Submitted',
+  'Date',
 ] as const;
+/**
+ * How far a caller's `Date` may be from the time of sending. Mail clients sort by `Date`, so a date far in the past buries the message and
+ * one in the future pins it above newer mail; spam filters also score a `Date` that is days older than its delivery. The past bound
+ * covers a send retried for a day; the future bound covers clock skew between hosts.
+ */
+export const MAX_MESSAGE_DATE_AGE_MS = 48 * 60 * 60 * 1000;
+export const MAX_MESSAGE_DATE_AHEAD_MS = 5 * 60 * 1000;
 const MAX_HEADER_VALUE_LENGTH = 998;
 // `<left@right>`, each side a dot-atom (RFC 5322 3.6.4): one or more nonempty atoms joined by single dots, so `a..b`, `.a` and `a.` are refused.
 // The lookaheads keep the length bounds: the left side at most 200 characters, the right side at most 253.
@@ -81,19 +91,37 @@ const MESSAGE_ID_PATTERN =
 /** The nodemailer options for the extra headers, or the reason they are refused. */
 export function buildMailHeaders(
   extra?: MailSendHeaders,
+  now: number = Date.now(),
 ):
-  { messageId?: string; headers?: Record<string, string> } | { error: string } {
+  | { messageId?: string; date?: Date; headers?: Record<string, string> }
+  | { error: string } {
   if (!extra) {
     return {};
   }
   const out: Record<string, string> = {};
   let messageId: string | undefined;
+  let date: Date | undefined;
   for (const [name, value] of Object.entries(extra)) {
     if (!(ALLOWED_MAIL_HEADERS as readonly string[]).includes(name)) {
       return { error: 'Mail header is not allowed' };
     }
     if (value === undefined) {
       // An optional header left unset is an omitted header, not an invalid one.
+      continue;
+    }
+    if (name === 'Date') {
+      if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+        return { error: 'Date is not valid' };
+      }
+      const ahead = value.getTime() - now;
+      if (
+        ahead < -MAX_MESSAGE_DATE_AGE_MS ||
+        ahead > MAX_MESSAGE_DATE_AHEAD_MS
+      ) {
+        return { error: 'Date is too far from the time of sending' };
+      }
+      // a copy: the send awaits the stored settings before the transport reads it, and a caller's later change must not reach the message
+      date = new Date(value.getTime());
       continue;
     }
     if (
@@ -115,6 +143,7 @@ export function buildMailHeaders(
   }
   return {
     ...(messageId ? { messageId } : {}),
+    ...(date ? { date } : {}),
     ...(Object.keys(out).length ? { headers: out } : {}),
   };
 }

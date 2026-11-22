@@ -432,23 +432,57 @@ class RecordsMixin(PgBase):
                                                  org, ids, ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, to_status, _j(extra), get_epoch_timestamp_in_ms()), None, write=True)
         return [r["id"] for r in rows]
 
-    async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
+    async def update_indexing_status_for_record_ids(
+        self, record_ids: list[str], status: str, *, fields: dict[str, Any] | None = None
+    ) -> None:
         """Set the status of each existing record that is neither internal nor a placeholder; a database failure is logged, not raised, but a
-        status the schema rejects is (it is validated first, and is an update: a missing record stays missing)."""
+        status the schema rejects is (it is validated first, and is an update: a missing record stays missing). ``fields`` are set in the
+        same statement (a Force reindex's refresh intent); a null value removes the key."""
         org = current_org_id()
         ids = _uniq(record_ids)
         if not ids:
             return
-        _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": status})
+        _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": status, **(fields or {})})
         try:
             run = sql_patch("doc", WriteKind.STATUS_VAR, now="$4::bigint", status="$3::text")
             await self._q(lambda tx: tx.execute(with_run_patch("""/* pipeshub:graph.update_indexing_status_for_record_ids */ UPDATE graph.nodes
-                SET doc = doc || jsonb_build_object('indexingStatus', $3::text) || {RUN_PATCH}
+                SET doc = doc || jsonb_build_object('indexingStatus', $3::text) || {RUN_PATCH} || $5::jsonb
                 WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])
                   AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)""", run),
-                                                 org, ids, status, get_epoch_timestamp_in_ms()), None, write=True)
+                                                 org, ids, status, get_epoch_timestamp_in_ms(), _j(fields or {})), None, write=True)
         except Exception as e:
+            if fields:
+                raise        # with ``fields`` (a Force reindex's request) a lost write must not be read as a request that was made
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
+
+    async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
+        """Set ``fields`` on each existing record that is neither internal nor a placeholder, whatever its status; the
+        statement writes nothing else. Returns how many were written; a failure raises."""
+        org = current_org_id()
+        ids = _uniq(record_ids)
+        if not ids or not fields:
+            return 0
+        _VALIDATOR.validate_node_update(_RECORDS, dict(fields))
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.update_record_fields_for_ids */ UPDATE graph.nodes
+            SET doc = doc || $3::jsonb
+            WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])
+              AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)
+            RETURNING id""", org, ids, _j(dict(fields))), None, write=True)
+        return len(rows or [])
+
+    async def get_records_with_refresh_intent(
+        self, org_id: str, *, after_key: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_records_with_refresh_intent`. The partial index on the intent serves the filter;
+        the org is the bound one (``org_id`` is the caller's check that it is the org it asked for)."""
+        org = current_org_id()
+        if org_id and org != org_id:
+            raise ValueError("get_records_with_refresh_intent: the bound org is not the org asked for")
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.records_with_refresh_intent */ SELECT n.doc FROM graph.nodes n
+            WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'refreshIntentId' IS NOT NULL
+              AND coalesce(n.doc->>'isDeleted', '') <> 'true' AND ($2::text IS NULL OR n.id > $2)
+            ORDER BY n.id LIMIT $3""", org, after_key, max(1, int(limit))), None)
+        return [_arango(_doc(r["doc"]), _RECORDS) for r in rows or []]
 
     async def has_records_indexed_since(self, connector_id: str, since_ms: int, *, transaction: str | None = None) -> bool:
         org = current_org_id()

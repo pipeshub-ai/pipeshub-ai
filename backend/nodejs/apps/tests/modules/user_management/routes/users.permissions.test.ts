@@ -375,6 +375,21 @@ describe('User routes: who may do what', () => {
       expect(mail.sendMail.called).to.be.false;
     });
 
+    // A removed account keeps its address, so the confirmation link could never be applied:
+    // the change is refused here, before a link is mailed.
+    it('refuses an email a removed account in the org still holds, without mailing a link', async () => {
+      const res = await call('PUT', `/${ids.memberA}`, sessionFor(ids.memberA), {
+        email: users.get(ids.deletedA)!.email,
+      });
+
+      expect(res.status).to.equal(400);
+      expect(errorMessage(res)).to.equal(
+        'This email belongs to an account that was removed. Restore that account or use another address.',
+      );
+      expect(mail.sendMail.called).to.be.false;
+      expect(users.get(ids.memberA)!.email).to.equal('max@a.test');
+    });
+
     it("stops an admin from editing a user in someone else's org", async () => {
       const res = await call('PUT', `/${ids.memberB}`, sessionFor(ids.adminA), {
         designation: 'Owned',
