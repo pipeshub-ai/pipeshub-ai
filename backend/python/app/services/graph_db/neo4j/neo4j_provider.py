@@ -21226,13 +21226,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _kh_v3_cross(
         self, user_key: str | None, org_id: str, gated_app_ids: list[str], app_id: str, transaction: str | None,
-        grants_by_connector: dict[str, list[str]] | None = None,
+        grants_by_connector: dict[str, list[str]] | None = None, *, every_app: bool = False,
     ) -> list[str] | dict[str, Any] | None:
         """``$kh_cross`` for a statement that reads ``app_id``'s grants: the live records and groups of the other gated
         connectors the viewer is granted there, from ``grants_by_connector`` when the caller holds them, else read for
         ``user_key`` with the grantees ``_kh_v3_connector_grantees`` names in each connector (so a source account's
         grants count inside its own connector only). Past ``_KH_CROSS_MAX`` ids, the holders to test on each node instead
-        (``_kh_cross_by_probe``). None when no other connector is gated, or neither is known."""
+        (``_kh_cross_by_probe``). None when no other connector is gated, or neither is known. ``every_app``: the request lists
+        every gated connector, each asking for all the others, so one read of all of them serves every page."""
         others = sorted({a for a in gated_app_ids if a != app_id})
         if not others:
             return None
@@ -21246,9 +21247,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return self._kh_cross_probe(others, holders, user_key)
         if not user_key:
             return None
-        holders, ids = await (self._kh_v3_shared(("cross", user_key, *others), lambda: self._kh_v3_cross_read(user_key, others, None))
-                              if transaction is None else self._kh_v3_cross_read(user_key, others, transaction))
+        if every_app and transaction is None:
+            gated = sorted(set(gated_app_ids))
+            holders, by_app = await self._kh_v3_shared(
+                ("cross-every", user_key, *gated), lambda: self._kh_v3_cross_read_by_app(user_key, gated))
+            # Each connector's ids are complete up to the bound, so a union within it is the read of ``others`` alone.
+            ids = sorted({i for a in others for i in by_app.get(a, ())})
+        else:
+            holders, ids = await (self._kh_v3_shared(("cross", user_key, *others), lambda: self._kh_v3_cross_read(user_key, others, None))
+                                  if transaction is None else self._kh_v3_cross_read(user_key, others, transaction))
         return ids if len(ids) <= self._KH_CROSS_MAX else self._kh_cross_probe(others, holders, user_key)
+
+    async def _kh_v3_cross_read_by_app(
+        self, user_key: str, apps: list[str],
+    ) -> tuple[list[list[str | None]], dict[str, list[str]]]:
+        """``_kh_v3_cross_read`` over ``apps``, the ids by connector: the first ``_KH_CROSS_MAX`` + 1 of each, in id order."""
+        holders, _ = await self._kh_v3_cross_read(user_key, apps, None, with_ids=False)
+        if not holders:
+            return holders, {}
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $holders AS kh_h
+            MATCH (kh_g:User|Group|Role|Teams|Organization {{id: kh_h[0]}})
+            MATCH (kh_g)-[kh_p:PERMISSION]->(kh_n:Record|RecordGroup)
+            WHERE kh_n.connectorId IN $others AND (kh_h[1] IS NULL OR kh_n.connectorId = kh_h[1])
+              AND NOT coalesce(kh_n.isDeleted, false) AND {_cypher_grant_edge("kh_g", "kh_p")}
+            WITH DISTINCT kh_n.connectorId AS app, kh_n.id AS id ORDER BY id
+            WITH app, collect(id) AS ids
+            RETURN app, ids[0..$limit] AS ids
+            """,
+            parameters={"holders": holders, "others": apps, "limit": self._KH_CROSS_MAX + 1}, plain=True,
+        )
+        return holders, {r["app"]: list(r["ids"] or []) for r in rows or []}
 
     async def _kh_v3_cross_read(
         self, user_key: str, others: list[str], transaction: str | None, *, with_ids: bool = True,
@@ -22549,7 +22579,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         cross_read = None
         if transaction is None:
             cross_read = spawn_in_request(
-                self._kh_v3_cross(user_key, org_id, gated_app_ids, app_id, None, grants_by_connector), name="kh-cross-grantees")
+                self._kh_v3_cross(user_key, org_id, gated_app_ids, app_id, None, grants_by_connector,
+                                  every_app=grants_out is not None), name="kh-cross-grantees")
             # A page that fails before it reads the answer leaves no unretrieved error behind.
             cross_read.add_done_callback(lambda done: done.cancelled() or done.exception())
         # Browse lists the user's chain-tops beside the start's own children: under
