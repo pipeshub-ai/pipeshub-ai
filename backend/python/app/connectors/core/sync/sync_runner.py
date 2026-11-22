@@ -15,6 +15,7 @@ import functools
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -769,6 +770,25 @@ async def _unlink_what_full_sync_missed(
     return bool(ok)
 
 
+async def _finish_then_finalize(
+    on_finished: Callable[[str | None], Awaitable[None]] | None,
+    failure_reason: str | None,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    connector_id: str,
+    *finalize_args: Any,  # noqa: ANN401 - passed through to _finalize unchanged
+    **finalize_kwargs: Any,  # noqa: ANN401 - passed through to _finalize unchanged
+) -> None:
+    # Ahead of _finalize: that releases the lease and re-issues a pending
+    # resync, which must already see what the caller records about this run.
+    if on_finished is not None:
+        try:
+            await on_finished(failure_reason)
+        except Exception as e:
+            logger.error(f"Sync completion hook failed for {connector_id}: {e}")
+    await _finalize(graph_provider, logger, connector_id, *finalize_args, **finalize_kwargs)
+
+
 def _run_outcome(*, stopped: bool, failed: bool, skipped: bool, finished: bool, lost: bool) -> SyncRunOutcome:
     # A lost lease ends _run_until_aborted without raising, so `finished` is set: the run was still cut short.
     if stopped or lost:
@@ -806,7 +826,10 @@ async def run_sync_task(
     coordinator: SyncCoordinator | None = None,
     close_connector: bool = False,
     resync_spec: object | None = None,
+    on_finished: Callable[[str | None], Awaitable[None]] | None = None,
 ) -> None:
+    """``on_finished`` is awaited once the run ends, with None after a clean
+    finish or a short reason ("cancelled", the skip code, "sync failed")."""
     start = time.monotonic()
     stopped = False
     failed = False
@@ -969,8 +992,13 @@ async def run_sync_task(
         # request, appDisabled, shutdown) aimed at this task must not be able to
         # kill the IDLE write and leave the connector stuck SYNCING, nor skip
         # the lease release and leave it un-startable for a full TTL.
+        failure_reason = (
+            "cancelled" if stopped else skipped_code or ("sync failed" if failed else None)
+        )
         cleanup = asyncio.get_running_loop().create_task(
-            _finalize(
+            _finish_then_finalize(
+                on_finished,
+                failure_reason,
                 graph_provider,
                 logger,
                 connector_id,
