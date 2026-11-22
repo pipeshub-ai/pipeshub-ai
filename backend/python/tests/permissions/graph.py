@@ -129,7 +129,7 @@ def _node(ns: Namespace, n: Node, ids: set[str]) -> NodeDict:
                  "createdAtTimestamp": TS, "isActive": n.active}
         if n.model:
             props["permissionModel"] = n.model
-        if n.access_limit or n.access_limit_null:
+        if n.access_limit is not None or n.access_limit_null:  # "" is a value (one the gate refuses), not an absent field
             props["accessLimit"] = n.access_limit
         if n.created_by:
             props["createdBy"] = ns.id(n.created_by)  # the creator's userId, which _principal_node sets to its id

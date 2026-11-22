@@ -181,6 +181,10 @@ class WorldBuilder:
     def _edit(self, node_id: str, **changes: object) -> None:
         self._nodes[node_id] = replace(self._nodes[node_id], **changes)
 
+    def edit(self, node_id: str, **changes: object) -> None:
+        """Change fields of a node already added (an app's access limit, say)."""
+        self._edit(node_id, **changes)
+
     def parent(self, parent: str, child: str, rel: str = "PARENT_CHILD") -> None:
         self._edit(child, parents=(*self._nodes[child].parents, Parent(parent, rel)))
 
