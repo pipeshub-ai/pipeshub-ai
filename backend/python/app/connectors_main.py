@@ -1154,6 +1154,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"Could not release queued syncs at startup: {e}")
 
+        # After the drain: once a licence key is entered, it queues the full sync that lifts each limited connector.
+        from app.connectors.core.sync.licence_lift import watch_licence
+
+        app.state.licence_watch_task = spawn_detached(
+            watch_licence(app_container.config_service(), graph_provider, logger), name="licence_watch"
+        )
+
         # After the consumers, so the reconciler shares the event service (and
         # its lock client and task manager) the code-graph consumer created.
         async def start_reconciler() -> None:
@@ -1297,7 +1304,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for task_name in (
         "connector_metrics_task", "trash_purge_task", "storage_release_task",
         "late_write_sweep_task", "stored_content_heal_task", "code_edge_build_reconcile_task",
-        "flat_storage_migration_task",
+        "flat_storage_migration_task", "licence_watch_task",
     ):
         task = getattr(app.state, task_name, None)
         if task is not None and not task.done():
