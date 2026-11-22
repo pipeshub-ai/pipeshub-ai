@@ -30,3 +30,10 @@ def check_runtime_settings() -> None:
     or app, so it holds whatever ``edition_services`` supplies. OSS runs every
     combination, so it refuses nothing.
     """
+
+
+def extra_node_collections() -> dict[str, tuple[tuple[str, ...], ...]]:
+    """Document collections this build adds to the ArangoDB schema: name -> persistent indexes, each a tuple of
+    field names. ``ensure_schema`` creates the collections and their indexes; Neo4j needs no declaration (a
+    label exists once a node carries it). Here there are none."""
+    return {}
