@@ -475,6 +475,13 @@ record_schema = {
             "rowCount": {"type": ["number", "null"]},
             # sha256(source bytes)[:16] of the revision being processed; stage status writes CAS on it.
             "contentRev": {"type": ["string", "null"]},
+            # The parser that built the indexed copy ("inproc:txt@1"), the lastIndexTimestamp and virtualRecordId it was written
+            # with (it describes the copy only while both still match) and where the label came from (parsed, adopted, twin).
+            # Accepted by this release; written only with RECORD_PARSER_IDENTITY_WRITE, which is off by default.
+            "indexedParser": {"type": ["string", "null"]},
+            "indexedParserAt": {"type": ["number", "null"]},
+            "indexedParserVrid": {"type": ["string", "null"]},
+            "indexedParserSource": {"type": ["string", "null"]},
             # Typed property values projected for filtering (record properties); written by indexing.
             "recordProps": {"type": ["object", "null"]},
             # 16-hex hash of the property names projected, the schema generation that
@@ -524,7 +531,7 @@ record_schema = {
 # Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
 # collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
 # tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
-RECORD_SCHEMA_GENERATION = 5
+RECORD_SCHEMA_GENERATION = 6
 record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
 
 

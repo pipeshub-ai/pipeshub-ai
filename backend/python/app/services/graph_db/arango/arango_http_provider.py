@@ -105,6 +105,7 @@ from app.modules.code_graph.edge_build_trigger import is_code_record
 from app.modules.indexing.record_diagnostics import WriteKind, aql_parts
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
+from app.modules.pipeline import parser_identity
 from app.schema.arango.documents import (
     APP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
@@ -10926,11 +10927,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Update all queued records
             current_timestamp = get_epoch_timestamp_in_ms()
             updated_records = []
+            # A duplicate read by another parser than this copy's is not promoted: it stays QUEUED (its own event, or the
+            # stranded-record sweep, releases it).
+            parser_plan = await parser_identity.promotion_plan(
+                ref_record, queued_records, new_indexing_status, virtual_record_id, current_timestamp,
+                lambda key: self.get_document(
+                    key, CollectionNames.FILES.value, transaction, raise_on_error=True,
+                ),
+            )
 
             for queued_record in queued_records:
                 doc = dict(queued_record)
                 record_key = doc.get("_key") or doc.get("id")
-                if not record_key:
+                if not record_key or (parser_plan is not None and record_key not in parser_plan):
                     continue
 
                 dup_update = {
@@ -10942,6 +10951,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
                     **run_reference({}, WriteKind.STATUS_VAR, current_timestamp, status=new_indexing_status),
+                    **(parser_plan or {}).get(record_key, {}),
                 }
                 if reason:
                     dup_update["reason"] = reason
