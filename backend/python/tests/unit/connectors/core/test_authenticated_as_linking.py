@@ -4,8 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    AuthenticatorLink,
+    AuthenticatorLinkResult,
     DataSourceEntitiesProcessor,
 )
 from app.models.entities import User
@@ -20,13 +22,23 @@ def _processor(tx_store) -> DataSourceEntitiesProcessor:
     ctx.__aexit__ = AsyncMock(return_value=False)
     provider = MagicMock()
     provider.transaction = MagicMock(return_value=ctx)
-    proc = DataSourceEntitiesProcessor(MagicMock(), provider, AsyncMock())
+    config_service = AsyncMock()
+    config_service.get_config = AsyncMock(return_value=None)
+    proc = DataSourceEntitiesProcessor(MagicMock(), provider, config_service)
     proc.org_id = "org-1"
     return proc
 
 
-def _tx_store(creator_email="dash@gmail.com", source_user=None, authenticated_by=None) -> AsyncMock:
+def _tx_store(
+    creator_email="dash@gmail.com", source_user=None, authenticated_by=None,
+    edges: list[dict] = (), links: list[dict] = (),
+) -> AsyncMock:
     tx = AsyncMock()
+    tx.get_edges_from_node = AsyncMock(
+        side_effect=lambda node, coll, **kw: list(edges)
+        if coll == CollectionNames.USER_APP_RELATION.value
+        else list(links)
+    )
     tx.get_app_by_id = AsyncMock(return_value=MagicMock(authenticated_by=authenticated_by))
     tx.get_user_by_user_id = AsyncMock(return_value={"_key": "creator-key", "email": creator_email})
     tx.get_user_by_email = AsyncMock(return_value=source_user)
@@ -82,6 +94,182 @@ class TestLinkAuthenticatorToSourceUser:
 
         tx.upsert_authenticated_as.assert_not_called()
         tx.remove_authenticated_as.assert_not_called()
+
+
+LISTED_KEY = "/services/connectors/jira-1/listedAuthenticators"
+LISTED_EDGE = {"_to": f"apps/{CONNECTOR}", "sourceUserId": "acct-own"}
+SOURCE = _user("src-key", "darshan@pipeshub.com")
+
+
+async def _link(proc, email="darshan@pipeshub.com", source_id="acct-123", **kw) -> AuthenticatorLinkResult:
+    return await proc.link_authenticator_to_source_user(
+        CONNECTOR, CREATED_BY, email, source_id, Connectors.JIRA, **kw
+    )
+
+
+class TestListedAuthenticator:
+    async def test_listed_creator_is_not_linked_and_any_link_is_removed(self) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        tx.remove_authenticated_as = AsyncMock(return_value=True)
+        result = await _link(_processor(tx))
+
+        tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
+        tx.upsert_authenticated_as.assert_not_called()
+        assert result.outcome is AuthenticatorLink.UNLINKED
+
+    async def test_listing_marks_the_authenticator_once(self) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        proc = _processor(tx)
+        await _link(proc)
+        proc.config_service.set_config.assert_awaited_once_with(LISTED_KEY, ["creator-key"])
+
+        proc = _processor(tx)
+        proc.config_service.get_config = AsyncMock(return_value=["creator-key"])
+        await _link(proc)
+        proc.config_service.set_config.assert_not_called()
+
+    async def test_marker_keeps_a_withdrawn_creator_unlinked(self) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[])
+        proc = _processor(tx)
+        proc.config_service.get_config = AsyncMock(return_value=["creator-key"])
+        await _link(proc)
+
+        tx.upsert_authenticated_as.assert_not_called()
+        tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
+
+    async def test_marker_of_another_authenticator_does_not_count(self) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[])
+        proc = _processor(tx)
+        proc.config_service.get_config = AsyncMock(return_value=["someone-else"])
+        await _link(proc)
+
+        tx.upsert_authenticated_as.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "edge",
+        [
+            {"_to": f"apps/{CONNECTOR}", "sourceUserId": ""},
+            {"_to": f"apps/{CONNECTOR}", "isExternalUser": True, "sourceUserId": "x"},
+            {"_to": f"apps/{CONNECTOR}", "isShared": True},
+            {"_to": "apps/other", "sourceUserId": "x"},
+        ],
+    )
+    async def test_external_or_unbound_edges_are_not_listing(self, edge) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[edge])
+        await _link(_processor(tx))
+
+        tx.upsert_authenticated_as.assert_awaited_once()
+
+    async def test_alias_match_ignores_case_and_spaces(self) -> None:
+        tx = _tx_store(creator_email="Dash@Gmail.com", source_user=SOURCE)
+        await _link(_processor(tx), extra_present_emails=(" dash@gmail.com ",))
+
+        tx.upsert_authenticated_as.assert_not_called()
+
+    async def test_a_failed_edge_read_changes_nothing(self) -> None:
+        tx = _tx_store(source_user=SOURCE)
+        tx.get_edges_from_node = AsyncMock(side_effect=RuntimeError("graph down"))
+        proc = _processor(tx)
+        result = await _link(proc)
+
+        tx.remove_authenticated_as.assert_not_called()
+        tx.upsert_authenticated_as.assert_not_called()
+        assert result.outcome is AuthenticatorLink.UNCHANGED
+        proc.logger.warning.assert_called()
+
+    async def test_a_failed_marker_read_changes_nothing(self) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        proc = _processor(tx)
+        proc.config_service.get_config = AsyncMock(side_effect=RuntimeError("kv down"))
+        result = await _link(proc)
+
+        tx.remove_authenticated_as.assert_not_called()
+        tx.upsert_authenticated_as.assert_not_called()
+        assert result.outcome is AuthenticatorLink.UNCHANGED
+        proc.logger.warning.assert_called()
+
+    async def test_a_failed_marker_write_still_removes_the_link(self) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        proc = _processor(tx)
+        proc.config_service.set_config = AsyncMock(side_effect=RuntimeError("kv down"))
+        await _link(proc)
+
+        tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
+
+    async def test_removal_only_pass_never_links(self) -> None:
+        tx = _tx_store(source_user=SOURCE)
+        await _link(_processor(tx), may_link=False)
+        tx.upsert_authenticated_as.assert_not_called()
+        tx.batch_upsert_app_users.assert_not_called()
+
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        await _link(_processor(tx), may_link=False)
+        tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
+
+    @pytest.mark.parametrize(("email", "source_id"), [(None, "acct-123"), ("darshan@pipeshub.com", None)])
+    async def test_unknown_source_never_links(self, email, source_id) -> None:
+        tx = _tx_store(source_user=SOURCE)
+        await _link(_processor(tx), email=email, source_id=source_id, may_link=True)
+
+        tx.upsert_authenticated_as.assert_not_called()
+
+    async def test_individual_connector_skips_the_listing_check(self) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        proc = _processor(tx)
+        await _link(proc, check_listing=False)
+
+        tx.upsert_authenticated_as.assert_awaited_once()
+        proc.config_service.get_config.assert_not_called()
+        colls = [c.args[1] for c in tx.get_edges_from_node.await_args_list]
+        assert CollectionNames.USER_APP_RELATION.value not in colls
+
+    async def test_unchanged_link_drops_nothing(self, monkeypatch) -> None:
+        notify = AsyncMock()
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.notify_connector_sync_completed",
+            notify,
+        )
+        tx = _tx_store(source_user=SOURCE, links=[{"connectorId": CONNECTOR, "_to": "users/src-key"}])
+        result = await _link(_processor(tx))
+
+        assert result.outcome is AuthenticatorLink.UNCHANGED
+        notify.assert_not_called()
+
+    async def test_retargeted_link_is_reported_as_linked(self, monkeypatch) -> None:
+        notify = AsyncMock()
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.notify_connector_sync_completed",
+            notify,
+        )
+        tx = _tx_store(source_user=SOURCE, links=[{"connectorId": CONNECTOR, "_to": "users/old-src"}])
+        result = await _link(_processor(tx))
+
+        assert result.outcome is AuthenticatorLink.LINKED
+        assert result.authenticator_user_id == CREATED_BY
+        assert result.source_email == "darshan@pipeshub.com"
+        notify.assert_awaited_once()
+
+    async def test_link_of_another_connector_is_not_this_one(self) -> None:
+        tx = _tx_store(source_user=SOURCE, links=[{"connectorId": "drive-1", "_to": "users/src-key"}])
+        result = await _link(_processor(tx))
+
+        assert result.outcome is AuthenticatorLink.LINKED
+
+    async def test_repeat_removal_is_quiet(self, monkeypatch) -> None:
+        notify = AsyncMock()
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.notify_connector_sync_completed",
+            notify,
+        )
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        tx.remove_authenticated_as = AsyncMock(return_value=False)
+        proc = _processor(tx)
+        proc.config_service.get_config = AsyncMock(return_value=["creator-key"])
+        result = await _link(proc)
+
+        assert result.outcome is AuthenticatorLink.UNCHANGED
+        proc.config_service.set_config.assert_not_called()
+        notify.assert_not_called()
 
 
 class TestCacheInvalidation:

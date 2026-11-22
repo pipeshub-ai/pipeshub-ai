@@ -3,8 +3,9 @@ import contextlib
 import contextvars
 import functools
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
@@ -154,6 +155,22 @@ _PENDING_FULL_SYNC_SEEN: contextvars.ContextVar[set[tuple[str, str, str]] | None
 _PENDING_RUN_STATS: contextvars.ContextVar[SyncRunStats | None] = contextvars.ContextVar(
     "pending_run_stats", default=None
 )
+
+
+LISTED_AUTHENTICATORS_KEY = "/services/connectors/{connector_id}/listedAuthenticators"
+
+
+class AuthenticatorLink(str, Enum):
+    LINKED = "linked"
+    UNLINKED = "unlinked"
+    UNCHANGED = "unchanged"
+
+
+@dataclass(frozen=True)
+class AuthenticatorLinkResult:
+    outcome: AuthenticatorLink
+    authenticator_user_id: str | None = None
+    source_email: str | None = None
 
 
 class ReindexSuperseded(RuntimeError):
@@ -5866,42 +5883,141 @@ class DataSourceEntitiesProcessor:
 
     @retry_on_deadlock()
     async def link_authenticator_to_source_user(
-        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: Connectors
-    ) -> None:
+        self,
+        connector_id: str,
+        created_by: str | None,
+        email: str | None,
+        source_user_id: str | None,
+        app_name: Connectors | None,
+        *,
+        may_link: bool = True,
+        check_listing: bool = True,
+        extra_present_emails: Collection[str] = (),
+    ) -> AuthenticatorLinkResult:
         """Keep the link from the user who authenticated this connector to the source account it
-        is authenticated as: linked when that email differs from the user's own, removed when
-        it matches. Instances written before ``authenticatedBy`` existed fall back to the creator."""
-        link_changed = False
-        async with self.data_store_provider.transaction() as tx_store:
-            authenticated_by, authenticator = await self._authenticator(tx_store, connector_id, created_by)
-            authenticator_key = authenticator.get("_key") or authenticator.get("id")
-            if not authenticator_key:
+        is authenticated as. A user the connector lists as one of the source's own users is
+        never linked: they already have their own account there, and the account the
+        credentials act as belongs to someone else. Such a user is remembered in a marker so
+        a later sync that no longer lists them (their account withdrawn) still leaves them
+        unlinked. Otherwise the link is made when the emails differ and removed when they
+        match. Instances written before ``authenticatedBy`` existed fall back to the creator."""
+        marker_key = LISTED_AUTHENTICATORS_KEY.format(connector_id=connector_id)
+        marker: list[str] = []
+        if check_listing:
+            try:
+                stored = await self.config_service.get_config(marker_key, use_cache=False)
+                marker = [str(k) for k in stored] if isinstance(stored, list) else []
+            except Exception as e:
                 self.logger.warning(
-                    f"User {authenticated_by} not found; cannot link connector {connector_id} to {email}"
+                    f"Connector {connector_id}: could not read the listed-authenticators marker; "
+                    f"leaving the authenticator link as it is: {e}"
                 )
-            elif (authenticator.get("email") or "").lower() == email.lower():
-                link_changed = await tx_store.remove_authenticated_as(connector_id)
-            else:
-                source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
-                if source_user is None:
-                    # Same inactive stub + userAppRelation the user sync would create for this email
-                    await tx_store.batch_upsert_app_users([AppUser(
-                        app_name=app_name, connector_id=connector_id, source_user_id=source_user_id,
-                        email=email, full_name=email, org_id=self.org_id,
-                    )], self.org_id)
-                    source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
-                if source_user is None:
-                    raise RuntimeError(f"Could not create source user {email} for connector {connector_id}")
+                return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
 
-                await tx_store.upsert_authenticated_as(authenticator_key, source_user.id, connector_id, self.org_id)
-                self.logger.info(f"Connector {connector_id}: user {authenticated_by} authenticated as {email}")
-                link_changed = True
+        async with self.data_store_provider.transaction() as tx_store:
+            result, newly_listed = await self._decide_authenticator_link(
+                tx_store, connector_id, created_by, email, source_user_id, app_name,
+                may_link=may_link, check_listing=check_listing,
+                marker=marker, extra_present_emails=extra_present_emails,
+            )
 
-        if link_changed:
+        if newly_listed:
+            try:
+                await self.config_service.set_config(marker_key, [*marker, newly_listed])
+            except Exception as e:
+                self.logger.warning(f"Connector {connector_id}: could not record the listed authenticator: {e}")
+        if result.outcome is not AuthenticatorLink.UNCHANGED:
             # Same drop a finished sync does, for the same reason: this connector's cached
             # per-user record maps were built under the old link, so until they go a search
             # misses the source account's records — or keeps serving them once it is gone.
             await notify_connector_sync_completed(connector_id, self.org_id)
+        return result
+
+    async def _decide_authenticator_link(
+        self,
+        tx_store: TransactionStore,
+        connector_id: str,
+        created_by: str | None,
+        email: str | None,
+        source_user_id: str | None,
+        app_name: Connectors | None,
+        *,
+        may_link: bool,
+        check_listing: bool,
+        marker: list[str],
+        extra_present_emails: Collection[str],
+    ) -> tuple[AuthenticatorLinkResult, str | None]:
+        """Apply the link decision inside the open transaction. Returns the result and, when the
+        authenticator is listed but missing from the marker, their key to add to it."""
+        unchanged = AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+        authenticated_by, authenticator = await self._authenticator(tx_store, connector_id, created_by)
+        authenticator_key = authenticator.get("_key") or authenticator.get("id")
+        if not authenticator_key:
+            self.logger.warning(
+                f"User {authenticated_by} not found; cannot link connector {connector_id} to {email}"
+            )
+            return unchanged, None
+
+        authenticator_email = (authenticator.get("email") or "").strip().lower()
+        if check_listing:
+            listed = authenticator_key in marker or authenticator_email in {
+                (e or "").strip().lower() for e in extra_present_emails
+            } - {""}
+            if not listed:
+                try:
+                    edges = await tx_store.get_edges_from_node(
+                        f"users/{authenticator_key}", CollectionNames.USER_APP_RELATION.value,
+                        raise_on_error=True,
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Connector {connector_id}: could not read the authenticator's source accounts; "
+                        f"leaving the authenticator link as it is: {e}"
+                    )
+                    return unchanged, None
+                listed = any(
+                    edge.get("_to") == f"apps/{connector_id}"
+                    and edge.get("sourceUserId")
+                    and not edge.get("isExternalUser")
+                    for edge in edges or []
+                )
+            if listed:
+                removed = await tx_store.remove_authenticated_as(connector_id)
+                return (
+                    AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if removed else AuthenticatorLink.UNCHANGED),
+                    authenticator_key if authenticator_key not in marker else None,
+                )
+
+        if not may_link or not email or not source_user_id:
+            return unchanged, None
+
+        if authenticator_email == email.strip().lower():
+            removed = await tx_store.remove_authenticated_as(connector_id)
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if removed else AuthenticatorLink.UNCHANGED), None
+
+        source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
+        if source_user is None:
+            # Same inactive stub + userAppRelation the user sync would create for this email
+            await tx_store.batch_upsert_app_users([AppUser(
+                app_name=app_name, connector_id=connector_id, source_user_id=source_user_id,
+                email=email, full_name=email, org_id=self.org_id,
+            )], self.org_id)
+            source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
+        if source_user is None:
+            raise RuntimeError(f"Could not create source user {email} for connector {connector_id}")
+
+        links = await tx_store.get_edges_from_node(
+            f"users/{authenticator_key}", CollectionNames.AUTHENTICATED_AS.value, raise_on_error=True,
+        )
+        already = any(
+            link.get("connectorId") == connector_id and link.get("_to") == f"users/{source_user.id}"
+            for link in links or []
+        )
+        await tx_store.upsert_authenticated_as(authenticator_key, source_user.id, connector_id, self.org_id)
+        if already:
+            return unchanged, None
+        self.logger.info(f"Connector {connector_id}: user {authenticated_by} authenticated as {email}")
+        return AuthenticatorLinkResult(AuthenticatorLink.LINKED, authenticated_by, email), None
 
     @staticmethod
     async def _authenticator(
