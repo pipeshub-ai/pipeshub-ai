@@ -391,7 +391,8 @@ async def test_trashed_record_then_purged(env) -> None:
     record_keys(env, "rec-1")
     await env.push(env.body())
     rec = await env.record()
-    await env.graph.batch_upsert_nodes([{**rec, "_key": rec.get("_key") or rec["id"], "isDeleted": True}], CollectionNames.RECORDS.value)
+    # a targeted update puts the record in the trash: an upsert no longer changes a stored record's trash state
+    await env.graph.batch_update_nodes([{"id": rec.get("_key") or rec["id"], "isDeleted": True}], CollectionNames.RECORDS.value)
     with pytest.raises(PushRefusal) as e:
         await env.push(env.body(version=2, text="x"))
     assert (e.value.status, e.value.reason) == (409, "RECORD_IN_TRASH")
@@ -598,7 +599,8 @@ async def test_the_claim_refuses_a_trashed_record_on_both_stores(env: Env) -> No
     expected = PushExpect(rec["externalRecordId"], rec["externalRevisionId"], rec["version"])
     kw = {"kb_id": env.kb_id, "org_id": env.org_id, "key": env.key()}
     assert await env.graph.claim_push_record(expected=expected, new=PushSet("d2", 2), **kw) is PushClaim.CLAIMED
-    await env.graph.batch_upsert_nodes([{**rec, "_key": rec.get("_key") or rec["id"], "isDeleted": True}], CollectionNames.RECORDS.value)
+    # a targeted update puts the record in the trash: an upsert no longer changes a stored record's trash state
+    await env.graph.batch_update_nodes([{"id": rec.get("_key") or rec["id"], "isDeleted": True}], CollectionNames.RECORDS.value)
     assert await env.graph.claim_push_record(expected=expected, new=PushSet("d3", 3), **kw) is PushClaim.LOST
     assert (await env.record())["isDeleted"] is True
 

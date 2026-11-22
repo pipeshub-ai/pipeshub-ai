@@ -25,7 +25,8 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.connectors.services.reindex_force import user_forced_reindex
+from app.modules.indexing import refresh_intent
+from app.connectors.services.reindex_force import user_forced_intent_id, user_forced_reindex
 from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
@@ -113,6 +114,7 @@ from app.connectors.services.vector_cleanup_events import build_soft_delete_even
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.common.record_visibility import HAS_INDEXED_COPY, RecordVisibility, is_live_record
+from app.services.graph_db.common.utils import positive_min, record_created_at_insert_only
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     FolderChangedDuringDelete,
@@ -1214,6 +1216,7 @@ class DataSourceEntitiesProcessor:
                 # Prepare record group BEFORE saving (so record_group_id is included in first save)
                 record_group_id = await self._handle_record_group(parent_record, tx_store)
 
+                parent_record._known_new = True
                 await tx_store.batch_upsert_records([parent_record])
 
                 # Link record to group AFTER saving (when record.id is available for edges)
@@ -1385,6 +1388,7 @@ class DataSourceEntitiesProcessor:
                     record=record,
                     record_name=related_ext_record.record_name,
                 )
+                related_record._known_new = True
                 await tx_store.batch_upsert_records([related_record])
 
             if related_record is not None and related_record.is_placeholder:
@@ -2410,6 +2414,22 @@ class DataSourceEntitiesProcessor:
             and existing_record.indexing_status != ProgressStatus.COMPLETED.value
         )
 
+    @staticmethod
+    def _carry_insert_only_fields(record: Record, existing_record: Record) -> None:
+        """A record written over a stored one keeps the stored ``createdAtTimestamp`` and ``incarnationId``.
+
+        The graph store enforces the same rule on the stored row; this makes the record this code hands on (events, logs, the
+        return value) agree with it. A stored placeholder that the incoming record replaces is the first full write: the date
+        is the earlier positive one, and the store is told so (``_promotes_stub``) because an ArangoDB bulk update cannot read the
+        stored row. The id is never changed by a write."""
+        if record_created_at_insert_only():
+            if existing_record.is_placeholder and not record.is_placeholder:
+                record.created_at = positive_min(existing_record.created_at, record.created_at) or record.created_at
+                record._promotes_stub = True
+            elif existing_record.created_at:
+                record.created_at = existing_record.created_at
+        record.incarnation_id = getattr(existing_record, "incarnation_id", None)
+
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         self.logger.debug("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
@@ -3254,6 +3274,7 @@ class DataSourceEntitiesProcessor:
                 # A new record's vectors are its own: a virtualRecordId chosen by the
                 # caller would serve another record's indexed content under this one.
                 record.virtual_record_id = None
+            carried_from_same_id = False
             if (
                 isinstance(same_id, dict)
                 and record.origin != OriginTypes.UPLOAD
@@ -3269,11 +3290,24 @@ class DataSourceEntitiesProcessor:
                 # its vectors stay keyed by the stored virtualRecordId.
                 self._preserve_indexing_state(record, renamed)
                 record.virtual_record_id = record.virtual_record_id or renamed.virtual_record_id
+                self._carry_insert_only_fields(record, renamed)
+                carried_from_same_id = True
             elif publishes_event:
                 self._stamp_queued_at(record)
+            if isinstance(same_id, dict) and not carried_from_same_id:
+                # Stored under this id (a rename or move that changes the revision): the store keeps its date and id, so
+                # the record handed on does too.
+                self._carry_insert_only_fields(record, SimpleNamespace(
+                    created_at=same_id.get("createdAtTimestamp"),
+                    incarnation_id=same_id.get("incarnationId"),
+                    is_placeholder=bool(same_id.get("isPlaceholder")),
+                ))
+            # Not stored under this id either: the ArangoDB store inserts first (one call), and a wrong guess only costs a patch.
+            record._known_new = not stored_under_its_id
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
+            self._carry_insert_only_fields(record, existing_record)
             # Connectors that track their own version pass a non-zero value; fill
             # it in for those that leave it at the default (GitLab, Jira) so the
             # stored version isn't pinned at 0 forever. Bump only on a real
@@ -4200,7 +4234,7 @@ class DataSourceEntitiesProcessor:
                                 1 if content_changed else 0
                             )
 
-                    new_record.created_at = old_record.created_at
+                    self._carry_insert_only_fields(new_record, old_record)
                     if not needs_reindex:
                         # The move rewrites the whole vertex, and nothing is
                         # re-parsed, so the checksum and parse/extraction state
@@ -5143,6 +5177,9 @@ class DataSourceEntitiesProcessor:
             # A user's Force reindex: every stored paid result is bypassed and paid for again. The platform's own
             # reindexes of unchanged records (a policy change) keep reusing them.
             payload["refreshPaidOutputs"] = True
+            if (intent_id := user_forced_intent_id()) and refresh_intent.write_enabled():
+                # The refresh's identity, the same one the walk stored on the record: a re-send keeps it.
+                payload["refreshIntentId"] = intent_id
         if record.virtual_record_id:
             payload.setdefault("virtualRecordId", record.virtual_record_id)
         if vector_db_only:

@@ -246,6 +246,7 @@ CLASSIFICATION: dict[str, str] = {
     **dict.fromkeys(["update_node", "batch_update_nodes", "update_node_fields_if_match", "update_node_fields_if", "update_knowledge_base", "compare_and_set_record_fields",
                      "write_attempt_start"], "update"),
     "update_node_if_match": "replace",
+    "update_record_fields_for_ids": "update", "update_queued_duplicates_status": "targeted",
     **dict.fromkeys(["batch_update_connector_status", "compare_and_set_indexing_status", "update_indexing_status_for_record_ids",
                      "stage_state_compare_and_set", "soft_delete_records", "restore_records", "record_purge_failure", "retag_push_record",
                      "claim_push_record", "take_back_kept_record_group", "update_kb_permission", "reset_indexing_status_for_connector",
@@ -278,7 +279,8 @@ CLASSIFICATION: dict[str, str] = {
 }
 #: Targeted writers whose every value comes from a typed argument that no schema narrows (a count, a free string, a constant), so no caller
 #: input can be invalid; they are classified for completeness and exercised only by the valid-path matrix where that is cheap.
-TYPED_ONLY = {"restore_records", "record_purge_failure", "retag_push_record", "claim_push_record", "take_back_kept_record_group",
+TYPED_ONLY = {"update_queued_duplicates_status",   # its fields come from typed arguments and constants, validated when the copies are written
+              "restore_records", "record_purge_failure", "retag_push_record", "claim_push_record", "take_back_kept_record_group",
               "update_kb_permission",      # its role is checked against OWNER/WRITER/READER first and its timestamps are generated
               "update_drive_sync_state",   # drives have no schema
               "add_taxonomy_aliases",       # neither have the taxonomy collections
@@ -302,6 +304,7 @@ Case = tuple[str, tuple, dict]   # method, args, kwargs
 
 #: payloads a schema rejects: (id, method, args, kwargs)
 INVALID: list[tuple[str, str, tuple, dict]] = [
+    ("intent-only bad time", "update_record_fields_for_ids", (["r1"], {"refreshIntentAtMs": "not a number"}), {}),
     # create: full validation
     ("create bad enum", "create_node_if_absent", ("r1", "records", rec(recordType="NOT_A_TYPE")), {}),
     ("create missing required", "create_node_if_absent", ("r1", "records", without(rec(), "recordName")), {}),
@@ -372,6 +375,7 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
 
 #: payloads the app legitimately writes: (id, method, args, kwargs)
 VALID: list[tuple[str, str, tuple, dict]] = [
+    ("intent-only fields", "update_record_fields_for_ids", (["r1"], {"refreshIntentId": "i1", "refreshIntentAtMs": 1}), {}),
     ("create", "create_node_if_absent", ("r1", "records", rec()), {}),
     ("create with nullables", "create_node_if_absent", ("r1", "records", rec(mimeType=None, externalParentId=None, webUrl=None)), {}),
     ("ensure_nodes", "ensure_nodes", ([rec("r1"), rec("r2")], "records"), {}),

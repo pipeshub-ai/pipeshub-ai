@@ -2498,7 +2498,7 @@ class TestRetryDelayBeforeSemaphore:
         from app.core import envelope, org_context
 
         key = envelope.derive_key("requeue-secret")
-        envelope.configure(None, None, key)
+        envelope.configure(None, key)
         monkeypatch.setenv("ENVELOPE_SIGN", "true")
         sent = []
 

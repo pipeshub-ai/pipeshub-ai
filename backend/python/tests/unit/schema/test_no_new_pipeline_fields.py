@@ -31,6 +31,7 @@ STAGE_STATE_PROPERTIES = frozenset({
 
 #: The record schema's property names as the previous release defined them.
 RECORD_PROPERTIES = frozenset({
+    "incarnationId",      # names the life of the vertex; identity, not pipeline state. Minted at insert, changed only by a restore
     "accessRule", "connectorId", "connectorName", "contentRev", "createdAtTimestamp", "definition",
     "deleteBatchId", "deleteSource", "deletedAtTimestamp", "deletedByUserId", "duplicateReconcileAttempts",
     "duplicateReconcileDueAt", "duplicateReconcilePending", "embedDeliveryId", "embedDigest", "embedDone",
@@ -57,6 +58,9 @@ RECORD_PROPERTIES = frozenset({
     # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message fires, so the
     # recovery scans do not republish it first. Optional, internal, and written only on that hand-back.
     "deferredUntilMs", "rateLimitedSinceMs",
+    # A Force reindex requested and not yet served: its id and time (app/modules/indexing/refresh_intent.py). Internal, optional,
+    # written only behind REFRESH_INTENT_WRITE.
+    "refreshDoneId", "refreshIntentAtMs", "refreshIntentId",
     # The virtual record a record is writing a replacement copy into while it keeps serving the old one (keep_old_copy). This
     # release accepts it and its writes are off by default (INDEXING_KEEP_OLD_COPY); the next turns them on.
     "pendingVirtualRecordId",
