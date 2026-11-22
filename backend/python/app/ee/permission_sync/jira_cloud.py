@@ -118,8 +118,11 @@ class JiraCloudPermissionsMixin:
     """The permission-reading half of ``JiraConnector``."""
 
     async def _copies_no_source_access(self) -> bool:
-        """Without a licence key a company-wide connector reads no access from Jira."""
-        return await self.data_entities_processor.permission_sync_gated(self.connector_id)
+        """Without a licence key a company-wide connector reads no access from Jira. The processor then keeps every
+        stored grant, group and role whatever is handed to it (``skips_permission_writes``), so the gated answers
+        below are empty, not None: None is this connector's "could not read", which leaves the project, space or
+        page unsaved or skipped, as unreadable, on every run."""
+        return await self.data_entities_processor.skips_permission_writes(self.connector_id)
 
     async def _without_stored_members(
         self, entity: str, items: list[tuple[Any, list[AppUser]]]
@@ -1165,7 +1168,9 @@ class JiraCloudPermissionsMixin:
         if not self._enforces_issue_security:
             return IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False)
         if await self._copies_no_source_access():
-            return IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False)
+            # Not "no scheme" (that re-reads every stored issue and saves an empty level map): nothing read, nothing
+            # changed. Holders unknown ("?"), so the first licensed read re-reads what they name.
+            return IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False, unlicensed=True, browse_holders=None)
         response = await self._call_with_retry(
             lambda ds: ds.get_project_issue_security_scheme(projectKeyOrId=project_key),
             ctx=f"reading the issue security scheme of {project_key}",
@@ -1465,7 +1470,8 @@ class JiraCloudPermissionsMixin:
                 comment, project_key=project_key, role_ids=self._role_ids, group_ids_by_name=self._group_ids_by_name,
                 product_access_groups=product_access_groups,
             )
-            if not grants:
+            # Unlicensed, roles and groups are not read: no grant is expected, and the processor keeps the stored ones.
+            if not grants and not await self._copies_no_source_access():
                 unresolved = True
                 self.logger.warning(
                     "Comment %s of issue %s names no role, group or product access that could be read; "

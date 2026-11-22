@@ -67,7 +67,7 @@ def _resp(status: int = 200, body: object = None) -> MagicMock:
 
 def _connector() -> JiraConnector:
     dep = MagicMock()
-    dep.permission_sync_gated = AsyncMock(return_value=False)
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.org_id = "org-1"
     for name in ("on_new_records", "on_record_content_update", "on_new_record_groups"):
         setattr(dep, name, AsyncMock())

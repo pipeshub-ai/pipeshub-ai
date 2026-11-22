@@ -2805,7 +2805,7 @@ class TestWithoutALicenceKey:
     async def test_a_gated_sync_stores_the_issues_and_reads_no_access_from_jira(self, api, site_db, checkpoints, search) -> None:
         stub_site(api)
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
-        site_db.permission_sync_gated = _no_licence
+        site_db.skips_permission_writes = _no_licence
         connector, _ = await ready_connector(site_db, checkpoints)
 
         await connector.run_sync()

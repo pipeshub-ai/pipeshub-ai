@@ -56,7 +56,7 @@ def _make_mock_deps():
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
-    dep.permission_sync_gated = AsyncMock(return_value=False)
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.on_record_deleted = AsyncMock()
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])

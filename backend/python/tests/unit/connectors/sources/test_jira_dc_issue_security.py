@@ -28,7 +28,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 
 def _connector(cls=JiraDataCenterConnector) -> JiraDataCenterConnector:
     dep = MagicMock()
-    dep.permission_sync_gated = AsyncMock(return_value=False)
+    dep.skips_permission_writes = AsyncMock(return_value=False)
     dep.org_id = "org"
     dep.on_new_records = AsyncMock()
     dep.on_record_content_update = AsyncMock()

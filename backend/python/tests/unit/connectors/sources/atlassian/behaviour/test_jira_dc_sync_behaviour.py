@@ -3498,7 +3498,7 @@ class TestWithoutALicenceKey:
     async def test_a_gated_sync_stores_the_issues_and_reads_no_access_from_jira(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         first_page_eng(search)
-        db.permission_sync_gated = _no_licence
+        db.skips_permission_writes = _no_licence
         connector, _ = await make_connector(db, store)
 
         await connector.run_sync()

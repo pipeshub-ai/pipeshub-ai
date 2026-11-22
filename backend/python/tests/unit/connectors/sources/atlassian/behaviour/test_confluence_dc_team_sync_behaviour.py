@@ -1955,7 +1955,7 @@ class TestWithoutALicenceKey:
     """The licence gate holds: the connector still syncs the content, and reads no access from the source."""
 
     async def test_a_gated_sync_stores_the_pages_and_reads_no_access_from_confluence(self, atlassian_api, db, store, search) -> None:
-        db.permission_sync_gated = _no_licence
+        db.skips_permission_writes = _no_licence
         connector = await make_connector(atlassian_api, db, store)
         alice = user("alice", "alice@example.com")
         with_directory(atlassian_api, [alice], {"eng": [alice]})

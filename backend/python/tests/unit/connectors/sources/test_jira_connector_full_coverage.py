@@ -37,7 +37,7 @@ def _make_mock_deps():
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
-    data_entities_processor.permission_sync_gated = AsyncMock(return_value=False)
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.on_record_deleted = AsyncMock()
     data_entities_processor.on_record_content_update = AsyncMock()
     data_entities_processor.on_new_app_roles = AsyncMock()

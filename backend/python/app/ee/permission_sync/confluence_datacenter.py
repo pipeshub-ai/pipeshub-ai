@@ -56,8 +56,11 @@ class ConfluenceDataCenterPermissionsMixin:
     """The permission-reading half of ``ConfluenceDataCenterConnector``."""
 
     async def _copies_no_source_access(self) -> bool:
-        """Without a licence key a company-wide connector reads no access from Confluence."""
-        return await self.data_entities_processor.permission_sync_gated(self.connector_id)
+        """Without a licence key a company-wide connector reads no access from Confluence. The processor then keeps every
+        stored grant, group and role whatever is handed to it (``skips_permission_writes``), so the gated answers
+        below are empty, not None: None is this connector's "could not read", which leaves the project, space or
+        page unsaved or skipped, as unreadable, on every run."""
+        return await self.data_entities_processor.skips_permission_writes(self.connector_id)
 
     async def _sync_user_groups(self) -> None:
         """

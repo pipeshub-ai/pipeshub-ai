@@ -25,9 +25,11 @@ from app.ee.permission_sync.jira_data_center import (
 from app.ee.permission_sync.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
+    plan_level_reread,
 )
 
 NOT_ENFORCED = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False)
+UNLICENSED = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False, unlicensed=True, browse_holders=None)
 
 
 def _connector(mixin: type, *, gated: bool) -> object:
@@ -36,7 +38,7 @@ def _connector(mixin: type, *, gated: bool) -> object:
     connector.connector_id = "connector-1"
     connector.logger = MagicMock()
     connector.data_entities_processor = MagicMock()
-    connector.data_entities_processor.permission_sync_gated = AsyncMock(return_value=gated)
+    connector.data_entities_processor.skips_permission_writes = AsyncMock(return_value=gated)
     connector.data_source = MagicMock()
     connector._get_fresh_datasource = AsyncMock()
     connector._call_with_retry = AsyncMock()
@@ -46,23 +48,23 @@ def _connector(mixin: type, *, gated: bool) -> object:
 
 
 def _assert_nothing_read(connector: object) -> None:
-    connector.data_entities_processor.permission_sync_gated.assert_awaited_with("connector-1")
+    connector.data_entities_processor.skips_permission_writes.assert_awaited_with("connector-1")
     assert connector.data_source.method_calls == []  # ``if not self.data_source`` is not a read
     connector._get_fresh_datasource.assert_not_awaited()
     connector._call_with_retry.assert_not_awaited()
     connector._fetch_group_members.assert_not_awaited()
     connector.notify.assert_not_awaited()
     # Only the gate was asked: nothing was written either.
-    assert [call[0] for call in connector.data_entities_processor.mock_calls] == ["permission_sync_gated"]
+    assert [call[0] for call in connector.data_entities_processor.mock_calls] == ["skips_permission_writes"]
 
 
 # Every method the free connector calls that reads the source, and what it gets back when the gate
-# holds: no grants (the record inherits), no groups or roles, and no issue security to enforce.
+# holds: no grants (the processor keeps the stored ones), no groups or roles, and issue security not read.
 JIRA = [
     ("_fetch_project_permission_scheme", ("KEY", {}, {}), []),
     ("_sync_project_roles", (["KEY"], [], {}), None),
     ("_sync_project_lead_roles", ([{"key": "KEY", "lead": {"accountId": "a"}}], []), None),
-    ("_load_issue_security", ("KEY",), NOT_ENFORCED),
+    ("_load_issue_security", ("KEY",), UNLICENSED),
 ]
 CONFLUENCE = [
     ("_sync_user_groups", (), None),
@@ -175,16 +177,28 @@ async def test_personal_jira_enforces_no_issue_security_without_asking_the_gate(
     connector = object.__new__(personal)
     connector.connector_id = "connector-1"
     connector.data_entities_processor = MagicMock()
-    connector.data_entities_processor.permission_sync_gated = AsyncMock(return_value=False)
+    connector.data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     connector._call_with_retry = AsyncMock()
     connector._get_fresh_datasource = AsyncMock()
 
     assert await connector._load_issue_security("KEY") == NOT_ENFORCED
 
-    connector.data_entities_processor.permission_sync_gated.assert_not_awaited()
+    connector.data_entities_processor.skips_permission_writes.assert_not_awaited()
     connector._call_with_retry.assert_not_awaited()
     connector._get_fresh_datasource.assert_not_awaited()
 
 
 def test_personal_confluence_data_center_shares_no_permission_reading() -> None:
     assert ConfluenceDataCenterPermissionsMixin not in ConfluenceDataCenterPersonalConnector.__mro__
+
+
+@pytest.mark.parametrize("stored", [{"10": "abc", "*": "retry"}, {}, None])
+@pytest.mark.parametrize("is_new_project", [False, True])
+def test_unread_issue_security_keeps_the_stored_levels(stored: dict | None, is_new_project: bool) -> None:
+    """Unlicensed, the levels are not read. "No scheme" would re-read every stored issue and save an empty map; this
+    re-reads nothing and saves back what is stored, so the first licensed read compares against it."""
+    assert plan_level_reread(UNLICENSED, stored, is_new_project=is_new_project, app_roles_mapping=None) == (
+        None, None, dict(stored or {}))
+    assert UNLICENSED.browse_fingerprint() == "?"  # holders unknown: the first licensed read re-reads what they name
+    if stored and not is_new_project:
+        assert plan_level_reread(NOT_ENFORCED, stored, is_new_project=False, app_roles_mapping=None)[0] == "project"

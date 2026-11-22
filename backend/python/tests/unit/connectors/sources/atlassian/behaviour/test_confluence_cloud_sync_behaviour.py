@@ -2892,7 +2892,7 @@ class TestWithoutALicenceKey:
     async def test_gated_steps_store_the_pages_and_read_no_access_from_confluence(self, api, db, checkpoints, search) -> None:
         api.on("GET", f"{V2}/spaces", {"results": [{"id": "77", "key": "ENG", "name": "Engineering"}], "_links": {"base": WIKI}})
         search.by_cursor[None] = search_page([v1_page("10")])
-        db.permission_sync_gated = _no_licence
+        db.skips_permission_writes = _no_licence
         connector, _ = await ready_connector(db, checkpoints)
 
         await connector._sync_user_groups()
