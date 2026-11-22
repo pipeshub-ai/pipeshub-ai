@@ -287,22 +287,45 @@ class TestUniqueNames:
     @pytest.mark.parametrize("failing", ["list", "read"])
     async def test_a_name_is_not_accepted_when_the_servers_cant_all_be_read(self, failing: str) -> None:
         class Flaky(FakeConfigService):
+            # Fails the way the real stores do: a read reports the failure only when asked to
+            # raise, so a check that doesn't ask would read the server as missing and pass.
+            down = True
+            outages = 0
+
             async def list_keys_in_directory(self, prefix: str) -> list[str]:
-                if failing == "list" and prefix == "/services/mcp/instances/":
+                if self.down and failing == "list" and prefix == "/services/mcp/instances/":
+                    self.outages += 1
                     raise RuntimeError("store down")
                 return await super().list_keys_in_directory(prefix)
 
-            async def get_config(self, key: str, default: object = None, use_cache: bool = False) -> object:
-                if failing == "read" and key == ORG_PATH.format("org-inst"):
+            async def get_config(
+                self, key: str, default: object = None, use_cache: bool = False, *,
+                raise_on_error: bool = False, keep_in_cache: bool = True,
+            ) -> object:
+                if self.down and failing == "read" and key == ORG_PATH.format("org-inst"):
+                    if not raise_on_error:
+                        return default
+                    self.outages += 1
                     raise RuntimeError("store down")
-                return await super().get_config(key, default, use_cache)
+                return await super().get_config(
+                    key, default, use_cache, raise_on_error=raise_on_error, keep_in_cache=keep_in_cache,
+                )
 
         store = Flaky(_store().data)
         before = dict(store.data)
 
         assert await _status(create_instance(_as(store, "admin-1"), _payload(name="brand new"))) == 503
+        # The 503 came from the simulated outage, not from a call the fake couldn't take.
+        assert store.outages == 1
         assert await _status(update_instance(_as(store, "u-alice"), "alice-own", _payload(name="renamed"))) == 503
+        assert store.outages == 2
         assert store.data == before
+
+        # Control: once the store is back, the same fake lets both through.
+        store.down = False
+        assert (await create_instance(_as(store, "admin-1"), _payload(name="brand new")))["name"] == "brand new"
+        assert (await update_instance(_as(store, "u-alice"), "alice-own", _payload(name="renamed")))["name"] == "renamed"
+        assert store.outages == 2
 
     async def test_a_failed_read_behind_the_configuration_service_is_not_read_as_no_server(self) -> None:
         # The real service, over a store that reports one failed read the way the encrypted
