@@ -3404,6 +3404,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._parent_levels = {}
         self._scheme_members = {}
 
+        self.progress.set_units("project", 0, len(projects))
         for project, _ in projects:
             try:
                 project_stats = await self._sync_project_issues(
@@ -3422,6 +3423,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
             finally:
+                self.progress.advance_units("project")
                 self._retry_given_up = False
 
         await self._warn_unreadable_security()

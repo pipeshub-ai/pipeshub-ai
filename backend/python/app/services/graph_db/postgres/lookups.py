@@ -26,6 +26,7 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
+    STATS_REASONED_STATUSES,
     build_connector_stats_response,
     jira_issue_browse_url_regex,
     record_status_field,
@@ -115,14 +116,14 @@ def _vis_code(v: RecordVisibility) -> int:
 STATS_KB = """/* pipeshub:graph.get_connector_stats */ WITH r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo'
         AND e.from_coll = 'records' AND e.to_coll = 'apps' AND e.to_id = $2)
     SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
-           s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+           s.doc->>'status' AS "entitiesStatus", CASE WHEN n.doc->>'indexingStatus' = ANY($4::text[]) THEN n.doc->>'reason' END AS reason, count(*) AS cnt
     FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
     CROSS JOIN LATERAL (SELECT x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
         WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
     LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
     WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
       AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
-    GROUP BY 1, 2, 3, 4"""
+    GROUP BY 1, 2, 3, 4, 5"""
 STATS_CONNECTOR = """/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(id, depth) AS (
       SELECT e.from_id, 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups' AND e.to_coll = 'apps' AND e.to_id = $2
       UNION SELECT e.from_id, g.depth + 1 FROM g JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
@@ -130,14 +131,14 @@ STATS_CONNECTOR = """/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(i
     r AS (SELECT DISTINCT e.from_id AS id FROM (SELECT DISTINCT id FROM g) g CROSS JOIN LATERAL (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1
         AND e.coll = 'belongsTo' AND e.from_coll = 'records' AND e.to_coll = 'recordGroups' AND e.to_id = g.id OFFSET 0) e)
     SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
-           s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+           s.doc->>'status' AS "entitiesStatus", CASE WHEN n.doc->>'indexingStatus' = ANY($4::text[]) THEN n.doc->>'reason' END AS reason, count(*) AS cnt
     FROM r CROSS JOIN (SELECT 'records'::text AS rec, 'stageStates'::text AS st OFFSET 0) k
     CROSS JOIN LATERAL (SELECT x.doc, (x.doc->>'virtualRecordId') || ':' || (x.doc->>'contentRev') || ':entities' AS sid FROM graph.nodes x
         WHERE x.org_id = $1 AND x.coll = k.rec AND x.id = r.id LIMIT 1) n
     LEFT JOIN LATERAL (SELECT x.doc FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = k.st AND x.id = n.sid LIMIT 1) s ON true
     WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
       AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($3::text[])
-    GROUP BY 1, 2, 3, 4"""
+    GROUP BY 1, 2, 3, 4, 5"""
 
 class LookupsMixin(PgBase):
     async def _lrows(self, sql: str, *args: Any, transaction: str | None = None, write: bool = False) -> list:  # noqa: ANN401
@@ -1040,7 +1041,8 @@ class LookupsMixin(PgBase):
             app = await self._one("/* pipeshub:graph.get_connector_stats_app */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2",
                                   org, connector_id, transaction=transaction)
             is_kb = bool(app) and app.get("type") == Connectors.KNOWLEDGE_BASE.value
-            rows = [] if org_id != org else await self._lrows(STATS_KB if is_kb else STATS_CONNECTOR, org, connector_id, FOLDER_MIME_TYPES, transaction=transaction)
+            rows = [] if org_id != org else await self._lrows(STATS_KB if is_kb else STATS_CONNECTOR, org, connector_id, FOLDER_MIME_TYPES,
+                                                           list(STATS_REASONED_STATUSES), transaction=transaction)
             result = build_connector_stats_response([dict(r) for r in rows], statuses, org_id, connector_id, origin="COLLECTION" if is_kb else "CONNECTOR")
             return {"success": True, "data": result}
         except Exception as e:

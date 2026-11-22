@@ -349,14 +349,39 @@ class TestChangedTablesAreQueued:
         assert await h.sync() == [("updateRecord", h.record("orders").id)]
 
     @pytest.mark.asyncio
+    async def test_an_unchanged_table_that_failed_indexing_stays_failed(self) -> None:
+        h = await _indexed_harness()
+        h.record("customers").indexing_status = ProgressStatus.FAILED.value
+        # Restarts and writes that leave the rows alone move the catalog markers,
+        # so the table is looked at with the same content. A sync is not a retry:
+        # it waits for a change at the source or a manual retry.
+        for move_markers in (h.source.restart, lambda: h.source.write("customers")):
+            move_markers()
+            assert await h.sync() == []
+            assert h.record("customers").indexing_status == ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
     async def test_a_changed_table_that_failed_indexing_is_retried(self) -> None:
         h = await _indexed_harness()
         h.record("customers").indexing_status = ProgressStatus.FAILED.value
-        h.source.restart()
+        h.source.tables["customers"]["rows"][0]["name"] = "changed"
+        h.source.write("customers")
         assert await h.sync() == [("updateRecord", h.record("customers").id)]
 
 
 class TestIndexingDuringTheSync:
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_started_during_the_sync_is_left_to_finish(self) -> None:
+        h = await _indexed_harness()
+
+        def _reindex_started(r: Record) -> None:
+            r.indexing_status = ProgressStatus.IN_PROGRESS.value
+
+        h.while_fingerprinting("orders", _reindex_started)
+        h.source.restart()
+        assert await h.sync() == []
+        assert h.record("orders").indexing_status == ProgressStatus.IN_PROGRESS.value
 
     @pytest.mark.asyncio
     async def test_indexing_that_finishes_during_the_sync_is_kept(self) -> None:

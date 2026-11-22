@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.connectors.core.registry.filters import FilterCollection, IndexingFilterKey
 from app.connectors.core.registry.folder_scope import FolderRole
+from app.connectors.core.sync.sync_progress import report_filtered
 from app.connectors.sources.network_share.entry import DirectoryEntry
 from app.connectors.sources.network_share.errors import (
     AccessDeniedError,
@@ -271,10 +272,12 @@ class ShareWalker:
             elif scope.includes_file(nfc_path):
                 role = FolderRole.KEEP
             else:
+                report_filtered("folder")
                 return None
             if not passes_extension_filter(
                 nfc_path, is_directory=entry.is_directory, sync_filters=sync_filters
             ):
+                report_filtered("extension")
                 return None
             if not passes_date_filters(
                 entry,
@@ -283,6 +286,7 @@ class ShareWalker:
                 created_after,
                 created_before,
             ):
+                report_filtered("date")
                 return None
             return server_path, nfc_path, role
 

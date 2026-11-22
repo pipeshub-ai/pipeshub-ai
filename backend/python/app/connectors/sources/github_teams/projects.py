@@ -118,6 +118,7 @@ class ProjectsSync:
                 await c.repo_scope.remove_empty_orgs(set())
             return
 
+        c.progress.set_units("repository", 0, len(repos))
         for repo in repos:
             try:
                 if not await self._sync_repo(repo):
@@ -128,6 +129,7 @@ class ProjectsSync:
                     "Unhandled error syncing GitHub repo %s (id=%s); continuing: %s",
                     getattr(repo, "full_name", "?"), getattr(repo, "id", "?"), e, exc_info=True,
                 )
+            c.progress.advance_units("repository")
 
         # Each repo already flushed its own org, so this is normally a no-op; it
         # exists to retry an org left dirty by a failed mid-sync flush.

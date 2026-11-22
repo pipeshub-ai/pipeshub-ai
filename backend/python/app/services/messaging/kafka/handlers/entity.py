@@ -854,6 +854,7 @@ class EntityEventService(BaseEventService):
                             "scope": scope,
                             "fullSync": full_sync,
                             "syncedBy": synced_by,
+                            "trigger": "enable",
                         },
                     )
 

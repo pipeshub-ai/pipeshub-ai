@@ -33,6 +33,9 @@ class SyncSpec:
     #: it is still owed before it deletes anything (a stop may have landed while
     #: the event waited for the consumers to start).
     boot_resume: bool = False
+    #: Shown in the run history (``SyncTrigger``). Unset, a boot resume reads as
+    #: "resume" and anything else as a follow-up the connector owed itself.
+    trigger: str | None = None
 
 
 class SubmitResult(Enum):
@@ -76,6 +79,7 @@ class SyncEventDispatcher:
                         "connectorId": spec.connector_id,
                         "fullSync": spec.full_sync,
                         "origin": "CONNECTOR",
+                        "trigger": spec.trigger or ("resume" if spec.boot_resume else "follow_up"),
                         "createdAtTimestamp": now,
                         "updatedAtTimestamp": now,
                         "sourceCreatedAtTimestamp": now,

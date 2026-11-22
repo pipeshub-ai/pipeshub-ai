@@ -211,6 +211,14 @@ app_schema = {
             "lastSyncSummary": {"type": ["string", "null"]},
             # What the connector's admin has to do (JSON text, see ActionItem); null when nothing.
             "actionItems": {"type": ["string", "null"]},
+            # app.connectors.core.sync.sync_progress: the running sync's live view,
+            # the last runs, and why the last run failed (JSON text).
+            "syncProgress": {"type": ["string", "null"]},
+            "syncRuns": {"type": ["string", "null"]},
+            "lastSyncError": {"type": ["string", "null"]},
+            # app.connectors.core.sync.first_sync_watch
+            "awaitingFirstSync": {"type": ["boolean", "null"]},
+            "readyAtTimestamp": {"type": ["number", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},
@@ -319,7 +327,7 @@ app_schema = {
 
 # Raised by one with every change to ``app_schema``; applied as ``RECORD_SCHEMA_GENERATION`` is (see below).
 # tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
-APP_SCHEMA_GENERATION = 1
+APP_SCHEMA_GENERATION = 2
 app_schema["rule"]["$comment"] = f"pipeshub-app-schema gen={APP_SCHEMA_GENERATION}"
 
 # Record schema for ArangoDB
@@ -399,6 +407,9 @@ record_schema = {
             # be sent again, and when this run of waits began (see
             # app/modules/indexing/rate_limit_deferral.py).
             "retryNotBefore": {"type": ["number", "null"]},
+            # How many times a sync re-queued this record after it failed with no
+            # change at the source; capped, and reset when the content changes or
+            # someone asks for a retry (DataSourceEntitiesProcessor).
             "rateLimitedSince": {"type": ["number", "null"]},
             # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message
             # fires. The recovery scans skip it until then (``processingStartedAt`` stays the real start).

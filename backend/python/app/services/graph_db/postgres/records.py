@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
     ProgressStatus,
@@ -454,6 +455,24 @@ class RecordsMixin(PgBase):
             if fields:
                 raise        # with ``fields`` (a Force reindex's request) a lost write must not be read as a request that was made
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
+
+    async def count_connector_records_by_status(self, connector_id: str, statuses: list[str], *, transaction: str | None = None) -> dict[str, int]:
+        """Live records of the connector per indexing status, for ``statuses`` only; internal, placeholder, deleted and folder records stay out, as in the stats."""
+        org = current_org_id()
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.count_connector_records_by_status */ SELECT r.doc->>'indexingStatus' AS status, count(*) AS cnt
+            FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'connectorId' = $2 AND r.doc->>'indexingStatus' = ANY($3::text[])
+              AND coalesce((r.doc->>'isInternal')::boolean, false) = false AND coalesce((r.doc->>'isPlaceholder')::boolean, false) = false
+              AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(r.doc->>'mimeType', '') = ANY($4::text[])
+            GROUP BY 1""", org, connector_id, list(statuses), list(FOLDER_MIME_TYPES)), transaction)
+        return {row["status"]: int(row["cnt"]) for row in rows or [] if row["status"]}
+
+    async def count_records_indexed_since(self, connector_id: str, since_ms: int, *, transaction: str | None = None) -> int:
+        """How many of the connector's records finished indexing (COMPLETED) after ``since_ms``, by ``lastIndexTimestamp``."""
+        org = current_org_id()
+        return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.count_records_indexed_since */ SELECT count(*) FROM graph.nodes r
+            WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'connectorId' = $2 AND r.doc->>'indexingStatus' = $3
+              AND jsonb_typeof(r.doc->'lastIndexTimestamp') = 'number' AND (r.doc->>'lastIndexTimestamp')::numeric > $4""",
+                                                   org, connector_id, ProgressStatus.COMPLETED.value, since_ms), transaction) or 0)
 
     async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
         """Set ``fields`` on each existing record that is neither internal nor a placeholder, whatever its status; the

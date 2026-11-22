@@ -41,6 +41,12 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     RecordGroupWithPermissions,
     UserGroupWithMembers,
 )
+from app.connectors.core.sync.sync_progress import (
+    ChangeKind,
+    SyncProgress,
+    reset_current_sync_progress,
+    set_current_sync_progress,
+)
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -5310,24 +5316,32 @@ class TestOnRecordContentUpdate:
         assert call_args[0][1]["eventType"] == "updateRecord"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("content_changed", "revision", "published"), [
-        (False, "r1", False), (False, "r2", True), (True, "r1", True)],
+    @pytest.mark.parametrize(("content_changed", "revision", "published", "counted"), [
+        (False, "r1", False, ChangeKind.UNCHANGED), (False, "r2", True, ChangeKind.CHANGED),
+        (True, "r1", True, ChangeKind.CHANGED)],
         ids=["said_unchanged_and_unchanged", "said_unchanged_but_new_revision", "callers_that_do_not_say"])
     async def test_a_write_said_to_leave_content_alone_publishes_only_when_the_save_asks_for_indexing(
-        self, content_changed: bool, revision: str, published: bool,
+        self, content_changed: bool, revision: str, published: bool, counted: ChangeKind,
     ) -> None:
         """A write only to keep an indexed record's grants keeps its outcome and sends no event, as on_new_records;
-        a new revision re-queues it whatever the caller said. Callers that do not say still publish."""
+        a new revision re-queues it whatever the caller said. Callers that do not say still publish. The running
+        sync counts the record the same way: unchanged only when the caller said so and the revision agrees."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         stored = _make_record(external_revision_id="r1", indexing_status=ProgressStatus.COMPLETED.value)
         tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
-        await proc.on_record_content_update(_make_record(external_revision_id=revision), content_changed=content_changed)
+        progress = SyncProgress(connector_id="conn-1", run_id="run-1", full=False)
+        token = set_current_sync_progress(progress)
+        try:
+            await proc.on_record_content_update(_make_record(external_revision_id=revision), content_changed=content_changed)
+        finally:
+            reset_current_sync_progress(token)
 
         events = [c.args[1]["eventType"] for c in proc.messaging_producer.send_message.call_args_list]
         assert events == (["updateRecord"] if published else [])
+        assert progress.counts()[counted.value] == 1 and progress.counts()["found"] == 1
 
     @pytest.mark.asyncio
     async def test_skips_auto_index_off(self):

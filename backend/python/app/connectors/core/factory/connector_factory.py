@@ -27,7 +27,7 @@ from app.connectors.core.registry.connector import (
 from app.connectors.core.registry.connector_builder import SyncStrategy
 from app.connectors.core.sync.sync_coordinator import Admission, get_coordinator
 from app.connectors.core.sync.sync_dispatcher import SyncSpec
-from app.connectors.core.sync.sync_runner import run_sync_task
+from app.connectors.core.sync.sync_runner import record_failed_start, run_sync_task
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.utils import error_class
 from app.utils.logging_fields import log_fields
@@ -385,9 +385,15 @@ class ConnectorFactory:
         connector_id: str,
         scope: str,
         created_by: str,
+        *,
+        sync_trigger: str | None = None,
         **kwargs,
     ) -> BaseConnector | None:
-        """Create and initialize a connector: None when init() returns False; what init() raised, re-raised."""
+        """Create and initialize a connector: None when init() returns False; what init() raised, re-raised.
+
+        ``sync_trigger`` is set when the connector is being built to run a sync;
+        an init failure is then recorded as that sync failing, with its reason.
+        """
         connector = await cls.create_connector(
             name=name,
             logger=logger,
@@ -407,12 +413,20 @@ class ConnectorFactory:
                         f"Failed to initialize {name} {connector_id} connector"
                     )
                     await connector.on_background_init_failed(None)
+                    if sync_trigger is not None:
+                        await record_failed_start(
+                            data_store_provider.graph_provider, logger, connector_id, None, trigger=sync_trigger
+                        )
                     await cls._dispose_failed(connector, name, connector_id, logger)
                     return None
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:
                 await connector.on_background_init_failed(e)
+                if sync_trigger is not None:
+                    await record_failed_start(
+                        data_store_provider.graph_provider, logger, connector_id, e, trigger=sync_trigger
+                    )
                 await cls._dispose_failed(connector, name, connector_id, logger)
                 raise
 
@@ -472,6 +486,12 @@ class ConnectorFactory:
         """
         # The boot path's lines, and the run it starts, name the instance; `name` is the stored type.
         with log_fields(connector_id=connector_id, connector_type=name):
+            config = await config_service.get_config(
+                f"/services/connectors/{connector_id}/config"
+            )
+            sync_strategy = (config or {}).get("sync", {}).get("selectedStrategy")
+            will_sync = start_sync and sync_strategy != SyncStrategy.MANUAL.value
+
             connector = await cls.initialize_connector(
                 name=name,
                 logger=logger,
@@ -480,13 +500,9 @@ class ConnectorFactory:
                 connector_id=connector_id,
                 scope=scope,
                 created_by=created_by,
+                sync_trigger="startup" if will_sync else None,
                 **kwargs,
             )
-
-            config = await config_service.get_config(
-                f"/services/connectors/{connector_id}/config"
-            )
-            sync_strategy = (config or {}).get("sync", {}).get("selectedStrategy")
             if connector and not start_sync:
                 return connector
 
@@ -563,6 +579,7 @@ class ConnectorFactory:
                                 logger,
                                 lease=lease,
                                 coordinator=coordinator,
+                                trigger="startup",
                                 resync_spec=SyncSpec(
                                     connector_id=connector_id,
                                     connector_name=name,

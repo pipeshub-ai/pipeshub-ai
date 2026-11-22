@@ -68,6 +68,7 @@ import {
   getConnectorEgressIps,
   getActiveAgentInstances,
   getConnectorStats,
+  getConnectorProgress,
   getPermissionStatus,
   setPermissionFilter,
   listMyPerUserConnectors,
@@ -503,6 +504,15 @@ const getConnectorStatsSchema = z.object({
 });
 
 /**
+ * Schema for getting what a connector is doing now: `summary` for cards,
+ * `full` (adds the stats and why records are not searchable) for the panel.
+ */
+const getConnectorProgressSchema = z.object({
+  params: z.object({ connectorId: z.string().min(1) }),
+  query: z.object({ detail: z.enum(['summary', 'full']).optional() }),
+});
+
+/**
  * Schema for getting a record's parsed content. With no query parameters the
  * whole record is returned, as it always was; any of them asks for a budgeted
  * read (part of the record, or its Slack thread). Bounds match the query
@@ -909,6 +919,18 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
+  );
+
+  /**
+   * GET /:connectorId/progress
+   * The running sync, recent runs, the last failure and indexing progress
+   */
+  router.get(
+    '/:connectorId/progress',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
+    ValidationMiddleware.validate(getConnectorProgressSchema),
+    getConnectorProgress(config),
   );
 
   /**

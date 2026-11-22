@@ -500,6 +500,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             await self._remove_spaces_out_of_scope(spaces)
 
             # Sync content per space; each type's sync also removes what left the space
+            self.progress.set_units("space", 0, len(spaces))
             for space in spaces:
                 space_key = space.short_name
 
@@ -510,6 +511,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 # Blogposts
                 self.logger.info(f"Syncing blogposts for space: {space.name} ({space_key})")
                 await self._sync_content(space_key, RecordType.CONFLUENCE_BLOGPOST, space=space)
+                self.progress.advance_units("space")
 
             self.logger.info(
                 "✅ Confluence DC Personal connector %s sync completed",

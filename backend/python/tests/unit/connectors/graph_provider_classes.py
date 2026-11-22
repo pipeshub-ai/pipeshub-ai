@@ -17,6 +17,7 @@ A method added to the interface fails `test_every_provider_method_is_classified`
 
 READS = frozenset("""
     check_access check_agent_permission check_api_toolset_in_use check_collection_has_document check_connector_in_use
+    count_connector_records_by_status count_records_indexed_since
     check_connector_name_exists check_connector_name_uniqueness check_edge_exists check_mcp_instance_in_use
     check_record_access_with_details check_toolset_instance_in_use count_active_apps_by_type count_connector_instances_by_scope
     count_kb_owners count_legacy_kb_record_groups count_nodes_by_filters filter_accessible_record_ids

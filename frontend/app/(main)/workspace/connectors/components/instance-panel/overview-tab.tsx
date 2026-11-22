@@ -10,7 +10,6 @@ import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
 import { useToastStore } from '@/lib/store/toast-store';
-import { deriveSyncStatus } from '../instance-card/utils';
 import { runConnectorResync, stopConnectorSync } from '../../utils/connector-sync-actions';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import { isSyncRunning } from '../instance-card/primitives';
@@ -30,6 +29,8 @@ import { CodeGraphStatus } from './code-graph-status';
 import { LastRunSummary } from './last-run-summary';
 import { PermissionFreshness } from './permission-freshness';
 import { ActionItemsCallout } from './action-items-callout';
+import { ConnectorProgressPanel } from './connector-progress-panel';
+import { useConnectorProgress } from '../../utils/use-connector-progress';
 import { AccessCheckDialog } from './access-check-dialog';
 import { ConnectedUsers } from '../user-access/connected-users';
 
@@ -59,7 +60,6 @@ export function OverviewTab({
   instance,
   stats,
   statsLoading = false,
-  connectorConfig,
   localSyncStatus,
   nestedModalHost,
 }: OverviewTabProps) {
@@ -68,7 +68,6 @@ export function OverviewTab({
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
   const openPanel = useConnectorsStore((s) => s.openPanel);
   const setPanelActiveTab = useConnectorsStore((s) => s.setPanelActiveTab);
-  const instanceConfigs = useConnectorsStore((s) => s.instanceConfigs);
   const setLocalSyncStatus = useConnectorsStore((s) => s.setLocalSyncStatus);
   const addToast = useToastStore((s) => s.addToast);
   const bumpCatalogRefresh = useConnectorsStore((s) => s.bumpCatalogRefresh);
@@ -90,10 +89,6 @@ export function OverviewTab({
   const isFullSyncRunning =
     (instance.status ?? '').toUpperCase() === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING;
   const [panelRefreshKey, bumpPanelRefresh] = useReducer((n: number) => n + 1, 0);
-  const configForDerive =
-    connectorConfig ?? (instance._key ? instanceConfigs[instance._key] : undefined);
-  const syncStatus = deriveSyncStatus(instance, stats ?? undefined, configForDerive);
-  const isSyncing = syncStatus === 'syncing';
 
   // Navigate to All Records page with filters for this connector
   const navigateToRecords = useCallback(
@@ -205,6 +200,13 @@ export function OverviewTab({
     }
   }, [instance._key, addToast]);
 
+  // The records are re-queued a moment after the request returns, and the progress
+  // view is cached for 10s, so look again once both have passed.
+  const refreshProgressAfterQueueing = useCallback(() => {
+    bumpPanelRefresh();
+    window.setTimeout(bumpPanelRefresh, 15_000);
+  }, []);
+
   const handleReindexFailed = useCallback(async () => {
     const connectorId = instance._key;
     if (!connectorId || !instance.isActive || isReindexFailedBusy) return;
@@ -213,6 +215,7 @@ export function OverviewTab({
       await ConnectorsApi.reindexConnector(connectorId, ['FAILED']);
       addToast({ variant: 'success', title: 'Reindexing failed records…' });
       await fetchInstanceStats(connectorId, { force: true });
+      refreshProgressAfterQueueing();
     } catch (error) {
       console.error('Failed to reindex failed records', { connectorId, error });
       addToast({ variant: 'error', title: 'Failed to reindex failed records' });
@@ -229,6 +232,7 @@ export function OverviewTab({
       await ConnectorsApi.reindexConnector(connectorId, ['AUTO_INDEX_OFF']);
       addToast({ variant: 'success', title: 'Indexing manual-indexing records…' });
       await fetchInstanceStats(connectorId, { force: true });
+      refreshProgressAfterQueueing();
     } catch (error) {
       console.error('Failed to start manual indexing', { connectorId, error });
       addToast({ variant: 'error', title: 'Failed to start manual indexing' });
@@ -288,40 +292,18 @@ export function OverviewTab({
     }
   }, [instance._key, instance.isActive, isRetryEntitiesBusy, addToast, refreshStatsAfterQueuedRetry, t]);
 
-  // Show sync progress bar for syncing
-  const showProgressBar = isSyncing && instance.syncProgress;
+  const progress = useConnectorProgress(instance._key, 'summary', `${instance.status}:${panelRefreshKey}`);
 
   return (
     <Flex direction="column" gap="5" style={{ padding: '0' }}>
-      {/* Sync progress bar */}
-      {showProgressBar && instance.syncProgress && (
-        <Flex direction="column" gap="2">
-          <Flex align="center" justify="between">
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {t('workspace.connectors.overview.progressPercent', { n: instance.syncProgress.percentage ?? 0 })}
-            </Text>
-          </Flex>
-          <Box
-            style={{
-              width: '100%',
-              height: 6,
-              borderRadius: 'var(--radius-full)',
-              backgroundColor: 'var(--gray-a3)',
-              overflow: 'hidden',
-            }}
-          >
-            <Box
-              style={{
-                width: `${instance.syncProgress.percentage ?? 0}%`,
-                height: '100%',
-                borderRadius: 'var(--radius-full)',
-                backgroundColor: 'var(--jade-9)',
-                transition: 'width 300ms ease',
-              }}
-            />
-          </Box>
-        </Flex>
-      )}
+      {progress && instance.supportsSync ? (
+        <ConnectorProgressPanel
+          view={progress}
+          source={instance.name?.trim() || instance.type}
+          byReason={stats?.byReason}
+          onViewRecords={navigateToRecords}
+        />
+      ) : null}
 
       {/* Local watcher status */}
       {localSyncStatus && (

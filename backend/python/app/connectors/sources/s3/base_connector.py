@@ -593,7 +593,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                     self._skipped_part_of_a_bucket = True
                     self._failed_buckets[bucket_name] = str(e)
                     self.logger.error(f"Error syncing bucket {bucket_name}: {e}", exc_info=True)
+                self.progress.advance_units("bucket")
 
+        self.progress.set_units("bucket", 0, len([n for n in bucket_names if n]))
         async with asyncio.TaskGroup() as tasks:
             for bucket_name in bucket_names:
                 if bucket_name:
@@ -1008,13 +1010,17 @@ class S3CompatibleBaseConnector(BaseConnector):
                             is_folder = key.endswith("/")
 
                             if not (scope.includes_folder(key) if is_folder else scope.includes_file(key)):
+                                if not is_folder:
+                                    self.progress.note_filtered("folder")
                                 continue
 
                             if not is_folder and not extension_passes_filter(sync_filters, get_file_extension(key)):
                                 self.logger.debug(f"Skipping {key}: excluded by the file extensions filter")
+                                self.progress.note_filtered("extension")
                                 continue
 
                             if not self._pass_date_filters(obj, *user_date_filters):
+                                self.progress.note_filtered("date")
                                 continue
 
                             # Kept before processing: an object that fails to process still exists.
