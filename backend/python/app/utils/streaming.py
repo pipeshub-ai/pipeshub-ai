@@ -1105,9 +1105,19 @@ def cleanup_content(response_text: str) -> str:
 _ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException)
 
 
+def _is_oversized_number(exc: BaseException) -> bool:
+    """A reply holding a number longer than Python converts (``sys.get_int_max_str_digits()``).
+
+    A model can run an integer field on until its output limit. The JSON parser behind
+    ``with_structured_output`` lets the resulting ``ValueError`` out as is, so without this
+    check the reply reads as a failed call.
+    """
+    return isinstance(exc, ValueError) and "integer string conversion" in str(exc)
+
+
 def answer_error_class(exc: BaseException) -> str | None:
     """``bad_request`` for a model answer that did not fit the schema; None lets ``classify_error`` decide."""
-    return "bad_request" if isinstance(exc, _ANSWER_PARSE_ERRORS) else None
+    return "bad_request" if isinstance(exc, _ANSWER_PARSE_ERRORS) or _is_oversized_number(exc) else None
 
 
 def _recover_structured_json_from_exception(
@@ -1236,6 +1246,12 @@ async def invoke_with_structured_output_and_reflection(
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
             return recovered
+        if _is_oversized_number(e):
+            # A reply that does not fit the schema, not a failed call. It is not asked for
+            # again: there is no reply text to show the model, and a second runaway reply
+            # costs a full output limit again. The message names only the digit count.
+            logger.warning("The %s reply holds a number too long to read (%s); the reply is discarded", schema.__name__, e)
+            return None
         if raise_call_errors:
             raise
         log_failure(
