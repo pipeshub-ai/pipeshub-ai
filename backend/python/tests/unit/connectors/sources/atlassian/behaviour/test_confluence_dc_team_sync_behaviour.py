@@ -864,6 +864,21 @@ class TestAnswersThatAreNotAPage:
 
         assert connector.full_sync_coverage().complete is False, "no next link is not the end of a list it never read"
 
+    async def test_a_second_member_page_without_results_keeps_the_stored_members(self, atlassian_api, db, store) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        people = [user("ana", "ana@example.com"), user("bob", "bob@example.com")]
+        with_directory(atlassian_api, people, {"eng": people})
+        await connector._sync_users()
+        await connector._sync_user_groups()
+
+        pages = {"0": {"results": people[:1], "size": 1, "_links": {"base": BASE, "next": f"{API}/group/eng/member?start=1"}},
+                 "1": {"size": 0, "_links": {"base": BASE}}}
+        atlassian_api.on("GET", f"{API}/group/eng/member", lambda r: json_response(pages[AtlassianApiStub.query(r).get("start", "0")]))
+        await connector._sync_user_groups()
+
+        assert db.members_of("eng") == ["ana@example.com", "bob@example.com"], "not saved as ana alone"
+        assert connector.full_sync_coverage().complete is False
+
     @pytest.mark.parametrize("answer", NOT_A_PAGE)
     async def test_a_member_page_that_is_not_a_page_keeps_the_stored_members(self, atlassian_api, db, store, answer) -> None:
         connector = await make_connector(atlassian_api, db, store)

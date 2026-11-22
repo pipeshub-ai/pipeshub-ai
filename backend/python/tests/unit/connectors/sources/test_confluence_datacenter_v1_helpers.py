@@ -150,3 +150,15 @@ async def test_a_null_size_is_an_absent_one() -> None:
     )
     assert v1_next_start({"results": [{"id": "1"}], "size": None}, 0, 1, 100, use_link_offset=False) is None
     assert await read_all_pages(_pages({0: _Answer(200, {"results": [{"id": "1"}], "size": None})}, [])) == ([{"id": "1"}], None)
+
+
+@pytest.mark.asyncio
+async def test_read_all_pages_that_keeps_answering_the_same_page_is_unread() -> None:
+    from app.connectors.sources.atlassian.core.confluence_access import (
+        content_id,
+        read_all_pages,
+    )
+    same = {"results": [{"id": "1"}], "_links": {"next": "/x?start=1"}}
+    asked: list[int] = []
+    assert await read_all_pages(_pages({0: _Answer(200, same), 1: _Answer(200, same)}, asked), content_id) is None
+    assert asked == [0, 1], "it stops at the first repeat, not when the buffer runs out"
