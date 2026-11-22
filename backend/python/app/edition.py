@@ -33,7 +33,8 @@ def check_runtime_settings() -> None:
 
 
 def extra_node_collections() -> dict[str, tuple[tuple[str, ...], ...]]:
-    """Document collections this build adds to the ArangoDB schema: name -> persistent indexes, each a tuple of
-    field names. ``ensure_schema`` creates the collections and their indexes; Neo4j needs no declaration (a
-    label exists once a node carries it). Here there are none."""
+    """Document collections this build adds to the graph schema: name -> indexes, each a tuple of field names.
+    ``ensure_schema`` creates them on ArangoDB (each collection and its persistent indexes) and on Neo4j (a unique
+    ``id`` constraint per collection, which keeps ``MERGE`` an index seek, and each declared index; a node keeps its
+    key as ``id`` there, so a declared ``_key`` is indexed as ``id``). Here there are none."""
     return {}

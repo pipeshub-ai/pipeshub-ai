@@ -1341,13 +1341,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         indexes: list[str] = []
 
-        # Collections a build adds (app.edition.extra_node_collections), with the indexes it declares.
+        # Collections a build adds (app.edition.extra_node_collections), with the indexes it declares. A node keeps its
+        # key as `id` here (`_arango_to_neo4j_node`), so a declared `_key` is indexed as `id`. The name carries a digest of
+        # the exact field list: `IF NOT EXISTS` also matches by name, and joined names alone can collide.
         for collection, declared in extra_node_collections().items():
             label = collection_to_label(collection)
             for fields in declared:
-                name = f"{label.lower()}_{'_'.join(f.lower() for f in fields)}"
+                props = ["id" if f == "_key" else f for f in fields]
+                digest = hashlib.sha256("\x00".join([label, *props]).encode()).hexdigest()[:10]
                 indexes.append(
-                    f"CREATE INDEX {name} IF NOT EXISTS FOR (n:{label}) ON ({', '.join(f'n.{f}' for f in fields)})"
+                    f"CREATE INDEX extra_{label.lower()}_{digest} IF NOT EXISTS FOR (n:{label}) ON ({', '.join(f'n.{p}' for p in props)})"
                 )
 
         # ==================== TAXONOMY INDEXES ====================

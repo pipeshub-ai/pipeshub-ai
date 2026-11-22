@@ -28,8 +28,17 @@ def test_neo4j_creates_the_indexes_an_extra_collection_declares(monkeypatch: pyt
     provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
     label = neo4j_module.collection_to_label("extraDocs")
     indexes = provider._generate_performance_indexes()
-    assert f"CREATE INDEX {label.lower()}_orgid_kind IF NOT EXISTS FOR (n:{label}) ON (n.orgId, n.kind)" in indexes
-    assert f"CREATE INDEX {label.lower()}_orgid IF NOT EXISTS FOR (n:{label}) ON (n.orgId)" in indexes
+    assert any(i.endswith(f"IF NOT EXISTS FOR (n:{label}) ON (n.orgId, n.kind)") for i in indexes)
+    assert any(i.endswith(f"IF NOT EXISTS FOR (n:{label}) ON (n.orgId)") for i in indexes)
+
+
+def test_neo4j_names_differ_for_field_lists_that_join_alike_and_key_is_indexed_as_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(neo4j_module, "extra_node_collections", lambda: {"extraDocs": (("a_b", "c"), ("a", "b_c"), ("orgId", "_key"))})
+    provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+    label = neo4j_module.collection_to_label("extraDocs")
+    mine = [i for i in provider._generate_performance_indexes() if f"(n:{label})" in i]
+    assert len({i.split()[2] for i in mine}) == 3
+    assert any(i.endswith("ON (n.orgId, n.id)") for i in mine)
 
 
 def test_extra_collections_add_exactly_their_constraint_and_indexes(monkeypatch: pytest.MonkeyPatch) -> None:
