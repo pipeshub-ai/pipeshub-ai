@@ -83,7 +83,8 @@ export class TokenManagerContainer {
         .toConstantValue(redisService);
 
       // The main Redis: the same cached provider `RedisService` resolved
-      // (Phase 5, R11) unless REDIS_CACHE_URL moved the cache elsewhere. Bound so any service in this container can depend on
+      // (Phase 5, R11) unless REDIS_CACHE_URL moved the cache elsewhere.
+      // Bound so any service in this container can depend on
       // `IRedisConnectionProvider` directly instead of importing the
       // factory module itself.
       container
