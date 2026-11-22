@@ -76,6 +76,8 @@ const logger = Logger.getInstance({
 
 const KNOWLEDGE_HUB_MIN_QUERY_LENGTH = 2;
 const KNOWLEDGE_HUB_MAX_QUERY_LENGTH = 500;
+/** Under the ~90 s a browser or proxy waits, so a slow listing fails with a 504 the page can show. */
+export const KNOWLEDGE_HUB_NODES_TIMEOUT_MS = 60_000;
 
 /**
  * The search text for a knowledge-hub listing, after trim.
@@ -210,6 +212,8 @@ export const getKnowledgeHubNodes =
         url,
         HttpMethod.GET,
         req.headers as Record<string, string>, // Forwards auth headers
+        undefined,
+        { timeoutMs: KNOWLEDGE_HUB_NODES_TIMEOUT_MS },
       );
 
       handleConnectorResponse(
@@ -1510,7 +1514,7 @@ export const updateRecord =
       // Blob is already uploaded at this point, so indexing service will find new content.
       logger.info('Updating record in database via Python service', {
         recordId,
-        hasFileUpload: hasFileBuffer,
+        hasFileUpload: Boolean(hasFileBuffer),
         updatedFields: Object.keys(updatedData),
       });
 

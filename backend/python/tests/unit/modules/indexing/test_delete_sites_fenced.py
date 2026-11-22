@@ -55,7 +55,7 @@ VECTOR_PROVIDERS = ("services/vector_db/qdrant", "services/vector_db/opensearch"
 FENCED = {  # the points of a record being indexed: under the virtual record's lease, confirmed before the call
     ("modules/transformers/vectorstore.py", "delete_blocks_by_ids"),
     ("modules/transformers/vectorstore.py", "delete_embeddings"),
-    ("modules/transformers/vectorstore.py", "_fence_and_verify"),
+    ("modules/transformers/vectorstore.py", "_drop_points_of_other_runs"),
     ("modules/indexing/run.py", "delete_points_for_virtual_record"),
 }
 SWEEP = {("modules/indexing/stray_sweep.py", "sweep_stray_points")}   # runs under apply's lease, with a fence around each call
@@ -64,6 +64,17 @@ GRAPH_CHECKED = {   # the last record of a virtual record, or a connector, went 
     ("modules/indexing/run.py", "bulk_delete_embeddings"),
     ("services/vector_db/membership.py", "_drop_points_where_no_record_remains"),
     ("services/vector_db/membership.py", "_rewrite_or_delete_locked"),
+}
+# The precision guard's deletes are pinned to points their caller knows are its own or are provably wrong or dead:
+#   delete_written: the points of the batch's records (or entities) at the batch's precision and epoch in the writer's org, removed only on a
+#                   definite verdict (the pin holds the other precision, or the epoch moved: wrong whoever wrote them), after the pin and the
+#                   epoch were read again for that attempt; the lease is not consulted. Reached from ``settle_unconfirmed`` and ``drain_debt``;
+#   delete_leaked:  the record's points tagged with a precision other than the pin's (wrong whoever wrote them);
+#   sweep_dead:     the points of epochs a reset retired (no live writer can own them).
+PRECISION_GUARD = {
+    ("services/vector_db/precision_guard.py", "delete_written"),
+    ("services/vector_db/precision_guard.py", "delete_leaked"),
+    ("services/vector_db/precision_guard.py", "sweep_dead"),
 }
 ENTITY_FILES = {"modules/transformers/entity_vectorstore.py"}   # the entity index, keyed by entity: not the points of a record
 
@@ -109,14 +120,14 @@ def _all_delete_sites(names: set[str] = DELETE_NAMES) -> set[tuple[str, str]]:
 COLLECTION_SITES = {
     ("modules/indexing/run.py", "_drop_scope_collections"),
     ("modules/indexing/run.py", "purge_connector_by_virtual_record_ids"),
-    ("modules/transformers/entity_vectorstore.py", "_drop_and_create_under_lock"),
+    ("modules/transformers/entity_vectorstore.py", "_drop_collection"),
     ("services/vector_db/collection_registry.py", "_drop"),
 }
 
 
 def test_every_delete_of_points_in_the_application_is_listed_and_the_record_writing_ones_are_fenced() -> None:
     sites = _all_delete_sites({"delete_points"})
-    unlisted = {s for s in sites if s not in FENCED | SWEEP | GRAPH_CHECKED and s[0] not in ENTITY_FILES}
+    unlisted = {s for s in sites if s not in FENCED | SWEEP | GRAPH_CHECKED | PRECISION_GUARD and s[0] not in ENTITY_FILES}
     assert not unlisted, f"a delete of vector points that is not listed (fence it, or list it with its reason): {sorted(unlisted)}"
     assert FENCED <= sites and SWEEP <= sites, "a listed fenced site no longer exists"
     fenced_calls = set(_calls_by_function("_fenced")) | set(_calls_by_function("fenced_delete"))
@@ -124,7 +135,7 @@ def test_every_delete_of_points_in_the_application_is_listed_and_the_record_writ
         text = (APP / file).read_text(encoding="utf-8")
         node = next(n for n in ast.walk(ast.parse(text)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function)
         assert "_fenced(" in ast.get_source_segment(text, node) or "fenced_delete(" in ast.get_source_segment(text, node), f"{file}:{function}"
-    assert fenced_calls >= {"delete_blocks_by_ids", "delete_embeddings", "_fence_and_verify"}
+    assert fenced_calls >= {"delete_blocks_by_ids", "delete_embeddings", "_drop_points_of_other_runs"}
 
 
 def test_every_collection_drop_in_the_application_is_listed() -> None:

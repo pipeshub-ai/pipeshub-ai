@@ -7,14 +7,15 @@ An older image applies its own, narrower record schema; records that hold the ne
     succeed after at most one failed statement;
 (b) inside a transaction: the 1620 aborts it before the caller's handler runs, a caller that catches and carries on
     cannot commit, nothing the transaction wrote is kept, and the owner's rerun leaves every write in place;
-(c) a stream transaction held open during a widening: no other records write waits longer than the stall bound X
-    (``STALL_BOUND_S``, measured in ``test_record_diagnostics_save_transaction_arango.py``);
+(c) a stream transaction held open during a widening: the change is sent only once it has ended, so no other records
+    write queues behind it for that transaction;
 (d) three processes that see the narrowing issue at most one change (the Redis lock);
 (e) a narrowed ``indexingStatus`` enum and a record holding the newer value: the record updates after the widening,
     and not when the widening keeps the narrowed definition (the union control);
 (f) an image without the guard fails until a newer process's next poll (10 s) repairs the schema, about one poll interval when it finds the
     lock free and a quiet point, and eventually otherwise;
-(g) the generation rule: a process applies its schema only when the live generation is lower.
+(g) the generation rule: a process applies its schema only when the live generation is lower;
+(h) the same rule for the apps schema, and its poll.
 
 One forced 1620 per rerun owner (``retry_on_deadlock``, ``GraphDataStore.execute_in_transaction``, a plain
 transaction block whose caller runs the unit again), each ending in the right state.
@@ -31,15 +32,24 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     retry_on_deadlock,
 )
 from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
-from app.schema.arango.documents import RECORD_SCHEMA_GENERATION, record_schema
+from app.schema.arango.documents import (
+    APP_SCHEMA_GENERATION,
+    RECORD_SCHEMA_GENERATION,
+    app_schema,
+    record_schema,
+)
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.arango.record_schema_guard import generation_of_schema
-from tests.integration.graph_db.record_diagnostics_stall_bound import STALL_BOUND_S
+from tests.integration.graph_db.record_diagnostics_stall_bound import (
+    STALL_BOUND_S,
+    running_at_each_widening,
+)
 from tests.integration.graph_db.record_diagnostics_support import (
     RECORDS,
     Store,
@@ -62,6 +72,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
 logger = logging.getLogger("record-diagnostics-rewiden-it")
 DIAGNOSTICS = {"firstQueuedAt": 1_700_000_000_000, "indexingAttempts": 2, "pageCount": 12, "failedAt": 1_700_000_100_000}
 NEWER_STATUS = "ENABLE_MULTIMODAL_MODELS"
+APPS = CollectionNames.APPS.value
 
 
 class Cluster:
@@ -248,13 +259,17 @@ async def test_ensure_wide_inside_a_transaction_asserts(cluster: Cluster) -> Non
 # ---- (c) a long transaction during a widening: the stall bound --------------------------------------------------------
 
 
-async def test_no_other_records_write_waits_longer_than_the_bound_while_a_transaction_is_open(cluster: Cluster) -> None:
+async def test_no_other_records_write_waits_on_the_widening_while_a_transaction_is_open(cluster: Cluster, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The widening is sent once the open transaction has ended, so no write queues behind it for that transaction (what each
+    write waited is printed; on a shared runner it is the host's scheduling, not the code)."""
     keys = await cluster.clean(20, "w")
     [tainted] = await cluster.tainted(1)
     await cluster.narrow()
     p = cluster.provider
     holding = await p.begin_transaction(read=[RECORDS], write=[RECORDS])
     await p.update_node(keys[0], RECORDS, {"indexingStatus": "QUEUED"}, transaction=holding)
+    assert holding in [t["id"] for t in await cluster.client.list_running_transactions()]
+    sent, _ = running_at_each_widening(cluster.client, monkeypatch)
     waits: list[float] = []
     stop = asyncio.Event()
 
@@ -272,13 +287,13 @@ async def test_no_other_records_write_waits_longer_than_the_bound_while_a_transa
         await p.commit_transaction(holding)
 
     background = [asyncio.create_task(others()), asyncio.create_task(release_later())]
-    trigger_started = time.monotonic()
     await p.update_node(tainted, RECORDS, {"indexingStatus": "QUEUED"})  # refused, widens at the quiet point, then lands
     stop.set()
     await asyncio.gather(*background)
 
-    assert time.monotonic() - trigger_started >= 2.5, "the change waited for the open transaction"
-    assert waits and max(waits) <= STALL_BOUND_S, f"a write waited {max(waits):.2f}s (bound {STALL_BOUND_S}s)"
+    print(f"plain writes during the widening: {len(waits)}, max wait {max(waits):.2f}s (STALL_BOUND_S={STALL_BOUND_S}s)")
+    # one change: the trigger is one write, so one widening
+    assert sent == [[]], f"the widening was sent while the server listed {sent} right before it: every records write waits for those"
     assert (await cluster.store.doc(tainted))["indexingStatus"] == "QUEUED"
 
 
@@ -395,6 +410,75 @@ async def test_applying_when_equal_would_not_be_needed(cluster: Cluster) -> None
     cluster.client.update_collection_schema = counting  # type: ignore[method-assign]
     await cluster.provider._apply_schema(RECORDS, record_schema)
     assert puts["n"] == 0
+
+
+# ---- (h) the apps schema: the same generation rule ---------------------------------------------------------------------
+
+
+def _older_apps_schema() -> dict[str, Any]:
+    """The apps schema of an image from before the marker and the user-link stamp."""
+    older = copy.deepcopy(app_schema)
+    del older["rule"]["$comment"]
+    del older["rule"]["properties"]["userLinkStartedAtTimestamp"]
+    return older
+
+
+async def _apps_generation(cluster: Cluster) -> int:
+    return generation_of_schema(await cluster.client.get_collection_schema(APPS))
+
+
+async def test_the_apps_schema_is_never_narrowed_and_an_older_one_is_widened(cluster: Cluster) -> None:
+    key = cluster.store.key("app")
+    assert await cluster.client.create_document(APPS, {
+        "_key": key, "name": "a", "type": "t", "appGroup": "g", "scope": "team", "isActive": True, "createdAtTimestamp": 1,
+    })
+    try:
+        assert await _apps_generation(cluster) == APP_SCHEMA_GENERATION
+        higher = copy.deepcopy(app_schema)
+        higher["rule"]["$comment"] = f"pipeshub-app-schema gen={APP_SCHEMA_GENERATION + 4}"
+        assert await cluster.client.update_collection_schema(APPS, higher)
+        assert await cluster.provider._apply_schema(APPS, app_schema) is True
+        assert await _apps_generation(cluster) == APP_SCHEMA_GENERATION + 4, "a lower generation must never narrow a higher one"
+
+        # An older image's start: the stamp it does not know is refused until a newer process widens the schema again.
+        assert await cluster.client.update_collection_schema(APPS, _older_apps_schema())
+        with pytest.raises(Exception, match="1620"):
+            await cluster.client.update_document(APPS, key, {"userLinkStartedAtTimestamp": 1})
+        assert await cluster.provider._apply_schema(APPS, app_schema) is True
+        assert await _apps_generation(cluster) == APP_SCHEMA_GENERATION
+        assert await cluster.client.update_document(APPS, key, {"userLinkStartedAtTimestamp": 2})
+    finally:
+        assert await cluster.client.update_collection_schema(APPS, app_schema)
+
+
+async def test_the_poll_repairs_an_apps_schema_an_older_image_narrowed(cluster: Cluster) -> None:
+    key = cluster.store.key("app")
+    assert await cluster.client.create_document(APPS, {
+        "_key": key, "name": "a", "type": "t", "appGroup": "g", "scope": "team", "isActive": True, "createdAtTimestamp": 1,
+    })
+    # ensure_schema (in connect_arango) already started the 10 s poll; a new one starts the measured window with a full interval.
+    await cluster.client.apps_guard.stop()
+    assert await cluster.client.update_collection_schema(APPS, _older_apps_schema())
+    cluster.provider.start_record_schema_poll()
+    started = time.monotonic()
+    try:
+        while True:
+            try:
+                await cluster.client.update_document(APPS, key, {"userLinkStartedAtTimestamp": 1})
+                break
+            except Exception as error:
+                assert "1620" in str(error)
+                assert time.monotonic() - started < 15, "still refused after the poll interval"
+                await asyncio.sleep(0.5)
+        window = time.monotonic() - started
+        assert await _apps_generation(cluster) == APP_SCHEMA_GENERATION, "the poll must put back this process's apps schema"
+    finally:
+        await cluster.client.record_guard.stop()
+        await cluster.client.apps_guard.stop()
+        assert await cluster.client.update_collection_schema(APPS, app_schema)
+    print(f"old-image apps window: {window:.1f}s")
+    # the poll interval, plus the request and the widening it issues
+    assert window <= 10.0 + 2.0
 
 
 # ---- the rerun owners: one forced 1620 each ----------------------------------------------------------------------------

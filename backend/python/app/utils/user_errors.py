@@ -32,9 +32,11 @@ from app.exceptions.indexing_exceptions import (
     VectorStoreError,
 )
 from app.exceptions.storage_exceptions import StorageRequestRejectedError
+from app.modules.parsers.worker_deaths import is_retrying_death
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
 from app.utils.api_call import ApiCallError
+from app.utils.embedding_retry import is_quota_exhausted
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -152,6 +154,21 @@ PARSE_WORKER_OUT_OF_MEMORY = (
     "into smaller files and sync or upload them again; if it keeps failing, ask your admin "
     "to give PipesHub more memory."
 )
+PARSE_WORKER_KILLED_RETRYING = (
+    "The process reading this file was stopped because the server was short of memory, "
+    "which is not a problem with the file. PipesHub will retry it automatically."
+)
+
+
+def retry_reason(exc: BaseException | None) -> str:
+    """The reason to store on a record that failed this time and is queued to run again.
+
+    A parse worker killed under memory pressure says so: the next delivery usually succeeds once the
+    other work has eased, and nobody needs to split the file yet. Any other failure is the generic text.
+    """
+    if is_retrying_death(exc):
+        return PARSE_WORKER_KILLED_RETRYING
+    return RETRY_SCHEDULED
 
 
 # Written for people by the code that raised them, and more specific than any
@@ -375,6 +392,11 @@ def _ai_messages(model: str) -> dict[str, str]:
             f"The {model} is busy right now, so this file wasn't indexed. Reindex it in "
             "a few minutes."
         ),
+        "quota_exceeded": (
+            f"The {model}'s provider account is out of credit, so this file wasn't indexed. "
+            "An admin can add credit with the provider or choose another model in "
+            "Workspace → AI Models, then Reindex the file."
+        ),
         "auth_error": (
             f"The {model} rejected PipesHub's API key, so this file wasn't indexed. An "
             "admin can update the key in Workspace → AI Models, then Reindex the file."
@@ -568,6 +590,9 @@ def _provider_code(chain: list[BaseException]) -> str:
         if _aws_error_code(e) == "NotAuthorized":
             return "auth_error"
         status = _status_code(e)
+        # An empty balance: OpenAI answers it 429 and Anthropic 400, and neither is fixed by waiting.
+        if status in (400, 402, 429) and is_quota_exhausted(e):
+            return "quota_exceeded"
         if status == 429:
             return "rate_limit"
         if status in (401, 403):
@@ -583,7 +608,7 @@ def _provider_code(chain: list[BaseException]) -> str:
     for e in theirs:
         name = type(e).__name__
         if "RateLimit" in name:
-            return "rate_limit"
+            return "quota_exceeded" if is_quota_exhausted(e) else "rate_limit"
         if "Authentication" in name or "PermissionDenied" in name:
             return "auth_error"
         if "ContextWindow" in name or "ContextLength" in name:
@@ -734,6 +759,11 @@ def _reason(exc: BaseException | None) -> str:
     if exc is None:
         return GENERIC_FAILURE
     chain = list(_chain(exc))
+
+    # The final text of a record whose worker was killed: the retry promised while it waited did not come, so this
+    # is the second death (or the last attempt) and the advice is to make the file smaller.
+    if is_retrying_death(exc):
+        return PARSE_WORKER_OUT_OF_MEMORY
 
     for e in chain:
         # The source refused the item, and the connector said why in its own words.

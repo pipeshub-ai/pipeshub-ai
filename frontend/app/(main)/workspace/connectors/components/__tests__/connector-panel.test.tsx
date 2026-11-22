@@ -449,7 +449,7 @@ describe('ConnectorPanel: editing saved credentials', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
       await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledTimes(1));
-      expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync');
+      expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', false);
       expect(api.toggleConnector.mock.invocationCallOrder[0]).toBeLessThan(
         api.saveAuthConfig.mock.invocationCallOrder[0]
       );
@@ -621,7 +621,7 @@ describe('ConnectorPanel: saving the sync configuration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
 
-    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync'));
+    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', false));
     await waitFor(() => expect(api.saveFiltersSyncConfig).toHaveBeenCalledTimes(1));
     expect(api.toggleConnector.mock.invocationCallOrder[0]).toBeLessThan(
       api.saveFiltersSyncConfig.mock.invocationCallOrder[0]

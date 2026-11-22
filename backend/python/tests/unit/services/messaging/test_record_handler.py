@@ -1020,6 +1020,7 @@ class TestDeleteVectorCollectionEvent:
         sink.vector_store = MagicMock(spec=VectorStore)
         sink.vector_store.get_embedding_model_instance = AsyncMock(return_value=False)
         sink.vector_store.embedding_size = embedding_size
+        sink.entity_vector_store = MagicMock(reset_collection=AsyncMock(return_value=True))
         handler.event_processor.sink_orchestrator = sink
         registry = AsyncMock()
         registry.recreate_records_collections = AsyncMock(return_value=["records"])
@@ -1028,7 +1029,7 @@ class TestDeleteVectorCollectionEvent:
 
     @pytest.mark.asyncio
     async def test_recreates_every_managed_collection_and_marks_ready(self):
-        handler, _sink, registry = self._handler_with_vector_store()
+        handler, sink, registry = self._handler_with_vector_store()
 
         with patch(
             "app.services.messaging.kafka.handlers.record.mark_cleanup_phase",
@@ -1041,6 +1042,8 @@ class TestDeleteVectorCollectionEvent:
             )
 
         assert [e.event for e in events] == ["parsing_complete", "indexing_complete"]
+        sink.entity_vector_store.reset_collection.assert_awaited_once()  # the entity index is reset with the records collections
+        registry.release_orphan_pins.assert_awaited_once()
         assert events[0].data.record_id == "delete_vector_collection"
         # The dimension comes from the live model, not the manifest: this event
         # fires precisely because the model (and so the width) changed.
@@ -4956,6 +4959,55 @@ class TestReconcilePendingFlag:
 
         assert self._flag_writes(gp) == []
         assert handler._reconcile_promoted_duplicates.await_count == record_module.RECONCILE_ATTEMPTS
+
+    @pytest.mark.asyncio
+    async def test_failure_after_a_sweep_cleared_the_flag_rearms_it(self, monkeypatch) -> None:
+        monkeypatch.setattr(record_module, "RECONCILE_RETRY_DELAY_SECONDS", 0)
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_node = AsyncMock()
+        gp.get_document = AsyncMock(return_value={
+            "indexingStatus": "COMPLETED", DUPLICATE_RECONCILE_PENDING_FIELD: False,
+            "duplicateReconcileAttempts": 0, "duplicateReconcileDueAt": None,
+        })
+        gp.update_node_fields_if_match = AsyncMock(return_value=True)
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=False)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        gp.update_node_fields_if_match.assert_awaited_once()
+        assert gp.update_node_fields_if_match.await_args.args[2][DUPLICATE_RECONCILE_PENDING_FIELD] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rearmed", [True, False])
+    async def test_the_recovery_line_is_logged_only_when_the_marker_was_rearmed(self, monkeypatch, rearmed) -> None:
+        monkeypatch.setattr(record_module, "RECONCILE_RETRY_DELAY_SECONDS", 0)
+        monkeypatch.setattr(record_module, "rearm_failed_reconcile", AsyncMock(return_value=rearmed))
+        handler = _make_handler()
+        handler.event_processor.graph_provider.update_node = AsyncMock()
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=False)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        logged = any("left pending for the recovery retry" in str(c.args[0]) for c in handler.logger.warning.call_args_list)
+        assert logged is rearmed
+
+    @pytest.mark.asyncio
+    async def test_a_successful_reconcile_is_not_rearmed(self) -> None:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.update_node = AsyncMock()
+        gp.get_document = AsyncMock(return_value={
+            "indexingStatus": "COMPLETED", DUPLICATE_RECONCILE_PENDING_FIELD: False,
+            "duplicateReconcileAttempts": 0, "duplicateReconcileDueAt": None,
+        })
+        gp.update_node_fields_if_match = AsyncMock(return_value=True)
+        handler._reconcile_promoted_duplicates = AsyncMock(return_value=True)
+
+        await handler._reconcile_pending_duplicates("r1", "vr1")
+
+        gp.update_node_fields_if_match.assert_not_awaited()
+        assert self._flag_writes(gp) == [False]
 
     @pytest.mark.asyncio
     async def test_a_transient_failure_is_retried(self, monkeypatch):

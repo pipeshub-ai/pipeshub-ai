@@ -2,56 +2,10 @@
 
 import asyncio
 import json
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import BackgroundTasks
-
-# ---------------------------------------------------------------------------
-# Module-level mocking to handle missing optional dependencies.
-# docling_service imports FastAPI, docling, uvicorn which may not be installed
-# in the test environment.
-# ---------------------------------------------------------------------------
-
-def _ensure_mock_modules():
-    """Mock modules that may not be installed in the test environment."""
-    # Create mock FastAPI module with required classes
-    if "fastapi" not in sys.modules:
-        mock_fastapi = MagicMock()
-        # FastAPI app mock
-        mock_app = MagicMock()
-        mock_fastapi.FastAPI.return_value = mock_app
-        mock_fastapi.HTTPException = type("HTTPException", (Exception,), {
-            "__init__": lambda self, status_code=500, detail="": setattr(self, "status_code", status_code) or setattr(self, "detail", detail)
-        })
-        sys.modules["fastapi"] = mock_fastapi
-        sys.modules["fastapi.testclient"] = MagicMock()
-
-    if "uvicorn" not in sys.modules:
-        sys.modules["uvicorn"] = MagicMock()
-
-    if "docling_core" not in sys.modules:
-        sys.modules["docling_core"] = MagicMock()
-        sys.modules["docling_core.types"] = MagicMock()
-        sys.modules["docling_core.types.doc"] = MagicMock()
-        sys.modules["docling_core.types.doc.document"] = MagicMock()
-
-    # Mock app.modules.parsers.pdf.docling_processor which may have heavy deps
-    if "app.modules.parsers.pdf.docling_processor" not in sys.modules:
-        sys.modules["app.modules.parsers.pdf.docling_processor"] = MagicMock()
-
-    # Mock app.models.blocks which may not exist in test env
-    if "app.models.blocks" not in sys.modules:
-        mock_blocks = MagicMock()
-        sys.modules["app.models.blocks"] = mock_blocks
-
-    # Mock app.config.constants.http_status_code
-    if "app.config.constants.http_status_code" not in sys.modules:
-        mock_http = MagicMock()
-        sys.modules["app.config.constants.http_status_code"] = mock_http
-
-_ensure_mock_modules()
 
 from app.services.docling.docling_service import (
     DoclingService,

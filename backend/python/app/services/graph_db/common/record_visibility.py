@@ -104,3 +104,47 @@ def matches_visibility(record: object, visibility: RecordVisibility) -> bool:
         return True
     live = is_live_record(record)
     return live if visibility is RecordVisibility.LIVE else not live
+
+
+# The virtual record a record is indexing into while it replaces its indexed copy. The record keeps serving the copy under
+# ``virtualRecordId`` until the new set commits; until then the pending vrid is held by the record so that no sweep or delete
+# removes the set while it is written. Only a record that is running (IN_PROGRESS or QUEUED) holds it: any other status releases it.
+PENDING_VIRTUAL_RECORD_ID = "pendingVirtualRecordId"
+# NOT_STARTED too: a connector save mid-run stores it, and a record edited faster than it indexes must still commit.
+PENDING_HOLDING_STATUSES = (ProgressStatus.IN_PROGRESS.value, ProgressStatus.QUEUED.value, ProgressStatus.NOT_STARTED.value)
+
+
+def aql_holds_vrid(var: str, vrid_expr: str) -> str:
+    """AQL: ``var`` holds the virtual record ``vrid_expr`` (a bind variable or a correlated variable): it names it, or is running into it.
+
+    The ``!= null`` guard is what lets the optimizer use the sparse index on the pending field for a correlated or batch form."""
+    statuses = ", ".join(f'"{s}"' for s in PENDING_HOLDING_STATUSES)
+    return (
+        f"({var}.virtualRecordId == {vrid_expr} OR ({var}.{PENDING_VIRTUAL_RECORD_ID} != null "
+        f"AND {var}.{PENDING_VIRTUAL_RECORD_ID} == {vrid_expr} AND {var}.indexingStatus IN [{statuses}]))"
+    )
+
+
+def cypher_holds_vrid(var: str, vrid_expr: str) -> str:
+    """Cypher form of :func:`aql_holds_vrid`."""
+    statuses = ", ".join(f"'{s}'" for s in PENDING_HOLDING_STATUSES)
+    return (
+        f"({var}.virtualRecordId = {vrid_expr} OR ({var}.{PENDING_VIRTUAL_RECORD_ID} = {vrid_expr} "
+        f"AND {var}.indexingStatus IN [{statuses}]))"
+    )
+
+
+def sql_holds_vrid(alias: str, vrid_expr: str) -> str:
+    """SQL form (``graph.nodes`` rows). Repeats the partial-index predicate so the planner can use it."""
+    statuses = ", ".join(f"'{s}'" for s in PENDING_HOLDING_STATUSES)
+    return (
+        f"({alias}.doc->>'virtualRecordId' = {vrid_expr} OR ({alias}.doc ? '{PENDING_VIRTUAL_RECORD_ID}' "
+        f"AND {alias}.doc->>'{PENDING_VIRTUAL_RECORD_ID}' = {vrid_expr} AND {alias}.doc->>'indexingStatus' IN ({statuses})))"
+    )
+
+
+def holds_vrid(record: Mapping[str, object], vrid: str) -> bool:
+    """The Python form, for a stored document."""
+    if record.get("virtualRecordId") == vrid:
+        return True
+    return record.get(PENDING_VIRTUAL_RECORD_ID) == vrid and record.get("indexingStatus") in PENDING_HOLDING_STATUSES

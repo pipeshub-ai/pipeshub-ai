@@ -6,6 +6,7 @@ import pytest
 
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    LEVEL_MEMBERS_UNREAD,
     UNREADABLE_AUTH,
     UNREADABLE_KEEPS_STORED_ACCESS,
     UNREADABLE_NOT_LISTED,
@@ -27,6 +28,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     collect_paged_values,
     level_grants,
     level_group_grants,
+    level_readers,
     level_reads_alike,
     levels_after_walk,
     plan_level_reread,
@@ -37,6 +39,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     scheme_has_no_levels,
     unreadable_reason,
     unreadable_security_notices,
+    user_grant_key,
 )
 from app.models.entities import Record, RecordType
 from app.models.permission import EntityType
@@ -1191,3 +1194,80 @@ class TestBrowseAndLevelNamedOnTheIssue:
         rec, grants = self._apply([{"type": "assignee"}], members={"7": [{"type": "group", "value": "g-1"}]},
                                   assignee_email="out@x.com")
         assert (rec.access_rule, grants) == (AccessRule.STRICT, [])
+
+
+class TestBrowseNamedAndInTheLevelThroughItsMembers:
+    """Jira shows a leveled issue to someone Browse names on it (its reporter) who is in the level through a group, a project
+    role or as project lead, without browsing the project. The sync reads those members (``level_readers``)."""
+
+    HOLDERS = (
+        {"type": "group", "value": "g-1"},
+        {"type": "projectRole", "parameter": "10002", "projectRole": {"id": "10002", "name": "Developers"}},
+        {"type": "projectLead"},
+    )
+
+    def _apply(self, holder: dict, readers: dict | None) -> tuple[Record, list, list]:
+        context = _present(members={"7": [holder]})
+        context.browse_holders = [{"type": "reporter"}]
+        context.level_readers = readers
+        rec = _record()
+        grants, skipped, settled = apply_issue_access_settled(
+            rec, {"security": {"id": "7"}}, is_subtask=False, project_key="JUNI", context=context, project_id="p-1",
+            reporter_email="in@x.com")
+        assert settled
+        return rec, grants, skipped
+
+    def test_a_member_of_the_level_named_by_browse_reads_it_alone(self) -> None:
+        for holder in self.HOLDERS:
+            rec, grants, skipped = self._apply(holder, {"7": frozenset({user_grant_key("in@x.com", None)})})
+            assert (rec.access_rule, [g.email for g in grants], skipped) == (AccessRule.OPEN, ["in@x.com"], []), holder
+
+    def test_someone_the_members_leave_out_needs_the_project(self) -> None:
+        rec, grants, skipped = self._apply(self.HOLDERS[0], {"7": frozenset({user_grant_key("other@x.com", None)})})
+        assert (rec.access_rule, grants, skipped) == (AccessRule.STRICT, [], [])
+
+    def test_members_not_read_are_reported_and_grant_nobody(self) -> None:
+        rec, grants, skipped = self._apply(self.HOLDERS[0], {"7": None})
+        assert (rec.access_rule, grants, skipped) == (AccessRule.STRICT, [], [LEVEL_MEMBERS_UNREAD])
+        rec, grants, skipped = self._apply(self.HOLDERS[0], None)  # not tracked (Data Center): as before
+        assert (rec.access_rule, grants, skipped) == (AccessRule.STRICT, [], [])
+
+    def test_level_readers_expand_groups_and_roles_and_fail_closed_on_an_unread_one(self) -> None:
+        def user(email: str, account: str) -> object:
+            return type("U", (), {"email": email, "source_user_id": account})()
+
+        grants, _ = level_group_grants([*self.HOLDERS, {"type": "user", "parameter": "acc-u",
+                                        "user": {"accountId": "acc-u", "emailAddress": "u@x.com"}}],
+                                       project_key="JUNI", user_by_id={"acc-u": user("u@x.com", "acc-u")}, app_roles_mapping={})
+        groups = {"g-1": [user("g@x.com", "acc-g")]}
+        roles = {"JUNI_10002": [user("", "acc-r")], "JUNI_projectLead": [user("lead@x.com", "acc-l")]}
+        assert level_readers(grants, groups, roles) == frozenset({
+            user_grant_key("u@x.com", None), user_grant_key("g@x.com", None), user_grant_key(None, "acc-r"),
+            user_grant_key("lead@x.com", None)})
+        assert level_readers(grants, {"g-1": None}, roles) is None
+        assert level_readers(grants, groups, {"JUNI_10002": []}) is None
+
+    def test_a_reader_alone_beside_a_grant_that_needs_the_project_stays_strict(self) -> None:
+        """Browse names the reporter, who is in the level's group, but not the assignee, whom the level names: the assignee's grant
+        needs the project, so the issue is STRICT and the reporter, who reads it alone in Jira, needs the project too (DELTA-18).
+        OPEN would admit the assignee without the project."""
+        context = _present(members={"7": [self.HOLDERS[0], {"type": "assignee"}]})
+        context.browse_holders = [{"type": "reporter"}]
+        context.level_readers = {"7": frozenset({user_grant_key("in@x.com", None)})}
+        rec = _record()
+        grants, skipped, settled = apply_issue_access_settled(
+            rec, {"security": {"id": "7"}}, is_subtask=False, project_key="JUNI", context=context, project_id="p-1",
+            reporter_email="in@x.com", assignee_email="asg@x.com")
+        assert (rec.access_rule, [g.email for g in grants], skipped, settled) == (AccessRule.STRICT, ["asg@x.com"], [], True)
+
+    def test_a_change_of_members_rereads_the_level_only_where_browse_names_people(self) -> None:
+        def digest(readers: frozenset, browse: list) -> str:
+            context = _present(members={"7": [self.HOLDERS[0]]})
+            context.browse_holders, context.level_readers = browse, {"7": readers}
+            return context.level_fingerprints({}, split=True)["7"]
+
+        a, b = frozenset({user_grant_key("a@x.com", None)}), frozenset({user_grant_key("b@x.com", None)})
+        reporter = [{"type": "reporter"}]
+        assert digest(a, reporter).split(".")[0] == digest(b, reporter).split(".")[0]
+        assert digest(a, reporter).split(".")[1] != digest(b, reporter).split(".")[1]
+        assert digest(a, []) == digest(b, [])

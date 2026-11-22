@@ -9,6 +9,7 @@ import contextlib
 import http.client
 import json
 import logging
+import select
 import socket
 import threading
 import time
@@ -21,6 +22,7 @@ from app.telemetry import ops_exporter as ox
 from tests.support.free_port import bind_on_free_port
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 HOST = "127.0.0.1"
@@ -49,6 +51,43 @@ def _wait_until(predicate, timeout_s: float) -> bool:
             return True
         time.sleep(0.01)
     return predicate()
+
+
+@contextlib.contextmanager
+def _nothing_on_this_thread_waits() -> Iterator[None]:
+    """Fail these calls on this thread when they would block: a Condition or Event wait, time.sleep, select.select with a
+    timeout and nothing ready, and socket recv/send/sendall with nothing ready. "Never waits" with no wall-clock bound.
+    It does not see a contended Lock.acquire, recv_into or makefile reads, poll or selectors, or os.read."""
+    me = threading.get_ident()
+    real_select = select.select
+
+    def ready(sock: socket.socket, write: bool) -> bool:
+        return any(real_select([] if write else [sock], [sock] if write else [], [], 0))
+
+    def io_waits(write: bool) -> Callable[..., bool]:
+        def waits(sock: socket.socket, _data: object = None, flags: int = 0, *_: object) -> bool:
+            # A socket with a timeout polls for that long first, MSG_DONTWAIT or not.
+            nonblocking = sock.gettimeout() == 0 or (sock.gettimeout() is None and flags & socket.MSG_DONTWAIT)
+            return not nonblocking and not ready(sock, write)
+        return waits
+
+    def guard(real: Callable[..., object], waits: Callable[..., bool]) -> Callable[..., object]:
+        def probe(*args: object, **kwargs: object) -> object:
+            if threading.get_ident() == me and waits(*args, **kwargs):
+                raise AssertionError(f"it waited: {real.__qualname__}")
+            return real(*args, **kwargs)
+        return probe
+
+    def timed(timeout: float | None) -> bool:
+        return timeout is None or timeout > 0
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(threading.Condition, "wait", guard(threading.Condition.wait, lambda _self, timeout=None: timed(timeout)))
+        m.setattr(time, "sleep", guard(time.sleep, lambda secs: secs > 0))
+        m.setattr(select, "select", guard(select.select, lambda r, w, x, timeout=None: timed(timeout) and not any(real_select(r, w, x, 0))))
+        for name, write in (("recv", False), ("send", True), ("sendall", True)):
+            m.setattr(socket.socket, name, guard(getattr(socket.socket, name), io_waits(write)))
+        yield
 
 
 def _get(port: int, timeout: float = 15.0) -> int:
@@ -277,31 +316,27 @@ def test_live_handler_threads_never_exceed_the_cap_while_handlers_linger_after_t
         _close(exporter)
 
 
-def test_a_trickling_client_is_cut_at_the_request_deadline_not_at_the_read_timeout(tmp_path: Path) -> None:
+def test_a_trickling_client_is_cut_at_the_request_deadline_not_at_the_read_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The shipped deadline, with free slots (nothing to evict): only the reaper can cut a client whose every
     byte restarts the per-read timer."""
-    assert ox.REQUEST_DEADLINE_S + 0.5 < ox._Handler.timeout
+    monkeypatch.setattr(ox._Handler, "timeout", 60.0)  # past the 10 s below: a cut inside it can only be the deadline's
     exporter = _exporter(tmp_path)
     port = exporter._port
     try:
         with socket.create_connection((HOST, port)) as s:
-            started = time.monotonic()
-            cut_after = None
-            while time.monotonic() - started < ox._Handler.timeout + 2:
+            end = time.monotonic() + 10
+            cut = False
+            while not cut and time.monotonic() < end:
                 try:
                     s.send(b"G")
                     s.settimeout(0.1)
-                    if s.recv(1) == b"":
-                        cut_after = time.monotonic() - started
-                        break
+                    cut = s.recv(1) == b""
                 except TimeoutError:
                     pass
                 except OSError:
-                    cut_after = time.monotonic() - started
-                    break
+                    cut = True
                 time.sleep(0.1)
-        assert cut_after is not None, "the trickling client was never cut"
-        assert cut_after <= ox.REQUEST_DEADLINE_S + 0.5, cut_after
+        assert cut, "the trickling client was never cut"
     finally:
         _close(exporter)
 
@@ -319,9 +354,7 @@ def test_a_scrape_is_answered_when_every_slot_is_held_by_idle_clients_and_the_de
     idle = [socket.create_connection((HOST, port)) for _ in range(ox.MAX_CONNECTIONS)]
     try:
         assert _wait_until(lambda: len(server._live) == ox.MAX_CONNECTIONS, 5)
-        started = time.monotonic()
-        assert _get(port) == 200
-        assert time.monotonic() - started < ox.ADMIT_WAIT_S + 2
+        assert _get(port) == 200  # without the eviction it waits out ADMIT_WAIT_S and gets a 503
     finally:
         for s in idle:
             s.close()
@@ -347,9 +380,8 @@ def test_the_acceptor_never_waits_for_a_slot(tmp_path: Path, monkeypatch: pytest
             server._live.add(t)
             del b
         c, d = socket.socketpair()
-        started = time.monotonic()
-        server.process_request(c, ("x", 0))
-        assert time.monotonic() - started < 0.1, "the acceptor waited"
+        with _nothing_on_this_thread_waits():
+            server.process_request(c, ("x", 0))
         assert len(server._queue) == 1
         d.settimeout(5)
         assert d.recv(100).startswith(b"HTTP/1.1 503")
@@ -381,9 +413,8 @@ def test_a_full_admission_queue_refuses_at_once(tmp_path: Path) -> None:
             server.process_request(c, ("x", 0))
         assert len(server._queue) == ox.ADMIT_QUEUE_MAX
         c, d = socket.socketpair()
-        started = time.monotonic()
-        server.process_request(c, ("x", 0))
-        assert time.monotonic() - started < 0.1
+        with _nothing_on_this_thread_waits():
+            server.process_request(c, ("x", 0))
         d.settimeout(2)
         assert d.recv(100).startswith(b"HTTP/1.1 503")
         assert len(server._queue) == ox.ADMIT_QUEUE_MAX
@@ -536,11 +567,11 @@ def test_the_peer_check_never_waits_even_with_a_default_socket_timeout() -> None
     socket.setdefaulttimeout(2.0)
     try:
         a, b = socket.socketpair()  # inherits the default timeout, as an accepted socket does
-        started = time.monotonic()
-        assert ox.BoundedServer._peer_gone(a) is False  # open and silent
+        with _nothing_on_this_thread_waits():
+            assert ox.BoundedServer._peer_gone(a) is False  # open and silent
         b.send(b"x")
-        assert ox.BoundedServer._peer_gone(a) is False  # open with data
-        assert time.monotonic() - started < 0.5, "the peer check waited for the default timeout"
+        with _nothing_on_this_thread_waits():
+            assert ox.BoundedServer._peer_gone(a) is False  # open with data
         a.recv(1)
         b.close()
         assert ox.BoundedServer._peer_gone(a) is True

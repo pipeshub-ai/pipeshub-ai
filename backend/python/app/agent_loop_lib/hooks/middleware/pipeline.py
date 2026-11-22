@@ -43,7 +43,7 @@ from app.agent_loop_lib.hooks.middleware.routing import (
     prefixed,
     to_matcher,
 )
-from app.utils.error_class import log_failure
+from app.utils.error_class import failure_reason, log_failure
 
 __all__ = ["Pipeline", "Next", "Middleware"]
 
@@ -162,14 +162,16 @@ class Pipeline(Generic[TCtx]):
             logger, "middleware.failed", exc, include_error_text=False,
             middleware=getattr(middleware, "__qualname__", None), context=type(ctx).__name__,
         )
+        # Not the error's text either: the denial reaches the model, the run's result and the client.
+        reason = failure_reason(exc)
         metadata = getattr(ctx, "metadata", None)
         if isinstance(metadata, dict):
-            metadata.setdefault("middleware_errors", []).append(str(exc))
+            metadata.setdefault("middleware_errors", []).append(reason)
 
         if self._fail_closed:
             deny = getattr(ctx, "deny", None)
             if callable(deny):
-                deny(f"middleware error: {exc}", code="middleware_error")
+                deny(f"middleware error: {reason}", code="middleware_error")
             # If the context type has no `deny` (e.g. a future event whose
             # decision model differs), the error is still recorded above;
             # callers should supply an `is_terminal` predicate appropriate

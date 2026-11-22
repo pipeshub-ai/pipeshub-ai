@@ -75,11 +75,6 @@ function panel(customStdioAllowed: boolean) {
         customStdioAllowed={customStdioAllowed}
         onOpenChange={vi.fn()}
         onSaved={vi.fn()}
-        onRequestDelete={vi.fn()}
-        busyInstanceId={null}
-        onAuthenticate={vi.fn()}
-        onReauthenticate={vi.fn()}
-        onDisconnect={vi.fn()}
       />
     </Theme>
   );
@@ -158,11 +153,6 @@ describe('Okta catalog URL', () => {
           customStdioAllowed={false}
           onOpenChange={vi.fn()}
           onSaved={vi.fn()}
-          onRequestDelete={vi.fn()}
-          busyInstanceId={null}
-          onAuthenticate={vi.fn()}
-          onReauthenticate={vi.fn()}
-          onDisconnect={vi.fn()}
         />
       </Theme>
     );

@@ -7,11 +7,22 @@ import yaml from 'js-yaml'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { ValidationMiddleware } from '../../../../src/libs/middlewares/validation.middleware'
 import {
+  coMentionedEntities,
+  entityCapabilities,
   entityNeighbors,
+  entityRecords,
   grepRecords,
+  recordsByEntities,
+  recordsByPerson,
+  recordsByValue,
   searchEntities,
 } from '../../../../src/modules/enterprise_search/controller/exact_search.controller'
 import {
+  enterpriseSearchCoMentionedSchema,
+  enterpriseSearchEntityRecordsSchema,
+  enterpriseSearchRecordsByEntitiesSchema,
+  enterpriseSearchRecordsByPersonSchema,
+  enterpriseSearchRecordsByValueSchema,
   enterpriseSearchEntitiesSchema,
   enterpriseSearchEntityNeighborsSchema,
   enterpriseSearchGrepSchema,
@@ -191,5 +202,91 @@ describe('entity routes match the published spec', () => {
       const fields = Object.keys(spec.components.schemas[name].properties)
       expect(fields.filter((f) => /^(org|user)/i.test(f)), name).to.deep.equal([])
     }
+  })
+})
+
+describe('entity tool routes', () => {
+  let execute: sinon.SinonStub
+  let calls: Array<{ uri: string; method: string; body: unknown }>
+
+  beforeEach(() => {
+    calls = []
+    execute = sinon.stub(AIServiceCommand.prototype, 'execute')
+    execute.callsFake(async function (this: any) {
+      calls.push({ uri: this.uri ?? this.url, method: this.method, body: this.body })
+      return { statusCode: 200, data: { text: 'ok' } }
+    })
+  })
+  afterEach(() => sinon.restore())
+
+  const ROUTES: Array<[string, any, string, Record<string, unknown>]> = [
+    ['entities/records', entityRecords, 'listEntityRecords', { entityId: 'e', entityType: 'person', limit: 5, cursor: 'c' }],
+    ['entities/co-mentioned', coMentionedEntities, 'listCoMentionedEntities', { entityIds: ['a'], kinds: ['person'] }],
+    ['records/by-person', recordsByPerson, 'listRecordsByPerson', { person: 'me', roles: ['assignee'] }],
+    ['records/by-value', recordsByValue, 'listRecordsByValue', { amountMin: 1, currency: 'USD' }],
+    ['records/by-entities', recordsByEntities, 'searchRecordsByEntities', { mentions: [{ name: 'Acme' }], match: 'all' }],
+  ]
+  for (const [path, handler, , body] of ROUTES) {
+    it(`forwards ${path} with only its fields, so a body cannot name another user or organisation`, async () => {
+      const { res, error } = await run(handler(appConfig), { ...body, orgId: 'other-org', userId: 'u', evil: 'x' })
+      expect(error).to.equal(undefined)
+      expect(res.statusCode).to.equal(200)
+      expect(calls[0].method).to.equal('POST')
+      expect(calls[0].uri).to.equal(`http://ai:8000/api/v1/search/${path}`)
+      expect(JSON.parse(String(calls[0].body))).to.deep.equal(body)
+    })
+  }
+
+  it('asks for the capabilities with a GET and no body', async () => {
+    execute.callsFake(async function (this: any) {
+      calls.push({ uri: this.uri ?? this.url, method: this.method, body: this.body })
+      return { statusCode: 200, data: { recordsByPerson: true } }
+    })
+    const { res } = await run(entityCapabilities(appConfig), { orgId: 'other-org' })
+    expect(res.payload).to.deep.equal({ recordsByPerson: true })
+    expect(calls[0].method).to.equal('GET')
+    expect(calls[0].body).to.equal(undefined)
+    expect(calls[0].uri).to.equal('http://ai:8000/api/v1/search/entities/capabilities')
+  })
+
+  it('passes a lookup the deployment does not serve on as an error, not an empty answer', async () => {
+    execute.resolves({ statusCode: 404, data: { detail: 'Named-entity lookup is not enabled.' } })
+    const { res, error } = await run(recordsByValue(appConfig), { amountMin: 1 })
+    expect(res.payload).to.equal(undefined)
+    expect(error).to.be.instanceOf(Error)
+  })
+
+  const spec: any = yaml.load(
+    readFileSync(join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'), 'utf8'),
+  )
+  const VALIDATORS: Array<[string, any, string]> = [
+    ['/search/entities/records', enterpriseSearchEntityRecordsSchema, 'EntityRecordsRequest'],
+    ['/search/entities/co-mentioned', enterpriseSearchCoMentionedSchema, 'CoMentionedEntitiesRequest'],
+    ['/search/records/by-person', enterpriseSearchRecordsByPersonSchema, 'RecordsByPersonRequest'],
+    ['/search/records/by-value', enterpriseSearchRecordsByValueSchema, 'RecordsByValueRequest'],
+    ['/search/records/by-entities', enterpriseSearchRecordsByEntitiesSchema, 'RecordsByEntitiesRequest'],
+  ]
+  for (const [path, validator, name] of VALIDATORS) {
+    it(`validates ${path} with exactly the published fields, behind the semantic scopes`, () => {
+      expect(Object.keys(validator.shape.body.shape).sort()).to.deep.equal(Object.keys(spec.components.schemas[name].properties).sort())
+      const op = spec.paths[path].post
+      expect(op.requestBody.content['application/json'].schema.$ref).to.equal(`#/components/schemas/${name}`)
+      expect(JSON.stringify(op.responses['403'])).to.contain('semantic:read')
+      expect(Object.keys(spec.components.schemas[name].properties).filter((f) => /^(org|user)/i.test(f))).to.deep.equal([])
+    })
+  }
+
+  it('accepts what each lookup needs and refuses what it cannot take', () => {
+    const ok = (schema: any, body: unknown) => schema.safeParse({ body }).success
+    expect(ok(enterpriseSearchEntityRecordsSchema, { entityId: 'e', entityType: 'organization' })).to.equal(true)
+    expect(ok(enterpriseSearchEntityRecordsSchema, { entityId: 'e', entityType: 'galaxy' })).to.equal(false)
+    expect(ok(enterpriseSearchEntityRecordsSchema, { entityId: 'e', entityType: 'topic', limit: 51 })).to.equal(false)
+    expect(ok(enterpriseSearchCoMentionedSchema, { entityIds: [] })).to.equal(false)
+    expect(ok(enterpriseSearchRecordsByPersonSchema, { person: '' })).to.equal(false)
+    expect(ok(enterpriseSearchRecordsByValueSchema, { amountMin: 'lots' })).to.equal(false)
+    expect(ok(enterpriseSearchRecordsByEntitiesSchema, { mentions: [] })).to.equal(false)
+    expect(ok(enterpriseSearchRecordsByEntitiesSchema, { mentions: [{ name: 'Acme' }], match: 'some' })).to.equal(false)
+    expect(ok(enterpriseSearchRecordsByEntitiesSchema, { mentions: Array(5).fill({ name: 'a' }) })).to.equal(true)
+    expect(ok(enterpriseSearchRecordsByEntitiesSchema, { mentions: Array(6).fill({ name: 'a' }) })).to.equal(false)
   })
 })

@@ -9,13 +9,16 @@ const makePresence = (online: boolean | null, connected: boolean | null = null) 
   isDesktopConnected: sinon.stub().returns(connected),
 })
 import { ConflictError } from '../../../../src/libs/errors/http.errors'
+import { Logger } from '../../../../src/libs/services/logger.service'
 import {
   BadRequestError,
   InternalServerError,
 } from '../../../../src/libs/errors/http.errors'
 import * as kbUtils from '../../../../src/modules/knowledge_base/utils/utils'
+import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
 import {
   getKnowledgeHubNodes,
+  KNOWLEDGE_HUB_NODES_TIMEOUT_MS,
   createKnowledgeBase,
   getKnowledgeBase,
   listKnowledgeBases,
@@ -292,6 +295,19 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+    it('gives up on a slow connector service rather than wait for the default five minutes', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { items: [] },
+      })
+
+      await handler(createMockRequest(), createMockResponse(), createMockNext())
+
+      expect(execStub.calledOnce).to.be.true
+      expect(execStub.firstCall.args[0]).to.include('/api/v1/knowledge-hub/nodes')
+      expect(execStub.firstCall.args[4]).to.deep.equal({ timeoutMs: KNOWLEDGE_HUB_NODES_TIMEOUT_MS })
     })
   })
 
@@ -3112,6 +3128,35 @@ describe('Knowledge Base Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response.message).to.equal('Record updated with new file version')
       expect(response.fileUploaded).to.be.true
+    })
+
+    it('logs whether a file came with the update, never the file itself', async () => {
+      stubUpdateRecordFileUploadConnectorCalls()
+      sinon.stub(kbUtils, 'uploadNextVersionToStorage').resolves()
+      const info = sinon.stub(Logger.prototype, 'info')
+
+      const handler = updateRecord(
+        createMockKeyValueStore(),
+        createMockAppConfig(),
+      )
+      const req = createMockRequest({
+        params: { recordId: 'r1' },
+        body: UPDATE_RECORD_FILE_BUFFER,
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      const call = info
+        .getCalls()
+        .find((c) => c.args[0] === 'Updating record in database via Python service')
+      expect(call, 'update log line').to.exist
+      const meta = call!.args[1] as Record<string, unknown>
+      expect(meta.hasFileUpload).to.equal(true)
+      for (const c of info.getCalls()) {
+        for (const value of Object.values((c.args[1] ?? {}) as Record<string, unknown>)) {
+          expect(Buffer.isBuffer(value), `${c.args[0]} carries a Buffer`).to.be.false
+        }
+      }
     })
 
     it('tells Python when the new version arrived, read before a slow storage upload', async () => {

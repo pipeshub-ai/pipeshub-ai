@@ -8,6 +8,7 @@ import Citation from '../../../../src/modules/enterprise_search/schema/citation.
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
+import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 
 /**
  * Test doubles for the chat controller's outermost I/O: MongoDB (an in-memory
@@ -571,6 +572,9 @@ export class FakeAIBackend {
   private readonly encoder = new TextEncoder()
 
   install(): void {
+    // A stream a test leaves open would keep the run's 60 s heartbeat (keepRunAlive) alive after the test, and
+    // it logs into whichever test file runs next. The heartbeat is covered in utils.persistence.test.ts.
+    if (!(searchUtils.keepRunAlive as { restore?: unknown }).restore) sinon.stub(searchUtils, 'keepRunAlive')
     sinon.stub(globalThis, 'fetch').callsFake((input: string | URL | Request, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : input.toString()
       const rawBody = typeof init?.body === 'string' ? init.body : '{}'

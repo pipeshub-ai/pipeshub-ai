@@ -150,10 +150,8 @@ def normalize_grid(grid: Sequence[Sequence[Any]]) -> list[list[str]]:
 
 
 def _row_dict(row: Sequence[str], headers: Sequence[str]) -> dict[str, str]:
-    return {
-        (headers[i] if i < len(headers) and headers[i] else f"Column_{i + 1}"): value
-        for i, value in enumerate(row)
-    }
+    keys = indexing_helpers.unique_column_keys(headers, len(row))
+    return {keys[i]: value for i, value in enumerate(row)}
 
 
 def _simple_texts(rows: Sequence[Sequence[str]], headers: Sequence[str]) -> list[str]:
@@ -608,6 +606,7 @@ def _plain_enrichment(
     rows: Sequence[Sequence[str]], header_rows: int, headers: list[str], *, degraded: bool
 ) -> TableEnrichmentResult:
     data_rows = rows[header_rows:]
+    headers = indexing_helpers.unique_column_keys(headers, fill_empty=False)
     return TableEnrichmentResult(
         summary=fallback_table_summary(headers, len(data_rows)),
         headers=headers,
@@ -718,7 +717,10 @@ async def enrich_table_grid(
     first_batch = send_rows[:batch_size]
 
     if not first_batch:
-        return TableEnrichmentResult(headers=known_headers or [], header_row_count=header_rows)
+        return TableEnrichmentResult(
+            headers=indexing_helpers.unique_column_keys(known_headers or [], fill_empty=False),
+            header_row_count=header_rows,
+        )
 
     if llm is None:
         return _plain_enrichment(rows, header_rows, known_headers or [], degraded=False)
@@ -775,6 +777,8 @@ async def enrich_table_grid(
     else:
         header_rows = 1 if llm_header_rows == 1 and len(rows) > 1 else 0
         headers = list(llm_headers)
+    # One distinct name per column, so the stored headers and the row keys agree.
+    headers = indexing_helpers.unique_column_keys(headers, fill_empty=False)
 
     data_rows = rows[header_rows:]
     if summary_lost is not None:

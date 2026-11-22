@@ -74,6 +74,9 @@ _SAME_ON_EVERY_ISSUE = frozenset({
     HOLDER_USER, HOLDER_GROUP, HOLDER_PROJECT_ROLE, HOLDER_PROJECT_LEAD,
     HOLDER_APPLICATION_ROLE, HOLDER_ANYONE,
 })
+# Someone Browse names may be in the level through members not known: the issue is written without them and read again.
+LEVEL_MEMBERS_UNREAD = "levelMembers"
+_ANY_READER = ("*", "*")  # stands for every reader, when a level holds ``anyone``
 def level_group_external_id(project_id: str, level_id: str) -> str:
     """The external id of the record group that holds a level's holders (one per project and level)."""
     return f"level:{project_id}:{level_id}"
@@ -110,6 +113,9 @@ class IssueSecurityContext:
     browse_holders: list[dict[str, Any]] | None = field(default_factory=list)
     # Level id -> its name, from the scheme read, to name the level's record group.
     level_names: dict[str, str] = field(default_factory=dict)
+    # Level id -> the people its same-on-every-issue holders name (``level_readers``), None for a level whose members
+    # were not read. None when not tracked: then a person is matched to the level by a user holder only.
+    level_readers: dict[str, frozenset[tuple[str, str]] | None] | None = None
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -142,7 +148,13 @@ class IssueSecurityContext:
                 out[level_id] = digest(holders)
                 continue
             static = [h for h in holders if h.get("type") in _SAME_ON_EVERY_ISSUE]
-            out[level_id] = f"{digest(static)}.{digest([h for h in holders if h not in static])}"
+            dynamic = digest([h for h in holders if h not in static])
+            if self.level_readers is not None and self.browse_holders:
+                # An OPEN issue grants a member Browse names on it (``_reads_alone``): one leaving the level re-reads it.
+                readers = self.level_readers.get(level_id)
+                dynamic += ":" + ("?" if readers is None else hashlib.sha256(
+                    ",".join(sorted(f"{k}={v}" for k, v in readers)).encode()).hexdigest()[:16])
+            out[level_id] = f"{digest(static)}.{dynamic}"
         return out
 
     def fingerprint(self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None) -> str:
@@ -753,6 +765,31 @@ def level_grants(
     return _prefer_named(grants), False, skipped
 
 
+def user_grant_key(email: str | None, account: str | None) -> tuple[str, str]:
+    """The key of the grant a person gets: by email, or by account when the directory holds no email for them."""
+    return _grant_key(Permission(entity_type=EntityType.USER, email=email or None,
+                                 external_id=None if email else account, type=PermissionType.READ))
+
+
+def level_readers(
+    grants: list[Permission], group_members: dict[str, Any], role_members: dict[str, Any],
+) -> frozenset[tuple[str, str]] | None:
+    """The people a level's record group grants (``level_group_grants``), with each group and role expanded to the
+    members the sync read. None when a group or role among them was not read: no one is matched through it."""
+    keys: set[tuple[str, str]] = set()
+    for grant in grants:
+        if grant.entity_type == EntityType.USER:
+            keys.add(_grant_key(grant))
+        elif grant.entity_type == EntityType.ORG:
+            keys.add(_ANY_READER)
+        else:
+            members = (group_members if grant.entity_type == EntityType.GROUP else role_members).get(str(grant.external_id))
+            if not isinstance(members, list):
+                return None
+            keys.update(user_grant_key(getattr(u, "email", None), getattr(u, "source_user_id", None)) for u in members)
+    return frozenset(keys)
+
+
 def level_group_grants(
     holders: list[dict[str, Any]],
     *,
@@ -920,15 +957,21 @@ def apply_issue_access_settled(
     record.rewrite_permissions = True
     if grouped:
         record.access_group_external_id = level_group_external_id(project_id, level_id)
-        alone = _reads_alone(context, level_id, grants, project_key=project_key, fields=fields or {}, users=users,
-                             app_roles_mapping=app_roles_mapping, reporter_email=reporter_email, assignee_email=assignee_email,
-                             reporter_account=reporter_account, assignee_account=assignee_account)
+        alone, members_unread = _reads_alone(
+            context, level_id, grants, project_key=project_key, fields=fields or {}, users=users,
+            app_roles_mapping=app_roles_mapping, reporter_email=reporter_email, assignee_email=assignee_email,
+            reporter_account=reporter_account, assignee_account=assignee_account)
+        if members_unread:
+            skipped = [*skipped, LEVEL_MEMBERS_UNREAD]
         # A grant of an OPEN record admits on its own (a seed), so the issue is OPEN only when every grant it holds is to someone
         # Jira shows it to without the project: Browse named on this issue, and named by its level.
         alone_keys = {_grant_key(g) for g in alone}
         if alone and all(_grant_key(g) in alone_keys for g in grants):
             record.access_rule = AccessRule.OPEN
             return alone, skipped, True
+        # Someone who reads alone beside a grant that needs the project (an assignee the level names whom Browse does not) cannot
+        # both be held: a rule is the record's, not the grant's. STRICT keeps the second exact and asks the first for the project
+        # too, an under-share (permission corpus DELTA-18); OPEN would admit the second without the project.
         record.access_rule = AccessRule.STRICT
         return grants, skipped, True
     record.access_rule = AccessRule.RESTRICTED
@@ -943,14 +986,15 @@ def _reads_alone(
     context: IssueSecurityContext, level_id: str, dynamic: list[Permission], *, project_key: str, fields: dict[str, Any],
     users: dict[str, Any], app_roles_mapping: dict[str, list[dict[str, Any]]] | None, reporter_email: str | None,
     assignee_email: str | None, reporter_account: str | None = None, assignee_account: str | None = None,
-) -> list[Permission]:
+) -> tuple[list[Permission], bool]:
     """Who reads a leveled issue without browsing its project: a person the project's Browse holders name on this issue (its
-    reporter, say) whom the level names too, on this issue or as a user holder of the level.
-
-    shortcut: a person in the level only through a group or role holder is not matched (its members are not known here), and
-    reads the issue only through the project; match memberships if a sync shows such a person missing."""
+    reporter, say) whom the level names too, on this issue, as a user holder, or through a group, role or project lead
+    (``context.level_readers``). Jira shows it to them: Browse names them, and "these allow the visibility of individual
+    issues to be adjusted, within the bounds of the project's permissions"
+    (https://support.atlassian.com/jira/kb/jira-permissions-general-overview/). Also returns whether someone Browse names
+    may be in the level through members that were not read."""
     if not context.browse_holders:
-        return []
+        return [], False
     # The same people the level's grants name, by account where the directory holds no email for them.
     browse = browse_holder_grants(context.browse_holders, project_key=project_key, fields=fields, user_by_id=users,
                                   reporter_email=reporter_email, assignee_email=assignee_email,
@@ -958,7 +1002,14 @@ def _reads_alone(
     static, _ = level_group_grants(context.members_by_level.get(level_id, []), project_key=project_key,
                                    user_by_id=users, app_roles_mapping=app_roles_mapping)
     named = {_grant_key(g) for g in dynamic} | {_grant_key(g) for g in static if g.entity_type == EntityType.USER}
-    return [g for g in browse if _grant_key(g) in named]
+    tracked = context.level_readers is not None
+    readers = context.level_readers.get(level_id) if tracked else None
+    if readers is not None:
+        named |= readers
+    alone = [g for g in browse if _grant_key(g) in named or (readers is not None and _ANY_READER in readers)]
+    # Not read: someone Browse names may be a member, unless the level has no holder beyond its users.
+    unread = tracked and readers is None and len(alone) < len(browse) and any(g.entity_type != EntityType.USER for g in static)
+    return alone, unread
 
 
 def apply_issue_access(

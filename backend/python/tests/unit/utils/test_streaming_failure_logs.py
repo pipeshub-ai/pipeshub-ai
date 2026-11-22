@@ -21,13 +21,8 @@ from app.utils.streaming import (
     call_aiter_llm_stream_simple,
     invoke_with_structured_output_and_reflection,
 )
-from tests.support.provider_errors import (
-    MARK,
-    assert_text_free,
-    failure_line,
-    httpx_error,
-    openai_error,
-)
+from tests.support.log_capture import assert_text_free, failure_line
+from tests.support.provider_errors import MARK, SENTINELS, httpx_error, openai_error
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -69,9 +64,9 @@ def log(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
 async def test_a_failed_structured_call_is_one_text_free_line(log, error, error_class, level) -> None:
     assert await _structured(_structured_llm(error())) is None
 
-    fields = failure_line(log.records, "structured_llm.failed", error_class, level)
+    fields = failure_line(log.records, "structured_llm.failed", error_class, level, *SENTINELS)
     assert (fields["schema"], fields["attempt"]) == ("_Answer", 0)
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_an_error_level_failure_keeps_its_frames_without_the_text(log) -> None:
@@ -89,14 +84,14 @@ async def test_a_caller_that_asked_for_the_error_gets_it_unlogged(log) -> None:
 
     assert raised.value is error
     assert not [r for r in log.records if r.getMessage() == "structured_llm.failed"]
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_an_answer_that_does_not_fit_the_schema_stays_a_warning(log) -> None:
     await _structured(_structured_llm(OutputParserException(f"Invalid json output: {MARK}")))
 
-    failure_line(log.records, "structured_llm.failed", "bad_request", logging.WARNING)
-    assert_text_free(log.records)
+    failure_line(log.records, "structured_llm.failed", "bad_request", logging.WARNING, *SENTINELS)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_our_own_bug_is_still_an_error_with_frames(log) -> None:
@@ -114,9 +109,9 @@ async def test_a_failed_reflection_call_is_logged_with_its_attempt(log) -> None:
 
     assert await _structured(llm, max_retries=1) is None
 
-    fields = failure_line(log.records, "structured_llm.failed", "misconfigured", logging.ERROR)
+    fields = failure_line(log.records, "structured_llm.failed", "misconfigured", logging.ERROR, *SENTINELS)
     assert fields["attempt"] == 1
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_a_reflection_answer_that_does_not_fit_stays_a_warning_without_it(log) -> None:
@@ -124,8 +119,8 @@ async def test_a_reflection_answer_that_does_not_fit_stays_a_warning_without_it(
 
     assert await _structured(llm, max_retries=1) is None
 
-    failure_line(log.records, "structured_llm.failed", "bad_request", logging.WARNING)
-    assert_text_free(log.records)
+    failure_line(log.records, "structured_llm.failed", "bad_request", logging.WARNING, *SENTINELS)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_a_last_reflection_timeout_is_raised_unlogged(log) -> None:
@@ -161,7 +156,7 @@ async def test_a_refused_cache_parameter_is_named_without_the_refusal(log, monke
     assert note.levelno == logging.WARNING
     assert note.error_type == "BadRequestError"
     assert "cache_control" in note.getMessage()
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
 
 
 async def test_a_failed_chat_stream_is_one_line_and_still_reported(log) -> None:
@@ -175,7 +170,7 @@ async def test_a_failed_chat_stream_is_one_line_and_still_reported(log) -> None:
     events = [e async for e in call_aiter_llm_stream_simple(llm, [HumanMessage(content="q")], [])]
 
     assert events[-1]["event"] == "error"
-    failure_line(log.records, "llm_stream.failed", "bad_request", logging.WARNING)
+    failure_line(log.records, "llm_stream.failed", "bad_request", logging.WARNING, *SENTINELS)
     assert not [r for r in log.records if "aiter_llm_stream" in r.getMessage()]
 
 
@@ -207,4 +202,4 @@ async def test_a_skipped_chunk_is_noted_without_the_chunk(log) -> None:
     (note,) = [r for r in log.records if "Skipping chunk" in r.getMessage()]
     assert (note.levelno, note.error_type) == (logging.WARNING, "ValidationError")
     assert "F24BMARK" not in note.getMessage()
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)

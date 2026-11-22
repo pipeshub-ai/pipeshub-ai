@@ -710,7 +710,11 @@
       "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
     },
     "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal.",
-    "sourcePreparing": "Diese Quelle wird vorbereitet… Ihre Einträge erscheinen hier gleich."
+    "sourcePreparing": "Diese Quelle wird vorbereitet… Ihre Einträge erscheinen hier gleich.",
+    "selectionActionsNotice": "Zuerst indexieren",
+    "selectionActionsNoticeEnterprise": "Auszuwählen, welche markierten Elemente zuerst indexiert werden, ist Teil der Enterprise Edition.",
+    "uploadExtrasNotice": "Diese Dateien zuerst indexieren",
+    "uploadExtrasNoticeEnterprise": "Auszuwählen, welche Uploads zuerst indexiert werden, ist Teil der Enterprise Edition."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2650,7 +2654,123 @@
       "tools": {
         "title": "Tools",
         "subtitle": "Schalten Sie einzelne Tools aus. Ein ausgeschaltetes Tool wird MCP-Clients nicht angeboten, und Aufrufe werden abgelehnt.",
-        "writes": "Schreibt"
+        "writes": "Schreibt",
+        "descriptions": {
+          "pipeshub_sources": "Listet die Konnektoren und Sammlungen auf, die der Benutzer lesen kann, sowie die im Arbeitsbereich eingerichteten KI-Modelle. Clients wählen damit aus, wo gesucht und mit welchem Modell gechattet wird.",
+          "pipeshub_search": "Durchsucht indexierte Dokumente nach Bedeutung in den Konnektoren und Sammlungen, die der Benutzer lesen kann, und liefert die passenden Textstellen mit ihren Datensätzen.",
+          "pipeshub_get_record_content": "Liest den vollständigen Text eines Datensatzes. Findet außerdem einen Datensatz anhand einer URL, eines Ticketschlüssels oder einer externen ID, zeigt, was unter einem Ordner, Bereich oder Epic liegt, und liest einen ganzen Slack-Thread.",
+          "pipeshub_download_record": "Lädt die Originaldatei eines Datensatzes herunter, auf Wunsch in PDF umgewandelt.",
+          "pipeshub_directory": "Schlägt den angemeldeten Benutzer, die Benutzer und Gruppen des Arbeitsbereichs und die Teams des Benutzers nach. Ändert nichts.",
+          "pipeshub_create_collection": "Erstellt eine neue, leere Sammlung, die dem Benutzer gehört und Uploads aufnehmen kann.",
+          "pipeshub_upload": "Lädt Dokumente in eine Sammlung hoch, damit sie indexiert und durchsuchbar werden. Bis zu 20 Dokumente und etwa 3 MB pro Aufruf.",
+          "pipeshub_indexing_status": "Meldet, wie weit die Indexierung einer Sammlung ist und welche Dokumente warum fehlgeschlagen sind.",
+          "pipeshub_connect_source": "Liefert einen Link, den der Benutzer im Browser öffnet, um eine Quelle wie Slack, Google Drive oder Jira zu verbinden. Das Tool selbst verbindet nichts.",
+          "pipeshub_add_web_source": "Fügt eine Website als eigenen Web-Connector des Benutzers hinzu. Der Crawl beginnt bei einer Startseite, folgt deren Links und wird täglich wiederholt. Behalten werden 100 Seiten, sofern der Client nicht mehr anfordert, höchstens 10.000. Eine OAuth-App oder ein Zugriffstoken braucht zusätzlich die Scopes connector:write und connector:sync.",
+          "pipeshub_chat": "Fragt den PipesHub-Assistenten oder einen Agenten des Arbeitsbereichs und liefert dessen Antwort mit Quellenangaben. Solange Schreib-Tools aus sind, führt es keine verbundenen Aktionen aus. Wird es ausgeschaltet, ist auch die Agentenliste aus.",
+          "pipeshub_agents": "Listet die Agenten des Arbeitsbereichs mit ihren Tools und ihrem Wissen auf, damit ein Client mit einem davon chatten kann. Wird nur angeboten, solange der Chat mit PipesHub eingeschaltet ist.",
+          "pipeshub_show_citations": "Zeigt dem Benutzer die Quellen hinter einer Antwort, nummeriert als [1], [2] und so weiter, mit einer Vorschau jedes Dokuments. Bis zu 30 Textstellen pro Aufruf. Wird nur Clients angeboten, die den Zitat-Viewer anzeigen können, etwa Claude.",
+          "pipeshub_preview_record": "Wird nur vom Zitat-Viewer verwendet, nie vom KI-Modell. Lädt die gespeicherte Datei eines Datensatzes stückweise, damit der Viewer das Dokument anzeigen kann. Solange es aus ist, kann der Viewer keine Dokumentvorschauen laden.",
+          "pipeshub_code_repos": "Listet die indexierten Code-Repositories auf, die der Benutzer lesen kann. Die Code-Tools werden nur Benutzern mit indexiertem Code angeboten; eine OAuth-App oder ein Zugriffstoken braucht zusätzlich den Scope code:read.",
+          "pipeshub_code_symbols": "Zeigt, was ein Verzeichnis oder eine Datei in einem indexierten Repository enthält: Unterverzeichnisse und Dateien oder die Symbole, die eine Datei definiert.",
+          "pipeshub_code_neighbours": "Zeigt, was eine Datei oder ein Symbol im Code-Graphen umgibt: Aufrufer, aufgerufener Code, Importe und Vererbung.",
+          "pipeshub_code_read": "Liest indexierten Quellcode: ein Symbol, einen Zeilenbereich oder eine ganze Datei. Gelesen wird die indexierte Kopie, die hinter dem Repository zurückliegen kann.",
+          "pipeshub_code_path": "Zeigt Schritt für Schritt, wie ein Symbol in einem Repository ein anderes erreicht.",
+          "pipeshub_code_search": "Findet Code anhand eines exakten Namens, einer Zeichenfolge oder eines regulären Ausdrucks.",
+          "pipeshub_code_semantic_search": "Findet den Code hinter einer Funktion oder einem Verhalten anhand einer Beschreibung in normaler Sprache, wenn die Namen nicht bekannt sind.",
+          "pipeshub_code_outline": "Listet die Klassen, Funktionen und Methoden einer Datei mit Signaturen und Zeilenbereichen auf, ohne deren Inhalt.",
+          "pipeshub_code_impact": "Zeigt, was von einem Symbol abhängt: alles, was es aufruft, importiert oder darauf aufbaut, samt der Tests, die es erreichen. Beantwortet, wer es aufruft und was bei einer Änderung bricht.",
+          "pipeshub_code_impact_of_diff": "Nimmt einen Unified Diff, etwa die Ausgabe von git diff oder den Diff eines Pull Requests, und zeigt die geänderten Symbole, die Dateien und Tests, die sie erreichen, und die Aufrufer, die kein Test abdeckt.",
+          "pipeshub_code_history": "Listet die indexierten Pull Requests auf, die eine Datei geändert haben, mit Autor, Reviewern, wer gemergt hat und den genannten Tickets.",
+          "pipeshub_code_entry_points": "Listet auf, wo die Ausführung in ein Repository eintritt, etwa Routen, Kommandozeilenwerkzeuge, Jobs und Hooks. Ein Einstieg in unbekannten Code.",
+          "pipeshub_entities": "Findet Personen, Teams, Themen, Projekte, Ordner, Kunden und Dokumenttitel im Wissensgraphen des Arbeitsbereichs, listet die mit einem davon verbundenen Datensätze auf sowie die Personen, Unternehmen oder Produkte, die zusammen damit erwähnt werden. Suchen und Auflisten werden angeboten, sobald Entitäten indexiert sind; die Liste der gemeinsam Erwähnten braucht außerdem die Erkennung benannter Entitäten. Eine OAuth-App oder ein Zugriffstoken braucht zusätzlich den Scope semantic:read oder semantic:write.",
+          "pipeshub_find_records": "Listet Datensätze danach auf, wem sie gehören oder was sie erwähnen, statt nach ihrem Wortlaut: die Datensätze, die einer Person zugewiesen sind oder die sie erstellt, verfasst oder besitzt, Datensätze, die einen Betrag, ein Datum, eine Menge oder einen Prozentsatz erwähnen, und Passagen in den Datensätzen, die bestimmte Personen, Unternehmen oder Produkte nennen. Beträge und Daten brauchen die Erkennung benannter Entitäten, und die Passagen werden nur angeboten, wo die Bereitstellung zusätzlich die Entitätssuche aktiviert. Eine OAuth-App oder ein Zugriffstoken braucht zusätzlich den Scope semantic:read oder semantic:write."
+        },
+        "count": "{{offered}} von {{total}} angeboten",
+        "searchPlaceholder": "Tools, Argumente oder Scopes suchen",
+        "searchLabel": "Tools suchen",
+        "filterLabel": "Anzeigen",
+        "filters": {
+          "all": "Alle",
+          "read": "Nur lesend",
+          "writes": "Schreibt oder ändert Daten",
+          "off": "Aus"
+        },
+        "expandAll": "Alle aufklappen",
+        "collapseAll": "Alle zuklappen",
+        "noMatch": "Kein Tool passt zu dieser Suche.",
+        "groupCount": "{{offered}} von {{total}} an",
+        "groupSwitch": "Alle Tools in {{group}}",
+        "showDetails": "Details zu {{tool}} anzeigen",
+        "hideDetails": "Details zu {{tool}} ausblenden",
+        "groups": {
+          "read": {
+            "label": "Finden und lesen",
+            "description": "Suchen, lesen und herunterladen, worauf der Benutzer zugreifen kann."
+          },
+          "people": {
+            "label": "Personen und Entitäten",
+            "description": "Die Benutzer und Gruppen des Arbeitsbereichs sowie die Personen, Projekte, Themen und Werte in seinem Wissensgraphen."
+          },
+          "chat": {
+            "label": "Chat und Agenten",
+            "description": "Den PipesHub-Assistenten oder einen Agenten des Arbeitsbereichs fragen."
+          },
+          "add": {
+            "label": "Inhalte hinzufügen",
+            "description": "Sammlungen anlegen, Dokumente hochladen, Websites hinzufügen und Quellen verbinden."
+          },
+          "viewer": {
+            "label": "Quellenansicht",
+            "description": "Zeigt die Quellen hinter einer Antwort, in Clients, die sie darstellen können."
+          },
+          "code": {
+            "label": "Code",
+            "description": "Die indexierten Code-Repositories erkunden.",
+            "availability": "Nur für Benutzer, die ein indexiertes Code-Repository lesen können."
+          },
+          "other": {
+            "label": "Weitere",
+            "description": "Tools, die diese Version der Seite noch nicht kennt."
+          }
+        },
+        "kinds": {
+          "readOnly": "Nur lesend",
+          "changes": "Kann Daten ändern",
+          "openWorld": "Greift über PipesHub hinaus"
+        },
+        "blocked": {
+          "writesOff": "Aus, solange schreibende Tools nicht erlaubt sind.",
+          "chatOff": "Aus, solange Chat mit PipesHub aus ist."
+        },
+        "details": {
+          "scopes": "Benötigte OAuth-Scopes",
+          "noScopes": "Keine: Es ruft nichts in PipesHub auf.",
+          "availability": "Wann es angeboten wird",
+          "arguments": "Argumente · {{n}}",
+          "noArguments": "Nimmt keine Argumente.",
+          "columns": {
+            "name": "Name",
+            "type": "Typ",
+            "description": "Beschreibung"
+          },
+          "required": "erforderlich",
+          "oneOf": "Einer von: {{values}}",
+          "modelText": "Was die KI sieht",
+          "hideModelText": "Ausblenden, was die KI sieht",
+          "modelTextHint": "Die Beschreibung, die das KI-Modell liest, bevor es dieses Tool wählt."
+        },
+        "availability": {
+          "default": "Immer, solange es an ist.",
+          "pipeshub_chat": "Immer, solange es an ist. Verbundene Aktionen führt es nur aus, solange schreibende Tools erlaubt sind.",
+          "pipeshub_agents": "Nur solange Chat mit PipesHub an ist.",
+          "pipeshub_create_collection": "Nur solange schreibende Tools erlaubt sind.",
+          "pipeshub_upload": "Nur solange schreibende Tools erlaubt sind.",
+          "pipeshub_add_web_source": "Nur solange schreibende Tools erlaubt sind.",
+          "pipeshub_show_citations": "Nur für Clients, die die Quellenansicht darstellen können, etwa Claude.",
+          "pipeshub_preview_record": "Nur für die Quellenansicht, nie für das KI-Modell.",
+          "pipeshub_entities": "Entitäten finden und ihre Datensätze auflisten, sobald Entitäten indexiert sind. Die Liste der gemeinsam Erwähnten braucht außerdem die Erkennung benannter Entitäten.",
+          "pipeshub_find_records": "Die Datensätze einer Person immer. Beträge und Daten brauchen die Erkennung benannter Entitäten, und Passagen, die Personen oder Unternehmen nennen, brauchen zusätzlich die für die Bereitstellung aktivierte Entitätssuche."
+        }
       },
       "appliesNote": "Änderungen gelten innerhalb weniger Sekunden für neue MCP-Anfragen.",
       "loadError": "Die MCP-Zugriffseinstellungen konnten nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
@@ -2658,6 +2778,45 @@
         "saveSuccess": "MCP-Zugriffseinstellungen gespeichert",
         "saveError": "MCP-Zugriffseinstellungen konnten nicht gespeichert werden",
         "saveErrorDescription": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut."
+      },
+      "status": {
+        "on": "An · {{offered}} von {{total}} Tools angeboten",
+        "off": "Aus · kein KI-Client kann sich verbinden"
+      },
+      "connect": {
+        "title": "KI-Client verbinden",
+        "description": "Clients verbinden sich mit diesem Endpunkt, und jeder Benutzer meldet sich mit seinem eigenen PipesHub-Konto an. Ein persönliches Zugriffstoken funktioniert ebenfalls.",
+        "endpointLabel": "MCP-Endpunkt",
+        "copy": "Kopieren",
+        "copied": "Kopiert",
+        "copyEndpoint": "MCP-Endpunkt kopieren",
+        "copySnippet": "Konfiguration kopieren",
+        "clientsLabel": "KI-Client",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "Öffnen Sie in Claude Anpassen › Konnektoren, wählen Sie + und dann „Benutzerdefinierten Konnektor hinzufügen“. Fügen Sie den Endpunkt oben ein, wählen Sie „Verbinden“ und melden Sie sich bei PipesHub an. Bei einem Team- oder Enterprise-Plan fügt zuerst ein Owner den Konnektor in den Organisationseinstellungen hinzu.",
+            "tip": "Claude verbindet sich aus der Cloud von Anthropic, nicht von Ihrem Computer. Der Endpunkt muss daher aus dem Internet erreichbar sein; eine localhost-Adresse oder eine Adresse in einem privaten Netzwerk funktioniert nicht."
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "Öffnen Sie auf chatgpt.com „Plugins“, wählen Sie + und dann „Benutzerdefinierten MCP-Server hinzufügen“. Fügen Sie den Endpunkt oben als Server-URL ein, wählen Sie OAuth, bestätigen Sie den Warnhinweis, wählen Sie „Als Plugin erstellen“ und melden Sie sich dann bei PipesHub an. In einem Business-, Enterprise- oder Edu-Workspace muss ein Admin benutzerdefinierte MCP-Server erlauben.",
+            "tip": "ChatGPT verbindet sich von den Servern von OpenAI, nicht von Ihrem Computer. Der Endpunkt muss daher aus dem Internet erreichbar sein; eine localhost-Adresse oder eine Adresse in einem privaten Netzwerk funktioniert nicht."
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "Fügen Sie den Server in ~/.cursor/mcp.json oder in .cursor/mcp.json eines Projekts ein. Cursor fragt beim ersten Aufruf eines Tools nach der Anmeldung."
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "Fügen Sie den Server in .vscode/mcp.json ein, starten Sie ihn dann aus der Liste der MCP-Server und melden Sie sich an."
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "Führen Sie dies in einem Terminal aus und anschließend /mcp in Claude Code, um sich anzumelden.",
+            "tip": "Nur für Fragen zum Code: Hängen Sie ?tools=code an den Endpunkt an; der Client erhält dann nur die Code-Tools."
+          }
+        }
       }
     },
     "labs": {
@@ -2765,8 +2924,7 @@
       },
       "enterpriseSso": {
         "title": "SAML-Single-Sign-on und OpenID Connect",
-        "description": "Melden Sie Personen über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-Identitätsanbieter an.",
-        "contactSales": "Zum Kauf schreiben Sie an {{email}}"
+        "description": "Melden Sie Personen über Okta, OneLogin oder einen anderen SAML-2.0- oder OpenID-Connect-Identitätsanbieter an."
       }
     },
     "connectors": {
@@ -3057,7 +3215,8 @@
             "max_pages": "Seitenlimit erreicht",
             "time_limit": "Zeitlimit erreicht; die nächste Synchronisierung macht weiter",
             "stalled": "Die Website antwortete nicht mehr; die nächste Synchronisierung macht weiter",
-            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter"
+            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter",
+            "start_not_recorded": "Die Synchronisierung konnte ihren Start nicht speichern und lief daher nicht; die nächste Synchronisierung versucht es erneut"
           },
           "pagesSaved": "{{count}} Seiten gespeichert",
           "failed": "{{count}} Seiten fehlgeschlagen",
@@ -3514,7 +3673,98 @@
           "other": "Bei den Berechtigungen dieses Konnektors muss sich jemand etwas ansehen.",
           "unreadable": "Die Liste der Ordner, die auf ein Update warten, kann nicht gelesen werden. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors neu aufzubauen. Die Suche prüft währenddessen jedes Ergebnis."
         }
-      }
+      },
+      "userAccess": {
+        "connect": "Verbinden",
+        "reconnect": "Erneut verbinden",
+        "connected": "Verbunden",
+        "connectedAs": "Verbunden als {{account}}",
+        "connectDialog": {
+          "title": "Ihr Konto mit {{name}} verbinden",
+          "description": "Fügen Sie ein persönliches Zugriffstoken aus Ihrem eigenen {{source}}-Konto ein. PipesHub zeigt Ihnen nur die Seiten, die Ihr Konto öffnen kann.",
+          "howTo": "So erstellen Sie ein persönliches Zugriffstoken",
+          "tokenLabel": "Persönliches Zugriffstoken",
+          "submitting": "Wird verbunden…",
+          "errorFallback": "Ihr Konto konnte nicht verbunden werden. Versuchen Sie es erneut.",
+          "signInHint": "{{source}} listet nur Seiten auf, auf die Sie vollen Zugriff haben. Unterseiten einer ausgewählten Seite sind enthalten, auch neue. Um später weitere Seiten hinzuzufügen, melden Sie sich erneut an.",
+          "signingIn": "Warten auf {{source}}…",
+          "signInFailed": "Die Anmeldung wurde nicht abgeschlossen. Versuchen Sie es erneut.",
+          "popupBlocked": "Ihr Browser hat das Anmeldefenster blockiert. Erlauben Sie Pop-ups für diese Website und versuchen Sie es erneut."
+        },
+        "admin": {
+          "title": "Verbundene Benutzer",
+          "description": "Dieser Connector zeigt jeder Person nur, was ihr eigenes Konto öffnen kann. Wer sich nicht verbunden hat, sieht nichts daraus.",
+          "remove": "Entfernen",
+          "removeTitle": "Verbindung von {{email}} entfernen?",
+          "removeMessage": "Die Person sieht keine Ergebnisse mehr aus diesem Connector, bis sie sich erneut verbindet.",
+          "removing": "Wird entfernt…",
+          "removed": "Verbindung entfernt",
+          "status": {
+            "connected": "Verbunden",
+            "needs_reconnect": "Muss neu verbinden",
+            "invited": "Eingeladen",
+            "not_invited": "Nicht eingeladen",
+            "opted_out": "Möchte keine Erinnerungen",
+            "no_account": "Kein PipesHub-Konto"
+          },
+          "noAccountHint": "Laden Sie die Person zuerst zu PipesHub ein",
+          "invite": "Einladen",
+          "remind": "Erinnern",
+          "sent_one": "An {{count}} Person gesendet",
+          "sent_other": "An {{count}} Personen gesendet",
+          "notEmailed_one": "Die E-Mail an {{count}} Person konnte nicht gesendet werden; die Benachrichtigung in der App kam trotzdem an.",
+          "notEmailed_other": "Die E-Mail an {{count}} Personen konnte nicht gesendet werden; die Benachrichtigung in der App kam trotzdem an.",
+          "lastSent": "Zuletzt gesendet {{time}}",
+          "connectedAt": "Verbunden {{time}}",
+          "membersUpdated": "Mitgliederliste zuletzt gelesen {{time}}",
+          "membersPending": "Die Mitgliederliste erscheint nach der nächsten Synchronisierung",
+          "queued_one": "Wird an {{count}} Person gesendet. Sie erhält eine Benachrichtigung und eine E-Mail.",
+          "queued_other": "Wird an {{count}} Personen gesendet. Sie erhalten eine Benachrichtigung und eine E-Mail.",
+          "nothingSent": "Nichts gesendet",
+          "skipReason": {
+            "connected": "Bereits verbunden.",
+            "not_found": "Kein Mitglied mehr.",
+            "opted_out": "Möchte keine Erinnerungen.",
+            "recently_sent": "Am letzten Tag wurde bereits etwas gesendet.",
+            "not_sent": "Konnte nicht gesendet werden. Versuchen Sie es später erneut."
+          },
+          "inviteWho": "{{name}} einladen",
+          "remindWho": "{{name}} erinnern",
+          "removeWho": "Verbindung von {{name}} entfernen",
+          "yourAccount": "Ihr Konto",
+          "connectedOf": "{{connected}} von {{total}} Personen verbunden",
+          "needReconnect_one": "{{count}} muss sich neu verbinden",
+          "needReconnect_other": "{{count}} müssen sich neu verbinden",
+          "search": "Personen nach Name oder E-Mail suchen",
+          "inviteEveryoneHint": "Alle, die sich noch nicht verbunden haben",
+          "inviteEveryone": "Alle einladen ({{count}})",
+          "noMatches": "Niemand passt zu „{{q}}“",
+          "nobody": "Noch niemand zu sehen. Personen erscheinen nach der nächsten Synchronisierung."
+        },
+        "link": {
+          "title": "Verbinden Sie Ihr {{source}}-Konto",
+          "forEmail": "für {{email}}",
+          "continue": "Weiter zu {{source}}",
+          "loading": "Link wird geprüft…",
+          "alreadyConnected": "Ihr {{source}}-Konto ist bereits verbunden.",
+          "openApp": "PipesHub öffnen",
+          "expired": "Dieser Link ist abgelaufen oder wurde bereits verwendet. Bitten Sie Ihren Admin um einen neuen oder verbinden Sie sich in PipesHub unter „Ihre persönlichen Konnektoren“.",
+          "optedOut": "Sie erhalten keine weiteren Erinnerungen für diesen Connector.",
+          "error": "Etwas ist schiefgelaufen. Versuchen Sie es in einer Minute erneut.",
+          "noSignIn": "Dieser Connector verwendet persönliche Zugriffstoken. Öffnen Sie PipesHub und wählen Sie in der Benachrichtigung „Verbinden“, um Ihres einzufügen.",
+          "done": "{{name}} ist verbunden. Ihre Seiten erscheinen in wenigen Minuten in der PipesHub-Suche.",
+          "doneUnnamed": "Ihr Konto ist verbunden. Ihre Seiten erscheinen in wenigen Minuten in der PipesHub-Suche.",
+          "failedTitle": "Verbindung fehlgeschlagen",
+          "failedRetry": "Verwenden Sie den Link in Ihrer E-Mail, um es erneut zu versuchen.",
+          "confirmOptOut": "Erinnerungen für {{name}} beenden?",
+          "stopReminders": "Erinnerungen beenden",
+          "rateLimited": "Zu viele Versuche. Versuchen Sie es in einer Minute erneut.",
+          "cancelled": "Sie haben die Anmeldung abgebrochen.",
+          "signInFailed": "Die Anmeldung wurde nicht abgeschlossen. Versuchen Sie es erneut."
+        }
+      },
+      "indexPriorityNotice": "Indexierung für diesen Connector priorisieren",
+      "indexPriorityNoticeEnterprise": "Die Indexierungspriorität ist Teil der Enterprise Edition."
     },
     "mcpServers": {
       "searchPlaceholder": "MCP-Server durchsuchen...",
@@ -3538,7 +3788,6 @@
         "confirm": "Speichern und Anmeldungen entfernen"
       },
       "cta": {
-        "manage": "Verwalten",
         "delete": "Löschen",
         "reauthenticate": "Erneut authentifizieren",
         "reconnect": "Neu verbinden",
@@ -3560,6 +3809,18 @@
         "needsAuth": "Authentifizierung erforderlich",
         "disabled": "Deaktiviert"
       },
+      "filters": {
+        "label": "Nach Status filtern",
+        "needsAction": "Aktion nötig",
+        "unavailable": "Nicht verfügbar"
+      },
+      "catalog": {
+        "title": "Weitere Server hinzufügen",
+        "description": "Vorgefertigte Server. Fügen Sie einen hinzu und melden Sie sich dann an.",
+        "personalDescription": "Server, die Sie hier hinzufügen, sehen nur Sie.",
+        "added": "Hinzugefügt",
+        "addAnother": "Weiteren hinzufügen"
+      },
       "team": {
         "title": "MCP-Server",
         "subtitle": "Verbinden Sie Model-Context-Protocol-Server, um die Fähigkeiten der Agenten Ihres Teams zu erweitern.",
@@ -3571,36 +3832,16 @@
         "subtitle": "Verbinden Sie sich mit den MCP-Servern, die Ihr Administrator bereitgestellt hat, oder fügen Sie eigene hinzu.",
         "emptyTitle": "Keine MCP-Server verfügbar",
         "emptyDescription": "Fügen Sie einen eigenen hinzu oder bitten Sie Ihren Administrator, einen für alle hinzuzufügen.",
-        "yourServersDescription": "Von Ihnen hinzugefügte Server. Nur Sie können sie sehen und verwenden, und sie können nicht zu Agenten hinzugefügt werden, die mit Ihrer Organisation geteilt sind.",
         "tabs": {
           "all": "Alle",
-          "connected": "Verbunden",
-          "notConnected": "Nicht verbunden"
+          "connected": "Verbunden"
         },
         "yours": "Ihrer",
         "noneInTab": "Hier gibt es keine MCP-Server."
       },
       "details": {
         "breadcrumbLabel": "MCP-Server",
-        "refreshAll": "Alle aktualisieren",
-        "addInstance": "Weitere Instanz hinzufügen",
-        "configuration": "KONFIGURATION",
-        "transport": "TRANSPORT",
-        "tools": "TOOLS",
-        "discoverTools": "Tools erkennen",
-        "discoveredTools_one": "{{count}} Tool verfügbar",
-        "discoveredTools_other": "{{count}} Tools verfügbar",
-        "discovering": "Tools werden erkannt…",
-        "discoveryError": "Tool-Erkennung fehlgeschlagen",
-        "discoveryNeedsAuth": "Authentifizieren, um Tools zu erkennen",
-        "retry": "Erneut versuchen",
-        "noInstances": "Keine Instanzen konfiguriert",
-        "authBannerTitle": "Authentifizierung erforderlich",
-        "authBannerDescription": "Authentifizieren Sie diesen MCP-Server, damit die Agenten Ihres Teams ihn nutzen können.",
-        "authBannerAuthenticatedTitle": "Verbunden",
-        "reconnectBannerDescription": "Die Anmeldung für diesen Server ist abgelaufen oder wurde abgelehnt. Verbinden Sie ihn neu, um ihn weiter zu nutzen.",
-        "authBannerAuthenticatedDescription": "Sie können diesen MCP-Server erneut authentifizieren oder trennen.",
-        "createdBy": "Erstellt von"
+        "tools": "TOOLS"
       },
       "deleteDialog": {
         "title": "MCP-Server löschen?",
@@ -3660,27 +3901,28 @@
         "tokenUrl": "Token-URL",
         "scopes": "Berechtigungen",
         "scopesPlaceholder": "Berechtigung hinzufügen",
-        "useAdminAuth": "Gemeinsame Admin-Authentifizierung für alle Benutzer verwenden",
         "headerValue": "{{headerName}}",
         "apiToken": "API-Token",
         "credentialsHeading": "Anmeldedaten (optional)",
-        "credentialsHint": "Fügen Sie jetzt Anmeldedaten hinzu oder überspringen Sie dies und verbinden Sie sich später über den Tab \"Verbindung & Tools\".",
+        "credentialsHint": "Fügen Sie sie jetzt hinzu oder melden Sie sich später auf der Seite des Servers an.",
         "multiEnvIncomplete": "Füllen Sie jede erforderliche Umgebungsvariable aus, oder lassen Sie alle leer, um später zu verbinden.",
         "oauthPairRequired": "Geben Sie sowohl die Client-ID als auch das Client-Secret ein, oder lassen Sie beide leer.",
-        "connectAfterCreateHint": "Speichern Sie diesen Server und öffnen Sie dann erneut \"Verwalten\", um ihn zu verbinden.",
         "timeoutsHeading": "Zeitlimits",
         "connectTimeout": "Verbindungszeitlimit (Sekunden)",
         "callTimeout": "Zeitlimit für Tool-Aufrufe (Sekunden)",
-        "timeoutRange": "Geben Sie eine Zahl von {{min}} bis {{max}} ein oder lassen Sie das Feld für den Standardwert leer."
+        "timeoutRange": "Geben Sie eine Zahl von {{min}} bis {{max}} ein oder lassen Sie das Feld für den Standardwert leer.",
+        "whoSignsIn": "Wie sich Personen anmelden",
+        "signIn": {
+          "personal": "Jede Person nutzt eigene Zugangsdaten",
+          "personalHint": "Personen melden sich mit ihren eigenen Zugangsdaten an und erhalten nur deren Zugriff.",
+          "shared": "Gemeinsame Zugangsdaten für alle",
+          "sharedHint": "Sie fügen sie einmal unten hinzu. Alle handeln mit deren Zugriff."
+        },
+        "advanced": "Erweitert"
       },
       "configPanel": {
         "editTitle": "MCP-Server bearbeiten",
         "createTitle": "Neuer MCP-Server",
-        "tabs": {
-          "configuration": "Konfiguration",
-          "tools": "Tools & Freigaben",
-          "toolList": "Tools"
-        },
         "synced": "Synchronisiert {{time}}",
         "refreshTools": "Tool-Liste aktualisieren",
         "signInForTools": "Melden Sie sich an, um die Tools dieses Servers zu sehen.",
@@ -3720,7 +3962,8 @@
           "remove": "Server löschen",
           "removeHint": "Löscht ihn für alle.",
           "removeHintPersonal": "Löscht ihn und Ihre Anmeldung."
-        }
+        },
+        "addTemplateTitle": "{{name}} hinzufügen"
       },
       "oauthConfig": {
         "saved": "OAuth-App gespeichert",
@@ -3755,7 +3998,6 @@
         "noState": "Es wurde kein State-Parameter zurückgegeben.",
         "backendRejected": "Der Server hat die Autorisierungsanfrage abgelehnt."
       },
-      "deleteDisabledTooltip": "Dieser Server kann nicht gelöscht werden",
       "stdioPolicy": {
         "disabledTitle": "In dieser Installation deaktiviert",
         "disabledDescription": "Benutzerdefinierte STDIO-Server führen einen Befehl auf dem PipesHub-Server aus und bleiben deshalb deaktiviert, bis der Betreiber {{flag}}=true in der Umgebung der Installation setzt (Docker-Compose-.env oder config.mcpAllowCustomStdio in Helm). Bis dahin können Agenten die Tools dieses Servers nicht nutzen. Sie können ihn löschen oder auf einen Remote-Server (HTTP) umstellen.",
@@ -3769,8 +4011,6 @@
         "customDescription": "Ein beliebiger Remote-MCP-Server über seine URL."
       },
       "toolRules": {
-        "open": "Tool-Freigaben",
-        "title": "Tool-Freigaben: {{name}}",
         "description": {
           "personal": "Legen Sie fest, was passiert, wenn ein Assistent oder Agent in Ihren Chats eines dieser Tools verwenden möchte."
         },
@@ -3823,6 +4063,12 @@
         "orgRulesDescription": "Legen Sie für alle in Ihrer Organisation fest, welche Tools laufen, zuerst nachfragen oder nie laufen. Hier legt jede Person ihre eigenen Regeln auf ihrer MCP-Server-Seite fest.",
         "userServersTitle": "Eigene MCP-Server der Mitglieder",
         "userServersDescription": "Prüfen und entfernen Sie die MCP-Server, die Mitglieder Ihrer Organisation für sich selbst hinzufügen."
+      },
+      "added": {
+        "ready": "{{name}} wurde hinzugefügt und ist einsatzbereit.",
+        "signIn": "{{name}} wurde hinzugefügt. Melden Sie sich unten an, damit seine Tools laufen können.",
+        "other": "{{name}} wurde hinzugefügt, funktioniert aber noch nicht. Den Grund finden Sie unten.",
+        "dismiss": "Fertig"
       }
     },
     "bots": {
@@ -4297,6 +4543,9 @@
           "label": "Extraktionsdienst",
           "description": "LLM-basierte Dokumentklassifizierung und Metadatenextraktion"
         }
+      },
+      "healthWarnings": {
+        "title": "Aufmerksamkeit erforderlich"
       },
       "vectorDbMemory": {
         "title": "Der Suchindex passt nicht in den Arbeitsspeicher der Vektordatenbank",

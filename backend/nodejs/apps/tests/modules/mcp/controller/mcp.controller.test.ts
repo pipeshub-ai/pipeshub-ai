@@ -20,6 +20,8 @@ const { handleMCPRequest } = require(CONTROLLER_PATH) as typeof import('../../..
 import { CODE_GRAPH_INSTRUCTIONS, CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
 import { McpToolCatalog } from '../../../../src/modules/mcp/tool-catalog'
 import path from 'path'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 // Cached module references — we mutate these exports per-test so the controller
 // picks up our stubs (it destructures from the same object on every request).
@@ -46,6 +48,7 @@ describe('MCP Controller — handleMCPRequest', () => {
 
   beforeEach(() => {
     appConfig = createMockAppConfig()
+    registerAppUpstreams(appConfig)
 
     // Preserve originals
     origCreateMCPServer = mcpServerExports.createMCPServer
@@ -59,6 +62,7 @@ describe('MCP Controller — handleMCPRequest', () => {
     mcpCoreExports.PipeshubCore = origPipeshubCore
     sdkTransportExports.StreamableHTTPServerTransport = origTransport
     sinon.restore()
+    registerUpstreams({})
   })
 
   // =========================================================================
@@ -335,8 +339,8 @@ describe('MCP Controller — handleMCPRequest', () => {
 
     it('leaves them out for an OAuth token without code:read, without asking', async () => {
       await serve('cg-no-scope', list, { isOAuth: true, oauthScopes: ['semantic:read', 'connector:read'] })
-      expect(registered).to.deep.equal([])
-      expect(fetchStub.called).to.equal(false)
+      expect(registered.filter((name) => name.startsWith('pipeshub_code_'))).to.deep.equal([])
+      expect(fetchStub.getCalls().some((c) => /\/code-graph\/repos$/.test(String(c.args[0])))).to.equal(false)
     })
 
     it('registers them for an OAuth token with code:read', async () => {
@@ -407,6 +411,148 @@ describe('MCP Controller — handleMCPRequest', () => {
     })
   })
 
+  describe('entity tools', () => {
+    let fetchStub: sinon.SinonStub
+    let registered: Record<string, any>
+    let sdkServer: { _instructions?: string }
+
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+    const ALL = {
+      entitySearch: true, entityRecords: true, namedEntities: true, coMentions: true,
+      recordsByValue: true, recordsByEntities: true, recordsByPerson: true,
+    }
+    const NONE_BUT_PEOPLE = {
+      entitySearch: false, entityRecords: false, namedEntities: false, coMentions: false,
+      recordsByValue: false, recordsByEntities: false, recordsByPerson: true,
+    }
+    // The code tools ask /code-graph/repos; answer that with no repo so only entity tools mount.
+    const answer = (caps: unknown, capsStatus = 200) =>
+      fetchStub.callsFake(async (url: string) =>
+        /\/code-graph\/repos$/.test(url) ? json({ repos: [] }) : json(caps, capsStatus))
+    const capsCalls = () => fetchStub.getCalls().filter((c) => /\/search\/entities\/capabilities$/.test(String(c.args[0])))
+
+    beforeEach(() => {
+      fetchStub = sinon.stub(globalThis, 'fetch')
+      registered = {}
+      sdkServer = { _instructions: 'Documents.' }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: {
+          registerTool: (name: string, config: any) => {
+            registered[name] = { config, remove: () => { delete registered[name] } }
+            return registered[name]
+          },
+          _registeredTools: registered,
+          connect: sinon.stub().resolves(),
+          server: sdkServer,
+        },
+      })
+      sdkTransportExports.StreamableHTTPServerTransport = class {
+        async handleRequest() {}
+      }
+    })
+
+    // A distinct user per test: capabilities are cached per caller.
+    const serve = async (userId: string, body: unknown, user: Record<string, unknown> = {}, opts: { query?: Record<string, string>; res?: any } = {}) => {
+      const req = createMockRequest({
+        headers: { authorization: 'Bearer t' },
+        user: { userId, orgId: 'org-1', ...user },
+        body,
+        query: opts.query ?? {},
+      })
+      const res = opts.res ?? createMockResponse()
+      await handleMCPRequest(appConfig)(req, res as any, createMockNext())
+      return res
+    }
+    const list = { jsonrpc: '2.0', id: 1, method: 'tools/list' }
+    const entityNames = () => Object.keys(registered).filter((n) => n === 'pipeshub_entities' || n === 'pipeshub_find_records')
+
+    it('mounts both tools, with every action, where the deployment serves everything', async () => {
+      answer(ALL)
+      await serve('et-all', list)
+      expect(entityNames()).to.deep.equal(['pipeshub_entities', 'pipeshub_find_records'])
+      expect(registered.pipeshub_find_records.config.inputSchema.shape.action.options).to.deep.equal(['by_person', 'by_value', 'by_entities'])
+      expect(sdkServer._instructions).to.include('## People, entities and values').and.include('by_entities')
+      expect(capsCalls()).to.have.length(1)
+      expect(capsCalls()[0].args[1].headers.authorization).to.equal('Bearer t')
+    })
+
+    it('mounts only what the deployment serves', async () => {
+      answer(NONE_BUT_PEOPLE)
+      await serve('et-people', list)
+      expect(entityNames()).to.deep.equal(['pipeshub_find_records'])
+      expect(registered.pipeshub_find_records.config.inputSchema.shape.action.options).to.deep.equal(['by_person'])
+      expect(sdkServer._instructions).to.not.include('by_value').and.not.include('pipeshub_entities')
+    })
+
+    it('mounts nothing, and adds no instructions, when the capabilities cannot be read', async () => {
+      answer({ detail: 'down' }, 503)
+      await serve('et-down', list)
+      expect(entityNames()).to.deep.equal([])
+      expect(sdkServer._instructions).to.equal('Documents.')
+    })
+
+    it('leaves them out for an OAuth token without a search scope, without asking', async () => {
+      answer(ALL)
+      await serve('et-no-scope', list, { isOAuth: true, oauthScopes: ['kb:read'] })
+      expect(entityNames()).to.deep.equal([])
+      expect(capsCalls()).to.have.length(0)
+    })
+
+    for (const scope of ['semantic:read', 'semantic:write']) {
+      it(`mounts them for an OAuth token with ${scope}`, async () => {
+        answer(ALL)
+        await serve(`et-${scope}`, list, { isOAuth: true, oauthScopes: [scope] })
+        expect(entityNames()).to.deep.equal(['pipeshub_entities', 'pipeshub_find_records'])
+      })
+    }
+
+    it('mounts them for a call to one, and not for a request that cannot reach one', async () => {
+      answer(ALL)
+      await serve('et-call', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_entities' } })
+      expect(entityNames()).to.include('pipeshub_entities')
+      fetchStub.resetHistory()
+      registered = {}
+      await serve('et-ping', { jsonrpc: '2.0', id: 3, method: 'ping' })
+      expect(capsCalls()).to.have.length(0)
+    })
+
+    it('sends no entity tools for ?tools=code', async () => {
+      answer(ALL)
+      await serve('et-code-only', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, {}, { query: { tools: 'code' } })
+      expect(entityNames()).to.deep.equal([])
+      expect(capsCalls()).to.have.length(0)
+    })
+
+    it('leaves out a tool an admin turned off, and its instructions', async () => {
+      answer(ALL)
+      const res: any = { ...createMockResponse(), locals: { mcpAccessPolicy: { enabled: true, allowWriteTools: true, disabledTools: ['pipeshub_entities'] } } }
+      res.status.returns(res)
+      await serve('et-admin-off', list, {}, { res })
+      expect(entityNames()).to.deep.equal(['pipeshub_find_records'])
+      expect(sdkServer._instructions).to.not.include('pipeshub_entities')
+    })
+
+    it('does not ask when an admin turned both off', async () => {
+      answer(ALL)
+      const res: any = { ...createMockResponse(), locals: { mcpAccessPolicy: { enabled: true, allowWriteTools: true, disabledTools: ['pipeshub_entities', 'pipeshub_find_records'] } } }
+      res.status.returns(res)
+      await serve('et-admin-all-off', list, {}, { res })
+      expect(entityNames()).to.deep.equal([])
+      expect(capsCalls()).to.have.length(0)
+    })
+
+    it('asks a token without a search scope that calls one for semantic:read', async () => {
+      const res: any = createMockResponse()
+      res.set = sinon.stub().returns(res)
+      await serve('et-step-up', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pipeshub_find_records' } },
+        { isOAuth: true, oauthClientId: 'client-1', oauthScopes: ['kb:read'] }, { res })
+      expect(res.status.calledWith(403)).to.equal(true)
+      expect(res.set.firstCall.args[1]).to.contain('error="insufficient_scope"').and.contain('semantic:read')
+      expect(capsCalls()).to.have.length(0)
+    })
+  })
+
   describe('scopes, step-up and the audit trail', () => {
     const oauthReq = (scopes: string[], body: unknown = {}) =>
       createMockRequest({
@@ -464,13 +610,14 @@ describe('MCP Controller — handleMCPRequest', () => {
         createOpts.onToolCall({ tool: 'pipeshub_search', durationMs: 12, isError: false, argumentNames: ['query'] }),
       )
 
-      const entry = info.getCalls().find((c) => c.args[0] === 'MCP tool call')
-      expect(entry, 'audit entry').to.exist
+      const entry = info.getCalls().find((c) => c.args[0] === 'mcp.tool_call.end')
+      expect(entry, 'tool call line').to.exist
       expect(entry!.args[1]).to.include({
-        audit: 'mcp_tool_call', orgId: 'o1', userId: 'u1', clientId: 'client-1',
-        tool: 'pipeshub_search', durationMs: 12, isError: false,
+        org_id: 'o1', user_id: 'u1', client_id: 'client-1',
+        tool: 'pipeshub_search', duration_ms: 12, outcome: 'success',
       })
-      expect(entry!.args[1].argumentNames).to.deep.equal(['query'])
+      expect(entry!.args[1].argument_names).to.deep.equal(['query'])
+      expect(entry!.args[1]).to.not.have.property('audit')
     })
   })
 
@@ -1029,6 +1176,7 @@ describe('MCP Controller — handleMCPRequest', () => {
   describe('request-ID logging', () => {
     let infoStub: sinon.SinonStub
     let errorStub: sinon.SinonStub
+    let debugStub: sinon.SinonStub
     let handle: typeof handleMCPRequest
 
     // The controller takes its logger once, at load, and under mocha's parallel
@@ -1037,7 +1185,8 @@ describe('MCP Controller — handleMCPRequest', () => {
     beforeEach(() => {
       infoStub = sinon.stub()
       errorStub = sinon.stub()
-      const recorder = { info: infoStub, error: errorStub, warn: sinon.stub(), debug: sinon.stub() } as unknown as Logger
+      debugStub = sinon.stub()
+      const recorder = { info: infoStub, error: errorStub, warn: sinon.stub(), debug: debugStub } as unknown as Logger
       const modulePath = require.resolve('../../../../src/modules/mcp/controller/mcp.controller')
       const original = require.cache[modulePath]
       delete require.cache[modulePath]
@@ -1071,11 +1220,12 @@ describe('MCP Controller — handleMCPRequest', () => {
       }))
       await handle(appConfig)(req, res as any, next)
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
-        method: 'initialize',
-        requestId: 'pilot-1',
+      // the access line is the request's INFO line; this one adds the JSON-RPC method, at DEBUG
+      expect(infoStub.called).to.be.false
+      expect(debugStub.calledOnce).to.be.true
+      expect(debugStub.firstCall.args[0]).to.equal('MCP request completed')
+      expect(debugStub.firstCall.args[1]).to.deep.equal({
+        jsonrpc_method: 'initialize',
       })
       expect(next.called).to.be.false
     })
@@ -1100,11 +1250,12 @@ describe('MCP Controller — handleMCPRequest', () => {
       requestContextMiddleware(req, res as any, () => {})
       await handle(appConfig)(req, res as any, next)
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
-        method: 'tools/call',
-        requestId: 'pilot-1',
+      // the access line is the request's INFO line; this one adds the JSON-RPC method, at DEBUG
+      expect(infoStub.called).to.be.false
+      expect(debugStub.calledOnce).to.be.true
+      expect(debugStub.firstCall.args[0]).to.equal('MCP request completed')
+      expect(debugStub.firstCall.args[1]).to.deep.equal({
+        jsonrpc_method: 'tools/call',
       })
       expect(next.called).to.be.false
     })
@@ -1132,16 +1283,17 @@ describe('MCP Controller — handleMCPRequest', () => {
         fetchStub.restore()
       }
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
-        method: 'tools/list',
-        requestId: undefined,
+      // the access line is the request's INFO line; this one adds the JSON-RPC method, at DEBUG
+      expect(infoStub.called).to.be.false
+      expect(debugStub.calledOnce).to.be.true
+      expect(debugStub.firstCall.args[0]).to.equal('MCP request completed')
+      expect(debugStub.firstCall.args[1]).to.deep.equal({
+        jsonrpc_method: 'tools/list',
       })
       expect(next.called).to.be.false
     })
 
-    it('should include requestId in error metadata when transport.handleRequest rejects', async () => {
+    it('passes a transport failure to the error middleware without logging it', async () => {
       const error = new Error('transport failure')
       sdkTransportExports.StreamableHTTPServerTransport = class {
         constructor() {}
@@ -1165,19 +1317,13 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       await handle(appConfig)(req, res as any, next)
 
-      expect(errorStub.calledOnce).to.be.true
-      expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
-      expect(errorStub.firstCall.args[1]).to.deep.include({
-        error: 'transport failure',
-        method: 'POST',
-        userId: 'user-42',
-        requestId: 'pilot-1',
-      })
+      // the error middleware logs it once
+      expect(errorStub.called).to.be.false
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.equal(error)
     })
 
-    it('should log error with requestId undefined when req.context is not set', async () => {
+    it('passes a set-up failure to the error middleware without logging it', async () => {
       const error = new Error('init failure')
       mcpServerExports.createMCPServer = sinon.stub().throws(error)
 
@@ -1191,14 +1337,7 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       await handle(appConfig)(req, res as any, next)
 
-      expect(errorStub.calledOnce).to.be.true
-      expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
-      expect(errorStub.firstCall.args[1]).to.deep.include({
-        error: 'init failure',
-        method: 'POST',
-        userId: 'user-42',
-        requestId: undefined,
-      })
+      expect(errorStub.called).to.be.false
       expect(next.calledOnce).to.be.true
     })
   })
@@ -1538,7 +1677,9 @@ describe('MCP Controller — handleMCPRequest', () => {
         policyRes({ disabledTools: [...CODE_GRAPH_TOOL_NAMES] }),
         createMockNext(),
       )
-      expect(fetchStub.called).to.equal(false)
+      const fetched = (input: string | URL | Request): string =>
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      expect(fetchStub.getCalls().some((c) => /\/code-graph\/repos$/.test(fetched(c.args[0])))).to.equal(false)
     })
 
     describe('with the real @pipeshub-ai/mcp package', () => {

@@ -17,6 +17,7 @@ import pytest
 
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.kg import trash as kg_trash
+from tests.support import plan_gate
 
 from .pg_support import new_org
 from .test_kg_derivation import ctx, edge
@@ -445,9 +446,9 @@ async def test_a_sampled_listing_that_differs_from_the_walk_takes_the_connector_
         assert [i["record"]["id"] for i in (await pg_provider.list_trashed_records(KB, org))["items"]] == ["e"]     # the walk's, from now on
 
 
-async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, pg_db) -> None:
+async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, pg_db, monkeypatch) -> None:
     """EXPLAIN gate: 3,000 trashed records of the connector in kg and in the graph, beside 3,000 live ones, never analysed and analysed: no statement scans a table, the batches
-    are read from records_trash and each batch's records from records_trash_batch."""
+    are read from records_trash and each batch's records from records_trash_batch, and a page's rows read each parent by its to_id."""
     org = new_org()
     await _tree(pg_provider, pg_db, org)
     await _trash(pg_provider, org, ["e"])
@@ -457,6 +458,9 @@ async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, 
     await _admin("""INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, path, leaf, deleted, deleted_ms, delete_batch)
         SELECT $1, 73000000 + g, 3, 'plan-' || g, 3, a.app_sk, a.path, true, g % 2 = 0, 1790000000000 + g / 4, 'pb-' || (g / 4) FROM generate_series(1, 6000) g,
           (SELECT app_sk, path FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'e') a""", org)
+    await _admin("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc) SELECT $1, 'nodeRelations', 'records', 'plan-' || (g - 1), 'records', 'plan-' || g,
+          '{"relationshipType": "PARENT_CHILD"}' FROM generate_series(2, 6000) g""", org)
+    await _admin("DELETE FROM kg.graph_changes WHERE org_id = $1", org)        # what the rows above log is in kg already: page() reads the connector from kg
     with ctx(org):
         app = await pg_db.run(lambda tx: tx.fetchval("SELECT app_sk FROM kg.records WHERE org_id = $1 AND coll = 3 AND id = 'e'", org))
     cases = {"page": (kg_trash.PAGE, [app, KB, org, False, None, None, 26, 25]), "page_after": (kg_trash.PAGE, [app, KB, org, True, 1790000000700, "pb-700", 26, 25]),
@@ -477,3 +481,19 @@ async def test_every_trash_statement_is_answered_by_index_searches(pg_provider, 
             assert not bad, f"{state} {name}: {bad}"
             used = set(re.findall(r'"Index Name": "[^"]*?(records_trash(?:_batch)?)"', plan))
             assert used == {"records_trash", "records_trash_batch"}, f"{state} {name}: {used}"
+
+        # a page's rows, as page() runs them under the profile: a record's first parent is a seek on to_id, not the primary key read in from_id order (the plan that
+        # needs no sort, which reads the org's relations up to the parent)
+        async def rows(tx) -> list[str]:
+            await tx.fetchval(kg_hier.PROFILE)
+            got, _ = await kg_trash.page(tx, org, KB, org, files_only=False, skip=0, limit=26, after=None, count_cap=None)
+            ran = got[0]["QUERY PLAN"]
+            plan = (json.loads(ran) if isinstance(ran, str) else ran)[0]["Plan"]
+            # every edge read is bounded by an endpoint (a sequential or bitmap read included); the parent read must not be the primary key in from_id order
+            loose = plan_gate.violations(plan, {"edges": r"\b(to_id|from_id) (=|>=) "})
+            return loose + [f"{n['Relation Name']}: {plan_gate.bounds(n)}" for n in plan_gate.scans(plan, "edges")
+                            if "nodeRelations" in str(plan_gate.bounds(n)) and str(n.get("Index Name")).endswith("_pkey")]
+        with ctx(org), monkeypatch.context() as m:
+            m.setattr(kg_trash, "ROWS", "EXPLAIN (ANALYZE, FORMAT JSON) " + kg_trash.ROWS)
+            bad = await pg_db.run(rows, custom_plan=True)
+        assert not bad, f"{state} rows: {bad}"

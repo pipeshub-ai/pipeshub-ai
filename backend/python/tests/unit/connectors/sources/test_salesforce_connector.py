@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -1346,8 +1347,8 @@ class TestSyncUsers:
     async def test_sync_users_calls_on_new_app_users(self):
         connector = _make_connector()
         users = [
-            {"Id": "u1", "FirstName": "Alice", "LastName": "S", "Email": "alice@example.com"},
-            {"Id": "u2", "FirstName": "Bob", "LastName": "J", "Email": "bob@example.com"},
+            {"Id": "u1", "FirstName": "Alice", "LastName": "S", "Email": "alice@example.com", "UserType": "Standard"},
+            {"Id": "u2", "FirstName": "Bob", "LastName": "J", "Email": "bob@example.com", "UserType": "Standard"},
         ]
         await connector._sync_users(_async_iter_pages(users))
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()
@@ -1359,8 +1360,8 @@ class TestSyncUsers:
         """Salesforce emails are not unique: a frozen duplicate must not take an active user's address."""
         connector = _make_connector()
         users = [
-            {"Id": "u1", "FirstName": "Maya", "LastName": "A", "Email": "maya@example.com"},
-            {"Id": "u2", "FirstName": "Maya", "LastName": "Old", "Email": "maya@example.com"},
+            {"Id": "u1", "FirstName": "Maya", "LastName": "A", "Email": "maya@example.com", "UserType": "Standard"},
+            {"Id": "u2", "FirstName": "Maya", "LastName": "Old", "Email": "maya@example.com", "UserType": "Standard"},
         ]
         await connector._sync_users(_async_iter_pages(users), frozen={"u2"})
         linked = connector.data_entities_processor.on_new_app_users.call_args[0][0]
@@ -1382,7 +1383,8 @@ class TestSyncUsers:
                     raise answer
                 yield [{"UserId": uid} for uid in answer]
             elif q.startswith("SELECT Id, FirstName"):
-                yield [{"Id": "U", "FirstName": "Una", "LastName": "F", "Email": "una@example.com", "IsActive": True}]
+                yield [{"Id": "U", "FirstName": "Una", "LastName": "F", "Email": "una@example.com", "IsActive": True,
+                        "UserType": "Standard"}]
 
         connector._soql_query_paginated = pages
         return connector
@@ -1403,6 +1405,21 @@ class TestSyncUsers:
         assert not any(c.args[0] == "users" for c in connector.user_sync_point.update_sync_point.await_args_list)
 
     @pytest.mark.asyncio
+    async def test_only_accounts_people_sign_in_with_are_linked(self) -> None:
+        """A site's guest user is no one's account, and a Chatter Free user reads no CRM
+        record: neither links a PipesHub user. Internal and external accounts do; a type the
+        connector does not know, or none, links nobody."""
+        connector = _make_connector()
+        types = ["Standard", "PowerPartner", "PowerCustomerSuccess", "CustomerSuccess", "CspLitePortal",
+                 "Guest", "CsnOnly", "SelfService", None]
+        users = [{"Id": f"u{i}", "Email": f"p{i}@example.com", "IsActive": True, "UserType": t}
+                 for i, t in enumerate(types)]
+        not_linked = await connector._sync_users(_async_iter_pages(users))
+        linked = connector.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert sorted(u.source_user_id for u in linked) == ["u0", "u1", "u2", "u3", "u4"]
+        assert not_linked == {"u5", "u6", "u7", "u8"}
+
+    @pytest.mark.asyncio
     async def test_sync_users_skips_empty_list(self):
         connector = _make_connector()
         await connector._sync_users(_async_iter_pages())
@@ -1416,8 +1433,77 @@ class TestSyncUsers:
         )
         with pytest.raises(Exception, match="DB error"):
             await connector._sync_users(
-                _async_iter_pages([{"Id": "u1", "Email": "x@x.com"}]),
+                _async_iter_pages([{"Id": "u1", "Email": "x@x.com", "UserType": "Standard"}]),
             )
+
+
+class TestOnlyAccountsReadThroughTheConnector:
+    """Who reads through the connector is asked of Salesforce with the type filter."""
+
+    @pytest.mark.asyncio
+    async def test_access_and_withdrawal_reads_ask_only_for_accounts(self) -> None:
+        from app.connectors.sources.salesforce import eligibility as e
+        assert "Guest" not in e.READER_USER_TYPES and "CsnOnly" not in e.READER_USER_TYPES
+        assert e.READERS_SOQL.endswith(
+            "WHERE IsActive = true AND UserType IN "
+            "('Standard', 'PowerPartner', 'PowerCustomerSuccess', 'CustomerSuccess', 'CspLitePortal')")
+        # Read in full every sync: links an earlier version gave a guest user are withdrawn.
+        assert "IsActive = false OR UserType = null OR UserType NOT IN ('Standard'," in e.INACTIVE_USERS_SOQL
+
+        connector = _make_connector()
+        asked: list = []
+
+        async def pages(api_version: str, q: str, **_: object) -> AsyncIterator[list[dict[str, str]]]:
+            asked.append(q)
+            yield [{"Id": "005A", "Email": "a@example.com", "UserType": "Standard"}]
+
+        connector._soql_query_paginated = pages
+        assert await connector._eligible_emails("59.0", frozen=set()) == {"a@example.com"}
+        assert asked == [e.READERS_SOQL]
+
+        asked.clear()
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(return_value=[])
+        connector._sync_product_readers = AsyncMock()
+        await connector._sync_permissions_edges(api_version="59.0")
+        assert asked[0] == e.READERS_SOQL
+
+    @pytest.mark.asyncio
+    async def test_a_withdrawn_user_loses_their_own_grants_too(self) -> None:
+        """Withdrawal also drops the user's grants: a product-group grant would otherwise stay
+        whenever the product readers cannot be read and the group's list is kept."""
+        connector = _make_connector()
+        eligibility = MagicMock()
+        eligibility.inactive_user_ids = AsyncMock(return_value={"005G"})
+        eligibility.frozen_user_ids = AsyncMock(return_value=set())
+        connector._eligibility = MagicMock(return_value=eligibility)
+        connector._eligible_emails = AsyncMock(return_value={"maya@example.com"})
+        connector.user_sync_point = MagicMock()
+        connector.user_sync_point.read_sync_point = AsyncMock(return_value={})
+        connector.user_sync_point.update_sync_point = AsyncMock()
+        guest_link = SimpleNamespace(id="user-carol", source_user_id="005G", email="carol@example.com")
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[guest_link])
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+
+        await connector._withdraw_ineligible_users("59.0", set(), set())
+
+        connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
+            "conn-sf-1", [guest_link], drop_grants=True)
+
+    @pytest.mark.asyncio
+    async def test_only_internal_users_read_products(self) -> None:
+        """Products have no record sharing for internal users; how external users read them
+        is not documented, so only internal users get the product group."""
+        connector = _make_connector()
+        eligibility = MagicMock()
+        eligibility.product_reader_ids = AsyncMock(return_value={"005S", "005P", "005C"})
+        await connector._sync_product_readers(eligibility, [
+            {"Id": "005S", "Email": "s@example.com", "UserType": "Standard"},
+            {"Id": "005P", "Email": "p@example.com", "UserType": "PowerPartner"},
+            {"Id": "005C", "Email": "c@example.com", "UserType": "CspLitePortal"},
+        ])
+        (_, permissions), = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
+        assert [p.email for p in permissions] == ["s@example.com"]
 
 
 # ===========================================================================
@@ -3883,8 +3969,8 @@ class TestProductReaderGrants:
         connector = _make_connector()
         connector.data_entities_processor.on_new_record_groups = AsyncMock()
         eligibility = MagicMock(product_reader_ids=AsyncMock(return_value={"sf-1"}))
-        await connector._sync_product_readers(eligibility, [{"Id": "sf-1", "Email": "a@x.com"},
-                                                            {"Id": "sf-2", "Email": "b@x.com"}])
+        await connector._sync_product_readers(eligibility, [{"Id": "sf-1", "Email": "a@x.com", "UserType": "Standard"},
+                                                            {"Id": "sf-2", "Email": "b@x.com", "UserType": "Standard"}])
         (_group, permissions), = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         assert [(p.email, p.external_id) for p in permissions] == [("a@x.com", "sf-1")]
 
@@ -7016,7 +7102,7 @@ class TestSyncUsersRolesGroupsRemaining:
 
         async def _pages():
             yield []
-            yield [{"Id": "005000000000001AAA", "Email": "a@example.com"}]
+            yield [{"Id": "005000000000001AAA", "Email": "a@example.com", "UserType": "Standard"}]
 
         await connector._sync_users(_pages())
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()

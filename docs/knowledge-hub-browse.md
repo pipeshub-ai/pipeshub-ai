@@ -1,6 +1,6 @@
 # Knowledge Hub browse on Neo4j: the split browse
 
-Status: implemented behind `KH_BROWSE_MODE` (default `legacy`). Read it before touching `get_knowledge_hub_connector_page_v3` (browse, `flatten=false`) on Neo4j.
+Status: the default. `KH_BROWSE_MODE=legacy` opts out (see Rollout). Read it before touching `get_knowledge_hub_connector_page_v3` (browse, `flatten=false`) on Neo4j.
 
 ## Why
 
@@ -56,7 +56,7 @@ For a browse of `N` (`flatten=false`), in `get_knowledge_hub_connector_page_v3`:
 | --- | --- | --- |
 | 1 | The viewer, the start's admission and the chain-tops placed under `N` | unchanged |
 | 2 | `N`'s live hierarchy children of `N`'s App, less a group that carries access only (a Jira security level: never a row), each with its stub flag and whether a hiding group holds it or lies above it | `_kh_split_children_cypher`, under 1.7 KB, at most 3 `EXISTS` |
-| 3 | Which of the visible real children the check admits | the batch check |
+| 3 | Which of the visible real children the check admits. A child whose own hop up to `N` passes, where the check's walk from the App reaches `N`, is admitted by that walk without asking: the walk above `N` is read once for all of them, a level at a time like the check's own walks (`_kh_v3_reached`), and only their ids are read. Only the rest are asked, and the check reads their shared ancestry once as well (below) | `_kh_split_admitted_by_hop` (3.3 KB, 6 `EXISTS`), then the batch check |
 | 4 | Which stub children list something: the same question one level down, recursively, to the walks' hop cap | steps 2–3 for the stubs |
 | 5 | The listed ids: admitted visible children, stubs that list something, chain-tops placed under `N` | Python (`_kh_split_listed`) |
 | 6 | The page | the page statement, reading `$kh_listed` by id in place of the walk, and dropping any of them deleted or moved to another App since step 2 |
@@ -83,6 +83,19 @@ It is not needed for the cost: the check is a fixed statement already.
   child past the bound.
 - **Stubs below stubs:** followed to `_KH_SPLIT_STUB_DEPTH` (50), the walks' hop cap.
 - **One request asks about a row once** (a memo shared by the listing and the arrows).
+- **The check reads siblings' ancestors once.** On Neo4j, when it is asked about more than one node, the batch check first decides its walk
+  from the App and its walk below a seed once for each parent of the asked nodes, and admits each node whose own hop up to that parent passes
+  (`_kh_v3_accessible_rows`; as sent 9.3 KB / 9 `EXISTS`, 12.0 KB / 23 with grants read from the nodes, 14.9 KB / 23 with cross-connector
+  grants past the list bound). Both walks are read a level at a time from the parent, as the check's own are (`_kh_v3_reached`: the parent
+  itself, then 1 to 49 levels above it, each node once), so no plan can start one at the App or at every seed of the App, and none reads
+  every route where nodes have two parents at many levels. A route out of a node through a parent is that hop plus at most 49
+  more, so this admits exactly what those two arms admit; every node it does not admit is asked of the full check, by every arm. A
+  5,000-file folder then reads the folder's ancestry once, not 5,000 times, for every caller that asks by node id (arrows, selections, and a browse's viewer reached only through a grant on the folder).
+- **A numbered page** is reached by reading the rows before it, 1,000 at a time (`kh_browse_skip_rows`), then the page. Those reads decide
+  the listing (steps 1-5) once between them and skip step 7, since none of their rows is shown (`KH_SKIP_READS`, set by
+  `KnowledgeHubService._walk_pages` for that request alone and keyed by the viewer's access). The page itself decides afresh, so page 50 costs
+  two decisions, not fifty, and lists only what the viewer may open when it is read
+  (`tests/integration/graph_db/test_kh_split_numbered_pages_real_neo4j.py`).
 
 Shortcuts, each bounded by the above:
 
@@ -112,10 +125,10 @@ Each difference is where legacy breaks the definition above and the split browse
 ## Correctness
 
 1. **The real-store permission suite** (`tests/integration/graph_permissions/`): its 18 browse, arrow, stub, chain-top, declared, seed,
-   placeholder, sidebar and parity modules pass with `KH_BROWSE_MODE=split`. The modules that pin legacy's statement text or its
-   gaps say so.
+   placeholder, sidebar and parity modules pass with the default, split, and with `KH_BROWSE_MODE=legacy`. The modules that pin
+   legacy's statement text or its gaps set `KH_BROWSE_MODE=legacy` themselves.
 2. **The conformance layer** (`tests/permissions/test_conformance_kh.py`): golden worlds, review shapes and generated worlds against the oracle.
-   CI runs it a second time with Neo4j on split (`permission-conformance.yml`, shards 8 and 9).
+   CI runs it with Neo4j on the default, split, and a second time on legacy (`permission-conformance.yml`, shards 8 and 9).
 3. **Live data.** A read-only copy of the demo server's graph: 33,096 nodes, 66,685 relationships, its 163 indexes and constraints. All 11 active
    users were taken through `KnowledgeHubService.get_nodes`, 40 opens each, every page, as a listing and as a sidebar, in both modes. Over 440
    opens and 789 reads, no row, order, arrow, stub flag, total or count differed. From a cold start the worst open took 70.2 s on legacy and
@@ -127,16 +140,17 @@ Each difference is where legacy breaks the definition above and the split browse
 
 `KH_BROWSE_MODE`:
 
-- **`legacy`** (the default): today's statement, byte for byte.
+- **`split`** (the default; also what an unset, empty or unknown value means, an unknown one with a warning logged once): the split browse.
+- **`legacy`** (the opt-out): the one-statement browse, byte for byte as before.
 - **`shadow`:** answers with legacy. For a sampled fraction of browses (`KH_BROWSE_SHADOW_SAMPLE`, default 0.1), it also runs the split browse in
   a detached task and compares them. It logs counts (rows only in one side, arrow and total differences), never ids. At most
   `_KH_SHADOW_MAX_RUNNING` (2) comparisons run at once per process; a sampled browse past that is not compared, so shadow adds a bounded
   load however busy the server is. A legacy page cut by its time budget is not compared: split has no budget, so they differ by construction.
   Nor is a page split would hand to legacy (past its bounds): its replay runs as `split-compare`, which reports that instead of answering
   with legacy. Arrow and stub flags are compared on every row both pages hold.
-- **`split`:** the split browse.
 
-Switch a deployment to `split` after shadow reports no differences over a representative period. The demo server first.
+Split became the default after the live-data comparison above (440 opens, 789 reads, no differences). To go back to the one-statement browse,
+set `KH_BROWSE_MODE=legacy` on the services that serve the Knowledge Hub and restart them; `shadow` compares the two on a running server.
 
 ## Out of scope
 

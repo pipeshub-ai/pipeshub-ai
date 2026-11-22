@@ -18,6 +18,7 @@ from app.capacity.member_budget import (
     CancelToken,
     MemberBudget,
 )
+from tests.support.eventually import until
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,23 +39,17 @@ def _small(n: int = 1) -> Demand:
     return Demand(Family.PARSE, n, 0, "small")
 
 
-def _p95(values: list[float]) -> float:
-    return sorted(values)[max(0, int(len(values) * 0.95) - 1)]
-
-
-async def test_a_release_wakes_a_waiter_within_a_few_milliseconds(ledger: Path) -> None:
+async def test_a_release_wakes_a_waiter_within_a_few_milliseconds(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wake comes from the watcher's next read of the change counters, every ``WATCH_S``: not from the fallback tick."""
+    assert mb.WATCH_S <= 0.005
+    monkeypatch.setattr(mb, "FALLBACK_S", 60.0)  # past the deadline: only the release's wake can serve the waiter
     b = MemberBudget(ledger, cpu_tokens=16, mem_bytes=1 << 36, llm_cap=1)
-    latencies: list[float] = []
     for _ in range(30):
         held = await b.reserve(_llm(), deadline_s=1)
-        task = asyncio.create_task(b.reserve(_llm(), deadline_s=5))
-        await asyncio.sleep(0.02)
-        started = time.monotonic()
+        task = asyncio.create_task(b.reserve(_llm(), deadline_s=10))
+        assert await until(lambda: bool(b._watcher._entries))  # its first attempt failed; it now waits for a wake
         held.release()
-        permit = await asyncio.wait_for(task, 2)
-        latencies.append(time.monotonic() - started)
-        permit.release()
-    assert _p95(latencies) < 0.02, sorted(latencies)[-3:]
+        (await asyncio.wait_for(task, 15)).release()  # a missed wake times out at the 10 s deadline
 
 
 async def test_a_release_that_lands_before_the_watchers_first_read_is_not_missed(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,9 +134,11 @@ def test_a_blocking_wait_whose_deadline_passed_does_not_take_one_more_permit(led
     waiting = threading.Event()
     result: list[BaseException | object] = []
     real_wait = threading.Event.wait
+    me = threading.get_ident()
 
     def wait_then_pass_the_deadline(self: threading.Event, timeout: float | None = None) -> bool:
-        if timeout is None or waiting.is_set():
+        # the patch is process-wide: another thread's timed wait (a controller left by an earlier test) must not move the clock before this wait starts
+        if timeout is None or waiting.is_set() or threading.get_ident() != me:
             return real_wait(self, timeout)  # thread start-up and everything else that waits on an Event
         waiting.set()  # the waiter has made its first attempt and is about to sleep
         now[0] += 10.0  # the deadline passes while it sleeps ...
@@ -149,6 +146,9 @@ def test_a_blocking_wait_whose_deadline_passed_does_not_take_one_more_permit(led
         return real_wait(self, 5)
 
     monkeypatch.setattr(threading.Event, "wait", wait_then_pass_the_deadline)
+    bystander = threading.Thread(target=lambda: threading.Event().wait(0.01))  # a timed wait in another thread, as under a loaded run
+    bystander.start()
+    bystander.join()
     try:
         b.reserve_blocking(_small(), deadline_s=5)
         result.append("took the permit")

@@ -6,9 +6,12 @@ keeps them few: :func:`fold` replaces a batch of deltas and the folded rows of t
 (its rows written before the trigger held no delta), which also leaves the mark (facet 0) that its counts can be read. Both run under the org's counters lock, read what they
 replace in one statement (one snapshot) and delete exactly the rows they read, so a delta committed meanwhile is kept, never lost or counted twice.
 
-Reading a count is off unless ``PG_KG_COUNTERS=1``: a listing then counts what the viewer's classes open from here instead of from the rows (:func:`class_rows`). A count
-sums only the classes the caller hands in, so it says nothing about rows the viewer may not read. The fold and the seed run whatever that switch says: the trigger adds
-deltas on every write, and unfolded they would grow without bound. A restore keeps no counter row and adds no delta (kg_0015), so the seed counts each connector whole again.
+Reading a count is on unless ``PG_KG_COUNTERS=0`` (any other value raises, ``flush.check_env``): an unfiltered listing counts what the viewer's classes open from here
+instead of from the rows (:func:`class_rows`). A count sums only the classes the caller hands in, so it says nothing about rows the viewer may not read. The fold and the
+seed run whatever that switch says: the trigger adds deltas on every write, and unfolded they would grow without bound, so reading them costs one index read and nothing
+more. A restore keeps no counter row and adds no delta (kg_0015), so the seed counts each connector whole again.
+Facet 2 (record type and origin) has no reader: the collection listing's filters also need the connector name and indexing state, which kg does not hold, so that
+listing reads them from the graph in the same statement as its page.
 """
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ import os
 from typing import TYPE_CHECKING
 
 from app.core.org_context import bind
+from app.services.graph_db.postgres.kg import flush
 from app.services.graph_db.postgres.kg.drainer import _ctx
 from app.services.graph_db.postgres.kg.listing import DECIDED, LIVE
 from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
@@ -54,12 +58,11 @@ RECOUNT = f"""/* pipeshub:kg.counts_recount */ SELECT coalesce(array_agg(c.id), 
 SEEDED = "/* pipeshub:kg.counts_seeded */ SELECT EXISTS (SELECT 1 FROM kg.counts WHERE org_id = $1 AND app_sk = $2 AND facet = 0)"
 CLASS_ROWS = """/* pipeshub:kg.counts_class_rows */ SELECT kind, folder, sum(n)::bigint AS n FROM kg.counts
     WHERE org_id = $1 AND app_sk = $2 AND facet = 1 AND class_id = ANY($3::bigint[]) GROUP BY kind, folder"""
-FACETS = """/* pipeshub:kg.counts_facets */ SELECT record_type, origin FROM kg.counts WHERE org_id = $1 AND app_sk = $2 AND facet = 2
-    GROUP BY record_type, origin HAVING sum(n) > 0"""
 
 
 def serving() -> bool:
-    return os.environ.get("PG_KG_COUNTERS") == "1"
+    flush.check_env()
+    return os.environ.get("PG_KG_COUNTERS") != "0"
 
 
 async def _locked(tx: Tx, org: str) -> bool:
@@ -130,11 +133,3 @@ async def class_rows(tx: Tx, org: str, app_sk: int, classes: list[int]) -> dict[
         return None
     return {(r["kind"], r["folder"]): r["n"] for r in await tx.fetch(CLASS_ROWS, org, app_sk, classes) if r["n"]}
 
-
-async def facets(tx: Tx, org: str, app_sk: int) -> dict[str, list[str]] | None:
-    """The record types and origins of a connector's live records (for a collection: the filters it offers to whoever may list it); None until it has been counted whole.
-    Only for a connector kg serves (``drainer.serves``): the projection leaves these columns empty on a row whose value the writer refused, and takes that connector off the readers."""
-    if not await tx.fetchval(SEEDED, org, app_sk):
-        return None
-    rows = await tx.fetch(FACETS, org, app_sk)
-    return {"recordTypes": sorted({r["record_type"] for r in rows} - {None}), "origins": sorted({r["origin"] for r in rows} - {None})}
