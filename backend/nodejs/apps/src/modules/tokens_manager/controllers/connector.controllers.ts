@@ -1825,6 +1825,34 @@ export const getConnectorStats =
     }
   };
 
+/**
+ * The query service parameters for a budgeted read, or null when the caller
+ * asked for none and gets the whole record from the connector service.
+ */
+export const budgetedReadParams = (
+  query: Record<string, unknown> | undefined,
+): URLSearchParams | null => {
+  const names: Array<[string, string]> = [
+    ['mode', 'mode'],
+    ['query', 'query'],
+    ['startBlock', 'start_block'],
+    ['startRecord', 'start_record'],
+    ['maxChars', 'max_chars'],
+    ['extract', 'extract'],
+  ];
+  const params = new URLSearchParams();
+  for (const [from, to] of names) {
+    const value = query?.[from];
+    if (
+      (typeof value === 'string' && value !== '') ||
+      typeof value === 'number'
+    ) {
+      params.append(to, String(value));
+    }
+  }
+  return params.toString() !== '' ? params : null;
+};
+
 export const getConnectorProgress =
   (appConfig: AppConfig) =>
   async (
@@ -1871,34 +1899,6 @@ export const getConnectorProgress =
       return;
     }
   };
-
-/**
- * The query service parameters for a budgeted read, or null when the caller
- * asked for none and gets the whole record from the connector service.
- */
-export const budgetedReadParams = (
-  query: Record<string, unknown> | undefined,
-): URLSearchParams | null => {
-  const names: Array<[string, string]> = [
-    ['mode', 'mode'],
-    ['query', 'query'],
-    ['startBlock', 'start_block'],
-    ['startRecord', 'start_record'],
-    ['maxChars', 'max_chars'],
-    ['extract', 'extract'],
-  ];
-  const params = new URLSearchParams();
-  for (const [from, to] of names) {
-    const value = query?.[from];
-    if (
-      (typeof value === 'string' && value !== '') ||
-      typeof value === 'number'
-    ) {
-      params.append(to, String(value));
-    }
-  }
-  return params.toString() !== '' ? params : null;
-};
 
 export const getRecordContent =
   (appConfig: AppConfig) =>
