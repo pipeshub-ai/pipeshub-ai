@@ -32,6 +32,26 @@ OPEN_CONNECTOR_TYPES = frozenset(c.value for c in (
 ))
 
 
+# Connectors this process limited since the licence watcher last looked (``note_limited``, ``take_limited``).
+# shortcut: in memory, per process; every connectors process runs its own watcher, so the process that limited queues.
+# A process that dies before its next check leaves it to the first check after a restart, which scans in full.
+_limited_since_last_check: set[str] = set()
+
+
+def note_limited(connector_id: str) -> None:
+    """A connector was limited: the watcher (``licence_lift.watch_licence``) looks again even while the install stays
+    licensed, and gives it its queued full syncs back. Without it, a connector limited by a run that ended after a
+    licensed one took over was never queued for the full sync that lifts it."""
+    _limited_since_last_check.add(connector_id)
+
+
+def take_limited() -> set[str]:
+    """The connectors limited since the last call, and forget them."""
+    taken = set(_limited_since_last_check)
+    _limited_since_last_check.difference_update(taken)
+    return taken
+
+
 class AccessLimitOwed(RuntimeError):
     """A permission write was skipped inside a store transaction on a connector whose limit is not set yet (its licence
     lapsed during the run). The limit is not written there, which would hold a second connection; the write fails, and

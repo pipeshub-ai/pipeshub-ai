@@ -34,6 +34,7 @@ from app.connectors.core.base.data_processor.record_organizations import (
 from app.connectors.core.base.data_processor.record_people import link_record_people
 from app.connectors.core.base.data_processor.permission_sync_gate import AccessLimitOwed
 from app.connectors.core.base.data_processor.permission_sync_gate import gated as _gated
+from app.connectors.core.base.data_processor.permission_sync_gate import note_limited
 from app.connectors.core.base.data_processor.permission_sync_gate import permission_sync_licensed
 from app.connectors.core.base.data_processor.pr_links import Linked, write_modifies
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
@@ -1746,6 +1747,7 @@ class DataSourceEntitiesProcessor:
             async with self._access_limit_refreshed(connector_id):
                 return
         await self.set_access_limit(connector_id, AccessLimit(limit) if limit else AccessLimit.CREATOR)
+        note_limited(connector_id)
 
     # ==================== The licence gate (permission_sync_gate) ====================
 
