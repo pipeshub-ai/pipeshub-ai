@@ -89,6 +89,7 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -412,7 +413,8 @@ class Processor:
 
             self.logger.debug(f"PDF processing completed for record: {recordId}, using PdfPlumber+OpenCV processor")
             return
-        except IndexingError:
+        # A parse that waited out its slot is queue time, handed back by the consumer only as itself.
+        except (IndexingError, RequeueWithoutAttempt):
             raise
         except Exception as e:
             raise DocumentProcessingError(

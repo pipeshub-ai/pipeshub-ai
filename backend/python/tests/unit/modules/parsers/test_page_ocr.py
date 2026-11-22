@@ -527,3 +527,31 @@ async def test_a_parse_that_was_not_admitted_is_raised_for_a_requeue(pdf: bytes,
          patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=_stub_handler())), \
          pytest.raises(type(error)):
         await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("label", ["page-ocr-detect", "page-ocr-extract"])
+async def test_an_admission_timeout_leaves_the_processor_unwrapped(pdf: bytes, label: str) -> None:
+    """The consumer hands a record back only for a bare RequeueWithoutAttempt; a DocumentProcessingError is final."""
+    from app.modules.parsers import parse_pool
+    from app.services.messaging.consumer_concurrency import ParseAdmissionTimeout
+    from tests.unit.events.test_processor_deep import _make_processor
+
+    proc = _make_processor()
+    proc.graph_provider.get_document = AsyncMock(return_value={"_key": "r1"})
+    real_submit = parse_pool.submit
+    labels: list[object] = []
+
+    async def submit(*args: object, **kwargs: object) -> object:
+        labels.append(kwargs.get("label"))
+        if kwargs.get("label") == label:
+            raise _admission_timeout()
+        return await real_submit(*args, **kwargs)
+
+    with patch.object(page_ocr.parse_pool, "submit", side_effect=submit), \
+         patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=_stub_handler())), \
+         pytest.raises(ParseAdmissionTimeout) as raised:
+        async for _ in proc.process_pdf_with_pdf_plumber("x.pdf", "r1", pdf, "vr1"):
+            pass
+    assert type(raised.value) is ParseAdmissionTimeout
+    assert labels[-1] == label
