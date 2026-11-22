@@ -129,15 +129,14 @@ async def test_the_in_process_run_identity_matches_the_dispatch_that_ran() -> No
             continue
         _handler, ident = seen[-1]
         dispatch, _ = _route_of(mime, ext, name, "FILE", path)
-        key = pi.parser_key(mime, ext, name, "FILE", service=False)
+        key = pi.parser_key(mime, ext, name, "FILE", service=False, file_path=path)
         if ident is None:
-            # untracked, or decided by a path the graph cannot reproduce: nothing is recorded
-            continue
+            continue  # not tracked
         assert ident.startswith("inproc:") and dispatch is not None, (mime, ext, name, ident)
         assert ident.split(":", 1)[1] == key and key.split("@")[0] == dispatch.route.value, (mime, ext, name, ident)
-    # a path-decided run records nothing
+    # a path-decided run records the key of the parser the path chose, not the name's
     seen, _sent, _err = await _run("unknown", "application/octet-stream", "Report.docx", "FILE", False, "x/app.log")
-    assert seen and seen[-1][1] is None
+    assert seen and seen[-1][1] == "inproc:plain_text@1"
 
 
 @pytest.mark.asyncio

@@ -24,9 +24,9 @@ def _every_handler_parses(world: World) -> None:
             setattr(world.processor, name, MagicMock(side_effect=world._parse))
 
 
-def test_a_key_built_with_a_deciding_path_is_not_recorded() -> None:
+def test_the_identity_of_a_path_decided_run_is_the_key_of_the_parser_the_path_chose() -> None:
     args = ("application/octet-stream", "unknown", "Report.docx", "FILE")
-    assert pi.parser_identity(*args, pipeline=pi.PIPELINE_IN_PROCESS, file_path="x/app.log") is None
+    assert pi.parser_identity(*args, pipeline=pi.PIPELINE_IN_PROCESS, file_path="x/app.log") == "inproc:plain_text@1"
     assert pi.parser_identity(*args, pipeline=pi.PIPELINE_IN_PROCESS) == "inproc:docx@1"
     assert pi.parser_identity(*args, pipeline=pi.PIPELINE_IN_PROCESS, file_path="x/Report.docx") == "inproc:docx@1"
 
@@ -37,14 +37,14 @@ def test_the_graph_key_never_reads_a_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_run_decided_by_its_path_through_the_event_path_stores_no_identity() -> None:
+async def test_a_run_decided_by_its_path_through_the_event_path_stores_the_key_of_the_path() -> None:
     world = World(node={"contentRev": "older"})
     _every_handler_parses(world)
 
     await world.run(world.event(mime="application/octet-stream", ext="unknown", name="Report.docx", filePath="x/app.log"))
 
     assert world.parses == 1
-    assert pi.IDENTITY_FIELD not in world.state
+    assert world.state[pi.IDENTITY_FIELD] == "inproc:plain_text@1"
 
 
 @pytest.mark.asyncio
@@ -66,10 +66,82 @@ async def test_a_second_same_bytes_update_of_a_path_decided_copy_runs_in_full_an
     world.state.update({"mimeType": "application/octet-stream", "recordName": "Report.docx"})
 
     await world.run(event)
-    assert world.parses == 1 and pi.IDENTITY_FIELD not in world.state
+    assert world.parses == 1 and world.state[pi.IDENTITY_FIELD] == "inproc:plain_text@1"
 
     await world.run(event)
 
     assert world.parses == 2
-    assert pi.IDENTITY_FIELD not in world.state
+    assert world.state[pi.IDENTITY_FIELD] == "inproc:plain_text@1"
     assert world.conditional_writes == []
+
+
+@pytest.mark.asyncio
+async def test_a_same_bytes_update_whose_path_agrees_with_the_name_skips_normally() -> None:
+    world = World(node={"contentRev": "older"})
+    _every_handler_parses(world)
+    world.files = {"_key": "rec-1", "extension": "unknown"}
+    world.state.update({"mimeType": "application/octet-stream", "recordName": "Report.docx"})
+    event = world.event(mime="application/octet-stream", ext="unknown", name="Report.docx", filePath="x/Report.docx")
+
+    await world.run(event)
+    assert world.parses == 1 and world.state[pi.IDENTITY_FIELD] == "inproc:docx@1"
+    await world.run(event)
+
+    assert world.parses == 1
+
+
+def _path_decided_copy() -> dict:
+    """A finished record whose copy was built by the plain-text reader because its path said so; its name says docx."""
+    return {
+        "_key": "rec-9", "mimeType": "application/octet-stream", "recordName": "Report.docx", "recordType": "FILE",
+        "virtualRecordId": "v9", "lastIndexTimestamp": 7, pi.IDENTITY_FIELD: "inproc:plain_text@1", pi.IDENTITY_AT_FIELD: 7,
+        pi.IDENTITY_VRID_FIELD: "v9", pi.IDENTITY_SOURCE_FIELD: pi.SOURCE_PARSED,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_docx_with_the_same_bytes_is_not_attached_to_a_path_decided_copy() -> None:
+    world = World()
+    world.files = {"_key": "rec-1", "extension": "unknown"}
+    doc = {"_key": "rec-1", "mimeType": "application/octet-stream", "recordName": "Report.docx", "recordType": "FILE"}
+
+    assert await world.ep._twin_shares_parser(doc, _path_decided_copy()) is False
+
+
+@pytest.mark.asyncio
+async def test_a_record_whose_own_path_decides_never_attaches_even_when_the_name_keys_coincide() -> None:
+    world = World()
+    world.files = {"_key": "rec-1", "extension": "unknown"}
+    doc = {"_key": "rec-1", "mimeType": "application/octet-stream", "recordName": "Report.docx", "recordType": "FILE"}
+    twin = _path_decided_copy() | {pi.IDENTITY_FIELD: "inproc:docx@1"}  # its stored key equals the record's name key
+
+    assert await world.ep._twin_shares_parser(doc, twin) is True
+    pi.begin_run_identity(None, path_decided=True)
+    try:
+        assert await world.ep._twin_shares_parser(doc, twin) is False
+    finally:
+        pi.end_run_identity()
+    assert pi.run_path_decided() is False
+
+
+def test_the_queued_duplicates_of_a_path_decided_copy_stay_queued() -> None:
+    source = _path_decided_copy()
+    queued = {"_key": "q", "mimeType": "application/octet-stream", "recordName": "Other.docx", "recordType": "FILE"}
+    assert pi.promotion_fields(source, queued, {"extension": "unknown"}, at=9, vrid="v9") is None
+    assert pi.plan_promotions(source, [queued], {"q": {"extension": "unknown"}}, at=9, vrid="v9") == {}
+
+
+@pytest.mark.asyncio
+async def test_a_path_decided_record_never_skips_even_when_a_stored_key_equals_its_name_key() -> None:
+    world = World(node={"contentRev": "older"})
+    _every_handler_parses(world)
+    world.files = {"_key": "rec-1", "extension": "unknown"}
+    world.state.update({"mimeType": "application/octet-stream", "recordName": "Report.docx"})
+    event = world.event(mime="application/octet-stream", ext="unknown", name="Report.docx", filePath="x/app.log")
+    await world.run(event)
+    world.state.update({pi.IDENTITY_FIELD: "inproc:docx@1"})  # stored by a process that did not see the path
+    parses = world.parses
+
+    await world.run(event)
+
+    assert world.parses == parses + 1

@@ -151,11 +151,11 @@ def parser_identity(
     file_path: str | None = None,
 ) -> str | None:
     """The identity a run with these labels stores: ``"<pipeline>:<route>@<rev>"``, or None when not tracked."""
-    service = pipeline == PIPELINE_SERVICE
-    if path_decides(mime_type, extension, record_name, record_type, file_path, service=service):
-        # The graph record holds no path and could never reproduce this key, so a copy built this way is not tracked.
-        return None
-    key = parser_key(mime_type, extension, record_name, record_type, service=service)
+    # With the file path the dispatch used: when the path decided the parser, the identity is that parser's key, which the
+    # name-derived key of any graph record then differs from (such a copy is never taken for the name's parser).
+    key = parser_key(
+        mime_type, extension, record_name, record_type, service=pipeline == PIPELINE_SERVICE, file_path=file_path,
+    )
     return None if key is None else f"{pipeline}:{key}"
 
 
@@ -325,13 +325,24 @@ async def promotion_plan(
 _run_identity: ContextVar[str | None] = ContextVar("parser_identity_of_run", default=None)
 
 
-def begin_run_identity(identity: str | None) -> None:
+#: Whether the file path of the event of this task decides its parser (the graph record holds no path).
+_run_path_decided: ContextVar[bool] = ContextVar("parser_identity_path_decided", default=False)
+
+
+def begin_run_identity(identity: str | None, *, path_decided: bool | None = None) -> None:
     _run_identity.set(identity)
+    if path_decided is not None:
+        _run_path_decided.set(path_decided)
+
+
+def run_path_decided() -> bool:
+    return _run_path_decided.get()
 
 
 def end_run_identity() -> None:
     # Set back rather than reset by token: an async generator closed from another context cannot reset.
     _run_identity.set(None)
+    _run_path_decided.set(False)
 
 
 def run_identity() -> str | None:

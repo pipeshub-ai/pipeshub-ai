@@ -341,6 +341,10 @@ class EventProcessor:
         """
         if not parser_identity.identity_write_enabled():
             return True
+        if parser_identity.run_path_decided():
+            # This record's own file path decides its parser and the graph holds no path: the graph keys cannot say whether
+            # the copy is the same parser's, whatever they are.
+            return False
         record_key = parser_identity.graph_parser_key(
             doc, await self._files_document(_record_key(doc)), service=self._use_service_pipeline(),
         )
@@ -1978,7 +1982,10 @@ class EventProcessor:
             self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
             record_type = doc.get("recordType")
             # What this run's parse will be recorded as: the type the event carries now, never the graph's at write time.
-            parser_identity.begin_run_identity(None)
+            parser_identity.begin_run_identity(None, path_decided=parser_identity.path_decides(
+                mime_type, extension, record_name, record_type, event_data.get("filePath"),
+                service=self._use_service_pipeline(),
+            ))
             dispatch, code_ext, reads_as_code_file = self._read_plan(
                 record_type, mime_type, extension, event_data.get("filePath"), record_name, gate_route
             )
