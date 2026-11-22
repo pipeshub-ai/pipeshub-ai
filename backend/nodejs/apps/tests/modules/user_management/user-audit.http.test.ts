@@ -192,6 +192,7 @@ describe('user and group audit lines (HTTP)', function () {
       deleteById: async (id: string) => { users = users.filter((u) => u._id !== id); },
       updateProfile: async (o: string, id: string, f: Row) => { const u = live(o, id); if (!u) return null; Object.assign(u, f); return { ...u }; },
       emailTakenByOther: async (_o: string, e: string, id: string) => users.some((u) => u.email === e && u._id !== id && !u.isDeleted),
+      hasRemovedAccount: async (o: string, e: string) => users.some((u) => u.orgId === o && u.email === e && u.isDeleted),
       listLiveMembershipsByEmail: async (e: string) => users.filter((u) => u.email === e && !u.isDeleted),
       markDeleted: async (o: string, id: string) => { const u = live(o, id); if (u) u.isDeleted = true; },
       listByEmails: async (o: string, es: string[]) => users.filter((u) => u.orgId === o && es.includes(u.email)).map((u) => ({ ...u })),

@@ -53,6 +53,7 @@ CALLS = {
     "batch_upsert_records": ([plain("o", "r")],), "create_record_relation": ("a", "b", "BOOKMARK"),
     "write_attempt_start": ("r", {"indexingStatus": "IN_PROGRESS"}),
     "compare_and_set_indexing_status": (["r"], "QUEUED", "COMPLETED"), "update_indexing_status_for_record_ids": (["r"], "QUEUED"),
+    "update_record_fields_for_ids": (["r"], {"refreshIntentId": "i"}), "get_records_with_refresh_intent": ("org",),
     "has_records_indexed_since": ("c1", 0), "count_records_indexed_since": ("c1", 0),
     "count_connector_records_by_status": ("c1", ["QUEUED"]), "get_sync_point": ("k", "syncPoints"), "upsert_sync_point": ("k", {}, "syncPoints"),
     "remove_sync_point": ("k", "syncPoints"), "_delete_records_with_their_types": (["r"],),

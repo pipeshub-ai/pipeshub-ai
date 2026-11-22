@@ -710,7 +710,11 @@
       "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
     },
     "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal.",
-    "sourcePreparing": "Diese Quelle wird vorbereitet… Ihre Einträge erscheinen hier gleich."
+    "sourcePreparing": "Diese Quelle wird vorbereitet… Ihre Einträge erscheinen hier gleich.",
+    "selectionActionsNotice": "Zuerst indexieren",
+    "selectionActionsNoticeEnterprise": "Auszuwählen, welche markierten Elemente zuerst indexiert werden, ist Teil der Enterprise Edition.",
+    "uploadExtrasNotice": "Diese Dateien zuerst indexieren",
+    "uploadExtrasNoticeEnterprise": "Auszuwählen, welche Uploads zuerst indexiert werden, ist Teil der Enterprise Edition."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -3913,7 +3917,9 @@
           "cancelled": "Sie haben die Anmeldung abgebrochen.",
           "signInFailed": "Die Anmeldung wurde nicht abgeschlossen. Versuchen Sie es erneut."
         }
-      }
+      },
+      "indexPriorityNotice": "Indexierung für diesen Connector priorisieren",
+      "indexPriorityNoticeEnterprise": "Die Indexierungspriorität ist Teil der Enterprise Edition."
     },
     "mcpServers": {
       "searchPlaceholder": "MCP-Server durchsuchen...",
