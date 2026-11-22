@@ -249,6 +249,27 @@ def _drop_all(engine: Engine, names: list[str] | frozenset[str], why: str, hint:
             log(f"WARNING index {q} was not dropped ({why}): {str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__}; {hint}")
 
 
+OUTCOME_WAIT_S = 60.0
+
+
+def _committed(engine: Engine, before: dict[str, int], pid: int | None) -> bool | None:
+    """Whether the upgrade's one transaction committed, after it raised: an error can reach the client after the server committed (the
+    reply to COMMIT lost with the connection). True or False once its session has ended (the epochs moved, or not); None when that is not
+    known within ``OUTCOME_WAIT_S`` or the epochs cannot be read. ``pid``: the upgrade session's backend; None when it never connected."""
+    if pid is None:
+        return False
+    try:
+        with engine.connect() as c:
+            deadline = time.monotonic() + OUTCOME_WAIT_S
+            while c.exec_driver_sql("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = %s)", (pid,)).scalar():
+                if time.monotonic() > deadline:
+                    return None
+                time.sleep(0.5)
+            return dict(c.exec_driver_sql("SELECT branch, epoch FROM kernel.schema_epoch").all()) != before
+    except Exception:
+        return None
+
+
 def _has_revisions(conn: psycopg.Connection) -> bool:
     if not conn.execute("SELECT to_regclass('kernel.alembic_version') IS NOT NULL").fetchone()[0]:
         return False
@@ -347,15 +368,23 @@ def run(argv: list[str]) -> None:
                     retiring = _retiring(cfg, conn)
                     cfg.attributes["verify"] = functools.partial(_report, retiring=retiring)
                     started: list[str] = []
+                    before = dict(conn.execute("SELECT branch, epoch FROM kernel.schema_epoch").fetchall())
                     try:
                         with engine.connect() as c:
                             _build_online(c, _modules(cfg, conn, pending=True), started)
                         _upgrade_with_retries(cfg, "heads")
                     except Exception:
-                        # Nothing of the upgrade stays, so neither do the indexes built for it: the build this one replaces refuses them
-                        # (unexpected surface lines) and would not start again.
-                        _drop_all(engine, started, "the upgrade did not commit",
-                                  "an earlier build refuses it as unexpected: run this build again, or drop it before going back")
+                        committed = _committed(engine, before, cfg.attributes.get("upgrade_pid")) if started else False
+                        if committed is False:
+                            # Nothing of the upgrade stays, so neither do the indexes built for it: the build this one replaces refuses
+                            # them (unexpected surface lines) and would not start again.
+                            _drop_all(engine, started, "the upgrade did not commit",
+                                      "an earlier build refuses it as unexpected: run this build again, or drop it before going back")
+                        elif committed:     # its revisions own them now; the next run finds nothing pending and builds nothing
+                            log(f"the upgrade committed although it raised: the {len(started)} indexes built for it stay; run this build again")
+                        else:
+                            log(f"WARNING could not tell whether the upgrade committed: the {len(started)} indexes built for it stay. Run this "
+                                "build again (it finds them valid); to go back instead, check kernel.schema_epoch and drop them if it did not")
                         raise
                 else:           # an empty database has nothing to protect, and all revisions in one transaction hold ~6,600 locks
                     _upgrade_with_retries(cfg, "heads")

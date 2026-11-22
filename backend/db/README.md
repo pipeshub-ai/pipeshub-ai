@@ -62,7 +62,7 @@ statements that take a lock writers wait for (the `ON ONLY` parent, a plain buil
 build, its parallel workers included, so keep it under the server's memory and, for parallel builds, under its shared memory size). Each index is
 logged when it starts and ends. A stopped run (killed, a lost connection) leaves an invalid index: the next run of this build drops and rebuilds it
 (`kernel.rls_violations` refuses an invalid index, so no run reports success with one). If the step or the transaction fails, the indexes the step
-built are dropped again, so the build the database was on still finds the surface it expects; a run killed before that leaves them, and going back
+built are dropped again, so the build the database was on still finds the surface it expects (only once the upgrade's session has ended with the epochs unchanged: an error can arrive after the server committed, when the reply to `COMMIT` is lost, and then the committed revisions keep their indexes; when that cannot be told within 60 s the indexes stay and the run says so); a run killed before that leaves them, and going back
 to the earlier build then needs them dropped by hand (the earlier build names them as `50 surface: unexpected`), or roll forward. After the commit the
 `ONLINE_DROPS` of every revision are dropped (below). Downgrade is development
 only (`PG_MIGRATE_ALLOW_DOWNGRADE=1 python -m db.migrate downgrade <rev>`).

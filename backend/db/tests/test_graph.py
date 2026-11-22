@@ -8,7 +8,7 @@ import pytest
 
 from db import vetted_harness
 
-from .test_integration import connect
+from .test_integration import connect, run_doctor
 
 A, B = "a" * 24, "b" * 24
 NODE = "INSERT INTO graph.nodes (org_id, coll, id, doc) VALUES (%s, %s, %s, %s::jsonb)"
@@ -1712,6 +1712,46 @@ def test_the_indexes_built_for_an_upgrade_that_did_not_commit_are_dropped(db, tm
     assert r.returncode == 0, r.stdout + r.stderr
 
 
+@pytest.mark.parametrize("outcome", ["committed", "unknown"])
+def test_an_upgrade_that_raised_keeps_its_indexes_unless_it_did_not_commit(db, monkeypatch, capsys, outcome):
+    """An error can reach db.migrate after the server committed (the reply to COMMIT lost with the connection). The revisions then own the
+    indexes the online step built: dropped, they would be missing from a schema whose next run has nothing pending and builds none (exit 4 on
+    the surface). They are dropped only when the upgrade's session has ended without moving the epochs (the test above); when that cannot be
+    told (the session is still there), they stay and the next run finds them valid."""
+    from db import migrate
+
+    from .conftest import run_migrate
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+    assert run_migrate(url).returncode == 0
+    assert run_migrate(url, "downgrade", "graph_0013", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    with connect(cluster, name) as c:
+        _populate(c)
+    real = migrate._upgrade_with_retries
+    with connect(cluster, name) as other:                           # a session that is still there: the upgrade's, as far as it can tell
+
+        def reply_lost(cfg, target):
+            if outcome == "committed":
+                real(cfg, target)
+            else:
+                cfg.attributes["upgrade_pid"] = other.info.backend_pid
+            raise psycopg.OperationalError("server closed the connection unexpectedly")
+        monkeypatch.setattr(migrate, "_upgrade_with_retries", reply_lost)
+        monkeypatch.setattr(migrate, "OUTCOME_WAIT_S", 1.0)
+        monkeypatch.setenv("PG_MIGRATE_URL", url)
+        code = migrate.main(["upgrade"])
+    out = capsys.readouterr().out
+    assert code == 1 and "dropped (the upgrade did not commit)" not in out, out
+    assert ("committed although it raised" if outcome == "committed" else "could not tell whether the upgrade committed") in out, out
+    with connect(cluster, name) as c:
+        assert all(_whole_and_valid(c, i) for i in ONLINE)
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == (20 if outcome == "committed" else 13)
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout + r.stderr
+    with connect(cluster, name) as c:
+        assert all(_whole_and_valid(c, i) for i in ONLINE) and not any(_exists(c, i) for i in RETIRED)
+
+
 def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_done_by_the_next_run(db):
     """graph_0020 retires two graph_0001 indexes: a new install ends without them, a downgrade brings them back as graph_0001 made them, and an
     upgrade whose drop waits on a reader still commits (exit 0, a warning); the next run drops them. No min_code_epoch: nothing reads them, so a
@@ -1738,6 +1778,8 @@ def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_do
     with connect(cluster, name) as c:
         assert all(_exists(c, i) for i in RETIRED)
         assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (20, 0)
+    r = run_doctor(url)                                                 # the health check accepts them as the migrate run did
+    assert r.returncode == 0 and "doctor: healthy" in r.stdout, r.stdout
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout + r.stderr
     for index in RETIRED:
@@ -1746,6 +1788,7 @@ def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_do
         assert not any(_exists(c, i) for i in RETIRED)
     r = run_migrate(url)                                                # the surface without them is the expected one
     assert r.returncode == 0 and "dropped" not in r.stdout, r.stdout + r.stderr
+
 
 def test_a_build_that_failed_half_way_down_the_tree_is_dropped_whole(db):
     """graph.nodes is LIST-partitioned with a HASH-partitioned default (nodes_def), so a build makes an intermediate partitioned index,
