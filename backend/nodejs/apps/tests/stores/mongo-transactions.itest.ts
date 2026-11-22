@@ -16,6 +16,8 @@ import { expect } from 'chai';
 import { randomUUID } from 'crypto';
 import mongoose from 'mongoose';
 import { MongoService } from '../../src/libs/services/mongo.service';
+import { MongoUnitOfWork } from '../../src/libs/repositories/mongo';
+import { UniqueConstraintError } from '../../src/libs/repositories/errors';
 import { Org } from '../../src/modules/user_management/schema/org.schema';
 import { Users, type User } from '../../src/modules/user_management/schema/users.schema';
 import {
@@ -311,6 +313,99 @@ describe('MongoDB code paths against a real MongoDB', function () {
         }
       }
       expect(ok).to.equal(1);
+    });
+  });
+
+  // A profile write reads the account as live, then saves it. A removal that lands in between must not be overwritten:
+  // on a standalone server a promotion would otherwise leave a removed admin, which a member invite later restores.
+  describe('a profile write racing the removal of its account', () => {
+    const users = new MongoUserRepository();
+    afterEach(() => sinon.restore());
+
+    /** Parks `updateProfile`'s live read of `id` once it has loaded the document; `release` lets the save go on. */
+    const parkProfileRead = (id: string) => {
+      const atRead = gate();
+      const released = gate();
+      const real = Users.findOne.bind(Users) as (...args: unknown[]) => Promise<unknown>;
+      let armed = true;
+      sinon.stub(Users, 'findOne').callsFake(((filter: Record<string, unknown>, ...rest: unknown[]) => {
+        const isProfileRead = armed && String(filter?._id) === id && filter.isDeleted === false && 'orgId' in filter;
+        if (!isProfileRead) return real(filter, ...rest);
+        armed = false;
+        return real(filter, ...rest).then(async (doc) => {
+          atRead.open();
+          await released.opened;
+          return doc;
+        });
+      }) as never);
+      return { atRead: atRead.opened, release: released.open };
+    };
+    /** Waits for the park; a write that settles first means the gate matched no read, so fail at once. */
+    const reachedRead = (atRead: Promise<void>, write: Promise<unknown>) =>
+      Promise.race([
+        atRead,
+        write.then(
+          () => expect.fail('the write finished without reaching the parked read'),
+          (error: unknown) => { throw error; },
+        ),
+      ]);
+    /** Runs `run` on a new member and removes the member between its read and its write. */
+    const removedDuring = async (run: (orgId: string, id: string) => Promise<unknown>) => {
+      const orgId = await newOrg();
+      const u = await newUser(orgId, 'member');
+      const id = String(u._id);
+      const { atRead, release } = parkProfileRead(id);
+      const write = run(orgId, id);
+      await reachedRead(atRead, write);
+      await users.markDeleted(orgId, id, { signedOut: true });
+      release();
+      return { result: await write, row: await Users.findById(id).lean() };
+    };
+
+    it('writes nothing onto an account removed after the read, and answers null', async () => {
+      const { result, row } = await removedDuring((orgId, id) =>
+        users.updateProfile(orgId, id, { role: 'admin', fullName: 'Late Name' }));
+      expect(result).to.equal(null);
+      expect(row).to.include({ role: 'member', fullName: 'Test User', isDeleted: true });
+    });
+
+    it('answers null for a removed account even when the write changes nothing', async () => {
+      const { result, row } = await removedDuring((orgId, id) =>
+        users.updateProfile(orgId, id, { fullName: 'Test User' }));
+      expect(result).to.equal(null);
+      expect(row).to.include({ isDeleted: true });
+    });
+
+    it('a save that fails for another reason still throws: a taken address is a UniqueConstraintError', async () => {
+      const orgId = await newOrg();
+      const [u, other] = [await newUser(orgId, 'member'), await newUser(orgId, 'member')];
+      const err = await users.updateProfile(orgId, String(u._id), { email: other.email }).then(() => null, (e: unknown) => e);
+      expect(err).to.be.instanceOf(UniqueConstraintError);
+    });
+
+    if (rsAvailable) {
+      it('inside a transaction whose first write is the save: nothing written, null, and the unit commits', async () => {
+        const { result, row } = await removedDuring((orgId, id) =>
+          new MongoUnitOfWork(true).run((tx) => users.updateProfile(orgId, id, { role: 'admin' }, tx)));
+        expect(result).to.equal(null);
+        expect(row).to.include({ role: 'member', isDeleted: true });
+      });
+    }
+
+    it('a promotion whose account is removed after its read answers 404 and leaves a removed member', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const u = String((await newUser(orgId, 'member'))._id);
+      const { atRead, release } = parkProfileRead(u);
+      const promotion = saveUserEnsuringAdminCap(orgId, u, { role: 'admin' }, rsAvailable);
+      await reachedRead(atRead, promotion);
+      // The delete's own last write, after its member check passed.
+      await users.markDeleted(orgId, u, { signedOut: true, deletedBy: a });
+      release();
+      const outcome = await promotion.then(() => null, (error: Error) => error);
+      expect(outcome?.message).to.equal('User not found');
+      expect(await Users.findById(u).lean()).to.include({ role: 'member', isDeleted: true });
+      expect(await adminCount(orgId)).to.equal(1);
     });
   });
 

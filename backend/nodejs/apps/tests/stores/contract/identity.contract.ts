@@ -823,6 +823,20 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(await users.updateProfile(org, u._id, { fullName: 'x' })).to.equal(null);
     });
 
+    it('updateProfile to an address another account in the organisation holds is a UniqueConstraintError on email', async () => {
+      const org = await fx.newOrg();
+      const [u, other] = [await person(org), await person(org)];
+      let err: unknown;
+      try {
+        await users.updateProfile(org, u._id, { email: other.email });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).to.be.instanceOf(UniqueConstraintError);
+      expect(String((err as UniqueConstraintError).metadata?.key)).to.include('email');
+      expect((await users.getLive(org, u._id))!.email).to.equal(u.email);
+    });
+
     it('markDeleted keeps the row, optionally signs the person out and records who deleted', async () => {
       const org = await fx.newOrg();
       const actor = fx.newId();

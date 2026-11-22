@@ -105,6 +105,35 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         ).to.equal('refused');
       });
 
+      it('a profile write sent while a removal holds the account waits for it, then writes nothing and answers null', async () => {
+        const org = await world.newOrg();
+        const u = await account(org);
+        const held = gate();
+        const commit = gate();
+        // A superuser transaction stands in for the removal: the delete's single UPDATE cannot be held open from outside.
+        const removal = stack.admin(async (c) => {
+          await c.query('BEGIN');
+          await c.query('UPDATE identity.users SET is_deleted = true WHERE id = $1', [u._id]);
+          held.open();
+          await commit.opened;
+          await c.query('COMMIT');
+        });
+        await held.opened;
+        const write = inOrg(org, () => users.updateProfile(org, u._id, { role: 'admin', fullName: 'Late Name' }), await world.adminOf(org));
+        try {
+          await waitUntil('the profile write waits on the removal\'s row lock', async () =>
+            (await count(
+              "SELECT count(*) AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%identity.user_lock_live%'",
+            )) > 0);
+        } finally {
+          commit.open();
+          await removal;
+        }
+        expect(await write).to.equal(null);
+        const row = await inOrg(org, () => users.getAny(org, u._id));
+        expect(row).to.include({ role: 'member', fullName: 'Person', isDeleted: true });
+      });
+
       it('an account of one organisation is invisible and untouchable from another, and a call naming another organisation fails first', async () => {
         const [a, b] = [await world.newOrg(), await world.newOrg()];
         const inB = await account(b);
