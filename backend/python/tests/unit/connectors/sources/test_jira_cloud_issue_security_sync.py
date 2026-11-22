@@ -3358,6 +3358,40 @@ class TestLevelReadersFollowTheMembersRead:
         assert after and "*" not in after[-1] and after[-1]["10102"] == saved[-1]["10102"]
 
     @pytest.mark.asyncio
+    async def test_accounts_that_stop_sharing_an_email_reread_the_level(self) -> None:
+        """The last sync withheld the reporter's own grant because two accounts held rep@x.com; neither the issue's `updated`
+        nor the holders move when that stops, so the level digest carries the shared emails and the level is read again."""
+        c = _connector()
+        self._stored_digests(c)
+        shared = _present()
+        shared.browse_holders, shared.level_readers = self.REPORTER, c._level_readers(shared, "PROJ", {})
+        unique_digests = shared.level_fingerprints(split=True)
+        shared.shared_emails = frozenset({"rep@x.com"})
+        shared_digests = shared.level_fingerprints(split=True)
+        assert shared_digests["10102"] != unique_digests["10102"]
+        assert await self._next_issue_pass(c, shared_digests) == [
+            {"resume": None, "is_new_project": True, "level_ids": ["10102"], "leveled_only": False, "stored_only": True}]
+        nxt = _connector()
+        self._stored_digests(nxt)
+        assert await self._next_issue_pass(nxt, unique_digests) == []  # nothing shared before or now: no pass
+
+    def test_a_level_holding_anyone_is_read_beside_an_application_role_that_does_not_resolve(self) -> None:
+        c = _connector()
+        c._level_roles = {}  # the role list names no groups for this role
+        ctx = _present({"10102": [{"type": "anyone"}, {"type": "applicationRole", "parameter": "jira-software"}]})
+        readers = c._level_readers(ctx, "PROJ", {})["10102"]
+        assert readers is not None and len(readers) == 1  # every reader, not unknown
+        alone = _present({"10102": [{"type": "applicationRole", "parameter": "jira-software"}]})
+        assert c._level_readers(alone, "PROJ", {})["10102"] is None  # without anyone, the role leaves it unknown
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_reads_a_level_holding_anyone_beside_an_application_role_that_does_not_resolve(self) -> None:
+        c = _connector()
+        c._level_roles = {}
+        ctx = _present({"10102": [{"type": "anyone"}, {"type": "applicationRole", "parameter": "jira-software"}]})
+        assert (await c._reindex_level_readers(ctx, "PROJ", {}))["10102"] is not None
+
+    @pytest.mark.asyncio
     async def test_a_group_list_that_fails_leaves_every_group_unknown(self) -> None:
         c = _connector()
         c._group_members = {"group-1": [self.REP]}

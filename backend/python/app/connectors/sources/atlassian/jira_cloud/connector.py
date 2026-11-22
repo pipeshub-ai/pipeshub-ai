@@ -121,6 +121,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     refuses_a_scope,
     roles_for_levels,
     scheme_has_no_levels,
+    shared_emails,
     unreadable_reason,
     unreadable_security_notices,
 )
@@ -297,6 +298,13 @@ INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 ISSUE_PLACEMENT: str = "issues-under-readable-parent+restricted-comment-records"
 # Marks a group a level names by a name no read resolved to an id: it names no group read, so its members are unknown.
 _UNRESOLVED_GROUP: str = "unresolved-group-name:"
+
+
+def _holds_anyone(grants: list[Permission]) -> bool:
+    """A level's grants include ``anyone`` (``level_group_grants`` writes it as the organisation)."""
+    return any(g.entity_type == EntityType.ORG for g in grants)
+
+
 # Groups a reindex reads again per project to apply its issues' levels (``_reindex_level_readers``).
 REINDEX_GROUP_READS: int = 20
 # Parents named in one ``parent in (...)`` clause when their children are re-read.
@@ -4878,8 +4886,9 @@ class JiraConnector(BaseConnector):
             await self._load_issue_security(project_key), project_key
         )
         self._issue_security[project_id] = security
-        security.level_readers = self._level_readers(
-            security, project_key, self._grant_directory({u.source_user_id: u for u in jira_users if u.source_user_id}))
+        directory = self._grant_directory({u.source_user_id: u for u in jira_users if u.source_user_id})
+        security.level_readers = self._level_readers(security, project_key, directory)
+        security.shared_emails = shared_emails(directory)
         self._issue_build_failures = 0
         self._parents_to_retry = set()
         self._issues_to_retry = set()
@@ -5204,8 +5213,8 @@ class JiraConnector(BaseConnector):
             grants, skipped = level_group_grants(
                 self._by_group_id(holders), project_key=project_key, user_by_id=users, app_roles_mapping=self._level_roles_by_id())
             # A user holder outside the directory reads nothing, so it leaves the others known; any other holder skipped
-            # (an unmapped application role) may hold anyone.
-            out[level_id] = None if set(skipped) - {HOLDER_USER} else level_readers(
+            # (an unmapped application role) may hold anyone, which a level that holds ``anyone`` already does.
+            out[level_id] = None if set(skipped) - {HOLDER_USER} and not _holds_anyone(grants) else level_readers(
                 grants, self._group_members, self._role_members)
         return out
 
@@ -5247,7 +5256,7 @@ class JiraConnector(BaseConnector):
             grants, skipped = level_group_grants(
                 self._by_group_id(holders, {}), project_key=project_key, user_by_id=self._grant_directory(synced),
                 app_roles_mapping=self._level_roles_by_id({}))
-            if set(skipped) - {HOLDER_USER}:
+            if set(skipped) - {HOLDER_USER} and not _holds_anyone(grants):
                 out[level_id] = None
                 continue
             for grant in grants:
@@ -6253,6 +6262,9 @@ class JiraConnector(BaseConnector):
         # Create accountId -> AppUser lookup for matching issue creators/assignees. A user list not read in full
         # leaves out linked accounts, whose grants (a level holder named by account id alone) would be dropped.
         user_by_account_id = {u.source_user_id: u for u in [*self._linked_not_read(), *users] if u.source_user_id}
+        if (security := self._issue_security.get(project_id)) is not None:
+            # Once per batch, from the directory its issues resolve against (``_reads_alone``).
+            security.shared_emails = shared_emails(self._grant_directory(user_by_account_id))
 
         # A story's place depends on its epic's level, which the story does not carry.
         self._remember_parent_levels(issues)

@@ -119,6 +119,9 @@ class IssueSecurityContext:
     # Data Center lists no level's members, so each leveled issue is granted to the users Jira lists as able to browse
     # it (``GET /user/permission/search``), read per issue.
     viewers: bool = False
+    # The emails more than one account of the directory the issues resolve against holds (``shared_emails``), set once per
+    # directory by the connector. None: ``_reads_alone`` reads them from the directory it is given.
+    shared_emails: frozenset[str] | None = None
 
     def browse_fingerprint(self) -> str:
         """"?" when the holders are unknown, "" when there are none, else a digest of them."""
@@ -155,6 +158,9 @@ class IssueSecurityContext:
             if self.level_readers is not None and self.browse_holders:
                 # An OPEN issue grants a member Browse names on it (``_reads_alone``): one leaving the level re-reads it.
                 readers = self.level_readers.get(level_id)
+                if self.shared_emails:
+                    # A grant to an email two accounts hold is withheld: accounts that stop or start sharing one re-read it.
+                    dynamic += ":e" + hashlib.sha256(",".join(sorted(self.shared_emails)).encode()).hexdigest()[:16]
                 dynamic += ":" + ("?" if readers is None else hashlib.sha256(
                     ",".join(sorted(f"{k}={v}" for k, v in readers)).encode()).hexdigest()[:16])
             out[level_id] = f"{digest(static)}.{dynamic}"
@@ -764,6 +770,15 @@ def user_grant_key(email: str | None, account: str | None) -> tuple[str, str]:
                                  external_id=None if email else account, type=PermissionType.READ))
 
 
+def shared_emails(users: dict[str, Any]) -> frozenset[str]:
+    """The emails more than one account of ``users`` holds (an account listed under two keys counts once)."""
+    held_by: dict[str, set[int]] = {}
+    for u in users.values():
+        if email := (getattr(u, "email", None) or "").lower():
+            held_by.setdefault(email, set()).add(id(u))
+    return frozenset(e for e, accounts in held_by.items() if len(accounts) > 1)
+
+
 def level_readers(
     grants: list[Permission], group_members: dict[str, Any], role_members: dict[str, Any],
 ) -> frozenset[tuple[str, str]] | None:
@@ -1003,12 +1018,8 @@ def _reads_alone(
     anyone = readers is not None and _ANY_READER in readers
     # A grant goes to an email, so an email two synced accounts share cannot tell the account Browse names from the one the
     # level names, nor (with ``anyone``) from an account Browse does not name: that person needs the project.
-    held_by: dict[str, set[int]] = {}
-    for u in users.values():
-        if email := (getattr(u, "email", None) or "").lower():
-            held_by.setdefault(email, set()).add(id(u))
-    alone = [g for g in browse
-             if (anyone or _grant_key(g) in named) and len(held_by.get((g.email or "").lower(), ())) < 2]
+    shared = context.shared_emails if context.shared_emails is not None else shared_emails(users)
+    alone = [g for g in browse if (anyone or _grant_key(g) in named) and (g.email or "").lower() not in shared]
     # Not read: someone Browse names may be a member, unless the level has no holder beyond its users.
     unread = tracked and readers is None and len(alone) < len(browse) and any(g.entity_type != EntityType.USER for g in static)
     return alone, unread
