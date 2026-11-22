@@ -29,10 +29,11 @@
       - {id: A, kind: app, model: APP_LEVEL, access_limit: CREATOR, created_by: c}
       - {id: d, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
       - {id: f, kind: record, connector: A, rule: OPEN, parents: [d]}
+    grants:
+      - [o, A]              # a permission edge to the app, typed as connectors write it
     gates:
       - [c, A]
       - [o, A]
-      - [o, A, PERMISSION]
   expect:
     verdicts:
       c: {A: admit, f: admit}
@@ -56,10 +57,11 @@
       - [o, t]
       - [o, g]
       - [c, t]
+    grants:
+      - [org, A, ORG]       # the organization's permission on the app, typed as connectors write it
     gates:
       - [t, A]
       - [g, A]
-      - [org, A, PERMISSION]
   expect:
     verdicts:
       c: {f: admit}
