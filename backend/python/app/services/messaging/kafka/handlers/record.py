@@ -2941,6 +2941,8 @@ class RecordEventHandler(BaseEventService):
                     return
                 except SameBytesSkipPending:
                     raise  # a hand-back, not a failure: the outer handler leaves the record alone
+                except RequeueWithoutAttempt:
+                    raise  # queue time: the consumer hands the message back only for the exception itself
                 except IndexingError:
                     error_occurred = True
                     raise  # preserve DocumentProcessingError and other IndexingError subtypes
@@ -3049,6 +3051,10 @@ class RecordEventHandler(BaseEventService):
                 if await self._hand_back_for_provider_wait(record_id, record, delay):
                     handed_back = True
                     raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=delay) from e
+            if isinstance(e, RequeueWithoutAttempt):
+                # Queue time (a parse that waited out its slot), as in the IndexingError arm: back in line, QUEUED,
+                # even on its last counted delivery.
+                handed_back = True
             # Not logged: the consumer's index.end writes the failure once.
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
