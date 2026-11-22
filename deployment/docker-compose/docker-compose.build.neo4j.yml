@@ -479,7 +479,7 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: ${NEO4J_MEMORY_LIMIT:-3G}
+          memory: ${NEO4J_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
           memory: ${NEO4J_MEMORY_RESERVATION:-2G}
