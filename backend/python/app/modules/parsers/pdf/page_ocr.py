@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from app.config.constants.ai_models import OCRProvider
 from app.config.constants.service import config_node_constants
+from app.exceptions.indexing_exceptions import AISettingsUnavailableError
 from app.modules.parsers import parse_pool
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.parsers.pdf.opencv_layout_analyzer import (
@@ -42,10 +43,14 @@ def page_ocr_max_pages() -> int:
 
 
 def regions_from_markdown(markdown: str, page: ParsedPageData) -> list[LayoutRegion]:
-    """One text region per paragraph of OCR *markdown*, each spanning *page* (OCR gives no boxes)."""
+    """One text region per paragraph of OCR *markdown*, each spanning *page* (OCR gives no boxes).
+
+    The regions are marked ``from_ocr``, so the page-margin rules for running headers and page numbers
+    do not read the page-sized box as a line at the top or bottom of the page.
+    """
     bbox = (0.0, 0.0, float(page.width), float(page.height))
     return [
-        LayoutRegion(type=LayoutRegionType.TEXT, bbox=bbox, text=paragraph.strip())
+        LayoutRegion(type=LayoutRegionType.TEXT, bbox=bbox, text=paragraph.strip(), from_ocr=True)
         for paragraph in _PARAGRAPH_SPLIT_RE.split(markdown or "")
         if paragraph.strip()
     ]
@@ -71,8 +76,16 @@ def _with_ocr_text(regions: list[LayoutRegion], text_regions: list[LayoutRegion]
 
 
 async def _vlm_ocr_handler(config: ConfigurationService, logger: logging.Logger) -> Optional[OCRHandler]:
-    """The VLM OCR handler the OCR route would use, or None when no OCR provider or multimodal model is set."""
-    ai_models: Any = await config.get_config(config_node_constants.AI_MODELS.value, raise_on_error=True)
+    """The VLM OCR handler the OCR route would use, or None when no OCR provider or multimodal model is set.
+
+    Raises ``AISettingsUnavailableError`` when the settings store does not answer, as the OCR route does.
+    """
+    try:
+        ai_models: Any = await config.get_config(config_node_constants.AI_MODELS.value, raise_on_error=True)
+    except Exception as e:
+        raise AISettingsUnavailableError(
+            "Could not read the workspace's AI settings", details={"error": str(e)}
+        ) from e
     if not isinstance(ai_models, dict):
         return None
     configured = any(
@@ -93,7 +106,9 @@ async def ocr_textless_pages(
 ) -> list[int]:
     """Replace the regions of the text-less pages of *parsed_data* with their OCR text; the pages changed.
 
-    Never raises: the pages stay as parsed when nothing is configured or the OCR fails.
+    The pages stay as parsed when nothing is configured or the OCR fails. Raises only
+    ``AISettingsUnavailableError`` (the settings store did not answer), so the record is retried instead
+    of being indexed without these pages.
     """
     cap = page_ocr_max_pages()
     if cap <= 0 or not pdf_bytes:
@@ -128,6 +143,8 @@ async def ocr_textless_pages(
             extract_pages, pdf_bytes, numbers, label="page-ocr-extract", size=len(pdf_bytes), kind=ParseKind.INSPECT
         )
         result = await handler.process_document(subset)
+    except AISettingsUnavailableError:
+        raise
     except Exception as e:
         logger.warning("Page OCR failed, the pages stay as parsed: %s", type(e).__name__)
         return []

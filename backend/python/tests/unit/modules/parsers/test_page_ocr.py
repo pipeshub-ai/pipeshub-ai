@@ -340,3 +340,85 @@ def test_a_mostly_image_page_with_a_short_caption_is_selected() -> None:
     c.showPage()
     c.save()
     assert textless_pages(buf.getvalue(), 25) == ([1], 1)
+
+
+def test_overlapping_images_count_their_shared_area_once() -> None:
+    from app.modules.parsers.pdf import pdf_inspection as pi
+
+    half = {"x0": 0, "x1": 50, "top": 0, "bottom": 100}
+    twice = SimpleNamespace(curves=[], rects=[], lines=[], images=[half, dict(half)], width=100.0, height=100.0)
+    assert pi.textless_page_score(twice, 10) == 0
+    # Images are clipped to the page: one bleeding past every edge covers the page once.
+    bleed = {"x0": -50, "x1": 150, "top": -50, "bottom": 150}
+    page = SimpleNamespace(curves=[], rects=[], lines=[], images=[bleed, dict(bleed)], width=100.0, height=100.0)
+    assert pi.textless_page_score(page, 10) == 1000
+    assert pi.textless_page_score(_fake_page(0, 1.0), 10) == 1000
+
+
+def _ocr_pages(paragraphs_of: list[list[str]]) -> list:
+    from app.modules.parsers.pdf.layout_pages import ParsedPageData
+
+    pages = []
+    for n, paragraphs in enumerate(paragraphs_of, start=1):
+        page = ParsedPageData(page_number=n, width=612.0, height=792.0, regions=[])
+        page.regions = page_ocr.regions_from_markdown("\n\n".join(paragraphs), page)
+        pages.append(page)
+    return pages
+
+
+def test_ocr_paragraphs_are_not_taken_for_margin_furniture() -> None:
+    from app.modules.parsers.pdf.pdfplumber_opencv_processor import running_noise
+
+    # Lone numbers at the start, middle and end of each page, and a short line on every page.
+    pages = _ocr_pages([["2024", "Schedule of grants", str(125 + n * 7), "Totals by region", "48"] for n in range(6)])
+    assert running_noise(pages) == set()
+    # The OCR text keeps the page's box for citations.
+    assert all(r.bbox == (0.0, 0.0, 612.0, 792.0) for p in pages for r in p.regions)
+
+
+def test_printed_page_numbers_read_by_ocr_still_drop() -> None:
+    from app.modules.parsers.pdf.pdfplumber_opencv_processor import running_noise
+
+    pages = _ocr_pages([["Schedule of grants", f"Page {n + 10}"] for n in range(1, 5)])
+    assert running_noise(pages) == {id(p.regions[-1]) for p in pages}
+
+
+def test_parsed_page_numbers_in_the_margin_still_drop() -> None:
+    from app.modules.parsers.pdf.layout_pages import ParsedPageData
+    from app.modules.parsers.pdf.opencv_layout_analyzer import (
+        LayoutRegion,
+        LayoutRegionType,
+    )
+    from app.modules.parsers.pdf.pdfplumber_opencv_processor import running_noise
+
+    footer = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, 760, 300, 772), text="7")
+    body = LayoutRegion(type=LayoutRegionType.TEXT, bbox=(50, 300, 300, 320), text="Revenue rose.")
+    page = ParsedPageData(page_number=1, width=612.0, height=792.0, regions=[body, footer])
+    assert running_noise([page]) == {id(footer)}
+
+
+@pytest.mark.asyncio
+async def test_unreadable_ai_settings_are_raised_for_a_retry(pdf: bytes) -> None:
+    from app.exceptions.indexing_exceptions import AISettingsUnavailableError
+
+    _, parsed = await _parse(pdf)
+    config = MagicMock()
+    config.get_config = AsyncMock(side_effect=ConnectionError("store down"))
+    with pytest.raises(AISettingsUnavailableError):
+        await page_ocr.ocr_textless_pages(pdf, parsed, config, logging.getLogger("t"))
+    handler = MagicMock()
+    handler.process_document = AsyncMock(side_effect=AISettingsUnavailableError("store down"))
+    with patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=handler)), \
+         pytest.raises(AISettingsUnavailableError):
+        await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t"))
+
+
+@pytest.mark.asyncio
+async def test_no_multimodal_model_keeps_the_pages(pdf: bytes) -> None:
+    from app.exceptions.indexing_exceptions import MultimodalModelNotConfiguredError
+
+    _, parsed = await _parse(pdf)
+    handler = MagicMock()
+    handler.process_document = AsyncMock(side_effect=MultimodalModelNotConfiguredError("none"))
+    with patch.object(page_ocr, "_vlm_ocr_handler", AsyncMock(return_value=handler)):
+        assert await page_ocr.ocr_textless_pages(pdf, parsed, MagicMock(), logging.getLogger("t")) == []

@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pdfplumber
 import pypdfium2
 
@@ -40,6 +41,8 @@ TEXTLESS_PAGE_MAX_CHARS = 100
 TEXTLESS_PAGE_MIN_DRAWN = 200
 # Or the page is mostly one picture or a few: the share of the page they cover.
 TEXTLESS_PAGE_IMAGE_SHARE = 0.75
+# Image coverage is measured on a grid of this many cells per side (1 MB, whatever the image count).
+_COVERAGE_GRID = 1000
 
 
 
@@ -255,16 +258,33 @@ def textless_page_score(page: Page, chars: int) -> int:
     drawn = len(page.curves) + len(page.rects) + len(page.lines)
     if drawn > TEXTLESS_PAGE_MIN_DRAWN:
         return drawn
-    area = float(page.width) * float(page.height)
-    if area > 0:
-        covered = sum(
-            max(0.0, (img.get("x1", 0) - img.get("x0", 0))) * max(0.0, (img.get("bottom", 0) - img.get("top", 0)))
-            for img in page.images
-        )
-        share = min(1.0, covered / area)
-        if share >= TEXTLESS_PAGE_IMAGE_SHARE:
-            return max(1, int(share * 1000))
+    share = image_share(page)
+    if share >= TEXTLESS_PAGE_IMAGE_SHARE:
+        return max(1, int(share * 1000))
     return 0
+
+
+def image_share(page: Page) -> float:
+    """The share of *page* its images cover, each clipped to the page and overlaps counted once.
+
+    Measured on a ``_COVERAGE_GRID`` x ``_COVERAGE_GRID`` grid of the page: right to within a thousandth of
+    each side, and bounded in time and memory however many images the page holds.
+    """
+    width, height = float(page.width), float(page.height)
+    if width <= 0 or height <= 0 or not page.images:
+        return 0.0
+    grid = _COVERAGE_GRID
+    covered = np.zeros((grid, grid), dtype=bool)
+
+    def cell(value: object, side: float) -> int:
+        return round(min(max(float(value or 0), 0.0), side) / side * grid)
+
+    for img in page.images:
+        x0, x1 = cell(img.get("x0"), width), cell(img.get("x1"), width)
+        top, bottom = cell(img.get("top"), height), cell(img.get("bottom"), height)
+        if x1 > x0 and bottom > top:
+            covered[top:bottom, x0:x1] = True
+    return int(covered.sum()) / (grid * grid)
 
 
 def textless_pages(content: bytes, max_pages: int) -> tuple[list[int], int]:

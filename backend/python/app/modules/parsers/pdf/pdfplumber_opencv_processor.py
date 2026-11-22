@@ -101,7 +101,10 @@ def running_noise(pages: list[ParsedPageData]) -> set[int]:
                 continue
             # A page number follows the page's last line, wherever that falls
             # (3M_2022_10K p.49 prints "49" a third of the way down a short page).
-            in_margin = region.bbox[1] <= pd.height * _MARGIN_BAND or region.bbox[3] >= pd.height * (1 - _MARGIN_BAND)
+            # OCR text has no position of its own, so only the edge rule can mark it.
+            in_margin = not region.from_ocr and (
+                region.bbox[1] <= pd.height * _MARGIN_BAND or region.bbox[3] >= pd.height * (1 - _MARGIN_BAND)
+            )
             at_edge = (region is texts[0] or region is texts[-1]) and _PAGE_NUMBER_RE.match(text)
             if in_margin or at_edge:
                 norm = re.sub(r"\d+", "#", " ".join(text.lower().split()))
