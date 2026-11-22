@@ -176,6 +176,7 @@ from app.services.graph_db.common.utils import (
     KB_LIST_FOLDERS_CAP,
     PATH_MAX_CANDIDATES,
     PERSON_ENTITY_TYPE,
+    RECORD_UPDATE_DROPPED_FIELDS,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
@@ -183,12 +184,17 @@ from app.services.graph_db.common.utils import (
     PermittedEntityRows,
     build_connector_stats_response,
     cleans_taxonomy_points,
+    collapse_repeated_records,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     is_full_address,
     jira_issue_browse_url_regex,
+    merge_same_id_record_docs,
+    new_incarnation_id,
     person_query_ref,
+    record_created_at_insert_only,
+    record_incarnation_write,
     record_taxonomy_refs,
     restore_items,
     select_canonical_chain_names,
@@ -535,6 +541,47 @@ _KH_STATE_LABELS = (Neo4jLabel.RECORDS.value, Neo4jLabel.RECORD_GROUPS.value)
 # Properties the listing keeps on those nodes; never part of a document handed out.
 _KH_INTERNAL_PROPERTIES = frozenset({"khSortName", "khScope"})
 _KH_TREE_TYPES = (Neo4jRelationshipType.NODE_RELATIONS.value, Neo4jRelationshipType.INHERIT_PERMISSIONS.value)
+
+
+# a record's insert-only fields (createdAtTimestamp, incarnationId) and its trash state are written by ``ON CREATE SET``;
+# ``SET n += rest`` then merges the document without them, so a re-sync keeps the stored values and a null cannot delete them.
+# A placeholder replaced by a real record takes the earlier positive date (the id is never touched). ``rest`` is the document
+# to merge, ``ins`` only the keys an insert adds to it: each row is sent once and written once, on create or on match.
+_CYPHER_RECORD_INSERT_ONLY = """
+            ON CREATE SET n += rest, n += ins
+            ON MATCH SET n += rest
+"""
+# The same for rows the processor marked as replacing a stored placeholder (``Record._promotes_stub``): the stored row is tested in
+# the statement. Only those rows pay for the test (it cost about 7 % of an update at 500 per call), as on ArangoDB.
+_CYPHER_RECORD_PROMOTING = """
+            ON CREATE SET n += rest, n += ins
+            ON MATCH SET n += CASE
+                WHEN coalesce(n.isPlaceholder, false) AND NOT coalesce(rest.isPlaceholder, false) AND ins.createdAtTimestamp > 0
+                THEN {createdAtTimestamp: CASE WHEN n.createdAtTimestamp > 0 THEN CASE WHEN n.createdAtTimestamp < ins.createdAtTimestamp THEN n.createdAtTimestamp ELSE ins.createdAtTimestamp END ELSE ins.createdAtTimestamp END}
+                ELSE {} END
+            ON MATCH SET n += rest
+"""
+
+
+def _record_insert_split(doc: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(rest, ins)`` for one record document: what an update may merge, and the keys only an insert adds to it.
+
+    One pass over the document (it runs for every record of a batch, and two or three passes cost more than the extra clause does)."""
+    insert_only = record_created_at_insert_only()
+    dropped = RECORD_UPDATE_DROPPED_FIELDS if insert_only else ("incarnationId",)
+    mint = insert_only and record_incarnation_write()
+    rest: dict[str, Any] = {}
+    ins: dict[str, Any] = {}
+    for key, value in doc.items():
+        if key == "incarnationId":
+            continue                      # never taken from the caller: the store mints it (as record_insert_doc does)
+        if key in dropped:
+            ins[key] = value
+        else:
+            rest[key] = value
+    if mint:
+        ins["incarnationId"] = new_incarnation_id()
+    return rest, ins
 
 
 def _cypher_kh_node_state(v: str) -> str:
@@ -2268,6 +2315,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     )
 
         # Use UNWIND for batch upsert
+        if collection == CollectionNames.RECORDS.value:
+            query = f"""
+        UNWIND $nodes AS row
+        WITH row.rest AS rest, row.ins AS ins
+        MERGE (n:{label} {{id: rest.id}}){_CYPHER_RECORD_INSERT_ONLY}
+        {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+        RETURN n.id
+        """
+            # documents that share an id are merged first (one rule on every store: ``merge_same_id_record_docs``); with the
+            # insert-only switch off every row is written as given, in order, as before
+            merged: dict[Any, dict[str, Any]] = {}
+            for position, node in enumerate(neo4j_nodes):
+                key = node["id"] if record_created_at_insert_only() else position
+                merged[key] = merge_same_id_record_docs(merged[key], node) if key in merged else node
+            rows = [dict(zip(("rest", "ins"), _record_insert_split(node))) for node in merged.values()]
+            await self.client.execute_query(
+                query, parameters={"nodes": _in_lock_order(rows, lambda r: _by_id(r["rest"]))}, txn_id=transaction
+            )
+            return True
         query = f"""
         UNWIND $nodes AS node
         MERGE (n:{label} {{id: node.id}})
@@ -2319,7 +2385,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return neo4j_nodes
 
     def _upsert_record_with_type_cypher(
-        self, records: list[Record], *, release_trashed_external_ids: bool
+        self, records: list[Record], *, release_trashed_external_ids: bool, promoting: bool = False
     ) -> tuple[str, dict[str, Any]]:
         """The statement of ``_upsert_record_with_type`` up to its RETURN, each record bound as ``n``.
 
@@ -2331,13 +2397,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  if collection else [None] * len(records))
         parameters: dict[str, Any] = {
             "rows": _in_lock_order(
-                [{"node": b, "type_node": t} for b, t in zip(bases, types)], lambda row: _by_id(row["node"])
+                [
+                    {"node": rest, "ins": ins, "type_node": t}
+                    for (rest, ins), t in ((_record_insert_split(b), t) for b, t in zip(bases, types))
+                ],
+                lambda row: _by_id(row["node"]),
             ),
             "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
         }
         # Each record releases only holders other than itself, as when records were written one at a time.
         release = """
-            WITH node, type_node, COLLECT {
+            WITH node, ins, type_node, COLLECT {
                 MATCH (holder:Record {externalRecordId: node.externalRecordId, connectorId: node.connectorId})
                 WHERE holder.isDeleted = true AND holder.id <> node.id
                 RETURN holder
@@ -2360,10 +2430,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
         return f"""
             UNWIND $rows AS row
-            WITH row.node AS node, row.type_node AS type_node
+            WITH row.node AS node, row.ins AS ins, row.type_node AS type_node
             {release}
-            MERGE (n:Record {{id: node.id}})
-            SET n += node
+            WITH node AS rest, ins, type_node
+            MERGE (n:Record {{id: rest.id}}){_CYPHER_RECORD_PROMOTING if promoting else _CYPHER_RECORD_INSERT_ONLY}
             {_cypher_kh_node_state("n")}
             {typed}""", parameters
 
@@ -2379,7 +2449,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *release_trashed_external_ids* is set.
         """
         statement, parameters = self._upsert_record_with_type_cypher(
-            [record], release_trashed_external_ids=release_trashed_external_ids
+            [record], release_trashed_external_ids=release_trashed_external_ids, promoting=record._promotes_stub
         )
         await self.client.execute_query(
             f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
@@ -9661,12 +9731,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record on its own, about 4 ms apiece (B2: 110 s for a 29k-file repo).
         """
         try:
-            by_type: dict[str | None, list[Record]] = {}
+            records = collapse_repeated_records(records)          # one row per id, by the rule every store applies
+            by_type: dict[tuple[str | None, bool], list[Record]] = {}
             for record in records:
-                by_type.setdefault(RECORD_TYPE_COLLECTION_MAPPING.get(record.record_type), []).append(record)
-            for group in by_type.values():
+                # rows that replace a stored placeholder go in their own statement, which tests the stored row
+                key = (RECORD_TYPE_COLLECTION_MAPPING.get(record.record_type), record._promotes_stub)
+                by_type.setdefault(key, []).append(record)
+            groups = [(promoting, group) for (_, promoting), group in by_type.items()]
+            for promoting, group in groups:
                 statement, parameters = self._upsert_record_with_type_cypher(
-                    group, release_trashed_external_ids=release_trashed_external_ids
+                    group, release_trashed_external_ids=release_trashed_external_ids, promoting=promoting
                 )
                 await self.client.execute_query(
                     f"{statement}\n            RETURN n.id", parameters=parameters, txn_id=transaction
@@ -9707,7 +9781,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # One statement: the record carries externalParentId, which the path reads
         # check against the edge, so the two change together or not at all. Written
         # apart, a failure after the old edge was deleted left the item in no folder.
-        statement, parameters = self._upsert_record_with_type_cypher([record], release_trashed_external_ids=True)
+        statement, parameters = self._upsert_record_with_type_cypher(
+            [record], release_trashed_external_ids=True, promoting=record._promotes_stub
+        )
         relationship_type = edge_collection_to_relationship(CollectionNames.NODE_RELATIONS.value)
         parameters["parent_child"] = RecordRelations.PARENT_CHILD.value
         carried = "n"
@@ -21689,6 +21765,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             parameters["grantedIds"] = [g for ids_ in access["by_connector"].values() for g in ids_]
         return parameters, bool(probe)
 
+    # A single asked node has no sibling to share a walk with: it is asked of the check alone.
+    _KH_CHECK_BY_PARENT_MIN_IDS = 2
+
     @staticmethod
     def _kh_v3_reached(start: str, hop: str, tag: str, *, child: str, parent: str, rel: str, hops: int = 50) -> str:
         """The nodes a walk up the hierarchy from ``start`` reaches in 1 to ``hops`` steps, each step from ``child`` to ``parent`` over
@@ -21776,6 +21855,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND NOT {in_declared_scope('kh_s', 'x')}
                 RETURN 1 }}"""
 
+        items = """RETURN collect({id: ok.id, vrid: ok.virtualRecordId,
+                        connectorId: ok.connectorId, indexingStatus: ok.indexingStatus,
+                        hasIndexedCopy: coalesce(ok.hasIndexedCopy, false),
+                        isInternal: coalesce(ok.isInternal, false),
+                        isPlaceholder: coalesce(ok.isPlaceholder, false),
+                        groupIds: [(ok)-[:BELONGS_TO]->(kh_og:RecordGroup) | kh_og.id]}) AS items"""
         query = f"""
         CALL () {{
             UNWIND $kh_ids AS kh_key
@@ -21818,21 +21903,67 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN t AS ok
         }}
         // One row: the driver builds a record object per row returned.
-        RETURN collect({{id: ok.id, vrid: ok.virtualRecordId,
-                        connectorId: ok.connectorId, indexingStatus: ok.indexingStatus,
-                        hasIndexedCopy: coalesce(ok.hasIndexedCopy, false),
-                        isInternal: coalesce(ok.isInternal, false),
-                        isPlaceholder: coalesce(ok.isPlaceholder, false),
-                        groupIds: [(ok)-[:BELONGS_TO]->(kh_og:RecordGroup) | kh_og.id]}}) AS items
+        {items}
         """
         # The grants of the other connectors (``kh_cross``) are tested on their nodes, when ``by_connector`` holds one connector's alone; a
         # browse inside one connector tests grants from the nodes (``probe``).
         grants, probe = self._kh_v3_check_parameters(access)
         if probe:
             query = self._kh_grants_by_probe(query)
+        admitted: list[dict[str, Any]] = []
+        if len(ids) >= self._KH_CHECK_BY_PARENT_MIN_IDS:
+            # Siblings share every ancestor, and the walks above read them again for each one (a 5,000-file folder: 5,000 times). The
+            # walk from the App and the walk below a seed are first decided once per parent, and each asked node by its own hop up to
+            # it. A path that leaves the node through the parent is that hop plus a path of at most 49 from the parent, so this admits
+            # exactly what those two arms admit through it. It only admits: the rest are asked below, by every arm, as before.
+            by_parent = f"""
+            UNWIND $kh_ids AS kh_key
+            MATCH (t:Record|RecordGroup {{id: kh_key}})
+            WHERE t.orgId = $org_id AND NOT coalesce(t.isDeleted, false) AND t.connectorId IN $gatedAppIds
+            MATCH (app:App {{id: t.connectorId}})
+            MATCH (kh_q)-[kh_e:NODE_RELATION]->(t)
+            WHERE kh_e.relationshipType {hierarchy}
+            WITH app, kh_q, collect([t, kh_e]) AS kh_kids
+            WITH app, kh_q, kh_kids, (coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB') AS appOpensEverything
+            // Both walks are read a level at a time from the parent (`_kh_v3_reached`), as the check's own are: no plan can start them at the
+            // App or at every seed of it, nor read every route. A walk of 0 to 49 hops is the parent and what 1 to 49 reach.
+            WITH app, kh_q, kh_kids, appOpensEverything,
+                 kh_q = app OR app IN {self._kh_v3_reached("kh_q", self._kh_v3_check_hop("kh_cq", "kh_pq", "kh_hq", grant_once=probe), "q",
+                                                         child="kh_cq", parent="kh_pq", rel="kh_hq", hops=49)} AS kh_reached,
+                 // An EXISTS over the unwound ends, not a list predicate: the seed's declared walk aggregates its ends, which Neo4j refuses
+                 // inside an expression over a list.
+                 EXISTS {{ UNWIND [kh_q] + {self._kh_v3_reached("kh_q", open_hop, "sq", child="kh_cs", parent="kh_ps", rel="kh_hs", hops=49)} AS kh_s
+                          WITH kh_s WHERE {seed('kh_s')}
+                            AND NOT {from_app('kh_s', 'x')}
+                            AND NOT {in_declared_scope('kh_s', 'x')} RETURN 1 }} AS kh_seeded
+            WITH app, kh_q, kh_kids, appOpensEverything, kh_reached, kh_seeded
+            WHERE kh_reached OR kh_seeded
+            UNWIND kh_kids AS kh_kid
+            WITH app, appOpensEverything, kh_q, kh_reached, kh_seeded, kh_kid[0] AS t, kh_kid[1] AS kh_e
+            // Each child is tested by the hop of an arm its parent passed only: in one WHERE the planner evaluates every test for every row.
+            CALL (app, appOpensEverything, kh_q, kh_reached, kh_seeded, t, kh_e) {{
+                WITH * WHERE kh_reached
+                WITH * WHERE {self._kh_v3_check_hop('t', 'kh_q', 'kh_e', grant_once=probe)}
+                RETURN t AS kh_t
+                UNION
+                WITH * WHERE kh_seeded
+                WITH * WHERE {self._kh_v3_seed_hop('t', 'kh_q', state=False)}
+                RETURN t AS kh_t
+            }}
+            WITH DISTINCT kh_t AS ok
+            {items}
+            """
+            if probe:
+                by_parent = self._kh_grants_by_probe(by_parent)
+            rows = await self._kh_query(by_parent, parameters={"kh_ids": ids, "org_id": org_id, **grants}, txn_id=transaction)
+            admitted = (rows or [{}])[0].get("items") or []
+            done = {r["id"] for r in admitted}
+            ids = [i for i in ids if i not in done]
+            if not ids and not vrids:
+                return admitted
         parameters = {"kh_ids": ids, "kh_vrids": vrids, "org_id": org_id, "granteeIds": access["grantee_ids"], **grants}
         rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
-        return (rows or [{}])[0].get("items") or []
+        return admitted + ((rows or [{}])[0].get("items") or [])
 
     async def _kh_v3_app_declared_scope(
         self, app_id: str, granted_ids: list[str], *, state: bool, transaction: str | None,

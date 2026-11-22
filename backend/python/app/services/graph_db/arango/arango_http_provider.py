@@ -224,6 +224,7 @@ from app.services.graph_db.common.utils import (
     KB_LIST_FOLDERS_CAP,
     KB_MAX_FOLDER_DEPTH,
     PERSON_ENTITY_TYPE,
+    RECORD_UPDATE_DROPPED_FIELDS,
     SOFT_DELETE_CHUNK,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
@@ -233,13 +234,17 @@ from app.services.graph_db.common.utils import (
     PermittedEntityRows,
     ancestor_chain_rows,
     build_connector_stats_response,
+    collapse_repeated_records,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     is_full_address,
     jira_issue_browse_url_regex,
     person_query_ref,
+    record_created_at_insert_only,
+    record_insert_doc,
     record_status_field,
+    record_update_doc,
     restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
@@ -4114,6 +4119,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Translate nodes from generic format to ArangoDB format
             arango_nodes = self._translate_nodes_to_arango(nodes)
 
+            if collection == CollectionNames.RECORDS.value and record_created_at_insert_only():
+                await self._upsert_record_base_docs(arango_nodes, transaction)
+                return True
+
+            if collection == CollectionNames.RECORDS.value:
+                # the insert-only switch is off: the older write, except that an update never writes the incarnation id
+                arango_nodes = [{k: v for k, v in n.items() if k != "incarnationId"} for n in arango_nodes]
+
             result = await self.http_client.batch_insert_documents(
                 collection, arango_nodes, txn_id=transaction, overwrite=True
             )
@@ -4122,6 +4135,51 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception:
             raise
+
+    async def _upsert_record_base_docs(
+        self,
+        docs: list[dict[str, Any]],
+        transaction: str | None,
+        *,
+        known_new: Collection[str] = (),
+        promotes: Collection[str] = (),
+    ) -> None:
+        """Write ``records`` documents with the insert-only fields; see ``batch_upsert_documents`` for the call order.
+
+        ``docs`` are in ArangoDB form. ``known_new`` are keys the caller knows are not stored (inserted first). ``promotes``
+        are keys of records that replace a placeholder: they go through one conditional AQL ``UPDATE`` that takes the earlier
+        positive date while the *stored* row is still a placeholder; a row the filter does not match is written as any other.
+        """
+        if not docs:
+            return
+        remaining = docs
+        promoting = [d for d in docs if d["_key"] in promotes]
+        if promoting:
+            handled = set(await self.execute_query(
+                """
+                FOR d IN @docs
+                    LET old = DOCUMENT(@@records, d.key)
+                    FILTER old != null AND old.isPlaceholder == true AND d.patch.isPlaceholder != true
+                    LET incoming = d.created
+                    LET stored = old.createdAtTimestamp
+                    LET created = (IS_NUMBER(incoming) AND incoming > 0)
+                        ? ((IS_NUMBER(stored) AND stored > 0) ? MIN([stored, incoming]) : incoming)
+                        : null
+                    UPDATE d.key WITH MERGE(d.patch, created == null ? {} : { createdAtTimestamp: created })
+                        IN @@records OPTIONS { keepNull: false, mergeObjects: true }
+                    RETURN d.key
+                """,
+                bind_vars={
+                    "docs": [{"key": d["_key"], "created": d.get("createdAtTimestamp"), "patch": record_update_doc(d)} for d in promoting],
+                    "@records": CollectionNames.RECORDS.value,
+                },
+                transaction=transaction,
+            ) or [])
+            remaining = [d for d in docs if d["_key"] not in handled]
+        rows = [{"key": d["_key"], "insert": record_insert_doc(d), "new": d["_key"] in known_new} for d in remaining]
+        await self.http_client.batch_upsert_documents(
+            CollectionNames.RECORDS.value, rows, txn_id=transaction, drop=RECORD_UPDATE_DROPPED_FIELDS
+        )
 
     async def _upsert_record_nodes_releasing_trash(
         self, nodes: list[dict], transaction: str | None = None
@@ -4149,11 +4207,30 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             trashedExternalRecordId: external_id
                         }
             )
-            FOR doc IN APPEND(releases, @docs)
-                INSERT doc INTO @@records OPTIONS { overwriteMode: "update" }
+            LET items = APPEND(
+                (FOR r IN releases RETURN { k: r._key, full: r, upd: r, cand: null }),
+                @items
+            )
+            FOR it IN items
+                UPSERT { _key: it.k }
+                INSERT it.full
+                UPDATE MERGE(it.upd,
+                    (OLD.isPlaceholder == true AND IS_NUMBER(it.cand) AND it.cand > 0)
+                        ? { createdAtTimestamp: (IS_NUMBER(OLD.createdAtTimestamp) AND OLD.createdAtTimestamp > 0) ? MIN([OLD.createdAtTimestamp, it.cand]) : it.cand }
+                        : {})
+                IN @@records OPTIONS { keepNull: false }
                 RETURN NEW._key
             """,
             bind_vars={
+                "items": [
+                    {
+                        "k": doc["_key"],
+                        "full": record_insert_doc(doc),
+                        "upd": record_update_doc(doc),
+                        "cand": None if (doc.get("isPlaceholder") or not record_created_at_insert_only()) else doc.get("createdAtTimestamp"),
+                    }
+                    for doc in docs
+                ],
                 "docs": docs,
                 "keys": [doc["_key"] for doc in docs],
                 "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
@@ -9805,6 +9882,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         duplicates = {x for x in record_ids if x in seen or seen.add(x)}
         if duplicates:
             self.logger.warning(f"DUPLICATE RECORD IDS IN BATCH: {duplicates}")
+            records = collapse_repeated_records(records)          # written once, by the rule every store applies
 
         try:
             for record in records:
@@ -9834,6 +9912,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if release_trashed_external_ids:
                     await self._upsert_record_nodes_releasing_trash(
                         [record.to_arango_base_record()], transaction
+                    )
+                elif record_created_at_insert_only():
+                    base_docs = self._translate_nodes_to_arango([record.to_arango_base_record()])
+                    key = base_docs[0]["_key"]
+                    await self._upsert_record_base_docs(
+                        base_docs,
+                        transaction,
+                        known_new={key} if record._known_new else (),
+                        promotes={key} if record._promotes_stub else (),
                     )
                 else:
                     await self.batch_upsert_nodes(

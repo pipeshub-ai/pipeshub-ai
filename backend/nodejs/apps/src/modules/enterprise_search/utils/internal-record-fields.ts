@@ -41,6 +41,7 @@ export const INTERNAL_RECORD_FIELDS: ReadonlySet<string> = new Set([
   'indexedParserAt',
   'indexedParserVrid',
   'indexedParserSource',
+  'incarnationId',
   'embedVrid',
   'embedRev',
   'embedKey',

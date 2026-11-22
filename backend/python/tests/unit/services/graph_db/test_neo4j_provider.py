@@ -6186,7 +6186,7 @@ class TestRecordMoveIsOneStatement:
             "REMOVE parent.moveLock",
             "WHERE (parent.isDeleted IS NULL OR parent.isDeleted = false)",
             "trashedExternalRecordId: holder.externalRecordId",
-            "MERGE (n:Record {id: node.id})",
+            "MERGE (n:Record {id: rest.id})",
             "MERGE (n)-[e:IS_OF_TYPE]->(t)",
             "OPTIONAL MATCH ()-[old:NODE_RELATION {relationshipType: $parent_child}]->(n)",
             "DELETE old",
@@ -6245,7 +6245,7 @@ class TestRecordMoveIsOneStatement:
 
         neo4j_provider.client.execute_query.assert_awaited_once()
         query = neo4j_provider.client.execute_query.await_args.args[0]
-        assert "MERGE (n:Record {id: node.id})" in query
+        assert "MERGE (n:Record {id: rest.id})" in query
         assert query.rstrip().endswith("RETURN n.id")
         assert "RECORD_RELATION" not in query
         assert "trashedExternalRecordId" not in query
