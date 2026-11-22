@@ -6,6 +6,10 @@ import { Logger } from '../../../libs/services/logger.service';
 import { injectable, inject } from 'inversify';
 import { getNotificationRepository } from '../../../libs/repositories/notification';
 import { forOrg } from '../../../libs/context/orgContext';
+import {
+  DuplicateEnvelope,
+  withDeliveryRecorded,
+} from '../../../libs/context/envelope';
 import { isRetryableStoreError } from '../../../libs/repositories/errors';
 import { isNotYetVisible } from '../../../libs/repositories/notification/dates';
 import { ValidationError } from '../../../libs/errors/validation.error';
@@ -125,8 +129,10 @@ export class NotificationConsumer {
               const docs = recipientUserIds.map((userOid) =>
                 buildNotificationDocForUser(event, String(userOid)),
               );
-              const savedDocs =
-                await getNotificationRepository().insertMany(docs);
+              // On PostgreSQL the rows and the inbox record commit together, so a redelivery cannot store them twice.
+              const savedDocs = await withDeliveryRecorded(() =>
+                getNotificationRepository().insertMany(docs),
+              );
 
               const savedIds: string[] = [];
               const dispatchedUserIds: string[] = [];
@@ -157,6 +163,8 @@ export class NotificationConsumer {
               redeliver = true;
               throw error;
             }
+            // Another delivery of the event stored it first: the consumer acknowledges this one.
+            if (error instanceof DuplicateEnvelope) throw error;
             // A refused event is the producer's fault (WARNING); anything else is ours.
             const level = error instanceof ValidationError ? 'warn' : 'error';
             this.logger[level]('Failed to process notification message', {
