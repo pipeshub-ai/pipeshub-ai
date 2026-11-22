@@ -160,6 +160,15 @@ describe('what this module writes reaches the client', () => {
     expect(sendThroughMiddleware(mapped).message).to.equal(detail)
   })
 
+  it('passes the sentence for a personal-connector limit that could not be checked', () => {
+    // Without it the reader sees "briefly unavailable" instead of being told to try again.
+    const detail =
+      "We couldn't check the limit on personal connectors just now, so this one was not added. Please try again in a moment."
+    const mapped = handleBackendError({ statusCode: 503, data: { detail } }, 'create connector')
+
+    expect(sendThroughMiddleware(mapped).message).to.equal(detail)
+  })
+
   it("passes search's sentence for a permission read that failed", () => {
     // Without it the reader sees "briefly unavailable" and no reason why
     // search came back empty.

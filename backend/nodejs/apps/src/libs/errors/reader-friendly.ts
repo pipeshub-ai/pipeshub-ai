@@ -62,6 +62,10 @@ const READER_WRITTEN_MESSAGES: ReadonlySet<string> = new Set([
   // backend/python/app/utils/user_messages.py (DATABASE_UNREACHABLE) — the 503
   // when a route cannot read the calling user's record.
   "We couldn't reach PipesHub's database just now. Please try again in a few seconds.",
+  // backend/python/app/connectors/core/registry/connector_registry.py
+  // (_CAP_CHECK_FAILED) — the 503 when a personal connector is not added
+  // because the per-source limit could not be checked.
+  "We couldn't check the limit on personal connectors just now, so this one was not added. Please try again in a moment.",
   // backend/nodejs/apps/src/modules/mail/types/mail-event.types.ts
   // (SMTP_PROBLEM_MESSAGES) — the 502 from the mail route when the SMTP server
   // rejected the sign-in or could not be reached.
