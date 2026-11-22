@@ -300,3 +300,51 @@ async def test_a_stored_limit_that_cannot_be_read_stays_as_it_is() -> None:
     admin = {"lim": {"connectorId": "lim", "filters": {"recordGroups": ["x"]}}}
     await keep_hidden_titles(graph, admin, stored, "u-1", "org-1", is_admin=True)
     assert admin["lim"]["filters"] == {"recordGroups": ["x"]}
+
+
+SCOPE_LABEL = "Project Nightjar"     # a sync filter's list label on alice's creator-limited connector
+
+
+@pytest.mark.parametrize(("viewer", "hidden"), [("bob", True), ("bob-admin", False), ("alice", False)])
+def test_a_refused_members_prompt_gets_no_connector_config_of_the_hidden_source(
+    graph: InMemoryGraph, monkeypatch: pytest.MonkeyPatch, viewer: str, hidden: bool,
+) -> None:
+    from app.modules.agents.context.source_catalog import SourceCatalog
+    from app.modules.agents.qna.router import build_capability_context
+
+    calls: list[dict[str, Any]] = []
+    asked: list[list[str]] = []
+
+    def loop(query_info: dict, *_a: object, **_k: object) -> Any:  # noqa: ANN401 - an async iterator
+        calls.append(query_info)
+
+        async def gen() -> Any:  # noqa: ANN401
+            if False:
+                yield ""
+        return gen()
+
+    async def llm(*_a: object, **_k: object) -> tuple[object, dict, dict]:
+        return object(), {"isMultimodal": False, "provider": "openai"}, {}
+
+    async def turn_filters(*, agent_knowledge: list[dict[str, Any]], **_k: object) -> dict[str, Any]:
+        return {"apps": [k["connectorId"] for k in agent_knowledge]}
+
+    async def configs(_config_service: object, connector_ids: list[str]) -> dict[str, Any]:
+        asked.append(list(connector_ids))
+        return {cid: {"sync": {"projects": {"type": "list", "value": [{"id": "p1", "label": f"{SCOPE_LABEL} {cid}"}]}}}
+                for cid in connector_ids}
+    monkeypatch.setattr("app.api.routes.agent.run_agent_loop_stream", loop)
+    monkeypatch.setattr("app.api.routes.agent.get_llm_for_chat", llm)
+    monkeypatch.setattr("app.api.routes.agent._resolve_turn_filters", turn_filters)
+    monkeypatch.setattr("app.api.routes.agent.fetch_connector_configs", configs)
+    client, user = _client(graph, viewer)
+    client.post("/api/v1/agent/shared/chat/stream", headers=as_user(user), json={"query": "hi"})
+    (query_info,) = calls
+    (ids,) = asked
+    secret = f"{SCOPE_LABEL} byAlice"
+    catalog = SourceCatalog.from_state({"agent_knowledge": query_info["knowledge"],
+                                        "connector_configs": query_info["connector_configs"]}).render()
+    summary = build_capability_context(query_info)[0]
+    assert ("byAlice" in ids) is not hidden
+    assert (secret in catalog) is not hidden and (secret in summary) is not hidden
+    assert f"{SCOPE_LABEL} open" in catalog      # an unlimited source keeps its scope lines

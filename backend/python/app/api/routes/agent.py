@@ -4815,7 +4815,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
                 agent_knowledge = agent.get("knowledge", [])
                 # The names reach the prompt and the answer: a limited connector a member cannot open is named by its id.
-                await hide_names_the_viewer_cannot_open(
+                hidden_connector_ids = await hide_names_the_viewer_cannot_open(
                     graph_provider, [agent_knowledge], user_context.get("userId", ""), org_key,
                     is_admin=is_request_admin(request),
                 )
@@ -4905,9 +4905,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         ),
                     ]
 
+                # A connector hidden above gets no config: its sync filters' labels (projects, folders, channels)
+                # would name it in the prompt. The configs only describe a source; they never set what is searched.
                 _stream_conn_ids = [
                     k["connectorId"] for k in agent_knowledge
-                    if isinstance(k, dict) and k.get("connectorId")
+                    if isinstance(k, dict) and k.get("connectorId") and k["connectorId"] not in hidden_connector_ids
                 ]
                 web_search_provider = _parse_web_search(agent.get("webSearch"))
                 if web_search_provider:

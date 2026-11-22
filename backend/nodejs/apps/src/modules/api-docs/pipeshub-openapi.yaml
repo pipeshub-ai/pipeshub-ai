@@ -14766,13 +14766,15 @@ components:
             additionalProperties: false
             required:
               - id
-              - name
               - nodeType
             properties:
               id:
                 type: string
               name:
                 type: string
+                description: |
+                  Left out on GET when the source's access limit refuses a viewer who
+                  is not an admin. On update, the stored title is kept for such an editor.
               nodeType:
                 type: string
                 description: "`recordGroup`, `folder` or `record`."

@@ -364,18 +364,21 @@ async def hide_names_the_viewer_cannot_open(
     org_id: str,
     *,
     is_admin: bool,
-) -> None:
+) -> set[str]:
     """Show, in place, the id instead of the name of every knowledge source whose connector is limited (``accessLimit``, which
     ``get_agent`` and ``get_all_agents`` carry on each source) and does not admit the viewer, as a source that cannot be resolved
     reads. The limit is weighed by the connector list a member gets (``apply_access_limit``), asked only when a source is limited.
     A failed lookup admits nothing, so it hides the name. The node titles saved in ``filters`` and ``filtersParsed`` are left out
-    with it. An admin of the request's org sees every name, as on the connectors page."""
-    for k in await _refused_sources(graph_provider, knowledge_lists, user_id, org_id, is_admin=is_admin):
+    with it. An admin of the request's org sees every name, as on the connectors page. Returns the ids of the connectors hidden,
+    so a caller leaves out what else would name them (a chat turn's connector configs)."""
+    refused = await _refused_sources(graph_provider, knowledge_lists, user_id, org_id, is_admin=is_admin)
+    for k in refused:
         k["name"] = k["displayName"] = k.get("connectorId")
         # The folder and file titles the agent builder saved go too; the ids that limit the search stay.
         for key in ("filters", "filtersParsed"):
             if key in k:
                 k[key] = _without_titles(k[key])
+    return {str(k.get("connectorId")) for k in refused}
 
 
 async def _refused_sources(
