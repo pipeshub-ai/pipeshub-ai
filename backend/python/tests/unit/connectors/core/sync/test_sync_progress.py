@@ -495,6 +495,31 @@ async def test_a_first_sync_is_announced_once_everything_is_searchable() -> None
     assert "1,200" in sent["message"]
 
 
+async def test_the_watch_reads_each_org_under_that_org() -> None:
+    """The watch starts with no org bound; a store that reads one org at a time refuses any read without one."""
+    from app.connectors.core.sync.first_sync_watch import check_first_syncs
+    from app.core.org_context import current_or_system, current_org_id
+
+    seen: list[tuple[str, str | None]] = []
+    gp = _watch_provider(_ready_app(), {})
+
+    async def orgs(**_: object) -> list[dict]:
+        seen.append(("orgs", current_or_system().kind))
+        return [{"_key": "org-1"}]
+
+    async def apps(org_id: str) -> list[dict]:
+        seen.append(("apps", current_org_id()))
+        return [_ready_app()]
+
+    async def counts(connector_id: str, statuses: list[str]) -> dict:
+        seen.append(("counts", current_org_id()))
+        return {} if "QUEUED" in statuses else {"COMPLETED": 3}
+
+    gp.get_all_orgs, gp.get_org_apps, gp.count_connector_records_by_status = orgs, apps, counts
+    assert await check_first_syncs(gp, AsyncMock(), _LOG) == ["c1"]
+    assert seen == [("orgs", "system"), ("apps", "org-1"), ("counts", "org-1"), ("counts", "org-1")]
+
+
 async def test_a_notice_the_broker_refused_is_tried_again() -> None:
     from app.connectors.core.sync.first_sync_watch import check_first_syncs
 

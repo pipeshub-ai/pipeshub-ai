@@ -18,6 +18,7 @@ from app.connectors.core.base.connector.connector_service import (
     DEFAULT_CONNECTOR_NOTIFICATION_LINK,
 )
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
+from app.core.org_jobs import for_each_org
 from app.services.notification.types import (
     NotificationOrigin,
     NotificationSeverity,
@@ -59,16 +60,18 @@ async def check_first_syncs(
 ) -> list[str]:
     """Mark ready, and announce, every connector whose first sync is now searchable; their ids."""
     ready: list[str] = []
-    for org in (await graph_provider.get_all_orgs(active=True)) or []:
-        org_id = org.get("_key") or org.get("id")
-        if not org_id:
-            continue
+
+    async def check_org(org_id: str) -> None:
         for app in (await graph_provider.get_org_apps(org_id)) or []:
             if not app.get(ConnectorStateKeys.AWAITING_FIRST_SYNC):
                 continue
             connector_id = app.get("_key") or app.get("id")
             if connector_id and await _mark_ready(graph_provider, notification_service, logger, org_id, connector_id, app):
                 ready.append(connector_id)
+
+    # Each org under its own context: the watch starts with none, and a store that reads one org at a
+    # time (PostgreSQL) refuses every read without one.
+    await for_each_org(graph_provider, "first_sync_watch", check_org, logger, active=True)
     return ready
 
 
