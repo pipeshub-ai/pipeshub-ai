@@ -216,9 +216,12 @@ async def try_answer_enumeration(
     # Without raise_on_error a failed read, or one source that failed, comes
     # back as {} or a partial map, which would be answered as "no documents"
     # or as a complete count. Switched-off demo records are not the user's.
+    # Only the scope and metadata keys, as search sends them: the bounds were
+    # checked above, and any other key would make the graph skip its cache.
+    from app.modules.retrieval.retrieval_service import _graph_filters
     try:
         accessible = await graph_provider.get_accessible_virtual_record_ids(
-            user_id=user_id, org_id=org_id, filters=filters or {},
+            user_id=user_id, org_id=org_id, filters=_graph_filters(filters),
             raise_on_error=True,
             exclude_app_ids=excluded_app_ids(getattr(context, "tool_state", None)),
         )

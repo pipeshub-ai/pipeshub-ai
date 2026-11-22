@@ -1747,9 +1747,11 @@ class TestCensusRunsAfterTheIntentCall:
 
         return seen, _fake_create, _fake_census, _fake_finalizer_run
 
-    async def _drive(self, policy, seen, fake_create, fake_census, fake_finalizer, extra=()) -> list[str]:
+    async def _drive(self, policy, seen, fake_create, fake_census, fake_finalizer, extra=(), log=None) -> list[str]:
         sql_patch, slack_patch = _patch_connectors()
         kwargs = TestRunChatStream._base_kwargs(policy=policy)
+        if log is not None:
+            kwargs["log"] = log
         kwargs["query_info"]["query"] = "How many documents do we have?"
         with contextlib.ExitStack() as stack:
             for p in (
@@ -1778,6 +1780,11 @@ class TestCensusRunsAfterTheIntentCall:
         await self._drive(AGENT_POLICY, seen, create, census, finalizer)
         assert seen["markers"] == ["yes"]
         assert seen["streamed"] is False
+
+    async def test_a_census_answer_ends_the_turn_as_done(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        seen, create, census, finalizer = self._run(AGENT_POLICY, marker="yes")
+        await self._drive(AGENT_POLICY, seen, create, census, finalizer, log=_TURN_LOG)
+        assert [(e["stop_reason"], e["level"]) for e in _turn_ends(turn_caplog)] == [("done", logging.INFO)]
 
     async def test_a_question_that_needs_clarifying_is_not_a_census(self) -> None:
         seen, create, census, finalizer = self._run(AGENT_POLICY, marker="yes", clarifying=[MagicMock()])

@@ -648,6 +648,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     prefetch_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await prefetch_task
+                stop_reason = "done"
                 return
 
             prefetch_result = await prefetch_task if prefetch_task is not None else None

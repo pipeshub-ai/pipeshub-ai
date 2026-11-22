@@ -462,6 +462,7 @@ async def run_agent_loop_stream(
                     event_sink=event_sink, log=log,
                 )
             ):
+                stop_reason = "done"
                 return
 
             if clarifying_questions:

@@ -199,6 +199,11 @@ class TestAScopedQuestionIsLeftToTheAgent:
         )
 
         graph.get_accessible_virtual_record_ids.assert_awaited()
+        # The bounds are checked here, not by the graph. Passed on, they are
+        # not metadata, yet the graph would skip its cache because of them.
+        assert graph.get_accessible_virtual_record_ids.await_args.kwargs["filters"] == {
+            key: value for key, value in filters.items() if key in ("apps", "kb")
+        }
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
