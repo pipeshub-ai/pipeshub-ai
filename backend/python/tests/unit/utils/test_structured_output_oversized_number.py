@@ -453,3 +453,157 @@ def test_a_whole_corpus_sized_reply_fits_under_the_ceiling() -> None:
     summary, per_header, per_row = 250, 8, 160  # tokens: verbose summary, header name, long row
     worst = 40 + summary + 30 * per_header + TABLE_ROW_BATCH_SIZE * (12 + per_row)
     assert worst < CEILING
+
+
+# --- A reply that ran away ends that call's part of the table -----------------------------
+
+
+def _runaway_rows(rows: list[dict]) -> str:
+    return '{"descriptions": [{"key": "' + row_keys(rows)[0] + '", "description": "x"}], "n": ' + "1" * _DIGITS + "}"
+
+
+@pytest.mark.asyncio
+async def test_a_runaway_row_batch_falls_back_without_a_split(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A batch large enough to split: a runaway reply is not asked for again, in halves or whole."""
+    from app.modules.parsers.excel.prompt_template import KeyedRowDescriptions
+
+    rows = [{"Name": f"n{i}", "Age": str(i)} for i in range(4 * table_enrichment.MIN_SPLIT_ROWS)]
+    calls: list[int] = []
+
+    async def _invoke(*_args: object, **_kwargs: object) -> BaseModel:
+        calls.append(1)
+        return _parse(KeyedRowDescriptions, _runaway_rows(rows))
+
+    monkeypatch.setattr(streaming, "_ainvoke_throttled", _invoke)
+    with caplog.at_level(logging.WARNING):
+        texts = await table_enrichment.describe_row_dicts(MagicMock(), rows, "s", logging.getLogger("t"))
+
+    assert len(calls) == 1
+    assert texts == [f"Name: n{i}, Age: {i}" for i in range(len(rows))]
+    degraded = [r.getMessage() for r in caplog.records if "row batch degraded" in r.getMessage()]
+    assert len(degraded) == 1 and "reason=parse" in degraded[0]
+    assert not [r for r in caplog.records if "call failed" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_a_runaway_first_reply_falls_back_without_another_call(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The summary follow-up would ask for the same header row count that just ran away."""
+    replies: list[str] = []
+
+    async def _invoke(_runnable: object, messages: list, **_kwargs: object) -> BaseModel:
+        prompt = "\n".join(str(m.content) for m in messages)
+        replies.append("first" if '"descriptions"' in prompt else "summary")
+        return _parse(TableEnrichment, _RUNAWAY)
+
+    monkeypatch.setattr(streaming, "_ainvoke_throttled", _invoke)
+    with caplog.at_level(logging.WARNING):
+        result = await enrich_table_grid(MagicMock(), GRID, logger=logging.getLogger("t"))
+
+    assert replies == ["first"]
+    assert result.failed and result.degraded
+    assert not [r for r in caplog.records if "call failed" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_a_runaway_number_raises_only_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    invoke, calls = _runaway_reply(_Answer)
+    monkeypatch.setattr(streaming, "_ainvoke_throttled", invoke)
+    with pytest.raises(streaming.OversizedNumberError):
+        await streaming.invoke_with_structured_output_and_reflection(
+            MagicMock(), [], _Answer, raise_call_errors=True, raise_oversized_number=True
+        )
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cut_off_reply_is_caught_without_the_structured_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model the structured wrapper cannot be built for returns its message as is."""
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    def _no_wrapper(*_a: object, **_kw: object):  # noqa: ANN202
+        raise NotImplementedError
+
+    monkeypatch.setattr(ChatGoogleGenerativeAI, "with_structured_output", _no_wrapper)
+    sent: list[object] = []
+    # Valid JSON for the schema, yet the reply stopped at its limit.
+    with _cut_off_model(sent, '{"summary": "Ages of", "headers": ["Name"], "header_row_count": 0}'):
+        answer = await streaming.invoke_with_structured_output_and_reflection(
+            _gemini(model="gemini-3.8-flash"), [("user", "x")], TableSummaryHeaders, 1, max_output_tokens=900
+        )
+    assert answer is None
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_cut_off_chunk_falls_back_in_get_rows_text() -> None:
+    grid = [["Name", "Age"], ["Ann", "30"], ["Bob", "41"]]
+    sent: list[object] = []
+    with _cut_off_model(sent, '{"descriptions": [{"key": "K", "description": "cut'):
+        texts, _rows = await table_enrichment.get_rows_text(
+            _gemini(model="gemini-3.8-flash"), {"grid": grid}, "s", ["Name", "Age"]
+        )
+    assert texts == ["Name: Ann, Age: 30", "Name: Bob, Age: 41"]
+    assert len(sent) == 1
+
+
+def _openai_request_schema(llm: object, schema: type[BaseModel]) -> dict:
+    """The JSON schema an OpenAI-style request carries for *schema*."""
+    from langchain_core.messages import HumanMessage
+
+    stack, bound = [streaming._apply_structured_output(llm, schema=schema, include_raw=True)], None
+    while stack:
+        node = stack.pop()
+        if getattr(node, "kwargs", None) and hasattr(node, "bound"):
+            bound = node
+            break
+        for attr in ("first", "bound", "steps__", "middle", "last"):
+            value = getattr(node, attr, None)
+            if isinstance(value, dict):
+                stack.extend(value.values())
+            elif isinstance(value, list):
+                stack.extend(value)
+            elif value is not None:
+                stack.append(value)
+    assert bound is not None
+    kwargs = {k: v for k, v in bound.kwargs.items() if k != "ls_structured_output_format"}
+    payload = bound.bound._get_request_payload([HumanMessage(content="t")], **kwargs)
+    response_format = payload["response_format"]
+    if isinstance(response_format, type):
+        from openai.lib._parsing._completions import type_to_response_format_param
+
+        response_format = type_to_response_format_param(response_format)
+    return response_format["json_schema"]["schema"]
+
+
+@pytest.mark.parametrize("model", ["ft:gpt-4o-2024-08-06:acme::abc123", "gpt-4.1"])
+@pytest.mark.parametrize("schema", [TableSummaryHeaders, TableEnrichment])
+def test_an_openai_request_carries_no_number_bounds(model: str, schema: type[BaseModel]) -> None:
+    """Fine-tuned OpenAI models refuse minimum/maximum in a strict schema with a 400."""
+    field = _openai_request_schema(_openai(model=model), schema)["properties"]["header_row_count"]
+    assert field["type"] == "integer"
+    assert not {"minimum", "maximum"} & set(field)
+
+
+def test_the_bounds_are_still_read_leniently_without_the_schema_bound() -> None:
+    from app.modules.parsers.excel.prompt_template import TableSummaryHeaders as Schema
+
+    unbounded = streaming._without_number_bounds(Schema)
+    assert issubclass(unbounded, Schema)
+    assert unbounded.model_validate({"header_row_count": 7}).header_row_count == 0
+    assert streaming._without_number_bounds(_Answer) is _Answer
+
+
+def test_a_typed_dict_schema_goes_out_as_given() -> None:
+    from typing import TypedDict
+
+    class _Typed(TypedDict):
+        count: int
+
+    llm = MagicMock()
+    llm.__class__ = type(_openai(model="gpt-4.1"))
+    streaming._apply_structured_output(llm, _Typed)
+    assert llm.with_structured_output.call_args.args[0] is _Typed

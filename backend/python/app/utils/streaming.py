@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncGenerator, Callable, Mapping
+from functools import cache
 from typing import (
     Any,
     TypeVar,
@@ -1046,7 +1047,49 @@ async def call_aiter_llm_stream_simple(
         yield {"event": "error", "data": {"error": classify_exception(exc)[1]}}
         return
 
+_NUMBER_BOUNDS = ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf")
+
+
+def _drop_number_bounds(node: Any) -> None:  # noqa: ANN401 - any JSON schema node
+    if isinstance(node, dict):
+        for key in _NUMBER_BOUNDS:
+            node.pop(key, None)
+        for value in node.values():
+            _drop_number_bounds(value)
+    elif isinstance(node, list):
+        for value in node:
+            _drop_number_bounds(value)
+
+
+@cache
+def _without_number_bounds(schema: type[BaseModel]) -> type[BaseModel]:
+    """*schema* as sent without numeric bounds; *schema* itself when it has none.
+
+    OpenAI refuses ``minimum``/``maximum`` in a strict schema for a fine-tuned model with a 400,
+    and neither an Azure deployment name nor an OpenAI-compatible server says which model is
+    behind it. The subclass validates exactly as *schema* does, so bounds the schema's own
+    validators enforce still hold on the reply.
+    """
+    sent = schema.model_json_schema()
+    _drop_number_bounds(sent)
+    if sent == schema.model_json_schema():
+        return schema
+
+    class _Unbounded(schema):  # type: ignore[valid-type, misc]
+        @classmethod
+        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+            result = super().model_json_schema(*args, **kwargs)
+            _drop_number_bounds(result)
+            return result
+
+    _Unbounded.__name__ = _Unbounded.__qualname__ = schema.__name__
+    _Unbounded.__doc__ = schema.__doc__
+    return _Unbounded
+
+
 def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
+    if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)) and isinstance(schema, type) and issubclass(schema, BaseModel):
+        schema = _without_number_bounds(schema)
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):
 
         additional_kwargs = {}
@@ -1115,6 +1158,10 @@ def _is_oversized_number(exc: BaseException) -> bool:
     check the reply reads as a failed call.
     """
     return isinstance(exc, ValueError) and "integer string conversion" in str(exc)
+
+
+class OversizedNumberError(OutputParserException):
+    """A reply holding a number too long to read: a reply that ran away, not a failed call."""
 
 
 #: Output tokens added to a per-call cap for a model that may reason: its reasoning counts
@@ -1232,9 +1279,15 @@ def _is_output_limit_refusal(exc: BaseException) -> bool:
     return is_400 and bool(_OUTPUT_LIMIT_REFUSAL.search(text))
 
 
-def _capped_reply(result: Any) -> Any:  # noqa: ANN401 - whatever the structured model returns
-    """Unwraps an ``include_raw`` result, raising for a cut-off reply or one that did not parse."""
+def _capped_reply(result: Any, *, check_message: bool) -> Any:  # noqa: ANN401 - whatever the structured model returns
+    """Unwraps an ``include_raw`` result, raising for a cut-off reply or one that did not parse.
+
+    With ``check_message`` a plain message is checked too: a model the structured wrapper could
+    not be built for returns its message as is.
+    """
     if not (isinstance(result, dict) and "raw" in result and "parsed" in result):
+        if check_message and isinstance(result, BaseMessage) and is_truncated(result):
+            raise TruncatedReplyError("the reply reached its output-token limit")
         return result
     if is_truncated(result.get("raw")):
         raise TruncatedReplyError("the reply reached its output-token limit")
@@ -1295,6 +1348,7 @@ async def invoke_with_structured_output_and_reflection(
     raise_unavailable: bool = False,
     max_output_tokens: int | None = None,
     raise_truncated: bool = False,
+    raise_oversized_number: bool = False,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
@@ -1306,6 +1360,10 @@ async def invoke_with_structured_output_and_reflection(
     read. A reply cut off at its limit is not usable and is not asked for again (the same
     request would stop at the same limit): the call returns None after one warning, or with
     ``raise_truncated`` raises ``TruncatedReplyError`` for the caller to report.
+
+    A reply holding a number too long to read is not asked for again either: the call returns
+    None, or with ``raise_oversized_number`` raises ``OversizedNumberError``, for a caller that
+    would otherwise read None as "ask again".
 
     Args:
         llm: The LangChain chat model to use
@@ -1362,7 +1420,7 @@ async def invoke_with_structured_output_and_reflection(
                     llm_with_structured_output, without_cache_markers(request, dropped) if dropped else request,
                     config=invoke_config, provider=provider, call_timeout=call_timeout,
                     call_kwargs={name: value for name, value in kwargs.items() if name not in dropped},
-                ))
+                ), check_message=capped is not None)
             except Exception as exc:
                 if cap_sent and _is_output_limit_refusal(exc):
                     # The model's real limit is below the one on record. Sent once more without
@@ -1405,6 +1463,8 @@ async def invoke_with_structured_output_and_reflection(
             # again: there is no reply text to show the model, and a second runaway reply
             # costs a full output limit again. The message names only the digit count.
             logger.warning("The %s reply holds a number too long to read (%s); the reply is discarded", schema.__name__, e)
+            if raise_oversized_number:
+                raise OversizedNumberError(f"the {schema.__name__} reply holds a number too long to read") from e
             return None
         if isinstance(e, TruncatedReplyError):
             if raise_truncated:
@@ -1526,6 +1586,10 @@ Respond only with valid JSON that matches the schema."""
                         "The %s reflection reply was cut off or holds a number too long to read; giving up",
                         schema.__name__,
                     )
+                    if raise_oversized_number and _is_oversized_number(reflection_error):
+                        raise OversizedNumberError(
+                            f"the {schema.__name__} reflection reply holds a number too long to read"
+                        ) from reflection_error
                     return None
                 recovered = _recover_structured_json_from_exception(reflection_error, schema)
                 if recovered is not None:
