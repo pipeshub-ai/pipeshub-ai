@@ -295,6 +295,12 @@ the auth middleware bound.
   is still cancelled before it reads.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
+- Node: a request a route's schema refuses (`ValidationMiddleware`: the zod schema, the array/key/depth guard, the
+  stack-overflow net) writes no line of its own. `http.request.error` (WARNING, `bad_request`) names each issue in
+  `error.metadata.errors` as `field`, `code` and `message`, never the issue's `value`; the route's `params` are on the line
+  as on every `http.request.error`. A key the caller made up (an unknown field, a record key) is named, and a few rules quote
+  an enum-like value the caller sent in `message` (a duplicate model id), as the 400 body does.
+  `POST /oauth2/token` answers its own refusals (see the OAuth provider below).
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
   is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
   token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.
@@ -1043,7 +1049,8 @@ run. Each says why it failed on the request's lines:
   the OIDC bearer check) answers in RFC 6749 shape (`modules/oauth_provider/utils/oauth-failure.ts`). A refusal (an OAuth
   error, or a deliberate `BadRequestError`, `NotFoundError`, `UnauthorizedError` or `ForbiddenError`) keeps its 4xx and its
   RFC code: a dead, rotated or unknown refresh token is `invalid_grant`. It writes one DEBUG `oauth.request.refused` with
-  `code`, and a wrong client credential marks the access line `bad_request`. Anything else is ours, whatever its status (a
+  `code` (a `/token` request its schema refuses adds `errors`, each issue's `field` and `code`, never a value), and a wrong
+  client credential marks the access line `bad_request`. Anything else is ours, whatever its status (a
   stored secret that no longer decrypts, a lock timeout's 409, a driver error): one `oauth.request.failed` at
   `levelFor(classifyRequestError(error, 500))` with the error, the access line marked with that class, and the answer
   `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
