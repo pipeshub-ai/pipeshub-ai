@@ -27,12 +27,14 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.entities import FileRecord, RecordType
 from app.services.messaging.postgres.producer import PgMessagingProducer
-from app.services.messaging.postgres.queue import PgQueue
+from app.services.messaging.postgres.queue import PgQueue, joined_to
 from app.services.pg_runtime import RuntimeDb
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from app.core.db import KernelDB
+    from app.core.db.uow import Tx
     from app.services.graph_db.postgres.provider import PostgresGraphProvider
 
 pytestmark = pytest.mark.integration
@@ -60,9 +62,12 @@ class _World:
     async def events(self, record_id: str, group: str | None = None) -> list[str]:
         """The event types delivered to this test's consumer group (or ``group``) for the record."""
         group = group or self.group
-        got = await self.queue.claim(group, [TOPIC], "test", 1000, 30.0)
-        for d in got:
-            await self.queue.ack(group, d)
+        got = []
+        # until the group has nothing ready: a backfilled group starts with the topic's whole backlog, which one batch may not hold
+        while batch := await self.queue.claim(group, [TOPIC], "test", 1000, 30.0):
+            for d in batch:
+                await self.queue.ack(group, d)
+            got += batch
         return [json.loads(d.value)["eventType"] for d in got if d.key == record_id]
 
     async def stored(self, record_id: str) -> dict | None:
@@ -176,3 +181,42 @@ async def test_a_consumer_group_created_while_a_write_is_open_does_not_wait_for_
         release.set()
         await asyncio.gather(write, return_exceptions=True)
         await w.queue.drop_group(TOPIC, late)
+
+
+async def test_an_event_published_in_a_savepoint_that_rolled_back_is_not_delivered(w: _World, pg_db: KernelDB) -> None:
+    """A caller that recovers from an error with a savepoint and commits the rest must not send the rolled-back part's event."""
+    async def run(fn: Callable[[Tx], Awaitable[object]]) -> object:  # the joined unit is ``tx``
+        return await fn(tx)
+
+    async with pg_db.uow(write=True) as tx:
+        with pytest.raises(Exception, match="division by zero"):  # the kernel maps the server error to its own type
+            async with tx.savepoint("sp_rolled_back"):
+                with joined_to(run):
+                    await w.queue.publish(TOPIC, [("rolled-back", "{}")])
+                await tx.execute("/* pipeshub:test.fail */ SELECT 1/0")
+        async with tx.savepoint("sp_kept"):
+            with joined_to(run):
+                await w.queue.publish(TOPIC, [("kept", "{}")])
+
+    keys = []
+    while batch := await w.queue.claim(w.group, [TOPIC], "test", 1000, 30.0):
+        for d in batch:
+            await w.queue.ack(w.group, d)
+        keys += [d.key for d in batch]
+    assert "kept" in keys
+    assert "rolled-back" not in keys
+
+
+async def test_an_event_that_fails_before_commit_is_sent_is_a_known_rollback(w: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The failure happened before COMMIT was sent: the caller may clean up what it made outside the transaction (a pushed
+    record's stored document), which it must not do when the outcome is unknown."""
+    async def insert_fails(*_args: object) -> None:
+        raise RuntimeError("queue insert failed")
+
+    monkeypatch.setattr(PgQueue, "publish_in", staticmethod(insert_fails))
+    record = w.record("g")
+    with pytest.raises(RuntimeError, match="queue insert failed") as raised:
+        await w.processor.on_new_records([(record, [])])
+
+    assert not getattr(raised.value, "commit_outcome_unknown", False)
+    assert await w.stored(record.id) is None

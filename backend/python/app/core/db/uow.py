@@ -256,6 +256,7 @@ class Tx:
         if not _IDENT.fullmatch(name):
             raise ValueError(f"invalid savepoint name {name!r}")
         await self._run("execute", f"/* pipeshub:kernel.savepoint */ SAVEPOINT {name}", internal=True)
+        mark = len(self.before_commit)
         try:
             yield
         except Exception:
@@ -268,6 +269,7 @@ class Tx:
                 mapped = self._db.map_error(e, self)
                 self._record("rollback_to", "kernel.savepoint", t0, mapped, getattr(e, "sqlstate", None))
                 raise mapped from e
+            del self.before_commit[mark:]  # what the rolled-back block registered (an event of its write) is rolled back with it
             self.failed = False
             raise
         else:
@@ -566,7 +568,10 @@ class KernelDB:
                     self.post_commit_hook(tx)  # the unit is committed: a hook that fails must not fail it
                 except Exception:
                     logger.exception("post-commit hook failed")
-        except BaseException:
+        except BaseException as e:
+            if not tx.commit_sent:
+                with suppress(Exception):
+                    e.commit_not_sent = True  # type: ignore[attr-defined]  # a known rollback: nothing of the unit was applied
             await self._abort(con, txn, tx)
             raise
         finally:

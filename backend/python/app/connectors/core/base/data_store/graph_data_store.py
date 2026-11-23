@@ -1648,8 +1648,10 @@ class GraphDataStore(DataStoreProvider):
                 self.logger.warning("Transaction commit failed (%s); aborting it", type(e).__name__)
                 # The store may still have applied it: callers that created something outside the
                 # transaction (a pushed record's storage document) must not undo it on this error.
-                with suppress(Exception):
-                    e.commit_outcome_unknown = True  # type: ignore[attr-defined]
+                # Not when the store says the COMMIT was never sent (PostgreSQL: a step before it failed).
+                if not getattr(e, "commit_not_sent", False):
+                    with suppress(Exception):
+                        e.commit_outcome_unknown = True  # type: ignore[attr-defined]
                 try:
                     await tx_store.rollback()
                 except ValueError:
