@@ -12,6 +12,7 @@ import { AdminOnlyConsentScopes } from '../../src/modules/oauth_provider/config/
 const nm = (p: string): string => path.join(__dirname, '../../node_modules', p)
 // The mocha setup replaces the CJS view of this ESM package with a mock, so
 // load the real files with a native dynamic import.
+// eslint-disable-next-line @typescript-eslint/no-implied-eval -- ts-node compiles import() to the mocked require()
 const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<any>
 
 describe('MCP tools and the scopes a non-admin is not asked for', function () {
