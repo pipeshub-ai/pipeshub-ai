@@ -26058,7 +26058,7 @@ components:
             type: string
             minLength: 1
             maxLength: 32
-            enum: [assignee, reporter, creator, author, owner, editor, reviewer, recipient, lead, mentioned, involved]
+            enum: [assignee, reporter, creator, author, owner, editor, shared_with, reviewer, recipient, lead, mentioned, involved]
           description: Roles to keep; every role when omitted.
         recordTypes:
           type: array
