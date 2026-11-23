@@ -6509,6 +6509,14 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_records_by_file_path(connector_id, path)
 
+    async def record_in_group(self, record_id: str, record_group_id: str) -> bool:
+        """Whether the record is filed in the record group (a BELONGS_TO edge). A failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            edges = await tx_store.get_edges_from_node(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.BELONGS_TO.value, raise_on_error=True
+            )
+        return any(record_group_id_from_edge(edge) == record_group_id for edge in edges or [])
+
     async def get_record_group_by_external_id(
         self, connector_id: str, external_id: str
     ) -> RecordGroup | None:
