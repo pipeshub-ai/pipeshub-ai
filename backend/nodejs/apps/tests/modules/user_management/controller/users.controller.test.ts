@@ -6831,6 +6831,30 @@ describe('UserController', () => {
       expect(upgrade.called).to.be.false;
     });
 
+    for (const [label, kind, message] of [
+      ['a Slack-only account', 'slack', 'An account created from Slack cannot be an administrator'],
+      ['a service account', 'service', 'A service account cannot be an administrator'],
+    ] as const) {
+      it(`changing the role of ${label} to administrator answers 400, not a server error, and writes nothing`, async () => {
+        const target = slackRow({ kind });
+        req.params.id = target._id;
+        req.body = { role: 'admin' };
+        sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+        sinon.stub(users, 'getForEdit').resolves(target);
+        const profile = sinon.stub(users, 'updateProfile').resolves(null);
+        const promote = sinon.stub(users, 'promoteToAdmin').resolves();
+
+        await controller.updateUser(req, res, next);
+
+        const error = next.firstCall?.args[0];
+        expect(error, 'refused').to.exist;
+        expect(error.statusCode).to.equal(400);
+        expect(error.message).to.equal(message);
+        expect(profile.called).to.be.false;
+        expect(promote.called).to.be.false;
+      });
+    }
+
     it('resend-invite refuses a Slack-only account: its mail would set a password on it', async () => {
       req.params = { id: new mongoose.Types.ObjectId().toHexString() };
       sinon.stub(getOrgRepository(), 'getLive').resolves({ _id: orgId, registeredName: 'Acme' } as any);

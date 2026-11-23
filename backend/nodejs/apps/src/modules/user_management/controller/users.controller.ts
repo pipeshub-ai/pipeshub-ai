@@ -1,5 +1,9 @@
 import { Response, NextFunction } from 'express';
-import { isSlackOnlyAccount } from '../constants/service-account.constants';
+import {
+  isSlackOnlyAccount,
+  SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE,
+  SLACK_ONLY_ADMIN_ROLE_MESSAGE,
+} from '../constants/service-account.constants';
 import { upgradeSlackOnlyAccount } from '../services/slack-only-accounts.service';
 import {
   AuthenticatedServiceRequest,
@@ -1319,6 +1323,14 @@ export class UserController {
             (await isUserOrgAdmin(id, orgId))));
       const promotingAdmin =
         updateFields.role === 'admin' && previousRole !== 'admin';
+
+      // The stores refuse this too, but as a server error: say it as the 400 it is.
+      if (promotingAdmin && isSlackOnlyAccount(user)) {
+        throw new BadRequestError(SLACK_ONLY_ADMIN_ROLE_MESSAGE);
+      }
+      if (promotingAdmin && user.kind === 'service') {
+        throw new BadRequestError(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
+      }
 
       if (demotingAdmin && (!id || !orgId)) {
         throw new BadRequestError('User or organization not found');
