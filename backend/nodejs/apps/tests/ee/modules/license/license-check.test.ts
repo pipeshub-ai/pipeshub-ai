@@ -36,6 +36,7 @@ import {
 } from '../../../../src/ee/modules/license/license.types';
 import { EncryptionService } from '../../../../src/libs/encryptor/encryptor';
 import { BaseError } from '../../../../src/libs/errors/base.error';
+import { xssSanitizationMiddleware } from '../../../../src/libs/middlewares/xss-sanitization.middleware';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -416,6 +417,8 @@ describe('license check: features, install and the permission sync answer', () =
     const serve = async <T>(fn: (url: string) => Promise<T>): Promise<T> => {
       const app = express();
       app.use(express.json());
+      // As app.ts mounts it: the signed file must get past body sanitizing intact.
+      app.use(xssSanitizationMiddleware);
       const container = new Container();
       container.bind('AuthMiddleware').toConstantValue({
         authenticate(req: any, _res: unknown, next: () => void) {
