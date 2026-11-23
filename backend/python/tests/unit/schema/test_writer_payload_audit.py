@@ -800,7 +800,9 @@ def test_known_violation_salesforce_edges_can_carry_a_null_created_at_timestamp(
     None for a missing date; the edge schemas type `createdAtTimestamp` as a non-null number."""
     path = APP / "connectors" / "sources" / "salesforce" / "connector.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    parser = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_parse_salesforce_timestamp")
+    # The parser is defined in rows.py, which the connector imports it from.
+    rows = ast.parse((path.parent / "rows.py").read_text(encoding="utf-8"))
+    parser = next(n for n in rows.body if isinstance(n, ast.FunctionDef) and n.name == "_parse_salesforce_timestamp")
     assert any(isinstance(n, ast.Return) and isinstance(n.value, ast.Constant) and n.value.value is None for n in ast.walk(parser))
 
     def from_parser(fn: ast.AST, name: str) -> bool:

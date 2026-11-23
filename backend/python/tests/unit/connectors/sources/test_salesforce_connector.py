@@ -3866,7 +3866,7 @@ class TestSyncPermissionsEdgesDropsCachedAccess:
     """Rewriting the permission edges can take access away, so the search cache's
     access lists for the connector are dropped once the transaction has ended."""
 
-    _NOTIFY = "app.connectors.sources.salesforce.connector.notify_connector_permissions_changed"
+    _NOTIFY = "app.ee.permission_sync.salesforce.notify_connector_permissions_changed"
 
     def _connector(
         self, events: list, records: list[dict[str, Any]] | None = None
