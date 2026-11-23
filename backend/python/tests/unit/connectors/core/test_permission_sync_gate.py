@@ -109,6 +109,11 @@ def _no_writes(tx_store: AsyncMock) -> list[str]:
     (LICENSED, True),
     (UNLICENSED, False),
     ({}, False),
+    # Exactly what the Node licence check writes (license.service.ts): only ``allowed`` decides.
+    ({"allowed": True, "until": "2026-12-23T12:00:00.000Z", "status": "active"}, True),
+    ({"allowed": True, "until": "2026-12-23T12:00:00.000Z", "status": "grace"}, True),
+    ({"allowed": False, "until": None, "status": "expired"}, False),
+    ({"allowed": False, "until": None, "status": "active"}, False),  # a licence without the feature
 ])
 async def test_the_licence_is_read_from_the_config_store(value: object, licensed: bool) -> None:
     config = _config(value)
