@@ -149,6 +149,14 @@ tags:
         are requested; `GET /personal-access-tokens/scopes` lists what's
         available.
 
+      **What a token can see**
+      - `knowledgeLimit` on create limits the token to the sources, record
+        groups, folders and records it names; omit it for everything the
+        owner can see.
+      - `PATCH /personal-access-tokens/{tokenId}` changes it later. The token
+        and its secret stay the same, and the new limit applies from the
+        token's next request.
+
       **Admin visibility**
       - Regular members only ever see and revoke their own tokens.
       - Org admins can list and revoke *any* member's token via
@@ -868,6 +876,9 @@ components:
           type: string
           enum: [token, oauth]
           description: '`token` when the user pasted a token, `oauth` when they signed in with the source.'
+        viaConnector:
+          type: boolean
+          description: 'True when the user is connected through the connector''s own OAuth sign-in, which they completed, rather than one of their own.'
     ConnectorUserConnectionStatus:
       type: object
       required: [connected, connection, signInAvailable]
@@ -3489,7 +3500,10 @@ components:
         token's by its owner. Search, chat, agent chat and every record read by
         id stay inside it, and inside the connecting user's own permissions.
         Omit it for everything the user can see. Sent, it must name at least one id and at
-        most 50 in all, since it is signed into every token the app gets.
+        most 50 in all, since it is signed into every token the app gets. A
+        personal access token's owner can change its limit later with
+        `PATCH /personal-access-tokens/{tokenId}`; the stored limit, not the
+        signed one, is then what the token can reach.
       properties:
         apps:
           type: array
@@ -4956,6 +4970,49 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PatListItem'
+    UpdatePatKnowledgeLimitRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Request body for `PATCH /personal-access-tokens/{tokenId}`.
+        `knowledgeLimit` is required, so a body that leaves it out is refused
+        rather than read as "everything".
+      required:
+        - knowledgeLimit
+      properties:
+        knowledgeLimit:
+          # The same shape as KnowledgeLimit, written out because OpenAPI 3.0
+          # does not carry `nullable` into an allOf/$ref branch, so a composed
+          # schema would refuse the documented `null`.
+          description: |
+            What the token may see from now on, the same shape as
+            `KnowledgeLimit`, or `null` for everything its owner can see
+            (including sources added later). Sent, it must name at least one
+            id and at most 50 in all.
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            apps:
+              type: array
+              items: { type: string, format: uuid }
+              description: Whole connectors and collections.
+            recordGroups:
+              type: array
+              items: { type: string, format: uuid }
+              description: Record groups (a drive, space or project), with the groups nested in them.
+            records:
+              type: array
+              items: { type: string, format: uuid }
+              description: Folders or records, with everything under them.
+    UpdatePatKnowledgeLimitResponse:
+      type: object
+      description: Response body for `PATCH /personal-access-tokens/{tokenId}` (`updateKnowledgeLimit`).
+      required:
+        - token
+      properties:
+        token:
+          $ref: '#/components/schemas/PatListItem'
     RevokePatRequest:
       type: object
       description: |
@@ -31361,6 +31418,96 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
   /personal-access-tokens/{tokenId}:
+    patch:
+      tags:
+        - Personal Access Tokens
+      summary: Change what one of your own personal access tokens can see
+      description: |
+        Replaces the token's knowledge limit, scoped to
+        `{tokenId, clientId, callerUserId}`: a caller can only change their own
+        live (not revoked, not expired) token. The token and its secret stay
+        the same, so nothing that uses it needs updating. The new limit applies
+        from the token's next request, and never reaches more than the owner
+        can see. Send `null` to let the token see everything its owner can.
+
+        Session only, like every `/personal-access-tokens/*` route: a token can
+        never change its own limit.
+      operationId: updatePersonalAccessTokenKnowledgeLimit
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Personal access token ID
+      requestBody:
+        description: The token's new knowledge limit, or null for everything you can see
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePatKnowledgeLimitRequest'
+            examples:
+              onlyPicked:
+                summary: Limit the token to one source and one folder
+                value:
+                  knowledgeLimit:
+                    apps: ['3f1c2a4e-9b7d-4c1a-8e2f-5a6b7c8d9e0f']
+                    recordGroups: []
+                    records: ['8a7b6c5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d']
+      responses:
+        '200':
+          description: The token, with its new limit (`knowledgeLimit` absent means everything its owner can see)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdatePatKnowledgeLimitResponse'
+        '400':
+          description: |
+            `tokenId` is not a 24-character hex id, `knowledgeLimit` is missing, or the limit names no ids, more than 50, or an id that is not a UUID (`VALIDATION_ERROR`)
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token, a personal access token (`phpat_`) or a service token (`phsvc_`) rather than an interactive user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Token not found, revoked, expired, not owned by the caller, or the org has no PAT app yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many token management requests from this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Internal server error.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Personal Access Tokens
@@ -59239,9 +59386,10 @@ paths:
       summary: Connect your own account to a per-user connector
       description: |
         Stores the caller's own credential for the connector's source (for Notion, a personal
-        access token). It is accepted only when it belongs to the same workspace as the connector
-        and to an account whose email is the caller's PipesHub email, and when no other user has
-        connected that account. A sync is requested so the caller's content appears soon.
+        access token). It is accepted only when it belongs to the same workspace as the connector,
+        no other user has connected that account, and the account's email is not another PipesHub
+        user's. The account's email may differ from the caller's own. A sync is requested so the
+        caller's content appears soon.
       operationId: connectMyConnectorAccount
       security:
         - bearerAuth: []
@@ -59267,7 +59415,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConnectorUserConnectionStatus'
         '400':
-          description: The credential cannot be connected (another workspace or person, not a personal credential, or refused by the source)
+          description: The credential cannot be connected (another workspace, not a personal credential, no email shared by the source, or refused by the source)
           content:
             application/json:
               schema:
@@ -59279,7 +59427,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Another user has already connected this source account
+          description: Another user has already connected this source account, or its email is another PipesHub user's
           content:
             application/json:
               schema:
@@ -65967,7 +66115,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: The caller already has the maximum number of personal servers
+          description: |
+            The caller already has the maximum number of personal servers, or another server in the
+            same list already has this name (compared without case or extra spaces, whatever the type).
+            An organization server is checked against the organization's servers; a personal server
+            against those and the caller's own.
           content:
             application/json:
               schema:
@@ -66119,6 +66271,14 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The new name is already used by another server in the same list (compared without case or
+            extra spaces, whatever the type). Keeping the current name never conflicts.
           content:
             application/json:
               schema:

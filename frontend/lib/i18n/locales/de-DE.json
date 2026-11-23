@@ -3924,7 +3924,8 @@
           "shared": "Gemeinsame Zugangsdaten für alle",
           "sharedHint": "Sie fügen sie einmal unten hinzu. Alle handeln mit deren Zugriff."
         },
-        "advanced": "Erweitert"
+        "advanced": "Erweitert",
+        "nameTaken": "Ein anderer Server hat bereits diesen Namen. Wählen Sie einen anderen."
       },
       "configPanel": {
         "editTitle": "MCP-Server bearbeiten",
@@ -4797,10 +4798,31 @@
         "pasteBlockLabel": "Zum Einfügen in Ihre MCP-Konfiguration bereit",
         "copyPasteBlockAria": "Konfigurationsblock kopieren",
         "copySuccessTitle": "Kopiert",
-        "copyErrorTitle": "Kopieren fehlgeschlagen"
+        "copyErrorTitle": "Kopieren fehlgeschlagen",
+        "knowledgeLimitLaterHint": "Du kannst das später ändern, ohne das Token zu ersetzen."
       },
       "scopeCount_one": "{{count}} Berechtigungsbereich",
-      "scopeCount_other": "{{count}} Berechtigungsbereiche"
+      "scopeCount_other": "{{count}} Berechtigungsbereiche",
+      "access": {
+        "panelTitle": "Zugriff ändern",
+        "intro": "Lege fest, was {{name}} sehen kann. Das Token funktioniert weiter, und die Änderung gilt ab seiner nächsten Anfrage, sodass du nichts anpassen musst, was es verwendet.",
+        "save": "Speichern",
+        "savedTitle": "Zugriff geändert",
+        "savedEverything": "{{name}} sieht jetzt alles, was du sehen kannst.",
+        "savedSome_one": "{{name}} sieht jetzt {{count}} ausgewähltes Element.",
+        "savedSome_other": "{{name}} sieht jetzt {{count}} ausgewählte Elemente.",
+        "undo": "Rückgängig",
+        "undoneTitle": "Änderung rückgängig gemacht",
+        "undoErrorTitle": "Die Änderung konnte nicht rückgängig gemacht werden. Öffne „Zugriff ändern“, um sie erneut festzulegen.",
+        "errorTitle": "Zugriff konnte nicht geändert werden",
+        "errorDescription": "Es wurde nichts geändert. Versuche es erneut.",
+        "unknownTitle": "Änderung konnte nicht bestätigt werden",
+        "unknownDescription": "Sie wurde möglicherweise gespeichert. Prüfen Sie den hier angezeigten Zugriff, bevor Sie es erneut versuchen.",
+        "unknownReloadFailedDescription": "Sie wurde möglicherweise gespeichert, und der aktuelle Zugriff konnte nicht geladen werden. Laden Sie die Seite neu, bevor Sie sich auf die Anzeige verlassen.",
+        "rowAction": "Zugriff ändern",
+        "rowActionAria": "Ändern, was {{name}} sehen kann",
+        "rowActionTooltip": "Zugriff ändern: festlegen, was dieses Token sehen kann"
+      }
     },
     "agentSignIns": {
       "title": "Agent-Anmeldungen",
