@@ -97,6 +97,12 @@ def public_paths() -> list[str]:
     because the route checks its caller itself. OSS: none."""
     return []
 
+async def validate_sync_settings(
+    app_container: object, connector_id: str, connector_type: str, old_config: dict, new_config: dict
+) -> list[str]:
+    """Edition checks on a connector's sync settings before they are saved; each problem is shown to the user. OSS: none."""
+    return []
+
 
 async def pre_sync_hook(app_container, logger) -> None:
     """Run before resume_sync_services in post-startup. OSS: no-op."""
