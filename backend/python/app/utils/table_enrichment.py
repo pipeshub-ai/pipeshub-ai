@@ -688,22 +688,26 @@ async def _summary_and_headers_call(
 
 
 async def _stored_texts_for(rows: Sequence[Sequence[str]], known_header_row_count: Optional[int]) -> Optional[StoredTable]:
-    """The rows of the stored table that shares the most rows with this one, when this delivery offered any; ``None`` otherwise (no
-    update, or a table the stored version did not have). Only one stored table is used, so a row equal to one of another table
-    never takes that table's wording. Where the model decides the header, a row is looked for both ways."""
+    """The rows of the stored table that can give this one the most texts, when this delivery offered any; ``None`` otherwise (no
+    update, a table the stored version did not have, or two stored tables that tie, where neither is surely this one). Only one
+    stored table is used, so a row equal to one of another table never takes that table's wording. Where the model decides the
+    header, a row is looked for both ways."""
     tables = await previous_row_texts()
     if not tables:
         return None
     hypotheses = (1 if known_header_row_count else 0,) if known_header_row_count is not None else (0, 1)
-    best, best_shared = None, 0
+    best, best_shared, tied = None, 0, False
     for header_rows in hypotheses:
         header = rows[0] if header_rows else None
-        digests = [row_digest(header, row) for row in rows[header_rows:]]
+        counts = Counter(row_digest(header, row) for row in rows[header_rows:])
         for table in tables:
-            shared = sum(digest in table for digest in digests)
+            # A repeated row counts as many times as both versions hold it, never more than the stored table can give.
+            shared = sum(min(n, len(table.get(digest, ()))) for digest, n in counts.items())
             if shared > best_shared:
-                best, best_shared = table, shared
-    return best
+                best, best_shared, tied = table, shared, False
+            elif shared and shared == best_shared and table is not best:
+                tied = True
+    return None if tied else best
 
 
 async def enrich_table_grid(

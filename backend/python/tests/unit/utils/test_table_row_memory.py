@@ -225,6 +225,30 @@ class TestAnUpdateOfAnEditedTable:
         assert model.row_calls == [1] and result.descriptions[3] == "B: REG0"
 
     @pytest.mark.asyncio
+    async def test_the_stored_table_that_can_give_the_most_texts_is_used(self) -> None:
+        # Kills: scoring a table by digest membership, where A=[X,Y] outscores B=[X,X,X,Z] for B updated to [X,X,X,Y].
+        x, y, z = GRID[1], GRID[2], GRID[3]
+        a = await _enrich(_model("A"), [HEAD, x, y], known=1)
+        b = await _enrich(_model("C"), [HEAD, x, x, x, z], known=1)
+        _offer(_stored(a, b))
+        model = _model("B")
+        result = await _enrich(model, [HEAD, x, x, x, y], known=1)
+        assert result.descriptions == ["C: REG0"] * 3 + ["B: REG1"]
+        assert model.row_calls == [1]
+
+    @pytest.mark.asyncio
+    async def test_two_stored_tables_that_tie_give_no_text(self) -> None:
+        # Kills: the first of two tied tables winning, where a shared `Total` row takes the other table's wording.
+        total = GRID[1]
+        first = await _enrich(_model("A"), [HEAD, total, GRID[2]], known=1)
+        second = await _enrich(_model("C"), [HEAD, total, ["OTHER0", "0x1", "0"]], known=1)
+        _offer(_stored(first, second))
+        model = _model("B")
+        result = await _enrich(model, [HEAD, total, ["OTHER0", "0xFFF", "0"]], known=1)
+        assert model.calls == [("combined", 2)]
+        assert result.descriptions[0] == "B: REG0" and result.descriptions[1].startswith("B: ")
+
+    @pytest.mark.asyncio
     async def test_the_kept_rows_still_get_the_new_summary(self) -> None:
         _offer(_stored(await _enrich(_model("A"), GRID, known=1)))
         result = await _enrich(_model("B", summary="Register map, revised"), _edited(), known=1)
