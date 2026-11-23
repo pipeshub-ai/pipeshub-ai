@@ -673,36 +673,50 @@ export function inDurableDelivery(): boolean {
 /** The inbox id of `step` of the current delivery's event (event ids are UUIDs, so no event id ends in `#<step>`). */
 const stepId = (d: Delivery, step: string): string => `${d.eventId}#${step}`;
 
-/**
- * Whether the current delivery's event already finished `step` for `orgId`: a step with no transaction to join (publishing
- * mail), recorded by `recordDeliveryStep` once it has run. False outside a delivery with an inbox, and when the inbox cannot
- * answer, so the step runs again; it must be safe to repeat.
- */
-export async function deliveryStepDone(
-  step: string,
+async function seenFor(
+  id: (d: Delivery) => string,
   orgId: string,
 ): Promise<boolean> {
   const d = deliveryStorage.getStore();
   if (!d) return false;
   try {
-    return await d.inbox.seen(d.consumer, stepId(d, step), orgId);
+    return await d.inbox.seen(d.consumer, id(d), orgId);
   } catch (e) {
     inboxFailed('seen', d.consumer, e);
     return false;
   }
 }
 
-/** Records that the current delivery's event finished `step` for `orgId`; call it after the step ran. Never throws. */
+/**
+ * Whether the current delivery's event already finished `step` for `orgId`: a step with no transaction to join (publishing
+ * mail), recorded by `recordDeliveryStep` once it has run. False outside a delivery with an inbox, and when the inbox cannot
+ * answer, so the step runs again; it must be safe to repeat.
+ */
+export function deliveryStepDone(
+  step: string,
+  orgId: string,
+): Promise<boolean> {
+  return seenFor((d) => stepId(d, step), orgId);
+}
+
+/** Whether `withDeliveryRecorded(fn, orgId)` already committed for the current delivery's event (false as above). */
+export function deliveryRecordedFor(orgId: string): Promise<boolean> {
+  return seenFor((d) => d.eventId, orgId);
+}
+
+/** Records that the current delivery's event finished `step` for `orgId`. Never throws; false when nothing was recorded. */
 export async function recordDeliveryStep(
   step: string,
   orgId: string,
-): Promise<void> {
+): Promise<boolean> {
   const d = deliveryStorage.getStore();
-  if (!d) return;
+  if (!d) return false;
   try {
     await d.inbox.record(d.consumer, stepId(d, step), orgId);
+    return true;
   } catch (e) {
     inboxFailed('record', d.consumer, e);
+    return false;
   }
 }
 

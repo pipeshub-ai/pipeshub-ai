@@ -332,6 +332,76 @@ describe('notification/service/platform-alert.handler', () => {
       expect(accepted).to.have.length(2);
     });
 
+    /** The real consumer on `h`, behind a broker that acknowledges when the callback resolves and delivers again when it rejects. */
+    const consumerOn = async (h: PlatformAlertHandler) => {
+      let cb: ((m: { value: unknown }) => Promise<void>) | undefined;
+      const broker = { isConnected: () => true, consume: async (f: typeof cb) => { cb = f; } };
+      await new NotificationConsumer(broker as never, logger, notificationService as unknown as NotificationService, h).consume(async () => {});
+      /** One delivery: 'acked', or 'redelivered' (a retryable error, so the broker delivers it again). */
+      return async (msg: unknown): Promise<'acked' | 'redelivered'> => {
+        try {
+          await runWithEnvelope('notification', JSON.parse(JSON.stringify(msg)), (v) => cb!({ value: v }), G);
+          return 'acked';
+        } catch (e) {
+          expect(isRetryableStoreError(e), String(e)).to.equal(true);
+          return 'redelivered';
+        }
+      };
+    };
+    const alertMsg = (alertId: string) => ({ ...event({}, { alertId }), eventId: `evt-${alertId}` });
+
+    it('the email budget a failed alert took stays its own: an alert in between cannot take it, and the redelivery mails once', async () => {
+      resolveRecipients.resolves([{ orgId: orgA, userIds: [admin1] }]);
+      const deliver1 = await consumerOn(handler);
+      // three alerts of the same level use three of the four email places this hour
+      for (const id of ['f1', 'f2', 'f3']) expect(await deliver1(alertMsg(id))).to.equal('acked');
+      expect(accepted).to.have.length(3);
+      // alert X takes the fourth place, and its publish fails
+      mailProducer.publishEvent.onCall(3).rejects(new Error('broker away'));
+      expect(await deliver1(alertMsg('x'))).to.equal('redelivered');
+      // another alert of the same level arrives during the backoff: no place is free for its email
+      expect(await deliver1(alertMsg('y'))).to.equal('acked');
+      expect(logger.warn.calledWithMatch('Platform alert email skipped: too many this hour')).to.be.true;
+      // X is delivered again: it spends its own place and is mailed once
+      expect(await deliver1(alertMsg('x'))).to.equal('acked');
+      const sentIds = accepted.map((j) => j.eventId);
+      expect(sentIds).to.have.length(4);
+      expect(new Set(sentIds).size).to.equal(4);
+      expect(await deliver1(alertMsg('x'))).to.equal('acked');
+      expect(accepted).to.have.length(4);
+    });
+
+    it('a restarted process whose email budget is used up still sends the mail an earlier delivery was granted, once', async () => {
+      resolveRecipients.resolves([{ orgId: orgA, userIds: [admin1] }]);
+      mailProducer.publishEvent.onFirstCall().rejects(new Error('broker away'));
+      expect(await (await consumerOn(handler))(alertMsg('x'))).to.equal('redelivered');
+      expect(accepted).to.have.length(0);
+      // after a restart, other alerts use up every email place of the new process
+      const restarted = fresh();
+      const deliver2 = await consumerOn(restarted);
+      for (const id of ['g1', 'g2', 'g3', 'g4']) expect(await deliver2(alertMsg(id))).to.equal('acked');
+      expect(accepted).to.have.length(4);
+      expect(await deliver2(alertMsg('x'))).to.equal('acked');
+      expect(accepted).to.have.length(5);
+      expect(await sendAll()).to.deep.equal(Array(5).fill(`${admin1}@example.com`));
+      // and the cap still holds for a new alert
+      expect(await deliver2(alertMsg('g5'))).to.equal('acked');
+      expect(accepted).to.have.length(5);
+    });
+
+    it('an email budget that cannot be held for the alert is given back, and the delivery is neither acknowledged nor remembered', async () => {
+      resolveRecipients.resolves([{ orgId: orgA, userIds: [admin1] }]);
+      const deliver1 = await consumerOn(handler);
+      inbox.failRecord = true;
+      expect(await deliver1(alertMsg('x'))).to.equal('redelivered');
+      expect(accepted).to.have.length(0);
+      inbox.failRecord = false;
+      // not remembered: the redelivery on the same handler queues the mail; given back: the four places are all still free
+      expect(await deliver1(alertMsg('x'))).to.equal('acked');
+      for (const id of ['h1', 'h2', 'h3']) expect(await deliver1(alertMsg(id))).to.equal('acked');
+      expect(accepted).to.have.length(4);
+    });
+
     it('without the inbox a failed publish is only logged: a redelivery would notify and mail every org again', async () => {
       configureInbox(null);
       mailProducer.publishEvent.onFirstCall().rejects(new Error('broker away'));

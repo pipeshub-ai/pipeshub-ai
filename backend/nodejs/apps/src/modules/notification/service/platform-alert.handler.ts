@@ -6,6 +6,7 @@ import { ServiceUnavailableError } from '../../../libs/errors/http.errors';
 import {
   DuplicateEnvelope,
   ctxRequired,
+  deliveryRecordedFor,
   deliveryStepDone,
   inDurableDelivery,
   recordDeliveryStep,
@@ -114,6 +115,8 @@ export function logIfPlatformAlertsBlocked(logger: Logger): void {
 }
 
 const MAIL_STEP = 'mail';
+// Recorded per org when the alert takes its email budget, before the first publish: the budget is then the alert's.
+const MAIL_GRANT_STEP = 'mail-grant';
 
 /**
  * One alert's mail to one address in one org always carries this event id, so with the durable inbox the mail consumer sends it
@@ -264,10 +267,15 @@ export class PlatformAlertHandler {
    * mail is skipped only when a record written after its last publish says it
    * was queued; otherwise it is published again. A mail that could not be
    * queued fails the delivery with a retryable error, so the broker delivers
-   * it again, and the alert id is remembered only once the mail is queued. Each mail job carries a stable
-   * event id (`alertMailEventId`), so the mail consumer sends a job published
-   * twice once, unless both copies are being sent at the same moment. Without
-   * the inbox, a redelivery after a stop can notify and mail again.
+   * it again, and the alert id is remembered only once the mail is queued.
+   * Each mail job carries a stable event id (`alertMailEventId`), so the mail
+   * consumer sends a job published twice once, unless both copies are being
+   * sent at the same moment. The hourly budgets an alert took stay its own:
+   * a redelivery of an alert whose notifications were stored takes no
+   * delivery budget, and one whose email budget was granted (recorded per org
+   * before the first publish) spends that grant instead of taking the budget
+   * again. Without the inbox, a redelivery after a stop can notify and mail
+   * again.
    */
   async handle(raw: unknown): Promise<void> {
     const now = Date.now();
@@ -298,8 +306,17 @@ export class PlatformAlertHandler {
       return;
     }
     const scope = budgetScope(alert);
-    const token = this.deliveries.take(type, scope, now);
-    if (!token) {
+    const durable = inDurableDelivery();
+    let orgs: PlatformRecipientOrg[] | undefined;
+    // An alert whose notifications an earlier delivery already stored was counted against the hourly cap then: its redelivery
+    // is neither counted again nor refused by the cap.
+    let begun = false;
+    if (durable) {
+      orgs = await this.resolveRecipients();
+      begun = await this.anyOrg(orgs, (org) => deliveryRecordedFor(org.orgId));
+    }
+    const token = begun ? null : this.deliveries.take(type, scope, now);
+    if (!begun && !token) {
       this.warnLimited(
         `rate:${type}:${scope}`,
         'Platform alert skipped: too many this hour',
@@ -308,11 +325,10 @@ export class PlatformAlertHandler {
       return;
     }
 
-    let orgs: PlatformRecipientOrg[];
     let recipients = 0;
     let storedBefore = 0;
     try {
-      orgs = await this.resolveRecipients();
+      orgs ??= await this.resolveRecipients();
       for (const org of orgs) {
         let delivered: number;
         try {
@@ -336,49 +352,24 @@ export class PlatformAlertHandler {
         });
       }
     } catch (error) {
-      this.deliveries.refund(token);
+      // With the inbox a stored alert stays counted (its redelivery takes nothing); without it the redelivery stores it all again.
+      if (token && (!durable || (recipients === 0 && storedBefore === 0)))
+        this.deliveries.refund(token);
       throw error;
     }
-    if (recipients === 0) {
-      this.deliveries.refund(token);
-      // Orgs an earlier delivery already stored still get their email below, if that delivery did not queue it.
-      if (storedBefore === 0) {
-        this.logger.warn('Platform alert not delivered: no recipients', {
-          type,
-          alertId,
-          orgs: orgs.length,
-        });
-        return;
-      }
+    if (recipients === 0 && storedBefore === 0) {
+      if (token) this.deliveries.refund(token);
+      this.logger.warn('Platform alert not delivered: no recipients', {
+        type,
+        alertId,
+        orgs: orgs.length,
+      });
+      return;
     }
 
     let emailQueued = 0;
     if (alert.email) {
-      const emailToken = this.emails.take(alert.kind, scope, now);
-      if (emailToken) {
-        try {
-          for (const org of orgs) {
-            emailQueued += await this.queueEmail(alert, org);
-          }
-        } catch (error) {
-          // The redelivery takes both budgets again; its stored orgs and queued mail are skipped.
-          this.emails.refund(emailToken);
-          if (recipients > 0) this.deliveries.refund(token);
-          throw error;
-        }
-        if (emailQueued === 0) this.emails.refund(emailToken);
-      } else {
-        this.warnLimited(
-          `email-rate:${alert.kind}:${scope}`,
-          'Platform alert email skipped: too many this hour',
-          {
-            type,
-            alertId,
-            scope,
-            maxPerHour: MAX_ALERT_EMAILS_PER_LEVEL_PER_HOUR,
-          },
-        );
-      }
+      emailQueued = await this.queueEmails(alert, orgs, scope, now);
     }
 
     // Only now: an alert remembered before its mail was queued would drop the redelivery that queues it.
@@ -390,6 +381,67 @@ export class PlatformAlertHandler {
       recipients,
       emailQueued,
     });
+  }
+
+  private async anyOrg(
+    orgs: PlatformRecipientOrg[],
+    test: (org: PlatformRecipientOrg) => Promise<boolean>,
+  ): Promise<boolean> {
+    for (const org of orgs) if (await test(org)) return true;
+    return false;
+  }
+
+  /**
+   * Queues the alert's mail for every org that still owes it. With the durable inbox, the email budget an alert takes is held
+   * for it by a grant recorded per org before the first publish: a redelivery spends that grant instead of taking the budget
+   * again, so another alert that came in between can neither take its place nor push it out. A grant that cannot be recorded
+   * gives the budget back and fails the delivery as retryable. Returns how many mail jobs were queued.
+   */
+  private async queueEmails(
+    alert: SandboxCapacityAlert,
+    orgs: PlatformRecipientOrg[],
+    scope: string,
+    now: number,
+  ): Promise<number> {
+    const owed: PlatformRecipientOrg[] = [];
+    for (const org of orgs)
+      if (!(await deliveryStepDone(MAIL_STEP, org.orgId))) owed.push(org);
+    if (owed.length === 0) return 0;
+    const granted = await this.anyOrg(owed, (org) =>
+      deliveryStepDone(MAIL_GRANT_STEP, org.orgId),
+    );
+    let emailToken: BudgetToken | null = null;
+    if (!granted) {
+      emailToken = this.emails.take(alert.kind, scope, now);
+      if (!emailToken) {
+        this.warnLimited(
+          `email-rate:${alert.kind}:${scope}`,
+          'Platform alert email skipped: too many this hour',
+          {
+            type: alert.type,
+            alertId: alert.alertId,
+            scope,
+            maxPerHour: MAX_ALERT_EMAILS_PER_LEVEL_PER_HOUR,
+          },
+        );
+        return 0;
+      }
+      if (inDurableDelivery()) {
+        for (const org of owed) {
+          if (!(await recordDeliveryStep(MAIL_GRANT_STEP, org.orgId))) {
+            this.emails.refund(emailToken);
+            throw new ServiceUnavailableError(
+              'Platform alert email not queued; the event will be delivered again',
+            );
+          }
+        }
+      }
+    }
+    // A failed publish throws (with the inbox) and leaves the budget held by the grant for the redelivery.
+    let queued = 0;
+    for (const org of owed) queued += await this.queueEmail(alert, org);
+    if (queued === 0 && emailToken) this.emails.refund(emailToken);
+    return queued;
   }
 
   private orgEvent(
