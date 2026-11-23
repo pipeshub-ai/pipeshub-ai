@@ -104,6 +104,7 @@ async def search(
         logger.warning("lexical leg ran out of time; answering from the dense leg alone")
         reason = "timeout"
     except ConnectionLost:
+        telemetry.observe_leg("lexical", leg, started)
         raise                   # the database is out: the whole search answers unavailable rather than half of it
     except DbError:
         logger.error("lexical leg failed; answering from the dense leg alone", exc_info=True)

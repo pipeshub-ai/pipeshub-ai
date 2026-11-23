@@ -825,4 +825,6 @@ async def test_a_lexical_leg_is_timed_whether_it_answers_or_runs_out_of_time(leg
     nothing = dataclasses.replace(Scope(), scope_filter=SimpleNamespace(matches_nothing=True))
     db = _LexDb(raises=AssertionError("a scope that matches nothing asks the database nothing"))
     assert await lexical.search(db, ORG, 7, SparseVector([4], [1.0]), nothing, 20, T) == ([], None)
-    assert leg_seconds("lexical") == 3 and db.opts == []
+    with pytest.raises(ConnectionLost):
+        await lexical.search(_LexDb(raises=_lost()), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    assert leg_seconds("lexical") == 4 and db.opts == []
