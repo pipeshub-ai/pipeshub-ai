@@ -1464,26 +1464,7 @@ export class UserController {
         }
       }
 
-      await this.eventService.start();
-
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: updatedUser.orgId,
-          userId: updatedUser._id,
-          fullName: updatedUser.fullName,
-          ...(updatedUser.firstName && { firstName: updatedUser.firstName }),
-          ...(updatedUser.lastName && { lastName: updatedUser.lastName }),
-          ...(updatedUser.designation && {
-            designation: updatedUser.designation,
-          }),
-          email: updatedUser.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(updatedUser);
       // Save the updated user
       res.json({
         ...updatedUser,
@@ -1502,6 +1483,40 @@ export class UserController {
       next(error);
     }
   }
+  /**
+   * Tells the connector service a user's profile changed. An account created
+   * from Slack has no permission-graph user, so announcing it only makes that
+   * service log an error and dead-letter the event after its retries.
+   */
+  private async publishUserUpdated(user: {
+    kind?: string;
+    orgId: unknown;
+    _id: unknown;
+    fullName?: string;
+    firstName?: string;
+    lastName?: string;
+    designation?: string;
+    email?: string;
+  }): Promise<void> {
+    if (isSlackOnlyAccount(user)) return;
+    await this.eventService.start();
+    const event: Event = {
+      eventType: EventType.UpdateUserEvent,
+      timestamp: Date.now(),
+      payload: {
+        orgId: user.orgId,
+        userId: user._id,
+        fullName: user.fullName,
+        ...(user.firstName && { firstName: user.firstName }),
+        ...(user.lastName && { lastName: user.lastName }),
+        ...(user.designation && { designation: user.designation }),
+        email: user.email,
+      } as UserUpdatedEvent,
+    };
+    await this.eventService.publishEvent(event);
+    await this.eventService.stop();
+  }
+
   async updateFullName(
     req: AuthenticatedUserRequest,
     res: Response,
@@ -1524,23 +1539,7 @@ export class UserController {
       }
       auditUserChange('user.update', id as string, 'profile');
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(user);
       res.json(user);
     } catch (error) {
       next(error);
@@ -1569,23 +1568,7 @@ export class UserController {
       }
       auditUserChange('user.update', id as string, 'profile');
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(user);
       res.json(user);
     } catch (error) {
       next(error);
@@ -1614,23 +1597,7 @@ export class UserController {
       }
       auditUserChange('user.update', id as string, 'profile');
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(user);
       res.json(user);
     } catch (error) {
       next(error);
@@ -1659,23 +1626,7 @@ export class UserController {
       }
       auditUserChange('user.update', id as string, 'profile');
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.UpdateUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
-        } as UserUpdatedEvent,
-      };
-
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      await this.publishUserUpdated(user);
       res.json(user);
     } catch (error) {
       next(error);

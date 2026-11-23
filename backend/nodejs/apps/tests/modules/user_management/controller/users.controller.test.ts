@@ -4494,6 +4494,62 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   // deleteUser - what the person leaves behind in OAuth
   // -----------------------------------------------------------------------
+  // An account created from Slack has no permission-graph user, so an update
+  // event only makes the connector service log an error and dead-letter it.
+  describe('profile edits - Slack-only accounts are not announced', () => {
+    const cases: Array<[string, string, Record<string, unknown>]> = [
+      ['updateUser', 'updateUser', { fullName: 'Sam Slack' }],
+      
+      ['updateFullName', 'updateFullName', { fullName: 'Sam Slack' }],
+      ['updateFirstName', 'updateFirstName', { firstName: 'Sam' }],
+      ['updateLastName', 'updateLastName', { lastName: 'Slack' }],
+      ['updateDesignation', 'updateDesignation', { designation: 'Lead' }],
+    ];
+    const make = (kind: string) => ({
+      _id: '507f1f77bcf86cd799439011',
+      orgId: new mongoose.Types.ObjectId('507f1f77bcf86cd799439012'),
+      fullName: 'Old Name',
+      email: 'sam@test.com',
+      kind,
+      role: 'member',
+      save: sinon.stub().resolves(),
+      toObject() {
+        const { save, toObject, ...rest } = this as any;
+        return { ...rest };
+      },
+    });
+
+    for (const [label, method, body] of cases) {
+      it(`${label}: saves a Slack-only account and publishes no event`, async () => {
+        req.params.id = '507f1f77bcf86cd799439011';
+        req.body = body;
+        const slack = make('slack');
+        sinon.stub(Users, 'findOne').resolves(slack as any);
+        mockEventService.publishEvent.resetHistory();
+
+        await (controller as any)[method](req, res, next);
+
+        expect(next.called, String(next.firstCall?.args[0])).to.be.false;
+        expect(slack.save.calledOnce, 'saved').to.be.true;
+        expect(res.json.calledOnce, 'answered').to.be.true;
+        expect(mockEventService.publishEvent.called, 'no userUpdated event').to.be.false;
+      });
+
+      it(`${label}: still publishes for a human account`, async () => {
+        req.params.id = '507f1f77bcf86cd799439011';
+        req.body = body;
+        const human = make('human');
+        sinon.stub(Users, 'findOne').resolves(human as any);
+        mockEventService.publishEvent.resetHistory();
+
+        await (controller as any)[method](req, res, next);
+
+        expect(next.called, String(next.firstCall?.args[0])).to.be.false;
+        expect(mockEventService.publishEvent.calledOnce, 'userUpdated event').to.be.true;
+      });
+    }
+  });
+
   describe('deleteUser - OAuth hand-over', () => {
     // The deletion is recorded before anything else changes; these tests are
     // about what follows, so the record succeeds.
