@@ -5264,7 +5264,9 @@
         "expired": "This key has already ended. Get a new key and install it.",
         "malformed": "This isn't a license key file. Paste the whole file, including the opening and closing braces.",
         "generic": "The license key couldn't be installed. Try again."
-      }
+      },
+      "startsOn": "This key starts on {{date}}.",
+      "keyLacksPermissionSync": "This key does not include permission sync. Company-wide connectors that copy access from their source are limited to the person who created them. Nothing was deleted: install a key that includes permission sync, and each connector's access comes back when its next full sync finishes."
     }
   },
   "filePreview": {

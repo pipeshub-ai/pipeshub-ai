@@ -5234,7 +5234,9 @@
         "expired": "Esta clave ya ha terminado. Consigue una clave nueva e instálala.",
         "malformed": "Esto no es un archivo de clave de licencia. Pega el archivo completo, incluidas las llaves de apertura y cierre.",
         "generic": "No se pudo instalar la clave de licencia. Inténtalo de nuevo."
-      }
+      },
+      "startsOn": "Esta clave empieza el {{date}}.",
+      "keyLacksPermissionSync": "Esta clave no incluye la sincronización de permisos. Los conectores de toda la empresa que copian los accesos de su origen quedan limitados a la persona que los creó. No se ha eliminado nada: instala una clave que incluya la sincronización de permisos y el acceso de cada conector volverá cuando termine su próxima sincronización completa."
     }
   },
   "filePreview": {

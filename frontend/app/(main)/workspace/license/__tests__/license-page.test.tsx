@@ -134,6 +134,21 @@ describe('License page: status', () => {
     expect(link.searchParams.get('graceEndsAt')).toBe(endsAt);
   });
 
+  it('a key that ended inside the grace leaves the grace and its extension link up', async () => {
+    const endsAt = iso(6);
+    api.getStatus.mockResolvedValue(
+      view({
+        status: 'expired',
+        license: license({ type: 'trial', startDate: iso(-20), endDate: iso(-6), graceEndsAt: iso(-3) }),
+        permissionSync: { allowed: true, until: endsAt },
+        upgradeGrace: { endsAt, affected: true },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText(/Permission sync stays on until/)).toBeTruthy();
+    expect(screen.getByText('Request a 14-day extension')).toBeTruthy();
+  });
+
   it('after the grace with no key: permission sync off and what that means', async () => {
     api.getStatus.mockResolvedValue(
       view({ permissionSync: { allowed: false, until: null }, upgradeGrace: { endsAt: iso(-1), affected: true } }),
@@ -142,6 +157,57 @@ describe('License page: status', () => {
     expect(await screen.findByText('Off')).toBeTruthy();
     expect(screen.getByText(/Nothing was deleted/)).toBeTruthy();
     expect(screen.queryByText('Request a 14-day extension')).toBeNull();
+  });
+});
+
+describe('License page: a key dated ahead, and a key without permission sync', () => {
+  it('pending: shows the upcoming key with its start date, and no trial link or install-a-key callout', async () => {
+    const upcoming = license({ licensee: 'Future Labs', seats: 40, startDate: iso(5), endDate: iso(370) });
+    api.getStatus.mockResolvedValue(
+      view({ status: 'pending', upcoming, permissionSync: { allowed: false, until: null } }),
+    );
+    renderPage();
+    expect(await screen.findByText('Starts later')).toBeTruthy();
+    expect(screen.getByText('Future Labs')).toBeTruthy();
+    expect(screen.getByText('Pro')).toBeTruthy();
+    expect(screen.getByText('40')).toBeTruthy();
+    const starts = new Date(upcoming.startDate).toLocaleDateString('en-US', { dateStyle: 'medium' });
+    expect(screen.getByText(`This key starts on ${starts}.`)).toBeTruthy();
+    expect(screen.queryByText('Get a trial key')).toBeNull();
+    expect(screen.queryByText(/Nothing was deleted/)).toBeNull();
+  });
+
+  it('expired with a key coming up: no trial link', async () => {
+    api.getStatus.mockResolvedValue(
+      view({
+        status: 'expired',
+        license: license({ startDate: iso(-400), endDate: iso(-30), graceEndsAt: iso(-27) }),
+        upcoming: license({ licenseId: 'lic-2', startDate: iso(3), endDate: iso(368) }),
+        permissionSync: { allowed: false, until: null },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText('Expired')).toBeTruthy();
+    expect(screen.getByText('Next key starts')).toBeTruthy();
+    expect(screen.queryByText('Get a trial key')).toBeNull();
+    expect(screen.queryByText(/install a key, and each connector/)).toBeNull();
+  });
+
+  it('an active key without permission sync says so, not "install a key"', async () => {
+    api.getStatus.mockResolvedValue(
+      view({ status: 'active', license: license({ features: [] }), permissionSync: { allowed: false, until: null } }),
+    );
+    renderPage();
+    expect(await screen.findByText(/This key does not include permission sync/)).toBeTruthy();
+    expect(screen.queryByText(/Nothing was deleted: install a key, and/)).toBeNull();
+    expect(screen.queryByText('Get a trial key')).toBeNull();
+  });
+
+  it('no key and permission sync off: the install-a-key callout and the trial link, as before', async () => {
+    api.getStatus.mockResolvedValue(view({ permissionSync: { allowed: false, until: null } }));
+    renderPage();
+    expect(await screen.findByText(/Nothing was deleted: install a key, and/)).toBeTruthy();
+    expect(screen.getByText('Get a trial key')).toBeTruthy();
   });
 });
 

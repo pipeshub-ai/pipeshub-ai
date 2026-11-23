@@ -5406,7 +5406,9 @@
         "expired": "Platnost tohoto klíče už skončila. Získejte nový klíč a nainstalujte ho.",
         "malformed": "Toto není soubor s licenčním klíčem. Vložte celý soubor včetně úvodní a koncové složené závorky.",
         "generic": "Licenční klíč se nepodařilo nainstalovat. Zkuste to znovu."
-      }
+      },
+      "startsOn": "Tento klíč začíná platit {{date}}.",
+      "keyLacksPermissionSync": "Tento klíč nezahrnuje synchronizaci oprávnění. Celofiremní konektory, které přebírají přístupová práva ze svého zdroje, jsou omezené na osobu, která je vytvořila. Nic nebylo smazáno: nainstalujte klíč se synchronizací oprávnění a přístup ke každému konektoru se obnoví, jakmile skončí jeho příští úplná synchronizace."
     }
   },
   "filePreview": {

@@ -44,8 +44,8 @@ export function installErrorMessage(t: TFunction, reason: string | null, serverM
 const isFuture = (iso: string | null | undefined): iso is string =>
   !!iso && Date.parse(iso) > Date.now();
 
-/** The upgrade grace in force: no license key has started and the grace has not ended. */
+/** The upgrade grace in force: no license key is in force and the grace has not ended. A key only extends it. */
 export function upgradeGraceEnd(view: LicenseStatusView): string | null {
-  const noLicense = view.status === 'none' || view.status === 'pending';
+  const noLicense = view.status === 'none' || view.status === 'pending' || view.status === 'expired';
   return noLicense && isFuture(view.upgradeGrace?.endsAt) ? view.upgradeGrace.endsAt : null;
 }
