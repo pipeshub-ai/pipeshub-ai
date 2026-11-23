@@ -65,7 +65,7 @@ from app.models.entities import (
     RecordType,
     WebpageRecord,
 )
-from app.models.permission import EntityType, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 
@@ -3137,7 +3137,7 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         assert not any(isinstance(t, tuple) for t in scanned)
         assert db.kept_records == []
 
-    async def test_a_failed_folder_check_keeps_a_folder_pages_hang_under(self, api, db, checkpoints, search) -> None:
+    async def test_a_failed_folder_check_keeps_every_stored_folder(self, api, db, checkpoints, search) -> None:
         search.folders = [{**v1_page("500"), "type": "folder", "title": "Specs"},
                           {**v1_page("503"), "type": "folder", "title": "Old"}]
         connector, _ = await ready_connector(db, checkpoints)
@@ -3151,7 +3151,7 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         def folders(request: httpx.Request) -> httpx.Response:
             q = AtlassianApiStub.query(request)
             if q.get("cql", "").startswith("type=folder"):
-                # The filters leave both out; the check for deleted folders fails. 503 is trashed.
+                # The filters leave both out; the check for deleted folders fails. 503 is empty.
                 return json_response({"message": "busy"}, status=503) if q.get("limit") == "250" else json_response(search_page([]))
             return listed(request)
 
@@ -3163,7 +3163,24 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
 
         assert connector.full_sync_coverage().complete is True
         assert unlink.unlinked(connector) & {"500"} == set(), "page 10 still hangs under it"
-        assert unlink.removed(connector) & {"503"} == {"503"}
+        assert unlink.removed(connector) & {"503"} == set(), "a failed read keeps what is stored, empty or not"
+
+    async def test_a_folder_gone_is_removed_when_the_folder_check_succeeds(self, api, db, checkpoints, search) -> None:
+        search.folders = [{**v1_page("500"), "type": "folder", "title": "Specs"},
+                          {**v1_page("503"), "type": "folder", "title": "Old"}]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        assert {"500", "503"} <= set(db.records)
+        search.folders = [{**v1_page("500"), "type": "folder", "title": "Specs"}]
+        api.on("GET", f"{V2}/folders/503", json_response({"message": "not found"}, status=404))
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_folders("ENG")
+        await connector._remove_folders_gone(ENG)
+
+        assert connector.full_sync_coverage().complete is True
+        assert "503" not in db.records
+        assert unlink.removed(connector) & {"500", "503"} == {"503"}
 
     async def test_a_failed_folder_check_outside_a_full_sync_keeps_nothing(self, api, db, checkpoints, search) -> None:
         search.folders = [{**v1_page("500"), "type": "folder", "title": "Specs"}]
@@ -3311,3 +3328,100 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
 
         assert connector.full_sync_coverage().complete is False
         assert unlink.unlinked(connector) == set()
+
+    @pytest.mark.parametrize("more", [
+        {"size": 2},
+        {"_links": {"next": "/rest/api/content/10/child/attachment?start=0"}},
+    ], ids=["size", "next-link"])
+    async def test_an_empty_v1_list_that_says_more_exist_counts_as_cut_short(
+        self, api, db, checkpoints, search, more
+    ) -> None:
+        # The v2 attachment list is not routed (404), so the v1 list on the page is all there is.
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        empty = v1_page("10", version=2)
+        empty["children"]["attachment"] = {"results": [], **more}
+        search.by_cursor = {None: search_page([empty])}
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is False
+        assert {"att1", "att2"} <= set(db.records)
+        assert unlink.unlinked(connector) == set()
+        await connector._report_sync_problems()
+        (note,) = connector._notification_service.sent
+        assert "Space ENG: skipped 1 pages whose attachment list could not be read in full" in note["message"]
+
+    async def test_an_empty_v1_list_read_through_v2_syncs_what_v2_lists(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        empty = v1_page("10", version=2)
+        empty["children"]["attachment"] = {"results": [], "size": 2}
+        search.by_cursor = {None: search_page([empty])}
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": [ATT_A, SPEC], "_links": {"base": WIKI}})
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is True
+        assert {db.records["att1"].id, db.records["att2"].id} <= unlink.written
+        assert unlink.unlinked(connector) == set()
+
+    async def test_an_empty_v1_list_that_says_nothing_more_removes_a_deleted_attachment(
+        self, api, db, checkpoints, search
+    ) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A])])
+        assert "att1" in db.records
+        search.by_cursor = {None: search_page([v1_page("10", version=2)])}  # no results, no size, no next link
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlink.removed(connector) & {"10", "att1"} == {"att1"}
+
+    async def _legacy_comment_under_restricted_page(self, api, db, checkpoints, search) -> None:
+        """Page 10 is stored as HTML with comment c1 (and reply c2) granting acc-bob directly; the page now admits only acc-ana."""
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10")])
+        db.records["10"] = db.records["10"].model_copy(update={"mime_type": MimeTypes.HTML.value})
+        bob = Permission(external_id="acc-bob", type=PermissionType.READ, entity_type=EntityType.USER)
+        for comment in (self._comment("c1", "10"), self._comment("c2", "c1", reply=True)):
+            db.records[comment.external_record_id] = comment.model_copy(update={"inherit_permissions": False})
+            db.record_permissions[comment.external_record_id] = [bob]
+        api.on("GET", f"{V1}/content/10/restriction", {"results": [
+            {"operation": "read", "restrictions": {"user": {"results": [{"accountId": "acc-ana"}]}, "group": {"results": []}}},
+        ]})
+
+    async def test_a_legacy_comment_takes_its_page_access_on_a_full_sync(self, api, db, checkpoints, search) -> None:
+        await self._legacy_comment_under_restricted_page(api, db, checkpoints, search)
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        for cid in ("c1", "c2"):
+            assert db.record_permissions[cid] == [], f"{cid} keeps no grant of its own"
+            assert db.records[cid].inherit_permissions is True, f"{cid} inherits from the page"
+        assert unlink.unlinked(connector) & {"10", "c1", "c2"} == set()
+
+    async def test_a_legacy_comment_whose_access_cannot_be_rewritten_is_still_kept(
+        self, api, db, checkpoints, search, monkeypatch
+    ) -> None:
+        await self._legacy_comment_under_restricted_page(api, db, checkpoints, search)
+        connector, unlink = await self._full_sync(db, checkpoints)
+
+        async def failing(record: Any, permissions: list) -> None:  # noqa: ANN401
+            raise RuntimeError("graph unavailable")
+
+        monkeypatch.setattr(db, "on_updated_record_permissions", failing)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is True, "the comments are kept as stored instead"
+        assert unlink.unlinked(connector) & {"10", "c1", "c2"} == set()
+
+    async def test_no_legacy_comment_rewrite_outside_a_full_sync(self, api, db, checkpoints, search) -> None:
+        await self._legacy_comment_under_restricted_page(api, db, checkpoints, search)
+
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert not [r for r, _ in db.permission_updates if r.external_record_id in ("c1", "c2")]
+        assert db.records["c1"].inherit_permissions is False

@@ -102,6 +102,7 @@ from app.connectors.sources.atlassian.core.auth_fields import (
 from app.connectors.sources.atlassian.core.confluence_access import (
     _is_folder,
     apply_page_access_to_dependents,
+    inherit_page_access,
     listing_modified_after,
     unresolved_principal_permission,
     v1_next_start,
@@ -2367,7 +2368,8 @@ class ConfluenceConnector(BaseConnector):
                             attachment_data.get("_links") or {}
                         ).get("next")
 
-                        if attachments:
+                        # An empty v1 list that says more exist is read through v2 like a non-empty one.
+                        if attachments or not attachments_complete:
                             # v2 list API puts base URL only on response _links, not per attachment
                             v2_attachments_base_url: str | None = None
 
@@ -3137,10 +3139,12 @@ class ConfluenceConnector(BaseConnector):
     async def _dependents_kept_as_stored(
         self, space: RecordGroup, stored: list[Record], existing: dict[str, str]
     ) -> list[str]:
-        """Ids of stored records under still-listed content that the sync keeps without rewriting.
+        """Ids of stored records under still-listed content that the sync keeps without re-reading.
 
         Comment records from older versions stay until their page is stored as blocks, and an
         archived page's attachments are not re-read, so a full sync would otherwise unlink them.
+        Those comments are given their page's access through inheritance; one that can't be
+        is kept as stored.
         """
         listed = {r.external_record_id for r in stored if r.external_record_id in existing}
         archived = {r.external_record_id for r in stored if existing.get(r.external_record_id) == "archived"}
@@ -3156,6 +3160,10 @@ class ConfluenceConnector(BaseConnector):
                 visited.add(node)
                 node = parent_of[node]
             if node in listed:
+                try:
+                    await inherit_page_access(self.data_entities_processor, comment)
+                except Exception as e:
+                    self.logger.warning(f"Could not give comment {comment.external_record_id} its page's access: {e}")
                 kept.append(comment.id)
         kept.extend(
             r.id for r in dependents
@@ -3313,13 +3321,14 @@ class ConfluenceConnector(BaseConnector):
             return
         listed = await self._list_folder_ids(space.short_name)
         if self.data_entities_processor.full_sync_running(self.connector_id):
-            # A folder filled in above an in-scope page is not listed when the filters leave it out,
-            # nor when the listing fails; unseen, the full sync would unlink it and hide the pages under it.
+            # A failed listing keeps every stored folder. A folder filled in above an in-scope page is
+            # not listed when the filters leave it out; unseen, the full sync would unlink it and hide its pages.
             for folder in stored:
-                if (
-                    listed is None or str(folder.external_record_id) in listed
-                ) and await self.data_entities_processor.get_records_by_parent(
-                    self.connector_id, folder.external_record_id
+                if listed is None or (
+                    str(folder.external_record_id) in listed
+                    and await self.data_entities_processor.get_records_by_parent(
+                        self.connector_id, folder.external_record_id
+                    )
                 ):
                     self.data_entities_processor.note_kept_records(self.connector_id, [folder.id])
         if listed is None:
