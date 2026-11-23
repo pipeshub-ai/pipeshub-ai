@@ -13,7 +13,12 @@ import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
-import { forOrg } from '../../../libs/context/orgContext';
+import {
+  forOrg,
+  getCurrentOrgId,
+  makeOrgContext,
+  runWithOrgContext,
+} from '../../../libs/context/orgContext';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
@@ -91,6 +96,34 @@ export const hydrateScopedRequestAsUser = async (
   // repository call below runs as that org (PostgreSQL refuses a call with none).
   await forOrg(orgId, 'scoped-request', () =>
     hydrateInOrg(req, appConfig, keyValueStoreService, email, orgId),
+  );
+};
+
+/**
+ * Runs `fn`, the rest of a scoped-token request, as the org of the user the
+ * hydration above put on the request. A Slack bot's token names no org, so
+ * nothing bound one, and the handlers that follow read conversations from the
+ * store (PostgreSQL refuses a read with none). The org is the server-resolved
+ * one on `req.user`; a different org already bound is refused, not replaced.
+ */
+export const runAsHydratedCaller = <T>(
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+  fn: () => Promise<T>,
+): Promise<T> => {
+  const user = (req as AuthenticatedUserRequest).user;
+  if (!user?.orgId) {
+    return Promise.reject(new UnauthorizedError('Caller has no organization'));
+  }
+  const orgId = String(user.orgId);
+  if (getCurrentOrgId() === orgId) return fn();
+  return runWithOrgContext(
+    makeOrgContext({
+      orgId,
+      userId: user.userId ? String(user.userId) : null,
+      kind: 'service',
+      source: 'scoped_jwt',
+    }),
+    fn,
   );
 };
 

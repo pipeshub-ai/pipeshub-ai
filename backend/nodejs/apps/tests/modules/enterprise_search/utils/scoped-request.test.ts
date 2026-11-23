@@ -6,6 +6,7 @@ import mongoose from 'mongoose'
 import {
   STAND_IN_TOKEN_TTL_SECONDS,
   hydrateScopedRequestAsUser,
+  runAsHydratedCaller,
   stableObjectIdHexForExternalEmail,
 } from '../../../../src/modules/enterprise_search/utils/scoped-request'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
@@ -16,7 +17,7 @@ import { getCredentialRepository } from '../../../../src/libs/repositories/crede
 import * as cmController from '../../../../src/modules/configuration_manager/controller/cm_controller'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
-import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
+import { forOrg, getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 
 describe('hydrateScopedRequestAsUser', () => {
   afterEach(() => {
@@ -319,5 +320,50 @@ describe('hydrateScopedRequestAsUser: Slack-only accounts', () => {
       expect(await run(r)).to.equal(undefined)
       expect(String(r.user.userId)).to.equal(String(existing._id))
     })
+  })
+})
+
+describe('runAsHydratedCaller', () => {
+  const orgId = '65a000000000000000000002'
+
+  it('runs the rest of the request as the hydrated caller\'s org when none is bound', async () => {
+    expect(getCurrentOrgId()).to.equal(undefined)
+    const seen = await runAsHydratedCaller({ user: { userId: 'u1', orgId } } as any, async () => getCurrentOrgId())
+    expect(seen).to.equal(orgId)
+  })
+
+  it('keeps an org that is already bound when it is the same one', async () => {
+    const seen = await forOrg(orgId, 'test', () => runAsHydratedCaller({ user: { userId: 'u1', orgId } } as any, async () => getCurrentOrgId()))
+    expect(seen).to.equal(orgId)
+  })
+
+  it('refuses, and does not run, when another org is already bound', async () => {
+    let ran = false
+    let error: unknown
+    try {
+      await forOrg('65a000000000000000000009', 'test', () =>
+        runAsHydratedCaller({ user: { userId: 'u1', orgId } } as any, async () => {
+          ran = true
+        }),
+      )
+    } catch (e) {
+      error = e
+    }
+    expect(error).to.be.instanceOf(Error)
+    expect(ran).to.equal(false)
+  })
+
+  it('refuses a request that was never hydrated', async () => {
+    let ran = false
+    let error: unknown
+    try {
+      await runAsHydratedCaller({} as any, async () => {
+        ran = true
+      })
+    } catch (e) {
+      error = e
+    }
+    expect(error).to.be.instanceOf(Error)
+    expect(ran).to.equal(false)
   })
 })
