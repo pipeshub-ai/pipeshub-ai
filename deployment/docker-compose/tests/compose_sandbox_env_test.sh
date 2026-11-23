@@ -77,8 +77,9 @@ VARS=(
 render() {
   local file="$1" out="$2"; shift 2
   local envf="$TMP/render.env"
-  : > "$envf"
-  (( $# )) && printf '%s\n' "$@" > "$envf"
+  # The legacy file has no fallback for these secrets, so every render gets placeholders.
+  printf '%s=test\n' SECRET_KEY ARANGO_PASSWORD MONGO_PASSWORD QDRANT_API_KEY > "$envf"
+  (( $# )) && printf '%s\n' "$@" >> "$envf"
   env -i PATH="$PATH" HOME="$HOME" $DOCKER compose -p sandbox-env-test -f "$COMPOSE_DIR/$file" \
     --env-file "$envf" --profile '*' config --format json > "$out"
 }
