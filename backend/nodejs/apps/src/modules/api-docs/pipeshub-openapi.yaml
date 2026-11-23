@@ -907,8 +907,8 @@ components:
             used: { type: integer, description: Accounts holding a seat now. }
             over: { type: integer, description: How many `used` is above `seats`; 0 when within. }
             overSince: { type: string, format: date-time, nullable: true, description: When the count first went above the seats; null when within. }
-            refuseFrom: { type: string, format: date-time, nullable: true, description: When new users start being refused, 14 days after `overSince`. }
-            daysLeft: { type: integer, nullable: true, description: Whole days left before refusal, rounded up; 0 once refusing, null when within. }
+            refuseFrom: { type: string, format: date-time, nullable: true, description: 'When new users start being refused, 14 days after `overSince`.' }
+            daysLeft: { type: integer, nullable: true, description: 'Whole days left before refusal, rounded up; 0 once refusing, null when within.' }
             refusing: { type: boolean, description: New users are refused now. }
     ConnectorUserConnection:
       type: object
