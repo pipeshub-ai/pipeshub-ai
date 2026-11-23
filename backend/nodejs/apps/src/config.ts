@@ -92,4 +92,4 @@ export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.co
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';
 
 // --- Edition boot hooks ---
-export { noopEditionBoot as editionBoot } from './libs/edition/edition-boot';
+export { licenseEditionBoot as editionBoot } from './ee/modules/license/license-boot';

@@ -26,3 +26,19 @@ export const MAX_LICENSE_BYTES = 16 * 1024;
 
 export const graceEndFor = (endDate: Date, graceDays: number): Date =>
   new Date(endDate.getTime() + graceDays * DAY_MS);
+
+/** The paid feature that copies who can see what from a connector's source. */
+export const PERMISSION_SYNC_FEATURE = 'permissionSync';
+
+/**
+ * What a license without a `features` list grants: every paid feature that
+ * existed before the field did, so a license already issued keeps what it
+ * bought. A feature added later is granted only by a license that names it.
+ */
+export const LEGACY_FEATURES: readonly string[] = [PERMISSION_SYNC_FEATURE];
+
+/** Whether the license turns on `feature`. */
+export const licenseGrants = (
+  payload: { features?: readonly string[] },
+  feature: string,
+): boolean => (payload.features ?? LEGACY_FEATURES).includes(feature);

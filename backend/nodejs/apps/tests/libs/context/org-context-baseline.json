@@ -1,6 +1,7 @@
 {
  "detached_work": {
   "app.ts": 2,
+  "ee/modules/license/license-boot.ts": 1,
   "libs/services/outbox/outbox.dispatcher.ts": 1,
   "libs/services/telemetry/telemetry.service.ts": 1,
   "libs/services/ttl-sweeper.service.ts": 1,
