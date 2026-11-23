@@ -16,7 +16,11 @@ def upgrade():
 
 
 def downgrade():
+    # The table forces row-level security, which hides every org's rows from the owner running this: without lifting it for the delete nothing is
+    # removed and the check below refuses the rows that remain (as retrieval_0002 does).
+    op.execute("ALTER TABLE identity.users NO FORCE ROW LEVEL SECURITY")
     op.execute("DELETE FROM identity.users WHERE kind = 'slack'")
+    op.execute("ALTER TABLE identity.users FORCE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE identity.users DROP CONSTRAINT users_kind_check, "
                "DROP CONSTRAINT users_slack_is_not_admin, ADD CONSTRAINT users_kind_check CHECK (kind IN ('human', 'service')), "
                "DROP COLUMN slack_user_id, DROP COLUMN slack_team_id")
