@@ -62292,7 +62292,8 @@ paths:
         <li>Retrieves Google Workspace OAuth config (client ID/secret)</li>
         <li>Exchanges the authorization code for tokens via Google's token endpoint</li>
         <li>Verifies the ID token</li>
-        <li>Stores access and refresh tokens in configuration manager</li>
+        <li>Stores access and refresh tokens in configuration manager. When Google sends no refresh token
+        (a repeat consent), the user's stored refresh token is kept</li>
         <li>Creates or enables the Google Workspace connector</li>
         <li>Publishes an AppEnabledEvent for the sync service</li>
         </ol>
@@ -62384,7 +62385,11 @@ paths:
                         type: string
                         format: date-time
         '400':
-          description: Error exchanging authorization code
+          description: |
+            Error exchanging authorization code, or the consent came from a different Google account.
+            Also when Google sent no refresh token (a repeat consent) and the user has no usable one
+            stored (none, or an expired one): the user removes the app's access in their Google account's
+            third-party access settings and connects again. Nothing is stored.
           content:
             application/json:
               schema:
@@ -62403,8 +62408,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The Google Workspace configuration could not be read, or the
-            credentials could not be stored. Also when Google Workspace OAuth is
+            The Google Workspace configuration or the user's stored credentials
+            could not be read, or the credentials could not be stored. Also when Google Workspace OAuth is
             not configured for the organization (client ID or secret missing):
             that is checked before `tempCode` is read, so a body without
             `tempCode` gets this answer too.
