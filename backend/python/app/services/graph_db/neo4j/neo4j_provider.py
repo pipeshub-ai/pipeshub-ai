@@ -20082,13 +20082,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         reverse: bool = False,
         lowered: bool = False,
-        order: bool = True,
     ) -> str:
         """Project ``sortKey`` and ``nullRank``, then order by them.
 
         ``lowered`` says the name is already lowercase (the stored sort name).
-        ``order=False`` stops before the ORDER BY, for a caller that sorts only the
-        page later (``_kh_v2_item_order``). ``reverse`` flips all three terms for a
+        ``reverse`` flips all three terms for a
         previous page: the query takes the rows just before the boundary, nearest
         first, and the caller turns them back into page order.
 
@@ -20117,8 +20115,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # and tiebreak.
         keyset = f"\n            WHERE {where}" if where else ""
         null_dir, value_dir, id_dir = self._kh_v2_order_dirs(direction, reverse=reverse)
-        order_by = (f"\n            ORDER BY nullRank {null_dir}, sortKey {value_dir}, {node_var}.id {id_dir}"
-                    if order else "")
+        order_by = f"\n            ORDER BY nullRank {null_dir}, sortKey {value_dir}, {node_var}.id {id_dir}"
         return f"""
             WITH {node_var}{extra}, {key_expr} AS sortKey
             WITH {node_var}{extra}, sortKey,
@@ -20129,15 +20126,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _kh_v2_order_dirs(direction: str, *, reverse: bool) -> tuple[str, str, str]:
         flipped = "ASC" if direction == "DESC" else "DESC"
         return ("DESC", flipped, "DESC") if reverse else ("ASC", direction, "ASC")
-
-    def _kh_v2_item_order(self, sort_order: str, item: str, *, reverse: bool) -> str:
-        """``_kh_v2_sort_cypher``'s ORDER BY over maps that already carry
-        ``sortKey``, ``nullRank`` and ``id``."""
-        null_dir, value_dir, id_dir = self._kh_v2_order_dirs(
-            self._kh_v2_sort_direction(sort_order), reverse=reverse,
-        )
-        return (f"ORDER BY {item}.nullRank {null_dir}, {item}.sortKey {value_dir}, "
-                f"{item}.id {id_dir}")
 
     def _kh_v2_keyset_cypher(
         self, sort_order: str, direction: str = "next", node_var: str = "node", param: str = "ks",
@@ -23246,40 +23234,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         filter_clause = ""
         if conditions:
             filter_clause = "WHERE " + "\n          AND ".join(conditions)
-        if include_total and name_matches is not None:
-            # At most _KH_NAME_FIRST_MAX rows reach here, so they are all sorted
-            # and the page sliced off. The ORDER BY + LIMIT below is charged the
-            # whole row list for every row it keeps (745 MB for 201 rows of 5650
-            # matches); the sort is charged each row once.
+        if include_total:
             sort = self._kh_v2_sort_cypher(
                 sort_field, sort_dir, carry=probe_carry, where=keyset, reverse=direction == "prev",
                 lowered=state,
             )
+            # Ids only. The full record map is built after the page is cut.
+            # Every visible node is sorted once, before the rows are collected:
+            # ORDER BY + LIMIT over the collected rows was charged the whole list
+            # for every row it kept (745 MB for 201 rows of 5650 name matches,
+            # 1.6 GB for the first page of a 50k-record connector, past any pool
+            # at 200k); the sort is charged each row once (sorting 200k rows
+            # takes about 0.3 s, 850k about 2 s). The
+            # page is cut through an aggregation, so an empty listing still
+            # yields its one row, and the page is a list of its own: a slice
+            # riding along every enrich row is charged the whole list per row by
+            # Neo4j Enterprise's pipelined runtime.
             tail = f"""
         {filter_clause}
         {sort}
-        WITH collect({{id: node.id, nodeType: node.nodeType,
-                       sortKey: sortKey, nullRank: nullRank{probe_field}}}) AS rows
-        WITH rows[0..$kh_limit] AS page, size(rows) AS total,
-             size([n IN rows WHERE n.nodeType = 'record' | 1]) AS nRecord,
-             size([n IN rows WHERE n.nodeType = 'folder' | 1]) AS nFolder,
-             size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup, {probes_of.format("rows")} AS khProbes
-            """
-        elif include_total:
-            sort_key = self._kh_v2_sort_cypher(
-                sort_field, sort_dir, carry=probe_carry, where=keyset, reverse=direction == "prev",
-                lowered=state, order=False,
-            )
-            # Ids only. The full record map is built after the page is cut.
-            # The total and counts come from the unsorted rows; only the page is
-            # ordered, by ORDER BY + LIMIT, which keeps the best rows as it scans
-            # instead of sorting every visible node (about 6 s at 850k). The CALL
-            # aggregates, so an empty listing still yields its one row, and the
-            # row list is dropped before `enrich`: a list riding along every enrich
-            # row is charged per row by Enterprise's pipelined runtime.
-            tail = f"""
-        {filter_clause}
-        {sort_key}
         WITH collect({{id: node.id, nodeType: node.nodeType,
                        sortKey: sortKey, nullRank: nullRank{probe_field}}}) AS rows
         WITH rows, size(rows) AS total,
@@ -23287,10 +23260,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
              size([n IN rows WHERE n.nodeType = 'folder' | 1]) AS nFolder,
              size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup, {probes_of.format("rows")} AS khProbes
         CALL (rows) {{
-            UNWIND rows AS pageItem
-            WITH pageItem
-            {self._kh_v2_item_order(sort_dir, "pageItem", reverse=direction == "prev")}
-            LIMIT $kh_limit
+            UNWIND rows[0..$kh_limit] AS pageItem
             RETURN collect(pageItem) AS page
         }}
         WITH total, nRecord, nFolder, nGroup, khProbes, page
