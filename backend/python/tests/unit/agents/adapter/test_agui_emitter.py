@@ -207,6 +207,50 @@ class TestToolCallTranslation:
         assert starts[0]["approved"] is True
         assert "approved" not in starts[1]
 
+    async def test_a_replayed_approval_answer_says_so(self) -> None:
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "x", "args": {}, "tool_call_id": "c1", "approval_answer": "allowed", "approval_replayed": True,
+        }))
+        await emitter.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "x", "args": {}, "tool_call_id": "c2", "approval_answer": "allowed",
+        }))
+
+        starts = [c.args[0]["data"] for c in sink.write.await_args_list if c.args[0]["event"] == "TOOL_CALL_START"]
+        assert (starts[0]["approvalAnswer"], starts[0]["approvalReplayed"]) == ("allowed", True)
+        assert "approvalReplayed" not in starts[1]
+
+    async def test_one_start_carries_every_approval_field_together(self) -> None:
+        emitter, sink = _make_emitter()
+
+        await emitter.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "x", "args": {}, "tool_call_id": "c1", "approval_answer": "allowed",
+            "approval_replayed": True, "changed_fields": ["title"], "approval_note": "Use the team list",
+        }))
+
+        data = sink.write.await_args_list[0].args[0]["data"]
+        assert (data["approvalAnswer"], data["approvalReplayed"], data["changedFields"], data["approvalNote"]) == (
+            "allowed", True, ["title"], "Use the team list",
+        )
+
+    async def test_an_edited_calls_start_names_the_changed_fields(self) -> None:
+        start = _event(EventType.TOOL_CALL_START, {
+            "tool": "x", "args": {"title": "b"}, "tool_call_id": "approved_2", "approval_answer": "allowed",
+            "changed_fields": ["title"], "approval_note": "Use the team list",
+        })
+        emitter, sink = _make_emitter()
+        collector = TranscriptCollector()
+
+        await emitter.emit(start)
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(start)
+
+        start_frame = sink.write.await_args_list[0].args[0]
+        assert start_frame["data"]["changedFields"] == ["title"]
+        assert collector.parts[0]["changedFields"] == ["title"]
+        assert start_frame["data"]["approvalNote"] == collector.parts[0]["approvalNote"] == "Use the team list"
+
     async def test_tool_call_start_forwards_args_summary(self) -> None:
         emitter, sink = _make_emitter()
 

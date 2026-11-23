@@ -28,6 +28,7 @@ import {
   resolveTextAttachmentMimetype,
   isReadableUtf8Text,
   uploadSlackAttachments,
+  slackBlocksFallbackText,
   downloadSlackFile,
   SlackFileTooLargeError,
   buildSkippedAttachmentsNotice,
@@ -1836,6 +1837,7 @@ describe('slack-bot/helpers', () => {
       botToken: 'xoxb-test',
       signingSecret: 'signing-secret',
       botId: 'B1',
+      approveActionsFromSlack: false,
     };
 
     it('returns the bot from the registry the caller passed in', async () => {
@@ -1847,5 +1849,22 @@ describe('slack-bot/helpers', () => {
       const result = await resolveSlackBotForEvent(() => null);
       expect(result).to.equal(null);
     });
+  });
+});
+
+describe('slackBlocksFallbackText', () => {
+  it('is the text of the blocks, so a blocks message never goes out without top-level text', () => {
+    expect(
+      slackBlocksFallbackText([
+        { type: 'section', text: { type: 'mrkdwn', text: 'First part' } },
+        { type: 'table', rows: [] },
+        { type: 'section', text: { type: 'mrkdwn', text: 'Second part' } },
+      ]),
+    ).to.equal('First part\nSecond part');
+  });
+
+  it('is never empty, even for blocks with no text', () => {
+    expect(slackBlocksFallbackText([{ type: 'table', rows: [] }])).to.not.equal('');
+    expect(slackBlocksFallbackText([])).to.not.equal('');
   });
 });
