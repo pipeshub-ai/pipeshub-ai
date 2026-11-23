@@ -414,6 +414,11 @@ export interface TokenListItem {
 }
 
 // Personal Access Tokens
+/** Body of PATCH /personal-access-tokens/:tokenId; null lifts the limit. */
+export interface UpdatePatKnowledgeLimitBody {
+  knowledgeLimit: KnowledgeLimit | null;
+}
+
 export interface CreatePatRequest {
   name: string;
   scopes?: string[];

@@ -4833,11 +4833,33 @@
         "pasteBlockLabel": "Listo para pegar en su configuración de MCP",
         "copyPasteBlockAria": "Copiar el bloque para pegar",
         "copySuccessTitle": "Copiado",
-        "copyErrorTitle": "No se ha podido copiar"
+        "copyErrorTitle": "No se ha podido copiar",
+        "knowledgeLimitLaterHint": "Puedes cambiarlo más adelante sin sustituir el token."
       },
       "scopeCount_one": "{{count}} ámbito",
       "scopeCount_other": "{{count}} ámbitos",
-      "scopeCount_many": "{{count}} de ámbitos"
+      "scopeCount_many": "{{count}} de ámbitos",
+      "access": {
+        "panelTitle": "Cambiar acceso",
+        "intro": "Elige qué puede ver {{name}}. El token sigue funcionando y el cambio se aplica desde su próxima solicitud, así que no tienes que actualizar nada que lo use.",
+        "save": "Guardar",
+        "savedTitle": "Acceso cambiado",
+        "savedEverything": "{{name}} ahora puede ver todo lo que tú puedes ver.",
+        "savedSome_one": "{{name}} ahora puede ver {{count}} elemento elegido.",
+        "savedSome_many": "{{name}} ahora puede ver {{count}} elementos elegidos.",
+        "savedSome_other": "{{name}} ahora puede ver {{count}} elementos elegidos.",
+        "undo": "Deshacer",
+        "undoneTitle": "Cambio deshecho",
+        "undoErrorTitle": "No se pudo deshacer el cambio. Abre Cambiar acceso para volver a configurarlo.",
+        "errorTitle": "No se pudo cambiar el acceso",
+        "errorDescription": "No se cambió nada. Inténtalo de nuevo.",
+        "unknownTitle": "No se pudo confirmar el cambio",
+        "unknownDescription": "Es posible que se haya guardado. Comprueba el acceso que se muestra aquí antes de volver a intentarlo.",
+        "unknownReloadFailedDescription": "Es posible que se haya guardado y no se pudo cargar el acceso actual. Vuelve a cargar la página antes de fiarte de lo que se muestra.",
+        "rowAction": "Cambiar acceso",
+        "rowActionAria": "Cambiar qué puede ver {{name}}",
+        "rowActionTooltip": "Cambiar acceso: elige qué puede ver este token"
+      }
     },
     "agentSignIns": {
       "title": "Inicios de sesión de agentes",
