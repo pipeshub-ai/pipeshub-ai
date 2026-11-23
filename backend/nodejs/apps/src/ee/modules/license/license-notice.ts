@@ -66,13 +66,17 @@ export interface NoticeViewer {
 
 const IN_FORCE = new Set(['active', 'expiring', 'grace']);
 
-/** When the upgrade grace ends, while it runs and no license key has started; else null. */
+/**
+ * When the upgrade grace ends, while it runs and no license key is in force;
+ * else null. A key that ended inside the grace leaves the grace running: a
+ * license only extends access (`permissionSyncAnswer`), never shortens it.
+ */
 export function upgradeGraceEndsAt(
   view: LicenseStatusView,
   now: Date,
 ): string | null {
   const endsAt = view.upgradeGrace?.endsAt;
-  const noLicense = view.status === 'none' || view.status === 'pending';
+  const noLicense = !IN_FORCE.has(view.status);
   return noLicense &&
     endsAt !== undefined &&
     endsAt !== null &&

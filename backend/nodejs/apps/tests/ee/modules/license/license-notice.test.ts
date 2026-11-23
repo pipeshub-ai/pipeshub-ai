@@ -93,7 +93,6 @@ describe('license notice: what every signed-in user may read', () => {
     store.data.set(UPGRADE_KEY, {
       upgradedAt: at(-days),
       affected,
-      extendedUntil: null,
     } satisfies UpgradeRecord);
   const connectors = (...list: Record<string, unknown>[]) =>
     store.data.set(LICENSE_CONNECTORS_KEY, { connectors: list });
@@ -145,6 +144,20 @@ describe('license notice: what every signed-in user may read', () => {
         restoring: 0,
         items: null,
       });
+    });
+
+    it('keeps the grace running when a trial ends inside it', async () => {
+      upgradedDaysAgo(5);
+      install({ startDate: at(-30), issuedAt: at(-30), endDate: at(-10) });
+      connectors(connector('a'));
+      const admin = await licenseNotice(store, ADMIN, NOW);
+      expect(admin.upgradeGrace).to.deep.equal({
+        endsAt: at(UPGRADE_GRACE_DAYS - 5),
+      });
+      expect(admin.permissionSync).to.equal(true);
+      expect(admin.connectors.items?.map((item) => item.state)).to.deep.equal([
+        'affected',
+      ]);
     });
 
     it('gives no grace to an install known not to need it', async () => {
