@@ -12,6 +12,7 @@ import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/compo
 import { toast } from '@/lib/store/toast-store';
 import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
+import { SLACK_ACCOUNT_CREATION_AVAILABLE } from '@/config';
 import { useBotsStore } from '../store';
 import { BotsApi } from '../api';
 import type { BotType, BotTypeInfo, SlackBotConfig } from '../types';
@@ -334,7 +335,7 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
         botToken: botToken.trim(),
         signingSecret: signingSecret.trim(),
         ...(!isDefaultAssistant ? { agentId: selectedAgentId } : {}),
-        createAccountsForSlackUsers,
+        ...(SLACK_ACCOUNT_CREATION_AVAILABLE ? { createAccountsForSlackUsers } : {}),
       };
 
       if (isEditMode && editingConfig) {
@@ -467,24 +468,26 @@ function SlackBotFormView({ editingConfig, agents, agentsComplete, onClose, onSa
           </Select.Root>
         </FormField>
 
-        <Text as="label" size="2">
-          <Flex gap="3" align="start">
-            <Switch
-              color="jade"
-              checked={createAccountsForSlackUsers}
-              onCheckedChange={setCreateAccountsForSlackUsers}
-              style={{ marginTop: 2 }}
-            />
-            <Flex direction="column" gap="1">
-              <Text weight="medium" style={{ color: 'var(--slate-12)' }}>
-                {t('workspace.bots.form.createAccountsForSlackUsers')}
-              </Text>
-              <Text size="1" style={{ color: 'var(--slate-11)' }}>
-                {t('workspace.bots.form.createAccountsForSlackUsersHelp')}
-              </Text>
+        {SLACK_ACCOUNT_CREATION_AVAILABLE && (
+          <Text as="label" size="2">
+            <Flex gap="3" align="start">
+              <Switch
+                color="jade"
+                checked={createAccountsForSlackUsers}
+                onCheckedChange={setCreateAccountsForSlackUsers}
+                style={{ marginTop: 2 }}
+              />
+              <Flex direction="column" gap="1">
+                <Text weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  {t('workspace.bots.form.createAccountsForSlackUsers')}
+                </Text>
+                <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                  {t('workspace.bots.form.createAccountsForSlackUsersHelp')}
+                </Text>
+              </Flex>
             </Flex>
-          </Flex>
-        </Text>
+          </Text>
+        )}
 
         {/* ── Delete zone (edit mode only) ── */}
         {isEditMode && (

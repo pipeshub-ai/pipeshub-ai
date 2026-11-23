@@ -16,6 +16,7 @@ vi.mock('@/lib/hooks/use-secret-reveal-available', () => ({
   useRevealScope: () => () => () => true,
   REVEAL_PARAMS: {},
 }));
+vi.mock('@/config', () => ({ SLACK_ACCOUNT_CREATION_AVAILABLE: true }));
 vi.mock('../api', () => ({
   BotsApi: {
     getSlackBotConfigs: vi.fn(),
