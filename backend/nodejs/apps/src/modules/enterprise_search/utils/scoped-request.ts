@@ -13,6 +13,7 @@ import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
+import { forOrg } from '../../../libs/context/orgContext';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
@@ -85,6 +86,21 @@ export const hydrateScopedRequestAsUser = async (
 
   const orgId = await resolveSoleOrgId();
 
+  // The Slack bot's token names no org, so nothing has bound one for this
+  // request. The org above is the one the server resolved itself; every
+  // repository call below runs as that org (PostgreSQL refuses a call with none).
+  await forOrg(orgId, 'scoped-request', () =>
+    hydrateInOrg(req, appConfig, keyValueStoreService, email, orgId),
+  );
+};
+
+const hydrateInOrg = async (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+  appConfig: AppConfig,
+  keyValueStoreService: KeyValueStoreService | undefined,
+  email: string,
+  orgId: string,
+): Promise<void> => {
   const user = await getUserRepository().getLiveByEmail(orgId, email);
 
   const authTokenService = new AuthTokenService(

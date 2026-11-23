@@ -16,6 +16,7 @@ import { getCredentialRepository } from '../../../../src/libs/repositories/crede
 import * as cmController from '../../../../src/modules/configuration_manager/controller/cm_controller'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 
 describe('hydrateScopedRequestAsUser', () => {
   afterEach(() => {
@@ -213,6 +214,40 @@ describe('hydrateScopedRequestAsUser: Slack-only accounts', () => {
     const token = r.headers.authorization.replace('Bearer ', '')
     expect(() => jwt.verify(token, 'session-secret')).to.throw()
     expect(jwt.verify(token, 'scoped-secret')).to.include({ isServiceAccount: true, userId: String(created._id) })
+  })
+
+  // The Slack bot's token names no org, so nothing binds one before this runs. On PostgreSQL every
+  // repository call fails closed without it ("no org context is bound"), so each one must run inside
+  // the org the server resolved itself, never one a client sent.
+  it('runs every account read and write inside the org context of the org it resolved', async () => {
+    const seen: Array<[string, string | undefined]> = []
+    const note = (name: string) => seen.push([name, getCurrentOrgId()])
+    findUser.callsFake(async () => (note('getLiveByEmail'), null))
+    inOrg.callsFake(async () => (note('listByEmails'), []))
+    createUser.callsFake(async (org: string, doc: any) => (note('create'), { ...doc, orgId: org, _id: new mongoose.Types.ObjectId().toHexString() }))
+    ;(getActivityRepository().record as sinon.SinonStub).callsFake(async () => void note('activity.record'))
+    ;(getCredentialRepository().blockedUserIds as sinon.SinonStub).callsFake(async () => (note('blockedUserIds'), []))
+    ;(Org.findOne as sinon.SinonStub).callsFake(async () => (note('org.getLive'), { _id: orgId }))
+
+    expect(await run(req())).to.equal(undefined)
+
+    const names = seen.map(([n]) => n)
+    for (const n of ['getLiveByEmail', 'org.getLive', 'listByEmails', 'create', 'activity.record']) expect(names).to.include(n)
+    for (const [n, org] of seen) expect(org, n).to.equal(String(orgId))
+  })
+
+  it('binds the org when it reads an existing Slack-only account and checks it is not blocked', async () => {
+    const seen: Array<[string, string | undefined]> = []
+    findUser.callsFake(async () => {
+      seen.push(['getLiveByEmail', getCurrentOrgId()])
+      return { _id: new mongoose.Types.ObjectId(), orgId, email, kind: 'slack', isDeleted: false }
+    })
+    ;(getCredentialRepository().blockedUserIds as sinon.SinonStub).callsFake(async () => (seen.push(['blockedUserIds', getCurrentOrgId()]), []))
+
+    expect(await run(req())).to.equal(undefined)
+
+    expect(seen.map(([n]) => n)).to.deep.equal(['getLiveByEmail', 'blockedUserIds'])
+    for (const [n, org] of seen) expect(org, n).to.equal(String(orgId))
   })
 
   it('keeps the stand-in behaviour when the setting is off', async () => {
