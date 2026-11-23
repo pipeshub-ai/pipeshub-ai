@@ -1371,3 +1371,11 @@ class TestForeignSharedDrive:
         assert connector.drive_delta_sync_point.delete_sync_point.await_count == 2
         assert self._last_group_write(connector)[1] == ["a@example.com"]
         assert _drives(state)["0APG"] == {"name": "Untitled shared drive", "members": ["a@example.com"]}
+
+
+async def test_a_reindex_reads_folder_sharing_afresh(connector) -> None:
+    connector._parent_grant_cache = {("alice@example.com", "folder-1"): []}
+
+    await connector.reindex_records([])
+
+    assert connector._parent_grant_cache == {}

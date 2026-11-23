@@ -8055,6 +8055,8 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def reindex_records(self, records: List[Record]) -> None:
         """Reindex records for Google Drive enterprise."""
         try:
+            # Folder sharing may have changed since an earlier call cached it.
+            self._parent_grant_cache = {}
             if not records:
                 self.logger.info("No records to reindex")
                 return

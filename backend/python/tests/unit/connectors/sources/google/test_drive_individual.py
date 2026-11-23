@@ -960,3 +960,11 @@ def test_personal_listing_asks_for_permissions() -> None:
     for mask in (fields.DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS, fields.DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
                  fields.DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS):
         assert "permissions(id, type, role, emailAddress, displayName, deleted, view)" in mask
+
+
+async def test_a_reindex_reads_folder_sharing_afresh(connector) -> None:
+    connector._parent_grant_cache = {"folder-1": []}
+
+    await connector.reindex_records([])
+
+    assert connector._parent_grant_cache == {}
