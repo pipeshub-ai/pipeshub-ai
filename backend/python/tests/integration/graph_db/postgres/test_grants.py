@@ -395,27 +395,6 @@ async def test_an_agent_check_that_fails_denies_and_answers_again_when_the_store
 
 # ---- the knowledge hub ---------------------------------------------------------------------------------------------------------------------
 
-async def test_the_apps_a_user_holds_through_a_grant_or_a_team_and_no_other(w: World) -> None:
-    await team(w)
-    await w.nodes("apps", {"_key": "direct", "type": "KB"}, {"_key": "hidden", "type": "KB", "isHidden": True}, {"_key": "foreign", "type": "KB"},
-                  {"_key": "viaTeam", "type": "KB"}, {"_key": "viaOtherTeam", "type": "KB"}, {"_key": "typed", "type": "KB"})
-    await w.nodes("apps", {"_key": "foreign", "type": "KB", "orgId": "elsewhere"})
-    await grant(w, "m1", "apps", "direct")
-    await grant(w, "m1", "apps", "hidden")
-    await grant(w, "m1", "apps", "foreign")
-    await grant(w, "m1", "apps", "typed", type_="GROUP")                         # a direct edge of another type is not a USER grant
-    await w.edge("permission", ("teams", "t1"), ("apps", "viaTeam"), type="TEAM")
-    await w.edge("permission", ("teams", "t2"), ("apps", "viaOtherTeam"), type="TEAM")
-    await grant(w, "outsider", "teams", "t2", type_="GROUP")                     # an edge of another type is not membership
-    await w.edge("permission", ("teams", "t2"), ("apps", "viaTeam"), type="GROUP")      # nor is a team edge of another type a team grant
-    got = await w.p.get_user_permission_app_ids("m1", w.org)
-    assert sorted(got) == ["direct", "kb", "viaOtherTeam", "viaTeam"]
-    assert await w.p.get_user_permission_app_ids("outsider", w.org) == []
-    assert await w.p.get_user_permission_app_ids("m1", _org()) == []
-    await w.p.delete_team_member_edges("t1", ["m1"])
-    assert sorted(await w.p.get_user_permission_app_ids("m1", w.org)) == ["direct", "viaOtherTeam"]        # a removed member loses the team's apps, not their own
-
-
 async def test_the_gate_and_the_connector_types_come_from_the_apps_a_user_passes_and_widen_when_unreadable(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await w.nodes("users", {"_key": "u", "userId": "uid-u"}, {"_key": "other", "userId": "uid-other"})
     await w.nodes("apps", {"_key": "slack", "type": "SLACK", "orgId": w.org}, {"_key": "jira", "type": "JIRA", "orgId": w.org})

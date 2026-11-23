@@ -35,39 +35,6 @@ def _neo4j() -> Neo4jProvider:
 
 
 # ---------------------------------------------------------------------------
-# App lists — linked connectors are listed by the query itself
-# ---------------------------------------------------------------------------
-
-
-class TestAppListsIncludeLinkedConnectors:
-
-    async def test_arango_lists_linked_connectors_in_the_same_query(self) -> None:
-        provider = _arango()
-        provider.execute_query = AsyncMock(return_value=["own-1", "jira-1"])
-
-        assert await provider.get_user_app_ids(CREATOR_KEY) == ["own-1", "jira-1"]
-
-        provider.execute_query.assert_awaited_once()
-        query = provider.execute_query.await_args.args[0]
-        assert "FOR link IN authenticatedAs" in query
-        assert "FILTER link._from == @user_from" in query
-        assert 'DOCUMENT("apps", link.connectorId)' in query
-        assert "UNION_DISTINCT(direct, via_team, linked)" in query
-
-    async def test_neo4j_lists_linked_connectors_in_the_same_query(self) -> None:
-        provider = _neo4j()
-        provider.client.execute_query = AsyncMock(return_value=[{"app_id": "own-1"}, {"app_id": "jira-1"}])
-
-        assert await provider.get_user_app_ids(CREATOR_KEY) == ["own-1", "jira-1"]
-
-        provider.client.execute_query.assert_awaited_once()
-        query = provider.client.execute_query.await_args.args[0]
-        assert "OPTIONAL MATCH (u)-[linked:AUTHENTICATED_AS]->(:User)" in query
-        assert "OPTIONAL MATCH (app3:App {id: linked.connectorId})" in query
-
-
-
-# ---------------------------------------------------------------------------
 # Chat retrieval — one query per connector, linked account reached through the edge
 # ---------------------------------------------------------------------------
 

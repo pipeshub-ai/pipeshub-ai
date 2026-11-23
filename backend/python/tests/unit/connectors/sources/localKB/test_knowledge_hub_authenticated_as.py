@@ -96,14 +96,13 @@ class TestSearch:
 class TestAppLookupFailure:
     async def test_browse_reports_an_error_not_an_empty_listing(self, service, provider) -> None:
         provider.get_user_by_user_id = AsyncMock(return_value={"_key": USER_KEY})
-        provider.get_user_app_ids = AsyncMock(side_effect=RuntimeError("graph down"))
-        provider.get_knowledge_hub_root_nodes = AsyncMock(return_value={"nodes": [], "total": 0})
+        provider.get_knowledge_hub_access_context_v2 = AsyncMock(side_effect=RuntimeError("graph down"))
 
         response = await service.get_nodes(user_id="user-1", org_id=ORG)
 
         assert response.success is False
         assert response.items == []
-        provider.get_knowledge_hub_root_nodes.assert_not_awaited()
+        provider.get_knowledge_hub_root_nodes_v2.assert_not_awaited()
 
     async def test_name_search_on_neo4j_reports_an_error_not_an_empty_listing(self) -> None:
         # A name search reaches the app lookup inside the provider's own search,

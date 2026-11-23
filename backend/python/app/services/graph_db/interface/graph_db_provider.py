@@ -669,16 +669,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_user_app_ids(self, user_key: str, transaction: str | None=None) -> list[str]:
-        """Get list of app IDs the user has access to."""
-        pass
-
-    @abstractmethod
-    async def get_user_permission_app_ids(self, user_key: str, org_id: str, transaction: str | None=None) -> list[str]:
-        """Get app IDs the user can access via a direct or team-based PERMISSION"""
-        pass
-
-    @abstractmethod
     async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None=None, request: Optional["Request"]=None, record_id: str | None=None) -> dict:
         """Create reindex event payload"""
         pass

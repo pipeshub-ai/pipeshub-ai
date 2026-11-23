@@ -670,17 +670,6 @@ class IdentityMixin(PgBase):
         rows = await self._id_rows("/* pipeshub:graph.get_user_apps */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", [org, gated], transaction)
         return [_arango(_doc(r["doc"]), "apps") for r in rows]
 
-    async def get_user_app_ids(self, user_key: str, transaction: str | None = None) -> list[str]:
-        """Apps the user is linked to, directly, through a team, or by authenticating as another account; hidden ones left out."""
-        rows = await self._id_rows("""/* pipeshub:graph.get_user_app_ids */ WITH ids AS (
-              SELECT e.to_id AS app FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'userAppRelation' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'apps'
-              UNION SELECT t.to_id FROM graph.edges p JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'userAppRelation' AND t.from_coll = 'teams' AND t.from_id = p.to_id AND t.to_coll = 'apps'
-                WHERE p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = $2 AND p.to_coll = 'teams' AND p.doc->>'type' = 'USER'
-              UNION SELECT l.doc->>'connectorId' FROM graph.edges l WHERE l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $2)
-            SELECT DISTINCT a.id FROM ids JOIN graph.nodes a ON a.org_id = $1 AND a.coll = 'apps' AND a.id = ids.app
-            WHERE NOT coalesce((a.doc->>'isHidden')::boolean, false)""", [current_org_id(), user_key], transaction)
-        return [r["id"] for r in rows]
-
     # ---- connector instances -------------------------------------------------------------------------------------
     @_soft(list)
     async def get_user_connector_instances(self, collection: str, user_id: str, org_id: str, team_scope: str, personal_scope: str, transaction: str | None = None,
