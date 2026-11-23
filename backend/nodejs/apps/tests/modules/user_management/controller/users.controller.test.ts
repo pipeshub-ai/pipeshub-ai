@@ -4516,13 +4516,14 @@ describe('UserController', () => {
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      const removal = stubRemoval({ ...mockUser, isDeleted: true, hasLoggedIn: false });
       mockEventService.publishEvent.resetHistory();
 
       await controller.deleteUser(req, res, next);
 
       expect(next.called, String(next.firstCall?.args[0])).to.be.false;
       expect(res.json.firstCall.args[0].message).to.equal('User deleted successfully');
-      expect(mockUser.isDeleted).to.be.true;
+      expect((removal.firstCall.args as any[])[1].$set).to.include({ isDeleted: true });
       expect(mockEventService.publishEvent.called, 'no userDeleted event').to.be.false;
     });
   });
