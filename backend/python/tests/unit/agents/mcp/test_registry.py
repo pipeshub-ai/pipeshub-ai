@@ -108,6 +108,7 @@ class TestMCPRegistry:
         assert "miro" in type_ids
         assert "instantly" in type_ids
         assert "apollo" in type_ids
+        assert "greenhouse" in type_ids
 
     def test_apollo_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -412,7 +413,30 @@ class TestMCPRegistry:
         assert template.icon == icon
         assert template.documentation_url == docs
 
-    @pytest.mark.parametrize("type_id", ["intercom", "granola", "fireflies", "fathom", "instantly"])
+    def test_greenhouse_catalog_entry(self) -> None:
+        """Greenhouse's official hosted server registers PipesHub by DCR, so users only sign in."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        greenhouse = registry.get_template("greenhouse")
+
+        assert greenhouse is not None
+        assert greenhouse.display_name == "Greenhouse"
+        assert greenhouse.transport == MCPTransport.STREAMABLE_HTTP
+        assert greenhouse.default_url == "https://mcp.us.greenhouse.io/mcp"
+        assert greenhouse.default_auth_mode == MCPAuthMode.OAUTH
+        assert greenhouse.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert greenhouse.supports_dcr is True
+        assert greenhouse.require_oauth_client is False
+        assert greenhouse.url_editable is False
+        assert greenhouse.authorization_url == "https://auth.greenhouse.io/authorize"
+        assert greenhouse.token_url == "https://auth.greenhouse.io/token"
+        assert greenhouse.default_scopes == ["greenhouse:mcp_client"]
+        assert greenhouse.icon == "/icons/connectors/greenhouse.svg"
+        assert greenhouse.documentation_url == (
+            "https://support.greenhouse.io/hc/en-us/articles/52090956642075-Greenhouse-MCP"
+        )
+
+    @pytest.mark.parametrize("type_id", ["intercom", "granola", "fireflies", "fathom", "instantly", "greenhouse"])
     def test_new_catalog_entry_logo_file_exists(self, type_id: str) -> None:
         """The template's `icon` path must point at a file the frontend actually serves."""
         registry = MCPRegistry()

@@ -34,6 +34,13 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('Intercomm')).toBe('generic');
   });
 
+  it('matches Greenhouse as a whole word only', () => {
+    expect(resolveConnectorType('greenhouse')).toBe('greenhouse');
+    expect(resolveConnectorType('Greenhouse')).toBe('greenhouse');
+    expect(resolveConnectorType('Greenhouse MCP')).toBe('greenhouse');
+    expect(resolveConnectorType('Greenhouses')).toBe('generic');
+  });
+
   it('maps the bare Google toolset slugs to their logos', () => {
     expect(resolveConnectorType('docs')).toBe('google-docs');
     expect(resolveConnectorType('sheets')).toBe('google-sheets');

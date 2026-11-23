@@ -205,4 +205,11 @@ describe('McpServerIcon', () => {
     expect(logoPath(<McpServerIcon typeId="apollo" name="Sales research" />)).toBe('/icons/connectors/apollo.svg');
     expect(logoPath(<McpServerIcon typeId={null} name="Apollo MCP" />)).toBe('/icons/connectors/apollo.svg');
   });
+
+  it("shows Greenhouse's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="greenhouse" name="Greenhouse" />)).toBe('greenhouse icon');
+    expect(logo(<McpServerIcon typeId={null} name="Greenhouse MCP" />)).toBe('greenhouse icon');
+    expect(logoPath(<McpServerIcon typeId="greenhouse" name="Greenhouse" />)).toBe('/icons/connectors/greenhouse.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Greenhouse MCP" />)).toBe('/icons/connectors/greenhouse.svg');
+  });
 });
