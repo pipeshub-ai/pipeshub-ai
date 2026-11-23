@@ -1044,10 +1044,11 @@ class TestTeamDriveItemSharedWith:
         connector.drive_data_source.permissions_list, calls = self._lists({
             "file-1": [_user_grant("p-alice", "alice@example.com", "owner")],
             "file-2": [_user_grant("p-alice", "alice@example.com", "owner")],
+            "file-3": [_user_grant("p-alice", "alice@example.com", "owner")],
             "folder-1": [_user_grant("p-alice", "alice@example.com", "owner")],
         })
 
-        for file_id, email in (("file-1", "alice@example.com"), ("file-2", "alice@example.com"), ("file-1", "dan@example.com")):
+        for file_id, email in (("file-1", "alice@example.com"), ("file-2", "alice@example.com"), ("file-3", "dan@example.com")):
             await connector._process_drive_item(
                 metadata=self._my_drive_file(id=file_id), user_id="u1", user_email=email, drive_id="drive-1"
             )
@@ -1068,6 +1069,37 @@ class TestTeamDriveItemSharedWith:
         )
 
         assert result.record.shared_with is None
+
+    async def test_an_item_read_whole_once_this_run_is_left_to_that_read(self, connector) -> None:
+        connector.drive_data_source.permissions_list, _ = self._lists({
+            "file-1": [_user_grant("p-alice", "alice@example.com", "owner"), _user_grant("p-bob", "bob@example.com", "writer")],
+            "folder-1": [_user_grant("p-alice", "alice@example.com", "owner")],
+        })
+        first = await connector._process_drive_item(
+            metadata=self._my_drive_file(), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        again = await connector._process_drive_item(
+            metadata=self._my_drive_file(), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        assert [p.email for p in first.record.shared_with] == ["bob@example.com"]
+        assert again.record.shared_with is None
+
+    async def test_someone_a_drive_restriction_cuts_out_is_not_shared_with(self, connector) -> None:
+        from app.connectors.sources.google.drive.team.drive_access import DrivePermissionBatch
+
+        record = MagicMock(shared_with=None)
+        batch = DrivePermissionBatch(
+            [], saw_permission_details=True, grant_details_seen=True,
+            user_grants=[_user_grant("p-in", "in@example.com", "reader", permissionDetails=[{"inherited": False}]),
+                         _user_grant("p-out", "out@other.test", "reader", permissionDetails=[{"inherited": False}])],
+            allowed_email=lambda email: email.endswith("@example.com"),
+        )
+
+        await connector._set_people_from_grants(record, {"id": "sd-file", "driveId": "sd-1"}, batch, "u@example.com", None)
+
+        assert [p.email for p in record.shared_with] == ["in@example.com"]
 
     async def test_a_metadata_only_grant_is_not_shared_with(self, connector) -> None:
         connector.drive_data_source.permissions_list, _ = self._lists({
@@ -1133,6 +1165,16 @@ def _drives(state: dict) -> dict:
     return json.loads(stored.get("drives") or "{}")
 
 
+class _Everyone(frozenset):
+    """Every address counts as a user the deployment syncs, unless a test narrows it."""
+
+    def __contains__(self, _item: object) -> bool:
+        return True
+
+
+_EVERYONE = _Everyone()
+
+
 class TestForeignSharedDrive:
     """A shared drive a user reaches that the domain's admin listing does not have (another organization's)."""
 
@@ -1152,7 +1194,7 @@ class TestForeignSharedDrive:
         connector.drive_delta_sync_point.update_sync_point = AsyncMock(side_effect=update)
         connector._shared_drives_listed = True
         connector._listed_shared_drive_ids = {"own-drive"}
-        connector._synced_user_emails = AsyncMock(return_value=set())
+        connector._synced_user_emails = AsyncMock(return_value=_EVERYONE)
         return state
 
     @staticmethod
@@ -1286,6 +1328,77 @@ class TestForeignSharedDrive:
         await connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN])
 
         assert self._last_group_write(connector)[1] == ["b@example.com", "z@example.com"]
+
+    async def test_the_last_eligible_member_leaving_the_deployment_is_pruned_once_a_run(self, connector) -> None:
+        state = self._store(connector)
+        connector.synced_users = [self._user("a@example.com")]
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        connector._synced_user_emails = AsyncMock(return_value=set())
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.delete_shared_drive_records",
+            new=AsyncMock(return_value=True),
+        ) as delete:
+            await connector._prune_foreign_drives()
+
+        assert self._last_group_write(connector)[1] == []
+        delete.assert_awaited_once()
+        assert _drives(state) == {}
+
+    async def test_a_run_with_no_user_to_sync_still_prunes_the_foreign_drives(self, connector) -> None:
+        connector._get_users_to_sync = AsyncMock(return_value=[])
+        connector._prune_foreign_drives = AsyncMock()
+
+        await connector._process_users_in_batches([])
+
+        connector._prune_foreign_drives.assert_awaited_once()
+
+    async def test_the_run_prune_keeps_everyone_on_a_cut_user_listing(self, connector) -> None:
+        state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        connector._synced_user_emails = AsyncMock(return_value=set())
+        connector._listing_cut = True
+        connector.data_entities_processor.on_new_record_groups.reset_mock()
+
+        await connector._prune_foreign_drives()
+
+        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        assert _drives(state)["0APG"]["members"] == ["a@example.com"]
+
+    async def test_the_cleanup_mark_is_stored_before_any_record_is_deleted(self, connector) -> None:
+        state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        seen: list[dict] = []
+
+        async def stopped_mid_delete(*_args: object, **_kwargs: object) -> bool:
+            seen.append(_drives(state)["0APG"])
+            raise asyncio.CancelledError  # the process stops after the delete began
+
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.delete_shared_drive_records", new=stopped_mid_delete
+        ), pytest.raises(asyncio.CancelledError):
+            await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+
+        assert seen == [{"name": "Untitled shared drive", "members": [], "tokensPending": True}]
+
+    async def test_a_foreign_drive_delete_keeps_files_shared_directly_or_in_someones_shared_with_me(
+        self, connector
+    ) -> None:
+        edges = {
+            ("to", "records/direct", "permission"): [{"from_id": "u-b"}],
+            ("from", "records/swm", "belongsTo"): [{"_to": "recordGroups/group-d"}, {"_to": "recordGroups/swm-b"}],
+            ("from", "records/only", "belongsTo"): [{"_to": "recordGroups/group-d"}],
+        }
+        tx = AsyncMock()
+        tx.get_edges_to_node = AsyncMock(side_effect=lambda n, c, **_: edges.get(("to", n, c), []))
+        tx.get_edges_from_node = AsyncMock(side_effect=lambda n, c, **_: edges.get(("from", n, c), []))
+        connector.data_store_provider = _make_mock_data_store_provider()
+        connector.data_store_provider._tx_store.get_edges_to_node = tx.get_edges_to_node
+        connector.data_store_provider._tx_store.get_edges_from_node = tx.get_edges_from_node
+
+        assert await connector._reached_outside_its_drive("direct", "group-d") is True
+        assert await connector._reached_outside_its_drive("swm", "group-d") is True
+        assert await connector._reached_outside_its_drive("only", "group-d") is False
 
     async def test_concurrent_user_syncs_keep_both_members(self, connector) -> None:
         state = self._store(connector)

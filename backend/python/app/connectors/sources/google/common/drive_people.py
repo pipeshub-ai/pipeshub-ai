@@ -2,10 +2,27 @@
 
 from typing import NamedTuple
 
-from app.connectors.sources.google.drive.team.drive_access import permission_is_direct
 from app.models.entities import SourcePerson
 
 _SERVICE_ACCOUNT_EMAIL_SUFFIX = ".gserviceaccount.com"
+
+
+def permission_is_direct(permission: dict) -> bool | None:
+    """True when this grant was written on the item, False when every detail is inherited.
+
+    None when ``permissionDetails`` is absent. My Drive omits it, so a missing
+    list is not evidence that the grant was inherited.
+    """
+    details = permission.get("permissionDetails") or []
+    if not isinstance(details, list) or not details:
+        return None
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        # A "file" entry can still be inherited from a parent folder.
+        if detail.get("inherited") is False:
+            return True
+    return False
 
 
 class DriveFilePeople(NamedTuple):

@@ -608,7 +608,16 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 owners=people.owners,
             )
 
-            if grants is not None or metadata.get("driveId"):
+            if metadata.get("driveId"):
+                # Drive leaves `permissions` off shared-drive items; their own list says which grants were
+                # made on them, and carries the address Drive hid from the last modifier.
+                item_grants = await self._item_grants(metadata)
+                if item_grants is not None:
+                    file_record.last_modified_by = drive_file_people(metadata, item_grants).last_modified_by
+                    file_record.shared_with = drive_shared_with(
+                        item_grants, owner_ids=set(), parent_grants=None, has_details=True
+                    )
+            elif grants is not None:
                 file_record.shared_with = await self._shared_with(metadata, grants, people.owners)
 
             if existing_record and not content_changed:
@@ -642,16 +651,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self._sync_ledger.fail_item(metadata.get("id"))
             return None
 
-    async def _shared_with(self, metadata: dict, grants: list[dict] | None, owners: list) -> list | None:
-        """The people the file was shared with directly; None when that cannot be told."""
-        if metadata.get("driveId"):
-            # Drive leaves `permissions` off shared-drive items; their own list says which grants were made on them.
-            item_grants = await self._item_grants(str(metadata.get("id")))
-            if item_grants is None:
-                return None
-            return drive_shared_with(item_grants, owner_ids=set(), parent_grants=None, has_details=True)
+    async def _shared_with(self, metadata: dict, grants: list[dict], owners: list) -> list | None:
+        """The people a My Drive file was shared with directly; None when that cannot be told."""
         # Decided by the owner only: a reader's view of the folder may differ from the owner's.
-        if grants is None or not metadata.get("ownedByMe"):
+        if not metadata.get("ownedByMe"):
             return None
         parent_id = (metadata.get("parents") or [None])[0]
         parent_grants = await self._parent_grants(parent_id) if parent_id else []
@@ -662,8 +665,12 @@ class GoogleDriveIndividualConnector(BaseConnector):
             has_details=False,
         )
 
-    async def _item_grants(self, file_id: str) -> list[dict] | None:
+    async def _item_grants(self, metadata: dict) -> list[dict] | None:
         """A shared-drive item's whole permission list with its details; None when it cannot be read whole."""
+        # Only a user who can share the item sees its list; anyone else would spend a call on nothing.
+        if not (metadata.get("capabilities") or {}).get("canShare"):
+            return None
+        file_id = str(metadata.get("id"))
         grants: list[dict] = []
         walk = DrivePageWalk()
         try:
@@ -675,8 +682,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 "permissions", self.logger, walk,
             ):
                 grants.extend(page)
-        except HttpError as e:
-            self.logger.debug(f"Sharing of file {file_id} not readable: {e}")
+        except Exception as e:
+            # The shares are derived data, kept as stored when unread; they must not cost the file its sync.
+            self.logger.warning(f"Sharing of file {file_id} not read: {e}")
             return None
         # A reader who cannot see sharing gets an empty list, and a list without details cannot tell direct grants.
         if walk.incomplete or not any(g.get("permissionDetails") for g in grants):

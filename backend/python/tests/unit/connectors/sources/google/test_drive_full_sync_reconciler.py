@@ -141,6 +141,20 @@ async def test_a_shared_drive_is_removed_once_every_record_is() -> None:
     assert processor.groups_deleted == ["sd-1"]
 
 
+async def test_a_record_someone_still_reaches_another_way_is_kept_with_its_group() -> None:
+    processor = _DriveProcessor([_record("a"), _record("b")])
+
+    async def reached_elsewhere(record_id: str, group_id: str) -> bool:
+        assert group_id == "group-1"
+        return record_id == "id-b"
+
+    removed = await delete_shared_drive_records(processor, "drive-1", "sd-1", LOGGER, keep=reached_elsewhere)
+
+    assert removed is True
+    assert processor.deleted == [["id-a"]]
+    assert processor.groups_deleted == []
+
+
 async def test_a_shared_drive_keeps_its_group_when_records_are_left_behind() -> None:
     class PartlyFails(_DriveProcessor):
         async def on_records_deleted_cascade(

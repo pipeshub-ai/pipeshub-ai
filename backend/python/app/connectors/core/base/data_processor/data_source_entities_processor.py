@@ -2667,6 +2667,7 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         membership_moved = False
         unlisted_group_ids: set[str] = set()
+        relink_people = False
         try:
             async with self._sync_transaction() as tx_store:
                 # Every write below goes to record.id, whoever stored it.
@@ -2794,11 +2795,6 @@ class DataSourceEntitiesProcessor:
                     record_group.id if record_group else None,
                     inherit=inherits_group,
                 )
-                if record.shared_with is not None and belongs_to_edges:
-                    # A share or unshare reaches the connector as a permission change only, so the
-                    # people it names are rewritten here; None means the shares were not read. Without
-                    # BELONGS_TO, _process_record above has linked them already.
-                    await self._handle_record_people(record, tx_store)
                 # Permissions may come from the group while browse stays on the
                 # parent record. A group hierarchy edge would list the record twice.
                 if record_group and record.parent_external_record_id and not parent_outside_group:
@@ -2832,14 +2828,27 @@ class DataSourceEntitiesProcessor:
                     )
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
+                relink_people = record.shared_with is not None and bool(belongs_to_edges)
 
             await self._access_changed([record.connector_id], record.org_id)
             await self._publish_membership_sync(moved_virtual_record_ids)
             await self._flush_pending_blob_moves(pending_moves)
+            if relink_people:
+                await self._relink_people_after_share_change(record)
 
         except Exception as e:
             self._log_failure(f"Failed to update permissions for record {record.id}: {e}", e, exc_info=True)
             raise
+
+    async def _relink_people_after_share_change(self, record: Record) -> None:
+        """A share or unshare reaches a connector as a permission change only, so the people the record names are
+        rewritten after its grants. In a transaction of their own: person edges are derived from the source and
+        the next sync writes them again, so a failure here must not hold back the grant change, an unshare least."""
+        try:
+            async with self._sync_transaction() as tx_store:
+                await self._handle_record_people(record, tx_store)
+        except Exception:
+            self.logger.warning("Person edges of record %s not rewritten after its permissions", record.id, exc_info=True)
 
     async def _write_content_edges(
         self, record: Record, tx_store: TransactionStore, *, may_have_edges: bool,

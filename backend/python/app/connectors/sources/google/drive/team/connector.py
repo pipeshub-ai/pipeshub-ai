@@ -180,6 +180,7 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.vector_db.membership import record_group_id_from_edge
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.utils.utils import merge_scopes
 from app.sources.external.google.admin.admin import GoogleAdminDataSource
@@ -650,6 +651,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
         # Per (user, folder), this run: the folder's sharing as that user reads it, None when unreadable.
         self._parent_grant_cache: dict[tuple[str, str], list[dict] | None] = {}
+        # Items whose shares were read whole this run: later members' syncs of the same item leave them be.
+        self._shares_linked_this_run: set[str] = set()
         # User syncs run concurrently and each rewrites the stored foreign-drive membership.
         self._foreign_drives_lock = asyncio.Lock()
         # Foreign drives already written this run: one write per run keeps a full sync from unlinking them.
@@ -929,6 +932,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._assumed_restrictions = set()
             self._drive_principals = {}
             self._parent_grant_cache = {}
+            self._shares_linked_this_run = set()
             self._group_people = {}
             self._warned_groups = set()
             self._hidden_groups = {}
@@ -2213,6 +2217,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 saw_permission_details=bool(saw_permission_details and not is_drive and inherits_from_drive),
                 user_grants=raw_grants,
                 grant_details_seen=saw_permission_details,
+                allowed_email=allowed_email,
             ),
             False,
             [e for e in individually_shared_emails if allowed_email(e)],
@@ -4567,6 +4572,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             saw_permission_details=getattr(permissions, "saw_permission_details", False),
             user_grants=getattr(permissions, "user_grants", None),
             grant_details_seen=getattr(permissions, "grant_details_seen", False),
+            allowed_email=getattr(permissions, "allowed_email", None),
         ), is_fallback, list(shared)
 
     async def _read_as_drive_manager(
@@ -5192,6 +5198,14 @@ class GoogleDriveTeamConnector(BaseConnector):
             return
         people = drive_file_people(metadata, grants)
         record.authored_by, record.last_modified_by, record.owners = people
+        file_id = str(metadata.get("id") or "")
+        if file_id in self._shares_linked_this_run:
+            # Every member's sync of a shared-drive item reads the same list: its people are rewritten once a run.
+            return
+        allowed = getattr(permissions, "allowed_email", None)
+        if allowed is not None:
+            # A shared drive's restrictions cut some of the listed people out; they cannot open the item.
+            grants = [g for g in grants if not g.get("emailAddress") or allowed(g["emailAddress"])]
         details = bool(getattr(permissions, "grant_details_seen", False))
         parent_grants: list[dict] | None = None
         # My Drive shares are decided by the owner's sync only: a reader's view of the folder may differ,
@@ -5205,6 +5219,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             parent_grants=parent_grants,
             has_details=details,
         )
+        if record.shared_with is not None and file_id:
+            self._shares_linked_this_run.add(file_id)
 
     async def _parent_grants(
         self, parent_id: str, user_email: str | None, data_source: GoogleDriveDataSource | None
@@ -6955,9 +6971,28 @@ class GoogleDriveTeamConnector(BaseConnector):
             if drive.get("id") and drive["id"] not in self._listed_shared_drive_ids
             and self._pass_drive_ids_filter(drive["id"])
         }
-        # A member who is not a user this deployment syncs never lists the drive again to leave it. A cut user
-        # listing leaves people out who are still there, so nobody is pruned on it.
-        active = set() if self._listing_cut else await self._synced_user_emails()
+        await self._reconcile_foreign_drives(email, reached)
+
+    async def _prune_foreign_drives(self) -> None:
+        """Once a run, after the users' syncs: drop the members who are no longer users this deployment syncs.
+
+        Each user's sync only removes that user. Someone who stops being synced never lists the drive again, and
+        when nobody is synced no user's sync runs at all, so their grants would stay.
+        """
+        if self._listing_cut:
+            return
+        try:
+            await self._load_listed_shared_drives()
+        except _ItemReadFailed as e:
+            self.logger.warning(f"Foreign shared drive members not pruned: {e}")
+            return
+        await self._reconcile_foreign_drives(None, {})
+
+    async def _reconcile_foreign_drives(self, email: str | None, reached: dict[str, str]) -> None:
+        """Make ``email`` a member of the ``reached`` foreign drives and of no other, keep only members this
+        deployment syncs, and write each drive whose membership changed."""
+        # A cut user listing leaves people out who are still there, so nobody is pruned on it.
+        active = None if self._listing_cut else await self._synced_user_emails()
         async with self._foreign_drives_lock:
             stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}
             # Kept as one JSON string: a sync point on Neo4j cannot hold a nested map.
@@ -6979,14 +7014,22 @@ class GoogleDriveTeamConnector(BaseConnector):
                 entry["members"] = sorted({*entry["members"], email})
                 entry["name"] = name
             for drive_id, entry in drives.items():
-                kept = [m for m in entry["members"] if (m != email or drive_id in reached) and (not active or m in active)]
+                kept = [
+                    m for m in entry["members"]
+                    if (m != email or drive_id in reached) and (active is None or m in active)
+                ]
                 if kept != entry["members"] or not kept:
                     # Nobody left: revoked and deleted, or a delete or cleanup that failed earlier tried again.
                     entry["members"] = kept
                     to_write.add(drive_id)
+            async def save() -> None:
+                await self.drive_delta_sync_point.update_sync_point(
+                    FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": json.dumps(drives, sort_keys=True)}
+                )
+
             for drive_id in sorted(to_write):
                 try:
-                    if await self._write_foreign_drive(drive_id, drives[drive_id]):
+                    if await self._write_foreign_drive(drive_id, drives[drive_id], save):
                         del drives[drive_id]
                     self._foreign_drives_written.add(drive_id)
                 except Exception as e:
@@ -7001,11 +7044,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     else:
                         drives.pop(drive_id, None)
             if drives != known:
-                await self.drive_delta_sync_point.update_sync_point(
-                    FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": json.dumps(drives, sort_keys=True)}
-                )
+                await save()
 
-    async def _write_foreign_drive(self, drive_id: str, entry: dict) -> bool:
+    async def _write_foreign_drive(
+        self, drive_id: str, entry: dict, save: Callable[[], Awaitable[None]]
+    ) -> bool:
         """Write a foreign drive's group with its members' grants; with none, revoke and delete it.
         True when the drive is gone and can be forgotten."""
         if entry.get("tokensPending"):
@@ -7025,13 +7068,28 @@ class GoogleDriveTeamConnector(BaseConnector):
         await self.data_entities_processor.on_new_record_groups([(group, grants)])
         if grants:
             return False
-        # Set before the delete: one that removes some records and then fails must still clear the change tokens
-        # before anyone rejoins, or they would never read the removed files again.
+        # Stored before the delete: a delete that removes some records and then fails, or a process that stops
+        # partway, must still clear the change tokens before anyone rejoins, or they never read those files again.
         entry["tokensPending"] = True
-        if not await delete_shared_drive_records(self.data_entities_processor, self.connector_id, drive_id, self.logger):
+        await save()
+        if not await delete_shared_drive_records(
+            self.data_entities_processor, self.connector_id, drive_id, self.logger,
+            keep=self._reached_outside_its_drive,
+        ):
             return False
         await self._forget_foreign_drive_tokens(drive_id)
         return True
+
+    async def _reached_outside_its_drive(self, record_id: str, group_id: str) -> bool:
+        """Whether a record of a foreign drive nobody is a member of still reaches someone: a grant written on the
+        file itself, or a "Shared with Me" group it is filed in. Deleting it would cost that person the file, and
+        their change feed would not report it again."""
+        node = f"{CollectionNames.RECORDS.value}/{record_id}"
+        async with self.data_store_provider.transaction() as tx_store:
+            if await tx_store.get_edges_to_node(node, CollectionNames.PERMISSION.value, raise_on_error=True):
+                return True
+            groups = await tx_store.get_edges_from_node(node, CollectionNames.BELONGS_TO.value, raise_on_error=True)
+        return any(record_group_id_from_edge(edge) not in (None, group_id) for edge in groups or [])
 
     async def _forget_foreign_drive_tokens(self, drive_id: str) -> None:
         """Without its change tokens gone, a user who rejoins would read only later changes, never the drive's files."""
@@ -7577,6 +7635,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # Small delay between batches to prevent overwhelming the API
                 await asyncio.sleep(1)
 
+            # After every user's sync, and also when no user is synced: nobody else removes those members.
+            try:
+                await self._prune_foreign_drives()
+            except Exception as e:
+                self._sync_ledger.note_incomplete()
+                self.logger.error(f"Foreign shared drive members not pruned: {e}", exc_info=True)
+
             self.logger.info("Completed processing all user batches")
 
         except Exception as e:
@@ -8057,6 +8122,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         try:
             # Folder sharing may have changed since an earlier call cached it.
             self._parent_grant_cache = {}
+            self._shares_linked_this_run = set()
             if not records:
                 self.logger.info("No records to reindex")
                 return

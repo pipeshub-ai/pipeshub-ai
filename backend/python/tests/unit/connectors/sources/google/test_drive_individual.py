@@ -911,10 +911,46 @@ class TestPersonalSharedDriveItemSharedWith:
     """A shared-drive item synced by the personal connector reads its own list, with which grants were made on it."""
 
     @staticmethod
-    def _item() -> dict:
+    def _item(*, can_share: bool = True) -> dict:
         metadata = _make_file_metadata(parents=["sd-1"])
         metadata["driveId"] = "sd-1"
+        metadata["capabilities"] = {"canShare": can_share}
         return metadata
+
+    async def test_a_reader_who_cannot_share_spends_no_call_and_leaves_shares_unknown(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock()
+
+        result = await connector._process_drive_item(
+            metadata=self._item(can_share=False), user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        connector.drive_data_source.permissions_list.assert_not_awaited()
+        assert result.record.shared_with is None
+
+    async def test_a_failed_read_keeps_the_shares_and_the_file_still_syncs(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=TimeoutError("read timed out"))
+
+        result = await connector._process_drive_item(
+            metadata=self._item(), user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        assert result is not None
+        assert result.record.shared_with is None
+
+    async def test_the_last_modifier_email_drive_hid_is_filled_from_the_items_list(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "p-ext", "type": "user", "role": "writer", "emailAddress": "ext@other.test",
+             "permissionDetails": [{"permissionType": "file", "inherited": False}]},
+        ]})
+        metadata = self._item()
+        metadata["lastModifyingUser"] = {"displayName": "Ext", "permissionId": "p-ext"}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        assert result.record.last_modified_by is not None
+        assert result.record.last_modified_by.email == "ext@other.test"
 
     async def test_a_direct_grant_is_shared_with_and_a_member_grant_is_not(self, connector) -> None:
         async def permissions_list(**params: object) -> dict:

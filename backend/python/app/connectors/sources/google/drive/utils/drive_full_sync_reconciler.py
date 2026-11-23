@@ -262,11 +262,15 @@ async def delete_shared_drive_records(
     connector_id: str,
     external_group_id: str,
     logger: Logger,
+    *,
+    keep: Callable[[str, str], Awaitable[bool]] | None = None,
 ) -> bool:
     """Delete a shared drive's record group and the records filed under it.
 
     Returns False, leaving the group in place, when any record could not be
     listed or removed, so the caller can retry the drive on a later run.
+    ``keep(record_id, group_id)`` spares a record someone still reaches another
+    way; the group then stays too, so the record keeps its links.
     """
     group = await processor.get_record_group_by_external_id(connector_id, external_group_id)
     if group is not None and getattr(group, "id", None):
@@ -296,6 +300,9 @@ async def delete_shared_drive_records(
                     "Keeping shared drive %s; its record listing could not be paged", external_group_id
                 )
                 return False
+        kept = [record_id for record_id in ids if keep is not None and await keep(record_id, group.id)]
+        if kept:
+            ids = [record_id for record_id in ids if record_id not in set(kept)]
         failed = False
         for start in range(0, len(ids), _DELETE_BATCH):
             try:
@@ -322,6 +329,11 @@ async def delete_shared_drive_records(
                 failed = True
         if failed:
             return False
+        if kept:
+            logger.info(
+                "Kept shared drive %s's group for %d record(s) still reached another way", external_group_id, len(kept)
+            )
+            return True
     await processor.on_record_group_deleted(external_group_id, connector_id)
     logger.info("Removed shared drive %s and its records", external_group_id)
     return True

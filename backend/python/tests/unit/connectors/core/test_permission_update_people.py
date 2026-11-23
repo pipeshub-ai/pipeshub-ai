@@ -53,3 +53,15 @@ async def test_a_permission_update_without_shared_with_leaves_people_alone() -> 
         await proc.on_updated_record_permissions(record, [])
 
     link.assert_not_awaited()
+
+
+async def test_a_failed_person_rewrite_does_not_hold_back_the_grant_change() -> None:
+    tx = _tx()
+    proc = _processor(tx, [])
+    record = _record()
+    record.shared_with = []
+
+    with patch(_NOTIFY, new=AsyncMock()), patch(_LINK, new=AsyncMock(side_effect=RuntimeError("person upsert collided"))):
+        await proc.on_updated_record_permissions(record, [])
+
+    tx.replace_record_permissions.assert_awaited_once()
