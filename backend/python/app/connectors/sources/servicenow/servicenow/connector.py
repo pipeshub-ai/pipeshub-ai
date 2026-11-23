@@ -322,6 +322,9 @@ _FEEDBACK_FIELDS = [
 ]
 
 
+_AUTHENTICATOR_LOOKUP_LIMIT = 50
+
+
 @dataclass
 class _Listing:
     """What one _iter_table listing saw: ``total`` rows counted before ACLs, ``seen`` shown."""
@@ -2234,6 +2237,7 @@ class ServiceNowConnector(BaseConnector):
         no_email = 0
         self._users_listing_complete, self._listed_user_emails = False, set()
         rows_seen = 0
+        users_listing = _Listing()
 
         # A failed page raises: a short list is indistinguishable from a complete one to
         # everything downstream, so the sync would report success over what it missed.
@@ -2253,6 +2257,7 @@ class ServiceNowConnector(BaseConnector):
             ],
             page=ServiceNowDefaults.ID_PAGE_SIZE,
             narrow=query is not None,  # a delta of hidden users only moves on
+            listing=users_listing,
         ):
             # Pages come oldest first, so the last row is the newest seen
             latest_update_time = users_data[-1].sys_updated_on
@@ -2318,10 +2323,43 @@ class ServiceNowConnector(BaseConnector):
             )
         # A full read lists at least one user. A delta read may list none, and the users it does
         # not list are already stored.
-        self._users_listing_complete = (rows_seen > 0 or query is not None) and not self._sync_read_incomplete
+        # Rows an ACL hid are not in the listing, so a partial read cannot show anyone is absent.
+        complete = not self._sync_read_incomplete and not users_listing.partial
+        if query is None:
+            complete = complete and rows_seen > 0
+        else:
+            # A delta lists only changed users, so the authenticator is looked up on their own, in any status.
+            complete = complete and await self._authenticator_is_listed()
+        self._users_listing_complete = complete
         self.logger.info(
             f"User sync complete, Total synced: {total_synced}, inactive: {len(inactive)}, no email: {no_email}"
         )
+
+    async def _authenticator_is_listed(self) -> bool:
+        """Whether a delta read can stand for a complete listing: the authenticator's own sys_user
+        row is looked up by email, active or not, and its email added to the listed set when found.
+        False when it cannot be looked up, so the delta only ever removes a link."""
+        email = await self.authenticator_email()
+        if not email or "\n" in email or "\r" in email:
+            return False
+        wanted = email.lower()
+        try:
+            response = await self._table_get(
+                ServiceNowTables.SYS_USER,
+                # ^ separates conditions: a literal one is doubled
+                sysparm_query=f"{ServiceNowFields.EMAIL}LIKE{email.replace('^', '^^')}",
+                sysparm_fields=CommonStrings.COMMA.join([ServiceNowFields.SYS_ID, ServiceNowFields.EMAIL]),
+                sysparm_limit=str(_AUTHENTICATOR_LOOKUP_LIMIT),
+            )
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the ServiceNow users: %s", e)
+            return False
+        rows = response.result or []
+        if any((r.get(ServiceNowFields.EMAIL) or "").strip().lower() == wanted for r in rows):
+            self._listed_user_emails.add(wanted)
+            return True
+        # A full page of near matches may hide the exact one beyond it.
+        return len(rows) < _AUTHENTICATOR_LOOKUP_LIMIT
 
     async def _users_gone(self, stored: set[str]) -> set[str]:
         """The ``stored`` user sys_ids that are no active user with an email at the source (nor the guest): deleted,

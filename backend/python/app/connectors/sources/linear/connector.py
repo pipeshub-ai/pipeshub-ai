@@ -462,8 +462,9 @@ class LinearConnector(BaseConnector):
         )
         # Per-run state
         self._full_member_emails: set[str] = set()
-        # The user listing of this run: read in full and non-empty, and every listed account's email,
-        # a suspended or guest one too (it is withdrawn from the connector, so no stored edge shows it as listed).
+        # The user listing of this run: read in full and non-empty, and every listed account's email.
+        # The users query passes no includeDisabled, so a suspended account is not listed, and whether
+        # Linear accepts that argument is not confirmed anywhere in this repository.
         self._users_listing_complete = False
         self._listed_user_emails: set[str] = set()
         self._refreshed_issue_ids: set[str] = set()

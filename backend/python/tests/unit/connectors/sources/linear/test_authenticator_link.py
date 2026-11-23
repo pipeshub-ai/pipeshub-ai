@@ -2,7 +2,7 @@
 
 The removal pass runs before the user listing. The full pass runs once the users are written and the
 absent ones withdrawn, told whether the listing was read in full and every listed account's email,
-a suspended or guest one too (its connector access is withdrawn).
+a guest too (its connector access is withdrawn).
 """
 
 from collections.abc import AsyncIterator
@@ -35,11 +35,13 @@ def _listing(connector: Any, users: list[dict], error: Exception | None = None) 
 
 
 @pytest.mark.asyncio
-async def test_a_listing_read_to_its_end_is_complete_and_names_every_account_whatever_its_status() -> None:
+async def test_a_listing_read_to_its_end_is_complete_and_names_every_listed_account() -> None:
+    # Linear's users query does not pass includeDisabled, so a suspended account is never in the
+    # listing; guests are, and are withdrawn from the connector like other non-full members.
     connector = _make_connector()
     _listing(connector, [
         {"id": "u1", "email": "Live@Corp.com", "active": True},
-        {"id": "u2", "email": "gone@corp.com", "active": False},
+        {"id": "u2", "email": "guest@corp.com", "active": True, "guest": True},
         {"id": "u3", "active": True},
     ])
     connector._listed_user_emails = {"stale@corp.com"}
@@ -47,7 +49,7 @@ async def test_a_listing_read_to_its_end_is_complete_and_names_every_account_wha
     await connector._fetch_users()
 
     assert connector._users_listing_complete is True
-    assert connector._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+    assert connector._listed_user_emails == {"live@corp.com", "guest@corp.com"}
 
 
 @pytest.mark.asyncio

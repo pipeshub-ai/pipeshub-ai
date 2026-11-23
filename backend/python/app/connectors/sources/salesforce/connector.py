@@ -2770,10 +2770,13 @@ class SalesforceConnector(BaseConnector):
                 inactive_user_ids = await self._sync_users(
                     self._soql_query_paginated(api_version=api_version, q=soql_query),
                 )
-                # A full read lists at least one user; an incremental one may list none.
-                self._users_listing_complete = not self._soql_cut and (
-                    self._users_listed > 0 or bool(last_sync_ts_ms)
-                )
+                self._users_listing_complete = not self._soql_cut
+                if not last_sync_ts_ms:
+                    self._users_listing_complete = self._users_listing_complete and self._users_listed > 0
+                elif self._users_listing_complete:
+                    # An incremental read lists only changed users, so the authenticator is looked up on
+                    # their own, in any status (inactive and frozen users are withdrawn from the connector).
+                    self._users_listing_complete = await self._authenticator_is_listed(api_version)
                 await self._withdraw_ineligible_users(api_version, inactive_user_ids)
                 await self._register_authenticated_identity(api_version)
                 await self.user_sync_point.update_sync_point(
@@ -3452,6 +3455,25 @@ class SalesforceConnector(BaseConnector):
             self._problems.note(unreadable_list("active users"))
             return None
         return emails
+
+    async def _authenticator_is_listed(self, api_version: str) -> bool:
+        """Whether an incremental user read can stand for a complete listing: the authenticator's own
+        User row is looked up by email, active or not, and its email added to the listed set when found.
+        False when it cannot be looked up, so the read only ever removes a link."""
+        email = await self.authenticator_email()
+        if not email:
+            return False
+        quoted = email.replace("\\", "\\\\").replace("'", "\\'")
+        try:
+            found = await self._fetch_first_record(
+                api_version=api_version, soql=f"SELECT Id FROM User WHERE Email = '{quoted}' LIMIT 1",
+            )
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the Salesforce users: %s", e)
+            return False
+        if found:
+            self._listed_user_emails.add(email.lower())
+        return True
 
     async def _withdraw_ineligible_users(self, api_version: str, inactive_user_ids: set[str]) -> None:
         """Take the connector away from users who cannot sign in to Salesforce: inactive and

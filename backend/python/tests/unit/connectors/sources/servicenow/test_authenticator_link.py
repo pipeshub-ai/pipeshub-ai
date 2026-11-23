@@ -56,13 +56,87 @@ async def test_an_empty_full_listing_is_incomplete(servicenow_connector) -> None
     assert sc._users_listing_complete is False
 
 
-async def test_a_delta_listing_that_finds_nothing_new_is_complete(servicenow_connector) -> None:
+def _lookup(sc, rows: list | None = None, error: Exception | None = None, email: str | None = "creator@corp.com") -> AsyncMock:
+    sc.authenticator_email = AsyncMock(return_value=email)
+    listing_get = sc._table_get
+    lookup = AsyncMock(side_effect=error, return_value=MagicMock(result=rows or []))
+
+    async def table_get(table: str, **kwargs: object) -> object:
+        if str(kwargs.get("sysparm_query", "")).startswith("emailLIKE"):
+            return await lookup(table, **kwargs)
+        return await listing_get(table, **kwargs)
+
+    sc._table_get = table_get
+    return lookup
+
+
+async def test_a_delta_whose_lookup_finds_the_authenticator_in_any_status_lists_them(servicenow_connector) -> None:
     sc = servicenow_connector
     _wire_users(sc, [], delta=True)
+    table_get = _lookup(sc, [TableAPIRecord(sys_id="a1", email="Creator@Corp.com")])
 
     await sc._sync_users()
 
     assert sc._users_listing_complete is True
+    assert sc._listed_user_emails == {"creator@corp.com"}
+    query = table_get.await_args.kwargs["sysparm_query"]
+    assert query == "emailLIKEcreator@corp.com" and "active" not in query
+
+
+async def test_a_delta_whose_lookup_finds_nothing_is_complete(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [], delta=True)
+    _lookup(sc, [])
+
+    await sc._sync_users()
+
+    assert sc._users_listing_complete is True
+    assert sc._listed_user_emails == set()
+
+
+async def test_a_delta_whose_lookup_fails_is_incomplete(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [], delta=True)
+    _lookup(sc, error=RuntimeError("down"))
+
+    await sc._sync_users()
+
+    assert sc._users_listing_complete is False
+
+
+async def test_a_delta_with_no_authenticator_email_is_incomplete(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [], delta=True)
+    _lookup(sc, email=None)
+
+    await sc._sync_users()
+
+    assert sc._users_listing_complete is False
+
+
+async def test_a_literal_caret_in_the_email_cannot_add_a_condition(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [], delta=True)
+    table_get = _lookup(sc, [], email="a^active=true@corp.com")
+
+    await sc._sync_users()
+
+    assert table_get.await_args.kwargs["sysparm_query"] == "emailLIKEa^^active=true@corp.com"
+
+
+async def test_a_listing_that_shows_fewer_users_than_it_counts_is_incomplete(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [_user(1)])
+
+    async def iter_table(*_a: object, listing=None, **_k: object):
+        listing.total, listing.seen = 5, 1  # an ACL or domain separation hid four rows
+        yield [TableAPIRecord(**_user(1))]
+
+    sc._iter_table = iter_table
+
+    await sc._sync_users()
+
+    assert sc._users_listing_complete is False
 
 
 async def test_a_user_row_that_fails_to_transform_makes_the_listing_incomplete(servicenow_connector) -> None:

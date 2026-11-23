@@ -10055,13 +10055,66 @@ class TestAuthenticatorLink:
         assert connector._users_listing_complete is True
 
     @pytest.mark.asyncio
-    async def test_an_empty_full_listing_is_incomplete_and_an_empty_incremental_one_is_not(self) -> None:
+    async def test_an_empty_full_listing_is_incomplete(self) -> None:
         full = self._run_conn([], [[]])
         await self._run(full)
-        incremental = self._run_conn([], [[]], checkpoint=1700000000000)
-        await self._run(incremental)
 
-        assert (full._users_listing_complete, incremental._users_listing_complete) == (False, True)
+        assert full._users_listing_complete is False
+
+    def _delta(
+        self, *, email: str | None = "creator@corp.com", found: object = None, error: Exception | None = None
+    ) -> SalesforceConnector:
+        connector = self._run_conn([], [[]], checkpoint=1700000000000)
+        connector.authenticator_email = AsyncMock(return_value=email)
+        connector._fetch_first_record = AsyncMock(return_value=found, side_effect=error)
+        return connector
+
+    @pytest.mark.asyncio
+    async def test_a_delta_whose_lookup_finds_the_authenticator_in_any_status_lists_them(self) -> None:
+        connector = self._delta(found={"Id": "005000000000001AAA"})
+
+        await self._run(connector)
+
+        assert connector._users_listing_complete is True
+        assert connector._listed_user_emails == {"creator@corp.com"}
+        assert connector._fetch_first_record.await_args.kwargs["soql"] == (
+            "SELECT Id FROM User WHERE Email = 'creator@corp.com' LIMIT 1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_delta_whose_lookup_finds_nothing_is_complete(self) -> None:
+        connector = self._delta(found=None)
+
+        await self._run(connector)
+
+        assert connector._users_listing_complete is True
+        assert connector._listed_user_emails == set()
+
+    @pytest.mark.asyncio
+    async def test_a_delta_whose_lookup_fails_is_incomplete(self) -> None:
+        connector = self._delta(error=RuntimeError("down"))
+
+        await self._run(connector)
+
+        assert connector._users_listing_complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_delta_with_no_authenticator_email_is_incomplete(self) -> None:
+        connector = self._delta(email=None)
+
+        await self._run(connector)
+
+        assert connector._users_listing_complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_quote_in_the_email_stays_inside_the_string(self) -> None:
+        connector = self._delta(email="o'brien\\@corp.com")
+
+        await self._run(connector)
+
+        assert connector._fetch_first_record.await_args.kwargs["soql"] == (
+            "SELECT Id FROM User WHERE Email = 'o\\'brien\\\\@corp.com' LIMIT 1"
+        )
 
     @pytest.mark.asyncio
     async def test_flags_of_an_earlier_run_do_not_survive_a_run_that_fails_early(self) -> None:
