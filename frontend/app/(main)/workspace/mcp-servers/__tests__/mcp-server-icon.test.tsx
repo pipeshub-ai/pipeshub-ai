@@ -73,6 +73,10 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="hubspot" name="HubSpot" />)).toBe('hubspot icon');
   });
 
+  it('shows the Clay catalog logo', () => {
+    expect(logo(<McpServerIcon typeId="clay" name="Clay" />)).toBe('clay icon');
+  });
+
   it('goes by the catalog type when the server was renamed', () => {
     expect(logo(<McpServerIcon typeId="linear" name="Team tracker" />)).toBe('linear icon');
   });
