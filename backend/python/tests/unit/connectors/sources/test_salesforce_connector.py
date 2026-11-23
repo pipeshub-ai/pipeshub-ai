@@ -9935,3 +9935,160 @@ class TestAccountsSharingAnExtractedOrganisation:
         await connector._sync_accounts(_async_iter_pages([self._account("001000000000002AAA", "Acme LLC")]))
         (written,) = tx.batch_upsert_orgs.await_args.args[0]
         assert written["_key"] != extracted
+
+
+# ===========================================================================
+# The user who authenticated the connector is linked only after a complete user listing
+# ===========================================================================
+
+
+class _SfStop(Exception):
+    pass
+
+
+class TestAuthenticatorLink:
+    @pytest.mark.asyncio
+    async def test_a_page_without_next_url_is_incomplete(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.soql_query = AsyncMock(return_value=_sf_response(
+            True, {"records": [{"Id": "1"}], "done": False}
+        ))
+
+        pages = [p async for p in connector._soql_query_paginated("59.0", "SELECT Id FROM User")]
+
+        assert pages == [[{"Id": "1"}]]
+        assert connector._soql_cut is True
+
+    @pytest.mark.asyncio
+    async def test_a_listing_read_to_done_is_not_a_cut(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.soql_query = AsyncMock(return_value=_sf_response(
+            True, {"records": [{"Id": "1"}], "done": False, "nextRecordsUrl": "/next"}
+        ))
+        connector.data_source.soql_query_next = AsyncMock(return_value=_sf_response(
+            True, {"records": [{"Id": "2"}], "done": True}
+        ))
+
+        [p async for p in connector._soql_query_paginated("59.0", "SELECT Id FROM User")]
+
+        assert connector._soql_cut is False
+
+    @pytest.mark.asyncio
+    async def test_every_listed_email_is_kept_whatever_the_status(self) -> None:
+        connector = _make_connector()
+        rows = [
+            {"Id": "005000000000001AAA", "Email": " Live@Corp.com ", "IsActive": True},
+            {"Id": "005000000000002AAA", "Email": "Gone@Corp.com", "IsActive": False},
+            {"Id": "005000000000003AAA", "IsActive": True},
+        ]
+
+        await connector._sync_users(_async_iter_pages(rows))
+
+        assert connector._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+
+    def _run_conn(
+        self, order: list[str], pages: list, *, checkpoint: object = None, cut: bool = False
+    ) -> SalesforceConnector:
+        def step(name: str, error: Exception | None = None) -> AsyncMock:
+            async def _run(*_a: object, **_k: object) -> None:
+                order.append(name)
+                if error:
+                    raise error
+            return AsyncMock(side_effect=_run)
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._reinitialize_token_if_needed = AsyncMock()
+        connector.drop_authenticator_link_if_listed = step("drop")
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._register_authenticated_identity = step("register", _SfStop())
+        connector._withdraw_ineligible_users = step("withdraw")
+        connector.user_sync_point = MagicMock()
+        connector.user_sync_point.read_sync_point = AsyncMock(return_value={"lastSyncTimestamp": checkpoint})
+        connector.records_sync_point = MagicMock()
+        connector.records_sync_point.read_sync_point = AsyncMock(return_value={})
+
+        def stream(*_a: object, **_k: object) -> AsyncIterator[list]:
+            async def _gen() -> AsyncIterator[list]:
+                order.append("list")
+                connector._soql_cut = cut
+                for p in pages:
+                    yield p
+            return _gen()
+
+        connector._soql_query_paginated = stream
+        return connector
+
+    async def _run(self, connector) -> None:
+        from app.connectors.core.registry.filters import FilterCollection
+        with patch(
+            "app.connectors.sources.salesforce.connector.load_connector_filters",
+            new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection()),
+        ), pytest.raises(_SfStop):
+            await connector.run_sync()
+
+    @pytest.mark.asyncio
+    async def test_the_removal_pass_runs_first_and_the_full_pass_after_the_users_are_written(self) -> None:
+        order: list[str] = []
+        connector = self._run_conn(order, [[{"Id": "005000000000001AAA", "Email": "a@corp.com"}]])
+
+        await self._run(connector)
+
+        assert order == ["drop", "list", "withdraw", "register"]
+
+    @pytest.mark.asyncio
+    async def test_a_cut_listing_is_incomplete(self) -> None:
+        connector = self._run_conn([], [[{"Id": "005000000000001AAA", "Email": "a@corp.com"}]], cut=True)
+
+        await self._run(connector)
+
+        assert connector._users_listing_complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_full_listing_read_to_its_end_is_complete(self) -> None:
+        connector = self._run_conn([], [[{"Id": "005000000000001AAA", "Email": "a@corp.com"}]])
+
+        await self._run(connector)
+
+        assert connector._users_listing_complete is True
+
+    @pytest.mark.asyncio
+    async def test_an_empty_full_listing_is_incomplete_and_an_empty_incremental_one_is_not(self) -> None:
+        full = self._run_conn([], [[]])
+        await self._run(full)
+        incremental = self._run_conn([], [[]], checkpoint=1700000000000)
+        await self._run(incremental)
+
+        assert (full._users_listing_complete, incremental._users_listing_complete) == (False, True)
+
+    @pytest.mark.asyncio
+    async def test_flags_of_an_earlier_run_do_not_survive_a_run_that_fails_early(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.drop_authenticator_link_if_listed = AsyncMock()
+        connector._reinitialize_token_if_needed = AsyncMock(side_effect=RuntimeError("no token"))
+        connector._users_listing_complete = True
+        connector._listed_user_emails = {"stale@corp.com"}
+
+        with pytest.raises(RuntimeError):
+            await connector.run_sync()
+
+        assert connector._users_listing_complete is False and connector._listed_user_emails == set()
+        connector.drop_authenticator_link_if_listed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_full_pass_carries_the_listing_state(self) -> None:
+        connector = _make_connector()
+        connector._users_listing_complete = True
+        connector._listed_user_emails = {"creator@corp.com"}
+        connector._authenticated_user_id = AsyncMock(return_value="005000000000001AAA")
+        connector._fetch_first_record = AsyncMock(return_value={"Id": "005000000000001AAA", "Email": "a@corp.com"})
+        connector.register_authenticated_source_user = AsyncMock()
+
+        await connector._register_authenticated_identity("59.0")
+
+        assert connector.register_authenticated_source_user.await_args.kwargs == {
+            "listing_complete": True, "extra_present_emails": {"creator@corp.com"},
+        }

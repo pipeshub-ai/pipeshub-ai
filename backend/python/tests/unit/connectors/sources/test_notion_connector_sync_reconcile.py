@@ -545,3 +545,165 @@ class TestChildMetByTwoWritersAtOnce:
         await conn._resolve_child_reference_blocks([block], parent_record=_stored("parent-1"))
 
         assert [c.child_id for c in block.table_row_metadata.children_records] == ["rid-stored-by-sync"]
+
+
+# ---- the user who authenticated the connector is linked only after a complete user listing ----------
+
+def _listing(*pages: dict[str, Any]) -> MagicMock:
+    ds = MagicMock()
+    ds.list_users = AsyncMock(side_effect=[_make_api_response(data=p) for p in pages])
+    ds.retrieve_user = AsyncMock()
+    return ds
+
+
+def _person(uid: str, email: str = "") -> dict[str, Any]:
+    return {"id": uid, "type": "person", "name": uid, "person": {"email": email} if email else {}}
+
+
+def _wired(ds: MagicMock) -> NotionConnector:
+    conn = _connector_with(ds)
+    conn._add_users_to_workspace_permissions = AsyncMock()
+    conn._remove_departed_workspace_users = AsyncMock()
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_a_listing_read_to_its_end_is_complete_and_names_every_person() -> None:
+    conn = _wired(_listing(
+        {"results": [_person("u1", "Live@Corp.com")], "has_more": True, "next_cursor": "c1"},
+        {"results": [_person("u2", "other@corp.com"), _person("u3")], "has_more": False, "next_cursor": None},
+    ))
+    conn._listed_user_emails = {"stale@corp.com"}
+
+    await conn._sync_users()
+
+    assert conn._users_listing_complete is True
+    assert conn._listed_user_emails == {"live@corp.com", "other@corp.com"}
+
+
+@pytest.mark.asyncio
+async def test_an_empty_page_with_has_more_is_incomplete() -> None:
+    conn = _wired(_listing(
+        {"results": [_person("u1", "a@corp.com")], "has_more": True, "next_cursor": "c1"},
+        {"results": [], "has_more": True, "next_cursor": "c2"},
+    ))
+
+    await conn._sync_users()
+
+    assert conn._users_listing_complete is False
+    assert conn._bot_ids_complete is False
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_says_more_without_a_cursor_is_incomplete() -> None:
+    conn = _wired(_listing({"results": [_person("u1", "a@corp.com")], "has_more": True, "next_cursor": None}))
+
+    await conn._sync_users()
+
+    assert conn._users_listing_complete is False
+
+
+@pytest.mark.asyncio
+async def test_a_person_whose_details_cannot_be_read_makes_the_listing_incomplete() -> None:
+    ds = _listing({"results": [_person("u1", "a@corp.com"), _person("u2")], "has_more": False, "next_cursor": None})
+    ds.retrieve_user = AsyncMock(return_value=_make_api_response(success=False, error="403"))
+    conn = _wired(ds)
+
+    await conn._sync_users()
+
+    assert conn._users_listing_complete is False
+
+
+@pytest.mark.asyncio
+async def test_an_empty_listing_is_incomplete() -> None:
+    conn = _wired(_listing({"results": [], "has_more": False, "next_cursor": None}))
+    conn._users_listing_complete = True
+
+    await conn._sync_users()
+
+    assert conn._users_listing_complete is False
+
+
+@pytest.mark.asyncio
+async def test_a_listing_that_raises_never_stays_complete() -> None:
+    conn = _wired(_listing())
+    conn._users_listing_complete = True
+    conn._get_fresh_datasource = AsyncMock(side_effect=RuntimeError("down"))
+
+    with pytest.raises(RuntimeError):
+        await conn._sync_users()
+
+    assert conn._users_listing_complete is False
+
+
+class _NotionStop(Exception):
+    pass
+
+
+def _sync_order(order: list[str], *, per_user: bool = False, users_error: Exception | None = None) -> NotionConnector:
+    def step(name: str, error: Exception | None = None, result: Any = None) -> AsyncMock:
+        async def _run(*_a: object, **_k: object) -> Any:
+            order.append(name)
+            if error:
+                raise error
+            return result
+        return AsyncMock(side_effect=_run)
+
+    conn = _make_connector()
+    conn.drop_authenticator_link_if_listed = step("drop")
+    conn._load_access_mode = step("mode", result=per_user)
+    conn._run_per_user_sync = step("per_user")
+    conn._get_fresh_datasource = step("datasource", result=MagicMock())
+    conn._assert_required_capabilities = step("capabilities")
+    conn._ensure_workspace_from_bot = step("workspace")
+    conn.workspace_id = None
+    conn._sync_users = step("users", users_error)
+    conn._register_authenticated_identity = step("register", _NotionStop())
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_the_removal_pass_runs_first_and_the_full_pass_after_the_users() -> None:
+    order: list[str] = []
+    conn = _sync_order(order)
+
+    with patch("app.connectors.sources.notion.connector.load_connector_filters",
+               AsyncMock(return_value=(MagicMock(), MagicMock()))), pytest.raises(_NotionStop):
+        await conn._run_sync_once()
+
+    assert order == ["drop", "mode", "datasource", "capabilities", "workspace", "users", "register"]
+
+
+@pytest.mark.asyncio
+async def test_no_full_pass_when_the_user_sync_raises() -> None:
+    order: list[str] = []
+    conn = _sync_order(order, users_error=RuntimeError("down"))
+
+    with patch("app.connectors.sources.notion.connector.load_connector_filters",
+               AsyncMock(return_value=(MagicMock(), MagicMock()))), pytest.raises(RuntimeError):
+        await conn._run_sync_once()
+
+    assert "register" not in order
+
+
+@pytest.mark.asyncio
+async def test_per_user_mode_never_reaches_the_full_pass() -> None:
+    order: list[str] = []
+    conn = _sync_order(order, per_user=True)
+
+    await conn._run_sync_once()
+
+    assert order == ["drop", "mode", "per_user"]
+
+
+@pytest.mark.asyncio
+async def test_a_flag_left_by_an_earlier_run_is_reset_before_anything_is_read() -> None:
+    order: list[str] = []
+    conn = _sync_order(order)
+    conn._users_listing_complete, conn._listed_user_emails = True, {"stale@corp.com"}
+    conn._load_access_mode = AsyncMock(side_effect=RuntimeError("config"))
+
+    with pytest.raises(RuntimeError):
+        await conn._run_sync_once()
+
+    assert conn._users_listing_complete is False and conn._listed_user_emails == set()

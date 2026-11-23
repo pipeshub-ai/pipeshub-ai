@@ -612,6 +612,10 @@ class ServiceNowConnector(BaseConnector):
         # Set when this run skipped something after an error it did not raise, so a full
         # sync's cleanup unlinks nothing (see full_sync_coverage).
         self._sync_read_incomplete = False
+        # Whether this run's user listing read every user, and the email of each user it listed whatever
+        # the status (an inactive one has its connector access withdrawn, so no stored edge shows it as listed).
+        self._users_listing_complete = False
+        self._listed_user_emails: set[str] = set()
         # The run that moves attachments stored under their sys_id to their key (see _attachment_keys)
         self._rekey_attachments = False
         # What this run could not do, reported once when it ends (see _report_sync_problems):
@@ -1343,7 +1347,9 @@ class ServiceNowConnector(BaseConnector):
             self.logger.debug("Could not read the authenticated ServiceNow user: %s", e)
             return
         await self.register_authenticated_source_user(
-            email.strip() if isinstance(email, str) else None, source_user_id
+            email.strip() if isinstance(email, str) else None, source_user_id,
+            listing_complete=self._users_listing_complete,
+            extra_present_emails=self._listed_user_emails,
         )
 
     async def run_sync(self) -> None:
@@ -1505,6 +1511,8 @@ class ServiceNowConnector(BaseConnector):
         4. Categories
         5. KB Articles and their attachments
         """
+        self._users_listing_complete, self._listed_user_emails = False, set()
+        await self.drop_authenticator_link_if_listed()
         try:
             self._app_users = None  # user listing is read once per run, after the user sync
             self._email_by_source_id = None
@@ -1529,7 +1537,6 @@ class ServiceNowConnector(BaseConnector):
 
             # Before anything is written: a run with the wrong scope would write, then remove, the wrong things.
             await self._load_filters()
-            await self._register_authenticated_identity()
 
             access = await self._read_access_state()
             # No table behind access changed since the last pass, and none is due: memberships,
@@ -1545,6 +1552,7 @@ class ServiceNowConnector(BaseConnector):
                 self._groups = {g.sys_id: g for g in await self._fetch_all_groups()}
             else:
                 await self._sync_users_and_groups()
+            await self._register_authenticated_identity()
 
             # Step 2: Get admin users from ServiceNow
             self.logger.info("Step 2/5: Fetching admin users from ServiceNow...")
@@ -2224,6 +2232,8 @@ class ServiceNowConnector(BaseConnector):
         latest_update_time = None
         inactive: set[str] = set()
         no_email = 0
+        self._users_listing_complete, self._listed_user_emails = False, set()
+        rows_seen = 0
 
         # A failed page raises: a short list is indistinguishable from a complete one to
         # everything downstream, so the sync would report success over what it missed.
@@ -2249,6 +2259,10 @@ class ServiceNowConnector(BaseConnector):
 
             app_users = []
             for user_data in users_data:
+                rows_seen += 1
+                email = (user_data.email or "").strip().lower()
+                if email:
+                    self._listed_user_emails.add(email)
                 # The anonymous guest signs in to no PipesHub account. Synced, it would turn the
                 # default knowledge bases' Guest User deny into a grant per user (_fetch_deny_records).
                 if not self._is_active(user_data) or user_data.get(ServiceNowFields.USER_NAME) == ServiceNowDefaults.GUEST_USER_NAME:
@@ -2302,6 +2316,9 @@ class ServiceNowConnector(BaseConnector):
                 f"{_plural(no_email, 'active ServiceNow user has', 'active ServiceNow users have')} no email "
                 "address and could not be synced, so they get no access in PipesHub", persistent=True,
             )
+        # A full read lists at least one user. A delta read may list none, and the users it does
+        # not list are already stored.
+        self._users_listing_complete = (rows_seen > 0 or query is not None) and not self._sync_read_incomplete
         self.logger.info(
             f"User sync complete, Total synced: {total_synced}, inactive: {len(inactive)}, no email: {no_email}"
         )

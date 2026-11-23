@@ -222,7 +222,8 @@ class TestNotion:
         return datasource
 
     def _conn(self, client_cls: type) -> MagicMock:
-        conn = _connector(NotionConnector, notion_client=MagicMock())
+        conn = _connector(NotionConnector, notion_client=MagicMock(), _users_listing_complete=True,
+                          _listed_user_emails=set())
         conn.notion_client.get_client.return_value = MagicMock(spec=client_cls)
         return conn
 
@@ -251,7 +252,8 @@ class TestServiceNow:
         datasource = MagicMock()
         datasource.get_now_table_tableName = AsyncMock(return_value=SimpleNamespace(result=rows))
         conn = _connector(ServiceNowConnector, _get_fresh_datasource=AsyncMock(return_value=datasource),
-                          servicenow_client=None, refresh_token=None)
+                          servicenow_client=None, refresh_token=None, _users_listing_complete=True,
+                          _listed_user_emails=set())
         conn._table_get = partial(ServiceNowConnector._table_get, conn)
         conn._with_token_retry = partial(ServiceNowConnector._with_token_retry, conn)
         return conn
@@ -294,6 +296,8 @@ class TestSalesforce:
             SalesforceConnector,
             config_service=MagicMock(),
             _fetch_first_record=AsyncMock(return_value=record),
+            _users_listing_complete=True,
+            _listed_user_emails=set(),
         )
         conn.config_service.get_config = AsyncMock(return_value={"credentials": credentials})
         conn._authenticated_user_id = partial(SalesforceConnector._authenticated_user_id, conn)
@@ -745,7 +749,8 @@ class TestSlackWorkspace:
 
 class TestGitLab:
     def _conn(self, result: object = None, error: Exception | None = None) -> MagicMock:
-        conn = _connector(GitLabConnector, data_source=MagicMock(), runtime=MagicMock())
+        conn = _connector(GitLabConnector, data_source=MagicMock(), runtime=MagicMock(),
+                          _users_listing_complete=True, _listed_user_emails=set())
         conn.runtime.ds_call = AsyncMock(return_value=result, side_effect=error)
         return conn
 
@@ -808,7 +813,8 @@ class TestLinear:
         datasource = MagicMock()
         datasource.viewer = AsyncMock(return_value=response, side_effect=error)
         return _connector(
-            LinearConnector, data_source=MagicMock(), _get_fresh_datasource=AsyncMock(return_value=datasource)
+            LinearConnector, data_source=MagicMock(), _get_fresh_datasource=AsyncMock(return_value=datasource),
+            _users_listing_complete=True, _listed_user_emails=set(),
         )
 
     async def test_registers_the_viewer(self) -> None:

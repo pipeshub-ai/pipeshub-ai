@@ -284,6 +284,9 @@ class GitLabConnector(BaseConnector):
         # Runtime state set during init/sync
         self._gitlab_included_group_paths: list[str] | None = None
         self._gitlab_user_id: int | None = None
+        # The member listing of this run: read in full and non-empty, and every listed member's email.
+        self._users_listing_complete = False
+        self._listed_user_emails: set[str] = set()
         # GitLab ids of each project's members at Guest or above, from this run's member read.
         self._project_reader_ids: dict[int, set[int]] = {}
         self._is_admin: bool = False
@@ -426,15 +429,18 @@ class GitLabConnector(BaseConnector):
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None,
             str(source_user_id) if source_user_id is not None else None,
+            listing_complete=self._users_listing_complete,
+            extra_present_emails=self._listed_user_emails,
         )
 
     async def run_sync(self) -> None:
         """Run a full GitLab sync (users → projects → issues/MRs/repos)."""
+        self._users_listing_complete, self._listed_user_emails = False, set()
+        await self.drop_authenticator_link_if_listed()
         try:
             await self.repos.cancel_timestamp_backfill()
             self.sync_problems = []
             await self.runtime.refresh_token_if_needed()
-            await self._register_authenticated_identity()
             self.logger.info("Starting GitLab sync")
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "gitlab", self.connector_id, self.logger
@@ -442,6 +448,7 @@ class GitLabConnector(BaseConnector):
             self._gitlab_included_group_paths = None
             self.logger.info("Starting sync of GitLab users")
             await self.users.sync_users()
+            await self._register_authenticated_identity()
             self.logger.info("Starting sync of GitLab projects")
             await self.projects.sync_all_projects()
             self.repos.schedule_timestamp_backfill()

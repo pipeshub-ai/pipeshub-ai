@@ -462,6 +462,10 @@ class LinearConnector(BaseConnector):
         )
         # Per-run state
         self._full_member_emails: set[str] = set()
+        # The user listing of this run: read in full and non-empty, and every listed account's email,
+        # a suspended or guest one too (it is withdrawn from the connector, so no stored edge shows it as listed).
+        self._users_listing_complete = False
+        self._listed_user_emails: set[str] = set()
         self._refreshed_issue_ids: set[str] = set()
         self._refreshed_project_ids: set[str] = set()
         self._team_visibility: dict[str, str] = {}
@@ -704,7 +708,9 @@ class LinearConnector(BaseConnector):
             return
         email = viewer.get("email")
         await self.register_authenticated_source_user(
-            email.strip() if isinstance(email, str) else None, viewer.get("id")
+            email.strip() if isinstance(email, str) else None, viewer.get("id"),
+            listing_complete=self._users_listing_complete,
+            extra_present_emails=self._listed_user_emails,
         )
 
     async def run_sync(self) -> None:
@@ -717,6 +723,7 @@ class LinearConnector(BaseConnector):
         token or exhausting the rate limit stops the sync (the next run resumes where
         this one stopped); any other failure is reported and the remaining steps run.
         """
+        self._users_listing_complete, self._listed_user_emails = False, set()
         try:
             self.logger.info(f"🚀 Starting Linear sync for connector {self.connector_id}")
 
@@ -727,7 +734,7 @@ class LinearConnector(BaseConnector):
                 init_error._notification_sent = True
                 raise init_error
 
-            await self._register_authenticated_identity()
+            await self.drop_authenticator_link_if_listed()
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -755,6 +762,7 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"👥 Synced {len(linear_users)} Linear users")
             # Also when nobody is eligible: everyone stored then loses the connector.
             await self._withdraw_absent_app_users(linear_users)
+            await self._register_authenticated_identity()
 
             # Step 3: Get team_ids filter and fetch teams
             team_ids = None
@@ -992,6 +1000,7 @@ class LinearConnector(BaseConnector):
             raise ValueError("DataSource not initialized")
 
         all_users: List[Dict[str, Any]] = []
+        self._users_listing_complete, self._listed_user_emails = False, set()
         try:
             async for users_list, _, _ in self._api.pages(
                 "users", ["users"], page_size=50,
@@ -1002,6 +1011,12 @@ class LinearConnector(BaseConnector):
             if self._stops_the_sync(e):
                 raise
             raise RuntimeError(f"Failed to fetch users: {e}") from e
+
+        # pages() raises when Linear says more follows without a way to continue, so a return is the end.
+        self._users_listing_complete = bool(all_users)
+        self._listed_user_emails = {
+            u["email"].strip().lower() for u in all_users if isinstance(u.get("email"), str) and u["email"].strip()
+        }
 
         # Convert Linear users to AppUser objects
         app_users: List[AppUser] = []

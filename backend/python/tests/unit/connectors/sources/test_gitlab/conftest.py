@@ -23,6 +23,7 @@ def make_mock_connector() -> MagicMock:
     """
     c = MagicMock()
     c._register_authenticated_identity = AsyncMock()
+    c.drop_authenticator_link_if_listed = AsyncMock()
     c.connector_id = "gitlab-conn-1"
     c.connector_name = "GITLAB"
     c._gitlab_base_url = "https://gitlab.com"

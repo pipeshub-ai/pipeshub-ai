@@ -928,6 +928,13 @@ class SalesforceConnector(BaseConnector):
         # it was asked to (a full sync that skipped a record must not unlink it).
         self._problems = SyncProblems()
         self._read_everything = True
+        # Set when a paged query ended with "more" but no URL to continue, so what it read is a cut.
+        self._soql_cut = False
+        # The user listing of this run: whether it was read in full, and every listed user's email, an
+        # inactive one too (its connector access is withdrawn, so no stored edge shows it as listed).
+        self._users_listing_complete = False
+        self._listed_user_emails: set[str] = set()
+        self._users_listed = 0
 
         # Shared HTTP client; created in init(), closed in cleanup().
         # Re-using a single client avoids per-call TCP connection overhead.
@@ -978,6 +985,7 @@ class SalesforceConnector(BaseConnector):
         while not response.data.get("done", True):
             next_url = response.data.get("nextRecordsUrl")
             if not next_url:
+                self._soql_cut = True
                 break
             response = await self.data_source.soql_query_next(next_url=next_url)
             if not response.success:
@@ -2618,13 +2626,19 @@ class SalesforceConnector(BaseConnector):
             self.logger.debug("Could not read the authenticated Salesforce user: %s", e)
             return
         user = user or {}
-        await self.register_authenticated_source_user(user.get("Email"), user.get("Id"))
+        await self.register_authenticated_source_user(
+            user.get("Email"), user.get("Id"),
+            listing_complete=self._users_listing_complete,
+            extra_present_emails=self._listed_user_emails,
+        )
 
     async def run_sync(self) -> None:
         """One sync (see _run_sync). A sync that stops tells the connector's creator and the
         org admins why, then raises; one that finished with problems sends one warning."""
         self._problems = SyncProblems()
         self._read_everything = True
+        self._users_listing_complete, self._listed_user_emails, self._users_listed = False, set(), 0
+        await self.drop_authenticator_link_if_listed()
         try:
             await self._run_sync()
         except Exception as e:
@@ -2726,7 +2740,6 @@ class SalesforceConnector(BaseConnector):
                     )
 
                 api_version = await self._get_api_version()
-                await self._register_authenticated_identity(api_version)
 
                 # A full sync clears every checkpoint: track what it writes (see _full_run_parents).
                 deals_point = await self.records_sync_point.read_sync_point(DEALS_SYNC_POINT_KEY) or {}
@@ -2753,10 +2766,16 @@ class SalesforceConnector(BaseConnector):
                 else:
                     soql_query = f"{base_soql} ORDER BY LastModifiedDate ASC"
                     self.logger.debug("Full user sync: no previous sync point, fetching all users")
+                self._soql_cut, self._users_listed = False, 0
                 inactive_user_ids = await self._sync_users(
                     self._soql_query_paginated(api_version=api_version, q=soql_query),
                 )
+                # A full read lists at least one user; an incremental one may list none.
+                self._users_listing_complete = not self._soql_cut and (
+                    self._users_listed > 0 or bool(last_sync_ts_ms)
+                )
                 await self._withdraw_ineligible_users(api_version, inactive_user_ids)
+                await self._register_authenticated_identity(api_version)
                 await self.user_sync_point.update_sync_point(
                     USERS_SYNC_POINT_KEY,
                     {"lastSyncTimestamp": checkpoint_for(run_started_ms)},
@@ -3354,6 +3373,8 @@ class SalesforceConnector(BaseConnector):
                 if not page:
                     continue
                 parsed_users = [SalesforceUser.model_validate(r) for r in page]
+                self._users_listed += len(parsed_users)
+                self._listed_user_emails.update(u.Email.strip().lower() for u in parsed_users if u.Email and u.Email.strip())
                 app_users = []
                 for u in parsed_users:
                     if u.IsActive is not False and u.UserType in READER_USER_TYPES:

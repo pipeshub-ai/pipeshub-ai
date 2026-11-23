@@ -520,6 +520,9 @@ class NotionConnector(BaseConnector):
         self.workspace_id: Optional[str] = None
         self._bot_user_ids: set[str] = set()  # from the user sync; marks a page's untyped partial users
         self._bot_ids_complete = False  # every page of the user listing was read
+        # The user listing of this run: complete, and the email of every listed person.
+        self._users_listing_complete = False
+        self._listed_user_emails: set[str] = set()
         self.workspace_name: Optional[str] = None
         # Set during a sync when part of the source was not read (a walk cut short, a page
         # whose attachments or comments failed, a user read that stopped early). Read by
@@ -727,7 +730,9 @@ class NotionConnector(BaseConnector):
             return
         email = (owner.get("person") or {}).get("email")
         await self.register_authenticated_source_user(
-            email.strip() if isinstance(email, str) else None, owner.get("id")
+            email.strip() if isinstance(email, str) else None, owner.get("id"),
+            listing_complete=self._users_listing_complete,
+            extra_present_emails=self._listed_user_emails,
         )
 
     async def run_sync(self) -> None:
@@ -832,6 +837,8 @@ class NotionConnector(BaseConnector):
             self.logger.info(f"🚀 Starting Notion sync for org: {org_id}")
             self._sync_incomplete = False
             self._failed_pages = set()
+            self._users_listing_complete, self._listed_user_emails = False, set()
+            await self.drop_authenticator_link_if_listed()
 
             if await self._load_access_mode():
                 await self._run_per_user_sync()
@@ -839,7 +846,6 @@ class NotionConnector(BaseConnector):
 
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
-            await self._register_authenticated_identity(datasource)
             # The token's own workspace, every run: a token swapped for one from another
             # workspace must not keep writing under the old workspace group.
             await self._ensure_workspace_from_bot(refresh=True)
@@ -853,6 +859,7 @@ class NotionConnector(BaseConnector):
 
             # Step 1: Sync users
             await self._sync_users()
+            await self._register_authenticated_identity(datasource)
 
             # Step 2: Sync all data sources (Search API returns all, regardless of hierarchy)
             await self._sync_objects_by_type("data_source")
@@ -2739,6 +2746,8 @@ class NotionConnector(BaseConnector):
         try:
             self.logger.info("🔄 Starting user synchronization...")
 
+            self._users_listing_complete, self._listed_user_emails = False, set()
+
             # Pagination variables
             page_size = self._SYNC_PAGE_SIZE
             cursor = None
@@ -2781,6 +2790,10 @@ class NotionConnector(BaseConnector):
 
                 if not users_data:
                     self.logger.info("No more users to process")
+                    if has_more:
+                        # An empty page that says more follows is a listing that stopped early.
+                        user_details_complete = False
+                        listing_complete = False
                     break
 
                 # First pass: Identify bot user and extract workspace info
@@ -2866,6 +2879,8 @@ class NotionConnector(BaseConnector):
                             continue
                         user_detail = details[user_id]
                         persons_seen += 1
+                        if _user_email(user_detail):
+                            self._listed_user_emails.add(_user_email(user_detail).lower())
                         if isinstance(user_detail, dict) and not _user_email(user_detail):
                             # A hidden email is not an absence: this member may still be one, so
                             # only their own access is left as it is.
@@ -2888,6 +2903,9 @@ class NotionConnector(BaseConnector):
                         self.logger.info(f"✅ Synced {len(app_users)} users in this batch")
 
                 if not has_more or not next_cursor:
+                    if has_more:
+                        user_details_complete = False
+                        listing_complete = False
                     break
                 if next_cursor == cursor:
                     self.logger.warning("Notion users pagination stopping: next_cursor equals start_cursor (%s)", cursor)
@@ -2906,6 +2924,7 @@ class NotionConnector(BaseConnector):
                     "then sync again."
                 )
             self._bot_ids_complete = listing_complete
+            self._users_listing_complete = listing_complete and user_details_complete and persons_seen > 0
             if self.workspace_id and workspace_emails:
                 await self._add_users_to_workspace_permissions(workspace_emails)
             if user_details_complete:

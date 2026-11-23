@@ -38,6 +38,8 @@ class UsersSync:
     def __init__(self, connector: "GitLabConnector") -> None:
         self.c = connector
         self.logger = connector.logger
+        self._read_cut = False
+        self._member_rows = 0
 
     # ------------------------------------------------------------------
     # Entry point
@@ -52,6 +54,11 @@ class UsersSync:
         top-level groups on a large EE deployment would scan every group the
         bot account is Guest+ on.
         """
+        c = self.c
+        c._users_listing_complete, c._listed_user_emails = False, set()
+        # Set by any member read that was skipped or failed: what was read is then partial.
+        self._read_cut = False
+        self._member_rows = 0
         scope = await self._resolve_user_sync_scope()
         if scope is not None:
             group_paths, project_paths = scope
@@ -61,8 +68,10 @@ class UsersSync:
                 len(project_paths),
             )
             await self._sync_users_scoped(group_paths, project_paths)
-            return
-        await self._sync_users_unscoped()
+        else:
+            await self._sync_users_unscoped()
+        # A directory with no member at all is a read that found nothing, not an empty directory.
+        c._users_listing_complete = not self._read_cut and self._member_rows > 0
 
     # ------------------------------------------------------------------
     # Scope resolution
@@ -114,6 +123,7 @@ class UsersSync:
                 progress_label="list_groups NOT_IN user-sync scope",
             )
             if not groups_res.success:
+                self._read_cut = True
                 self.logger.error(
                     "Could not list groups for NOT_IN user-sync scope: %s", groups_res.error
                 )
@@ -149,6 +159,7 @@ class UsersSync:
                 progress_label="list_projects NOT_IN user-sync scope",
             )
             if not proj_res.success:
+                self._read_cut = True
                 self.logger.error(
                     "Could not list projects for NOT_IN user-sync scope: %s", proj_res.error
                 )
@@ -209,6 +220,7 @@ class UsersSync:
                     get_all=True,
                 )
                 if not pres.success:
+                    self._read_cut = True
                     self.logger.error("Error fetching members for %s: %s", label, pres.error)
                     return False, 0
                 rows = list(pres.data or [])
@@ -216,6 +228,7 @@ class UsersSync:
                     dict_member[member.id] = member
                 return bool(rows), len(rows)
             except Exception as e:
+                self._read_cut = True
                 self.logger.error("Error in syncing users for %s: %s", label, e, exc_info=True)
                 return False, 0
 
@@ -231,6 +244,7 @@ class UsersSync:
                     get_all=True,
                 )
                 if not members_res.success:
+                    self._read_cut = True
                     self.logger.error(
                         "Error fetching members for configured group %s: %s",
                         group_path, members_res.error,
@@ -244,6 +258,7 @@ class UsersSync:
                         any_success = True
                     total_groups_synced += 1
             except Exception as e:
+                self._read_cut = True
                 self.logger.error(
                     "Error in syncing users for group %s: %s", group_path, e, exc_info=True
                 )
@@ -256,9 +271,11 @@ class UsersSync:
                     progress_label=f"list_group_projects user-sync({group_path})",
                 )
             except Exception as e:
+                self._read_cut = True
                 self.logger.error("Error expanding subgroup projects for %s: %s", group_path, e, exc_info=True)
                 continue
             if not gres.success:
+                self._read_cut = True
                 self.logger.error(
                     "Could not fully list subgroup projects for user sync of "
                     "group %s: %s. Walking partial list (%s project(s)).",
@@ -309,6 +326,7 @@ class UsersSync:
             else:
                 total_projects_skipped += 1
 
+        self._member_rows = len(dict_member)
         creator_added = self._inject_creator_member_into(dict_member)
         all_failed = bool(group_paths or project_paths) and not any_success
         if all_failed and not creator_added:
@@ -357,6 +375,7 @@ class UsersSync:
         dict_member: dict[int, Any] = {}
         groups_failed = not groups_res.success
         if groups_failed:
+            self._read_cut = True
             self.logger.error(
                 "Error in fetching groups: %s, continuing with projects members", groups_res.error
             )
@@ -367,6 +386,7 @@ class UsersSync:
                 try:
                     group_id = getattr(group, "id", None)
                     if group_id is None:
+                        self._read_cut = True
                         self.logger.warning("Group missing ID, skipping")
                         total_groups_skipped += 1
                         continue
@@ -379,6 +399,7 @@ class UsersSync:
                         get_all=True,
                     )
                     if not members_res.success:
+                        self._read_cut = True
                         self.logger.info("Error in fetching members for group %s", group_id)
                         total_groups_skipped += 1
                         continue
@@ -386,6 +407,7 @@ class UsersSync:
                         dict_member[member.id] = member
                     total_groups_synced += 1
                 except Exception as e:
+                    self._read_cut = True
                     self.logger.error(
                         "Error in syncing users for group %s: %s", group_id, e, exc_info=True
                     )
@@ -400,8 +422,10 @@ class UsersSync:
         )
         projects_failed = not projects_res.success
         if projects_failed:
+            self._read_cut = True
             self.logger.error("Error in fetching projects: %s", projects_res.error)
 
+        creator_is_new = c._gitlab_user_id not in dict_member
         creator_added = self._inject_creator_member_into(dict_member)
         if groups_failed and projects_failed and not creator_added:
             raise RuntimeError(
@@ -423,6 +447,7 @@ class UsersSync:
                 try:
                     project_id = getattr(project, "id", None)
                     if project_id is None:
+                        self._read_cut = True
                         self.logger.warning("Project missing ID, skipping")
                         total_projects_skipped += 1
                         continue
@@ -435,6 +460,7 @@ class UsersSync:
                         get_all=True,
                     )
                     if not members_res.success:
+                        self._read_cut = True
                         self.logger.error("Error in fetching members for project %s", project_id)
                         total_projects_skipped += 1
                         continue
@@ -442,8 +468,10 @@ class UsersSync:
                         dict_member[member.id] = member
                     total_projects_synced += 1
                 except Exception as e:
+                    self._read_cut = True
                     self.logger.error("Error in syncing users for project: %s", e, exc_info=True)
 
+        self._member_rows = len(dict_member) - (1 if creator_added and creator_is_new else 0)
         self.logger.info(
             "Total groups synced: %s, Total groups skipped: %s",
             total_groups_synced, total_groups_skipped,
@@ -494,6 +522,7 @@ class UsersSync:
                     )
                     if user_res.success and user_res.data is not None:
                         return member_id, user_res.data
+                    self._read_cut = True
                     self.logger.warning(
                         "Could not fetch full GitLab user id=%s (%s); using member payload.",
                         member_id,
@@ -501,6 +530,7 @@ class UsersSync:
                     )
                     return member_id, member
                 except Exception as e:
+                    self._read_cut = True
                     self.logger.warning(
                         "Exception fetching GitLab user id=%s; using member payload: %s",
                         member_id, e, exc_info=True,
@@ -619,6 +649,7 @@ class UsersSync:
                     )
                 )
 
+        c._listed_user_emails = {u.email.strip().lower() for u in app_users if u.email}
         if app_users:
             await c.data_entities_processor.on_new_app_users(app_users)
             total_users_synced += len(app_users)
