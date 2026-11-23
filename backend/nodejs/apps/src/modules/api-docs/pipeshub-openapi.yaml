@@ -855,7 +855,7 @@ components:
     LicenseStatus:
       type: object
       additionalProperties: false
-      required: [status, license, upcoming, permissionSync, ignored]
+      required: [status, license, upcoming, permissionSync, ignored, upgradeGrace]
       properties:
         status:
           type: string
@@ -880,6 +880,15 @@ components:
         ignored:
           type: integer
           description: Installed files that do not count here (signature, trusted key or web address).
+        upgradeGrace:
+          type: object
+          nullable: true
+          description: Set once licence enforcement is on. When the upgrade grace ends (null when none is given), and whether the installation was using licensed features at the upgrade (null until the connectors report).
+          additionalProperties: false
+          required: [endsAt, affected]
+          properties:
+            endsAt: { type: string, format: date-time, nullable: true }
+            affected: { type: boolean, nullable: true }
     ConnectorUserConnection:
       type: object
       description: One user's connection to a per-user connector. The credential is never included.
