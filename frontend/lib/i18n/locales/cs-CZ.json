@@ -4518,6 +4518,7 @@
         "candidateApproved": "\"{{name}}\" schváleno",
         "candidateRejected": "\"{{name}}\" zamítnuto",
         "candidateActionError": "Nepodařilo se aktualizovat kandidáta",
+        "candidateGone": "Tento kandidát už byl zkontrolován",
         "conflict": "Tato dovednost byla změněna jinde",
         "conflictDescription": "Načtěte nejnovější verzi a poté své úpravy proveďte znovu.",
         "conflictReload": "Načíst znovu"

@@ -822,6 +822,13 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "sourceTrajectorySummary": candidate.source_trajectory_summary,
             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
         }
+        # Insert-only: the key is the bare candidate id, so a plain upsert would let one org overwrite (and take over)
+        # another org's candidate that has the same id. Re-queueing a candidate of this org replaces it, as before.
+        if await self._graph.create_node_if_absent(candidate.candidate_id, _CANDIDATES, {k: v for k, v in doc.items() if k != "id"}):
+            return
+        existing = await self._graph.get_document(candidate.candidate_id, _CANDIDATES)
+        if existing is None or existing.get("orgId") != self._org_id:
+            raise RegistryError(f"Candidate {candidate.candidate_id!r} already exists")
         await self._graph.batch_upsert_nodes([doc], _CANDIDATES)
 
     async def get_pending_candidates(self) -> list[SkillCandidate]:

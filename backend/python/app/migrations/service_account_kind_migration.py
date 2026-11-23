@@ -27,7 +27,8 @@ class ServiceAccountKindMigrationService:
     read by a binary that drops it.
 
     Only ``kind`` is written. The nodes are resolved first, in batched queries
-    rather than one lookup per account, so nothing is created by a stale id and
+    (the system-scope lookup, ``get_graph_user_keys_by_mongo_user_ids_all_orgs``: the staged ids
+    come from every organisation) rather than one lookup per account, so nothing is created by a stale id and
     the startup health gate is not held open by a round trip per account. No
     other field is touched — in particular not ``isActive``, so an account
     deleted after it was staged stays deleted.
@@ -71,7 +72,7 @@ class ServiceAccountKindMigrationService:
             chunk = wanted[start : start + _BATCH]
             try:
                 found.update(
-                    await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                    await self.graph_provider.get_graph_user_keys_by_mongo_user_ids_all_orgs(
                         chunk, chunk_size=_BATCH
                     )
                 )

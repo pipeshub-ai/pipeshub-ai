@@ -37,7 +37,7 @@ def _provider(keys: dict) -> MagicMock:
     """
     provider = MagicMock()
 
-    async def batched(user_ids, *, chunk_size, org_id=None) -> dict[str, str]:
+    async def batched(user_ids, *, chunk_size) -> dict[str, str]:
         missing = [u for u in user_ids if u not in keys]
         if missing:
             raise ValueError(f"Users not found in graph: {missing}")
@@ -46,7 +46,7 @@ def _provider(keys: dict) -> MagicMock:
     async def one(user_id, *, raise_on_error=False) -> dict | None:
         return {"id": keys[user_id]} if user_id in keys else None
 
-    provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(side_effect=batched)
+    provider.get_graph_user_keys_by_mongo_user_ids_all_orgs = AsyncMock(side_effect=batched)
     provider.get_user_by_user_id = AsyncMock(side_effect=one)
     provider.batch_upsert_nodes = AsyncMock(return_value=True)
     return provider
@@ -99,7 +99,9 @@ async def test_the_nodes_are_resolved_in_one_batched_lookup() -> None:
 
     assert (await service.migrate())["stamped"] == 250
     # Three chunks, not two hundred and fifty lookups.
-    assert provider.get_graph_user_keys_by_mongo_user_ids.await_count == 3
+    assert provider.get_graph_user_keys_by_mongo_user_ids_all_orgs.await_count == 3
+    # The staged ids come from every organisation: the system-scope lookup, never the org-bound one.
+    provider.get_graph_user_keys_by_mongo_user_ids.assert_not_called()
     assert provider.get_user_by_user_id.await_count == 0
     assert provider.batch_upsert_nodes.await_count == 3
 
@@ -187,7 +189,7 @@ async def test_a_list_that_changed_while_we_worked_is_not_recorded_done() -> Non
 @pytest.mark.asyncio
 async def test_a_failed_lookup_is_not_read_as_a_missing_node() -> None:
     provider = _provider({})
-    provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
+    provider.get_graph_user_keys_by_mongo_user_ids_all_orgs = AsyncMock(
         side_effect=ConnectionError("graph down")
     )
     service, config = _service(provider, _staged("u1"))
@@ -240,7 +242,7 @@ async def test_a_finished_migration_does_not_run_again() -> None:
     service, config = _service(provider, {"version": 1, "done": True})
 
     assert (await service.migrate())["skipped"] is True
-    provider.get_graph_user_keys_by_mongo_user_ids.assert_not_called()
+    provider.get_graph_user_keys_by_mongo_user_ids_all_orgs.assert_not_called()
     config.set_config.assert_not_called()
 
 

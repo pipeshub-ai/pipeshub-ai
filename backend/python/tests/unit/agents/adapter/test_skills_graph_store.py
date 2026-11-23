@@ -111,6 +111,16 @@ class FakeGraphProvider:
         col[key] = dict(node)
         return True
 
+    async def create_node_if_absent(
+        self, key: str, collection: str, node: dict[str, Any], transaction: str | None = None,
+    ) -> bool:
+        _assert_neo4j_safe(node, f"create_node_if_absent({collection})")
+        col = self._col(collection)
+        if key in col:
+            return False
+        col[key] = {**node, "id": key}
+        return True
+
     async def delete_nodes(self, keys: list[str], collection: str, transaction: str | None = None) -> bool:
         col = self._col(collection)
         for key in keys:

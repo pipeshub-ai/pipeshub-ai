@@ -96,3 +96,52 @@ async def test_own_org_rejects_its_candidate(kind, monkeypatch):
     with pytest.raises(RegistryError, match="not found"):  # a second reject is a missing id
         await _manager_for(p, org_b, "user-b").reject_candidate(cid)
     await p.disconnect()
+
+
+@pytest.mark.parametrize("kind", ["arango", "neo4j"])
+async def test_queue_with_another_orgs_candidate_id_does_not_overwrite_it(kind, monkeypatch):
+    p, org_a, org_b, store_b, cid = await _world(kind, monkeypatch)
+    store_a = GraphSkillStore(p, org_a, "user-a")
+    with pytest.raises(RegistryError, match="already exists"):
+        await store_a.queue_candidate(_candidate(cid, name="a-overwrite"))
+    assert [(c.candidate_id, c.name) for c in await store_b.get_pending_candidates()] == [(cid, "b-secret-skill")]
+    assert await store_a.get_pending_candidates() == []
+    # Re-queueing a candidate of the own org still replaces it.
+    await store_b.queue_candidate(_candidate(cid, name="b-renamed"))
+    assert [c.name for c in await store_b.get_pending_candidates()] == ["b-renamed"]
+    await p.disconnect()
+
+
+@pytest.mark.parametrize("kind", ["arango", "neo4j"])
+async def test_concurrent_foreign_rejects_never_remove_it(kind, monkeypatch):
+    import asyncio
+
+    p, org_a, org_b, store_b, cid = await _world(kind, monkeypatch)
+    manager_a = _manager_for(p, org_a, "user-a")
+
+    async def foreign() -> str:
+        try:
+            await manager_a.reject_candidate(cid)
+        except RegistryError:
+            return "not found"
+        return "removed"
+
+    own = asyncio.create_task(_manager_for(p, org_b, "user-b").reject_candidate(cid))
+    results = await asyncio.gather(*[foreign() for _ in range(25)])
+    assert set(results) == {"not found"}
+    await own  # org B's own reject wins
+    assert await store_b.get_pending_candidates() == []
+    await p.disconnect()
+
+
+@pytest.mark.parametrize("kind", ["arango", "neo4j"])
+@pytest.mark.parametrize("org", [None, ""])
+async def test_a_store_without_an_org_removes_and_lists_nothing(kind, org, monkeypatch):
+    p, org_a, org_b, store_b, cid = await _world(kind, monkeypatch)
+    nowhere = GraphSkillStore(p, org, "user-x")
+    assert await nowhere.get_pending_candidates() == []
+    await nowhere.remove_candidate(cid)
+    with pytest.raises(RegistryError, match="not found"):
+        await _manager_for(p, org, "user-x").reject_candidate(cid)
+    assert [c.candidate_id for c in await store_b.get_pending_candidates()] == [cid]
+    await p.disconnect()

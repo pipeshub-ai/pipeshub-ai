@@ -3734,6 +3734,23 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_graph_user_keys_by_mongo_user_ids_all_orgs(
+        self,
+        user_ids: list[str],
+        *,
+        chunk_size: int,
+    ) -> dict[str, str]:
+        """System-scope variant of ``get_graph_user_keys_by_mongo_user_ids``: no organisation term, because a Mongo
+        ``userId`` is unique across organisations. For maintenance jobs that hold ids from every organisation (the
+        service-account kind backfill); a request handler must use the org-bound lookup. The call sites are pinned by
+        ``tests/unit/services/graph_db/test_system_scope_lookups_allowlist.py``.
+
+        Raises:
+            ValueError: If any user_id was not found in the graph
+        """
+        pass
+
+    @abstractmethod
     async def get_graph_user_keys_by_mongo_user_ids(
         self,
         user_ids: list[str],

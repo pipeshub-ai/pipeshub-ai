@@ -44,3 +44,13 @@ async def test_missing_org_is_refused_not_unscoped(kind, org, monkeypatch):
     with pytest.raises(ValueError, match="org_id is required"):
         await p.get_graph_user_keys_by_mongo_user_ids([uid_a, uid_b], org, chunk_size=10)
     await p.disconnect()
+
+
+@pytest.mark.parametrize("kind", ["arango", "neo4j"])
+async def test_system_scope_lookup_resolves_users_of_every_org_in_one_batch(kind, monkeypatch):
+    """The service-account kind backfill holds ids of every org: one batched call, exact keys, a straggler raises."""
+    p, (_org_a, uid_a, key_a), (_org_b, uid_b, key_b) = await _world(kind, monkeypatch)
+    assert await p.get_graph_user_keys_by_mongo_user_ids_all_orgs([uid_a, uid_b], chunk_size=10) == {uid_a: key_a, uid_b: key_b}
+    with pytest.raises(ValueError, match="Users not found"):
+        await p.get_graph_user_keys_by_mongo_user_ids_all_orgs([uid_a, uuid.uuid4().hex[:24]], chunk_size=10)
+    await p.disconnect()

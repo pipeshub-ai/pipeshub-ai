@@ -395,6 +395,10 @@ class IdentityMixin(PgBase):
             ORDER BY name COLLATE "C", id COLLATE "C" LIMIT $3""", [current_org_id(), wanted, max(1, limit)], None)
         return [dict(r) for r in rows]
 
+    async def get_graph_user_keys_by_mongo_user_ids_all_orgs(self, user_ids: list[str], *, chunk_size: int) -> dict[str, str]:
+        """The graph is read in the ambient org (the database filters on it), so the system-scope lookup is the current org's."""
+        return await self.get_graph_user_keys_by_mongo_user_ids(user_ids, current_org_id(), chunk_size=chunk_size)
+
     async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int) -> dict[str, str]:
         if not user_ids:
             return {}

@@ -339,6 +339,7 @@ class TestAbstractMethodInventory:
         "get_user_by_user_id",
         "apply_verified_user_email",
         "get_graph_user_keys_by_mongo_user_ids",
+        "get_graph_user_keys_by_mongo_user_ids_all_orgs",
         "get_account_type",
         "get_connector_stats",
         "get_users",

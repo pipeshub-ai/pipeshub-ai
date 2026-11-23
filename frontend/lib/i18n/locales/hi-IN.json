@@ -4881,6 +4881,7 @@
         "candidateApproved": "\"{{name}}\" स्वीकृत",
         "candidateRejected": "\"{{name}}\" अस्वीकृत",
         "candidateActionError": "उम्मीदवार अपडेट नहीं हो सका",
+        "candidateGone": "इस उम्मीदवार की समीक्षा पहले ही हो चुकी है",
         "conflict": "यह skill कहीं और बदली गई थी",
         "conflictDescription": "नवीनतम संस्करण फिर से लोड करें, फिर अपने बदलाव दोबारा लागू करें।",
         "conflictReload": "पुनः लोड करें"

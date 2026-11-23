@@ -6821,6 +6821,39 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         {on_match}
         """
 
+    async def get_graph_user_keys_by_mongo_user_ids_all_orgs(
+        self,
+        user_ids: list[str],
+        *,
+        chunk_size: int,
+    ) -> dict[str, str]:
+        """System-scope variant of ``get_graph_user_keys_by_mongo_user_ids``: no organisation term, because a Mongo
+        ``userId`` is unique across organisations. For maintenance jobs that hold ids from every organisation (the
+        service-account kind backfill); a request handler must use the org-bound lookup. The call sites are pinned by
+        ``tests/unit/services/graph_db/test_system_scope_lookups_allowlist.py``."""
+        if not user_ids:
+            return {}
+
+        mongo_to_key: dict[str, str] = {}
+        for i in range(0, len(user_ids), chunk_size):
+            chunk = user_ids[i:i + chunk_size]
+            results = await self.client.execute_query(
+                """
+                MATCH (u:User)
+                WHERE u.userId IN $user_ids
+                RETURN u.userId AS userId, u.id AS _key
+                """,
+                parameters={"user_ids": chunk},
+            )
+            for record in results:
+                if record.get("userId") and record.get("_key"):
+                    mongo_to_key[record["userId"]] = record["_key"]
+
+        missing = [user_id for user_id in user_ids if user_id not in mongo_to_key]
+        if missing:
+            raise ValueError(f"Users not found in graph: {missing}")
+        return mongo_to_key
+
     async def get_graph_user_keys_by_mongo_user_ids(
         self,
         user_ids: list[str],

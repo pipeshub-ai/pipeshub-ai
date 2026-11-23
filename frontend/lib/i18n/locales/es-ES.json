@@ -4932,6 +4932,7 @@
         "candidateApproved": "\"{{name}}\" aprobada",
         "candidateRejected": "\"{{name}}\" rechazada",
         "candidateActionError": "No se ha podido actualizar la candidata",
+        "candidateGone": "Esta candidata ya se ha revisado",
         "conflict": "Esta skill se ha modificado en otro sitio",
         "conflictDescription": "Vuelva a cargar la última versión y aplique de nuevo sus cambios.",
         "conflictReload": "Recargar"

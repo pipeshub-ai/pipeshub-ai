@@ -94,3 +94,27 @@ async def test_graph_user_keys_refuse_a_missing_org(pg_provider, orgs, org_ctx, 
             await pg_provider.get_graph_user_keys_by_mongo_user_ids(["mongo-1"], org, chunk_size=10)
         with pytest.raises(ValueError, match="Users not found"):  # a user of another org is not found
             await pg_provider.get_graph_user_keys_by_mongo_user_ids(["mongo-1"], "another-org", chunk_size=10)
+
+
+async def test_queue_with_another_orgs_candidate_id_does_not_overwrite_it(pg_provider, orgs, org_ctx) -> None:
+    org_a, org_b = orgs
+    cid = str(uuid.uuid4())
+    await _queue(pg_provider, org_ctx, org_b, cid)
+    with org_ctx(org_a):  # the same id in another org is another row (the key includes the org)
+        await GraphSkillStore(pg_provider, org_a, "user-a").queue_candidate(
+            SkillCandidate(candidate_id=cid, name="a-own", description="A", body="A body", created_at="0"),
+        )
+    assert await _pending(pg_provider, org_ctx, org_b) == [cid]
+    with org_ctx(org_b):
+        assert [c.name for c in await GraphSkillStore(pg_provider, org_b, "user-b").get_pending_candidates()] == ["b-secret-skill"]
+
+
+async def test_system_scope_user_lookup_is_the_current_orgs(pg_provider, orgs, org_ctx) -> None:
+    org_a, org_b = orgs
+    for org, uid in ((org_a, "mongo-a"), (org_b, "mongo-b")):
+        with org_ctx(org):
+            assert await pg_provider.batch_upsert_nodes([{"_key": f"k-{uid}", "orgId": org, "userId": uid, "email": f"{uid}@example.com"}], "users")
+    with org_ctx(org_a):
+        assert await pg_provider.get_graph_user_keys_by_mongo_user_ids_all_orgs(["mongo-a"], chunk_size=10) == {"mongo-a": "k-mongo-a"}
+        with pytest.raises(ValueError, match="Users not found"):  # the database filters on the org, even for the system-scope lookup
+            await pg_provider.get_graph_user_keys_by_mongo_user_ids_all_orgs(["mongo-b"], chunk_size=10)

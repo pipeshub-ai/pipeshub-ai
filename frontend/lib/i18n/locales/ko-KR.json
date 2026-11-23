@@ -4363,6 +4363,7 @@
         "candidateApproved": "\"{{name}}\"이(가) 승인되었습니다",
         "candidateRejected": "\"{{name}}\"이(가) 거부되었습니다",
         "candidateActionError": "후보를 업데이트하지 못했습니다",
+        "candidateGone": "이 후보는 이미 검토되었습니다",
         "conflict": "이 스킬이 다른 곳에서 변경되었습니다",
         "conflictDescription": "최신 버전을 다시 불러온 다음 수정 사항을 적용하세요.",
         "conflictReload": "다시 불러오기"
