@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.types import Source
 from app.agent_loop_lib.tools.errors import ToolValidationError
+from app.utils.log_redaction import redact_secrets_in_text
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -58,6 +59,7 @@ __all__ = [
     "ToolSummary",
     "ToolOutput",
     "Tool",
+    "error_data",
 ]
 
 
@@ -195,6 +197,13 @@ class ToolOutput:
     end_fields: Mapping[str, object] = field(default_factory=dict)
     """For the executor's ``tool_call.end`` line: ``reason``, ``error_class``, ``status``,
     ``mcp_reason`` (other keys are dropped). Enums and ids only, never arguments or content."""
+
+
+def error_data(exc: BaseException) -> dict[str, str]:
+    """The payload of a soft failure a tool answers with success (a sandbox refusal, a missing file): the error's
+    words for the model, with any key, token or password in them masked. A failed `ToolOutput` is masked by the executor;
+    a successful one isn't, so these sites mask their own."""
+    return {"error": redact_secrets_in_text(str(exc))}
 
 
 class Tool(ABC):

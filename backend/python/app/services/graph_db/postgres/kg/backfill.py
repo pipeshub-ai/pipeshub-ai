@@ -283,11 +283,12 @@ async def principals_copied(db: KernelDB, org: str) -> bool:
 
 
 async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max_batches: int | None = None, drain_rounds: int | None = None, restart: bool = False,
-                   stop: asyncio.Event | None = None, stamp_pages: int | None = None, stamp_after: str | None = None, stamp_page: int = 2000) -> Outcome:
+                   stop: asyncio.Event | None = None, stamp_pages: int | None = None, stamp_after: str | None = None, stamp_page: int = 2000, enforce: bool = False) -> Outcome:
     """The whole sequence for one connector; resumes where an interrupted call stopped. ``flipped`` is true only when the verify found no difference and nothing waits in the log.
     ``max_batches`` (per copy), ``drain_rounds`` (each round takes at most ``page`` log rows), ``stamp_pages`` and ``stop`` bound the call: when one is reached the outcome is not flipped and
     nothing is stamped or verified past it: "unfinished" (a copy or the stamping stopped at its budget or at ``stop``; the copy keeps its cursor and the stamping goes on from
-    ``Outcome.stamp_after``) or "pending" (the log still has rows). The verify itself is one unit and is not interrupted."""
+    ``Outcome.stamp_after``) or "pending" (the log still has rows). The verify itself is one unit and is not interrupted. ``enforce``: a verify that passes promotes at once (the
+    bootstrap's), with what :func:`promote` checks and writes, instead of a second full verify in a unit of its own."""
     _need_log()
     n = await backfill_scope(db, org, None, page=page, max_batches=max_batches, restart=restart, stop=stop)
     n += await backfill_scope(db, org, app_id, page=page, max_batches=max_batches, restart=restart, stop=stop)
@@ -327,7 +328,11 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
                 else:      # a copy never served: it keeps its cursor, and loses this code's epoch so that the listing does not read it either
                     await KgWriter(tx).projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor=cursor, verified_at=None)
                 return Outcome(False, n, res, 0, "differs")
-            await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce" if mode == "enforce" else "shadow", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))
+            w = KgWriter(tx)
+            await w.projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce" if mode == "enforce" or enforce else "shadow", digest=res.digest, cursor="done",
+                                   verified_at=dt.datetime.now(dt.timezone.utc))
+            if enforce and mode != "enforce":
+                await w.analyze_request(app_sk)
             return Outcome(True, n, res, 0)
         out = await db.run(flip, write=True)
     FLIPS.inc("shadow" if out.flipped else "refused")

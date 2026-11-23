@@ -126,6 +126,9 @@ class ServiceBackpressureError(ServiceCallError):
     breaker must not see this as a failure (or a success), so callers should
     treat it as a retryable/transient outcome on their own longer schedule
     (e.g. re-queue the message) rather than opening the breaker.
+
+    ``delivered``: an earlier attempt of the same call reached the service (it answered 5xx, or broke after the request
+    was written) before the backpressure; as on :class:`ServiceUnavailableError`.
     """
 
     def __init__(
@@ -134,9 +137,21 @@ class ServiceBackpressureError(ServiceCallError):
         retry_after: float,
         service_name: str = "",
         details: dict[str, Any] | None = None,
+        *,
+        delivered: bool = False,
     ) -> None:
         super().__init__(message, status_code=HTTP_TOO_MANY_REQUESTS, service_name=service_name, details=details)
         self.retry_after = retry_after
+        self.delivered = delivered
+
+
+# Set on every response ``_request_with_retry`` returns: whether an earlier attempt of the same call reached the service.
+EARLIER_ATTEMPT_DELIVERED = "pipeshub_earlier_attempt_delivered"
+
+
+def earlier_attempt_delivered(response: httpx.Response) -> bool:
+    """Whether an attempt of the call before this response reached the service; True when unknown."""
+    return bool(response.extensions.get(EARLIER_ATTEMPT_DELIVERED, True))
 def _extract_service_error_message(response: httpx.Response) -> str | None:
     """Pull a useful error message from a failed service JSON/text body."""
     try:
@@ -543,6 +558,7 @@ class BaseServiceClient:
                     async with self._attempt_slot():
                         response = await client.request(method, url, **kwargs)
                     last_status = response.status_code
+                    response.extensions[EARLIER_ATTEMPT_DELIVERED] = delivered
                     # A 429 with Retry-After is the service declining before any work; every other answer may
                     # have done some.
                     delivered = delivered or not (
@@ -596,6 +612,7 @@ class BaseServiceClient:
                                 f"after {backpressure_attempts} attempts",
                                 retry_after=retry_after,
                                 service_name=self.service_name,
+                                delivered=delivered,
                             )
                         if budget_seconds is not None:
                             spent = time.monotonic() - started_at
@@ -608,6 +625,7 @@ class BaseServiceClient:
                                     f"the remaining budget cannot fit another attempt",
                                     retry_after=retry_after,
                                     service_name=self.service_name,
+                                    delivered=delivered,
                                 )
                         self.logger.debug(
                             "[%s] %s backpressured (429, Retry-After=%.1fs), waiting %.1fs (%d/%d)",

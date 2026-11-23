@@ -21,6 +21,7 @@ import {
 } from '../../../../src/libs/utils/createJwt';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { MongoUserRepository } from '../../../../src/libs/repositories/user/mongo';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
@@ -197,6 +198,8 @@ describe('User routes: who may do what', () => {
       disabledA: person('dee', orgA, 'member', { isDisabled: true }),
     };
 
+    // The standalone admin-role lease has its own tests; here it only runs the change.
+    sinon.stub(MongoUserRepository.prototype, 'withAdminLease').callsFake((_orgId, fn) => fn({ confirm: async () => true }));
     sinon.stub(Users, 'findOne').callsFake(((f: Row) => users.findOne(f)) as unknown as typeof Users.findOne);
     sinon.stub(Users, 'find').callsFake(((f: Row) => users.find(f)) as unknown as typeof Users.find);
     sinon.stub(Users, 'countDocuments').callsFake(((f: Row) =>
@@ -370,6 +373,21 @@ describe('User routes: who may do what', () => {
       expect(res.status).to.equal(400);
       expect(errorMessage(res)).to.equal('Email already exists for another user');
       expect(mail.sendMail.called).to.be.false;
+    });
+
+    // A removed account keeps its address, so the confirmation link could never be applied:
+    // the change is refused here, before a link is mailed.
+    it('refuses an email a removed account in the org still holds, without mailing a link', async () => {
+      const res = await call('PUT', `/${ids.memberA}`, sessionFor(ids.memberA), {
+        email: users.get(ids.deletedA)!.email,
+      });
+
+      expect(res.status).to.equal(400);
+      expect(errorMessage(res)).to.equal(
+        'This email belongs to an account that was removed. Restore that account or use another address.',
+      );
+      expect(mail.sendMail.called).to.be.false;
+      expect(users.get(ids.memberA)!.email).to.equal('max@a.test');
     });
 
     it("stops an admin from editing a user in someone else's org", async () => {

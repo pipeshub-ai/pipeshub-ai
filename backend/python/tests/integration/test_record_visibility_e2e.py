@@ -488,7 +488,6 @@ EXERCISED_HERE: dict[str, str] = {
     "get_records_by_record_group": "test_reindex_walks",
     "get_records_by_parent_record": "test_reindex_walks",
     "get_linked_records": "test_linked_records",
-    "list_kb_records": "test_kb_listings",
     "get_kb_children": "test_kb_listings",
     "get_folder_children": "test_kb_listings",
     "get_connector_stats": "test_connector_stats",
@@ -496,6 +495,7 @@ EXERCISED_HERE: dict[str, str] = {
     "find_next_queued_duplicate": "test_next_queued_duplicate",
     "update_queued_duplicates_status": "test_queued_duplicate_status_is_not_copied_onto_the_trash",
     "get_failed_records_by_org": "test_failed_records",
+    "get_records_with_refresh_intent": "test_records_with_a_refresh_request",
     "get_record_by_weburl": "test_weburl_lookup",
     "get_records_by_weburls": "test_weburl_lookup",
     "get_records_linking_to_weburls": "test_records_linking_to_an_address",
@@ -694,6 +694,16 @@ async def test_record_content_revisions(world: _World) -> None:
 async def test_failed_records(world: _World) -> None:
     g = world.graph
     assert _ids(await g.get_failed_records_by_org(world.org_id, world.connector_id)) == {world.ids["live_failed"]}
+
+
+async def test_records_with_a_refresh_request(world: _World) -> None:
+    """The intent sweep's read: a live record that holds a Force reindex request is listed, a trashed one is not."""
+    g = world.graph
+    fields = {"refreshIntentId": "i-visibility", "refreshIntentAtMs": 1}
+    assert await g.update_record_fields_for_ids([world.ids["live"], world.ids["trashed"]], fields) == 2
+    listed = await g.get_records_with_refresh_intent(world.org_id, limit=500)
+    assert {d.get("_key") or d.get("id") for d in listed} >= {world.ids["live"]}
+    assert world.ids["trashed"] not in {d.get("_key") or d.get("id") for d in listed}
 
 
 async def test_weburl_lookup(world: _World) -> None:
@@ -916,14 +926,6 @@ async def test_organization_record_reach(world: _World) -> None:
 
 async def test_kb_listings(world: _World) -> None:
     g = world.graph
-    kb_records, _, _ = await g.list_kb_records(
-        world.kb_id, world.user_key, world.org_id, 0, 100,
-        None, None, None, None, None, None, None, "recordName", "asc",
-    )
-    got = _ids_anywhere(kb_records)
-    assert world.ids["kb_live"] in got and world.ids["kb_child_live"] in got
-    assert not {world.ids["kb_trashed"], world.ids["kb_child_trashed"]} & got
-
     root = _ids_anywhere(await g.get_kb_children(world.kb_id, 0, 100))
     assert world.ids["kb_live"] in root and world.ids["kb_trashed"] not in root
 

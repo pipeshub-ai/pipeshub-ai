@@ -113,19 +113,33 @@ def test_the_callers_answer_as_before() -> None:
 
 
 # ---- linear time --------------------------------------------------------------------
-# The inputs CodeQL reported each regex slow on, at a length the regexes could take
-# seconds over; each matcher must finish well inside a budget that only linear work meets.
-_BUDGET_SECONDS = 0.5
-_N = 200_000
+# The inputs CodeQL reported each regex slow on, at two lengths 16x apart. Linear work
+# takes at most about 16x as long on the longer one; a backtracking matcher about 256x.
+# The bound is on that growth, not on the wall clock, so a slow runner passes. Each
+# length is timed in this thread's CPU time, best of several rounds, so time spent
+# preempted on a busy runner does not count.
+_SHORT, _LONG = 250, 4_000
+_ROUNDS = 10
+_MAX_GROWTH = 64
+# A clock coarser than the short run reads it as 0; any backtracking matcher takes
+# far longer than 64x this on the long input.
+_FLOOR_NS = 10_000
 
 
-@pytest.mark.parametrize(("name", "run"), [
-    ("email", lambda: is_email_shaped("!@!." + "!." * _N + " ")),
-    ("version", lambda: _is_version("0" * _N + "x")),
-    ("range separators", lambda: _separators("1" + " " * _N + "x", _RANGE_WORDS, _RANGE_DASHES)),
-    ("and separators", lambda: _separators(("a" + " " * 50) * (_N // 50), _AND_WORDS)),
+@pytest.mark.parametrize(("run", "text_of"), [
+    pytest.param(is_email_shaped, lambda n: "!@!." + "!." * n + " ", id="email"),
+    pytest.param(_is_version, lambda n: "0" * n + "x", id="version"),
+    pytest.param(lambda text: _separators(text, _RANGE_WORDS, _RANGE_DASHES), lambda n: "1" + " " * n + "x", id="range separators"),
+    # One long run of spaces: a matcher that rescans a run from each of its spaces is quadratic in its length.
+    pytest.param(lambda text: _separators(text, _AND_WORDS), lambda n: "a" + " " * n + "x", id="and separators"),
 ])
-def test_the_matchers_take_linear_time_on_the_inputs_that_slowed_the_regexes(name: str, run) -> None:
-    started = time.perf_counter()
-    run()
-    assert time.perf_counter() - started < _BUDGET_SECONDS, name
+def test_the_matchers_take_linear_time_on_the_inputs_that_slowed_the_regexes(run, text_of) -> None:
+    texts = (text_of(_SHORT), text_of(_LONG))
+    best = [float("inf"), float("inf")]
+    for _ in range(_ROUNDS):
+        for i, text in enumerate(texts):
+            started = time.thread_time_ns()
+            run(text)
+            best[i] = min(best[i], time.thread_time_ns() - started)
+    short_ns, long_ns = best
+    assert long_ns <= _MAX_GROWTH * max(short_ns, _FLOOR_NS), f"{_LONG // _SHORT}x the input took {long_ns / max(short_ns, 1):.0f}x the time ({short_ns} ns -> {long_ns} ns)"

@@ -984,6 +984,10 @@ components:
         - name
         - title
         - writes
+        - description
+        - arguments
+        - hints
+        - scopes
       properties:
         name:
           type: string
@@ -994,6 +998,59 @@ components:
         writes:
           type: boolean
           description: True for a tool that is left out while `allowWriteTools` is false.
+        description:
+          type: string
+          description: What the AI model reads before it picks the tool, as the MCP server publishes it. Written for the model, so it names arguments and other tools.
+        arguments:
+          type: array
+          description: The tool's arguments, flattened from the input schema it publishes. Empty for a tool that takes none.
+          items:
+            $ref: '#/components/schemas/McpAccessToolArgument'
+        hints:
+          type: object
+          additionalProperties: false
+          description: What the tool declares it does (MCP tool annotations). A hint the tool does not declare is false.
+          required: [readOnly, destructive, idempotent, openWorld]
+          properties:
+            readOnly:
+              type: boolean
+              description: It changes nothing.
+            destructive:
+              type: boolean
+              description: It can change or remove data, for example by running a connected action.
+            idempotent:
+              type: boolean
+              description: Calling it again with the same arguments has no further effect.
+            openWorld:
+              type: boolean
+              description: It reaches outside PipesHub, for example the web.
+        scopes:
+          type: array
+          description: The OAuth scopes an app or access token needs to call it. Empty for a tool that calls nothing in PipesHub.
+          items:
+            type: string
+          example: [kb:upload]
+    McpAccessToolArgument:
+      type: object
+      additionalProperties: false
+      required: [name, type, required]
+      properties:
+        name:
+          type: string
+          example: collectionId
+        type:
+          type: string
+          description: "`string`, `number`, `integer`, `boolean`, `object`, `enum`, `<type>[]` for a list, or `a|b` for a choice of types."
+          example: string
+        required:
+          type: boolean
+        description:
+          type: string
+        values:
+          type: array
+          description: The allowed values, for an enum or a list of one.
+          items:
+            type: string
     AIGatewayIdentityPolicy:
       type: object
       additionalProperties: false
@@ -3679,6 +3736,53 @@ components:
           type: string
         reason:
           type: string
+        createdAt:
+          type: string
+          format: date-time
+    AgentCallEvent:
+      type: object
+      description: One call made with an access token, or the calls of one minute rolled up.
+      required: [id, userId, tokenId, tokenKind, method, route, statusCode, durationMs, scopeDenied, count, createdAt]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        tokenId:
+          type: string
+          description: The id of the stored token (the id the token lists and revocation use). Never the token or a hash of it.
+        tokenKind:
+          type: string
+          enum: [pat, oauth, delegated]
+        oauthClientId:
+          type: string
+          description: Present for tokens issued to an OAuth application.
+        userAgent:
+          type: string
+          description: The product token of the `User-Agent` header.
+        channel:
+          type: string
+          description: The `X-PipesHub-Channel` header, when it is well formed.
+        method:
+          type: string
+        route:
+          type: string
+          description: The route template, with `:name` placeholders; never the URL or query string.
+        mcpTool:
+          type: string
+          description: The tool name, for an MCP `tools/call`.
+        statusCode:
+          type: integer
+        durationMs:
+          type: integer
+        scopeDenied:
+          type: boolean
+          description: The call was refused because the token lacked a required scope.
+        requestId:
+          type: string
+        count:
+          type: integer
+          description: How many calls this row stands for; above 1 only for rolled-up `GET` calls.
         createdAt:
           type: string
           format: date-time
@@ -9525,7 +9629,11 @@ components:
         counts:
           type: object
           nullable: true
-          description: Present when `include=counts`; otherwise `null`.
+          description: >-
+            Present when `include=counts`; otherwise `null`. Counted and carried with
+            `pagination.totalItems`, also through pages that do not ask for them. A later
+            page that asks for counts with a cursor that carries no per-type counts counts
+            the whole result again, `totalItems` too.
           required:
             - items
             - total
@@ -18398,7 +18506,10 @@ components:
           enum:
             - sync
             - agent
-          description: '''sync'' flips data synchronization; ''agent'' flips use by agents'
+          description: '''sync'' is data synchronization; ''agent'' is use by agents'
+        enabled:
+          type: boolean
+          description: The state wanted. Omitted, the current state is flipped.
         fullSync:
           type: boolean
           description: When turning sync on, start from scratch
@@ -29134,6 +29245,124 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /agent-activity:
+    get:
+      tags:
+        - OAuth Provider
+      summary: List calls made with access tokens
+      description: |
+        The calls made in your organisation with a personal access token, an OAuth access token or
+        a service token, newest first. Organisation administrators only; the organisation is the
+        one on the credential. Calls made from a signed-in browser session are not recorded.
+
+        Every write (any method other than `GET`), every call that ended with status 400 or above,
+        and every MCP tool call is one row. Successful `GET` calls are rolled up into one row per
+        token, route and minute, with `count` giving how many calls it stands for.
+
+        A row keeps who made the call (user, token id and kind, OAuth client), the client's
+        user-agent product token and channel, the method, the route template (for example
+        `/api/v1/knowledgeBase/{kbId}/records` written with a `:kbId` placeholder), the MCP tool
+        name, the status, whether a scope was missing, the duration and the request id. Request and
+        response bodies, query strings, addresses and token values are never stored. Rows are kept
+        for 30 days.
+
+        Pages are cut by an opaque `cursor`: pass the `nextCursor` of one page to get the next.
+      operationId: listAgentActivity
+      security:
+        - bearerAuth: []
+        - oauth2: [org:admin]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Only rows created at or after this time (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Only rows created at or before this time (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+        - name: userId
+          in: query
+          required: false
+          description: Only calls made as this user.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+        - name: tokenId
+          in: query
+          required: false
+          description: Only calls made with this token (its id in the token lists).
+          schema:
+            type: string
+            maxLength: 128
+        - name: tokenKind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pat, oauth, delegated]
+        - name: client
+          in: query
+          required: false
+          description: Only calls from this client, as named by the product token of its `User-Agent`.
+          schema:
+            type: string
+            maxLength: 80
+        - name: status
+          in: query
+          required: false
+          description: Only calls whose status was in this class.
+          schema:
+            type: string
+            enum: [2xx, 4xx, 5xx]
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page.
+          schema:
+            type: string
+            maxLength: 100
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: One page of calls
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentCallEvent'
+                  nextCursor:
+                    type: string
+                    description: Present when there are older rows.
+        '400':
+          description: A filter or the cursor is malformed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not an organisation administrator, or the token lacks `org:admin`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /service-account-delegations/capability:
     get:
       tags:
@@ -33263,6 +33492,7 @@ paths:
             - `password` given for an address outside `@acme-demo.example`
             - `password` fails the complexity rules or is longer than 72 bytes
             - A live account already uses this `email` (`A user with this email already exists`)
+            - Creating an admin would exceed the organization limit of 5 admins
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -33295,6 +33525,23 @@ paths:
             Internal server error (DB save failure or event publish failure).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." No account was created. Retry after the
+            `Retry-After` seconds.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the account
+            was saved (writing its credential, its everyone-group membership or its creation event), the account is
+            removed again; if that removal fails too, the account stays.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -33662,6 +33909,24 @@ paths:
             Internal server error (DB save or event publish failure, including an `address.country` outside the accepted list, which the database refuses).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." The account was not changed (a
+            requested email change's verification mail may already have been sent). Retry after the `Retry-After`
+            seconds. "This administrator change took too long and was not made. Try again." is a demotion that
+            outlived its turn: the account was not changed either, and this 503 is sent without `Retry-After`.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the account
+            was saved (publishing the update event), the saved fields stay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -34449,6 +34714,24 @@ paths:
             - A `groupIds` entry that is not an ObjectId (the group update fails)
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            On a MongoDB without a replica set, where admin-role changes take turns: "Another administrator change
+            for this organisation is in progress. Try again in a moment." No account was restored, created or
+            promoted (the restore activity of removed addresses in the batch may already be recorded). Retry after the
+            `Retry-After` seconds.
+            A 503 also comes from a document store that is read-only or fenced. When that happens after the accounts
+            were written (group memberships, creation events, invite mail), the restored, created and promoted
+            accounts stay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -40798,7 +41081,12 @@ paths:
                       - mode
                     properties:
                       path:
-                        $ref: '#/components/schemas/PaidResultPath'
+                        anyOf:
+                          - $ref: '#/components/schemas/PaidResultPath'
+                          - type: string
+                            enum:
+                              - refreshed/marker.json
+                            description: The refresh marker; readable with mode `get` only.
                       mode:
                         type: string
                         enum:
@@ -40806,10 +41094,20 @@ paths:
                           - get
                           - replace
                           - refresh
+                          - bump
                         description: |
-                          `put` stores only if nothing is stored yet, `get` reads, `replace` stores over a
-                          writer's own retention manifest (manifest paths only), and `refresh` stores over one
-                          result object (result paths only: a refresh run's, or one found unreadable).
+                          `put` stores only if nothing is stored yet, `get` reads (it also reads the refresh
+                          marker, `refreshed/marker.json`), `replace` stores over a writer's own retention
+                          manifest (manifest paths only), `refresh` stores over one result object (result paths
+                          only: a refresh run's, or one found unreadable), and `bump` stores over one result
+                          object only while its ETag is the `etag` sent (result paths only). A `bump` URL carries
+                          `If-Match` among its headers; the store answers 412 when the object changed and 404 or
+                          412 when it is gone. Refused (400) when the store honours no conditional write
+                          (`capabilities` has no `bump`).
+                      etag:
+                        type: string
+                        pattern: '^[A-Za-z0-9._:+=-]{1,128}$'
+                        description: The ETag (without quotes) of the object a `bump` may replace. Required for `bump`, refused for the other modes.
       responses:
         '200':
           description: One URL per requested file.
@@ -40826,6 +41124,17 @@ paths:
                     type: string
                   expiresInSeconds:
                     type: integer
+                  capabilities:
+                    type: array
+                    description: |
+                      What the store honours, named so a client never infers it from a status code:
+                      `conditionalDelete` (a delete by listed ETag) and `bump` (a write conditional on the ETag).
+                      Absent from a storage service of an earlier release, which honours neither.
+                    items:
+                      type: string
+                      enum:
+                        - conditionalDelete
+                        - bump
                   files:
                     type: array
                     items:
@@ -40846,6 +41155,7 @@ paths:
                             - get
                             - replace
                             - refresh
+                            - bump
                         method:
                           type: string
                           enum:
@@ -40969,6 +41279,20 @@ paths:
                         lastModifiedMs:
                           type: integer
                           description: When storage last wrote the file, in epoch milliseconds.
+                        etag:
+                          type: string
+                          description: |
+                            The file's version (ETag without quotes), when the store lists one. `delete-if-match`
+                            takes it so that a file replaced since is kept. The refresh marker and a purge
+                            cutoff's sentinel are never listed.
+                  capabilities:
+                    type: array
+                    description: What the store honours (see the presign reply).
+                    items:
+                      type: string
+                      enum:
+                        - conditionalDelete
+                        - bump
                   next:
                     type: string
                     description: Present when more files follow; pass it as `after`.
@@ -41003,9 +41327,10 @@ paths:
         purge that lands late leaves what a newer run stored since. `before` must be an instant the
         storage service itself returned from `purge-cutoff` (an upper bound on what may go): one in
         the future by more than 15 minutes (a store clock may differ a little from this host's) is
-        refused with 400. The guarantee covers objects as they were when the purge listed them: an object
-        replaced after it was listed and before the delete ran is removed with the old one, because no
-        storage adapter offers a delete conditional on the object's version.
+        refused with 400. Each object goes only while it is still the version the purge listed, where the
+        store honours a delete by ETag (`conditionalDelete`); elsewhere an object replaced after it was listed
+        and before the delete ran is removed with the old one. The refresh marker (`refreshed/marker.json`)
+        is not removed by a purge with `before`.
       operationId: internalPurgeRecordPaidResults
       security:
         - scopedToken: []
@@ -41124,6 +41449,9 @@ paths:
         Returns the object store's own clock (the last-modified stamp of a sentinel object written to
         and removed from the record's folder), so that no caller's clock decides what a purge removes.
         Take it once per purge and send it as `before` on every DELETE of that purge.
+        Before it takes the cutoff it writes the record's refresh marker (`refreshed/marker.json`), whose
+        own store timestamp says when the latest refresh began; a reuse that would re-write an object
+        older than it must not.
         S3 and Azure Blob stamp whole seconds, so the cutoff is a whole second there and an object
         written in that same second is not removed by the purge.
       operationId: internalPaidResultsPurgeCutoff
@@ -41148,6 +41476,12 @@ paths:
                   cutoff:
                     type: integer
                     description: Milliseconds since the epoch, by the store's clock.
+                  marker:
+                    type: boolean
+                    description: |
+                      `true`: the refresh marker was written before this cutoff was taken. Absent from a storage
+                      service of an earlier release; a client with paid-result writes on does not go on with a refresh
+                      whose cutoff lacks it.
         '400':
           description: The record id is not valid (`VALIDATION_ERROR`).
           content:
@@ -41175,7 +41509,8 @@ paths:
       summary: Remove named cached model outputs of one record (service-to-service)
       description: |
         Removes up to 1000 files of the record's folder in one call. A file that is already gone
-        is counted as removed.
+        is counted as removed. This route is unconditional: it takes no version and deletes every path named.
+        To delete only while a file is still the version a listing returned, use `delete-if-match`.
       operationId: internalDeletePaidResults
       security:
         - scopedToken: []
@@ -41230,15 +41565,109 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/paid-results/{recordId}/delete-if-match:
+    parameters:
+      - $ref: '#/components/parameters/PaidResultRecordId'
+    post:
+      tags:
+        - Internal Storage
+      summary: Remove named cached model outputs only while they are the listed version (service-to-service)
+      description: |
+        Removes up to 1000 files, each only while its ETag is still the one named (the one the listing returned). A file
+        that changed since is kept and named in `changed`; one already gone counts as removed. A route of its own, not a
+        field of the plain delete: a storage service of an earlier release answers `404` here, where it would have ignored
+        a version field and deleted without the guard. A store that cannot delete by version (it ignores the condition, or
+        its probe was denied or could not tell, which read as "not supported" for a while) answers `200` with
+        `unsupported: true` and deletes nothing: the caller takes its own fallback. A request that names versions is never
+        turned into a plain delete.
+      operationId: internalDeleteIfMatchPaidResults
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - items
+              properties:
+                orgId:
+                  type: string
+                  description: Optional. If sent, it must be the storage token's organisation.
+                items:
+                  type: array
+                  minItems: 1
+                  maxItems: 1000
+                  description: Each path at most once.
+                  items:
+                    type: object
+                    required:
+                      - path
+                      - etag
+                    properties:
+                      path:
+                        $ref: '#/components/schemas/PaidResultPath'
+                      etag:
+                        type: string
+                        pattern: '^[A-Za-z0-9._:+=-]{1,128}$'
+      responses:
+        '200':
+          description: The files are gone, except those named in `changed`, or nothing was deleted (`unsupported`).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - deleted
+                  - changed
+                properties:
+                  deleted:
+                    type: integer
+                  changed:
+                    type: array
+                    description: Paths kept because their version differs from the ETag sent.
+                    items:
+                      type: string
+                  unsupported:
+                    type: boolean
+                    description: '`true`: the store cannot delete by version; nothing was deleted.'
+        '400':
+          description: >-
+            The body is not valid (`VALIDATION_ERROR`): a path that is not a cache file, a path given twice, a malformed ETag, no items or more than 1000.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The body names a different organisation than the storage token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /document/internal/paid-results/{recordId}/files/{path}:
     parameters:
       - $ref: '#/components/parameters/PaidResultRecordId'
       - name: path
         in: path
         required: true
-        description: The file inside the record's folder; may contain `/`.
+        description: |
+          The file inside the record's folder; may contain `/`. A GET may also read the refresh marker
+          (`refreshed/marker.json`); a PUT refuses it (`400`).
         schema:
-          $ref: '#/components/schemas/PaidResultPath'
+          anyOf:
+            - $ref: '#/components/schemas/PaidResultPath'
+            - type: string
+              enum:
+                - refreshed/marker.json
     put:
       tags:
         - Internal Storage
@@ -41247,7 +41676,10 @@ paths:
         The local-storage counterpart of a signed `put` URL, as returned by presign. Stores the
         file only if nothing is stored at the path: a second write is answered `412` and the
         first file is kept. With `replace=1` (a manifest) or `refresh=1` (a result object), the URLs the
-        `replace` and `refresh` presign modes return, it stores over the file instead. Only answered when storage is local.
+        `replace` and `refresh` presign modes return, it stores over the file instead. With `bump=1&ifMatch=<etag>`
+        (the `bump` presign mode) it stores over a result object only while its ETag is the one named: `404` when
+        there is no such file, `412` when its ETag differs. The refresh marker is never written through this route.
+        Only answered when storage is local.
       operationId: internalPutPaidResultFile
       security:
         - scopedToken: []
@@ -41268,6 +41700,20 @@ paths:
             type: string
             enum:
               - '1'
+        - name: bump
+          in: query
+          required: false
+          description: Store over an existing result object only while its ETag is `ifMatch` (result paths only). Cannot be combined with `replace` or `refresh`.
+          schema:
+            type: string
+            enum:
+              - '1'
+        - name: ifMatch
+          in: query
+          required: false
+          description: The ETag (without quotes) a `bump` requires.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -41302,8 +41748,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: With `bump=1`, there is no file at this path (`File not found`); nothing was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '412':
-          description: A file is already stored at this path. It was left as it was.
+          description: A file is already stored at this path (or, with `bump=1`, its ETag is not the one named). It was left as it was.
           content:
             application/json:
               schema:
@@ -41326,7 +41778,16 @@ paths:
         - scopedToken: []
       responses:
         '200':
-          description: The file's bytes.
+          description: The file's bytes, with its version and write time (the inputs of a `bump`).
+          headers:
+            ETag:
+              description: The file's version, quoted.
+              schema:
+                type: string
+            Last-Modified:
+              description: When the file was last written (HTTP date, whole seconds).
+              schema:
+                type: string
           content:
             application/octet-stream:
               schema:
@@ -61060,9 +61521,12 @@ paths:
         - Connector Control
       summary: Toggle connector sync or agent
       description: |
-        Flip a connector's sync or agent use: each call turns it on when it is off and
-        off when it is on. Read <code>isActive</code> / <code>isAgentActive</code> first. Turning sync on
-        starts the first sync.<br><br>
+        Turn a connector's sync or agent use on or off. Send <code>enabled</code> with the state you
+        want: a call for the state the connector is already in changes nothing and answers
+        <code>changed: false</code>, so a request can be sent again safely after a dropped connection
+        or a timeout. Without <code>enabled</code> the call flips the current state (on when off, off
+        when on); sent twice, that turns the connector back, so read <code>isActive</code> /
+        <code>isAgentActive</code> first. Turning sync on starts the first sync.<br><br>
         <b>Toggle Types:</b><br>
         <ul>
         <li><code>sync</code> - data synchronization</li>
@@ -61105,7 +61569,7 @@ paths:
               $ref: '#/components/schemas/ConnectorToggleRequest'
       responses:
         '200':
-          description: Flipped
+          description: The connector is in the requested state
           content:
             application/json:
               schema:
@@ -61113,6 +61577,12 @@ paths:
                 properties:
                   success:
                     type: boolean
+                  enabled:
+                    type: boolean
+                    description: The state sync or agent use is in now
+                  changed:
+                    type: boolean
+                    description: False when the connector was already in the requested state
                   message:
                     type: string
                 required:
@@ -61152,6 +61622,13 @@ paths:
                   - $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+        '504':
+          description: The connector service did not answer in time. The change may still have
+            been made; read the connector before sending a flip again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
@@ -61315,11 +61792,15 @@ paths:
                       Only when `success` is `false`. The provider's own code when
                       it was passed in `error`, otherwise one of `invalid_state`,
                       `instance_not_found`, `config_not_found`,
-                      `oauth_config_fetch_error`, `invalid_token` or `server_error`.
+                      `oauth_config_fetch_error`, `invalid_token`, `server_error`, or
+                      `temporarily_unavailable` (PipesHub's own storage did not respond; try again). The
+                      connector's signed-in state is left as it was (an existing sign-in is not cleared), but if
+                      only the final status write failed, the new tokens may already be saved, so don't assume
+                      the old token is still in use.
                     example: "access_denied"
                   errorMessage:
                     type: string
-                    description: Only when `error` is `server_error`. A readable reason for the failed token exchange.
+                    description: Only when `error` is `server_error` or `temporarily_unavailable`. A readable reason for the failed sign-in.
                 required:
                   - success
         '400':
@@ -61868,21 +62349,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '404':
+        '500':
           description: |
-            Google Workspace OAuth is not configured for the organization (client
-            ID or secret missing). Checked before `tempCode` is read, so a body
-            without `tempCode` gets this answer too.
+            The Google Workspace configuration could not be read, or the
+            credentials could not be stored. Also when Google Workspace OAuth is
+            not configured for the organization (client ID or secret missing):
+            that is checked before `tempCode` is read, so a body without
+            `tempCode` gets this answer too.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '500':
+        '503':
           description: |
-            The Google Workspace configuration could not be read, or the
-            credentials could not be stored.
-
-            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+            The sync could not be queued (the message broker is unavailable), so nothing was synced.
+            The Google tokens are kept, but the authorization code has been used: the client restarts the
+            Google consent flow and calls this route with the new code, which starts the sync.
           content:
             application/json:
               schema:
@@ -73396,7 +73880,7 @@ paths:
         deleted model, and the empty store is rebuilt for the replacement model.
 
         The agent usage check is fail-closed: when it cannot be made, the model is not
-        deleted (500). Role assignments that point at the deleted model are removed. The
+        deleted (503). Role assignments that point at the deleted model are removed. The
         request body and the query string are not read.
       operationId: deleteAIModelProvider
       security:
@@ -73521,10 +74005,18 @@ paths:
                 error:
                   code: HTTP_CONFLICT
                   message: "Cannot delete model 'gpt-4o-mini': currently in use by agent 'Research Assistant'. Remove it from the agent first."
+        '503':
+          description: |
+            The agent usage check could not be made or did not succeed (unreachable, timed out, a non-200
+            answer, or an answer that is not a list of agents), so the model is kept: `HTTP_SERVICE_UNAVAILABLE`,
+            "We couldn't check which agents use this model, so it wasn't deleted. Please try again in a few seconds."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The agent usage check could not be made or did not succeed, so the model is kept
-            (`Cannot delete this model: unable to verify if it is in use by agents...`).
+            Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -74314,6 +74806,15 @@ paths:
                         creatorName:
                           type: string
                           nullable: true
+        '503':
+          description: |
+            The agent usage check could not be made or did not succeed (unreachable, timed out, a non-200
+            answer, or an answer that is not a list of agents), so the provider is kept: `HTTP_SERVICE_UNAVAILABLE`,
+            "We couldn't check which agents use this web search provider, so it wasn't deleted. Please try again in a few seconds."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error.
@@ -74850,7 +75351,7 @@ paths:
       tags:
         - MCP
       summary: List the tools /mcp can serve
-      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, for choosing which ones to turn off. Admins only.
+      description: Every tool the inbound `/mcp` endpoint can offer, whatever the caller's scopes, with what each one tells the AI model, its arguments, the hints it declares and the OAuth scopes it needs, for choosing which ones to turn off. Admins only.
       operationId: listMcpAccessTools
       security:
         - bearerAuth: []
@@ -80034,8 +80535,9 @@ paths:
 
         The provider is trimmed and lower-cased before matching. A provider
         that is not one of the supported ones (`duckduckgo`, `serper`,
-        `tavily`, `exa`) is not an error: the list is simply empty. The list
-        is also empty when the AI backend answers with a non-200 status.
+        `tavily`, `exa`) is not an error: the list is simply empty. A check
+        that fails is an error, never an empty list: the AI backend's `4xx` is
+        passed on with its words, a `5xx` is a `500`, and a `503` stays a `503`.
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
@@ -80089,9 +80591,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The AI backend could not be reached.
+            The AI backend could not read which agents use it.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The AI backend could not be reached or is temporarily unavailable. Try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The AI backend did not answer in time. Try again.
           content:
             application/json:
               schema:
@@ -80108,8 +80622,9 @@ paths:
 
         An agent matches when one of its model entries equals `model_key` or
         starts with `model_key` followed by `_`. An unknown key is not an
-        error: the list is simply empty. The list is also empty when the AI
-        backend answers with a non-200 status.
+        error: the list is simply empty. A check that fails is an error, never
+        an empty list: the AI backend's `4xx` is passed on with its words, a
+        `5xx` is a `500`, and a `503` stays a `503`.
 
         Query parameters are not accepted: any one is refused with `400`
         (`VALIDATION_ERROR` on `query`, "These fields aren't accepted here").
@@ -80162,9 +80677,21 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The AI backend could not be reached.
+            The AI backend could not read which agents use it.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The AI backend could not be reached or is temporarily unavailable. Try again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The AI backend did not answer in time. Try again.
           content:
             application/json:
               schema:

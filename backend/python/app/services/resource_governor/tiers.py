@@ -28,6 +28,13 @@ def classify(extension: str | None, mime_type: str | None) -> ParseTier:
     return ParseTier(file_types.tier(extension, mime_type))
 
 
+def reader_tier(extension: str | None, mime_type: str | None, reader: file_types.Tier | None) -> ParseTier:
+    """The parse tier of a record read by a reader of tier *reader*: the labels' tier, raised to HEAVY when that
+    reader is a heavy format (a PDF labelled ``txt`` is parsed by the PDF reader). The labels decide otherwise, so an
+    extension still decides over a generic mime and an unknown format stays heavy."""
+    return ParseTier.HEAVY if reader == "heavy" else classify(extension, mime_type)
+
+
 def parse_cost(tier: ParseTier, size_bytes: int | None) -> int:
     """Admission cost in permits: 1 normally, 2 for an extra-large heavy doc."""
     if tier is ParseTier.HEAVY and size_bytes is not None and size_bytes > XL_HEAVY_BYTES:

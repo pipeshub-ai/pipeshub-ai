@@ -109,7 +109,7 @@ describe('MailConsumer - asynchronous mail delivery', () => {
     expect(mockSender.getSmtpConfig.callCount).to.equal(2);
     expect(mockSender.send.calledOnce).to.be.true;
     expect(mockNotificationProducer.publishEvent.called).to.be.false;
-    expect(mockLogger.error.calledWithMatch('Mail event dropped: SMTP configuration not set')).to.be.false;
+    expect(mockLogger.error.calledWithMatch('mail.send.end', { reason: 'smtp_not_configured' })).to.be.false;
   });
 
   it('reports a store that stays unreadable as a failed delivery, not as missing settings', async () => {
@@ -119,8 +119,8 @@ describe('MailConsumer - asynchronous mail delivery', () => {
 
     expect(mockSender.getSmtpConfig.callCount).to.be.greaterThan(1);
     expect(mockSender.send.called).to.be.false;
-    expect(mockLogger.error.calledWithMatch('Mail failed after all retries')).to.be.true;
-    expect(mockLogger.error.calledWithMatch('Mail event dropped: SMTP configuration not set')).to.be.false;
+    expect(mockLogger.warn.calledWithMatch('mail.send.end', { outcome: 'failure', reason: 'attempts_exhausted', error_class: 'unavailable' })).to.be.true;
+    expect(mockLogger.error.calledWithMatch('mail.send.end', { reason: 'smtp_not_configured' })).to.be.false;
   });
 
   it('drops the event without retrying when no SMTP settings are configured', async () => {
@@ -130,7 +130,43 @@ describe('MailConsumer - asynchronous mail delivery', () => {
 
     expect(mockSender.getSmtpConfig.calledOnce).to.be.true;
     expect(mockSender.send.called).to.be.false;
-    expect(mockLogger.error.calledWithMatch('Mail event dropped: SMTP configuration not set')).to.be.true;
+    expect(mockLogger.error.calledWithMatch('mail.send.end', { outcome: 'skipped', reason: 'smtp_not_configured', error_class: 'misconfigured' })).to.be.true;
+  });
+
+  describe('a job sent only if SMTP is configured', () => {
+    it('is skipped with an info log and no failure notification when SMTP is not set', async () => {
+      mockSender.getSmtpConfig.resolves(null);
+
+      await deliver(payload({ ifSmtpConfigured: true }));
+
+      expect(mockSender.send.called).to.be.false;
+      expect(mockNotificationProducer.publishEvent.called).to.be.false;
+      expect(mockLogger.info.calledWithMatch('mail.send.end', { outcome: 'skipped', reason: 'smtp_optional' })).to.be.true;
+      expect(mockLogger.error.called).to.be.false;
+      expect(mockLogger.warn.calledWithMatch('mail.send.end')).to.be.false;
+    });
+
+    it('is sent normally when SMTP is set', async () => {
+      await deliver(payload({ ifSmtpConfigured: true }));
+
+      expect(mockSender.send.calledOnce).to.be.true;
+      expect(mockNotificationProducer.publishEvent.called).to.be.false;
+    });
+
+    it('is skipped silently when the settings were unreadable and then turn out to be unset', async () => {
+      mockSender.getSmtpConfig
+        .onFirstCall()
+        .rejects(new SmtpSettingsUnreadableError(new Error('kv down')))
+        .onSecondCall()
+        .resolves(null);
+
+      await runWithFakeTimers(deliver(payload({ ifSmtpConfigured: true })));
+
+      expect(mockSender.getSmtpConfig.callCount).to.equal(2);
+      expect(mockSender.send.called).to.be.false;
+      expect(mockNotificationProducer.publishEvent.called).to.be.false;
+      expect(mockLogger.info.calledWithMatch('mail.send.end', { outcome: 'skipped', reason: 'smtp_optional' })).to.be.true;
+    });
   });
 
   it('sends once and does not notify when delivery succeeds', async () => {
@@ -265,13 +301,16 @@ describe('MailConsumer - asynchronous mail delivery', () => {
   });
 
   it('logs instead of notifying when the event carries no orgId', async () => {
-    mockSender.send.resolves({ status: 'permanent', error: '550 rejected' });
+    mockSender.send.resolves({ status: 'permanent', error: '550 rejected', errorClass: 'bad_request', smtpCode: 550 });
 
     await deliver(payload({ orgId: undefined }));
 
     // Without an org the notification pipeline would drop the event anyway.
     expect(mockNotificationProducer.publishEvent.called).to.be.false;
-    expect(mockLogger.error.called).to.be.true;
+    expect(mockLogger.warn.calledWithMatch('mail.send.end', { outcome: 'failure', reason: 'permanent', smtp_code: 550 })).to.be.true;
+    // the job's one line at WARNING or above; the missing org is DEBUG
+    expect([mockLogger.warn, mockLogger.error].reduce((n: number, stub: sinon.SinonStub) => n + stub.callCount, 0)).to.equal(1);
+    expect(JSON.stringify([mockLogger.warn.args, mockLogger.error.args, mockLogger.debug.args])).to.not.include('550 rejected');
   });
 
   it('collapses a storm of failures into one notification per org', async () => {

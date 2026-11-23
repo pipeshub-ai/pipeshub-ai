@@ -1,8 +1,9 @@
 """Every PostgreSQL graph provider test runs in exactly one shard of pg-runtime.yml.
 
 The `python` job splits tests/integration/graph_db/postgres across `matrix.shard`.
-Each shard names its files in `graph_tests`. One shard takes the whole folder
-minus what the others name (`--ignore`), so a new test file is never left out.
+Each shard names its files, or single tests (`file.py::test`), in `graph_tests`.
+One shard takes the whole folder minus what the others name (`--ignore` a file,
+`--deselect` a test), so a new test file is never left out.
 A file too slow for one shard runs alone in several, each with a `graph_k`
 expression; for every test exactly one of them is true. No count is written
 down: each shard checks its run against its own `pytest --collect-only`, and
@@ -85,8 +86,9 @@ class PgRuntimeShardsTest(unittest.TestCase):
             if shard == rest[0]:
                 continue
             for path in args:
-                self.assertTrue(path.startswith(f"{SUITE}/test_") and path.endswith(".py"), path)
-                self.assertTrue((PYTHON / path).is_file(), path)
+                file = path.split("::", 1)[0]
+                self.assertTrue(file.startswith(f"{SUITE}/test_") and file.endswith(".py"), path)
+                self.assertTrue((PYTHON / file).is_file(), path)
                 named.setdefault(path, []).append(shard)
         for path, shards in named.items():
             ks = [self.shards[shard].get("graph_k") for shard in shards]
@@ -99,11 +101,17 @@ class PgRuntimeShardsTest(unittest.TestCase):
             self.assertTrue(all(ks), f"{path} runs in shards {shards}, but not split by -k")
             self.assertTrue(_partition(ks), f"{path}: the -k expressions {ks} do not hold each test exactly once")
 
-        ignored = [a.removeprefix("--ignore=") for a in self.args[rest[0]] if a != SUITE]
-        self.assertTrue(all(a.startswith("--ignore=") for a in self.args[rest[0]] if a != SUITE))
-        self.assertEqual(len(ignored), len(set(ignored)))
-        # An ignore no other shard names would drop that file; a named file not ignored would run twice.
-        self.assertEqual(set(ignored), set(named))
+        others = [a for a in self.args[rest[0]] if a != SUITE]
+        ignored = [a.removeprefix("--ignore=") for a in others if a.startswith("--ignore=")]
+        deselected = [a.removeprefix("--deselect=") for a in others if a.startswith("--deselect=")]
+        self.assertEqual(len(ignored) + len(deselected), len(others), "the rest shard only ignores files and deselects tests")
+        self.assertEqual(len(others), len(set(others)))
+        tests = {p for p in named if "::" in p}
+        # A test named while its whole file runs elsewhere would run twice.
+        self.assertFalse({p.split("::", 1)[0] for p in tests} & set(named), "a file named whole and by test")
+        # An ignore or deselect no other shard names would drop it; a named file or test the rest still runs would run twice.
+        self.assertEqual(set(ignored), set(named) - tests)
+        self.assertEqual(set(deselected), tests)
 
     def test_the_partition_check(self) -> None:
         self.assertTrue(_partition(["a", "not a"]))

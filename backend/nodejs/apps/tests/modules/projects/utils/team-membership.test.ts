@@ -105,7 +105,7 @@ describe('resolveCallerTeamIds', () => {
 
     expect(await resolveCallerTeamIds(makeRequest(), appConfig)).to.deep.equal([]);
     expect(warnStub.calledOnce).to.equal(true);
-    expect(warnStub.firstCall.args[1]).to.deep.equal({ statusCode: 422, page: 1 });
+    expect(warnStub.firstCall.args[1]).to.deep.equal({ status: 422, page: 1 });
   });
 
   it('falls back to `_id` and drops rows that carry no id at all', async () => {
@@ -140,13 +140,15 @@ describe('resolveCallerTeamIds', () => {
   });
 
   it('degrades to no teams, with a warning, when the lookup throws', async () => {
-    sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('connect ECONNREFUSED'));
+    const refused = new Error('connect ECONNREFUSED');
+    sinon.stub(AIServiceCommand.prototype, 'execute').rejects(refused);
 
     const teamIds = await resolveCallerTeamIds(makeRequest(), appConfig);
 
     expect(teamIds).to.deep.equal([]);
     expect(warnStub.calledOnce).to.equal(true);
-    expect(warnStub.firstCall.args[1]).to.deep.equal({ error: 'connect ECONNREFUSED' });
+    // the error object, so the logger's serialiser applies
+    expect(warnStub.firstCall.args[1]).to.deep.equal({ error: refused });
   });
 
   it('degrades the same way when something other than an Error is thrown', async () => {

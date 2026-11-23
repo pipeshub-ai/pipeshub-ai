@@ -15,6 +15,7 @@ from app.agent_loop_lib.control_plane.config import ControlPlaneConfig
 from app.agent_loop_lib.control_plane.control_plane import ControlPlane
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.serve.playground import PLAYGROUND_HTML
+from app.utils.error_class import failure_reason
 
 """SSE serving (Phase 4): exposes `Agent.stream()`'s AG-UI-aligned event
 stream (agent/streaming.py, events/base.py) over plain HTTP as
@@ -53,7 +54,7 @@ async def _agent_event_stream(agent: Agent, goal: Goal) -> AsyncIterator[bytes]:
         payload = result.model_dump(mode="json") if result is not None else {"success": False}
         yield _sse_frame("done", payload)
     except Exception as exc:
-        yield _sse_frame("error", {"error": str(exc)})
+        yield _sse_frame("error", {"error": failure_reason(exc)})
 
 
 async def runs_endpoint(request: Request) -> Response:

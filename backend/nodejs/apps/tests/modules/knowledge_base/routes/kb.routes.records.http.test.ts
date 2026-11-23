@@ -181,9 +181,7 @@ describe('Knowledge base routes over HTTP: browsing and changing records', () =>
       expect(h.backend.calls).to.deep.equal([])
     })
 
-    it("passes on the source's wait time when a file is rate limited", async function () {
-      // The shared axios instance retries a 429 after its Retry-After, three times.
-      this.timeout(15000)
+    it("passes on the source's wait time when a file is rate limited", async () => {
       h.backend.on('GET', `/api/v1/stream/record/${RECORD_ID}`, {
         status: 429,
         headers: { 'retry-after': '1' },

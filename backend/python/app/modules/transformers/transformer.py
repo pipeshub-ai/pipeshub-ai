@@ -1,7 +1,11 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Set
-from pydantic import BaseModel
+
+from pydantic import BaseModel, Field
+
 from app.models.entities import Record
+from app.modules.pipeline import parser_identity as _parser_identity
+
 
 class ReconciliationContext(BaseModel):
     """Context for reconciliation-based incremental indexing."""
@@ -56,6 +60,10 @@ class TransformContext(BaseModel):
     extraction_skip_reason: str | None = None
     # The lastIndexTimestamp the record's COMPLETED write stored; None until that write succeeds.
     indexed_at_ms: int | None = None
+    # The parser the run recorded in its COMPLETED write ("inproc:txt@1"): set from the event's labels when the run starts and
+    # carried here; None when it is not tracked. Never recomputed at write time from the graph.
+    parser_identity: str | None = Field(default_factory=_parser_identity.run_identity)
+    parser_identity_source: str = _parser_identity.SOURCE_PARSED
 
 class Transformer(ABC):
     @abstractmethod

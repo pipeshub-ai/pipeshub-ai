@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
+
 
 __all__ = [
     "ResolvedRecordContent",
@@ -19,6 +21,8 @@ __all__ = [
     "RecordAccessDeniedError",
     "RecordTooLargeError",
     "RecordContentUnavailableError",
+    "GRAPH_CALLER_BUGS",
+    "graph_did_not_answer",
 ]
 
 
@@ -57,6 +61,15 @@ class RecordTooLargeError(RecordContentError):
 
 class RecordContentUnavailableError(RecordContentError):
     """Bytes cannot be fetched right now (connector deleted, network error, etc.)."""
+
+
+# Our bug, not an outage (TypeError: a provider without raise_on_error): no query ran, so nothing has logged it.
+GRAPH_CALLER_BUGS: tuple[type[Exception], ...] = (MissingOrgContext, SystemContextNotAllowed, OrgMismatch, TypeError)
+
+
+def graph_did_not_answer(what: str) -> RecordContentUnavailableError:
+    """A graph read that failed, for the reader. No backend text: it can carry hosts and query values, and goes to the model."""
+    return RecordContentUnavailableError(f"{what}: the knowledge graph did not answer. Try again later.")
 
 
 # ---------------------------------------------------------------------------

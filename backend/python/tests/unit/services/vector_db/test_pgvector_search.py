@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import logging
 
 import pytest
 
+from app.core.db import ConnectionLost, DbError, DbTimeout, TooManyConnections
 from app.services.vector_db.pgvector import dense, fusion, validate
 from app.services.vector_db.pgvector.errors import PgVectorError
 from app.services.vector_db.pgvector.tuning import Tuning
@@ -635,7 +637,7 @@ async def test_a_selective_condition_pages_further_into_the_function_rows_and_sa
     assert len(rows) == 10 and len(tx.calls) == 1
 
 
-@pytest.mark.parametrize(("error", "reason"), [("DbTimeout", "timeout"), ("PoolTimeout", "timeout"), ("ConnectionLost", "error"), ("DbError", "error")])
+@pytest.mark.parametrize(("error", "reason"), [("DbTimeout", "timeout"), ("PoolTimeout", "timeout"), ("DbError", "error")])
 async def test_a_lexical_leg_that_fails_answers_nothing_and_says_why(error: str, reason: str, caplog: pytest.LogCaptureFixture) -> None:
     import logging
 
@@ -643,11 +645,97 @@ async def test_a_lexical_leg_that_fails_answers_nothing_and_says_why(error: str,
     from app.services.vector_db.models import SparseVector
     from app.services.vector_db.pgvector import lexical
 
-    exc = errors.ConnectionLost("down", retry_safe=True) if error == "ConnectionLost" else getattr(errors, error)("down")
+    exc = getattr(errors, error)("down")
     caplog.set_level(logging.WARNING)
     rows, degraded = await lexical.search(_LexDb(raises=exc), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
     assert rows == [] and degraded == reason
     assert any(r.levelno >= (logging.ERROR if reason == "error" else logging.WARNING) for r in caplog.records)
+
+
+async def test_a_lexical_leg_that_cannot_reach_the_database_fails_the_search_without_an_error_line(caplog: pytest.LogCaptureFixture) -> None:
+    from app.services.vector_db.models import SparseVector
+    from app.services.vector_db.pgvector import lexical
+
+    lost = ConnectionLost("cannot connect", retry_safe=True)
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(ConnectionLost) as raised:
+        await lexical.search(_LexDb(raises=lost), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
+    assert raised.value is lost and not caplog.records      # the search retry answers it as unavailable; no traceback here
+
+
+class _ScriptedDb:
+    """``run`` raises the next scripted error: the sizing read first, then the bounded degraded read."""
+
+    def __init__(self, *errors: Exception) -> None:
+        self.errors = list(errors)
+
+    async def run(self, fn: object, **_: object) -> object:
+        raise self.errors.pop(0)
+
+
+def _lost() -> ConnectionLost:
+    return ConnectionLost("cannot connect", retry_safe=True)
+
+
+@pytest.mark.parametrize("first", [None, DbTimeout("busy")], ids=["sizing-read", "degraded-read"])
+async def test_a_dense_leg_that_cannot_reach_the_database_fails_instead_of_answering_an_empty_degraded_leg(first) -> None:
+    db = _ScriptedDb(*([first] if first else []), _lost())
+    with pytest.raises(ConnectionLost):
+        await dense.search(db, dense.Sizer(db, T), query(), T)
+
+
+async def test_a_dense_leg_that_hits_another_database_failure_still_answers_an_empty_overload_leg() -> None:
+    db = _ScriptedDb(DbTimeout("busy"), DbError("no slot"))
+    leg, _ = await dense.search(db, dense.Sizer(db, T), query(), T)
+    assert leg.rows == [] and leg.degraded == "overload"
+
+
+async def test_a_pgvector_search_that_cannot_reach_the_database_ends_unavailable_after_one_retry() -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.vector_db.models import SearchFailureKind
+    from app.services.vector_db.pgvector.errors import classify_pg_search_error
+    from app.services.vector_db.search_retry import (
+        VectorSearchUnavailableError,
+        query_nearest_points_with_retry,
+    )
+
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(side_effect=[_lost(), _lost()])
+    service.transient_search_error = classify_pg_search_error
+    service.get_service_name = MagicMock(return_value="pgvector-f58f")
+    with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock), pytest.raises(VectorSearchUnavailableError) as raised:
+        await query_nearest_points_with_retry(service, "records", ["req"], logger=logging.getLogger("t"))
+    assert raised.value.kind is SearchFailureKind.UNAVAILABLE and service.query_nearest_points.await_count == 2
+
+
+@pytest.mark.parametrize(("lost", "attempts", "recovers"), [
+    pytest.param(TooManyConnections(), 1, False, id="53300-full-server"),
+    pytest.param(ConnectionLost("connection lost", retry_safe=False), 2, True, id="loss-after-a-statement"),
+])
+async def test_a_full_server_gets_one_search_attempt_and_any_other_connection_loss_two(lost, attempts, recovers) -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.vector_db.models import SearchFailureKind
+    from app.services.vector_db.pgvector.errors import classify_pg_search_error
+    from app.services.vector_db.search_retry import (
+        VectorSearchUnavailableError,
+        query_nearest_points_with_retry,
+    )
+
+    results = [[MagicMock()]]
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(side_effect=[lost, results])
+    service.transient_search_error = classify_pg_search_error
+    service.get_service_name = MagicMock(return_value="pgvector-f58f-full")
+    with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+        if recovers:      # a read search is safe to run again, whatever retry_safe said about the unit
+            assert await query_nearest_points_with_retry(service, "records", ["req"], logger=logging.getLogger("t")) is results
+        else:             # unavailable, as the plan says, but no second attempt on a server with no slot left
+            with pytest.raises(VectorSearchUnavailableError) as raised:
+                await query_nearest_points_with_retry(service, "records", ["req"], logger=logging.getLogger("t"))
+            assert raised.value.kind is SearchFailureKind.UNAVAILABLE and raised.value.__cause__ is lost
+    assert service.query_nearest_points.await_count == attempts
 
 
 def test_a_weight_that_does_not_fit_a_32_bit_float_is_refused() -> None:

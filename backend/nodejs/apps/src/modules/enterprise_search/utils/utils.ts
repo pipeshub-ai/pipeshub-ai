@@ -50,15 +50,11 @@ import {
   aguiRunErrorMetadata,
   frameAGUI,
   isAGUI,
-  readRunFrame,
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
-import { logBadFrame } from './chat-stream-run';
-import {
-  CHAT_ERROR_MESSAGES,
-  userFacingChatError,
-} from './chat-error-messages';
+import { readAIStreamChunk } from './chat-stream-reader';
+import { userFacingChatError } from './chat-error-messages';
 import { stripModelAuthoredMarkers } from './answer-markers';
 
 const logger = new Logger({
@@ -2227,7 +2223,8 @@ export const sendSSECompleteEvent = (
 };
 
 /**
- * Handle regeneration stream data events
+ * Regenerate's hooks on the shared AI-stream reader: an error replaces the regenerated message,
+ * and a question is handed back to be attached to the answer when it is saved.
  */
 export const handleRegenerationStreamData = (
   chunk: Buffer,
@@ -2235,223 +2232,33 @@ export const handleRegenerationStreamData = (
   existingConversation: ChatSessionDto | null,
   messageId: string | null,
   session: Tx | null,
-  requestId: string,
   res: Response,
   onCompleteData: (data: IAIResponse) => void,
-  protocol?: SSEProtocol,
   accumulator?: StreamedContentAccumulator,
   onUpstreamError?: (code: unknown) => void,
   onAskUserQuestion?: (payload: unknown) => void,
-): string => {
-  const chunkStr = chunk.toString();
-  let newBuffer = buffer + chunkStr;
-
-  const events = newBuffer.split('\n\n');
-  newBuffer = events.pop() || '';
-
-  let filteredChunk = '';
-  const agui = isAGUI(protocol);
-
-  for (const event of events) {
-    if (event.trim()) {
-      const lines = event.split('\n');
-      const eventType = lines
-        .find((line) => line.startsWith('event:'))
-        ?.replace('event:', '')
-        .trim();
-      const dataLines = lines
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.replace(/^data: ?/, ''));
-      const dataLine = dataLines.join('\n');
-      if (agui && eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
-        accumulator?.feedToolCallStart(dataLine);
+): string =>
+  readAIStreamChunk(chunk, buffer, res, accumulator, {
+    onAnswer: onCompleteData,
+    onRunError: (error) => {
+      onUpstreamError?.(error.data.code);
+      if (existingConversation && messageId) {
+        replaceMessageWithError(
+          existingConversation,
+          messageId,
+          error.message,
+          session,
+          'streaming_error',
+          error.stack,
+        ).catch((err: unknown) => {
+          logger.error('Failed to replace message with error', { error: err });
+        });
       }
-
-      if (
-        agui &&
-        (eventType === AGUIEventType.RUN_FINISHED ||
-          eventType === AGUIEventType.RUN_ERROR)
-      ) {
-        const frame = readRunFrame(eventType, dataLine);
-        if (frame.kind === 'answer') {
-          // Not forwarded: Node sends its own RUN_FINISHED once the answer is saved.
-          onCompleteData(frame.result);
-        } else {
-          if (frame.kind === 'error') {
-            // A throw here must not escape the stream's 'data' handler.
-            try {
-              const errorData = frame.data;
-              onUpstreamError?.(errorData.code);
-              if (existingConversation && messageId) {
-                replaceMessageWithError(
-                  existingConversation,
-                  messageId,
-                  (typeof errorData.message === 'string' &&
-                    errorData.message) ||
-                    CHAT_ERROR_MESSAGES.failed,
-                  session,
-                  'streaming_error',
-                  typeof errorData.stack === 'string'
-                    ? errorData.stack
-                    : undefined,
-                ).catch((error: unknown) => {
-                  logger.error('Failed to replace message with error', {
-                    error,
-                  });
-                });
-              }
-            } catch {
-              logBadFrame(eventType, dataLine);
-            }
-          } else if (frame.kind === 'bad') {
-            logBadFrame(eventType, dataLine);
-          }
-          if (frame.kind !== 'bad') {
-            filteredChunk += event + '\n\n';
-          }
-        }
-      } else if (
-        agui &&
-        eventType === AGUIEventType.TEXT_MESSAGE_CONTENT &&
-        dataLine
-      ) {
-        // Feed the passive-disconnect accumulator so a partial answer
-        // survives a dropped connection — see savePartialConversation.
-        try {
-          accumulator?.feedTextMessageContent(JSON.parse(dataLine));
-        } catch {
-          // Non-fatal: still forward the frame below.
-        }
-        filteredChunk += event + '\n\n';
-      } else if (
-        agui &&
-        eventType === AGUIEventType.CUSTOM &&
-        dataLine &&
-        existingConversation
-      ) {
-        try {
-          const eventData = JSON.parse(dataLine);
-          if (eventData?.name === 'ask_user_question' && eventData.value) {
-            const payload = eventData.value.toolData ?? eventData.value;
-            onAskUserQuestion?.(payload);
-          }
-        } catch {
-          logBadFrame('CUSTOM', dataLine);
-        }
-        filteredChunk += event + '\n\n';
-      } else if (!agui && eventType === 'complete' && dataLine) {
-        try {
-          const completeData = JSON.parse(dataLine);
-          onCompleteData(completeData);
-        } catch (parseError: any) {
-          logger.error('Failed to parse complete event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          filteredChunk += event + '\n\n';
-        }
-      } else if (!agui && eventType === 'answer_chunk' && dataLine) {
-        // `accumulated` is the running full text, not a delta — see
-        // LegacyFormatter.answer_delta.
-        try {
-          const parsed = JSON.parse(dataLine) as Record<string, unknown>;
-          if (typeof parsed.accumulated === 'string') {
-            accumulator?.setAccumulatedText(parsed.accumulated);
-          }
-        } catch {
-          // Non-fatal: still forward the frame below.
-        }
-        filteredChunk += event + '\n\n';
-      } else if (!agui && eventType === 'error' && dataLine) {
-        onUpstreamError?.('streaming_error');
-        try {
-          const errorData = JSON.parse(dataLine);
-          if (existingConversation && messageId) {
-            const errorMessage =
-              errorData.error ||
-              errorData.message ||
-              CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'streaming_error',
-              errorData.stack,
-              errorData.metadata
-                ? new Map(Object.entries(errorData.metadata))
-                : undefined,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
-          filteredChunk += event + '\n\n';
-        } catch (parseError: any) {
-          logger.error('Failed to parse error event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          if (existingConversation && messageId) {
-            const errorMessage = CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'parse_error',
-              parseError.stack,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
-          filteredChunk += event + '\n\n';
-        }
-      } else if (
-        eventType === 'ask_user_question' &&
-        dataLine &&
-        existingConversation
-      ) {
-        try {
-          const eventData = JSON.parse(dataLine);
-          if (
-            eventData &&
-            typeof eventData === 'object' &&
-            eventData.status === 'success'
-          ) {
-            const payload = eventData.toolData ?? eventData;
-            onAskUserQuestion?.(payload);
-          }
-        } catch (parseErr: any) {
-          logger.warn(
-            'Failed to parse ask_user_question event data during regenerate',
-            {
-              requestId,
-              error: parseErr?.message,
-            },
-          );
-        }
-        filteredChunk += event + '\n\n';
-      } else {
-        filteredChunk += event + '\n\n';
-      }
-    }
-  }
-
-  if (filteredChunk) {
-    res.write(filteredChunk);
-    (res as any).flush?.();
-  }
-
-  return newBuffer;
-};
+    },
+    onAskUserQuestion: (payload) => {
+      if (existingConversation) onAskUserQuestion?.(payload);
+    },
+  });
 
 /**
  * Handle successful regeneration completion

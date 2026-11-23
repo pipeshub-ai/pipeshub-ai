@@ -44,11 +44,15 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
     is_out_of_memory,
+    listing_busy,
 )
 from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.retrieval.selection_scope import NamedNode
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    KH_SKIP_READS,
+    IGraphDBProvider,
+)
 from app.utils.kh_cursor import (
     Boundary,
     CursorError,
@@ -318,10 +322,12 @@ class KnowledgeHubService:
         cursor_token: str | None,
         page: int,
         limit: int,
+        *,
+        browse: bool = False,
     ) -> SearchPage:
         """One page, by cursor if given, otherwise by reading the rows before `page` and then the page from where they end.
 
-        ``fetch_page(token, rows)`` reads ``rows`` rows past the cursor ``token`` (None: from the start)."""
+        ``fetch_page(token, rows)`` reads ``rows`` rows past the cursor ``token`` (None: from the start); ``browse``: one level below a start."""
         async def fetch(token: str | None, rows: int = limit) -> SearchPage:
             # A provider that stopped looking at a bound before it had a page leaves a page with no rows and a cursor to go on with: go on, within a time budget,
             # so that in practice a caller sees rows or the end. Only if the budget runs out is the empty page returned (with its cursor).
@@ -342,17 +348,21 @@ class KnowledgeHubService:
         # read pays the listing's fixed cost (per connector: its state, its access classes), page N is then about two reads, not N. A read that stopped early at a
         # bound is continued from where it stopped until every row before the page is read; one that found no row within the scan budget is handed back as it is
         # (no rows, its cursor), never a page from too early.
-        step = getattr(self.graph_provider, "kh_skip_rows", 0)
+        step = getattr(self.graph_provider, "kh_browse_skip_rows" if browse else "kh_skip_rows", 0)
         step = step if type(step) is int and step > limit else limit      # exactly an int: a spec'd test double passes isinstance
         token, left = None, (page - 1) * limit
-        while left > 0:
-            got = await fetch(token, min(left, step))
-            if not got.next_cursor:
-                return replace(got, rows=[], start_index=0, end_index=0, next_cursor=None, prev_cursor=None)
-            if not got.rows:
-                return got
-            left -= len(got.rows)
-            token = got.next_cursor
+        skipping = KH_SKIP_READS.set({"page_rows": limit})
+        try:
+            while left > 0:
+                got = await fetch(token, min(left, step))
+                if not got.next_cursor:
+                    return replace(got, rows=[], start_index=0, end_index=0, next_cursor=None, prev_cursor=None)
+                if not got.rows:
+                    return got
+                left -= len(got.rows)
+                token = got.next_cursor
+        finally:
+            KH_SKIP_READS.reset(skipping)
         return await fetch(token)
 
     def _page_from_partition(
@@ -539,6 +549,9 @@ class KnowledgeHubService:
                 token, secret, user_id, org_id,
                 mode=mode, parent_id=parent_id, parent_type=parent_type,
             )
+            if want_counts and page_cursor is not None and page_cursor.total is not None and page_cursor.counts_by_type is None:
+                # The listing was counted without per-type counts, so the cursor carries the total alone: counted again as if it had aged out.
+                page_cursor = replace(page_cursor, total=None, total_capped=False, counted_at_ms=0)
             # The cursor decides sort and filters, so a page cannot resume a
             # keyset from an order that no longer applies.
             active = dict(page_cursor.filters or {}) if page_cursor else dict(filters)
@@ -613,7 +626,7 @@ class KnowledgeHubService:
                 user_id=user_id, org_id=org_id, want_counts=want_counts, limit_apps=limit_apps,
             )
 
-        return await self._walk_pages(fetch_single, cursor, page, limit), scope
+        return await self._walk_pages(fetch_single, cursor, page, limit, browse=parent_id is not None and not flatten), scope
 
     def _only_signed_cursors(self, page: SearchPage, secret: bytes | None) -> SearchPage:
         """Hand out cursors only when they are signed.
@@ -1044,9 +1057,11 @@ class KnowledgeHubService:
             self.logger.warning("⚠️ Browse request refused: %s", request_error.message)
             return self._refusal(parent_id, page, limit, request_error.message, request_error.status_code)
         except Exception as e:
-            if is_out_of_memory(e):
-                # Some other statement of this request found the transaction pool spent: a retry, not a failure.
-                return self._refusal(parent_id, page, limit, str(KnowledgeHubListingBusy()), 503)
+            busy = listing_busy(e)
+            if busy is not None or is_out_of_memory(e):
+                # Some other statement of this request found the transaction pool spent, or the deadline passed inside the batch check:
+                # a retry, not a failure.
+                return self._refusal(parent_id, page, limit, str(busy or KnowledgeHubListingBusy()), 503)
             self.logger.error("❌ Failed to get nodes: %s", e, exc_info=True)
             return KnowledgeHubNodesResponse(
                 success=False,

@@ -370,6 +370,10 @@ dependencies = [
     # Parse inline style declarations without mistaking CSS comments or strings for declarations.
     "tinycss2>=1.4.0",
     "trafilatura>=1.6.0",
+    # Debian 13 moved legacy zone names (Asia/Calcutta, US/Pacific) to tzdata-legacy, which the
+    # images do not install. zoneinfo falls back to this package, which still carries them; Jira
+    # reports such names as the account timezone. It came in through kombu until kombu 5.7.
+    "tzdata>=2026.1",
     "uuid==1.30",
     "uvicorn==0.54.0",
     "zstandard==0.25.0",

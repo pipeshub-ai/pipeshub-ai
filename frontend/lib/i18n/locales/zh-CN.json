@@ -799,7 +799,11 @@
       "collectionExists": "你已有名为“{{name}}”的集合。请换一个名称。"
     },
     "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。",
-    "sourcePreparing": "正在准备此来源… 其中的项目稍后将显示在这里。"
+    "sourcePreparing": "正在准备此来源… 其中的项目稍后将显示在这里。",
+    "selectionActionsNotice": "优先索引",
+    "selectionActionsNoticeEnterprise": "选择先为哪些已选项目建立索引属于企业版。",
+    "uploadExtrasNotice": "优先索引这些文件",
+    "uploadExtrasNoticeEnterprise": "选择先为哪些上传文件建立索引属于企业版。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2840,7 +2844,95 @@
           "pipeshub_code_impact": "显示依赖某个符号的内容：所有调用、导入或基于它的代码，以及覆盖到它的测试。可回答谁调用了它、修改后会影响什么。",
           "pipeshub_code_impact_of_diff": "接收一个统一格式的 diff，例如 git diff 的输出或拉取请求的 diff，显示它更改的符号、涉及这些符号的文件和测试，以及没有测试覆盖的调用方。",
           "pipeshub_code_history": "列出修改过某个文件的已索引拉取请求，包括作者、审阅者、合并者及其提到的工单。",
-          "pipeshub_code_entry_points": "列出执行进入仓库的位置，例如路由、命令行工具、任务和钩子。是阅读陌生代码的起点。"
+          "pipeshub_code_entry_points": "列出执行进入仓库的位置，例如路由、命令行工具、任务和钩子。是阅读陌生代码的起点。",
+          "pipeshub_entities": "在工作区的知识图谱中查找人员、团队、主题、项目、文件夹、客户和文档标题，列出与其中某一项关联的记录，以及与其一同被提及的人员、公司或产品。查找和列出在实体完成索引后提供；一同提及的列表还需要命名实体提取。OAuth 应用或访问令牌还需要 semantic:read 或 semantic:write 权限范围。",
+          "pipeshub_find_records": "按记录属于谁或提及了什么来列出记录，而不是按其文字：分配给某人或由其创建、撰写或拥有的记录，提及金额、日期、数量或百分比的记录，以及记录中提到指定人员、公司或产品的段落。金额和日期需要命名实体提取，段落仅在部署同时开启实体搜索时提供。OAuth 应用或访问令牌还需要 semantic:read 或 semantic:write 权限范围。"
+        },
+        "count": "提供 {{offered}}/{{total}} 个",
+        "searchPlaceholder": "搜索工具、参数或权限范围",
+        "searchLabel": "搜索工具",
+        "filterLabel": "显示",
+        "filters": {
+          "all": "全部",
+          "read": "只读",
+          "writes": "写入或更改数据",
+          "off": "已关闭"
+        },
+        "expandAll": "全部展开",
+        "collapseAll": "全部收起",
+        "noMatch": "没有与此搜索匹配的工具。",
+        "groupCount": "已开启 {{offered}}/{{total}}",
+        "groupSwitch": "{{group}}中的所有工具",
+        "showDetails": "显示 {{tool}} 的详情",
+        "hideDetails": "隐藏 {{tool}} 的详情",
+        "groups": {
+          "read": {
+            "label": "查找和阅读",
+            "description": "搜索、阅读和下载用户可访问的内容。"
+          },
+          "people": {
+            "label": "人员和实体",
+            "description": "工作区的用户和群组，以及其知识图谱中的人员、项目、主题和数值。"
+          },
+          "chat": {
+            "label": "聊天和智能体",
+            "description": "向 PipesHub 的助手或工作区的某个智能体提问。"
+          },
+          "add": {
+            "label": "添加内容",
+            "description": "创建集合、上传文档、添加网站和连接来源。"
+          },
+          "viewer": {
+            "label": "引用查看器",
+            "description": "在能够显示它的客户端中展示回答背后的来源。"
+          },
+          "code": {
+            "label": "代码",
+            "description": "浏览已索引的代码仓库。",
+            "availability": "仅提供给可读取已索引代码仓库的用户。"
+          },
+          "other": {
+            "label": "其他",
+            "description": "此版本页面尚不认识的工具。"
+          }
+        },
+        "kinds": {
+          "readOnly": "只读",
+          "changes": "可更改数据",
+          "openWorld": "会访问 PipesHub 之外"
+        },
+        "blocked": {
+          "writesOff": "在不允许写入工具期间关闭。",
+          "chatOff": "在与 PipesHub 聊天关闭期间关闭。"
+        },
+        "details": {
+          "scopes": "所需的 OAuth 权限范围",
+          "noScopes": "无：它不调用 PipesHub 中的任何内容。",
+          "availability": "何时提供",
+          "arguments": "参数 · {{n}}",
+          "noArguments": "不接受参数。",
+          "columns": {
+            "name": "名称",
+            "type": "类型",
+            "description": "说明"
+          },
+          "required": "必填",
+          "oneOf": "取值之一：{{values}}",
+          "modelText": "AI 看到的内容",
+          "hideModelText": "隐藏 AI 看到的内容",
+          "modelTextHint": "AI 模型在选择此工具前读取的说明。"
+        },
+        "availability": {
+          "default": "开启时始终提供。",
+          "pipeshub_chat": "开启时始终提供。仅在允许写入工具时运行已连接的操作。",
+          "pipeshub_agents": "仅在与 PipesHub 聊天开启时提供。",
+          "pipeshub_create_collection": "仅在允许写入工具时提供。",
+          "pipeshub_upload": "仅在允许写入工具时提供。",
+          "pipeshub_add_web_source": "仅在允许写入工具时提供。",
+          "pipeshub_show_citations": "仅提供给能显示引用查看器的客户端，例如 Claude。",
+          "pipeshub_preview_record": "仅提供给引用查看器，从不提供给 AI 模型。",
+          "pipeshub_entities": "实体完成索引后，提供查找实体和列出其记录。一同提及的列表还需要命名实体提取。",
+          "pipeshub_find_records": "某人的记录始终提供。金额和日期需要命名实体提取，提到人员或公司的段落还需要部署开启实体搜索。"
         }
       },
       "appliesNote": "更改会在几秒内应用于新的 MCP 请求。",
@@ -2849,6 +2941,45 @@
         "saveSuccess": "MCP 访问设置已保存",
         "saveError": "无法保存 MCP 访问设置",
         "saveErrorDescription": "请检查网络连接后重试。"
+      },
+      "status": {
+        "on": "已开启 · 提供 {{offered}}/{{total}} 个工具",
+        "off": "已关闭 · AI 客户端无法连接"
+      },
+      "connect": {
+        "title": "连接 AI 客户端",
+        "description": "客户端连接到此端点，每位用户使用自己的 PipesHub 账号登录。也可以使用个人访问令牌。",
+        "endpointLabel": "MCP 端点",
+        "copy": "复制",
+        "copied": "已复制",
+        "copyEndpoint": "复制 MCP 端点",
+        "copySnippet": "复制配置",
+        "clientsLabel": "AI 客户端",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "在 Claude 中打开“自定义 › 连接器”，选择 +，然后选择“添加自定义连接器”。粘贴上面的端点，然后选择“连接”并登录 PipesHub。如果是 Team 或 Enterprise 套餐，需先由所有者在组织设置中添加该连接器。",
+            "tip": "Claude 从 Anthropic 的云端连接，而不是从你的电脑连接，因此端点必须能从互联网访问。localhost 或私有网络地址将无法使用。"
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "在 chatgpt.com 上打开“插件”，选择 +，然后选择“添加自定义 MCP 服务器”。将上面的端点粘贴为服务器 URL，选择 OAuth，接受警告并选择“创建为插件”，然后登录 PipesHub。在 Business、Enterprise 或 Edu 工作区中，需要管理员允许自定义 MCP 服务器。",
+            "tip": "ChatGPT 从 OpenAI 的服务器连接，而不是从你的电脑连接，因此端点必须能从互联网访问。localhost 或私有网络地址将无法使用。"
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "将服务器添加到 ~/.cursor/mcp.json，或项目中的 .cursor/mcp.json。Cursor 首次使用工具时会要求你登录。"
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "将服务器添加到 .vscode/mcp.json，然后从 MCP 服务器列表中启动它并登录。"
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "在终端中运行以下命令，然后在 Claude Code 中运行 /mcp 登录。",
+            "tip": "如果只问代码相关的问题，请在端点后加上 ?tools=code：客户端将只获得代码工具。"
+          }
+        }
       }
     },
     "labs": {
@@ -3788,7 +3919,9 @@
           "cancelled": "你取消了登录。",
           "signInFailed": "登录未完成。请重试。"
         }
-      }
+      },
+      "indexPriorityNotice": "为此连接器优先建立索引",
+      "indexPriorityNoticeEnterprise": "索引优先级属于企业版。"
     },
     "mcpServers": {
       "searchPlaceholder": "搜索 MCP 服务器...",
@@ -3812,7 +3945,6 @@
         "confirm": "保存并移除登录"
       },
       "cta": {
-        "manage": "管理",
         "delete": "删除",
         "reauthenticate": "重新认证",
         "reconnect": "重新连接",
@@ -3834,6 +3966,18 @@
         "needsAuth": "需要认证",
         "disabled": "已禁用"
       },
+      "filters": {
+        "label": "按状态筛选",
+        "needsAction": "需要处理",
+        "unavailable": "不可用"
+      },
+      "catalog": {
+        "title": "添加更多服务器",
+        "description": "现成的服务器。添加后登录即可使用。",
+        "personalDescription": "你在这里添加的服务器只有你能看到。",
+        "added": "已添加",
+        "addAnother": "再添加一个"
+      },
       "team": {
         "title": "MCP 服务器",
         "subtitle": "连接 Model Context Protocol 服务器，扩展团队智能体的能力。",
@@ -3845,36 +3989,16 @@
         "subtitle": "连接管理员提供的 MCP 服务器，或添加您自己的服务器。",
         "emptyTitle": "没有可用的 MCP 服务器",
         "emptyDescription": "添加您自己的服务器，或请管理员为所有人添加一个。",
-        "yourServersDescription": "您添加的服务器。只有您可以查看和使用，且不能添加到与组织共享的智能体中。",
         "tabs": {
           "all": "全部",
-          "connected": "已连接",
-          "notConnected": "未连接"
+          "connected": "已连接"
         },
         "yours": "我的",
         "noneInTab": "这里没有 MCP 服务器。"
       },
       "details": {
         "breadcrumbLabel": "MCP 服务器",
-        "refreshAll": "全部刷新",
-        "addInstance": "添加另一个实例",
-        "configuration": "配置",
-        "transport": "传输方式",
-        "tools": "工具",
-        "discoverTools": "发现工具",
-        "discoveredTools_one": "{{count}} 个可用工具",
-        "discoveredTools_other": "{{count}} 个可用工具",
-        "discovering": "正在发现工具…",
-        "discoveryError": "工具发现失败",
-        "discoveryNeedsAuth": "请先认证以发现工具",
-        "retry": "重试",
-        "noInstances": "未配置任何实例",
-        "authBannerTitle": "需要认证",
-        "authBannerDescription": "认证此 MCP 服务器，让您团队的智能体可以使用它。",
-        "authBannerAuthenticatedTitle": "已连接",
-        "reconnectBannerDescription": "此服务器的登录已过期或被拒绝。请重新连接以继续使用。",
-        "authBannerAuthenticatedDescription": "您可以重新认证或断开此 MCP 服务器的连接。",
-        "createdBy": "创建者"
+        "tools": "工具"
       },
       "deleteDialog": {
         "title": "删除 MCP 服务器？",
@@ -3934,27 +4058,28 @@
         "tokenUrl": "Token URL",
         "scopes": "权限范围",
         "scopesPlaceholder": "添加权限范围",
-        "useAdminAuth": "为所有用户使用共享的管理员认证",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "凭证（可选）",
-        "credentialsHint": "现在添加凭证，或跳过并稍后在“连接与工具”标签页中连接。",
+        "credentialsHint": "现在添加，或稍后在服务器页面登录。",
         "multiEnvIncomplete": "请填写所有必需的环境变量，或全部留空以便稍后连接。",
         "oauthPairRequired": "请同时输入客户端 ID 和客户端密钥，或两者都留空。",
-        "connectAfterCreateHint": "保存此服务器，然后重新打开“管理”进行连接。",
         "timeoutsHeading": "超时",
         "connectTimeout": "连接超时（秒）",
         "callTimeout": "工具调用超时（秒）",
-        "timeoutRange": "请输入 {{min}} 到 {{max}} 之间的数字，或留空以使用默认值。"
+        "timeoutRange": "请输入 {{min}} 到 {{max}} 之间的数字，或留空以使用默认值。",
+        "whoSignsIn": "成员如何登录",
+        "signIn": {
+          "personal": "每人使用自己的凭据",
+          "personalHint": "每个人用自己的凭据登录，只获得这些凭据拥有的权限。",
+          "shared": "所有人共用一个凭据",
+          "sharedHint": "你在下方添加一次。所有人都以它的权限操作。"
+        },
+        "advanced": "高级"
       },
       "configPanel": {
         "editTitle": "编辑 MCP 服务器",
         "createTitle": "新建 MCP 服务器",
-        "tabs": {
-          "configuration": "配置",
-          "tools": "工具与审批",
-          "toolList": "工具"
-        },
         "synced": "{{time}}同步",
         "refreshTools": "刷新工具列表",
         "signInForTools": "登录以查看此服务器的工具。",
@@ -3994,7 +4119,8 @@
           "remove": "删除服务器",
           "removeHint": "为所有人删除它。",
           "removeHintPersonal": "删除它及您的登录信息。"
-        }
+        },
+        "addTemplateTitle": "添加 {{name}}"
       },
       "oauthConfig": {
         "saved": "OAuth 应用已保存",
@@ -4029,7 +4155,6 @@
         "noState": "未返回 state 参数。",
         "backendRejected": "服务器拒绝了授权请求。"
       },
-      "deleteDisabledTooltip": "此服务器无法删除",
       "stdioPolicy": {
         "disabledTitle": "此部署已禁用",
         "disabledDescription": "自定义 STDIO 服务器会在 PipesHub 服务器上运行命令，因此在运维人员于部署环境中设置 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前保持关闭。在此之前，智能体无法使用此服务器的工具。你可以删除它，或将其改为远程（HTTP）服务器。",
@@ -4043,8 +4168,6 @@
         "customDescription": "通过 URL 连接任意远程 MCP 服务器。"
       },
       "toolRules": {
-        "open": "工具审批",
-        "title": "工具审批：{{name}}",
         "description": {
           "personal": "选择当助手或智能体想在您的聊天中使用这些工具时会发生什么。"
         },
@@ -4097,6 +4220,12 @@
         "orgRulesDescription": "为组织中的所有人决定哪些工具直接运行、先询问或从不运行。在这里，每个人在自己的 MCP 服务器页面设置自己的规则。",
         "userServersTitle": "成员自己的 MCP 服务器",
         "userServersDescription": "查看并移除组织成员为自己添加的 MCP 服务器。"
+      },
+      "added": {
+        "ready": "{{name}} 已添加，可以使用了。",
+        "signIn": "{{name}} 已添加。请在下方登录，以便运行它的工具。",
+        "other": "{{name}} 已添加，但还不能使用。原因见下方。",
+        "dismiss": "完成"
       }
     },
     "bots": {

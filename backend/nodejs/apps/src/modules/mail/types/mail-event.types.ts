@@ -1,3 +1,4 @@
+import type { ErrorClass } from '../../../libs/utils/error-class';
 import { MailBody } from '../middlewares/types';
 
 export enum MailEventType {
@@ -18,6 +19,13 @@ export interface MailEventPayload {
    * topic's retention, and the token's TTL starts at delivery, not enqueue.
    */
   passwordResetLinkFor?: PasswordResetLinkTarget;
+  /**
+   * Send only if SMTP is configured: without it the job is dropped with an
+   * info log instead of a failure notification. For mail that accompanies an
+   * in-app notification, so a workspace without mail set up still gets that
+   * notification and not an "Email delivery failed" one on top.
+   */
+  ifSmtpConfigured?: boolean;
 }
 
 export interface PasswordResetLinkTarget {
@@ -33,14 +41,24 @@ export interface MailEvent {
 }
 
 /** Outcome of one delivery attempt, so callers can decide whether to retry. */
+/**
+ * Every failure carries `errorClass` (docs/logging.md "Failures") and, when the server answered, its reply code. `error` is the
+ * failure's text for the admin notification only: SMTP replies quote the recipient, so it is never logged.
+ */
+interface MailFailure {
+  error: string;
+  errorClass: ErrorClass;
+  smtpCode?: number;
+}
+
 export type MailSendResult =
   | { status: 'sent' }
-  | { status: 'transient'; error: string; problem?: SmtpProblem }
-  | { status: 'permanent'; error: string; problem?: SmtpProblem }
+  | ({ status: 'transient'; problem?: SmtpProblem } & MailFailure)
+  | ({ status: 'permanent'; problem?: SmtpProblem } & MailFailure)
   // Deadline fired while SMTP may still be in flight — retrying risks a duplicate.
-  | { status: 'indeterminate'; error: string }
+  | ({ status: 'indeterminate' } & MailFailure)
   // Not attempted: the SMTP server kept failing to connect and is cooling down.
-  | { status: 'unavailable'; error: string; problem: 'unreachable' };
+  | ({ status: 'unavailable'; problem: 'unreachable' } & MailFailure);
 
 /** An SMTP setup fault an admin can fix, as opposed to one message being refused. */
 export type SmtpProblem = 'auth' | 'unreachable';
@@ -81,11 +99,7 @@ export const SMTP_CONNECTION_ERROR_CODES = new Set([
   SMTP_DEADLINE_ERROR_CODE,
 ]);
 
-const PERMANENT_ERROR_CODES = new Set([
-  'EAUTH',
-  'EENVELOPE',
-  'EMESSAGE',
-]);
+const PERMANENT_ERROR_CODES = new Set(['EAUTH', 'EENVELOPE', 'EMESSAGE']);
 
 /**
  * An error with no usable signal counts as transient: dropping a real email is
@@ -153,4 +167,95 @@ export function smtpProblemOf(error: unknown): SmtpProblem | undefined {
     return 'unreachable';
   }
   return undefined;
+}
+
+// A certificate the SMTP server presented that we cannot trust: our host or TLS setting is wrong.
+const TLS_CERTIFICATE_CODES = new Set([
+  'CERT_HAS_EXPIRED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
+const SMTP_TIMEOUT_CODES = new Set(['ETIMEDOUT', SMTP_DEADLINE_ERROR_CODE]);
+
+/** The class of a reply the server sent; the command it refused says whose fault a 5xx is. */
+function replyClass(
+  code: number,
+  err: { code?: string; command?: string },
+): ErrorClass {
+  // RFC 5321: 4xx is temporary whatever the command (greylisting, a busy server, a 454 on AUTH).
+  if (code < 500) return 'unavailable';
+  // Our login (535 rejected, 530 required) or our sender / relay (553 sender rejected, 550 relaying denied): every mail fails.
+  if (
+    code === 530 ||
+    code === 535 ||
+    err.code === 'EAUTH' ||
+    err.command === 'MAIL FROM'
+  ) {
+    return 'misconfigured';
+  }
+  // The server refused this recipient or this message.
+  if (err.command === 'RCPT TO' || err.command === 'DATA') return 'bad_request';
+  return 'upstream_5xx';
+}
+
+/**
+ * The error class of a failed send (docs/logging.md "Failures"). The reply code decides whenever there is one, as
+ * {@link classifyMailError} does; nodemailer's own code only when the server never answered. Never throws.
+ */
+export function mailErrorClass(error: unknown): ErrorClass {
+  if (typeof error === 'string') return 'internal';
+  const err = error as {
+    responseCode?: number;
+    code?: string;
+    command?: string;
+    originalCode?: string;
+    timeoutType?: string;
+    message?: string;
+  } | null;
+  if (!err || typeof err !== 'object') return 'internal';
+  const responseCode = Number(err.responseCode);
+  if (
+    Number.isInteger(responseCode) &&
+    responseCode >= 400 &&
+    responseCode < 600
+  ) {
+    return replyClass(responseCode, err);
+  }
+  const code = err.code ?? '';
+  // A failed TLS upgrade (nodemailer builds ETLS without the socket's code): our host or TLS setting.
+  if (code === 'EAUTH' || code === 'ETLS') return 'misconfigured';
+  if (code === 'EENVELOPE' && err.command === 'API') {
+    // Nodemailer's own checks before sending: our fromEmail, or the caller's recipients.
+    return (err.message ?? '').startsWith('Invalid sender')
+      ? 'misconfigured'
+      : 'bad_request';
+  }
+  // The message is larger than the server allows: the caller's attachments.
+  if (
+    code === 'EMESSAGE' &&
+    (err.message ?? '').startsWith('Message size larger than allowed')
+  ) {
+    return 'bad_request';
+  }
+  if (
+    TLS_CERTIFICATE_CODES.has(err.originalCode ?? '') ||
+    TLS_CERTIFICATE_CODES.has(code)
+  ) {
+    return 'misconfigured';
+  }
+  if (
+    SMTP_TIMEOUT_CODES.has(code) ||
+    SMTP_SETUP_TIMEOUTS.has(err.timeoutType ?? '')
+  )
+    return 'timeout';
+  if (
+    SMTP_CONNECTION_ERROR_CODES.has(code) ||
+    SMTP_NEVER_CONNECTED_CODES.has(err.originalCode ?? '')
+  ) {
+    return 'unavailable';
+  }
+  if (code === 'EPROTOCOL') return 'upstream_5xx';
+  return 'internal';
 }

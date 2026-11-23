@@ -20,6 +20,8 @@ export interface OAuthTokenPayload {
   client_id: string;
   tokenType: 'oauth';
   isRefreshToken?: true;
+  /** Not a claim: the stored token's id, which token lists and revocation use. Set by verifyAccessToken. */
+  tokenRowId?: string;
   fullName?: string;
   accountType?: string;
   createdBy?: string;

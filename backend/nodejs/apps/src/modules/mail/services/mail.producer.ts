@@ -47,8 +47,9 @@ export class MailProducer {
     // Another module's stop() may have disconnected the shared producer.
     await this.start();
     await this.producer.publish(this.topic, message);
-    this.logger.info(
-      `Published event: ${event.eventType} to topic ${this.topic}`,
-    );
+    this.logger.debug('broker.event.published', {
+      event_type: event.eventType,
+      topic: this.topic,
+    });
   }
 }

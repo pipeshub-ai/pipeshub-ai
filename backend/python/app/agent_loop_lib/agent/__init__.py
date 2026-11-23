@@ -60,7 +60,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.turn_guards import install_turn
 from app.agent_loop_lib.tools.executor import ToolExecutor, log_tool_call_end
 from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL, TAG_SPAWN_BATCH
 from app.agent_loop_lib.transport.base import llm_error_class
-from app.utils.error_class import log_failure
+from app.utils.error_class import failure_reason, log_failure, provider_code
 from pydantic import BaseModel as _PydanticBaseModel
 
 if TYPE_CHECKING:
@@ -540,15 +540,20 @@ class Agent:
         detail: dict | None = None,
         status: str = "failed",
         error_class: str | None = None,
+        error_detail: str | None = None,
+        error_code: str | None = None,
     ) -> AgentResult:
         """Build and persist a failed `AgentResult` — the shared tail for
         every "run stopped without succeeding" exit (blocked hooks,
-        cancellation, transport errors, max_turns exhausted)."""
+        cancellation, transport errors, max_turns exhausted).
+
+        `error` reaches frames, the timeline, traces and a parent agent, so it
+        never holds a provider's text; `error_detail` does (see `AgentResult`)."""
         turns = self._scope.turns if self._scope is not None else []
         result = AgentResult(
             goal=goal, turns=list(turns), success=False, error=error, usage=self._usage,
-            cancelled=(status == "cancelled"), end_event=event, error_class=error_class,
-        )
+            cancelled=(status == "cancelled"), end_event=event, error_class=error_class, error_code=error_code,
+        ).with_error_detail(error_detail)
         await self.emit(
             EventType.CANCELLATION if status == "cancelled" else EventType.ERROR,
             {"error": error},
@@ -943,15 +948,16 @@ class Agent:
         except Exception as e:
             cls = llm_error_class(e)
             log_failure(logger, "llm_call.failed", e, error_class=cls, turn=turn_index)
+            reason = failure_reason(e, cls)
             if final_answer_only:
                 await obs.append_timeline(
-                    self, "final_answer_turn_failed", f"Final-answer LLM call failed: {e}",
-                    "calling_llm", {"turn_index": turn_index, "error": str(e)},
+                    self, "final_answer_turn_failed", f"Final-answer LLM call failed: {reason}",
+                    "calling_llm", {"turn_index": turn_index, "error": reason},
                 )
                 return StepOutcome("continue")
             return StepOutcome("stop", result=await self.fail(
-                goal, f"LLM call failed: {e}", event="llm_call_failed", summary=f"LLM call failed: {e}",
-                error_class=cls,
+                goal, f"LLM call failed: {reason}", event="llm_call_failed", summary=f"LLM call failed: {reason}",
+                error_class=cls, error_detail=f"LLM call failed: {e}", error_code=provider_code(e),
             ))
 
         response_msg = response.message

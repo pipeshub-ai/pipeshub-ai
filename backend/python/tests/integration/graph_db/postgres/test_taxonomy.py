@@ -283,7 +283,7 @@ async def test_unreached_entities_are_those_no_live_record_of_the_org_links_or_w
     await w.link("r", SUB1, "s1")
     await w.link("r", DEPTS, "dept")
     await w.link("gone-r", TOPICS, "trashed-only")
-    await w.p.batch_upsert_nodes([{"_key": "gone-r", "isDeleted": True}], "records")
+    await w.p.batch_update_nodes([{"id": "gone-r", "isDeleted": True}], "records")      # a targeted update trashes: an upsert leaves trash state alone
     await w.link("x", TOPICS, "theirs-only", org="someone-else")
     for i in range(30):                      # a language most records link to
         await w.link(f"m{i}", LANGS, "en")
@@ -312,7 +312,7 @@ async def test_unreached_follows_the_transaction_and_never_answers_empty_for_a_f
     await w.link("r", TOPICS, "t1")
     tid = await w.p.begin_transaction([], [])
     try:
-        await w.p.batch_upsert_nodes([{"_key": "r", "isDeleted": True}], "records", transaction=tid)
+        await w.p.batch_update_nodes([{"id": "r", "isDeleted": True}], "records", transaction=tid)
         assert await w.p.get_unreached_taxonomy_entities([{"id": "t1", "type": "topic"}], w.org, transaction=tid) == {("topic", "t1")}
     finally:
         await w.p.rollback_transaction(tid)
@@ -727,7 +727,7 @@ async def test_a_move_keeps_the_edges_fields_counts_trashed_records_and_refuses_
     await w.node(CATS, "to", "B")
     await w.link("r1", CATS, "from", extractedNames=["a", "aa"], confidence=0.9, mergedFrom=None)
     await w.link("trashed", CATS, "from")
-    await w.p.batch_upsert_nodes([{"_key": "trashed", "isDeleted": True}], "records")
+    await w.p.batch_update_nodes([{"id": "trashed", "isDeleted": True}], "records")
 
     assert await w.p.move_taxonomy_edges(CATS, "from", "to", w.org, set_merged_from="from", dry_run=True) == 2
     assert await w.p.move_taxonomy_edges(CATS, "from", "missing", w.org, set_merged_from="from", dry_run=True) == 2      # a dry run checks no target

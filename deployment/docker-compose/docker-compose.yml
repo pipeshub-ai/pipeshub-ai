@@ -463,12 +463,70 @@ services:
       - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-false}
       # Generated code gets no network unless set to true; even then private,
       # link-local and cloud-metadata addresses are firewalled. CIDRs in
-      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt,
+      # except the sandbox bridge, its gateway and metadata, which stay blocked.
       - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
       - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
+      # Extra resolvers sandboxes may query on port 53 only (comma-separated IPv4).
+      - SANDBOX_EGRESS_DNS_SERVERS=${SANDBOX_EGRESS_DNS_SERVERS:-}
       # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
       # the storage driver supports it; logs a warning once otherwise.
       - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
+      # The most seconds one code run may take (10..3600); a larger timeout
+      # asked for by the model is lowered to it.
+      - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
+      # Code sandbox capacity, shared by every query worker. Empty = sized
+      # from the machine: min(25% of memory / 512 MB, 75% of CPUs / 0.5, processes),
+      # at least SANDBOX_MIN_TOTAL (2). SANDBOX_MAX_TOTAL replaces it; set it when
+      # several stacks share one Docker host.
+      - SANDBOX_MAX_TOTAL=${SANDBOX_MAX_TOTAL:-}
+      - SANDBOX_MAX_PER_ORG=${SANDBOX_MAX_PER_ORG:-}
+      - SANDBOX_MAX_PER_REQUEST=${SANDBOX_MAX_PER_REQUEST:-}
+      - SANDBOX_MIN_TOTAL=${SANDBOX_MIN_TOTAL:-}
+      - SANDBOX_MEMORY_SHARE=${SANDBOX_MEMORY_SHARE:-}
+      - SANDBOX_CPU_FACTOR=${SANDBOX_CPU_FACTOR:-}
+      # How long a run waits for a free sandbox before it is refused (default 120).
+      - SANDBOX_SLOT_WAIT_S=${SANDBOX_SLOT_WAIT_S:-}
+      # The sandbox host's size, when the daemon is remote and cannot be read.
+      - SANDBOX_HOST_MEMORY_BYTES=${SANDBOX_HOST_MEMORY_BYTES:-}
+      - SANDBOX_HOST_CPU_MILLIS=${SANDBOX_HOST_CPU_MILLIS:-}
+      # Live limit: holds new runs back while the host is short of memory or CPU
+      # (off disables it). Empty = defaults; see env.template.
+      - SANDBOX_LIVE_LIMIT=${SANDBOX_LIVE_LIMIT:-}
+      - SANDBOX_LIVE_INTERVAL_S=${SANDBOX_LIVE_INTERVAL_S:-}
+      - SANDBOX_HOST_MEM_FLOOR_MB=${SANDBOX_HOST_MEM_FLOOR_MB:-}
+      - SANDBOX_HOST_MEM_SOFT_MB=${SANDBOX_HOST_MEM_SOFT_MB:-}
+      - SANDBOX_HOST_CPU_BRAKE=${SANDBOX_HOST_CPU_BRAKE:-}
+      - SANDBOX_HOST_CPU_PSI_BRAKE=${SANDBOX_HOST_CPU_PSI_BRAKE:-}
+      - SANDBOX_MEMORY_OVERCOMMIT=${SANDBOX_MEMORY_OVERCOMMIT:-}
+      # Runs waiting for memory ask indexing to slow down (off disables it).
+      - SANDBOX_YIELD_INDEXING=${SANDBOX_YIELD_INDEXING:-}
+      - SANDBOX_YIELD_TTL_S=${SANDBOX_YIELD_TTL_S:-}
+      - SANDBOX_ALERTS=${SANDBOX_ALERTS:-}
+      - SANDBOX_ALERT_WINDOW_S=${SANDBOX_ALERT_WINDOW_S:-}
+      - SANDBOX_ALERT_EVAL_S=${SANDBOX_ALERT_EVAL_S:-}
+      - SANDBOX_ALERT_WARN_BUSY_PCT=${SANDBOX_ALERT_WARN_BUSY_PCT:-}
+      - SANDBOX_ALERT_WARN_MIN_WAITED=${SANDBOX_ALERT_WARN_MIN_WAITED:-}
+      - SANDBOX_ALERT_CRIT_MIN_REFUSED=${SANDBOX_ALERT_CRIT_MIN_REFUSED:-}
+      - SANDBOX_ALERT_CRIT_REFUSED_PCT=${SANDBOX_ALERT_CRIT_REFUSED_PCT:-}
+      - SANDBOX_ALERT_COOLDOWN_S=${SANDBOX_ALERT_COOLDOWN_S:-}
+      - SANDBOX_ALERT_SCOPE=${SANDBOX_ALERT_SCOPE:-}
+      # Shared state place, disk checks, container log rotation and output caps
+      # (empty: the app's defaults; see ADVANCED_DEPLOYMENT.md).
+      - SANDBOX_STATE_DIR=${SANDBOX_STATE_DIR:-}
+      - SANDBOX_DISK_WATCHDOG=${SANDBOX_DISK_WATCHDOG:-}
+      - SANDBOX_DISK_WATCH_CHECK_TIMEOUT_S=${SANDBOX_DISK_WATCH_CHECK_TIMEOUT_S:-}
+      - SANDBOX_DISK_WATCH_MAX_FAILURES=${SANDBOX_DISK_WATCH_MAX_FAILURES:-}
+      - SANDBOX_LOG_MAX_SIZE=${SANDBOX_LOG_MAX_SIZE:-}
+      - SANDBOX_LOG_MAX_FILES=${SANDBOX_LOG_MAX_FILES:-}
+      - SANDBOX_STDIO_HEAD_BYTES=${SANDBOX_STDIO_HEAD_BYTES:-}
+      - SANDBOX_STDIO_TAIL_BYTES=${SANDBOX_STDIO_TAIL_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_FILE_BYTES=${SANDBOX_OUTPUT_MAX_FILE_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_TOTAL_BYTES=${SANDBOX_OUTPUT_MAX_TOTAL_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_FILES=${SANDBOX_OUTPUT_MAX_FILES:-}
+      - SANDBOX_OUTPUT_MAX_SANDBOX_BYTES=${SANDBOX_OUTPUT_MAX_SANDBOX_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_SANDBOX_FILES=${SANDBOX_OUTPUT_MAX_SANDBOX_FILES:-}
+      - SANDBOX_DEPS_MAX_TOTAL_BYTES=${SANDBOX_DEPS_MAX_TOTAL_BYTES:-}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
       - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
       # The app never sees the Docker socket; sandbox containers are created
@@ -567,6 +625,16 @@ services:
     environment:
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
       - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      # Same value as the app's, so the reaper never removes a run still in time.
+      - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
+      # All interfaces of this container, which is only on the internal
+      # sandbox-control network (the proxy itself defaults to loopback).
+      - DOCKER_PROXY_HOST=0.0.0.0
+      # Names this stack on the containers it creates. Blank: the Compose project (compose:<project>).
+      - DOCKER_PROXY_INSTANCE=${DOCKER_PROXY_INSTANCE:-compose:${COMPOSE_PROJECT_NAME}}
+      # Also remove leftover sandbox containers that carry no stack name (from a
+      # proxy before this one). Off: another stack on the daemon may still run one.
+      - DOCKER_PROXY_REAP_UNLABELED=${DOCKER_PROXY_REAP_UNLABELED:-false}
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -616,10 +684,15 @@ services:
         reservations:
           memory: ${MONGO_MEMORY_RESERVATION:-512M}
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      # mongosh boots a whole Node.js runtime per check. Under load that alone
+      # can outlast a 3s timeout while mongod keeps serving, so give each check
+      # 10s and tolerate about a minute of slow checks before calling it
+      # unhealthy. (start_interval would shorten the first wait but needs
+      # Docker Engine 25+.)
+      test: ["CMD", "mongosh", "--quiet", "--norc", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 10s
+      retries: 4
 
   redis:
     image: redis:7.4-bookworm
@@ -866,10 +939,11 @@ services:
     networks:
       - pipeshub
     healthcheck:
+      # arangosh is a full JavaScript shell; same budget as mongodb's check.
       test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-}' --javascript.execute-string 'db._version()' || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      interval: 15s
+      timeout: 10s
+      retries: 4
 
   # ---------------------------------------------------------------------------
   # Graph DB — profile: graph-neo4j  (set DATA_STORE=neo4j)

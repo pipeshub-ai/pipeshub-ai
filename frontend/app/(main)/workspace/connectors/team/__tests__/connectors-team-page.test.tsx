@@ -453,7 +453,7 @@ describe('Team connectors page: turning sync on and off', () => {
 
     fireEvent.click(toggle);
 
-    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', undefined));
+    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', true, undefined));
     await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Connector sync enabled'));
   });
 
@@ -465,7 +465,7 @@ describe('Team connectors page: turning sync on and off', () => {
     fireEvent.click(toggle);
     await confirmDisable();
 
-    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync'));
+    await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', false));
     await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Connector sync disabled'));
   });
 

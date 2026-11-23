@@ -24,8 +24,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
+from app.agent_loop_lib.sandbox.capacity import slot_file_count
 from app.agent_loop_lib.sandbox.coding.egress_firewall import ensure_egress_network_sync
-from app.agent_loop_lib.sandbox.coding.settings import _env_cap
 
 __all__ = [
     "DockerClientProvider",
@@ -54,6 +54,12 @@ class DockerClientProvider:
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="docker-sandbox",
         )
+        # Stop and remove calls get their own small pool: the run pool is
+        # full exactly when a run has to be stopped, and a remove queued
+        # behind the runs it is meant to end would wait for them.
+        self._control_executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="docker-sandbox-ctl",
+        )
         self._image_cache: set[str] = set()
         self._network_cidrs: dict[str, list[str]] = {}
         self._closed = False
@@ -80,6 +86,14 @@ class DockerClientProvider:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._executor, lambda: fn(*args, **kwargs),
+        )
+
+    async def run_control(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a short blocking call that stops or removes a container, on
+        the control pool, so it never waits behind running containers."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._control_executor, lambda: fn(*args, **kwargs),
         )
 
     async def ensure_image(self, image: str) -> bool:
@@ -164,6 +178,7 @@ class DockerClientProvider:
                 pass
             self._client = None
         self._executor.shutdown(wait=False)
+        self._control_executor.shutdown(wait=False)
         logger.debug("DockerClientProvider: closed")
 
 
@@ -178,8 +193,8 @@ def get_default_provider(*, max_workers: int | None = None) -> DockerClientProvi
 
     Shared deliberately: `max_workers` doubles as the ceiling on concurrent
     blocking docker operations, which only bounds anything if every sandbox
-    in the process draws from the same pool. Defaults to the governor's
-    process-wide cap (`SANDBOX_MAX_TOTAL`).
+    in the process draws from the same pool. Defaults to the number of
+    shared sandbox slots plus a few for pings and inspects.
     """
     global _default_provider
     if _default_provider is not None:
@@ -188,9 +203,10 @@ def get_default_provider(*, max_workers: int | None = None) -> DockerClientProvi
         if _default_provider is None:
             if max_workers is None:
                 # A run blocks its thread for the container's life (`container.wait`),
-                # so size the pool to the governor's process-wide cap; an unlimited
-                # cap still needs a finite pool.
-                max_workers = _env_cap("SANDBOX_MAX_TOTAL", 50) or 50
+                # and any one worker may hold every slot the workers share, so the
+                # pool covers all of them. Threads start lazily, so this costs
+                # nothing until used.
+                max_workers = slot_file_count() + 4
             _default_provider = DockerClientProvider(max_workers=max_workers)
             atexit.register(_default_provider.close)
         return _default_provider

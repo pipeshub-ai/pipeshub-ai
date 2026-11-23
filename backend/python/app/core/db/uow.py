@@ -47,7 +47,7 @@ from app.core.db.errors import (
     UnsupportedIsolation,
     UowUsageError,
 )
-from app.core.db.pool import create_pool
+from app.core.db.pool import connect_failure, create_pool, lost_state
 from app.telemetry.backend import METRICS_BACKEND
 from app.utils import db_query_log, error_class
 
@@ -87,7 +87,6 @@ _SQL_NOISE = re.compile(r"/\*.*?\*/|--[^\n]*|(\$[A-Za-z_]*\$).*?\1|'(?:[^']|'')*
 COMMIT_PROBE = True  # ask the server before COMMIT whether the transaction is still alive (write units)
 _current_tx: contextvars.ContextVar[Tx | None] = contextvars.ContextVar("pg_current_tx", default=None)
 _COLTYPE = re.compile(r"[a-z][a-z0-9_ ]{0,40}(\(\d{1,4}(,\d{1,4})?\))?(\[\])?")
-_LOST_STATES = {"57P01", "57P02", "57P03", "25P03"}
 _ISOLATION = ("read_committed", "repeatable_read", "serializable")
 RETRIES_MAX = 3
 BACKOFF_BASE_S = 0.01
@@ -520,8 +519,11 @@ class KernelDB:
             con = await pool.acquire(timeout=statement_ms / 1000)
         except TimeoutError as e:
             raise PoolTimeout("no pooled connection became free in time") from e
-        except OSError as e:  # connection refused and similar while opening a new connection
-            raise ConnectionLost(f"cannot connect: {e}", retry_safe=True) from e
+        except (OSError, asyncpg.PostgresError) as e:  # the OS or the server refused a new connection
+            lost = connect_failure(e)
+            if lost is None:
+                raise
+            raise lost from e
         waited = time.perf_counter() - t_start
         POOL_WAIT.observe(self.cfg.service, value=waited)
         if timeout_ms and statement_ms <= timeout_ms:      # the caller's budget covers the wait for a connection and the statement together
@@ -653,7 +655,7 @@ class KernelDB:
             return ProfileEpochMismatch(str(e))
         lost = isinstance(e, asyncpg.InterfaceError) or (
             not isinstance(e, TimeoutError) and isinstance(e, (OSError, asyncio.IncompleteReadError))
-        ) or (state is not None and (state in _LOST_STATES or state.startswith("08")))
+        ) or lost_state(state)
         if lost:
             safe = not tx.commit_sent and (tx.idempotent or tx.completed == 0)
             return ConnectionLost(str(e) or type(e).__name__, retry_safe=safe)
