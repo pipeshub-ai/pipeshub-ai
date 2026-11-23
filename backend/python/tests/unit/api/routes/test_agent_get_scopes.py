@@ -6,6 +6,7 @@ need agent:write, so a write-only token must be able to make that read.
 """
 
 import asyncio
+import importlib
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -13,8 +14,11 @@ import pytest
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
 
-import app.edition_config  # noqa: F401  (edition seams load before any router)
-from app.api.routes.agent import router
+# Edition seams must load before any router. Imported for that side effect, so through
+# importlib rather than as an unused name.
+importlib.import_module("app.edition_config")
+
+from app.api.routes.agent import router  # noqa: E402
 
 
 def _scope_check() -> Callable[[Any], Coroutine[Any, Any, None]]:
