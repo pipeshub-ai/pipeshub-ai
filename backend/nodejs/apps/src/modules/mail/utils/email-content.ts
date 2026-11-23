@@ -6,6 +6,8 @@ import {
   connectorAccountConnect,
   domainLimitReached,
   emailChangeNotice,
+  feedbackCopy,
+  feedbackReceived,
   isEmailChangeNoticeData,
   isSandboxCapacityAlertData,
   joinRequestDecision,
@@ -16,6 +18,7 @@ import {
   resetPassword,
   sandboxCapacityAlert,
   sandboxCapacityAlertText,
+  supportRequest,
   suspiciousLoginAttempt,
 } from './emailTemplates';
 
@@ -74,6 +77,16 @@ export function getEmailContent(
       return sandboxCapacityAlert(templateData);
     case EmailTemplateType.ConnectorAccountConnect as string:
       return connectorAccountConnect(templateData);
+
+    // `as string`: the type is a plain string here, as for every case above.
+    case EmailTemplateType.SupportRequest as string:
+      return supportRequest(templateData);
+
+    case EmailTemplateType.FeedbackReceived as string:
+      return feedbackReceived(templateData);
+
+    case EmailTemplateType.FeedbackCopy as string:
+      return feedbackCopy(templateData);
 
     default:
       throw 'Unknown Template';

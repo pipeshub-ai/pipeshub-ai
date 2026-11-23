@@ -854,6 +854,25 @@ _FORMAT_BY_MIME: Final = {
 _TIER_BY_FORMAT: Final = {ft.format: ft.tier or ft.mime_tier for ft in FILE_TYPES if ft.format and (ft.tier or ft.mime_tier)}
 
 
+def _kind_by_format() -> dict[str, str]:
+    """The kind of each parse format: its own type's (`txt` is text, though code read as text shares it), else the one
+    kind every type of that format has. A format with no kind (an image, epub, blocks) is left out."""
+    kinds: dict[str, set[str]] = {}
+    for ft in FILE_TYPES:
+        if ft.format and (ft.kind or ft.mime_kind):
+            kinds.setdefault(ft.format, set()).add(ft.kind or ft.mime_kind)  # type: ignore[arg-type]
+    index: dict[str, str] = {}
+    for fmt, found in kinds.items():
+        own = _BY_EXTENSION.get(fmt)
+        own_kind = own.kind or own.mime_kind if own is not None else None
+        if own_kind or len(found) == 1:
+            index[fmt] = own_kind or next(iter(found))
+    return index
+
+
+_KIND_BY_FORMAT: Final = _kind_by_format()
+
+
 # The mimes the dispatch matched before the registry's second version, each as it matched it
 # (exactly), and the extensions it had a branch for. Whatever these route keeps that route.
 _MAIN_CHAIN_MIMES: Final = {
@@ -904,14 +923,23 @@ def _extension_decides(ft: FileType, mime_type: object) -> bool:
     return not ft.ext_wins or _new_type_wins(ft, mime_type)
 
 
-def tier(extension: str | None, mime_type: str | None) -> Tier:
-    """Parse tier: by extension, else by mime, else heavy (the safe side for an unknown format).
+def _labels_reader(extension: str | None, mime_type: str | None) -> Dispatch | None:
+    """The reader the labels select; none for a malformed mime (not a string), which the old rule judges as before."""
+    return labels_route(extension, mime_type) if isinstance(mime_type, str) or not mime_type else None
 
-    The mime is lower-cased before the extension is looked at, so a malformed mime fails the
-    same way whatever the extension.
+
+def tier(extension: str | None, mime_type: str | None) -> Tier:
+    """Parse tier: the tier of the reader the labels select (`labels_route`); for labels that select none, by
+    extension, else by mime, else heavy (the safe side for an unknown format).
+
+    Both labels are normalised before anything is looked up, so a malformed one fails the same way whatever the other.
     """
     mime_key = (mime_type or "").lower()
-    ft = _BY_EXTENSION.get(normalize_extension(extension))
+    ext_key = normalize_extension(extension)
+    reader = read_tier(_labels_reader(extension, mime_type))
+    if reader is not None:
+        return reader
+    ft = _BY_EXTENSION.get(ext_key)
     if ft is not None and ft.tier and _extension_decides(ft, mime_type):
         return ft.tier
     ft = _TIER_BY_MIME.get(mime_key) or _TIER_BY_MIME.get(normalize_mime(mime_key))
@@ -921,8 +949,13 @@ def tier(extension: str | None, mime_type: str | None) -> Tier:
 
 
 def kind(extension: str | None, mime_type: str | None) -> str | None:
-    """Parse kind: by extension, else by mime, else None."""
-    ft = _BY_EXTENSION.get(normalize_extension(extension))
+    """Parse kind: the kind of the reader the labels select (`labels_route`); for labels that select none, or a reader
+    with no kind, by extension, else by mime, else None. A malformed extension fails before anything is looked up."""
+    ext_key = normalize_extension(extension)
+    reader = read_kind(_labels_reader(extension, mime_type))
+    if reader is not None:
+        return reader
+    ft = _BY_EXTENSION.get(ext_key)
     if ft is not None and ft.kind and (_extension_decides(ft, mime_type) or ft.key in _KIND_BY_EXTENSION_BEFORE):
         return ft.kind
     mime_key = (mime_type or "").lower()
@@ -1142,6 +1175,35 @@ def read_tier(dispatch: Dispatch | None) -> Tier | None:
 def format_tier(format_key: str | None) -> Tier | None:
     """The parse tier of the parsing service's reader for *format_key* (see `parse_format`), or None."""
     return _TIER_BY_FORMAT.get(format_key) if format_key else None
+
+
+def kind_of_format(format_key: str | None) -> str | None:
+    """The parse kind of the reader for *format_key* (see `parse_format`), or None for a format with no kind."""
+    return _KIND_BY_FORMAT.get(format_key) if format_key else None
+
+
+def read_kind(dispatch: Dispatch | None) -> str | None:
+    """The parse kind of the in-process reader *dispatch* names (the code parser's is ``code``), or None.
+
+    A type with no kind of its own (a Google export, Gmail) is read as its parsing format, so it has that one's.
+    """
+    if dispatch is None:
+        return None
+    ft = dispatch.file_type
+    if ft is None:
+        return "code"
+    return ft.kind or ft.mime_kind or kind_of_format(ft.format)
+
+
+def labels_route(
+    extension: object, mime_type: object, *, file_path: object = None, record_name: object = None,
+) -> Dispatch | None:
+    """The in-process reader a record event's labels select, before the record handler has read the record (so no
+    record type). The path and the name stand in for a missing extension, as they do for the reader."""
+    mime = mime_type if isinstance(mime_type, str) and mime_type else "unknown"
+    ext = extension if isinstance(extension, str) and extension else "unknown"
+    code_ext = code_extension(ext, file_path, record_name)
+    return legacy_route(mime, ext, code_ext=code_ext, reads_as_code_file=reads_as_source(mime, code_ext))
 
 
 def _names_nothing(mime_type: object) -> bool:

@@ -2228,10 +2228,31 @@
         "pasteBlockLabel": "Ready to paste into your MCP config",
         "copyPasteBlockAria": "Copy paste block",
         "copySuccessTitle": "Copied",
-        "copyErrorTitle": "Could not copy"
+        "copyErrorTitle": "Could not copy",
+        "knowledgeLimitLaterHint": "You can change this later without replacing the token."
       },
       "scopeCount_one": "{{count}} scope",
-      "scopeCount_other": "{{count}} scopes"
+      "scopeCount_other": "{{count}} scopes",
+      "access": {
+        "panelTitle": "Change access",
+        "intro": "Pick what {{name}} can see. The token keeps working, and the change applies from its next request, so you don't need to update anything that uses it.",
+        "save": "Save",
+        "savedTitle": "Access changed",
+        "savedEverything": "{{name}} can now see everything you can.",
+        "savedSome_one": "{{name}} can now see {{count}} picked item.",
+        "savedSome_other": "{{name}} can now see {{count}} picked items.",
+        "undo": "Undo",
+        "undoneTitle": "Change undone",
+        "undoErrorTitle": "Couldn't undo the change. Open Change access to set it again.",
+        "errorTitle": "Couldn't change access",
+        "errorDescription": "Nothing changed. Try again.",
+        "unknownTitle": "Couldn't confirm the change",
+        "unknownDescription": "It may have been saved. Check the access shown here before you try again.",
+        "unknownReloadFailedDescription": "It may have been saved, and the latest access couldn't be loaded. Reload the page before you rely on what's shown.",
+        "rowAction": "Change access",
+        "rowActionAria": "Change what {{name}} can see",
+        "rowActionTooltip": "Change access: pick what this token can see"
+      }
     },
     "agentSignIns": {
       "title": "Agent sign-ins",
@@ -2506,7 +2527,8 @@
         "security": "Security",
         "personal": "Personal",
         "people": "People",
-        "developerSettings": "Developer settings"
+        "developerSettings": "Developer settings",
+        "help": "Help"
       },
       "nav": {
         "general": "General",
@@ -4086,7 +4108,8 @@
           "shared": "One shared credential for everyone",
           "sharedHint": "You add it once, below. Everyone acts with its access."
         },
-        "advanced": "Advanced"
+        "advanced": "Advanced",
+        "nameTaken": "Another server already has this name. Choose a different one."
       },
       "configPanel": {
         "editTitle": "Edit MCP server",
@@ -6416,5 +6439,155 @@
       "copyDetails": "Copy details for an admin",
       "copied": "Details copied"
     }
+  },
+  "support": {
+    "menuLabel": "Contact support",
+    "title": "Contact support",
+    "steps": {
+      "area": "Area",
+      "details": "Details"
+    },
+    "close": "Close",
+    "cancel": "Cancel",
+    "back": "Back",
+    "continue": "Continue",
+    "send": "Send request",
+    "sending": "Sending…",
+    "changeArea": "Change area",
+    "change": "Change",
+    "issueOther": "Other (not listed)",
+    "areaStep": {
+      "title": "What do you need help with?",
+      "subtitle": "Choose the area closest to your problem.",
+      "suggested": "Suggested",
+      "suggestion": "Something in {{area}} failed at {{time}}, so we suggested it.",
+      "idea": "Have an idea instead? Send feedback"
+    },
+    "areas": {
+      "connectors": {
+        "label": "Connectors and sync",
+        "hint": "Connecting apps, sync errors or missing data"
+      },
+      "chat": {
+        "label": "Chat and search",
+        "hint": "Answers, citations or search results"
+      },
+      "agents": {
+        "label": "Agents and actions",
+        "hint": "Building, running or sharing agents"
+      },
+      "files": {
+        "label": "Files and collections",
+        "hint": "Uploads, folders or file previews"
+      },
+      "access": {
+        "label": "Sign-in and access",
+        "hint": "Signing in, passwords or single sign-on"
+      },
+      "people": {
+        "label": "People and permissions",
+        "hint": "Inviting users, roles or groups"
+      },
+      "other": {
+        "label": "Something else",
+        "hint": "Anything not listed here"
+      }
+    },
+    "details": {
+      "descriptionLabel": "What happened?",
+      "descriptionPlaceholder": "What were you trying to do, and what happened instead?",
+      "descriptionMin_one": "At least {{count}} character.",
+      "descriptionMin_other": "At least {{count}} characters.",
+      "descriptionMax_one": "You've reached the {{count}}-character limit.",
+      "descriptionMax_other": "You've reached the {{count}}-character limit.",
+      "attach": "Attach screenshot",
+      "removeFile": "Remove {{name}}",
+      "fileUnsupported": "{{name}}: this file type isn't supported.",
+      "fileTooLarge": "{{name}} is larger than 5 MB.",
+      "tooManyFiles": "You can attach up to 5 files.",
+      "filesTotalTooLarge": "Files can total up to 8 MB.",
+      "smtpTitle": "Email isn't set up for this workspace",
+      "smtpBody": "We'll give you a message to send to {{email}} from your own email app.",
+      "smtpAdmin": "To send requests directly, configure SMTP in workspace settings.",
+      "smtpMember": "To send requests directly, ask your admin to configure SMTP.",
+      "includeErrors_one": "Include {{count}} recent error",
+      "includeErrors_other": "Include {{count}} recent errors",
+      "errorLine": "{{area}}: error {{status}} at {{time}}",
+      "errorLineUnknown": "Error {{status}} at {{time}}",
+      "sentWith": "Sent with your request: {{list}}.",
+      "sentParts": {
+        "workspace": "your workspace",
+        "identity": "your name and email",
+        "browser": "your browser",
+        "errors": "recent errors"
+      },
+      "viewDetails": "View details",
+      "hideDetails": "Hide details",
+      "rows": {
+        "issue": "Issue regarding",
+        "workspace": "Workspace",
+        "signedInAs": "Signed in as",
+        "browser": "Browser",
+        "recentErrors": "Recent errors"
+      }
+    },
+    "blocked": {
+      "area": "Choose an area to continue.",
+      "description": "“What happened?” needs at least {{min}} characters ({{left}} to go)."
+    },
+    "result": {
+      "sentTitle": "Request sent",
+      "sentBody": "Our support team has your request. We emailed you a copy, and replies will come to your inbox.",
+      "pendingTitle": "Still sending",
+      "pendingBody": "The email to {{email}} is taking longer than usual. If you don't hear back, contact us with this reference.",
+      "referenceLabel": "Your reference",
+      "copyReference": "Copy reference",
+      "quote": "Mention this reference if you contact us about the same issue.",
+      "done": "Done"
+    },
+    "email": {
+      "title": "Send it from your email app",
+      "noSmtp": "Email isn't set up here, so request {{reference}} wasn't sent. Send this message from your own email app so support gets it.",
+      "failed": "We couldn't email request {{reference}}. Send this message from your own email app so support gets it.",
+      "limit": "You've sent several requests in the last hour. Send this one from your email app instead.",
+      "unsaved": "We couldn't send your request. Send this message from your own email app so support gets it.",
+      "to": "To",
+      "subject": "Subject",
+      "copy": "Copy message",
+      "copied": "Copied",
+      "open": "Open email app",
+      "shortened": "Your email app gets a shorter version. Use Copy message to get the full text.",
+      "attachFiles_one": "Your {{count}} file isn't part of this message. Attach it in your email app.",
+      "attachFiles_other": "Your {{count}} files aren't part of this message. Attach them in your email app.",
+      "copyFallback": "Couldn't copy automatically. The message is selected, so press Ctrl+C (⌘C on Mac)."
+    },
+    "errors": {
+      "load": "Couldn't load support options.",
+      "retry": "Try again",
+      "send": "Couldn't send your request. Please try again.",
+      "emailInstead": "Send by email instead"
+    }
+  },
+  "feedback": {
+    "menuLabel": "Send feedback",
+    "title": "Send feedback",
+    "subtitle": "Tell us what's working, what isn't, or what you'd like to see.",
+    "kindIssue": "General feedback",
+    "kindFeedback": "Feature request",
+    "descriptionPlaceholder": "What happened, or what should we improve?",
+    "addFiles": "Add files",
+    "removeFile": "Remove",
+    "fileHint": "Optional. Up to 5 files, 5 MB each. Images, PDF, text, or CSV.",
+    "cancel": "Cancel",
+    "submit": "Submit",
+    "needReply": "Need a reply? Contact support",
+    "success": "Thanks, we received your feedback.",
+    "pending": "The email to {{email}} is taking longer than usual. If you don't hear back, contact us.",
+    "submitError": "Could not submit. Please try again.",
+    "descriptionTooShort": "Please add a bit more detail (at least 10 characters).",
+    "invalidType": "That file type is not supported.",
+    "fileTooLarge": "Each file must be 5 MB or smaller.",
+    "tooManyFiles": "You can attach up to 5 files.",
+    "filesTotalTooLarge": "Files can total up to 8 MB."
   }
 }

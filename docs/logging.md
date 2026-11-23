@@ -175,8 +175,9 @@ except Exception as e:
 - `classify_error(exc_or_status)` is one of `auth_expired`, `forbidden`, `not_found`, `rate_limited`, `timeout`, `upstream_5xx`,
   `bad_request`, `conflict`, `unavailable`, `cancelled`, `misconfigured`, `internal`. `misconfigured` is **our** configuration: the
   LLM provider rejected our key, no LLM is configured, an OAuth client registration was rejected, or a service token was refused.
-  A credential refresh also classes a token URL that cannot be sent to (no `https://`), a token endpoint that answers 2xx
-  without a token, or a token field that is not a timestamp or a number of seconds, as `misconfigured` (see Credential refresh).
+  A credential refresh, and the code exchange of the connector and toolset OAuth callbacks, also class a token URL that cannot
+  be sent to (no `https://`), a token endpoint that answers 2xx without a token, or a token field that is not a timestamp or a
+  number of seconds, as `misconfigured` (see Credential refresh).
   `auth_expired` is a user's or a connector's grant that expired or was revoked. The first decisive exception in the chain wins,
   outermost first (`__cause__`, else `__context__` unless `from None`). OAuth error codes are read before the HTTP status, our
   own `HTTPException` 5xx counts as `internal`, and our programming errors (`KeyError`, `TypeError`, …) stop the walk. It never raises.
@@ -297,6 +298,13 @@ the auth middleware bound.
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
   is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
   token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.
+- `connector.route.failed` (`log_failure`, no text), `op=rollback`: a connector create (`connectors/api/router.py`) that fails
+  after its instance write takes back its config and then the instance (an OAuth app it created or updated is left as it is).
+  `step` is the one it could not undo, `config` or `instance` (also when the instance's own org edge was not written), with
+  `connector_id`. It stops there, and the instance stays for the admin to finish or delete. After a failed `step=instance` the
+  org edge is put back when the graph answers. Where it did not (ArangoDB removes a connector's edges before its node), the
+  instance is missing from the connector list but still holds its name: `DELETE /api/v1/connectors/<connector_id>` with the
+  logged id starts its removal. The request's failure is on its own line.
 
 ## Connector sync runs
 
@@ -595,7 +603,12 @@ the calls are dispatched, bind their own call's `tool` and `tool_call_id`.
   A callback that is not for the sign-in in progress (a stale or replayed state, a used code, or a code another callback
   claimed: `OAuthStateError`) is `bad_request` at WARNING on both the connector and the toolset callback, as on the MCP
   one; so are the connector callback's missing `code` or `state` (`reason=missing_parameters`) and a state it cannot
-  decode (`reason=invalid_state`, no text).
+  decode or that is not a string `state` and `connector_id` (`reason=invalid_state`, no text).
+  Both callbacks class their token exchange's failure as a refresh classes the same answer
+  (`credential_refresh_log.token_endpoint_error_class`): an unusable token URL, a 2xx answer that is not a token or whose
+  `error` is neither a dead grant nor busy, and a token field that cannot be parsed are ERROR `misconfigured`. A 2xx answer
+  that refuses the code itself (Slack `invalid_code`, `code_already_used`; GitHub `bad_verification_code`), which only a code
+  exchange can get, is the user's stale or wrong code: WARNING `bad_request`.
   A successful sign-in is that line with `outcome=success` and `has_refresh_token`. No field of the provider's token answer
   (scopes, `uid`, `account_id`, `team_id`, `token_type`) is logged: the route serves every connector and can't tell an opaque
   id from a login.
@@ -978,7 +991,7 @@ their own HTTP clients.
   nothing; a 5xx it maps carries `{ status }` as its cause, so an upstream 500 is `upstream_5xx` (WARNING) on the request's
   lines too, and a 4xx it passes on keeps the service's words in its message. A 5xx's own detail stays in the service's log.
   A controller that passes a failure to `next` does not log it itself (see "Connector proxy (Node)"). A few catch blocks in
-  the knowledge base, toolset and MCP server controllers still log `error.response?.data`; they are being removed module by module.
+  the knowledge base controllers still log `error.response?.data`; they are being removed module by module.
 - **Request id.** A call to a PipesHub service always carries the request's sanitised root id, replacing an `x-request-id`
   copied from the client (`injectRequestHeaders`, and the axios adapter). The gateway never adds one for a third party.
 - **Streams.** The chat stream's line is written when the body ends (DEBUG), fails midway (`unavailable`, with the 200), or
@@ -1000,6 +1013,15 @@ their own HTTP clients.
   or an SDK, never `upstreamFetch`, and the request id and MCP relay header must not reach it (the axios adapter adds them
   only for registered internal targets).
 
+## Toolset and MCP server proxies (Node)
+
+The toolset (`/api/v1/toolsets`), MCP server (`/api/v1/mcp-servers`) and API toolset (`/api/v1/api-toolsets`) routes pass each
+request on to the connector service and write no line of their own for a failure they pass on: the error middleware's
+`http.request.error` is the one failure line, at its class's level, each call has its `upstream.call.end`, and a read or a
+change is told by the access line. `toolset_id` (a toolset or API toolset instance), `mcp_server_id` and `agent_id` are bound
+from the path (`bindPathLogFields`, after `guardPathParams`), the names the connector service uses, so every line of a request
+about one instance carries it. An OAuth callback's outcome is the connector service's line, under the same request id.
+
 ## Routes that answer their own errors (Node)
 
 Some routes write their error answer themselves instead of passing it to the error middleware, so `http.request.error` does not
@@ -1018,6 +1040,16 @@ run. Each says why it failed on the request's lines:
   as its `upstream.call.end` says, not `internal`.
 - **The desktop proxy** answers a desktop that is offline (409), slow (504) or refusing (502) itself; the access line's class
   comes from that status.
+- **The OAuth provider** (`/oauth2/token`, `/device_authorization`, `/revoke`, `/introspect`, the `/authorize` redirect, and
+  the OIDC bearer check) answers in RFC 6749 shape (`modules/oauth_provider/utils/oauth-failure.ts`). A refusal (an OAuth
+  error, or a deliberate `BadRequestError`, `NotFoundError`, `UnauthorizedError` or `ForbiddenError`) keeps its 4xx and its
+  RFC code: a dead, rotated or unknown refresh token is `invalid_grant`. It writes one DEBUG `oauth.request.refused` with
+  `code`, and a wrong client credential marks the access line `bad_request`. Anything else is ours, whatever its status (a
+  stored secret that no longer decrypts, a lock timeout's 409, a driver error): one `oauth.request.failed` at
+  `levelFor(classifyRequestError(error, 500))` with the error, the access line marked with that class, and the answer
+  `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
+  retries; `/authorize`: a `server_error` redirect; `/introspect`: `active: false`, as before) with a fixed description.
+  `server_error` is never a refusal's code.
 
 The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and
@@ -1142,7 +1174,10 @@ request has its one `http.request.error`. A failed call to the configuration man
 error's cause, so it is the service's class (`upstream_5xx`, `unavailable`, `timeout`; WARNING); any other answer, a 408 included,
 stays `internal` (ERROR). Its body is never logged (it can hold stored credentials). A Google
 client id or secret that is not configured is ours: 500 `internal` (ERROR). A refresh that succeeds writes `Access token refreshed
-successfully` (INFO); a config reload writes `Connector configuration updated successfully`. The `appEnabled` event the code
+successfully` (INFO); a config reload writes `Connector configuration updated successfully`. A repeat consent that Google answers
+without a refresh token keeps the user's stored one and writes `Google sent no refresh token; keeping the stored one` (INFO, no
+token values); when none is stored, or the stored one has expired, the request answers 400 (`bad_request`, WARNING) and writes
+nothing. The `appEnabled` event the code
 exchange publishes is `broker.event.published` (DEBUG, with `event_type` and `topic`). When it cannot be published, the request
 answers 503 and its one `http.request.error` (`unavailable`, WARNING) carries the broker error as the cause; the producer writes no
 line of its own.

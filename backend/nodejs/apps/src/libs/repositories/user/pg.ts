@@ -877,7 +877,7 @@ export class PgUserRepository implements UserRepository, Importable {
   async markDeleted(
     orgId: string,
     id: string,
-    extra?: { signedOut?: boolean; deletedBy?: string },
+    extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null> {
     const oid = oidOf(id);
     if (oid === undefined) return null;
@@ -895,7 +895,7 @@ export class PgUserRepository implements UserRepository, Importable {
         sets.push(`deleted_by = $${String(values.length)}`);
       }
       const { rows } = await k.query<UserRow>(
-        `/* pipeshub:identity.user_mark_deleted */ UPDATE identity.users u SET ${sets.join(', ')} WHERE u.org_id = $1 AND u.id = $2::text RETURNING ${COLS}`,
+        `/* pipeshub:identity.user_mark_deleted */ UPDATE identity.users u SET ${sets.join(', ')} WHERE u.org_id = $1 AND u.id = $2::text${extra?.onlyMember ? " AND u.role <> 'admin'" : ''} RETURNING ${COLS}`,
         values,
       );
       return rows[0] ? dto(rows[0]) : null;
