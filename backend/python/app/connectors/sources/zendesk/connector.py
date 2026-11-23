@@ -1364,7 +1364,8 @@ class ZendeskConnector(BaseConnector):
     async def _keep_organization_group(self, org_id: str) -> None:
         """Keep an unanswered organization's group through a full sync's unlink.
 
-        The org is also recorded so its tickets keep their org_ grant this sync.
+        The org is also recorded so a ticket that already had its org_ grant keeps it
+        this sync.
 
         A failed keep must not stop the tickets and Help Center: the run is reported
         incomplete instead, so nothing is unlinked and a full sync stays owed.
@@ -2125,16 +2126,55 @@ class ZendeskConnector(BaseConnector):
             # The stored node is an untyped Record the Neo4j upsert rejects, so the
             # typed record is rebuilt; keeping the status avoids re-queueing it.
             record.indexing_status = existing_record.indexing_status
+        organization_id = ticket_data.get("organization_id")
+        # An unanswered org's grant opens no new access: only a stored copy that
+        # already carries it keeps it. Such orgs are rare, so this read is too.
+        keeps_org_grant = bool(
+            has_public_comment
+            and existing_record
+            and str(organization_id) in self._unanswered_org_ids
+            and await self._has_stored_org_grant(existing_record.id, organization_id)
+        )
         permissions = self._record_permissions(
             group_id,
             requester,
-            ticket_data.get("organization_id"),
+            organization_id,
             collaborators=ticket_data.get("collaborator_ids") or [],
             include_customer_access=has_public_comment,
             assignee_id=ticket_data.get("assignee_id"),
             requester_id=ticket_data.get("requester_id"),
+            keeps_org_grant=keeps_org_grant,
         )
         return record, permissions
+
+    async def _has_stored_org_grant(self, record_id: str, organization_id: Any) -> bool:
+        """Whether the stored ticket already carries its organization's org_ grant.
+
+        A failed read answers False: the ticket then loses the grant until the
+        organization is read again, rather than gaining one it may not have.
+        """
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                group = await tx_store.get_user_group_by_external_id(
+                    self.connector_id, f"org_{organization_id}", raise_on_error=True
+                )
+                if group is None:
+                    return False
+                edge = await tx_store.get_edge(
+                    group.id,
+                    CollectionNames.GROUPS.value,
+                    record_id,
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.PERMISSION.value,
+                    raise_on_error=True,
+                )
+        except Exception as e:
+            self.logger.warning(
+                f"Zendesk: could not read whether record {record_id} has the grant of "
+                f"organization {organization_id}; it is written without it: {e}"
+            )
+            return False
+        return edge is not None
 
     def _parse_ticket_links(self, ticket_data: dict[str, Any]) -> list[RelatedExternalRecord]:
         """Map Zendesk's ticket-to-ticket links onto RecordRelations.
@@ -4009,6 +4049,7 @@ class ZendeskConnector(BaseConnector):
         include_customer_access: bool = True,
         assignee_id: Any = None,
         requester_id: Any = None,
+        keeps_org_grant: bool = False,
     ) -> list[Permission]:
         permissions: list[Permission] = [self._all_tickets_permission()]
         granted: set[str] = set()
@@ -4036,9 +4077,8 @@ class ZendeskConnector(BaseConnector):
             grant_group(f"{ORG_AGENTS_GROUP_PREFIX}{organization_id}")
         # Granted whether or not the org shares tickets: run_sync empties the group of
         # an org that does not, so toggling sharing needs no change to the tickets.
-        # An unanswered org's group is left as it is, so its tickets keep their grant.
-        unanswered_org = str(organization_id) in self._unanswered_org_ids
-        if include_customer_access and (known_org or unanswered_org):
+        # An unanswered org's group is left as it is: a ticket that had its grant keeps it.
+        if include_customer_access and (known_org or keeps_org_grant):
             grant_group(f"org_{organization_id}")
 
         emails: set[str] = set()

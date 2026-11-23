@@ -6130,20 +6130,29 @@ class _ZendeskGraph:
         self.user_groups: dict[str, AppUserGroup] = {}
         # external record id -> the permissions the last write of it carried
         self.permissions: dict[str, list] = {}
+        # record id -> the group external ids its stored permission edges come from
+        self.stored_grants: dict[str, set[str]] = {}
         self.seen = FullSyncSeen()
 
         def note(collection, node_id) -> None:
             self.seen.add(collection, node_id)
 
+        def store_grants(record, permissions) -> None:
+            self.permissions[record.external_record_id] = list(permissions)
+            self.stored_grants[record.id] = {
+                p.external_id for p in permissions
+                if p.external_id and p.external_id in self.user_groups
+            }
+
         async def on_new_records(batch) -> None:
             for record, permissions in batch:
                 self.records[record.external_record_id] = record
-                self.permissions[record.external_record_id] = list(permissions)
+                store_grants(record, permissions)
                 note(CollectionNames.RECORDS.value, record.id)
                 note(CollectionNames.RECORD_GROUPS.value, record.external_record_group_id)
 
         async def on_updated_record_permissions(record, permissions) -> None:
-            self.permissions[record.external_record_id] = list(permissions)
+            store_grants(record, permissions)
             note(CollectionNames.RECORDS.value, record.id)
 
         async def on_new_record_groups(batch) -> None:
@@ -6191,6 +6200,13 @@ class _ZendeskGraph:
         async def get_record_group_by_external_id(connector_id, external_id):
             return MagicMock(id=external_id) if external_id in self.record_groups else None
 
+        async def get_user_group_by_external_id(_connector_id, external_id, **_):
+            return MagicMock(id=external_id) if external_id in self.user_groups else None
+
+        async def get_edge(from_id, _from_collection, to_id, _to_collection, collection, **_):
+            assert collection == CollectionNames.PERMISSION.value
+            return {} if from_id in self.stored_grants.get(to_id, set()) else None
+
         def note_kept_records(_connector_id, record_ids) -> None:
             for record_id in record_ids:
                 note(CollectionNames.RECORDS.value, record_id)
@@ -6225,6 +6241,8 @@ class _ZendeskGraph:
         tx_store.get_record_group_by_external_id = AsyncMock(
             side_effect=get_record_group_by_external_id
         )
+        tx_store.get_user_group_by_external_id = AsyncMock(side_effect=get_user_group_by_external_id)
+        tx_store.get_edge = AsyncMock(side_effect=get_edge)
 
     def _stored(self) -> dict[str, dict[str, str]]:
         """collection -> {node id the run notes: name in these tests}."""
@@ -6431,6 +6449,79 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         await graph.full_sync()
 
         assert "org_9" not in {p.external_id for p in graph.permissions["101"]}
+
+    @staticmethod
+    def _add_ticket(graph, ticket_id: int, organization_id: int) -> None:
+        graph.tenant.tickets[ticket_id] = {
+            **graph.tenant.tickets[101], "id": ticket_id, "subject": f"Ticket {ticket_id}",
+            "organization_id": organization_id,
+        }
+        graph.tenant.comments[ticket_id] = [{"id": ticket_id, "public": True, "attachments": []}]
+
+    @staticmethod
+    def _grants(graph, external_id: str) -> set[str]:
+        return {p.external_id for p in graph.permissions[external_id]}
+
+    async def test_a_new_ticket_of_an_unanswered_organization_gets_no_org_grant(
+        self, graph
+    ) -> None:
+        """The organization may have stopped sharing tickets: no new access is opened."""
+        await self._seed(graph)
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        self._add_ticket(graph, 103, 9)
+
+        await graph.full_sync()
+
+        assert "org_9" in self._grants(graph, "101")
+        assert "org_9" not in self._grants(graph, "103")
+
+    async def test_a_ticket_moved_into_an_unanswered_organization_gets_no_org_grant(
+        self, graph
+    ) -> None:
+        """Its stored copy carries another organization's grant, not this one's."""
+        graph.tenant.orgs[10] = {**graph.tenant.orgs[9], "id": 10, "name": "Other"}
+        graph.tenant.exported_orgs.add(10)
+        self._add_ticket(graph, 103, 10)
+        await self._seed(graph)
+        assert {"org_10"} <= self._grants(graph, "103")
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        graph.tenant.tickets[103] = {
+            **graph.tenant.tickets[103], "organization_id": 9,
+            "updated_at": "2026-01-03T00:00:00Z",
+        }
+
+        await graph.full_sync()
+
+        assert "org_9" in self._grants(graph, "101")
+        assert not {"org_9", "org_10"} & self._grants(graph, "103")
+
+    async def test_a_failed_stored_grant_read_writes_the_ticket_without_the_org_grant(
+        self, graph, mock_tx_store
+    ) -> None:
+        """Fail closed: a store error never grants an unanswered organization."""
+        await self._seed(graph)
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        mock_tx_store.get_edge = AsyncMock(side_effect=RuntimeError("store down"))
+
+        done, _ = await graph.full_sync()
+
+        assert done is True
+        assert "101" in graph.records
+        assert "org_9" not in self._grants(graph, "101")
+
+    async def test_a_new_ticket_of_a_readable_organization_gets_its_org_grant(
+        self, graph
+    ) -> None:
+        await self._seed(graph)
+        self._add_ticket(graph, 103, 9)
+
+        await graph.full_sync()
+
+        assert "org_9" in self._grants(graph, "101")
+        assert "org_9" in self._grants(graph, "103")
 
     async def test_an_organization_deleted_at_the_source_loses_its_groups(self, graph) -> None:
         await self._seed(graph)
