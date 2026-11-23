@@ -306,7 +306,8 @@ async def _maxmemory_policies(redis: Redis) -> tuple[list[str], list[Exception]]
     answer."""
     if callable(getattr(type(redis), "get_primaries", None)):  # a cluster client (no client import outside the providers)
         # The node list is empty until the client has loaded the slot map, and an empty list must not read as safe.
-        await redis.initialize()  # type: ignore[attr-defined]
+        # With every node down the client keeps retrying; start-up must not wait out the outage.
+        await asyncio.wait_for(redis.initialize(), EVICTION_CHECK_TIMEOUT_SECONDS)  # type: ignore[attr-defined]
         primaries = redis.get_primaries()  # type: ignore[attr-defined]
         if not primaries:
             raise RuntimeError("Redis Cluster reported no primaries")
@@ -317,7 +318,8 @@ async def _maxmemory_policies(redis: Redis) -> tuple[list[str], list[Exception]]
     errors: list[Exception] = []
     for read in reads:
         try:
-            info = await read
+            # Each primary has its own deadline, so a slow one cannot discard what the others already answered.
+            info = await asyncio.wait_for(read, EVICTION_CHECK_TIMEOUT_SECONDS)
         except Exception as exc:
             errors.append(exc)
             continue
@@ -331,8 +333,7 @@ async def check_eviction_policy(redis: Redis, logger: Logger | None = None, serv
     ``UnsafeEvictionPolicyError`` instead. A Redis that cannot be read is not a reason to stop."""
     global _eviction_warning  # noqa: PLW0603 - module state read by /health
     try:
-        # With every node down a cluster client can keep retrying; start-up must not wait out the outage.
-        policies, errors = await asyncio.wait_for(_maxmemory_policies(redis), EVICTION_CHECK_TIMEOUT_SECONDS)
+        policies, errors = await _maxmemory_policies(redis)
     except Exception as exc:
         errors, policies = [exc], []
     if errors and logger is not None:

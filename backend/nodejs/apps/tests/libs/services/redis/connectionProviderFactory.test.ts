@@ -455,6 +455,27 @@ describe('checkRedisEvictionPolicy', () => {
     });
   }
 
+  it('a primary that never answers does not discard an allkeys answer', async () => {
+    const provider = new FakeProvider(config());
+    (provider as { isCluster: boolean }).isCluster = true;
+    provider.getClient = () =>
+      ({
+        status: 'ready',
+        ping: async () => 'PONG',
+        nodes: () => [
+          { info: async () => 'maxmemory_policy:allkeys-lru\r\n' },
+          { info: () => new Promise(() => {}) }, // never answers
+        ],
+      }) as unknown as RedisClient;
+    let thrown: Error | undefined;
+    try {
+      await checkRedisEvictionPolicy(provider, 20);
+    } catch (error) {
+      thrown = error as Error;
+    }
+    expect(thrown?.message).to.match(/allkeys-lru/);
+  });
+
   it('does not wait out a cluster that never becomes ready', async () => {
     const provider = new FakeProvider(config());
     (provider as { isCluster: boolean }).isCluster = true;

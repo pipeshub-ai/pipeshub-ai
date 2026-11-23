@@ -248,6 +248,32 @@ class TestEvictionPolicy:
         assert await asyncio.wait_for(replay_set.check_eviction_policy(Cluster(), logger), 5) == "earlier warning"
         logger.warning.assert_called_once()
 
+    async def test_a_primary_that_never_answers_does_not_discard_an_allkeys_answer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The first primary answered allkeys-lru; the next one's INFO never returns. The deadline is per primary, so
+        # the answer already read still refuses the start.
+        monkeypatch.setattr(replay_set, "EVICTION_CHECK_TIMEOUT_SECONDS", 0.05)
+        nodes = [MagicMock(name="primary-0"), MagicMock(name="primary-1")]
+
+        async def info(_section: str, target_nodes: MagicMock) -> dict[str, str]:
+            if target_nodes is nodes[1]:
+                await asyncio.Event().wait()
+            return {"maxmemory_policy": "allkeys-lru"}
+
+        class Cluster:
+            async def initialize(self) -> None:
+                return None
+
+            def get_primaries(self) -> list[MagicMock]:
+                return nodes
+
+        cluster = Cluster()
+        cluster.info = info  # type: ignore[attr-defined]
+        logger = MagicMock()
+
+        with pytest.raises(replay_set.UnsafeEvictionPolicyError):
+            await asyncio.wait_for(replay_set.check_eviction_policy(cluster, logger), 5)
+        logger.warning.assert_any_call("Redis eviction policy not read on %d node(s): %s", 1, "TimeoutError")
+
     async def test_a_cluster_that_reports_no_primaries_is_unreadable_not_safe(self) -> None:
         logger = MagicMock()
 

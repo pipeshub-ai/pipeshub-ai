@@ -249,9 +249,26 @@ export async function closeAllRedisProviders(): Promise<void> {
  * `INFO memory` because managed Redis often blocks `CONFIG GET`; a Redis that
  * cannot be read is not a reason to stop.
  */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Redis did not answer in time')),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function checkRedisEvictionPolicy(
   provider: IRedisConnectionProvider,
-  readyDeadlineMs = 10_000,
+  deadlineMs = 10_000,
 ): Promise<void> {
   if (provider instanceof NoRedisProvider) {
     return;
@@ -266,28 +283,15 @@ export async function checkRedisEvictionPolicy(
       const cluster = client as Cluster;
       // With every endpoint down the ping never settles; start-up must not wait out the outage.
       if (cluster.status !== 'ready') {
-        let timer: NodeJS.Timeout | undefined;
-        try {
-          await Promise.race([
-            cluster.ping(),
-            new Promise((_, reject) => {
-              timer = setTimeout(
-                () => reject(new Error('Redis Cluster not ready')),
-                readyDeadlineMs,
-              );
-            }),
-          ]);
-        } finally {
-          clearTimeout(timer);
-        }
+        await withDeadline(cluster.ping(), deadlineMs);
       }
       nodes = cluster.nodes('master');
       if (nodes.length === 0)
         throw new Error('Redis Cluster reported no primaries');
     }
-    // Each primary on its own: one that fails must not hide another's answer.
+    // Each primary on its own, with its own deadline: one that fails or hangs must not hide another's answer.
     const reads = await Promise.allSettled(
-      nodes.map((node) => node.info('memory')),
+      nodes.map((node) => withDeadline(node.info('memory'), deadlineMs)),
     );
     const failed = reads.filter((r) => r.status === 'rejected').length;
     if (failed > 0) {
