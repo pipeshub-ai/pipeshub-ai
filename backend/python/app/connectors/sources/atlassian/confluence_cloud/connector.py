@@ -578,6 +578,10 @@ class ConfluenceConnector(BaseConnector):
         # Email from GET /wiki/rest/api/user/current (cached in init)
         self._authenticated_confluence_email: str | None = None
         self._authenticated_confluence_account_id: str | None = None
+        # Whether this run's user search was read to its end (not failed, repeated or capped), and the email of every
+        # user it listed, whatever their status.
+        self._user_list_complete: bool = False
+        self._listed_user_emails: set[str] = set()
 
         # Initialize sync points for incremental sync
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -933,9 +937,10 @@ class ConfluenceConnector(BaseConnector):
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
 
-            await self.register_authenticated_source_user(
-                self._authenticated_confluence_email, self._authenticated_confluence_account_id
-            )
+            # Reset so a value left by an earlier run never counts as this run's listing.
+            self._user_list_complete = False
+            self._listed_user_emails = set()
+            await self.drop_authenticator_link_if_listed()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -949,6 +954,13 @@ class ConfluenceConnector(BaseConnector):
             # Step 2: Sync groups and memberships
             await self._sync_user_groups()
             await self._reconcile_inactive_app_users()
+            await self.register_authenticated_source_user(
+                self._authenticated_confluence_email, self._authenticated_confluence_account_id,
+                listing_complete=self._user_list_complete,
+                # Every listed user, inactive ones too: withdrawing one removes the edge that would otherwise show
+                # them as listed.
+                extra_present_emails=self._listed_user_emails,
+            )
 
             # Step 3: Sync spaces
             spaces = await self._sync_spaces()
@@ -1256,6 +1268,8 @@ class ConfluenceConnector(BaseConnector):
         try:
             self.logger.info("Starting user synchronization...")
             self._held_back_users = []
+            self._user_list_complete = False
+            self._listed_user_emails = set()
 
             # Pagination variables
             batch_size = 100
@@ -1306,6 +1320,7 @@ class ConfluenceConnector(BaseConnector):
                         self.logger.warning(f"Skipping user creation with name : {user_data.get('displayName')}, Reason: No email found for the user")
                         total_skipped += 1
                         continue
+                    self._listed_user_emails.add(email.lower())
 
                     app_user = self._transform_to_app_user(user_data)
                     if not app_user:
@@ -1339,6 +1354,10 @@ class ConfluenceConnector(BaseConnector):
             elif user_list_complete and seen_account_ids:
                 await self._withdraw_users_gone_from_source(seen_account_ids)
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
+            # A capped search (users past the cap are unseen) and an empty one are not the whole directory.
+            self._user_list_complete = bool(
+                user_list_complete and seen_account_ids and len(seen_account_ids) < USER_SEARCH_CAP
+            )
 
             try:
                 if user_list_complete and len(seen_account_ids) < USER_SEARCH_CAP:

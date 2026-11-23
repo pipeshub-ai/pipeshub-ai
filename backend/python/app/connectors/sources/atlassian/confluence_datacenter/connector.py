@@ -360,6 +360,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         self.external_client: Optional[ExternalConfluenceClient] = None
         self.data_source: Optional[ConfluenceDataSource] = None
         self.connector_id: str = connector_id
+        # Whether this run's user listing was read to its end, and the email of every user it listed.
+        self._users_listing_complete: bool = False
+        self._listed_user_emails: set[str] = set()
 
         # Initialize sync points for incremental sync
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -478,7 +481,12 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         except Exception as e:
             self.logger.debug("Could not read the authenticated Confluence account: %s", e)
             return
-        await self.register_authenticated_source_user(email or None, source_user_id)
+        await self.register_authenticated_source_user(
+            email or None, source_user_id,
+            listing_complete=self._users_listing_complete,
+            # Every listed user: the listing's emails, not only the ones the user sync wrote.
+            extra_present_emails=self._listed_user_emails,
+        )
 
     async def run_sync(self) -> None:
         """
@@ -505,7 +513,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
 
-            await self._register_authenticated_identity()
+            # Reset so a value left by an earlier run never counts as this run's listing.
+            self._users_listing_complete = False
+            self._listed_user_emails = set()
+            await self.drop_authenticator_link_if_listed()
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -514,6 +525,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
             # Step 1: Sync users
             await self._sync_users()
+            await self._register_authenticated_identity()
 
             # Step 2: Sync groups and memberships
             await self._sync_user_groups()
@@ -643,6 +655,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             start = 0
             total_synced = 0
             total_skipped = 0
+            self._users_listing_complete = False
+            self._listed_user_emails = set()
+            listed_any = False
 
             # Paginate through all users
             while True:
@@ -671,7 +686,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 users_data = response_data.get("results", [])
 
                 if not users_data:
+                    self._users_listing_complete = listed_any
                     break
+                listed_any = True
 
                 # Transform users (skip users without email)
                 app_users = []
@@ -689,6 +706,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         self.logger.warning(f"Skipping user creation with name : {user_data.get('displayName')}, Reason: No email found for the user")
                         total_skipped += 1
                         continue
+                    self._listed_user_emails.add(email.lower())
 
                     app_user = self._transform_to_app_user(user_data)
                     if app_user:
@@ -722,6 +740,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                 # Check if we've reached the end
                 if len(users_data) < batch_size:
+                    self._users_listing_complete = True
                     break
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")

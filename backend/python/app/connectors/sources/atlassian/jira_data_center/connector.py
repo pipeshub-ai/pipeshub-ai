@@ -566,6 +566,8 @@ class JiraDataCenterConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # Emails of every account this sync's user read listed, whatever its status.
+        self._listed_user_emails: set[str] = set()
         self._stored_app_users: list[AppUser] = []
         self._listed_user_keys: set[str] = set()
         # Every account the user list showed, active or not.
@@ -996,25 +998,24 @@ class JiraDataCenterConnector(BaseConnector):
     # Sync Orchestration
     # ============================================================================
 
-    async def _register_authenticated_identity(self) -> None:
-        """Record which source account this connector is authenticated as, so a creator whose
-        PipesHub email differs still resolves that account's permissions for this connector."""
+    async def _read_own_account(self) -> tuple[str | None, str | None]:
+        """The email and key of the account this connector is authenticated as, so a creator whose PipesHub
+        email differs still resolves that account's permissions. Sets ``_own_key``, which the user sync keeps
+        eligible; (None, None) when it cannot be read."""
         if not self.data_source:
-            return
+            return None, None
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_current_user_v2()
             if not response or response.status != HttpStatusCode.OK.value:
-                return
+                return None, None
             data = self._safe_json_parse(response, "GET /rest/api/2/myself") or {}
         except Exception as e:
             self.logger.debug("Could not read the authenticated Jira account: %s", e)
-            return
+            return None, None
         email = data.get("emailAddress")
         self._own_key = data.get("accountId") or data.get("key") or data.get("name")
-        await self.register_authenticated_source_user(
-            email.strip() if isinstance(email, str) else None, self._own_key,
-        )
+        return (email.strip() if isinstance(email, str) else None), self._own_key
 
     async def _read_server_version(self) -> None:
         """Read the server's version once per sync. GET /rest/api/2/serverInfo's ServerInfoBean has no documented
@@ -1061,7 +1062,10 @@ class JiraDataCenterConnector(BaseConnector):
                         "check auth configuration (authType / baseUrl / credentials)"
                     )
 
-            await self._register_authenticated_identity()
+            # Reset so a value left by an earlier run never counts as this run's listing.
+            self._listed_user_emails = set()
+            await self.drop_authenticator_link_if_listed()
+            own_email, own_key = await self._read_own_account()
             await self._read_server_version()
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
@@ -1082,6 +1086,8 @@ class JiraDataCenterConnector(BaseConnector):
             self._kept_unread_access = False
             self._kept_after_refusal = []
             jira_users = await self._fetch_users()
+            # Taken here: the withdrawals below prune the stored users this reads.
+            directory_complete = self._directory_read_complete()
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
                 # was read, since holding it back would leave it with no access at all.
@@ -1096,6 +1102,12 @@ class JiraDataCenterConnector(BaseConnector):
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
             await self._withdraw_unlisted_app_users(jira_users)
+            await self.register_authenticated_source_user(
+                own_email, own_key, listing_complete=directory_complete,
+                # Every listed account, deactivated or ineligible too: withdrawing one removes the edge that
+                # would otherwise show them as listed.
+                extra_present_emails=self._listed_user_emails,
+            )
 
             # Fetch and sync user groups (returns mapping for role resolution). Saving a
             # group replaces its members, so on an unfinished user read a group whose
@@ -1697,6 +1709,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         self._dc_name_to_source_id = {}
         self._user_read_unfinished = False
+        self._listed_user_emails = set()
 
         # A failed read raises: read as no links, it would link no one while product access is unknown.
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
@@ -1725,6 +1738,9 @@ class JiraDataCenterConnector(BaseConnector):
             if not user_key:
                 continue
             self._seen_user_keys.add(user_key)
+            listed_email = user.get("emailAddress")
+            if isinstance(listed_email, str) and listed_email.strip():
+                self._listed_user_emails.add(listed_email.strip().lower())
             if not user.get("active", True):
                 continue
 
@@ -1794,6 +1810,7 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.info("👥 All Jira DC users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira DC AppUsers resolved")
+        self._listed_user_emails |= {u.email.lower() for u in resolved.values() if u.email}
         if self._user_read_unfinished:
             self.logger.warning(
                 "⚠️ The Jira user list could not be read in full; when an earlier sync left access to keep, "

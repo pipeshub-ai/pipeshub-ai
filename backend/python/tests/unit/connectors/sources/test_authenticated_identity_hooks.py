@@ -835,20 +835,26 @@ class TestJiraDataCenter:
             data_source=MagicMock(),
             _get_fresh_datasource=AsyncMock(return_value=datasource),
             _safe_json_parse=MagicMock(return_value=profile),
+            _own_key=None,
         )
 
     async def test_data_center_identifies_the_account_by_its_key(self) -> None:
         conn = self._conn(HttpStatusCode.OK.value, {"emailAddress": " dev@corp.com ", "key": "JIRAUSER10100", "name": "dev"})
 
-        await JiraDataCenterConnector._register_authenticated_identity(conn)
+        assert await JiraDataCenterConnector._read_own_account(conn) == ("dev@corp.com", "JIRAUSER10100")
+        conn.register_authenticated_source_user.assert_not_awaited()
 
-        assert _registered(conn) == ("dev@corp.com", "JIRAUSER10100")
+    async def test_own_key_is_set_before_eligibility(self) -> None:
+        conn = self._conn(HttpStatusCode.OK.value, {"emailAddress": "dev@corp.com", "key": "JIRAUSER10100"})
 
-    async def test_a_refused_read_never_reaches_the_link(self) -> None:
+        await JiraDataCenterConnector._read_own_account(conn)
+
+        assert conn._own_key == "JIRAUSER10100"
+
+    async def test_a_refused_read_gives_nothing_to_link(self) -> None:
         conn = self._conn(HttpStatusCode.UNAUTHORIZED.value)
 
-        await JiraDataCenterConnector._register_authenticated_identity(conn)
-
+        assert await JiraDataCenterConnector._read_own_account(conn) == (None, None)
         conn.register_authenticated_source_user.assert_not_awaited()
 
 
@@ -861,6 +867,8 @@ class TestConfluenceDataCenter:
             ConfluenceDataCenterConnector,
             data_source=MagicMock(),
             _get_fresh_datasource=AsyncMock(return_value=datasource),
+            _users_listing_complete=True,
+            _listed_user_emails={"dev@corp.com"},
         )
 
     async def test_registers_the_current_user_by_user_key(self) -> None:
@@ -967,3 +975,467 @@ class TestGoogleDriveIndividual:
             await GoogleDriveIndividualConnector.run_sync(conn)
 
         assert _registered(conn) == ("me@gmail.com", "09120187146347425491")
+
+
+# ---------------------------------------------------------------------------
+# Atlassian: the removal pass first, the full pass after the users are written
+# ---------------------------------------------------------------------------
+
+
+class _AtlassianStop(Exception):
+    pass
+
+
+def _steps(order: list[str]):
+    def step(name: str, result: object = None, error: Exception | None = None) -> AsyncMock:
+        async def _run(*_: object, **__: object) -> object:
+            order.append(name)
+            if error:
+                raise error
+            return result
+        return AsyncMock(side_effect=_run)
+    return step
+
+
+class TestJiraCloudSyncOrder:
+    def _conn(self, order: list[str], *, active_users: list, complete: bool = True) -> MagicMock:
+        step = _steps(order)
+        conn = _connector(
+            JiraConnector, data_source=MagicMock(), config_service=MagicMock(),
+            _authenticated_jira_email="admin@corp.com", _authenticated_jira_account_id="acc-admin",
+            _listed_user_emails=set(), _deactivated_account_ids=set(), _shown_inactive_ids=set(),
+            _user_read_unfinished=False,
+        )
+        conn._expire_org_gate = AsyncMock()
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn.data_entities_processor = MagicMock(
+            get_all_active_users=step("active", active_users), on_new_app_users=step("write"),
+        )
+
+        async def fetch(**_: object) -> list:
+            order.append("fetch")
+            conn._listed_user_emails = {"creator@corp.com"}
+            return [MagicMock()]
+
+        conn._fetch_users = AsyncMock(side_effect=fetch)
+        conn._directory_read_complete = MagicMock(return_value=complete)
+        conn._fetch_application_roles_to_groups_mapping = step("roles", {})
+        conn._read_level_roles = step("level")
+        conn._keep_licensed_users = step("licence", [MagicMock()])
+        conn._unlicensed_ids = MagicMock(return_value=set())
+        conn._note_newly_listed = step("noted", set())
+        conn._withdraw_ineligible_app_users = step("withdraw")
+        conn.register_authenticated_source_user = step("register", error=_AtlassianStop())
+        return conn
+
+    async def _run(self, conn: MagicMock) -> None:
+        with patch(
+            "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
+            AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ):
+            await JiraConnector.run_sync(conn)
+
+    async def test_the_removal_pass_runs_even_when_the_run_stops_for_no_active_users(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order, active_users=[])
+
+        await self._run(conn)
+
+        assert order == ["drop", "active"]
+
+    async def test_the_full_pass_runs_after_the_users_are_written_and_withdrawn(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order, active_users=[MagicMock()])
+
+        with pytest.raises(_AtlassianStop):
+            await self._run(conn)
+
+        assert order.index("drop") < order.index("fetch")
+        assert order.index("write") < order.index("withdraw") < order.index("register")
+        kwargs = conn.register_authenticated_source_user.await_args.kwargs
+        assert kwargs["extra_present_emails"] == {"creator@corp.com"}
+
+    @pytest.mark.parametrize("complete", [True, False])
+    async def test_listing_complete_follows_the_directory_read(self, complete: bool) -> None:
+        conn = self._conn([], active_users=[MagicMock()], complete=complete)
+
+        with pytest.raises(_AtlassianStop):
+            await self._run(conn)
+
+        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is complete
+
+    async def test_the_emails_of_a_previous_run_are_not_this_runs_listing(self) -> None:
+        conn = self._conn([], active_users=[MagicMock()])
+        conn._listed_user_emails = {"stale@corp.com"}
+        conn._fetch_users = AsyncMock(return_value=[MagicMock()])
+
+        with pytest.raises(_AtlassianStop):
+            await self._run(conn)
+
+        assert conn.register_authenticated_source_user.await_args.kwargs["extra_present_emails"] == set()
+
+    async def test_every_listed_account_counts_as_listed_whatever_its_status(self) -> None:
+        raw = [
+            {"accountId": "a1", "accountType": "atlassian", "active": True, "emailAddress": "Live@corp.com"},
+            {"accountId": "a2", "accountType": "atlassian", "active": False, "emailAddress": "Gone@Corp.com"},
+            {"accountId": "a3", "accountType": "app", "active": True, "emailAddress": "bot@corp.com"},
+            {"accountId": "a4", "accountType": "atlassian", "active": True},
+        ]
+        conn = _connector(
+            JiraConnector, data_source=MagicMock(), connector_name="JIRA", _user_bulk_forbidden=False,
+            _user_read_unfinished=False, _listed_user_emails={"stale@corp.com"},
+        )
+        conn.data_entities_processor = MagicMock(
+            org_id="org", get_all_app_users=AsyncMock(return_value=[]),
+        )
+        conn._fetch_all_jira_users_bulk = AsyncMock(return_value=raw)
+
+        await JiraConnector._fetch_users(conn, active_pipeshub_users=[])
+
+        assert conn._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+
+
+class TestJiraDataCenterSyncOrder:
+    def _conn(self, order: list[str], *, active_users: list, complete: bool = True) -> MagicMock:
+        step = _steps(order)
+        conn = _connector(
+            JiraDataCenterConnector, data_source=MagicMock(), config_service=MagicMock(), _listed_user_emails=set(),
+            _user_read_unfinished=False,
+        )
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn._read_own_account = step("own", ("admin@corp.com", "key-admin"))
+        conn._read_server_version = step("version")
+        conn.data_entities_processor = MagicMock(
+            get_all_active_users=step("active", active_users), on_new_app_users=step("write"),
+        )
+
+        async def fetch() -> list:
+            order.append("fetch")
+            conn._listed_user_emails = {"creator@corp.com"}
+            return [MagicMock()]
+
+        conn._fetch_users = AsyncMock(side_effect=fetch)
+        conn._directory_read_complete = MagicMock(return_value=complete)
+        conn._eligible_users = step("eligible", [MagicMock()])
+        conn._note_newly_listed = step("noted", set())
+        conn._withdraw_unlisted_app_users = step("withdraw")
+        conn.register_authenticated_source_user = step("register", error=_AtlassianStop())
+        return conn
+
+    async def _run(self, conn: MagicMock) -> None:
+        with patch(
+            "app.connectors.sources.atlassian.jira_data_center.connector.load_connector_filters",
+            AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ):
+            await JiraDataCenterConnector.run_sync(conn)
+
+    async def test_the_removal_pass_runs_even_when_the_run_stops_for_no_active_users(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order, active_users=[])
+
+        await self._run(conn)
+
+        assert order[0] == "drop" and "own" in order and "register" not in order
+
+    async def test_the_account_is_read_early_and_registered_after_the_users(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order, active_users=[MagicMock()])
+
+        with pytest.raises(_AtlassianStop):
+            await self._run(conn)
+
+        assert order.index("own") < order.index("eligible")
+        assert order.index("write") < order.index("withdraw") < order.index("register")
+        args = conn.register_authenticated_source_user.await_args
+        assert args.args == ("admin@corp.com", "key-admin")
+        assert args.kwargs["extra_present_emails"] == {"creator@corp.com"}
+
+    @pytest.mark.parametrize("complete", [True, False])
+    async def test_listing_complete_follows_the_directory_read(self, complete: bool) -> None:
+        conn = self._conn([], active_users=[MagicMock()], complete=complete)
+
+        with pytest.raises(_AtlassianStop):
+            await self._run(conn)
+
+        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is complete
+
+    async def test_the_emails_of_a_previous_run_are_not_this_runs_listing(self) -> None:
+        conn = self._conn([], active_users=[MagicMock()])
+        conn._listed_user_emails = {"stale@corp.com"}
+        conn._fetch_users = AsyncMock(return_value=[MagicMock()])
+
+        with pytest.raises(_AtlassianStop):
+            await self._run(conn)
+
+        assert conn.register_authenticated_source_user.await_args.kwargs["extra_present_emails"] == set()
+
+    async def test_every_listed_account_counts_as_listed_whatever_its_status(self) -> None:
+        raw = [
+            {"key": "k1", "active": True, "emailAddress": "Live@corp.com", "name": "live"},
+            {"key": "k2", "active": False, "emailAddress": "Gone@Corp.com", "name": "gone"},
+        ]
+        conn = _connector(
+            JiraDataCenterConnector, data_source=MagicMock(), connector_name="JIRA", _user_bulk_forbidden=False,
+            _user_bulk_incomplete=False, _user_read_unfinished=False, _listed_user_emails={"stale@corp.com"},
+            _dc_name_to_source_id={}, _seen_user_keys=set(),
+        )
+        conn.data_entities_processor = MagicMock(
+            org_id="org", get_all_app_users=AsyncMock(return_value=[]),
+            get_all_active_users=AsyncMock(return_value=[]),
+        )
+        conn._fetch_all_jira_users_bulk = AsyncMock(return_value=raw)
+
+        await JiraDataCenterConnector._fetch_users(conn)
+
+        assert conn._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+
+
+class TestConfluenceCloudSyncOrder:
+    def _conn(self, order: list[str], *, complete: bool = True) -> MagicMock:
+        step = _steps(order)
+        conn = _connector(
+            ConfluenceConnector, data_source=MagicMock(), external_client=MagicMock(), config_service=MagicMock(),
+            _authenticated_confluence_email="admin@corp.com", _authenticated_confluence_account_id="acc-admin",
+            _user_list_complete=complete, _listed_user_emails={"creator@corp.com"}, _in_use=0, _close_after_sync=False,
+        )
+        conn.data_entities_processor = MagicMock(org_id="org")
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn._open_audit_window = step("audit")
+        conn._sync_users = step("users")
+        conn._sync_user_groups = step("groups")
+        conn._reconcile_inactive_app_users = step("reconcile")
+        conn.register_authenticated_source_user = step("register", error=_AtlassianStop())
+        conn._report_sync_problems = AsyncMock()
+        conn._release = AsyncMock()
+        return conn
+
+    async def _run(self, conn: MagicMock) -> None:
+        with patch(
+            "app.connectors.sources.atlassian.confluence_cloud.connector.load_connector_filters",
+            AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ):
+            await ConfluenceConnector.run_sync(conn)
+
+    async def test_the_removal_pass_runs_first_and_the_full_pass_after_the_user_writes_and_withdrawals(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order)
+
+        with pytest.raises(_AtlassianStop):
+            await self._run(conn)
+
+        assert order == ["drop", "audit", "users", "groups", "reconcile", "register"]
+
+    @pytest.mark.parametrize("complete", [True, False])
+    async def test_listing_complete_follows_the_user_search(self, complete: bool) -> None:
+        conn = self._conn([])
+        conn._sync_users = AsyncMock(side_effect=lambda: setattr(conn, "_user_list_complete", complete))
+
+        with pytest.raises(_AtlassianStop):
+            await self._run(conn)
+
+        kwargs = conn.register_authenticated_source_user.await_args.kwargs
+        assert kwargs["listing_complete"] is complete
+        assert kwargs["extra_present_emails"] is conn._listed_user_emails
+
+    async def test_a_flag_left_by_an_earlier_run_is_reset_before_the_search(self) -> None:
+        conn = self._conn([], complete=True)
+        conn._sync_users = AsyncMock(side_effect=RuntimeError("search down"))
+
+        with pytest.raises(RuntimeError):
+            await self._run(conn)
+
+        assert conn._user_list_complete is False and conn._listed_user_emails == set()
+
+
+def _confluence_cloud_search(pages: list) -> MagicMock:
+    responses = [SimpleNamespace(status=status, json=lambda body=body: body) for status, body in pages]
+    return MagicMock(search_users=AsyncMock(side_effect=responses))
+
+
+def _cloud_user(account_id: str, email: str = "") -> dict:
+    return {"user": {"accountId": account_id, "email": email}}
+
+
+class TestConfluenceCloudUserListing:
+    def _conn(self, datasource: MagicMock, inactive: set[str] | None = None) -> MagicMock:
+        conn = _connector(
+            ConfluenceConnector, _held_back_users=[], _user_list_complete=True, _listed_user_emails={"stale@corp.com"},
+            _account_statuses_known=True, _inactive_account_ids=inactive or set(),
+        )
+        conn._get_fresh_datasource = AsyncMock(return_value=datasource)
+        conn._note_problem = MagicMock()
+        conn._save_app_users = AsyncMock()
+        conn._withdraw_users_gone_from_source = AsyncMock()
+        conn._link_platform_users_via_jira = AsyncMock()
+        conn._transform_to_app_user = lambda data: SimpleNamespace(
+            source_user_id=data["accountId"], email=data["email"],
+        )
+        return conn
+
+    async def test_a_search_read_to_an_empty_page_is_complete_and_names_every_listed_email(self) -> None:
+        datasource = _confluence_cloud_search([
+            (200, {"results": [_cloud_user("a1", "Live@corp.com"), _cloud_user("a2", "Gone@corp.com")]}),
+            (200, {"results": []}),
+        ])
+        conn = self._conn(datasource, inactive={"a2"})
+
+        await ConfluenceConnector._sync_users(conn)
+
+        assert conn._user_list_complete is True
+        assert conn._listed_user_emails == {"live@corp.com", "gone@corp.com"}
+
+    async def test_a_failed_page_is_an_incomplete_search(self) -> None:
+        datasource = _confluence_cloud_search([
+            (200, {"results": [_cloud_user("a1", "live@corp.com")]}),
+            (503, {}),
+        ])
+        conn = self._conn(datasource)
+
+        await ConfluenceConnector._sync_users(conn)
+
+        assert conn._user_list_complete is False
+
+    async def test_a_repeated_page_is_an_incomplete_search(self) -> None:
+        page = (200, {"results": [_cloud_user("a1", "live@corp.com")]})
+        conn = self._conn(_confluence_cloud_search([page, page]))
+
+        await ConfluenceConnector._sync_users(conn)
+
+        assert conn._user_list_complete is False
+
+    async def test_a_capped_search_is_incomplete(self) -> None:
+        datasource = _confluence_cloud_search([
+            (200, {"results": [_cloud_user("a1", "a@corp.com"), _cloud_user("a2", "b@corp.com")]}),
+            (200, {"results": []}),
+        ])
+        conn = self._conn(datasource)
+
+        with patch("app.connectors.sources.atlassian.confluence_cloud.connector.USER_SEARCH_CAP", 2):
+            await ConfluenceConnector._sync_users(conn)
+
+        assert conn._user_list_complete is False
+
+    async def test_an_empty_search_is_incomplete(self) -> None:
+        conn = self._conn(_confluence_cloud_search([(200, {"results": []})]))
+
+        await ConfluenceConnector._sync_users(conn)
+
+        assert conn._user_list_complete is False
+
+    async def test_a_search_that_raises_never_leaves_a_complete_flag(self) -> None:
+        conn = self._conn(MagicMock(search_users=AsyncMock(side_effect=OSError("reset"))))
+
+        with pytest.raises(OSError):
+            await ConfluenceConnector._sync_users(conn)
+
+        assert conn._user_list_complete is False
+
+
+class TestConfluenceDataCenterSyncOrder:
+    def _conn(self, order: list[str]) -> MagicMock:
+        step = _steps(order)
+        conn = _connector(
+            ConfluenceDataCenterConnector, external_client=MagicMock(), data_source=MagicMock(),
+            config_service=MagicMock(), _users_listing_complete=True, _listed_user_emails={"stale@corp.com"},
+        )
+        conn.data_entities_processor = MagicMock(org_id="org")
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn._sync_users = step("users")
+        conn._register_authenticated_identity = step("register", error=_AtlassianStop())
+        return conn
+
+    async def test_the_removal_pass_runs_first_and_the_full_pass_after_the_user_writes(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order)
+
+        with patch(
+            "app.connectors.sources.atlassian.confluence_datacenter.connector.load_connector_filters",
+            AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ), pytest.raises(_AtlassianStop):
+            await ConfluenceDataCenterConnector.run_sync(conn)
+
+        assert order == ["drop", "users", "register"]
+
+    async def test_a_flag_left_by_an_earlier_run_is_reset_before_the_listing(self) -> None:
+        conn = self._conn([])
+        conn._sync_users = AsyncMock(side_effect=RuntimeError("down"))
+
+        with patch(
+            "app.connectors.sources.atlassian.confluence_datacenter.connector.load_connector_filters",
+            AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ), pytest.raises(RuntimeError):
+            await ConfluenceDataCenterConnector.run_sync(conn)
+
+        assert conn._users_listing_complete is False and conn._listed_user_emails == set()
+
+    async def test_the_full_pass_carries_the_listing_state(self) -> None:
+        conn = _connector(
+            ConfluenceDataCenterConnector, data_source=MagicMock(), _users_listing_complete=False,
+            _listed_user_emails={"creator@corp.com"},
+        )
+        datasource = MagicMock(get_current_user_v1=AsyncMock(
+            return_value=_json_response(200, {"userKey": "k", "email": "dev@corp.com"})))
+        conn._get_fresh_datasource = AsyncMock(return_value=datasource)
+
+        await ConfluenceDataCenterConnector._register_authenticated_identity(conn)
+
+        kwargs = conn.register_authenticated_source_user.await_args.kwargs
+        assert kwargs["listing_complete"] is False
+        assert kwargs["extra_present_emails"] == {"creator@corp.com"}
+
+
+class TestConfluenceDataCenterUserListing:
+    def _conn(self, pages: list) -> MagicMock:
+        conn = _connector(ConfluenceDataCenterConnector, _users_listing_complete=False, _listed_user_emails=set())
+        responses = [SimpleNamespace(status=status, json=lambda body=body: body) for status, body in pages]
+        datasource = MagicMock(get_user_list_v1=AsyncMock(side_effect=responses))
+        conn._get_fresh_datasource = AsyncMock(return_value=datasource)
+        conn.data_entities_processor = MagicMock(
+            on_new_app_users=AsyncMock(), migrate_group_to_user_by_external_id=AsyncMock(),
+        )
+        conn._transform_to_app_user = lambda data: SimpleNamespace(
+            source_user_id=data["userKey"], email=data["email"],
+        )
+        return conn
+
+    @staticmethod
+    def _users(count: int, prefix: str = "u") -> dict:
+        return {"results": [{"userKey": f"{prefix}{i}", "email": f"{prefix}{i}@corp.com"} for i in range(count)]}
+
+    async def test_a_short_page_ends_a_complete_listing_and_names_every_email(self) -> None:
+        conn = self._conn([(200, self._users(3))])
+
+        await ConfluenceDataCenterConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is True
+        assert conn._listed_user_emails == {"u0@corp.com", "u1@corp.com", "u2@corp.com"}
+
+    async def test_a_full_page_then_an_empty_one_is_complete(self) -> None:
+        conn = self._conn([(200, self._users(200)), (200, {"results": []})])
+
+        await ConfluenceDataCenterConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is True
+
+    async def test_a_failed_page_is_an_incomplete_listing(self) -> None:
+        conn = self._conn([(200, self._users(200)), (500, {})])
+
+        await ConfluenceDataCenterConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is False
+
+    async def test_an_empty_listing_is_incomplete(self) -> None:
+        conn = self._conn([(200, {"results": []})])
+
+        await ConfluenceDataCenterConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is False
+
+    async def test_a_row_that_raises_is_never_a_complete_listing(self) -> None:
+        conn = self._conn([(200, self._users(3))])
+        conn._transform_to_app_user = MagicMock(side_effect=ValueError("bad row"))
+
+        with pytest.raises(ValueError):
+            await ConfluenceDataCenterConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is False

@@ -620,6 +620,8 @@ class JiraConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # Emails of every account this sync's user read listed, whatever its status.
+        self._listed_user_emails: set[str] = set()
         # Members of the product groups this run, by account id; None when they could not be read.
         self._licensed_account_ids: set[str] | None = None
         # True when this sync kept stored groups, roles, a lead, a project or its issues after
@@ -1049,9 +1051,9 @@ class JiraConnector(BaseConnector):
                 init_error._notification_sent = True
                 raise init_error
 
-            await self.register_authenticated_source_user(
-                self._authenticated_jira_email, self._authenticated_jira_account_id
-            )
+            # Reset so a value left by an earlier run never counts as this run's listing.
+            self._listed_user_emails = set()
+            await self.drop_authenticator_link_if_listed()
 
             # 2. Load latest sync/indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1072,6 +1074,8 @@ class JiraConnector(BaseConnector):
             self._kept_unread_access = False
             self._kept_after_refusal = []
             jira_users = await self._fetch_users(active_pipeshub_users=users)
+            # Taken here: the withdrawals below prune the stored users this reads.
+            directory_complete = self._directory_read_complete()
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
                 # was read, since holding it back would leave it with no access at all.
@@ -1095,6 +1099,13 @@ class JiraConnector(BaseConnector):
             await self._withdraw_ineligible_app_users(
                 jira_users, unlicensed_ids | (
                     self._deactivated_account_ids if self._directory_read_complete() else self._shown_inactive_ids)
+            )
+            await self.register_authenticated_source_user(
+                self._authenticated_jira_email, self._authenticated_jira_account_id,
+                listing_complete=directory_complete,
+                # Every listed account, deactivated or without product access too: withdrawing one removes the edge
+                # that would otherwise show them as listed.
+                extra_present_emails=self._listed_user_emails,
             )
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
@@ -2434,6 +2445,7 @@ class JiraConnector(BaseConnector):
             raise ValueError("DataSource not initialized")
 
         self._user_read_unfinished = False
+        self._listed_user_emails = set()
 
         # ====================================================================
         # Phase 1: DB reads (0 API calls)
@@ -2469,6 +2481,10 @@ class JiraConnector(BaseConnector):
         }
         self._listed_account_ids = listed_active
         self._seen_account_ids = {u["accountId"] for u in raw_jira_users if u.get("accountId")}
+        self._listed_user_emails = {
+            u["emailAddress"].strip().lower() for u in raw_jira_users
+            if u.get("accountType") == "atlassian" and isinstance(u.get("emailAddress"), str) and u["emailAddress"].strip()
+        }
         # GET /rest/api/3/users/search: "Returns a list of all users, including active users, inactive users and
         # previously deleted users that have an Atlassian account"; User.active: "Whether the user is active."
         # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-users/)
@@ -2566,6 +2582,7 @@ class JiraConnector(BaseConnector):
             self.logger.info("👥 All Jira users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira AppUsers resolved")
+        self._listed_user_emails |= {u.email.lower() for u in resolved.values() if u.email}
         if self._user_read_unfinished:
             self.logger.warning(
                 "⚠️ The Jira user list could not be read in full; when an earlier sync left access to keep, "
