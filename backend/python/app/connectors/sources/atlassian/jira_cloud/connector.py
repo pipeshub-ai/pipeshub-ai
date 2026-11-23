@@ -711,6 +711,7 @@ class JiraConnector(BaseConnector):
         self._never_tightened_security: set[str] = set()
         self._skipped_holders_logged: set[tuple[str, str | None, str]] = set()
         self._issue_build_failures = 0  # issues skipped because they failed to build
+        self._issue_search_cut_short = False  # Jira may not have listed every issue of the project
         # issue external id -> the time of its read, stored once its comments and files are written (`_process_new_records`)
         self._settle_after_dependents: dict[str, int] = {}
         # Parents of stories, by issue id, as read this sync: an epic read with its project's
@@ -987,22 +988,34 @@ class JiraConnector(BaseConnector):
             return
         self.data_entities_processor.note_kept_user_groups(self.connector_id, groups)
 
-    async def _keep_stored_records(self, project_id: str) -> None:
+    async def _keep_stored_records(self, project_id: str, issue_ids: set[str] | None = None) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
         could not be read, so they stay as stored and must survive the unlink after it. So does
         the project's record group, even with no grants of its own, for the records' links into it. Soft-deleted
-        records too: a restored issue must come back with its edges."""
+        records too: a restored issue must come back with its edges. With ``issue_ids``, only those issues, the
+        files and comments filed under them and the comments' files: their sub-tasks are written when still in Jira."""
         await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
         page_size = 1000
         after_key: Optional[str] = None
+        comments: list[Record] = []
         while True:
             page = await self.data_entities_processor.get_records_in_record_group(
                 self.connector_id, project_id, page_size, after_key, visibility=RecordVisibility.ALL,
             )
-            self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+            kept = page if issue_ids is None else [
+                record for record in page
+                if record.external_record_id in issue_ids
+                or (record.parent_external_record_id in issue_ids
+                    and record.record_type in (RecordType.FILE, RecordType.COMMENT))
+            ]
+            if issue_ids is not None:
+                comments += [record for record in kept if record.record_type == RecordType.COMMENT]
+            self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in kept])
             if len(page) < page_size:
-                return
+                break
             after_key = page[-1].id
+        if comments:
+            self.data_entities_processor.note_kept_records(self.connector_id, await self._with_their_files(comments))
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: the user list was not read in
@@ -4882,6 +4895,7 @@ class JiraConnector(BaseConnector):
         security.level_readers = self._level_readers(
             security, project_key, self._grant_directory({u.source_user_id: u for u in jira_users if u.source_user_id}))
         self._issue_build_failures = 0
+        self._issue_search_cut_short = False
         self._parents_to_retry = set()
         self._issues_to_retry = set()
         self._retry_read = {}
@@ -5104,6 +5118,13 @@ class JiraConnector(BaseConnector):
                 )
 
         saved_retry = await self._save_issues_to_retry(project_key, saved_retry)
+        if self.data_entities_processor.full_sync_running(self.connector_id) is True:
+            if self._issue_search_cut_short:
+                # The issues Jira did not list are unknown, so the whole project stays as stored.
+                await self._keep_stored_records(project_id)
+            elif self._issues_to_retry:
+                # Scanned rather than looked up where the write failed: that lookup is often what failed.
+                await self._keep_stored_records(project_id, self._issues_to_retry)
         if self._parents_to_retry:
             # Their children kept where they were filed; the next sync reads them first.
             self.logger.warning(
@@ -5680,6 +5701,7 @@ class JiraConnector(BaseConnector):
                 # (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/)
                 self.logger.warning("Jira warned about the search for %s: %s", project_key, issues_batch_response["warnings"])
                 self._issue_build_failures += 1
+                self._issue_search_cut_short = True
 
             batch_issues = issues_batch_response.get("issues", [])
             new_page_token = issues_batch_response.get("nextPageToken")
@@ -5693,9 +5715,11 @@ class JiraConnector(BaseConnector):
                         continue
                     self.logger.warning("Jira repeated a page token for %s; the issue pass is repeated next sync", project_key)
                     self._issue_build_failures += 1
+                    self._issue_search_cut_short = True
                 elif issues_batch_response.get("isLast") is False:
                     self.logger.warning("Jira said %s has more issues but gave no page token; the pass is repeated next sync", project_key)
                     self._issue_build_failures += 1
+                    self._issue_search_cut_short = True
                 # No more issues - yield empty to signal completion
                 yield [], False, last_issue_updated
                 break
@@ -5742,6 +5766,7 @@ class JiraConnector(BaseConnector):
                 self.logger.warning("Jira gave no new page token for %s past a page that is not the last; the pass is "
                                     "repeated next sync", project_key)
                 self._issue_build_failures += 1
+                self._issue_search_cut_short = True
             if has_more:
                 seen_page_tokens.add(new_page_token)
 

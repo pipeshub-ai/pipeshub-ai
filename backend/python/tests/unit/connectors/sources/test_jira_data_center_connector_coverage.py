@@ -1612,6 +1612,47 @@ async def test_fetch_issue_attachments_swallows_inner_failure():
     assert out == []
 
 
+@pytest.mark.asyncio
+async def test_fetch_issue_attachments_failure_notes_the_issue_not_written() -> None:
+    conn = _make_connector()
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
+    fields = {"attachment": [{"id": "1", "filename": "f"}]}
+    assert await conn._fetch_issue_attachments("10", "K-1", fields, [], "pid", RecordGroupType.PROJECT) == []
+    assert conn._issues_not_written == {"10"}
+
+
+@pytest.mark.asyncio
+async def test_keep_stored_records_for_issues_keeps_them_and_their_files_only() -> None:
+    conn = _make_connector()
+
+    def stored(rid: str, ext: str, kind: RecordType, parent: str | None = None) -> MagicMock:
+        return MagicMock(id=rid, external_record_id=ext, record_type=kind, parent_external_record_id=parent)
+
+    rows = [stored(f"r{n:04d}", f"x{n}", RecordType.TICKET) for n in range(1500)]
+    rows[5] = stored("r0005", "1", RecordType.TICKET)
+    rows[6] = stored("r0006", "attachment_1", RecordType.FILE, "1")
+    rows[7] = stored("r0007", "2", RecordType.TICKET, "1")
+    rows[8] = stored("r0008", "attachment_3", RecordType.FILE, "3")
+    rows[1499] = stored("r1499", "attachment_9", RecordType.FILE, "1")
+    after_keys: list[str | None] = []
+
+    async def scan(connector_id: str, group_id: str, limit: int, after_key: str | None = None) -> list[MagicMock]:
+        after_keys.append(after_key)
+        return [r for r in rows if after_key is None or r.id > after_key][:limit]
+
+    processor = conn.data_entities_processor
+    processor.note_kept_record_group = AsyncMock()
+    processor.note_kept_records = MagicMock()
+    processor.get_records_in_record_group = scan
+
+    await conn._keep_stored_records("proj", {"1"})
+
+    assert after_keys == [None, "r0999"]
+    kept = [rid for call in processor.note_kept_records.call_args_list for rid in call.args[1]]
+    assert kept == ["r0005", "r0006", "r1499"], "a sub-task is written when still in Jira; other issues' files are not kept"
+    processor.note_kept_record_group.assert_awaited_once_with("conn-dc-cov", "proj")
+
+
 def test_organize_issue_comments_to_threads_sorts():
     conn = _make_connector()
     threads = conn._organize_issue_comments_to_threads(

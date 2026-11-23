@@ -2788,3 +2788,286 @@ class TestAttachmentMetByTwoWritersAtOnce:
             ).id
 
         assert await new_id() == await new_id() == new_record_id(CONNECTOR_ID, "attachment_902")
+
+
+def missed_by_full_sync(db: CloudRecordsDb, graph: Any, stored: dict[str, str]) -> set[str]:  # noqa: ANN401
+    """External ids of the stored records the unlink after a full sync takes the edges of: still stored,
+    neither written by the sync nor noted as kept. Nothing is unlinked when the sync reports an incomplete read."""
+    from app.config.constants.arangodb import CollectionNames
+
+    if not graph.unlink_nodes_missed_by_full_sync.await_count:
+        return set()
+    seen = graph.unlink_nodes_missed_by_full_sync.await_args.args[1][CollectionNames.RECORDS.value]
+    return {ext for ext, record_id in stored.items()
+            if ext in db.records and ext not in seen and record_id not in db.kept_records}
+
+
+def ops_issue(num: int) -> dict[str, Any]:
+    ticket = issue(num, "2024-05-01T10:00:00.000+0000", project="OPS")
+    ticket["fields"]["project"] = {"id": "10001", "key": "OPS"}
+    return ticket
+
+
+class TestAFullSyncKeepsWhatItCouldNotWrite:
+    """A full sync unlinks every stored record it neither wrote nor noted as kept. An issue still in
+    Jira that it could not write in full must keep its edges, and so must its files. OPS-8, removed
+    in Jira from a project read in full, still loses them."""
+
+    @staticmethod
+    async def _synced(
+        api, site_db, checkpoints, search, eng_1: dict[str, Any] | None = None, also: tuple[dict[str, Any], ...] = (),
+    ) -> tuple[JiraConnector, dict[str, str]]:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/project/search", {"values": [
+            {"id": "10000", "key": "ENG", "name": "Engineering"}, {"id": "10001", "key": "OPS", "name": "Operations"},
+        ], "isLast": True})
+        api.on("GET", f"{JIRA}/project/OPS/permissionscheme", {"id": 1})
+        api.on("GET", f"{JIRA}/project/OPS/role", {})
+        search.add("ENG", None, {"issues": [
+            eng_1 or commented(1, "2024-05-01T10:00:00.000+0000", []),
+            issue(2, "2024-05-01T10:00:00.000+0000"),
+            issue(3, "2024-05-01T10:00:00.000+0000"),
+            *also,
+        ]})
+        search.add("OPS", None, {"issues": [ops_issue(7), ops_issue(8)]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        stored = {ext: r.id for ext, r in site_db.records.items()}
+        assert set(stored) >= {"1", "2", "3", "7", "8", "attachment_901", "attachment_902"}
+        checkpoints.sync_points.clear()
+        site_db.kept_records.clear()
+        search.add("OPS", None, {"issues": [ops_issue(7)]})
+        return connector, stored
+
+    @staticmethod
+    def _gone_unlinked(site_db: CloudRecordsDb, missed: set[str]) -> set[str]:
+        """The issues removed in Jira that the full sync unlinked, or deleted outright."""
+        return {ext for ext in ("3", "8") if ext in missed or ext not in site_db.records}
+
+    async def test_an_issue_that_fails_to_build_keeps_itself_and_its_files(self, api, site_db, checkpoints, search) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+
+        graph = await run_full_sync(connector, site_db)
+
+        missed = missed_by_full_sync(site_db, graph, stored)
+        assert missed - {"3", "8"} == set(), "ENG-1 is still in Jira: it and its files keep their edges"
+        assert {"3", "8"} <= missed, "ENG-3 and OPS-8 are gone: only what the sync could not write is kept"
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    async def test_an_issue_whose_comments_cannot_be_read_keeps_its_files(self, api, site_db, checkpoints, search) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [], total=60),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        api.on("GET", f"{JIRA}/issue/1/comment", json_response({"errorMessages": ["oops"]}, status=500))
+
+        graph = await run_full_sync(connector, site_db)
+
+        missed = missed_by_full_sync(site_db, graph, stored)
+        assert missed - {"3", "8"} == set(), "the files of ENG-1 are still in Jira"
+        assert {"3", "8"} <= missed, "ENG-3 and OPS-8 are gone: only what the sync could not write is kept"
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    async def test_a_file_whose_record_fails_to_build_keeps_its_edges(self, api, site_db, checkpoints, search) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"attachment_901"}
+
+        graph = await run_full_sync(connector, site_db)
+
+        missed = missed_by_full_sync(site_db, graph, stored)
+        assert missed - {"3", "8"} == set(), "salaries.txt is still on ENG-1"
+        assert {"3", "8"} <= missed, "ENG-3 and OPS-8 are gone: only what the sync could not write is kept"
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    @pytest.mark.parametrize("answer", [
+        pytest.param({"warnings": ["The result set was truncated"]}, id="warned"),
+        pytest.param({"isLast": False}, id="more-without-a-token"),
+    ])
+    async def test_a_search_cut_short_keeps_the_issues_it_did_not_list(
+        self, api, site_db, checkpoints, search, answer
+    ) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [])], **answer})
+
+        graph = await run_full_sync(connector, site_db)
+
+        missed = missed_by_full_sync(site_db, graph, stored)
+        assert missed - {"3", "8"} == set(), "ENG-2 may be past where Jira stopped"
+        assert "8" in self._gone_unlinked(site_db, missed), "OPS-8 is gone from a project read in full"
+        assert "3" not in missed, "which issues Jira left out is unknown, so all of ENG stays for this sync"
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_page_token_repeated_on_an_empty_page_keeps_the_issues_it_did_not_list(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [])], "nextPageToken": "T2"})
+        search.add("ENG", "T2", {"issues": [], "isLast": False, "nextPageToken": "T2"})
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert missed_by_full_sync(site_db, graph, stored) == {"8"}
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_an_empty_page_with_more_but_no_token_keeps_the_issues_it_did_not_list(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [])], "nextPageToken": "T2"})
+        search.add("ENG", "T2", {"issues": [], "isLast": False})
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert missed_by_full_sync(site_db, graph, stored) == {"8"}
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_search_cut_short_keeps_only_its_own_project(self, api, site_db, checkpoints, search) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [])],
+                                 "warnings": ["The result set was truncated"]})
+        keeps: list[tuple[str, set[str] | None]] = []
+        keep = connector._keep_stored_records
+
+        async def spy(project_id: str, issue_ids: set[str] | None = None) -> None:
+            keeps.append((project_id, issue_ids))
+            await keep(project_id, issue_ids)
+        connector._keep_stored_records = spy
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert keeps == [("10000", None)]
+        assert missed_by_full_sync(site_db, graph, stored) == {"8"}
+
+    async def test_a_full_sync_that_reads_everything_keeps_nothing(self, api, site_db, checkpoints, search) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert site_db.kept_records == []
+        assert missed_by_full_sync(site_db, graph, stored) == {"3", "8"}
+
+    @staticmethod
+    def _restricted_eng_1(api: AtlassianApiStub) -> dict[str, Any]:
+        """ENG-1 with a comment for Administrators only, which shows salaries.txt."""
+        restricted = [comment("c1", "see the figures", file=SALARIES, **ADMINS_ONLY)]
+        jira_has_comments(api, 1, restricted)
+        return commented(1, "2024-05-01T10:00:00.000+0000", restricted)
+
+    @staticmethod
+    def _sub_task_of_eng_1() -> dict[str, Any]:
+        child = issue(9, "2024-05-01T10:00:00.000+0000")
+        child["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True}
+        child["fields"]["parent"] = {"id": "1", "key": "ENG-1", "fields": {"summary": "Issue 1"}}
+        return child
+
+    async def test_restricted_comments_a_failed_comment_read_removed_stay_removed(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        eng_1 = self._restricted_eng_1(api)
+        connector, stored = await self._synced(api, site_db, checkpoints, search, eng_1=eng_1)
+        assert under(site_db, "attachment_901") == "comment_c1"
+        search.add("ENG", None, {"issues": [eng_1, issue(2, "2024-05-01T10:00:00.000+0000")]})
+        api.on("GET", f"{JIRA}/issue/1/comment", json_response({"errorMessages": ["oops"]}, status=500))
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert "comment_c1" not in site_db.records and "attachment_901" not in site_db.records
+        assert {stored["comment_c1"], stored["attachment_901"]}.isdisjoint(site_db.kept_records)
+        assert missed_by_full_sync(site_db, graph, stored) == {"3", "8"}, "the issue's own file keeps its edges"
+
+    async def test_an_issue_that_fails_to_build_keeps_its_restricted_comment_and_the_file_under_it(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        eng_1 = self._restricted_eng_1(api)
+        connector, stored = await self._synced(api, site_db, checkpoints, search, eng_1=eng_1)
+        assert {"comment_c1", "attachment_901"} <= set(stored)
+        search.add("ENG", None, {"issues": [eng_1, issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert missed_by_full_sync(site_db, graph, stored) == {"3", "8"}
+
+    async def test_an_attachment_fetch_that_raises_keeps_the_issues_files(self, api, site_db, checkpoints, search) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        fetch = connector._fetch_issue_attachments
+
+        async def fails_on_eng_1(issue_id: str, *args: object, **kwargs: object) -> object:
+            if str(issue_id) == "1":
+                raise RuntimeError("attachment listing failed")
+            return await fetch(issue_id, *args, **kwargs)
+        connector._fetch_issue_attachments = fails_on_eng_1
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert missed_by_full_sync(site_db, graph, stored) == {"3", "8"}
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_sub_task_removed_under_an_issue_that_fails_to_build_is_unlinked(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        connector, stored = await self._synced(api, site_db, checkpoints, search, also=(self._sub_task_of_eng_1(),))
+        assert "9" in stored
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert missed_by_full_sync(site_db, graph, stored) == {"3", "8", "9"}, "only the issue and its files are kept"
+
+    async def test_a_sub_task_still_in_jira_is_written_and_its_parent_that_fails_to_build_kept(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        from app.config.constants.arangodb import CollectionNames
+
+        connector, stored = await self._synced(api, site_db, checkpoints, search, also=(self._sub_task_of_eng_1(),))
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000"), self._sub_task_of_eng_1()]})
+        site_db.fail_lookup_for = {"1"}
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert "9" in graph.unlink_nodes_missed_by_full_sync.await_args.args[1][CollectionNames.RECORDS.value]
+        assert stored["1"] in site_db.kept_records, "so the sub-task's edges into it stay"
+        assert missed_by_full_sync(site_db, graph, stored) == {"3", "8"}
+
+    async def test_a_sync_that_is_not_a_full_sync_scans_nothing(self, api, site_db, checkpoints, search) -> None:
+        connector, _ = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-02T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+        scanned: list[str] = []
+        scan = site_db.get_records_in_record_group
+
+        async def spy(connector_id: str, group_id: str, *args: object, **kwargs: object) -> list[Any]:
+            scanned.append(group_id)
+            return await scan(connector_id, group_id, *args, **kwargs)
+        site_db.get_records_in_record_group = spy
+
+        await connector.run_sync()
+
+        assert "10000" not in scanned and site_db.kept_records == []
+        assert any("1" in json.loads(point.get("issues_to_retry") or "[]") for point in checkpoints.sync_points.values()), \
+            "the issue is still read first by the next sync"
+
+    async def test_a_keep_whose_scan_fails_unlinks_nothing(self, api, site_db, checkpoints, search) -> None:
+        connector, _ = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+        site_db.fail_record_scan = True
+
+        with pytest.raises(RuntimeError, match="graph unavailable"):
+            await run_full_sync(connector, site_db)  # a failed sync is not followed by the unlink
