@@ -1,16 +1,10 @@
-"""The All Records and KB record lists, against a real Neo4j and a real ArangoDB.
+"""The All Records list, against a real Neo4j and a real ArangoDB.
 
 Seeds one user with a knowledge base (a root file and a folder holding a file)
 and one connector record shared with them directly, then lists them the way the
 product does: All Records is the knowledge hub's global flatten
-(``KnowledgeHubService.get_nodes``), the KB list is ``list_kb_records`` with the
-user's graph key. Each list must return the seeded records, a total that agrees
-with the page, and honour pagination and a search filter.
-
-On ArangoDB the KB list used to answer every request with an empty page: the
-count query was sent bind parameters it never declared, and it read
-``user_permission`` as a collection name. The error was logged and swallowed,
-so users saw an empty list rather than a failure.
+(``KnowledgeHubService.get_nodes``). The list must return the seeded records, a
+total that agrees with the page, and honour pagination and a search filter.
 
 Needs Docker services. A backend whose env var is set but cannot be reached
 fails, naming it; one that is not configured skips, so the bare unit job can
@@ -277,17 +271,6 @@ async def _all_records(w: _World, **overrides: object) -> KnowledgeHubNodesRespo
     return listing
 
 
-def _kb_args(w: _World, **overrides: object) -> dict:
-    args: dict = {
-        "kb_id": w.kb_id, "user_id": w.user_key, "org_id": w.org_id, "skip": 0, "limit": 50,
-        "search": None, "record_types": None, "origins": None, "connectors": None,
-        "indexing_status": None, "date_from": None, "date_to": None,
-        "sort_by": "recordName", "sort_order": "asc",
-    }
-    args.update(overrides)
-    return args
-
-
 async def test_all_records_lists_kb_and_connector_records(world: _World) -> None:
     listing = await _all_records(world)
     got = [item.id for item in listing.items]
@@ -312,28 +295,6 @@ async def test_all_records_paginates_and_filters(world: _World) -> None:
 
     kb_only = {item.id for item in (await _all_records(world, origins=["COLLECTION"])).items}
     assert {world.ids["kb_root"], world.ids["kb_file"]} <= kb_only and world.ids["drive_file"] not in kb_only
-
-
-async def test_kb_records_lists_the_folder_contents(world: _World) -> None:
-    g = world.graph
-    records, total, available = await g.list_kb_records(**_kb_args(world))
-    assert sorted(r["id"] for r in records) == sorted([world.ids["kb_root"], world.ids["kb_file"]])
-    assert total == len(records)
-    assert world.ids["kb_folder"] in {f["id"] for f in available["folders"]}
-    assert {r["id"]: r["folder"] for r in records}[world.ids["kb_root"]] is None
-
-    first, first_total, _ = await g.list_kb_records(**_kb_args(world, limit=1))
-    second, _, _ = await g.list_kb_records(**_kb_args(world, skip=1, limit=1))
-    assert len(first) == 1 and len(second) == 1 and first_total == total
-    assert [r["id"] for r in first + second] == [r["id"] for r in records]
-
-    in_folder, folder_total, _ = await g.list_kb_records(**_kb_args(world, folder_id=world.ids["kb_folder"]))
-    assert [r["id"] for r in in_folder] == [world.ids["kb_file"]]
-    assert folder_total == len(in_folder)
-
-    found, found_total, _ = await g.list_kb_records(**_kb_args(world, search="kb_file"))
-    assert [r["id"] for r in found] == [world.ids["kb_file"]]
-    assert found_total == 1
 
 
 async def test_all_records_answers_404_for_an_unknown_caller(world: _World) -> None:

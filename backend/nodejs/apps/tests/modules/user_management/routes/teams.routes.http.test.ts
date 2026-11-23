@@ -27,6 +27,8 @@ import {
   errorMessage,
   single,
 } from '../../tokens_manager/routes/connectors-http-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const JWT_SECRET = 'connectors-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'connectors-http-test-scoped-secret'
@@ -79,6 +81,9 @@ const team = (members = [member(OWNER, 'OWNER'), member(READER, 'READER')]) => (
 })
 
 describe('Teams over HTTP', () => {
+  beforeEach(() => registerAppUpstreams(config))
+  afterEach(() => registerUpstreams({}))
+
   const backend = new FakeBackend()
   const tokens = new AuthTokenService(JWT_SECRET, SCOPED_JWT_SECRET)
   const oauthGrants = new Map<string, { userId: string; orgId: string; scope: string }>()
@@ -465,6 +470,7 @@ describe('Teams over HTTP', () => {
       await new Promise<void>((resolve) => dropping.listen(0, '127.0.0.1', resolve))
       const live = config.connectorBackend
       config.connectorBackend = `http://127.0.0.1:${(dropping.address() as AddressInfo).port}`
+      registerAppUpstreams(config)
       try {
         const res = await send('GET', '/user/teams', session(READER))
         expect(res.status).to.equal(503)

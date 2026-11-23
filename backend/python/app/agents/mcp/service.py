@@ -102,49 +102,65 @@ def _owned_by(instance: dict[str, Any], user_id: Optional[str]) -> bool:
 _PREFIX_READ_CONCURRENCY = 16
 
 
-async def _load_instance_key(config_service: ConfigurationService, key: str) -> Optional[dict[str, Any]]:
+# `strict` raises a failed read instead of leaving the record out: a check that must see every
+# record (no two servers share a name) can't pass on a partial list.
+async def _load_instance_key(
+    config_service: ConfigurationService, key: str, *, strict: bool = False,
+) -> Optional[dict[str, Any]]:
     try:
-        data = await config_service.get_config(key, default=None, use_cache=False)
+        # The service answers `default` for a failed store read unless asked to raise; only a
+        # strict read asks, so every other caller and test double keeps the plain call.
+        if strict:
+            data = await config_service.get_config(key, default=None, use_cache=False, raise_on_error=True)
+        else:
+            data = await config_service.get_config(key, default=None, use_cache=False)
     except Exception as e:
+        if strict:
+            raise
         logger.warning(f"Failed to load MCP instance at {key}: {e}")
         return None
     return data if isinstance(data, dict) else None
 
 
-async def _load_prefix(config_service: ConfigurationService, prefix: str) -> list[dict[str, Any]]:
+async def _load_prefix(config_service: ConfigurationService, prefix: str, *, strict: bool = False) -> list[dict[str, Any]]:
     try:
         keys = await config_service.list_keys_in_directory(prefix)
     except Exception as e:
+        if strict:
+            raise
         logger.error(f"Failed to list MCP instance keys under {prefix}: {e}", exc_info=True)
         return []
     records = await gather_with_concurrency(
-        _PREFIX_READ_CONCURRENCY, *[_load_instance_key(config_service, key) for key in keys],
+        _PREFIX_READ_CONCURRENCY, *[_load_instance_key(config_service, key, strict=strict) for key in keys],
     )
     return [record for record in records if record is not None]
 
 
-async def load_org_instances(config_service: ConfigurationService, org_id: str) -> list[dict[str, Any]]:
+async def load_org_instances(
+    config_service: ConfigurationService, org_id: str, *, strict: bool = False,
+) -> list[dict[str, Any]]:
     """Every org-wide MCP instance of `org_id` (no secrets)."""
-    records = await _load_prefix(config_service, get_mcp_instances_prefix())
+    records = await _load_prefix(config_service, get_mcp_instances_prefix(), strict=strict)
     return [r for r in records if belongs_to_org(r, org_id) and not is_personal(r)]
 
 
 async def load_user_instances(
-    config_service: ConfigurationService, org_id: str, user_id: str,
+    config_service: ConfigurationService, org_id: str, user_id: str, *, strict: bool = False,
 ) -> list[dict[str, Any]]:
     """`user_id`'s own personal instances. Stored under the user, so this reads only theirs."""
-    records = await _load_prefix(config_service, get_mcp_user_instances_prefix(org_id, user_id))
+    records = await _load_prefix(config_service, get_mcp_user_instances_prefix(org_id, user_id), strict=strict)
     return [r for r in records if belongs_to_org(r, org_id) and is_personal(r) and _owned_by(r, user_id)]
 
 
 async def load_visible_instances(
-    config_service: ConfigurationService, org_id: str, user_id: Optional[str],
+    config_service: ConfigurationService, org_id: str, user_id: Optional[str], *, strict: bool = False,
 ) -> list[dict[str, Any]]:
     """What `user_id` may see and use: the org's instances plus their own personal ones."""
     if not user_id:
-        return await load_org_instances(config_service, org_id)
+        return await load_org_instances(config_service, org_id, strict=strict)
     org_instances, own = await asyncio.gather(
-        load_org_instances(config_service, org_id), load_user_instances(config_service, org_id, user_id),
+        load_org_instances(config_service, org_id, strict=strict),
+        load_user_instances(config_service, org_id, user_id, strict=strict),
     )
     return [*org_instances, *own]
 

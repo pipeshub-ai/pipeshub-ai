@@ -5,6 +5,7 @@ import {
   isKnowledgeLimitValid,
   knowledgeLimitForApi,
   limitFromSelection,
+  sameKnowledgeLimit,
   selectionFromLimit,
 } from '../knowledge-limit';
 
@@ -34,5 +35,16 @@ describe('knowledge limit', () => {
     const limit = { apps: ['a', 'kb-1'], recordGroups: ['g'], records: ['f'] };
     expect(selectionFromLimit(undefined)).toBeNull();
     expect(knowledgeLimitForApi(selectionFromLimit(limit))).toEqual(limit);
+  });
+
+  it('treats two limits naming the same items in any order as the same; absent matches only absent', () => {
+    const a = { apps: ['a', 'b'], recordGroups: ['g'], records: [] };
+    const b = { apps: ['b', 'a'], recordGroups: ['g'], records: [] };
+    expect(sameKnowledgeLimit(a, b)).toBe(true);
+    expect(sameKnowledgeLimit(undefined, undefined)).toBe(true);
+    expect(sameKnowledgeLimit(a, undefined)).toBe(false);
+    expect(sameKnowledgeLimit(a, { ...a, records: ['r'] })).toBe(false);
+    // An id in a different list reaches something else.
+    expect(sameKnowledgeLimit(a, { apps: ['a'], recordGroups: ['g', 'b'], records: [] })).toBe(false);
   });
 });

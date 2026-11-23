@@ -25,7 +25,8 @@ from atlassian_behaviour_fakes import (
 )
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import AccessRule
+from app.config.constants.arangodb import AccessRule, CollectionNames
+from app.connectors.core.sync import sync_runner
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     IssueSecurityContext,
     SchemeKnowledge,
@@ -35,6 +36,9 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
     DC_EPIC_LINK_SCHEMA_CUSTOM,
     JiraDataCenterConnector,
     _parse_jira_dc_user_list_page,
+)
+from app.connectors.sources.atlassian.jira_data_center_personal.connector import (
+    JiraDataCenterPersonalConnector,
 )
 from app.connectors.utils.record_ids import new_record_id
 from app.models.entities import AppUser, FileRecord, Record, RecordType, TicketRecord
@@ -3521,3 +3525,133 @@ class TestFailedUserRead:
         db.fail_active_users = False
         await connector._link_users_and_groups()
         assert "dave@example.com" in {u.email for u in db.app_users}
+
+
+async def make_personal_connector(db: JiraRecordsDb, store: FakeCheckpointStore) -> JiraDataCenterPersonalConnector:
+    config = {"auth": {"authType": "API_TOKEN", "baseUrl": f"{BASE}/", "apiToken": FAKE_PAT}, "filters": {}}
+    connector = JiraDataCenterPersonalConnector(
+        logging.getLogger("test.jira_dc_personal"), db, store, FakeConfigService(CONNECTOR_ID, config),
+        CONNECTOR_ID, "personal", "creator-user-1",
+    )
+    connector.notify = Notifications()
+    assert await connector.init() is True
+    return connector
+
+
+def ops_issue(iid: str, key: str) -> dict[str, Any]:
+    row = issue(iid, key)
+    row["fields"]["project"] = {"id": "10001", "key": "OPS"}
+    return row
+
+
+def unlinked_records(graph: AsyncMock, db: JiraRecordsDb, stored: dict[str, str]) -> set[str]:
+    """The stored records (external id -> id) a full sync's unlink takes the edges of."""
+    if not graph.unlink_nodes_missed_by_full_sync.await_count:
+        return set()
+    seen = graph.unlink_nodes_missed_by_full_sync.await_args.args[1][CollectionNames.RECORDS.value]
+    return {external_id for external_id, record_id in stored.items()
+            if external_id not in seen and record_id not in db.kept_records}
+
+
+class TestPersonalFullSyncCoverage:
+    """A full sync of the personal connector after a project's issue search failed.
+
+    ENG holds ENG-1 (with attachment 200) and ENG-2; OPS holds OPS-1 and OPS-2. On the full sync
+    OPS-2 is gone from Jira, so it is the one node whose edges must go. Jira does not confirm the
+    account (no /myself route), so the issue removal leaves the stored records to the unlink.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_owed_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The runner's owed-retry set is module-global and keyed by the connector id the team tests share.
+        monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
+
+    @staticmethod
+    async def _synced(jira, db, store, search) -> tuple[JiraDataCenterPersonalConnector, dict[str, str]]:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering"},
+            {"id": "10001", "key": "OPS", "name": "Operations"},
+        ]))
+        search.add("ENG", 0, [issue("1001", "ENG-1", attachments=[attachment("200")]), issue("1002", "ENG-2")])
+        search.add("OPS", 0, [ops_issue("2001", "OPS-1"), ops_issue("2002", "OPS-2")])
+        connector = await make_personal_connector(db, store)
+        await connector.run_sync()
+        stored = {external_id: record.id for external_id, record in db.records.items()}
+        assert set(stored) == {"1001", "attachment_200", "1002", "2001", "2002"}
+        store.sync_points.clear()  # a full sync's prep
+        search.add("OPS", 0, [ops_issue("2001", "OPS-1")])
+        return connector, stored
+
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_an_issue_search_that_may_pass_next_time_unlinks_nothing(
+        self, jira, db, store, search, status
+    ) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+
+        search.add("ENG", 0, json_response({"errorMessages": ["try later"]}, status=status))
+        graph = await run_full_sync(connector, db)
+
+        wrongly_unlinked = unlinked_records(graph, db, stored) & {"1001", "attachment_200", "1002"}
+        assert wrongly_unlinked == set(), "ENG's issues and attachment are still in Jira"
+        assert connector.full_sync_coverage().complete is False
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+
+    async def test_a_refused_issue_search_keeps_the_projects_records_and_still_unlinks(
+        self, jira, db, store, search
+    ) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+
+        search.add("ENG", 0, json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        unlinked = unlinked_records(graph, db, stored)
+        assert unlinked & {"1001", "attachment_200", "1002"} == set(), "ENG's stored records are noted as seen"
+        assert unlinked & {"2002"} == {"2002"}, "OPS-2, gone from Jira, is still unlinked"
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_full_sync_that_read_everything_unlinks_only_what_is_gone(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+
+        graph = await run_full_sync(connector, db)
+
+        assert unlinked_records(graph, db, stored) == {"2002"}
+
+    async def test_an_incomplete_earlier_sync_does_not_hold_back_a_later_full_sync(
+        self, jira, db, store, search
+    ) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        search.add("ENG", 0, json_response({"errorMessages": ["try later"]}, status=503))
+        await connector.run_sync()
+        store.sync_points.clear()
+
+        search.add("ENG", 0, [issue("1001", "ENG-1", attachments=[attachment("200")]), issue("1002", "ENG-2")])
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked_records(graph, db, stored) == {"2002"}
+
+    async def test_a_transport_error_on_an_issue_search_unlinks_nothing(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+
+        def eng_unreachable(request: httpx.Request) -> httpx.Response:
+            if 'project = "ENG"' in json.loads(request.content)["jql"]:
+                raise httpx.ConnectError("reset")
+            return search(request)
+
+        jira.on("POST", f"{API}/search", eng_unreachable)
+        graph = await run_full_sync(connector, db)
+
+        assert unlinked_records(graph, db, stored) & {"1001", "attachment_200", "1002"} == set()
+        assert connector.full_sync_coverage().complete is False
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+
+    async def test_a_search_that_says_the_project_is_not_there_keeps_nothing(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+
+        search.add("ENG", 0, json_response({"errorMessages": ["The value 'ENG' does not exist"]}, status=400))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        assert not {stored[key] for key in ("1001", "attachment_200", "1002")} & set(db.kept_records)
+        assert unlinked_records(graph, db, stored) == {"1001", "attachment_200", "1002", "2002"}

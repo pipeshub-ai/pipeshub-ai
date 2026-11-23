@@ -33,6 +33,7 @@ import {
   PaidResultFileParams,
   ListPaidResultsSchema,
   DeletePaidResultsSchema,
+  DeleteIfMatchPaidResultsSchema,
   PurgeCutoffPaidResultsSchema,
   PurgePaidResultsSchema,
   PurgeBatchPaidResultsSchema,
@@ -339,6 +340,23 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         await storageController.deletePaidResults(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/internal/paid-results/:recordId/delete-if-match',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(DeleteIfMatchPaidResultsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.deletePaidResultsIfMatch(req, res, next);
       } catch (error) {
         next(error);
       }

@@ -16,6 +16,7 @@ import path from 'node:path';
 
 /** Tables no collection maps to: written by functions, derived, or not data to move. */
 export const UNMAPPED_TABLES: Record<string, string> = {
+  'oauth.agent_call_events': 'agent activity log (30 days); a store move starts a new one',
   'platform.kv_entries': 'key-value store runtime state, rebuilt by use',
   'platform.kv_access': 'the key-value access mode (shadow or enforce), owned by the migrations and set by db.migrate',
   'platform.cache_entries': 'the Node API\'s session and short-lived cache, rebuilt by signing in again (a MongoDB install keeps it in Redis)',

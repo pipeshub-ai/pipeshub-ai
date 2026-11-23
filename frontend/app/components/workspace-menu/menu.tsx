@@ -157,7 +157,7 @@ export function WorkspaceMenu({ isOpen, onClose, triggerRef }: WorkspaceMenuProp
         <Divider />
 
         {/* ── Section 2: External Links ── */}
-        <ExternalLinksSection />
+        <ExternalLinksSection onDialogOpen={onClose} />
 
         {/* ── Sub-panels — float to the right, top-aligned ── */}
         {subPanels}

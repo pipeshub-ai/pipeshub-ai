@@ -71,6 +71,8 @@ on:
       - 'backend/python/app/events/events.py'
       - 'backend/python/app/api/routes/chatbot.py'
       - 'backend/python/app/modules/indexing/parse_now_marker.py'
+      # The parser identity the promotion of queued duplicates is judged by (graph_db/test_parser_identity_fields.py).
+      - 'backend/python/app/modules/pipeline/parser_identity.py'
       - 'backend/python/app/telemetry/backend.py'
       - 'backend/python/app/utils/time_conversion.py'
       # Entity search and named-entity linking: graph_db/test_permitted_entity_records_* reads through them.
@@ -157,6 +159,7 @@ on:
       - 'backend/python/tests/unit/connectors/sources/test_connector_workflow_integration.py'
       - 'backend/python/tests/unit/modules/entity_resolution/conftest.py'
       - 'backend/python/tests/unit/modules/indexing/test_entity_index_rebuild.py'
+      - 'backend/python/tests/unit/agent_loop_lib/sandbox/live_fakes.py'
       - 'backend/python/tests/unit/modules/pipeline/fakes.py'
       - 'backend/python/tests/unit/modules/transformers/test_entity_vectorstore_delete.py'
       - 'backend/python/tests/unit/services/artifact_registry/fakes.py'

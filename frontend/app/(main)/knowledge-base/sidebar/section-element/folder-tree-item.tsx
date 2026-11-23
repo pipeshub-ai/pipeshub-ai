@@ -17,6 +17,10 @@ import {
   mapReindexOptionsToMenuActions,
 } from '../../utils/reindex-label';
 import { getTreeNodeDescendantsFlag } from '../../utils/tree-builder';
+import {
+  useCollectionGroupPermissions,
+  isReindexPermissionLocked,
+} from '../../hooks/use-collection-group-permissions';
 import { renderTreeLines } from './tree-lines';
 import { ItemActionMenu } from '../../components/item-action-menu';
 import type { MenuAction } from '../../components/item-action-menu';
@@ -76,6 +80,7 @@ export function FolderTreeItem({
   showRootLines = true,
 }: FolderTreeItemProps) {
   const { t } = useTranslation();
+  const groupPermissions = useCollectionGroupPermissions();
   const [isHovered, setIsHovered] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -175,7 +180,11 @@ export function FolderTreeItem({
   const hideLeafRecordReindex =
     enhancedNode.nodeType === 'record' && !hasDescendants;
 
-  const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
+  const {
+    reindexNode,
+    options: reindexMenuOptions,
+    showMenu: showReindexMenu,
+  } = getReindexMenuState(
     getReindexNodeFromHubItem({
       nodeType: enhancedNode.nodeType,
       hasChildren: hasDescendants,
@@ -197,15 +206,24 @@ export function FolderTreeItem({
             enhancedNode.indexingStatus,
             hasDescendants,
           ),
-        )
+        ).map((action) => ({
+          ...action,
+          permissionLocked: isReindexPermissionLocked(reindexNode, groupPermissions),
+        }))
       : []),
-    canEdit && !!onRename && { icon: 'edit', label: t('menu.rename'), onClick: handleRenameStart },
+    canEdit && !!onRename && {
+      icon: 'edit',
+      label: t('menu.rename'),
+      onClick: handleRenameStart,
+      permissionLocked: !groupPermissions.canEdit,
+    },
     // Collections can only be deleted by OWNER
     canDelete && !!onDelete && !(enhancedNode.nodeType === 'app' && enhancedNode.permission?.role !== 'OWNER') && {
       icon: 'delete',
       label: t('menu.delete'),
       onClick: () => onDelete!(node.id),
       color: 'red' as const,
+      permissionLocked: !groupPermissions.canDelete,
     },
   ];
   const hasRenameAction = canEdit && !!onRename;

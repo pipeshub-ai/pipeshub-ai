@@ -80,6 +80,7 @@ from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.citations import normalize_citations_and_chunks
+from app.utils.error_class import failure_reason
 from app.utils.log_redaction import redact_error_for_log
 from app.utils.streaming import parse_confidence_from_answer
 
@@ -225,7 +226,7 @@ class AnswerFinalizer:
                 )
             except Exception as exc:
                 log.error("AnswerFinalizer failed: %s", exc, exc_info=True)
-                record_named_span_output(span, {"error": str(exc)})
+                record_named_span_output(span, {"error": failure_reason(exc)})
                 return await self._emit_error_response(
                     "I encountered an issue. Please try again.", event_sink=event_sink
                 )

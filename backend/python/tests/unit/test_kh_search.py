@@ -360,6 +360,64 @@ def test_partition_queries_are_capped_by_default() -> None:
     assert 1 < provider.peak_in_flight <= DEFAULT_MAX_CONCURRENCY, provider.peak_in_flight
 
 
+def test_searches_at_once_share_the_process_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each search keeps under its own cap; together they keep under the process's."""
+    from app.connectors.sources.localKB.handlers import kh_search
+
+    monkeypatch.setattr(kh_search, "SHARED_MAX_CONCURRENCY", 5)
+    provider = FakeProvider({f"rg-{index}": [row(f"a{index}", f"name {index:02d}")]
+                             for index in range(30)})
+
+    async def both() -> list:
+        return await asyncio.gather(_search(provider, limit=50), _search(provider, limit=50))
+
+    pages = asyncio.run(both())
+    assert [len(page.rows) for page in pages] == [30, 30]
+    assert 1 < provider.peak_in_flight <= 5, provider.peak_in_flight
+
+
+def test_a_search_with_no_turn_before_its_deadline_is_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.connectors.sources.localKB.handlers import kh_search
+    from app.utils.request_deadline import deadline_after
+
+    monkeypatch.setattr(kh_search, "SHARED_MAX_CONCURRENCY", 1)
+
+    class Held(FakeProvider):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.release = asyncio.Event()
+
+        async def get_knowledge_hub_connector_page_v3(self, *, app_id, **kwargs) -> dict:
+            if app_id == "rg-held":
+                await self.release.wait()
+            return await super().get_knowledge_hub_connector_page_v3(app_id=app_id, **kwargs)
+
+    async def scenario() -> None:
+        holder = Held({"rg-held": [row("h1", "held")]})
+        first = asyncio.ensure_future(_search(holder, limit=10))
+        await asyncio.sleep(0.01)
+        waiting = Held({"rg-1": [row("a1", "apple")]})
+        with deadline_after(0.05), pytest.raises(KnowledgeHubListingBusy) as busy:
+            await _search(waiting, limit=10)
+        assert busy.value.timed_out
+        assert waiting.calls == [], "the waiting search never reached the graph"
+        holder.release.set()
+        assert ids(await first) == ["h1"]
+
+    asyncio.run(scenario())
+
+
+def test_no_process_cap_when_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.connectors.sources.localKB.handlers import kh_search
+
+    monkeypatch.setattr(kh_search, "SHARED_MAX_CONCURRENCY", 0)
+    provider = FakeProvider({f"rg-{index}": [row(f"a{index}", f"name {index:02d}")]
+                             for index in range(30)})
+    page = asyncio.run(_search(provider, limit=50, max_concurrency=None))
+    assert len(page.rows) == 30
+    assert provider.peak_in_flight == 30
+
+
 def test_an_exhausted_partition_is_not_queried_again() -> None:
     """The cursor's live set is what keeps a finished partition out."""
     provider = FakeProvider({
