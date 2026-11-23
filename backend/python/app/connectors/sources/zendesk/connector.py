@@ -368,6 +368,8 @@ class ZendeskConnector(BaseConnector):
         self._section_id_to_data: dict[str, dict[str, Any]] = {}
         self._category_id_to_data: dict[str, dict[str, Any]] = {}
         self._org_id_to_data: dict[str, dict[str, Any]] = {}
+        # Organizations Zendesk did not answer about this sync: their group is left as it is.
+        self._unanswered_org_ids: set[str] = set()
         self._user_id_to_app_user: dict[str, AppUser] = {}
         self._rebuild_ticket_edges = False
         self._rebuild_article_edges = False
@@ -527,6 +529,7 @@ class ZendeskConnector(BaseConnector):
         self._section_id_to_data.clear()
         self._category_id_to_data.clear()
         self._org_id_to_data.clear()
+        self._unanswered_org_ids.clear()
         self._ticket_folders.clear()
         self._folder_org_group_ids.clear()
 
@@ -1358,6 +1361,26 @@ class ZendeskConnector(BaseConnector):
                 sorted(emails), self.connector_id
             )
 
+    async def _keep_organization_group(self, org_id: str) -> None:
+        """Keep an unanswered organization's group through a full sync's unlink.
+
+        The org is also recorded so its tickets keep their org_ grant this sync.
+
+        A failed keep must not stop the tickets and Help Center: the run is reported
+        incomplete instead, so nothing is unlinked and a full sync stays owed.
+        """
+        self._unanswered_org_ids.add(org_id)
+        try:
+            await self.data_entities_processor.note_kept_user_group(
+                self.connector_id, f"org_{org_id}"
+            )
+        except Exception as e:
+            self._skip("organization groups")
+            self.logger.warning(
+                f"Zendesk: could not keep the group of organization {org_id}; "
+                f"this full sync unlinks nothing: {e}"
+            )
+
     async def _add_organizations_missing_from_export(
         self, org_user_groups: list[tuple[AppUserGroup, list[AppUser]]]
     ) -> list[tuple[AppUserGroup, list[AppUser]]]:
@@ -1393,9 +1416,7 @@ class ZendeskConnector(BaseConnector):
                 )
             except Exception as e:
                 self.logger.warning(f"Zendesk: could not check organization {org_id}: {e}")
-                await self.data_entities_processor.note_kept_user_group(
-                    self.connector_id, f"org_{org_id}"
-                )
+                await self._keep_organization_group(org_id)
                 continue
             if response.status_code == HttpStatusCode.NOT_FOUND.value:
                 for external_id in (f"org_{org_id}", f"{ORG_AGENTS_GROUP_PREFIX}{org_id}"):
@@ -1411,9 +1432,7 @@ class ZendeskConnector(BaseConnector):
                 self.logger.warning(
                     f"Zendesk: organization {org_id} missing from the export and unreadable"
                 )
-                await self.data_entities_processor.note_kept_user_group(
-                    self.connector_id, f"org_{org_id}"
-                )
+                await self._keep_organization_group(org_id)
                 continue
             self._org_id_to_data[org_id] = org_data
             org_user_groups.append((self._org_user_group(org_id), []))
@@ -4017,7 +4036,9 @@ class ZendeskConnector(BaseConnector):
             grant_group(f"{ORG_AGENTS_GROUP_PREFIX}{organization_id}")
         # Granted whether or not the org shares tickets: run_sync empties the group of
         # an org that does not, so toggling sharing needs no change to the tickets.
-        if include_customer_access and known_org:
+        # An unanswered org's group is left as it is, so its tickets keep their grant.
+        unanswered_org = str(organization_id) in self._unanswered_org_ids
+        if include_customer_access and (known_org or unanswered_org):
             grant_group(f"org_{organization_id}")
 
         emails: set[str] = set()

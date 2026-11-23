@@ -5690,6 +5690,31 @@ class TestOrganizationsMissingFromTheExport:
             "zd-conn-1", "org_21"
         )
 
+    @pytest.mark.parametrize("unanswered", ["lookup_raises", "unreadable"])
+    async def test_one_whose_group_cannot_be_kept_leaves_the_run_incomplete(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor, unanswered
+    ) -> None:
+        """Nothing is unlinked then, and the sync goes on to the next organization."""
+        datasource = _ready(zendesk_connector)
+        self._stored(mock_tx_store, "org_21", "org_22")
+        if unanswered == "lookup_raises":
+            zendesk_connector._call_api_with_retry = AsyncMock(side_effect=RuntimeError("boom"))
+        else:
+            datasource.show_organization = AsyncMock(
+                return_value=_make_response(success=False, status_code=403, error="Forbidden")
+            )
+        mock_data_entities_processor.note_kept_user_group = AsyncMock(
+            side_effect=RuntimeError("store unavailable")
+        )
+
+        assert await zendesk_connector._add_organizations_missing_from_export([]) == []
+
+        assert [
+            c.args for c in mock_data_entities_processor.note_kept_user_group.await_args_list
+        ] == [("zd-conn-1", "org_21"), ("zd-conn-1", "org_22")]
+        mock_data_entities_processor.on_user_group_deleted.assert_not_awaited()
+        assert zendesk_connector.full_sync_coverage().complete is False
+
     async def test_exported_organizations_are_not_asked_about(self, zendesk_connector, mock_tx_store) -> None:
         datasource = _ready(zendesk_connector)
         self._stored(mock_tx_store, "org_21", "orgagents_21", "group_7", "named_1")
@@ -6103,18 +6128,22 @@ class _ZendeskGraph:
         self.records: dict[str, object] = {}
         self.record_groups: set[str] = set()
         self.user_groups: dict[str, AppUserGroup] = {}
+        # external record id -> the permissions the last write of it carried
+        self.permissions: dict[str, list] = {}
         self.seen = FullSyncSeen()
 
         def note(collection, node_id) -> None:
             self.seen.add(collection, node_id)
 
         async def on_new_records(batch) -> None:
-            for record, _ in batch:
+            for record, permissions in batch:
                 self.records[record.external_record_id] = record
+                self.permissions[record.external_record_id] = list(permissions)
                 note(CollectionNames.RECORDS.value, record.id)
                 note(CollectionNames.RECORD_GROUPS.value, record.external_record_group_id)
 
-        async def on_updated_record_permissions(record, _permissions) -> None:
+        async def on_updated_record_permissions(record, permissions) -> None:
+            self.permissions[record.external_record_id] = list(permissions)
             note(CollectionNames.RECORDS.value, record.id)
 
         async def on_new_record_groups(batch) -> None:
@@ -6215,6 +6244,7 @@ class _ZendeskGraph:
         """Returns (whether no further full sync is owed, the nodes unlinked)."""
         self.states.clear()
         self.seen = FullSyncSeen()
+        self.permissions = {}
         await self.connector.run_sync()
         stored = self._stored()
         unlinked: set[str] = set()
@@ -6359,6 +6389,48 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         assert done is True
         assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
         assert "org_9" in graph.user_groups
+        # Its ticket is rewritten with the group's grant still on it.
+        assert "org_9" in {p.external_id for p in graph.permissions["101"]}
+
+    @pytest.mark.parametrize("unanswered", ["lookup_raises", "unreadable"])
+    async def test_an_organization_whose_group_cannot_be_kept_unlinks_nothing(
+        self, graph, unanswered
+    ) -> None:
+        """A failed keep reports the run incomplete instead of stopping the sync."""
+        await self._seed(graph)
+        graph.tenant.exported_orgs.discard(9)
+        if unanswered == "lookup_raises":
+            graph.connector.data_source.show_organization = AsyncMock(
+                side_effect=RuntimeError("boom")
+            )
+        else:
+            graph.tenant.fail.add("show_organization")
+        graph.connector.data_entities_processor.note_kept_user_group = AsyncMock(
+            side_effect=RuntimeError("store unavailable")
+        )
+
+        done, unlinked = await graph.full_sync()
+
+        assert {"101", "article_55", "article_56"} <= graph.permissions.keys()
+        assert graph.connector.full_sync_coverage().complete is False
+        assert (done, sorted(unlinked)) == (False, [])
+        assert "org_9" in graph.user_groups
+
+    async def test_an_unanswered_organization_does_not_keep_its_grant_once_deleted(
+        self, graph
+    ) -> None:
+        """Unanswered in one sync, then 404 in the next: its tickets lose the grant."""
+        await self._seed(graph)
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        await graph.full_sync()
+        assert "org_9" in {p.external_id for p in graph.permissions["101"]}
+
+        graph.tenant.fail.discard("show_organization")
+        del graph.tenant.orgs[9]
+        await graph.full_sync()
+
+        assert "org_9" not in {p.external_id for p in graph.permissions["101"]}
 
     async def test_an_organization_deleted_at_the_source_loses_its_groups(self, graph) -> None:
         await self._seed(graph)
