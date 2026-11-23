@@ -3746,14 +3746,15 @@ class IGraphDBProvider(ABC):
 
         Args:
             user_ids: Mongo user IDs (user.userId)
-            org_id: Optional organization ID to scope results
+            org_id: Organization ID the users must belong to; required (a missing or empty
+                value raises ValueError instead of matching users of any organization)
             chunk_size: Max IDs per graph query batch
 
         Returns:
             Mapping of Mongo userId -> graph _key
 
         Raises:
-            ValueError: If any user_id was not found in the graph for org_id
+            ValueError: If org_id is missing, or any user_id was not found in the graph for org_id
         """
         pass
 
@@ -6466,22 +6467,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_key_by_external_file_id(
-        self,
-        external_file_id: str
-    ) -> str | None:
-        """
-        Get internal key by external file ID.
-
-        Args:
-            external_file_id (str): External file ID
-
-        Returns:
-            Optional[str]: Internal key if found, None otherwise
-        """
-        pass
-
-    @abstractmethod
     async def organization_exists(
         self,
         organization_name: str,
@@ -7169,24 +7154,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_key_by_external_message_id(
-        self,
-        external_message_id: str,
-        transaction: str | None = None
-    ) -> str | None:
-        """
-        Get internal key by external message ID.
-
-        Args:
-            external_message_id (str): External message ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Internal key if found, None otherwise
-        """
-        pass
-
-    @abstractmethod
     async def get_message_id_header_by_key(
         self,
         record_key: str,
@@ -7203,28 +7170,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[str]: messageIdHeader value if found, None otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def get_related_mails_by_message_id_header(
-        self,
-        message_id_header: str,
-        exclude_key: str,
-        collection: str,
-        transaction: str | None = None
-    ) -> list[str]:
-        """
-        Find all mail records with the same messageIdHeader, excluding a specific key.
-
-        Args:
-            message_id_header (str): messageIdHeader value to search for
-            exclude_key (str): Record key to exclude from results
-            collection (str): Collection name (e.g., "records" or "mails")
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[str]: List of record keys (_key or id) matching the criteria
         """
         pass
 

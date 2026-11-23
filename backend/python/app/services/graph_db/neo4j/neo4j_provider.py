@@ -6831,6 +6831,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Return graph user _key for each Mongo userId (batched lookup)."""
         if not user_ids:
             return {}
+        if not org_id:
+            # Fail closed: without an org the lookup would match a user of any organisation.
+            raise ValueError("org_id is required to look up graph users by Mongo user id")
 
         mongo_to_key: dict[str, str] = {}
         for i in range(0, len(user_ids), chunk_size):
@@ -6838,7 +6841,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             MATCH (u:User)
             WHERE u.userId IN $user_ids
-              AND ($org_id IS NULL OR u.orgId = $org_id)
+              AND u.orgId = $org_id
             RETURN u.userId AS userId, u.id AS _key
             """
             results = await self.client.execute_query(
@@ -12816,78 +12819,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return int(rows[0]["deleted"]) if rows else 0
 
-    async def get_key_by_external_file_id(
-        self,
-        external_file_id: str
-    ) -> str | None:
-        """Get internal key by external file ID"""
-        try:
-            query = """
-            MATCH (r:Record {externalRecordId: $external_file_id})
-            RETURN r.id AS id
-            LIMIT 1
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={"external_file_id": external_file_id}
-            )
-
-            return results[0]["id"] if results else None
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_key_by_external_file_id")
-            return None
-
-    async def get_key_by_external_message_id(
-        self,
-        external_message_id: str,
-        transaction: str | None = None
-    ) -> str | None:
-        """
-        Get internal key by external message ID.
-
-        Args:
-            external_message_id (str): External message ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Internal key if found, None otherwise
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Retrieving internal key for external message ID {external_message_id}"
-            )
-
-            query = """
-            MATCH (r:Record {externalRecordId: $external_message_id})
-            RETURN r.id AS id
-            LIMIT 1
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={"external_message_id": external_message_id},
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Successfully retrieved internal key for external message ID {external_message_id}"
-                )
-                return results[0]["id"]
-            else:
-                self.logger.warning(
-                    f"⚠️ No internal key found for external message ID {external_message_id}"
-                )
-                return None
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_key_by_external_message_id")
-            return None
-
     async def get_message_id_header_by_key(
         self,
         record_key: str,
@@ -12940,65 +12871,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="get_message_id_header_by_key", record_id=record_key)
             return None
-
-    async def get_related_mails_by_message_id_header(
-        self,
-        message_id_header: str,
-        exclude_key: str,
-        collection: str,
-        transaction: str | None = None
-    ) -> list[str]:
-        """
-        Find all mail records with the same messageIdHeader, excluding a specific key.
-
-        Args:
-            message_id_header (str): messageIdHeader value to search for
-            exclude_key (str): Record key to exclude from results
-            collection (str): Collection name (e.g., "records" or "mails")
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[str]: List of record keys (_key or id) matching the criteria
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Finding related mails with messageIdHeader {message_id_header}, excluding {exclude_key}"
-            )
-
-            # Map collection to Neo4j label
-            label = self._get_label(collection)
-
-            query = f"""
-            MATCH (r:{label})
-            WHERE r.messageIdHeader = $message_id_header
-            AND r.id <> $exclude_key
-            RETURN r.id AS id
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={
-                    "message_id_header": message_id_header,
-                    "exclude_key": exclude_key
-                },
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Found {len(results)} related mails with messageIdHeader {message_id_header}"
-                )
-                return [r["id"] for r in results]
-            else:
-                self.logger.debug(
-                    f"ℹ️ No related mails found with messageIdHeader {message_id_header}"
-                )
-                return []
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_related_mails_by_message_id_header")
-            return []
 
     async def check_connector_name_uniqueness(
         self,

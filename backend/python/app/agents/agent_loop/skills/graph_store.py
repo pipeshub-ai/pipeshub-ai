@@ -843,4 +843,9 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         ]
 
     async def remove_candidate(self, candidate_id: str) -> None:
-        await self._graph.delete_nodes([candidate_id], _CANDIDATES)
+        """Removes the candidate only if it belongs to this org: the key is resolved through an
+        org-scoped read, so an id of another org (or none) removes nothing."""
+        docs = await self._graph.get_nodes_by_filters(_CANDIDATES, {"orgId": self._org_id, "candidateId": candidate_id})
+        keys = [key for doc in docs if (key := _doc_id(doc))]
+        if keys:
+            await self._graph.delete_nodes(keys, _CANDIDATES)

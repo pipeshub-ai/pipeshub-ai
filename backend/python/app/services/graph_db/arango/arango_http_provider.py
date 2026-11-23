@@ -8856,6 +8856,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Return graph user _key for each Mongo userId (batched lookup)."""
         if not user_ids:
             return {}
+        if not org_id:
+            # Fail closed: without an org the lookup would match a user of any organisation.
+            raise ValueError("org_id is required to look up graph users by Mongo user id")
 
         mongo_to_key: dict[str, str] = {}
         for i in range(0, len(user_ids), chunk_size):
@@ -8863,7 +8866,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
                 FOR user IN {CollectionNames.USERS.value}
                     FILTER user.userId IN @user_ids
-                    FILTER @org_id == null OR user.orgId == @org_id
+                    FILTER user.orgId == @org_id
                     RETURN {{ userId: user.userId, _key: user._key }}
             """
             result = await self.http_client.execute_aql(
@@ -14226,102 +14229,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Delete every edge attached to a Local FS record."""
         await self._delete_every_edge_of_record(record_id, transaction)
 
-    async def get_key_by_external_file_id(
-        self,
-        external_file_id: str,
-        transaction: str | None = None
-    ) -> str | None:
-        """
-        Get internal file key using the external file ID.
-
-        Args:
-            external_file_id (str): External file ID to look up
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Internal file key if found, None otherwise
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Retrieving internal key for external file ID {external_file_id}"
-            )
-
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_file_id
-                RETURN record._key
-            """
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={"external_file_id": external_file_id},
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Successfully retrieved internal key for external file ID {external_file_id}"
-                )
-                return results[0]
-            else:
-                self.logger.warning(
-                    f"⚠️ No internal key found for external file ID {external_file_id}"
-                )
-                return None
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_key_by_external_file_id")
-            return None
-
-    async def get_key_by_external_message_id(
-        self,
-        external_message_id: str,
-        transaction: str | None = None
-    ) -> str | None:
-        """
-        Get internal key by external message ID.
-
-        Args:
-            external_message_id (str): External message ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Internal key if found, None otherwise
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Retrieving internal key for external message ID {external_message_id}"
-            )
-
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_message_id
-                RETURN record._key
-            """
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={"external_message_id": external_message_id},
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Successfully retrieved internal key for external message ID {external_message_id}"
-                )
-                return results[0]
-            else:
-                self.logger.warning(
-                    f"⚠️ No internal key found for external message ID {external_message_id}"
-                )
-                return None
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_key_by_external_message_id")
-            return None
-
     async def get_message_id_header_by_key(
         self,
         record_key: str,
@@ -14371,62 +14278,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="get_message_id_header_by_key", record_id=record_key)
             return None
-
-    async def get_related_mails_by_message_id_header(
-        self,
-        message_id_header: str,
-        exclude_key: str,
-        collection: str,
-        transaction: str | None = None
-    ) -> list[str]:
-        """
-        Find all mail records with the same messageIdHeader, excluding a specific key.
-
-        Args:
-            message_id_header (str): messageIdHeader value to search for
-            exclude_key (str): Record key to exclude from results
-            collection (str): Collection name (e.g., "records" or "mails")
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[str]: List of record keys (_key or id) matching the criteria
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Finding related mails with messageIdHeader {message_id_header}, excluding {exclude_key}"
-            )
-
-            query = f"""
-            FOR record IN {collection}
-                FILTER record.messageIdHeader == @message_id_header
-                AND record._key != @exclude_key
-                RETURN record._key
-            """
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={
-                    "message_id_header": message_id_header,
-                    "exclude_key": exclude_key
-                },
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Found {len(results)} related mails with messageIdHeader {message_id_header}"
-                )
-                return results
-            else:
-                self.logger.debug(
-                    f"ℹ️ No related mails found with messageIdHeader {message_id_header}"
-                )
-                return []
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_related_mails_by_message_id_header")
-            return []
 
     async def count_connector_instances_by_scope(
         self,

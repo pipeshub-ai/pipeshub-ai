@@ -37,7 +37,7 @@ READS = frozenset("""
     get_failed_records_by_org get_file_paths_for_records get_file_record_by_id get_filtered_connector_instances
     get_first_user_with_permission_to_node get_folder_children get_folder_depth get_folder_subtree_height get_gated_apps
     get_graph_user_keys_by_mongo_user_ids get_groups_with_permission_to_node get_hidden_app_ids get_issue_sites get_kb_children
-    get_kb_permissions get_key_by_external_file_id get_key_by_external_message_id get_knowledge_base
+    get_kb_permissions get_knowledge_base
     get_knowledge_hub_access_context_v2 get_knowledge_hub_access_v3 get_knowledge_hub_breadcrumbs
     get_knowledge_hub_connector_grants get_knowledge_hub_connector_page_v3 get_knowledge_hub_context_permissions
     get_knowledge_hub_filter_options get_knowledge_hub_node_access get_knowledge_hub_parent_node get_knowledge_hub_root_nodes_v2
@@ -55,7 +55,7 @@ READS = frozenset("""
     get_records_by_parent_record get_records_by_record_group get_records_by_record_ids get_records_by_record_type
     get_records_by_status get_records_by_virtual_record_id get_records_by_weburls get_records_for_named_entities
     get_records_in_delete_batch get_records_linking_to_weburls get_records_pending_duplicate_reconcile get_ref_access
-    get_related_mails_by_message_id_header get_related_node_field get_revision_pointers get_selection_nodes
+    get_related_node_field get_revision_pointers get_selection_nodes
     get_stage_states_with_records get_structure_of_nodes get_switch_pointers get_sync_point get_taxonomy_entities_for_record
     get_taxonomy_entity_membership get_team_owner_removal_info get_team_permissions_and_owner_count get_team_users
     get_team_with_users get_template get_trash_purge_stats get_typed_records_batch get_unreached_taxonomy_entities

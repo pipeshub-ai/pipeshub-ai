@@ -398,8 +398,11 @@ class IdentityMixin(PgBase):
     async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int) -> dict[str, str]:
         if not user_ids:
             return {}
+        if not org_id:
+            # Fail closed: without an org the lookup would match a user of any organisation.
+            raise ValueError("org_id is required to look up graph users by Mongo user id")
         rows = await self._id_rows("/* pipeshub:graph.user_keys_by_user_ids */ SELECT doc->>'userId' AS uid, id FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = ANY($2::text[])"
-                                " AND ($3::text IS NULL OR doc->>'orgId' = $3)", [current_org_id(), list(user_ids), org_id], None)
+                                " AND doc->>'orgId' = $3", [current_org_id(), list(user_ids), org_id], None)
         found = {r["uid"]: r["id"] for r in rows if r["uid"] and r["id"]}
         missing = [u for u in user_ids if u not in found]
         if missing:
