@@ -24349,7 +24349,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 FILTER parent_doc != null AND IS_SAME_COLLECTION("recordGroups", parent_doc)
                                 RETURN PARSE_IDENTIFIER(edge._to).key
                         )
-                    ) : (
+                    ) : FIRST((
+                        // A subquery: without FIRST its value is an array, which names no document,
+                        // and every connector record read as having no parent.
                         // For connector records, check nodeRelations first (for nested folders/records),
                         // then belongsTo (for immediate children of record groups),
                         // then inheritPermissions (alternative way records can be connected to record groups)
@@ -24379,7 +24381,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 RETURN PARSE_IDENTIFIER(edge._to).key
                         ) : null
                         RETURN parent_from_rel || parent_from_belongs || parent_from_inherit
-                    )
+                    ))
                 ) : null
             )
         )
