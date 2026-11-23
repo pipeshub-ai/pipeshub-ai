@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 
+from app.core.org_context import OrgContext, bind, for_org, system
 from tests.integration.real_graph import connect_arango, connect_neo4j
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -48,9 +49,23 @@ async def test_missing_org_is_refused_not_unscoped(kind, org, monkeypatch):
 
 @pytest.mark.parametrize("kind", ["arango", "neo4j"])
 async def test_system_scope_lookup_resolves_users_of_every_org_in_one_batch(kind, monkeypatch):
-    """The service-account kind backfill holds ids of every org: one batched call, exact keys, a straggler raises."""
+    """The service-account kind backfill holds ids of every org: one batched call under an explicit system scope; an id nobody holds is absent."""
     p, (_org_a, uid_a, key_a), (_org_b, uid_b, key_b) = await _world(kind, monkeypatch)
-    assert await p.get_graph_user_keys_by_mongo_user_ids_all_orgs([uid_a, uid_b], chunk_size=10) == {uid_a: key_a, uid_b: key_b}
-    with pytest.raises(ValueError, match="Users not found"):
-        await p.get_graph_user_keys_by_mongo_user_ids_all_orgs([uid_a, uuid.uuid4().hex[:24]], chunk_size=10)
+    nobody = uuid.uuid4().hex[:24]
+    with system("test"):
+        assert await p.get_graph_user_keys_by_mongo_user_ids_all_orgs([uid_a, uid_b, nobody], chunk_size=10) == {uid_a: key_a, uid_b: key_b}
+    await p.disconnect()
+
+
+@pytest.mark.parametrize("kind", ["arango", "neo4j"])
+async def test_system_scope_lookup_refuses_unless_the_scope_is_system(kind, monkeypatch):
+    """Not reachable from a request: bound to an org, with no context, or through getattr, it refuses and returns nothing."""
+    p, (org_a, uid_a, _key_a), (_org_b, uid_b, _key_b) = await _world(kind, monkeypatch)
+    name = "get_graph_user_keys_by_mongo_user_ids" + "_all_orgs"  # a name built at run time, as a text scan would miss
+    with pytest.raises(PermissionError, match="explicit system context"):
+        await getattr(p, name)([uid_b], chunk_size=10)  # no context at all
+    with bind(OrgContext(org_a, "user-a", "user", "jwt", "t")), pytest.raises(PermissionError, match="explicit system context"):
+        await getattr(p, name)([uid_b], chunk_size=10)  # org A asking for org B's user
+    with for_org(org_a, job="test"), pytest.raises(PermissionError, match="explicit system context"):
+        await getattr(p, name)([uid_a], chunk_size=10)
     await p.disconnect()

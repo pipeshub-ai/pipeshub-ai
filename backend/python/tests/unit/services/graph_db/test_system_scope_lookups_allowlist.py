@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import pathlib
 
-APP = pathlib.Path(__file__).resolve().parents[4] / "app"
+PYTHON = pathlib.Path(__file__).resolve().parents[4]
+APP = PYTHON / "app"
+# Product code only: the app and the EE tree (its scripts included); tests may name it.
+SCANNED = [APP, PYTHON / "ee" / "scripts", *(p for p in (PYTHON / "ee").glob("*") if p.is_dir() and p.name not in {"tests", "vendor", "scripts"})]
 NAME = "get_graph_user_keys_by_mongo_user_ids_all_orgs"
 ALLOWED = {"migrations/service_account_kind_migration.py"}
 DEFINED_IN = {
@@ -20,9 +23,19 @@ DEFINED_IN = {
 }
 
 
+def _users() -> set[str]:
+    return {
+        str(p.relative_to(PYTHON))
+        for root in SCANNED
+        if root.is_dir()
+        for p in root.rglob("*.py")
+        if NAME in p.read_text(encoding="utf-8")
+    }
+
+
 def test_only_the_migration_calls_the_system_scope_lookup() -> None:
-    users = {str(p.relative_to(APP)) for p in APP.rglob("*.py") if NAME in p.read_text(encoding="utf-8")}
-    assert users == ALLOWED | DEFINED_IN
+    allowed = {f"app/{p}" for p in ALLOWED | DEFINED_IN}
+    assert _users() == allowed
 
 
 def test_no_request_route_or_tool_names_it() -> None:

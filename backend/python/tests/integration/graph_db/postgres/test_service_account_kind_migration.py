@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.core.org_context import OrgContext, bind
+from app.core.org_context import OrgContext, bind, system
 from app.migrations.service_account_kind_migration import ServiceAccountKindMigrationService
 
 if TYPE_CHECKING:
@@ -66,11 +66,33 @@ async def test_both_orgs_are_backfilled_and_neither_sees_the_other(pg_provider, 
             assert await pg_provider.get_user_by_user_id(other["svc"]) is None
 
 
-async def test_without_any_org_context_the_per_org_lookup_still_refuses(pg_provider, two_orgs) -> None:
-    """The migration's reach comes from its own per-org binding; the lookup itself stays bound."""
-    from app.core.org_context import MissingOrgContext
+async def test_the_system_scope_lookup_joins_the_active_orgs_and_refuses_outside_a_system_scope(pg_provider, two_orgs, org_ctx) -> None:
+    a, b = two_orgs["a"], two_orgs["b"]
+    name = "get_graph_user_keys_by_mongo_user_ids" + "_all_orgs"
+    nobody = f"mongo-nobody-{uuid.uuid4().hex[:6]}"
+    with system("test"):
+        found = await getattr(pg_provider, name)([a["svc"], b["svc"], nobody], chunk_size=10)
+    assert found == {a["svc"]: f"k-{a['svc']}", b["svc"]: f"k-{b['svc']}"}  # one answer, whatever org holds the user; the stranger is absent
+    with pytest.raises(PermissionError, match="explicit system context"):  # no context
+        await getattr(pg_provider, name)([a["svc"]], chunk_size=10)
+    with bind(OrgContext(b["org"], None, "job", "job:test", "t")), pytest.raises(PermissionError, match="explicit system context"):
+        await getattr(pg_provider, name)([a["svc"]], chunk_size=10)  # bound to org B asking for org A's user
 
-    with pytest.raises(MissingOrgContext):
-        await pg_provider.get_graph_user_keys_by_mongo_user_ids_all_orgs([two_orgs["a"]["svc"]], chunk_size=10)
-    with bind(OrgContext(two_orgs["b"]["org"], None, "job", "job:test", "t")), pytest.raises(ValueError, match="Users not found"):
-        await pg_provider.get_graph_user_keys_by_mongo_user_ids_all_orgs([two_orgs["a"]["svc"]], chunk_size=10)
+
+async def test_a_deleted_org_is_skipped_and_no_lookup_is_per_id(pg_provider, pg_db, two_orgs, org_ctx) -> None:
+    a, b = two_orgs["a"], two_orgs["b"]
+    with org_ctx(b["org"]):  # org B is deleted: its organisation node is inactive
+        assert await pg_provider.batch_upsert_nodes([{"_key": b["org"], "isActive": False}], "organizations")
+    config = MagicMock()
+    config.get_config = AsyncMock(return_value={"version": 1, "userIds": [a["svc"], b["svc"]], "disabledUserIds": []})
+    config.set_config = AsyncMock()
+    spy = AsyncMock(wraps=pg_provider.get_user_by_user_id)
+    pg_provider.get_user_by_user_id = spy  # type: ignore[method-assign]
+    try:
+        result = await ServiceAccountKindMigrationService(pg_provider, config, logging.getLogger("kind-migration-it")).migrate()
+    finally:
+        del pg_provider.get_user_by_user_id
+    assert result["success"] is True and result["stamped"] == 1 and result["missing"] == 1  # the deleted org's account is a straggler, left alone
+    spy.assert_not_called()  # batched per org, never one lookup per id
+    with org_ctx(b["org"]):
+        assert (await pg_provider.get_document(f"k-{b['svc']}", "users")).get("kind") != "service"

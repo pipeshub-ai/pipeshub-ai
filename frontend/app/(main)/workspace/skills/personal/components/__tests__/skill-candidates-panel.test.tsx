@@ -39,6 +39,8 @@ beforeEach(() => {
   installBrowserShims();
   mocks.api.getPendingCandidates.mockReset().mockResolvedValue([]);
   mocks.api.rejectCandidate.mockReset();
+  mocks.api.approveCandidate.mockReset();
+  mocks.api.listSkills.mockReset().mockResolvedValue([]);
   mocks.toast.success.mockReset();
   mocks.toast.error.mockReset();
   mocks.toast.info.mockReset();
@@ -64,5 +66,26 @@ describe('SkillCandidatesPanel reject', () => {
     await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('Failed to update candidate'));
     expect(mocks.toast.info).not.toHaveBeenCalled();
     expect(mocks.api.getPendingCandidates).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SkillCandidatesPanel approve', () => {
+  it('refreshes the list and says the candidate was already reviewed when the server answers 404', async () => {
+    mocks.api.approveCandidate.mockRejectedValue({ statusCode: 404 });
+    renderInTheme(<SkillCandidatesPanel />);
+    await waitFor(() => expect(mocks.api.getPendingCandidates).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(mocks.toast.info).toHaveBeenCalledWith('This candidate has already been reviewed'));
+    expect(mocks.api.getPendingCandidates).toHaveBeenCalledTimes(2);
+    expect(mocks.toast.error).not.toHaveBeenCalled();
+    expect(mocks.toast.success).not.toHaveBeenCalled();
+  });
+
+  it('keeps the error toast for any other failure', async () => {
+    mocks.api.approveCandidate.mockRejectedValue({ response: { status: 409 } });
+    renderInTheme(<SkillCandidatesPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('Failed to update candidate'));
+    expect(mocks.toast.info).not.toHaveBeenCalled();
   });
 });

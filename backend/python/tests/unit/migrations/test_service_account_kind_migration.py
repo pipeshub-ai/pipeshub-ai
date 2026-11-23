@@ -31,17 +31,13 @@ def _staged(*user_ids, disabled=()) -> dict:
 def _provider(keys: dict) -> MagicMock:
     """A graph holding exactly `keys`, answering like the real providers.
 
-    The batched lookup raises for a chunk holding an id it cannot resolve and
-    returns nothing for that chunk, so the migration falls back to one lookup
-    per id there. Both behaviours are reproduced here.
+    The system-scope lookup answers with the ids it found; an id nobody holds
+    is simply absent from the answer.
     """
     provider = MagicMock()
 
     async def batched(user_ids, *, chunk_size) -> dict[str, str]:
-        missing = [u for u in user_ids if u not in keys]
-        if missing:
-            raise ValueError(f"Users not found in graph: {missing}")
-        return {u: keys[u] for u in user_ids}
+        return {u: keys[u] for u in user_ids if u in keys}
 
     async def one(user_id, *, raise_on_error=False) -> dict | None:
         return {"id": keys[user_id]} if user_id in keys else None
@@ -123,15 +119,16 @@ async def test_a_staged_id_with_no_node_is_retried_not_recorded_done() -> None:
 
 @pytest.mark.asyncio
 async def test_one_straggler_does_not_cost_the_accounts_that_do_have_nodes() -> None:
-    """The batched lookup raises for the whole chunk and hands back nothing, so
-    without the per-id fallback a single missing id would leave every other
-    account unmarked on every boot."""
+    """A single missing id is absent from the batched answer and costs the
+    others nothing: no per-id fallback, and the accounts that do have nodes are
+    marked on the first boot."""
     provider = _provider({"u1": "node-1"})
     service, config = _service(provider, _staged("u1", "u-not-yet"))
 
     result = await service.migrate()
 
     assert (result["success"], result["stamped"], result["missing"]) == (True, 1, 1)
+    assert provider.get_user_by_user_id.await_count == 0
     # Progress is recorded so the next boot skips this node, but never `done`.
     assert config.set_config.await_args.args[1].get("done") is not True
     written = provider.batch_upsert_nodes.await_args.args[0]
@@ -193,7 +190,7 @@ async def test_a_failed_lookup_is_not_read_as_a_missing_node() -> None:
         side_effect=ConnectionError("graph down")
     )
     service, config = _service(provider, _staged("u1"))
-    # Not a ValueError, so it is a failure rather than "this id has no node".
+    # A failed lookup is a failure of the pass, never "this id has no node".
 
     assert (await service.migrate())["success"] is False
     config.set_config.assert_not_called()

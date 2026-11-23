@@ -396,10 +396,27 @@ class IdentityMixin(PgBase):
         return [dict(r) for r in rows]
 
     async def get_graph_user_keys_by_mongo_user_ids_all_orgs(self, user_ids: list[str], *, chunk_size: int) -> dict[str, str]:
-        """The graph is read in the ambient org (the database filters on it), so the system-scope lookup is the current org's."""
-        return await self.get_graph_user_keys_by_mongo_user_ids(user_ids, current_org_id(), chunk_size=chunk_size)
+        """Every active org in turn, each bound by ``for_org`` from this enumeration (the database filters on the bound org); the answers are joined."""
+        from app.core.org_context import for_org, peek, system
 
-    async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int) -> dict[str, str]:
+        ctx = peek()
+        if ctx is None or ctx.kind != "system":
+            raise PermissionError("get_graph_user_keys_by_mongo_user_ids_all_orgs requires an explicit system context")
+        if not user_ids:
+            return {}
+        with system("graph_user_keys_all_orgs"):
+            org_docs = await self.get_all_orgs(active=True)
+        found: dict[str, str] = {}
+        for doc in org_docs:
+            org_id = str(doc.get("_key") or doc.get("id") or "")
+            todo = [u for u in user_ids if u not in found]
+            if not org_id or not todo:
+                continue
+            with for_org(org_id, job="graph_user_keys_all_orgs"):
+                found.update(await self.get_graph_user_keys_by_mongo_user_ids(todo, org_id, chunk_size=chunk_size, allow_missing=True))
+        return found
+
+    async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int, allow_missing: bool = False) -> dict[str, str]:
         if not user_ids:
             return {}
         if not org_id:
@@ -409,7 +426,7 @@ class IdentityMixin(PgBase):
                                 " AND doc->>'orgId' = $3", [current_org_id(), list(user_ids), org_id], None)
         found = {r["uid"]: r["id"] for r in rows if r["uid"] and r["id"]}
         missing = [u for u in user_ids if u not in found]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError(f"Users not found in graph: {missing}")
         return found
 

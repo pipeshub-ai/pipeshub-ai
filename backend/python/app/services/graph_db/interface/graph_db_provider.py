@@ -3740,13 +3740,14 @@ class IGraphDBProvider(ABC):
         *,
         chunk_size: int,
     ) -> dict[str, str]:
-        """System-scope variant of ``get_graph_user_keys_by_mongo_user_ids``: no organisation term, because a Mongo
-        ``userId`` is unique across organisations. For maintenance jobs that hold ids from every organisation (the
-        service-account kind backfill); a request handler must use the org-bound lookup. The call sites are pinned by
-        ``tests/unit/services/graph_db/test_system_scope_lookups_allowlist.py``.
+        """System-scope variant of ``get_graph_user_keys_by_mongo_user_ids`` for maintenance jobs that hold ids of every
+        organisation (the service-account kind backfill). A Mongo ``userId`` is unique across organisations.
 
-        Raises:
-            ValueError: If any user_id was not found in the graph
+        Refuses (PermissionError) unless the ambient context is an explicit ``system(...)`` scope, so a request handler
+        cannot run it. Returns the ids that were found, in any organisation; an id nobody holds is absent from the answer
+        (it does not raise). On ArangoDB and Neo4j it is one lookup over the whole graph; on PostgreSQL, where every
+        statement is bound to one organisation, it visits each active organisation in turn and joins the answers.
+        The call sites are pinned by ``tests/unit/services/graph_db/test_system_scope_lookups_allowlist.py``.
         """
         pass
 
@@ -3757,6 +3758,7 @@ class IGraphDBProvider(ABC):
         org_id: str | None = None,
         *,
         chunk_size: int,
+        allow_missing: bool = False,
     ) -> dict[str, str]:
         """
         Look up graph user document keys for Mongo user IDs.
@@ -3766,6 +3768,7 @@ class IGraphDBProvider(ABC):
             org_id: Organization ID the users must belong to; required (a missing or empty
                 value raises ValueError instead of matching users of any organization)
             chunk_size: Max IDs per graph query batch
+            allow_missing: Return the ids that were found instead of raising when some are not
 
         Returns:
             Mapping of Mongo userId -> graph _key

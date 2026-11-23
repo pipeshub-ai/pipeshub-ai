@@ -6831,6 +6831,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ``userId`` is unique across organisations. For maintenance jobs that hold ids from every organisation (the
         service-account kind backfill); a request handler must use the org-bound lookup. The call sites are pinned by
         ``tests/unit/services/graph_db/test_system_scope_lookups_allowlist.py``."""
+        from app.core.org_context import peek
+
+        ctx = peek()
+        if ctx is None or ctx.kind != "system":
+            # Fail closed: no organisation term below, so only an explicit system scope may run it.
+            raise PermissionError("get_graph_user_keys_by_mongo_user_ids_all_orgs requires an explicit system context")
         if not user_ids:
             return {}
 
@@ -6849,9 +6855,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if record.get("userId") and record.get("_key"):
                     mongo_to_key[record["userId"]] = record["_key"]
 
-        missing = [user_id for user_id in user_ids if user_id not in mongo_to_key]
-        if missing:
-            raise ValueError(f"Users not found in graph: {missing}")
         return mongo_to_key
 
     async def get_graph_user_keys_by_mongo_user_ids(
@@ -6860,6 +6863,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
         *,
         chunk_size: int,
+        allow_missing: bool = False,
     ) -> dict[str, str]:
         """Return graph user _key for each Mongo userId (batched lookup)."""
         if not user_ids:
@@ -6888,7 +6892,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     mongo_to_key[mongo_id] = graph_key
 
         missing = [user_id for user_id in user_ids if user_id not in mongo_to_key]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError(f"Users not found in graph: {missing}")
 
         return mongo_to_key

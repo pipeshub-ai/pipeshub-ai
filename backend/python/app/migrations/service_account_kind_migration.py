@@ -64,44 +64,34 @@ class ServiceAccountKindMigrationService:
         return state if isinstance(state, dict) else None
 
     async def _resolve_nodes(
-        self, wanted: list[str], *, batched: bool = True
+        self, wanted: list[str], *, org_id: str | None = None
     ) -> tuple[dict[str, str], list[str]]:
         """Map each staged `userId` to its node key, and name the ones with no node.
 
-        `batched=False` looks each id up on its own: inside one organisation of a
-        PostgreSQL graph most staged ids belong to another organisation, so the
-        batch would raise for every chunk.
+        Batched, and an id nobody holds is only absent from the answer: one
+        straggler never costs the others a lookup. Without `org_id` the staged ids are looked up in every organisation (the
+        system-scope lookup, which only runs inside an explicit system scope);
+        with it, in that organisation alone (PostgreSQL, one bound organisation at a time).
         """
-        found: dict[str, str] = {}
-        missing: list[str] = []
+        from app.core.org_context import system
 
+        found: dict[str, str] = {}
         for start in range(0, len(wanted), _BATCH):
             chunk = wanted[start : start + _BATCH]
-            try:
-                if not batched:
-                    raise ValueError("per-id lookup")
+            if org_id is None:
+                with system("service_account_kind_migration"):
+                    found.update(
+                        await self.graph_provider.get_graph_user_keys_by_mongo_user_ids_all_orgs(
+                            chunk, chunk_size=_BATCH
+                        )
+                    )
+            else:
                 found.update(
-                    await self.graph_provider.get_graph_user_keys_by_mongo_user_ids_all_orgs(
-                        chunk, chunk_size=_BATCH
+                    await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
+                        chunk, org_id, chunk_size=_BATCH, allow_missing=True
                     )
                 )
-            except ValueError:
-                # That call raises for the whole chunk when any one id has no
-                # node, and does not hand back the ones it did find. So only
-                # the chunk holding a straggler pays a lookup per id, and only
-                # while that id is missing. A store failure is not a ValueError
-                # and still surfaces.
-                for user_id in chunk:
-                    node = await self.graph_provider.get_user_by_user_id(
-                        user_id, raise_on_error=True
-                    )
-                    key = (node or {}).get("id") or (node or {}).get("_key")
-                    if key:
-                        found[user_id] = str(key)
-                    else:
-                        missing.append(user_id)
-
-        return found, missing
+        return found, [user_id for user_id in wanted if user_id not in found]
 
     async def _stamp(
         self,
@@ -109,14 +99,14 @@ class ServiceAccountKindMigrationService:
         already: set[str],
         disabled: set[str],
         *,
-        batched: bool = True,
+        org_id: str | None = None,
     ) -> tuple[int, list[str], list[str]]:
         """Resolve `wanted` in the graph as bound now and write `kind` on what is found.
 
         Returns (stamped, resolved ids, ids with no node).
         """
         stamped = 0
-        found, missing = await self._resolve_nodes(wanted, batched=batched)
+        found, missing = await self._resolve_nodes(wanted, org_id=org_id)
 
         resolved = [user_id for user_id in wanted if user_id in found]
         node_keys = [found[user_id] for user_id in resolved if user_id not in already]
@@ -154,7 +144,9 @@ class ServiceAccountKindMigrationService:
         database filters every statement on the bound org), so the pass runs
         once per organisation, each bound from the job's own enumeration of the
         organisations, never from the staged ids. A staged id is resolved when
-        any organisation holds its node; the others never see it.
+        any organisation holds its node; the others never see it. Organisations that
+        were deleted are skipped, and an organisation is asked in batches, never one id
+        at a time, so a straggler costs one batched lookup per organisation per startup.
         """
         from app.services.graph_db.postgres.provider import PostgresGraphProvider
 
@@ -164,7 +156,7 @@ class ServiceAccountKindMigrationService:
         from app.core.org_context import for_org, system
 
         with system("service_account_kind_migration"):
-            org_docs = await self.graph_provider.get_all_orgs(active=False)
+            org_docs = await self.graph_provider.get_all_orgs(active=True)
         org_ids = [str(o.get("_key") or o["id"]) for o in org_docs if o.get("_key") or o.get("id")]
 
         stamped = 0
@@ -174,7 +166,7 @@ class ServiceAccountKindMigrationService:
             if not todo:
                 break
             with for_org(org_id, job="service_account_kind_migration"):
-                count, done, _missing = await self._stamp(todo, already, disabled, batched=False)
+                count, done, _missing = await self._stamp(todo, already, disabled, org_id=org_id)
             stamped += count
             resolved.update(done)
         return stamped, [u for u in processed if u in resolved], [u for u in processed if u not in resolved]
