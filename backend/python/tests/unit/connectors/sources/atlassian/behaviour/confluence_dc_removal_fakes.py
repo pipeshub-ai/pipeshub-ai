@@ -76,6 +76,9 @@ class RemovalRecordsDb(FakeRecordsDb):
         await super().on_new_records(records_with_permissions)
         self.type_docs.update(record.id for record, _ in records_with_permissions)
 
+    async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
+        """Confluence has no roles; here so ``run_full_sync`` can track the write."""
+
     async def on_record_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
         return self.record_groups.pop(external_group_id, None) is not None
 
@@ -130,3 +133,28 @@ class RemovalRecordsDb(FakeRecordsDb):
             "success": True, "failed_records": failed, "failed_count": len(failed),
             "deleted_records": [{"record_id": r.id} for r in doomed],
         }
+
+
+def unlinked_by_full_sync(graph: Any, db: FakeRecordsDb) -> dict[str, set[str]]:  # noqa: ANN401
+    """External ids, per kind, of the stored nodes a ``run_full_sync`` left to be unlinked.
+
+    A node is spared when the sync wrote it or noted it kept; a record group also when
+    the sync wrote one of its records, as the processor notes it then. Nothing is
+    unlinked when the connector reported an incomplete read.
+    """
+    from app.config.constants.arangodb import CollectionNames
+
+    if not graph.unlink_nodes_missed_by_full_sync.await_count:
+        return {"records": set(), "record_groups": set(), "groups": set()}
+    seen = graph.unlink_nodes_missed_by_full_sync.await_args.args[1]
+    written = set(seen[CollectionNames.RECORDS.value])
+    kept = {r.external_record_id for r in db.records.values() if r.id in db.kept_records}
+    spaces = set(seen[CollectionNames.RECORD_GROUPS.value]) | {
+        r.external_record_group_id for r in db.records.values() if r.external_record_id in written
+    }
+    groups = {g.source_user_group_id for g, _ in db.user_groups}
+    return {
+        "records": set(db.records) - written - kept,
+        "record_groups": set(db.record_groups) - spaces,
+        "groups": groups - set(seen[CollectionNames.GROUPS.value]),
+    }

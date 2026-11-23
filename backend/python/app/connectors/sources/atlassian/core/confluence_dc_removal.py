@@ -20,6 +20,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     generate_record_sync_point_key,
 )
 from app.connectors.core.registry.filters import SyncFilterKey
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.models.entities import Record, RecordGroup, RecordGroupType, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
@@ -125,6 +126,26 @@ class ConfluenceDataCenterRemovalMixin:
 
     # The space's stored pages and blog posts as the last reconcile read them, kept for the next one only.
     _stored_space_scan: tuple[str, dict[RecordType, list[Record]]] | None = None
+    # Part of the source went unread, so a full sync must not unlink what it did not see.
+    _sync_read_incomplete = False
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that left part of Confluence unread unlinks nothing it did not see."""
+        return FullSyncCoverage(complete=not self._sync_read_incomplete)
+
+    async def _note_homepage_unread(self, homepage_id: str) -> None:
+        """The search can omit a space homepage, so only its backfill writes it: a stored one it failed to read must not be unlinked."""
+        try:
+            stored = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=homepage_id, raise_on_error=True
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not look up space homepage {homepage_id}: {e}")
+        else:
+            if stored is None:
+                # Nothing was left unwritten, and a homepage never readable would otherwise flag every full sync.
+                return
+        self._sync_read_incomplete = True
 
     async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
         raise NotImplementedError
@@ -212,10 +233,13 @@ class ConfluenceDataCenterRemovalMixin:
         The space's stored records are read once for both types: the blog posts
         reuse the read made for the pages just before.
         """
+        if not listing.complete:
+            self._sync_read_incomplete = True
         space_id = str(space.external_group_id)
         earlier, self._stored_space_scan = self._stored_space_scan, None
         existing = await self._list_space_content(space.short_name, record_type)
         if existing is None:
+            self._sync_read_incomplete = True
             return False
         stored: list[Record] | None = None
         if record_type == RecordType.CONFLUENCE_BLOGPOST and earlier is not None and earlier[0] == space_id:
@@ -228,6 +252,7 @@ class ConfluenceDataCenterRemovalMixin:
                 by_type = await self._stored_content(space_id)
             except Exception as e:
                 self.logger.warning(f"Could not read the stored records of space {space.short_name}; nothing removed: {e}")
+                self._sync_read_incomplete = True
                 return False
             if record_type == RecordType.CONFLUENCE_PAGE:
                 self._stored_space_scan = (space_id, by_type)
@@ -235,6 +260,9 @@ class ConfluenceDataCenterRemovalMixin:
 
         settled = True
         stored_ids = {r.external_record_id for r in stored}
+        # One never stored leaves nothing unwritten, and a deterministic failure would otherwise flag every full sync.
+        if stored_ids & {item_id for item_id, _, _ in listing.failed}:
+            self._sync_read_incomplete = True
         missing = sorted(
             item_id for item_id, item in existing.items()
             if item.status == "current" and item_id not in stored_ids and item_id not in listing.seen
@@ -258,9 +286,48 @@ class ConfluenceDataCenterRemovalMixin:
             self.logger.info(
                 f"Removing {len(left_out)} {record_type.value} records the sync filters now leave out in space {space.short_name}"
             )
+        if listing.full:
+            leaving = {r.external_record_id for r in left_out}
+            archived = [
+                r for r in stored
+                if r.external_record_id in existing and r.external_record_id not in leaving
+                and existing[r.external_record_id].status == "archived"
+            ]
+            if archived:
+                await self._note_archived_kept(archived)
         if gone or left_out:
             settled = await self._delete_content_records(gone + left_out) and settled
         return settled
+
+    async def _note_archived_kept(self, pages: list[Record]) -> None:
+        """Note archived pages kept as stored, with the files, comments and replies under them.
+
+        The search leaves archived pages out, but Confluence still shows them to those
+        allowed, so a full sync keeps them and what hangs under them rather than
+        unlinking them. Child pages are left to their own listing state.
+        """
+        page_types = (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST)
+        kept = [r.id for r in pages]
+        queue = [r.external_record_id for r in pages]
+        visited: set[str] = set()
+        while queue:
+            parent_id = queue.pop()
+            if parent_id in visited:
+                continue
+            visited.add(parent_id)
+            try:
+                children = await self.data_entities_processor.get_records_by_parent(
+                    self.connector_id, parent_id, visibility=RecordVisibility.ALL
+                )
+            except Exception as e:
+                self.logger.warning(f"Could not read the stored records under archived content {parent_id}: {e}")
+                self._sync_read_incomplete = True
+                continue
+            for child in children:
+                if child.record_type not in page_types:
+                    kept.append(child.id)
+                    queue.append(child.external_record_id)
+        self.data_entities_processor.note_kept_records(self.connector_id, kept)
 
     async def _list_space_content(self, space_key: str, record_type: RecordType) -> dict[str, ListedItem] | None:
         """Every page (current and archived) or current blog post in a space the account can see.
@@ -451,10 +518,12 @@ class ConfluenceDataCenterRemovalMixin:
         nothing: that is the account failing, not every space leaving.
         """
         if not self._space_listing_complete:
+            self._sync_read_incomplete = True
             return
         in_scope = sorted({str(s.external_group_id) for s in spaces})
         if not in_scope:
             self.logger.warning("The space listing came back empty; no space is removed")
+            self._sync_read_incomplete = True
             return
         key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_space_scope", "all")
         cleaned = await self.pages_sync_point.read_sync_point(key) or {}

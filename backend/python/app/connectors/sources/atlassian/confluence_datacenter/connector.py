@@ -497,6 +497,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             - Attachments
             - Comments (inline, footer)
         """
+        self._sync_read_incomplete = False
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Data Center sync for org: {org_id}")
@@ -759,6 +760,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
+                    self._sync_read_incomplete = True
                     break
 
                 response_data = response.json()
@@ -788,6 +790,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             self.logger.warning(
                                 f"Keeping the stored members of group {group_name}: its member list could not be read"
                             )
+                            await self._keep_group_as_stored(group_id or group_name)
                             continue
 
                         # Create user group
@@ -804,6 +807,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                 f"Keeping the stored members of group {group_name}: "
                                 f"its members could not be looked up ({lookup_error})"
                             )
+                            await self._keep_group_as_stored(group_id or group_name)
                             continue
 
                         # Save group with members
@@ -814,6 +818,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                     except Exception as group_error:
                         self.logger.error(f"❌ Failed to process group {group_data.get('name')}: {group_error}")
+                        self._sync_read_incomplete = True
                         continue
 
                 next_start = v1_next_start(response_data, start, len(groups_data), batch_size, use_link_offset=False)
@@ -826,6 +831,14 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         except Exception as e:
             self.logger.error(f"❌ Group sync failed: {e}", exc_info=True)
             raise
+
+    async def _keep_group_as_stored(self, external_group_id: str) -> None:
+        """Note a group whose members could not be read kept as stored, so a full sync leaves its links."""
+        try:
+            await self.data_entities_processor.note_kept_user_group(self.connector_id, external_group_id)
+        except Exception as e:
+            self.logger.warning(f"Could not note group {external_group_id} kept; this full sync unlinks nothing: {e}")
+            self._sync_read_incomplete = True
 
     async def _sync_spaces(self) -> list[RecordGroup]:
         """
@@ -946,6 +959,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             self.logger.warning(
                                 f"Keeping the stored access of space {space_name}: its permissions could not be read"
                             )
+                            await self.data_entities_processor.note_kept_record_group(
+                                self.connector_id, record_group.external_group_id
+                            )
                             continue
 
                         total_permissions_synced += len(permissions)
@@ -1000,6 +1016,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 keys=[space_key], limit=1, expand="homepage"
             )
             if not space_resp or space_resp.status != HttpStatusCode.SUCCESS.value:
+                self._sync_read_incomplete = True
                 return None, None, None
             space_results = space_resp.json().get("results", [])
             if not space_results:
@@ -1022,6 +1039,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             self.logger.warning(
                 "Failed to fetch space homepage for %s: %s", space_key, e
             )
+            self._sync_read_incomplete = True
             return None, None, None
 
     async def _backfill_space_homepage_from_api(
@@ -1045,6 +1063,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     space_key,
                     response.status if response else "no response",
                 )
+                await self._note_homepage_unread(space_homepage_id)
                 return 0
 
             item_data = response.json()
@@ -1066,6 +1085,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             permissions = await self._fetch_page_permissions(item_id)
             if permissions is None:
                 self.logger.warning("Skipping space homepage %s: its restrictions could not be read", item_id)
+                if existing_record:
+                    self._sync_read_incomplete = True
                 return 0
             webpage_record_update = await self._process_webpage_with_update(
                 item_data, record_type, existing_record, permissions
@@ -1103,6 +1124,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 e,
                 exc_info=True,
             )
+            await self._note_homepage_unread(space_homepage_id)
             return 0
 
     async def _sync_content(
@@ -1457,6 +1479,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                                 except Exception as att_error:
                                     self.logger.error(f"❌ Failed to process attachment: {att_error}")
+                                    self._sync_read_incomplete = True
                                     continue
 
                         # Process comments (always fetch; DC /content/search omits childTypes.comment even when present)
@@ -2220,6 +2243,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         f"⚠️ Failed to fetch attachments for content {content_id}: "
                         f"{response.status if response else 'No response'}"
                     )
+                    self._sync_read_incomplete = True
                     break
 
                 response_data = response.json()
@@ -2245,6 +2269,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch attachments for content {content_id}: {e}")
+            self._sync_read_incomplete = True
             return [], None
 
     async def _fetch_attachment_file_records(
@@ -2305,6 +2330,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch attachment file records for comment {comment_id}: {e}")
+            self._sync_read_incomplete = True
             return []
 
     async def _fetch_comments_recursive(
@@ -2361,6 +2387,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         f"⚠️ Failed to fetch {comment_type} comments for page {page_title}: "
                         f"{response.status if response else 'No response'}"
                     )
+                    self._sync_read_incomplete = True
                     break
 
                 response_data = response.json()
@@ -2491,6 +2518,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                     except Exception as comment_error:
                         self.logger.error(f"❌ Failed to process comment {comment_data.get('id')}: {comment_error}")
+                        self._sync_read_incomplete = True
                         continue
 
                 next_url = response_data.get("_links", {}).get("next")
@@ -2500,6 +2528,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         start_offset = int(token)
                         continue
                     except ValueError:
+                        self._sync_read_incomplete = True
                         break
                 if len(comments_data) < batch_size:
                     break
@@ -2510,6 +2539,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch {comment_type} comments for page {page_title}: {e}")
+            self._sync_read_incomplete = True
             return []
 
     async def _fetch_comment_children_recursive(
@@ -2554,6 +2584,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 )
 
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    self._sync_read_incomplete = True
                     break
 
                 response_data = response.json()
@@ -2678,6 +2709,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
                     except Exception as child_error:
                         self.logger.error(f"❌ Failed to process child comment {child_data.get('id')}: {child_error}")
+                        self._sync_read_incomplete = True
                         continue
 
                 next_url = response_data.get("_links", {}).get("next")
@@ -2687,6 +2719,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         start_offset = int(token)
                         continue
                     except ValueError:
+                        self._sync_read_incomplete = True
                         break
                 if len(children_data) < batch_size:
                     break
@@ -2696,6 +2729,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch children for comment {comment_id}: {e}")
+            self._sync_read_incomplete = True
             return []
 
     def _transform_to_comment_record(
@@ -3356,6 +3390,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     if not pseudo_group:
                         # Create pseudo-group on-the-fly
                         pseudo_group = await self._create_pseudo_group(principal_id)
+                    else:
+                        self.data_entities_processor.note_kept_user_groups(self.connector_id, [pseudo_group])
 
                     if pseudo_group:
                         self.logger.debug(
