@@ -1135,7 +1135,11 @@ class NotionConnector(BaseConnector):
             if owner else {}
         )
         user_id, email = str(authenticator.get("userId") or ""), str(authenticator.get("email") or "")
-        if owner is not None and owner.email and email and owner.email.casefold() != email.casefold():
+        if owner is not None and not owner.email:
+            # As when connecting: an account whose email Notion does not share cannot be checked
+            # against other users, so it names nobody here.
+            user_id = ""
+        elif owner is not None and email and owner.email.casefold() != email.casefold():
             # As when connecting: an account under another PipesHub user's email is that user's, so it
             # names nobody here; a connection already made through it is dropped below.
             other = await self.data_entities_processor.get_user_by_email(owner.email, raise_on_error=True)

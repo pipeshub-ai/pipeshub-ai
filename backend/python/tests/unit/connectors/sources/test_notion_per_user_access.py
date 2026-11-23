@@ -1373,6 +1373,16 @@ class TestConnectorSignIn:
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "k-old")
         save.assert_not_awaited()
 
+    async def test_an_account_without_a_shared_email_is_not_connected_and_an_old_one_is_dropped(self) -> None:
+        me = {"type": "bot", "bot": {"workspace_id": "ws-1", "owner": {"type": "user", "user": {"id": "n-admin"}}}}
+        _, save, _ = await self._run(me=me)
+        save.assert_not_awaited()
+        old = _connection("admin", token="", method="connector")
+        old.source_user_id = "n-admin"
+        _, save, delete = await self._run([old], me=me)
+        delete.assert_awaited_once()
+        save.assert_not_awaited()
+
     async def test_a_failed_drop_leaves_the_sign_in_unverified(self) -> None:
         old = _connection("admin", token="", method="connector")
         old.source_user_id = "n-admin"
