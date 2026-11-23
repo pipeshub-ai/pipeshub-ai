@@ -189,8 +189,6 @@ class ConnectorRegistry:
         self.logger = container.logger()
         self._graph_provider: IGraphDBProvider | None = None
         self._collection_name = CollectionNames.APPS.value
-        # Each org's connector documents, as the start-up sync read them (``_report_install_affected``).
-        self._apps_seen_at_startup: list[list[dict[str, Any]]] = []
 
         # In-memory storage for connector metadata
         self._connectors: dict[str, dict[str, Any]] = {}
@@ -797,7 +795,6 @@ class ConnectorRegistry:
         """
         try:
             graph_provider = await self._get_graph_provider()
-            self._apps_seen_at_startup = []
             # Org by org: on PostgreSQL every read and write runs under one org.
             failed = await for_each_org(
                 graph_provider, "connector_registry_sync",
@@ -808,26 +805,39 @@ class ConnectorRegistry:
             return False
         if failed:
             return False
-        await self._report_install_affected()
+        await self._report_install_affected(graph_provider)
         self.logger.info("Successfully synced registry with database")
         return True
 
-    async def _report_install_affected(self) -> None:
-        """Writes ``install_affected`` for the Node licence check, only after every org was read: a partial answer
-        could call an affected install unaffected. A failure is logged; Node then treats the install as affected."""
+    async def _report_install_affected(self, graph_provider: IGraphDBProvider) -> None:
+        """Writes ``install_affected`` for the Node licence check, only when every read succeeded: the org list and each
+        org's connectors are read with ``raise_on_error``, because Arango and Neo4j otherwise answer a failed read with
+        no rows, and a partial count could call an affected install unaffected. A failure is logged and writes nothing;
+        Node then treats the install as affected."""
         from app.connectors.core.base.data_processor.permission_sync_gate import (
             INSTALL_AFFECTED_KEY,
             install_affected,
         )
 
+        apps_by_org: list[list[dict[str, Any]]] = []
+
+        async def read(org_id: str) -> None:
+            apps_by_org.append(
+                await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True)
+            )
+
         try:
-            facts = install_affected(self._apps_seen_at_startup)
+            failed = await for_each_org(
+                graph_provider, "licence_install_affected", read, self.logger, raise_on_error=True
+            )
+            if failed:
+                self.logger.warning("Not reporting whether this install uses licensed features: an org could not be read")
+                return
+            facts = install_affected(apps_by_org)
             facts["checkedAt"] = datetime.now(timezone.utc).isoformat()
             await self.container.config_service().set_config(INSTALL_AFFECTED_KEY, facts)
         except Exception as e:
             self.logger.warning(f"Could not report whether this install uses licensed features: {e}")
-        finally:
-            self._apps_seen_at_startup = []
 
     async def _sync_org_with_database(self, graph_provider: IGraphDBProvider, org_id: str) -> None:
         """One org's part of ``sync_with_database``, called under that org."""
@@ -933,7 +943,6 @@ class ConnectorRegistry:
                 )
 
             await self._limit_unlicensed_connectors(org_id, all_documents)
-            self._apps_seen_at_startup.append(all_documents)
 
         except Exception as e:
             self.logger.error(f"Error syncing registry with database org={org_id}: {e}")

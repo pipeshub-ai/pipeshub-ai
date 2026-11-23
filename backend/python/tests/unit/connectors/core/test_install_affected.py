@@ -52,40 +52,59 @@ def test_install_affected(orgs: list[list[dict]], expected: dict) -> None:
     assert install_affected(orgs) == expected
 
 
-def _registry_with(documents: object) -> tuple:
+def _registry_with(apps: list[dict] | Exception) -> tuple:
     registry, container = _make_registry()
     gp = _make_graph_provider()
-    if isinstance(documents, Exception):
-        gp.get_all_documents.side_effect = documents
+    gp.get_all_documents.return_value = []
+    if isinstance(apps, Exception):
+        gp.get_org_apps.side_effect = apps
     else:
-        gp.get_all_documents.return_value = documents
+        gp.get_org_apps.return_value = apps
     data_store = MagicMock()
     data_store.graph_provider = gp
     container.data_store = AsyncMock(return_value=data_store)
     container.config_service.return_value.set_config = AsyncMock(return_value=True)
-    return registry, container.config_service.return_value.set_config
+    return registry, gp, container.config_service.return_value.set_config
 
 
 @pytest.mark.asyncio
 async def test_the_startup_sync_reports_it() -> None:
-    registry, set_config = _registry_with([{"_key": "c1", "type": "Jira", "scope": "team", "isActive": True}])
+    registry, gp, set_config = _registry_with([{"_key": "c1", "type": "Jira", "scope": "team", "isActive": True}])
     assert await registry.sync_with_database() is True
     key, facts = set_config.await_args.args
     assert key == INSTALL_AFFECTED_KEY
     assert facts["affected"] is True and facts["teamConnectors"] == 1
     assert isinstance(facts["checkedAt"], str)
+    # Arango and Neo4j answer a failed read with no rows unless asked to raise: both reads ask.
+    assert gp.get_all_orgs.await_args.kwargs.get("raise_on_error") is True
+    assert gp.get_org_apps.await_args.kwargs == {"active_only": False, "raise_on_error": True}
 
 
 @pytest.mark.asyncio
-async def test_nothing_is_reported_when_an_org_could_not_be_read() -> None:
+async def test_nothing_is_reported_when_an_orgs_connectors_could_not_be_read() -> None:
     """A partial answer could call an affected install unaffected; with none, Node gives the grace."""
-    registry, set_config = _registry_with(RuntimeError("store down"))
-    assert await registry.sync_with_database() is False
+    registry, _, set_config = _registry_with(RuntimeError("store down"))
+    await registry.sync_with_database()
+    set_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_reported_when_the_org_list_could_not_be_read() -> None:
+    """As Arango and Neo4j do: a failed org list is no orgs, unless the read asks to raise."""
+    registry, gp, set_config = _registry_with([])
+
+    async def orgs(**kwargs: object) -> list[dict]:
+        if kwargs.get("raise_on_error"):
+            raise RuntimeError("store down")
+        return []
+
+    gp.get_all_orgs.side_effect = orgs
+    assert await registry.sync_with_database() is True
     set_config.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_a_failed_report_does_not_fail_the_sync() -> None:
-    registry, set_config = _registry_with([])
+    registry, _, set_config = _registry_with([])
     set_config.side_effect = RuntimeError("store down")
     assert await registry.sync_with_database() is True
