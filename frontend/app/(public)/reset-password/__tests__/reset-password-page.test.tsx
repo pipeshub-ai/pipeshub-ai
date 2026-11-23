@@ -5,6 +5,8 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 const replace = vi.fn();
 const push = vi.fn();
 const logout = vi.fn();
+const discardDrafts = vi.fn();
+const discardUnread = vi.fn();
 const authState = { isHydrated: true, isAuthenticated: false, logout };
 
 vi.mock('next/navigation', () => ({
@@ -18,6 +20,8 @@ vi.mock('@/config', () => ({
   ),
 }));
 
+vi.mock('@/lib/storage/chat-drafts', () => ({ discardAllChatDrafts: () => discardDrafts() }));
+vi.mock('@/lib/storage/chat-unread', () => ({ discardAllChatUnread: () => discardUnread() }));
 vi.mock('@/lib/hooks/use-breakpoint', () => ({ useAuthWideLayout: () => false }));
 vi.mock('../../components/auth-hero', () => ({ default: () => null }));
 vi.mock('../../components/form-panel', () => ({
@@ -86,6 +90,8 @@ describe('ResetPasswordPage', () => {
     replace.mockReset();
     push.mockReset();
     logout.mockReset();
+    discardDrafts.mockReset();
+    discardUnread.mockReset();
     authState.isHydrated = true;
     authState.isAuthenticated = false;
   });
@@ -123,6 +129,8 @@ describe('ResetPasswordPage', () => {
       fireEvent.click(screen.getByText('submit-ok'));
 
       expect(logout).toHaveBeenCalledTimes(1);
+      expect(discardDrafts).toHaveBeenCalledTimes(1);
+      expect(discardUnread).toHaveBeenCalledTimes(1);
       expect(screen.getByText('reset-success')).toBeTruthy();
     });
   });
@@ -154,6 +162,17 @@ describe('ResetPasswordPage', () => {
       expect(screen.queryByText(/^reset-form:/)).toBeNull();
     });
 
+    it('discards unsent chat text and unread flags before it signs out', () => {
+      openLink(validResetToken());
+      render(<ResetPasswordPage />);
+
+      fireEvent.click(screen.getByText('submit-ok'));
+
+      expect(discardDrafts).toHaveBeenCalledTimes(1);
+      expect(discardUnread).toHaveBeenCalledTimes(1);
+      expect(discardDrafts.mock.invocationCallOrder[0]).toBeLessThan(logout.mock.invocationCallOrder[0]);
+    });
+
     it('keeps the session when the submit is rejected', () => {
       openLink(validResetToken());
       render(<ResetPasswordPage />);
@@ -161,6 +180,7 @@ describe('ResetPasswordPage', () => {
       fireEvent.click(screen.getByText('submit-invalid'));
 
       expect(logout).not.toHaveBeenCalled();
+      expect(discardDrafts).not.toHaveBeenCalled();
       expect(screen.getByText('reset-failure:reset-expired')).toBeTruthy();
     });
 
