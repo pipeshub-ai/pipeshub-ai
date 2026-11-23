@@ -63,14 +63,23 @@ class ServiceAccountKindMigrationService:
         )
         return state if isinstance(state, dict) else None
 
-    async def _resolve_nodes(self, wanted: list[str]) -> tuple[dict[str, str], list[str]]:
-        """Map each staged `userId` to its node key, and name the ones with no node."""
+    async def _resolve_nodes(
+        self, wanted: list[str], *, batched: bool = True
+    ) -> tuple[dict[str, str], list[str]]:
+        """Map each staged `userId` to its node key, and name the ones with no node.
+
+        `batched=False` looks each id up on its own: inside one organisation of a
+        PostgreSQL graph most staged ids belong to another organisation, so the
+        batch would raise for every chunk.
+        """
         found: dict[str, str] = {}
         missing: list[str] = []
 
         for start in range(0, len(wanted), _BATCH):
             chunk = wanted[start : start + _BATCH]
             try:
+                if not batched:
+                    raise ValueError("per-id lookup")
                 found.update(
                     await self.graph_provider.get_graph_user_keys_by_mongo_user_ids_all_orgs(
                         chunk, chunk_size=_BATCH
@@ -93,6 +102,82 @@ class ServiceAccountKindMigrationService:
                         missing.append(user_id)
 
         return found, missing
+
+    async def _stamp(
+        self,
+        wanted: list[str],
+        already: set[str],
+        disabled: set[str],
+        *,
+        batched: bool = True,
+    ) -> tuple[int, list[str], list[str]]:
+        """Resolve `wanted` in the graph as bound now and write `kind` on what is found.
+
+        Returns (stamped, resolved ids, ids with no node).
+        """
+        stamped = 0
+        found, missing = await self._resolve_nodes(wanted, batched=batched)
+
+        resolved = [user_id for user_id in wanted if user_id in found]
+        node_keys = [found[user_id] for user_id in resolved if user_id not in already]
+        disabled_keys = {found[user_id]: user_id in disabled for user_id in resolved}
+        for start in range(0, len(node_keys), _BATCH):
+            batch = [
+                {
+                    "id": node_key,
+                    "kind": "service",
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    # Written both ways rather than only when true: an
+                    # account enabled again before this ran would
+                    # otherwise keep a stale flag from an earlier pass.
+                    "isDisabled": disabled_keys.get(node_key, False),
+                }
+                for node_key in node_keys[start : start + _BATCH]
+            ]
+            # Both backends answer falsy for a write that did not land, and
+            # counting those as stamped would retire them from the retry.
+            if not await self.graph_provider.batch_upsert_nodes(
+                batch, CollectionNames.USERS.value
+            ):
+                raise RuntimeError(
+                    f"The graph rejected {len(batch)} service-account kind write(s)"
+                )
+            stamped += len(batch)
+        return stamped, resolved, missing
+
+    async def _stamp_everywhere(
+        self, processed: list[str], already: set[str], disabled: set[str]
+    ) -> tuple[int, list[str], list[str]]:
+        """ArangoDB and Neo4j hold every organisation in one graph, so one pass covers all.
+
+        A PostgreSQL graph is read and written one organisation at a time (the
+        database filters every statement on the bound org), so the pass runs
+        once per organisation, each bound from the job's own enumeration of the
+        organisations, never from the staged ids. A staged id is resolved when
+        any organisation holds its node; the others never see it.
+        """
+        from app.services.graph_db.postgres.provider import PostgresGraphProvider
+
+        if not isinstance(self.graph_provider, PostgresGraphProvider):
+            return await self._stamp(processed, already, disabled)
+
+        from app.core.org_context import for_org, system
+
+        with system("service_account_kind_migration"):
+            org_docs = await self.graph_provider.get_all_orgs(active=False)
+        org_ids = [str(o.get("_key") or o["id"]) for o in org_docs if o.get("_key") or o.get("id")]
+
+        stamped = 0
+        resolved: set[str] = set()
+        for org_id in org_ids:
+            todo = [user_id for user_id in processed if user_id not in resolved]
+            if not todo:
+                break
+            with for_org(org_id, job="service_account_kind_migration"):
+                count, done, _missing = await self._stamp(todo, already, disabled, batched=False)
+            stamped += count
+            resolved.update(done)
+        return stamped, [u for u in processed if u in resolved], [u for u in processed if u not in resolved]
 
     async def _unchanged(
         self, processed: list[str], disabled: set[str]
@@ -219,42 +304,11 @@ class ServiceAccountKindMigrationService:
             await self._record_done(processed, set(), 0)
             return {"success": True, "stamped": 0, "skipped": True}
 
-        stamped = 0
         try:
-            found, missing = await self._resolve_nodes(processed)
-
-            resolved = [user_id for user_id in processed if user_id in found]
-            node_keys = [
-                found[user_id] for user_id in resolved if user_id not in already
-            ]
-            disabled_keys = {
-                found[user_id]: user_id in disabled for user_id in resolved
-            }
-            for start in range(0, len(node_keys), _BATCH):
-                batch = [
-                    {
-                        "id": node_key,
-                        "kind": "service",
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                        # Written both ways rather than only when true: an
-                        # account enabled again before this ran would
-                        # otherwise keep a stale flag from an earlier pass.
-                        "isDisabled": disabled_keys.get(node_key, False),
-                    }
-                    for node_key in node_keys[start : start + _BATCH]
-                ]
-                # Both backends answer falsy for a write that did not land, and
-                # counting those as stamped would retire them from the retry.
-                if not await self.graph_provider.batch_upsert_nodes(
-                    batch, CollectionNames.USERS.value
-                ):
-                    raise RuntimeError(
-                        f"The graph rejected {len(batch)} service-account kind write(s)"
-                    )
-                stamped += len(batch)
+            stamped, resolved, missing = await self._stamp_everywhere(processed, already, disabled)
         except Exception as e:
             self.logger.error(f"❌ Service-account kind migration failed: {e}", exc_info=True)
-            return {"success": False, "stamped": stamped, "error": str(e)}
+            return {"success": False, "stamped": 0, "error": str(e)}
 
         if missing:
             # Marked what we could, and recorded it so the next startup writes
