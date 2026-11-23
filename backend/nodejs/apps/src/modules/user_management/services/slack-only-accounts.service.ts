@@ -68,21 +68,26 @@ export const slackMemberClaims = (
  * Throws unless a Slack-only account may still be used: a disabled or blocked
  * record is never brought back to life by a Slack message.
  */
-export const assertSlackOnlyAccountActive = async (user: {
-  _id: unknown;
-  orgId: unknown;
-  isDisabled?: boolean;
-  isDeleted?: boolean;
-}): Promise<void> => {
+export const assertSlackOnlyAccountActive = async (
+  user: {
+    _id: unknown;
+    orgId: unknown;
+    isDisabled?: boolean;
+    isDeleted?: boolean;
+  },
+  // What the refused person reads. The default speaks to the Slack bot's
+  // reader; a sign-in page passes its own words.
+  message: string = SLACK_ACCOUNT_UNAVAILABLE_MESSAGE,
+): Promise<void> => {
   if (user.isDeleted === true || user.isDisabled === true) {
-    throw new ForbiddenError(SLACK_ACCOUNT_UNAVAILABLE_MESSAGE);
+    throw new ForbiddenError(message);
   }
   const blocked = await getCredentialRepository().blockedUserIds(
     String(user.orgId),
     [String(user._id)],
   );
   if (blocked.length > 0) {
-    throw new ForbiddenError(SLACK_ACCOUNT_UNAVAILABLE_MESSAGE);
+    throw new ForbiddenError(message);
   }
 };
 

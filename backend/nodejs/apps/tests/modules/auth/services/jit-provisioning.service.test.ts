@@ -15,6 +15,8 @@ import { getCredentialRepository } from '../../../../src/libs/repositories/crede
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
 import { ForbiddenError } from '../../../../src/libs/errors/http.errors';
 import { SLACK_ACCOUNT_UNAVAILABLE_MESSAGE } from '../../../../src/modules/user_management/services/slack-only-accounts.service';
+import { DISABLED_ACCOUNT_SIGN_IN_MESSAGE } from '../../../../src/modules/auth/utils/generateAuthToken';
+import { REMOVED_ACCOUNT_SIGN_IN_MESSAGE } from '../../../../src/modules/auth/services/jit-provisioning.service';
 
 describe('JitProvisioningService', () => {
   let jitService: JitProvisioningService;
@@ -487,17 +489,22 @@ describe('JitProvisioningService - additional coverage', () => {
         blocked.resolves([user._id])
         const error = await refuse()
         expect(error).to.be.instanceOf(ForbiddenError)
-        expect((error as Error).message).to.equal(SLACK_ACCOUNT_UNAVAILABLE_MESSAGE)
+        expect((error as Error).message).to.equal(DISABLED_ACCOUNT_SIGN_IN_MESSAGE)
+        expect((error as Error).message).to.not.equal(SLACK_ACCOUNT_UNAVAILABLE_MESSAGE)
       })
 
       it('is left alone when disabled', async () => {
         sinon.stub(getUserRepository(), 'getLive').resolves({ ...user, isDisabled: true } as any)
-        expect(await refuse()).to.be.instanceOf(ForbiddenError)
+        const error = await refuse()
+        expect(error).to.be.instanceOf(ForbiddenError)
+        expect((error as Error).message).to.equal(DISABLED_ACCOUNT_SIGN_IN_MESSAGE)
       })
 
       it('is left alone when removed', async () => {
         sinon.stub(getUserRepository(), 'getLive').resolves(null)
-        expect(await refuse()).to.be.instanceOf(ForbiddenError)
+        const error = await refuse()
+        expect(error).to.be.instanceOf(ForbiddenError)
+        expect((error as Error).message).to.equal(REMOVED_ACCOUNT_SIGN_IN_MESSAGE)
       })
     })
   })

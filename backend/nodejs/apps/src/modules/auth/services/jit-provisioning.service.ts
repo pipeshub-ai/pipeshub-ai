@@ -18,9 +18,13 @@ import {
 } from '../../user_management/services/entity_events.service';
 import {
   assertSlackOnlyAccountActive,
-  SLACK_ACCOUNT_UNAVAILABLE_MESSAGE,
   upgradeSlackOnlyAccount,
 } from '../../user_management/services/slack-only-accounts.service';
+import { DISABLED_ACCOUNT_SIGN_IN_MESSAGE } from '../utils/generateAuthToken';
+
+/** What a person who signs in with SSO reads when their account was removed. */
+export const REMOVED_ACCOUNT_SIGN_IN_MESSAGE =
+  'User account deleted by admin. Please contact your admin to restore your account.';
 
 export interface JitUserDetails {
   firstName?: string;
@@ -56,9 +60,7 @@ export class JitProvisioningService {
     if (await getUserRepository().hasRemovedAccount(orgId, email)) {
       // The sign-in line carries this refusal; provisioning audits only what it created.
       throw authRefusal(
-        new BadRequestError(
-          'User account deleted by admin. Please contact your admin to restore your account.',
-        ),
+        new BadRequestError(REMOVED_ACCOUNT_SIGN_IN_MESSAGE),
         'account_removed',
       );
     }
@@ -102,8 +104,11 @@ export class JitProvisioningService {
       // A removed, switched-off or blocked account is never brought back by a
       // sign-in, the same as an invite leaves it alone.
       const existing = await users.getLive(orgId, userId);
-      if (!existing) throw new ForbiddenError(SLACK_ACCOUNT_UNAVAILABLE_MESSAGE);
-      await assertSlackOnlyAccountActive(existing);
+      if (!existing) throw new ForbiddenError(REMOVED_ACCOUNT_SIGN_IN_MESSAGE);
+      await assertSlackOnlyAccountActive(
+        existing,
+        DISABLED_ACCOUNT_SIGN_IN_MESSAGE,
+      );
       if (!(await upgradeSlackOnlyAccount(userId, orgId))) return;
       const previous: Record<string, unknown> = {};
       try {
