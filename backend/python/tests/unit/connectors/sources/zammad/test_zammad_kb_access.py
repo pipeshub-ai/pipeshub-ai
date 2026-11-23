@@ -1,4 +1,4 @@
-"""Who may read a Zammad knowledge-base answer (``app.connectors.sources.zammad.kb_access``).
+"""Who may read a Zammad knowledge-base answer (``app.connectors.sources.zammad.kb_access``, and the category rule in ``app.ee.permission_sync.zammad``).
 
 An answer's state is the first of archived, published and internal whose time is
 set and already passed, else draft. A role's access to a category is its row
@@ -14,10 +14,10 @@ from app.connectors.sources.zammad.kb_access import (
     DRAFT,
     INTERNAL,
     PUBLISHED,
-    CategoryAccess,
     answer_changed_at,
     answer_state,
 )
+from app.ee.permission_sync.zammad import CategoryAccess
 
 NOW = int(datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp() * 1000)
 PAST = "2026-01-01T00:00:00Z"

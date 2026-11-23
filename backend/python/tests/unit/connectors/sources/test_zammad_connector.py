@@ -10,7 +10,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
 import base64
-from app.connectors.sources.zammad.access import GroupReaders, RoleAccess, UserAccess
+from app.ee.permission_sync.zammad_access import GroupReaders, RoleAccess, UserAccess
 from app.connectors.sources.zammad.connector import (
     ATTACHMENT_ID_PARTS_COUNT,
     BATCH_SIZE_KB_ANSWERS,
@@ -56,6 +56,7 @@ def mock_data_entities_processor():
     proc = MagicMock()
     proc.org_id = "org-zm-1"
     proc.on_new_app_users = AsyncMock()
+    proc.skips_permission_writes = AsyncMock(return_value=False)
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
@@ -1396,6 +1397,7 @@ def mock_data_entities_processor_fullcov():
     proc = MagicMock()
     proc.org_id = "org-zm-fc"
     proc.on_new_app_users = AsyncMock()
+    proc.skips_permission_writes = AsyncMock(return_value=False)
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
     proc.on_new_user_groups = AsyncMock()

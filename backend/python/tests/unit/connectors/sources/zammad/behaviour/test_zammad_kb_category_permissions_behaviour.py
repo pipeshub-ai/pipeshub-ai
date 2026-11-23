@@ -394,3 +394,24 @@ async def test_a_scheduled_archive_takes_a_published_answer_out_of_everyones_rea
 
     assert world.answer(21) == EDITORS_ONLY
 
+
+
+async def test_without_a_licence_categories_and_answers_sync_and_no_permissions_are_read(world: World) -> None:
+    """Unlicensed, a company-wide connector reads no category permissions (``app/ee/permission_sync/zammad.py``):
+    every category and answer is still written, with no role grants, and the run is not marked incomplete. The
+    processor keeps the stored grants while it skips permission writes."""
+    world.access.skips_permission_writes = AsyncMock(return_value=True)
+    # Answered, these reads would mark the run incomplete; unlicensed they are never made.
+    world.zammad.permissions_unanswered.update({GENERAL, BILLING})
+    world.zammad.updated[11] = 20.0
+    world.access.answer_writes.clear()
+
+    await world.sync()
+
+    assert world.incomplete() == []
+    assert world.category(GENERAL) == set() and world.category(BILLING) == set()
+    # The edited answer, and the draft whose category's editors now read as none: archived and draft answers are
+    # written again when those change, so the first licensed sync writes them again with the editors it reads.
+    assert sorted(world.access.answer_writes) == ["kb_answer_11", "kb_answer_21"]
+    # Handed no grants (this fake replaces as handed); the processor keeps the stored ones while it skips writes.
+    assert world.answer(11) == set()

@@ -95,6 +95,7 @@ async def test_a_customer_whose_only_staff_role_is_inactive_is_a_guest() -> None
 def _connector() -> ZammadConnector:
     processor = MagicMock()
     processor.org_id = "org-1"
+    processor.skips_permission_writes = AsyncMock(return_value=False)
     with patch("app.connectors.sources.zammad.connector.ZammadApp"):
         connector = ZammadConnector(
             logger=logging.getLogger("test.zammad.links"),
