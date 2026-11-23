@@ -688,6 +688,7 @@ class TestSlackWorkspace:
             SlackConnector,
             _fresh_datasource=AsyncMock(return_value=datasource),
             user_id_to_email_cache={"U0ALICE": "alice@corp.com"},
+            _users_read_failed=False, _users_listing_cut=False, _listed_user_emails=set(),
             authenticator_email=AsyncMock(return_value=authenticator),
             data_entities_processor=MagicMock(unlink_authenticator=AsyncMock()),
         )
@@ -1501,3 +1502,269 @@ class TestConfluenceDataCenterUserListing:
             await ConfluenceDataCenterConnector._sync_users(conn)
 
         assert conn._users_listing_complete is False
+
+
+# ---------------------------------------------------------------------------
+# Slack Workspace and GitHub Teams: link only after a complete user listing
+# ---------------------------------------------------------------------------
+
+
+class _SlackStop(Exception):
+    pass
+
+
+def _slack_member(uid: str, email: str = "", **flags: object) -> dict:
+    return {"id": uid, "name": uid.lower(), "profile": {"email": email, "real_name": uid}, **flags}
+
+
+class TestSlackSyncOrder:
+    def _conn(self, order: list[str]) -> MagicMock:
+        step = _steps(order)
+        conn = _connector(
+            SlackConnector, external_client=MagicMock(), config_service=MagicMock(),
+            _users_read_failed=False, _users_listing_cut=False, _listed_user_emails={"stale@corp.com"},
+        )
+        conn.data_entities_processor = MagicMock(org_id="org")
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn._sync_users = step("users")
+        conn._register_authenticated_identity = step("register", error=_SlackStop())
+        return conn
+
+    async def test_removal_pass_runs_first(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order)
+
+        with patch(
+            "app.connectors.sources.slack.team.connector.load_connector_filters",
+            AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ), pytest.raises(_SlackStop):
+            await SlackConnector.run_sync(conn)
+
+        assert order == ["drop", "users", "register"]
+
+    async def test_the_removal_pass_survives_a_failing_filter_load(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order)
+
+        with patch(
+            "app.connectors.sources.slack.team.connector.load_connector_filters",
+            AsyncMock(side_effect=RuntimeError("config down")),
+        ), pytest.raises(RuntimeError):
+            await SlackConnector.run_sync(conn)
+
+        assert order == ["drop"]
+
+
+class TestSlackUserListing:
+    def _conn(self, pages: list[object]) -> MagicMock:
+        conn = _connector(
+            SlackConnector, user_id_to_email_cache={}, user_id_to_internal_id_cache={}, user_id_to_name_cache={},
+            rate_limiter=MagicMock(acquire=AsyncMock()), _full_sync_read_failed=False,
+            _users_read_failed=False, _users_listing_cut=False, _listed_user_emails=set(),
+        )
+        datasource = MagicMock(users_list=AsyncMock(side_effect=pages))
+        conn._fresh_datasource = AsyncMock(return_value=datasource)
+        conn._fail_if_token_refused = AsyncMock()
+        conn._build_user_id_caches = AsyncMock()
+        conn._to_app_user = partial(SlackConnector._to_app_user, conn)
+        conn.data_entities_processor = MagicMock(org_id="org", on_new_app_users=AsyncMock())
+        return conn
+
+    @staticmethod
+    def _page(members: list[dict], cursor: str = "") -> SimpleNamespace:
+        return SimpleNamespace(success=True, data={"members": members, "response_metadata": {"next_cursor": cursor}})
+
+    @staticmethod
+    def _complete(conn: MagicMock) -> bool:
+        return not (conn._users_read_failed or conn._users_listing_cut)
+
+    async def test_a_listing_read_to_its_last_page_is_complete(self) -> None:
+        conn = self._conn([
+            self._page([_slack_member("U1", "a@corp.com")], "c1"), self._page([_slack_member("U2", "b@corp.com")]),
+        ])
+
+        await SlackConnector._sync_users(conn)
+
+        assert self._complete(conn)
+        assert conn._listed_user_emails == {"a@corp.com", "b@corp.com"}
+
+    async def test_every_listed_human_is_present_whatever_their_status(self) -> None:
+        members = [
+            _slack_member("U1", "Active@Corp.com"),
+            _slack_member("U2", "gone@corp.com", deleted=True),
+            _slack_member("U3", "guest@corp.com", is_restricted=True),
+            _slack_member("U4", "bot@corp.com", is_bot=True),
+        ]
+        conn = self._conn([self._page(members)])
+
+        await SlackConnector._sync_users(conn)
+
+        assert conn._listed_user_emails == {"active@corp.com", "gone@corp.com", "guest@corp.com"}
+
+    async def test_a_failed_or_cut_user_page_never_links(self) -> None:
+        failed = self._conn([
+            self._page([_slack_member("U1", "a@corp.com")], "c1"), SimpleNamespace(success=False, error="ratelimited"),
+        ])
+        empty_with_more = self._conn([self._page([_slack_member("U1", "a@corp.com")], "c1"), self._page([], "c2")])
+        nothing = self._conn([self._page([])])
+        bad_row = self._conn([self._page([_slack_member("U1", "a@corp.com")])])
+        bad_row._to_app_user = MagicMock(return_value=None)
+        for conn in (failed, empty_with_more, nothing, bad_row):
+            await SlackConnector._sync_users(conn)
+
+        assert [self._complete(c) for c in (failed, empty_with_more, nothing, bad_row)] == [False] * 4
+
+    async def test_a_flag_left_by_an_earlier_sync_is_reset(self) -> None:
+        conn = self._conn([self._page([_slack_member("U1", "a@corp.com")])])
+        conn._users_listing_cut = True
+        conn._listed_user_emails = {"stale@corp.com"}
+
+        await SlackConnector._sync_users(conn)
+
+        assert self._complete(conn) and conn._listed_user_emails == {"a@corp.com"}
+
+    async def test_the_full_pass_carries_the_listing_state(self) -> None:
+        conn = self._conn([])
+        conn._users_listing_cut = True
+        conn._listed_user_emails = {"creator@corp.com"}
+        conn.user_id_to_email_cache = {"U0ALICE": "alice@corp.com"}
+        auth = SimpleNamespace(success=True, data={"user_id": "U0ALICE"})
+        conn._fresh_datasource = AsyncMock(return_value=MagicMock(auth_test=AsyncMock(return_value=auth)))
+
+        await SlackConnector._register_authenticated_identity(conn)
+
+        kwargs = conn.register_authenticated_source_user.await_args.kwargs
+        assert kwargs["listing_complete"] is False
+        assert kwargs["extra_present_emails"] == {"creator@corp.com"}
+
+    async def test_bot_token_still_unlinks(self) -> None:
+        conn = self._conn([])
+        auth = SimpleNamespace(success=True, data={"bot_id": "B1"})
+        conn._fresh_datasource = AsyncMock(return_value=MagicMock(auth_test=AsyncMock(return_value=auth)))
+        conn.data_entities_processor.unlink_authenticator = AsyncMock()
+
+        await SlackConnector._register_authenticated_identity(conn)
+
+        conn.data_entities_processor.unlink_authenticator.assert_awaited_once_with("connector-1")
+        conn.register_authenticated_source_user.assert_not_awaited()
+
+
+class TestGitHubTeamsListing:
+    def _users(self, member_pages: dict[str, object], outside: object | None = None) -> object:
+        from app.connectors.sources.github_teams.users import UsersSync
+
+        conn = MagicMock()
+        conn.data_source = MagicMock()
+        conn.sync_filters = None
+
+        async def ds_call(fn: object, *args: object, **__: object) -> object:
+            if fn is conn.data_source.list_org_members:
+                return member_pages[args[0]]
+            if fn is conn.data_source.list_org_outside_collaborators:
+                return outside if outside is not None else SimpleNamespace(success=True, data=[])
+            return SimpleNamespace(success=True, data=[])
+
+        conn.runtime.ds_call = ds_call
+        users = UsersSync(conn)
+        users._resolve_target_orgs = AsyncMock(return_value=(list(member_pages), True))
+        users._resolve_cached_users = AsyncMock(return_value={})
+        users._resolve_via_verified_domains = AsyncMock(return_value={})
+        users._enrich_members_with_full_profile = AsyncMock(return_value={})
+        users._persist_app_users = AsyncMock()
+        return users
+
+    @staticmethod
+    def _member(uid: int, email: str | None = None) -> SimpleNamespace:
+        return SimpleNamespace(id=uid, login=f"u{uid}", type="User", email=email)
+
+    @staticmethod
+    def _ok(*members: object) -> SimpleNamespace:
+        return SimpleNamespace(success=True, data=list(members))
+
+    async def test_every_org_read_to_its_end_is_a_complete_listing(self) -> None:
+        users = self._users({
+            "o1": self._ok(self._member(1, "A@corp.com")), "o2": self._ok(self._member(2, "b@corp.com")),
+        })
+
+        await users.sync_users()
+
+        assert users.listing_complete is True
+        assert users.listed_emails() == {"a@corp.com", "b@corp.com"}
+
+    async def test_one_failed_org_is_an_incomplete_listing(self) -> None:
+        users = self._users({
+            "o1": self._ok(self._member(1, "a@corp.com")),
+            "o2": SimpleNamespace(success=False, error="boom", status_code=500),
+        })
+
+        await users.sync_users()
+
+        assert users.listing_complete is False
+
+    async def test_a_failed_outside_collaborator_listing_is_incomplete(self) -> None:
+        users = self._users(
+            {"o1": self._ok(self._member(1, "a@corp.com"))},
+            outside=SimpleNamespace(success=False, error="forbidden"),
+        )
+
+        await users.sync_users()
+
+        assert users.listing_complete is False
+
+    async def test_an_empty_listing_and_a_non_org_login_are_incomplete(self) -> None:
+        empty = self._users({"o1": self._ok()})
+        not_an_org = self._users({"me": SimpleNamespace(success=False, error="nf", status_code=404)})
+        for users in (empty, not_an_org):
+            await users.sync_users()
+
+        assert (empty.listing_complete, not_an_org.listing_complete) == (False, False)
+
+    async def test_a_failed_persist_is_never_a_complete_listing(self) -> None:
+        users = self._users({"o1": self._ok(self._member(1, "a@corp.com"))})
+        users._persist_app_users = AsyncMock(side_effect=RuntimeError("store down"))
+
+        with pytest.raises(RuntimeError):
+            await users.sync_users()
+
+        assert users.listing_complete is False
+
+    async def test_the_state_of_an_earlier_sync_is_reset(self) -> None:
+        users = self._users({"o1": self._ok(self._member(1, "a@corp.com"))})
+        await users.sync_users()
+        users._resolve_target_orgs = AsyncMock(return_value=([], True))
+
+        await users.sync_users()
+
+        assert users.listing_complete is False and users.listed_emails() == set()
+
+    async def test_registration_still_uses_the_resolved_email(self) -> None:
+        conn = _connector(
+            GitHubTeamsConnector, data_source=MagicMock(), runtime=MagicMock(),
+            users=MagicMock(
+                resolved_email=MagicMock(return_value="dev@corp.com"), listing_complete=False,
+                listed_emails=MagicMock(return_value={"creator@corp.com"}),
+            ),
+        )
+        me = SimpleNamespace(success=True, data=SimpleNamespace(email=None, id=7))
+        conn.runtime.ds_call = AsyncMock(return_value=me)
+
+        await GitHubTeamsConnector._register_authenticated_identity(conn)
+
+        assert _registered(conn) == ("dev@corp.com", "7")
+        kwargs = conn.register_authenticated_source_user.await_args.kwargs
+        assert kwargs["listing_complete"] is False
+        assert kwargs["extra_present_emails"] == {"creator@corp.com"}
+
+
+class TestGitHubTeamsSyncOrder:
+    async def test_the_removal_pass_runs_before_anything_that_can_raise(self) -> None:
+        order: list[str] = []
+        conn = _connector(GitHubTeamsConnector, record_sync_point=MagicMock(), repos=MagicMock(), runtime=MagicMock())
+        conn.data_entities_processor = MagicMock(org_id="org")
+        conn.drop_authenticator_link_if_listed = _steps(order)("drop")
+        conn.repos.timestamps.cancel = AsyncMock(side_effect=RuntimeError("down"))
+
+        with pytest.raises(RuntimeError):
+            await GitHubTeamsConnector.run_sync(conn)
+
+        assert order == ["drop"]

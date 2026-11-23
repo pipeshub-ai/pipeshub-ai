@@ -389,11 +389,17 @@ class GitHubTeamsConnector(BaseConnector):
         await self.register_authenticated_source_user(
             email.strip() if isinstance(email, str) else None,
             str(source_user_id) if source_user_id is not None else None,
+            listing_complete=self.users.listing_complete,
+            # Only principals whose email resolved can be matched to the creator.
+            extra_present_emails=self.users.listed_emails(),
         )
 
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
         try:
+            # First, with no source call, so a sync that fails early still removes a link
+            # the creator should not hold.
+            await self.drop_authenticator_link_if_listed()
             self.record_sync_point.org_id = self.data_entities_processor.org_id
             await self.repos.timestamps.cancel()
             await self.runtime.refresh_token_if_needed()

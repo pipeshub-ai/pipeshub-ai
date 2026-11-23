@@ -427,6 +427,7 @@ class FakeSlackStore:
         self.authenticator_email = authenticator_email
         # (email, source user id) per link the connector asked for, and how often it unlinked.
         self.links: list[tuple[str | None, str | None]] = []
+        self.stored_link: tuple[str | None, str | None] | None = None
         self.unlinks = 0
         # Lowercased emails holding the membership an external collaborator gets on the app.
         # A member's own comes from on_new_app_users.
@@ -463,11 +464,24 @@ class FakeSlackStore:
         self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object,
         *, may_link: bool = True, check_listing: bool = True, extra_present_emails: Collection[str] = (),
     ) -> AuthenticatorLinkResult:
+        """The real processor's rule: a creator the connector lists (a stored source user with an id, or one of
+        ``extra_present_emails``, compared ignoring case and spaces) is never linked and loses an existing link."""
+        creator = (self.authenticator_email or "").strip().lower()
+        listed = {
+            (u.email or "").strip().lower() for u in self.app_users.values() if getattr(u, "source_user_id", None)
+        } | {e.strip().lower() for e in extra_present_emails}
+        if check_listing and creator and creator in listed:
+            had, self.stored_link = self.stored_link, None
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
+        if not may_link or not email or not source_user_id:
+            return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
         self.links.append((email, source_user_id))
+        self.stored_link = (email, source_user_id)
         return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
 
     async def unlink_authenticator(self, connector_id: str) -> None:
         self.unlinks += 1
+        self.stored_link = None
 
     async def on_external_app_users(self, emails: list[str], connector_id: str) -> None:
         """Create-only, as the processor's: a member keeps the edge the user sync gave them."""

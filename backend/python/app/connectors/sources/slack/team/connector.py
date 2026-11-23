@@ -558,6 +558,9 @@ class SlackConnector(BaseConnector):
         self._cache_rebuild_event:         Optional[asyncio.Event]   = None
         # Set each run_sync by _authenticator_grant(); added to every channel's grants.
         self._authenticator_permission:    Permission | None         = None
+        # Until a sync has read the user listing, it counts as cut.
+        self._users_listing_cut:           bool                      = True
+        self._listed_user_emails:          set[str]                  = set()
 
         # ── Filter state ─────────────────────────────────────────────────────
         self.sync_filters:     FilterCollection = FilterCollection()
@@ -834,6 +837,11 @@ class SlackConnector(BaseConnector):
             if not self.external_client:
                 raise RuntimeError("Call init() first.")
 
+            # First, with no source call, so a sync that fails early still removes a link
+            # the creator should not hold.
+            self._listed_user_emails = set()
+            await self.drop_authenticator_link_if_listed()
+
             # Set when a read fails and the sync carries on without it; see
             # full_sync_coverage.
             self._full_sync_read_failed = False
@@ -947,10 +955,15 @@ class SlackConnector(BaseConnector):
         # Set when a page fails: the caches above then miss users, and every
         # permission list built from them would be short (see _sync_channels).
         self._users_read_failed = False
+        # Set when the listing stops short of the last page without a failed call; with
+        # _users_read_failed it gates linking the authenticator, which needs the whole list.
+        self._users_listing_cut = False
+        self._listed_user_emails: set[str] = set()
         self._guest_user_ids: set[str] = set()
 
         cursor: Optional[str] = None
         synced = skipped = bots_cached = 0
+        listed_any = False
 
         while True:
             await self.rate_limiter.acquire(Tier.T2)
@@ -968,7 +981,11 @@ class SlackConnector(BaseConnector):
 
             members = resp.data.get("members", [])
             if not members:
+                # An empty page that points further is a listing that stopped early.
+                if (resp.data.get("response_metadata") or {}).get("next_cursor"):
+                    self._users_listing_cut = True
                 break
+            listed_any = True
 
             batch: list[AppUser] = []
             for m in members:
@@ -998,7 +1015,12 @@ class SlackConnector(BaseConnector):
                     bots_cached += 1
                     continue
 
+                # Deactivated and guest accounts are listed members too, though they
+                # get no workspace grants.
+                self._listed_user_emails.add(email.lower())
                 app_user = self._to_app_user(m)
+                if not app_user:
+                    self._users_listing_cut = True
                 if app_user:
                     batch.append(app_user)
                     if m.get("deleted"):
@@ -1017,6 +1039,9 @@ class SlackConnector(BaseConnector):
             cursor = resp.data.get("response_metadata", {}).get("next_cursor", "")
             if not cursor:
                 break
+
+        if not listed_any:
+            self._users_listing_cut = True
 
         # After all pages, build the internal-ID cache for fast mention resolution
         await self._build_user_id_caches()
@@ -1436,6 +1461,8 @@ class SlackConnector(BaseConnector):
         user_id = data.get("user_id")
         await self.register_authenticated_source_user(
             self.user_id_to_email_cache.get(user_id) if user_id else None, user_id,
+            listing_complete=not (getattr(self, "_users_read_failed", True) or self._users_listing_cut),
+            extra_present_emails=self._listed_user_emails,
         )
 
     async def _authenticator_grant(self) -> Permission | None:

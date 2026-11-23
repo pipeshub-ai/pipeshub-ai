@@ -102,6 +102,20 @@ class UsersSync:
         self._collab_resolution_attempted: set[int] = set()
         # GitHub user id -> the email this run bound it to, the one its grants carry.
         self._resolved_emails: dict[int, str] = {}
+        # Whether the last sync_users read every org's member and outside-collaborator listing to
+        # its end and stored what it found, and the resolved email of each principal it listed.
+        # Linking the authenticator needs both: an org that failed or was skipped may hold them.
+        self._users_listing_complete: bool = False
+        self._listed_user_emails: set[str] = set()
+        self._listing_read_to_the_end: bool = False
+
+    @property
+    def listing_complete(self) -> bool:
+        return self._users_listing_complete
+
+    def listed_emails(self) -> set[str]:
+        """Resolved emails of every principal the last user sync listed, members and outside collaborators."""
+        return self._listed_user_emails
 
     def org_member_emails(self) -> set[str]:
         """Resolved emails of org members (never outside collaborators).
@@ -123,6 +137,8 @@ class UsersSync:
         """Discover every principal on the target orgs and bind those we can
         identify to ``AppUser`` rows. See the module docstring for the phases."""
         c = self.c
+        self._users_listing_complete = False
+        self._listed_user_emails = set()
         if not c.data_source:
             raise Exception("GitHub data source not initialized")
         # Here rather than at the profile lookups, which a sync that resolves
@@ -198,6 +214,8 @@ class UsersSync:
 
         await self._persist_app_users(dict_member, resolved_email)
         self._resolved_emails = dict(resolved_email)
+        self._listed_user_emails = {email.strip().lower() for email in resolved_email.values()}
+        self._users_listing_complete = self._listing_read_to_the_end
         member_ids = getattr(self, "_member_ids", set())
         self._org_member_emails = {
             email for uid, email in resolved_email.items() if uid in member_ids
@@ -229,6 +247,7 @@ class UsersSync:
         self._member_ids: set[int] = set()
         self._collab_resolution_attempted = set()
         any_success = False
+        self._listing_read_to_the_end = True
 
         def collect(rows: Any, *, is_member: bool) -> int:
             kept = 0
@@ -253,6 +272,8 @@ class UsersSync:
                 # unreachable org must.
                 if getattr(res, "status_code", None) == 404:
                     any_success = True
+                    # Also what a token that cannot see the org gets, so it proves no member list.
+                    self._listing_read_to_the_end = False
                     self.logger.info(
                         "%s is not an organization (404 on member listing); it has no org "
                         "members. Repos owned by it rely on visibility and explicit "
@@ -260,6 +281,7 @@ class UsersSync:
                     )
                     continue
                 self.logger.error("Failed to list members for org %s: %s", org, res.error)
+                self._listing_read_to_the_end = False
                 continue
             any_success = True
             member_count = collect(res.data, is_member=True)
@@ -272,6 +294,7 @@ class UsersSync:
                     "Could not list outside collaborators for org %s: %s. Any that hold repo "
                     "access will be unresolvable this sync.", org, outside_res.error,
                 )
+                self._listing_read_to_the_end = False
                 continue
             self.logger.info(
                 "Org %s: %s member(s), %s outside collaborator(s)",
