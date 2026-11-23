@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.services.pg_runtime import QUEUE_CHANNEL, RuntimeDb
 from app.utils.log_redaction import redact_secrets_in_text
@@ -247,9 +248,12 @@ class PgQueue:
 
     async def ack(self, group_id: str, d: Delivery) -> bool:
         async with await self._write() as tx:
-            return (
-                await tx.execute(_ACK, group_id, d.topic, d.message_id, d.attempts)
-            ).endswith(" 1")
+            return await self.ack_in(tx, group_id, d)
+
+    @staticmethod
+    async def ack_in(tx: Any, group_id: str, d: Delivery) -> bool:  # noqa: ANN401 - the unit of work
+        """The ack as one statement of the caller's unit of work (the consumer inbox records the event in the same one)."""
+        return (await tx.execute(_ACK, group_id, d.topic, d.message_id, d.attempts)).endswith(" 1")
 
     async def admit(self, group_id: str, d: Delivery, admission_ms: int, admission_mac: str) -> bool:
         """Record that this claim opened its message. Applied only while the claim still stands, so a consumer that lost the row writes nothing."""

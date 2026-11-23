@@ -1553,12 +1553,13 @@ class TestStreamRecordDeepPaths:
 
     @pytest.mark.asyncio
     async def test_outer_generic_exception_raises_500(self):
-        """Top-level generic exception -> 500."""
+        """Top-level generic exception -> 500 (a failed access check is a 503: test_record_read_outage.py)."""
         req, record, gp, cs, conn_obj = self._setup()
-        gp.check_record_access_with_details = AsyncMock(side_effect=RuntimeError("boom"))
 
+        from app.connectors.api import router as router_mod
         from app.connectors.api.router import stream_record
-        with pytest.raises(HTTPException) as exc:
+        with patch.object(router_mod, "refuse_outside_connection", new=AsyncMock(side_effect=RuntimeError("boom"))), \
+                pytest.raises(HTTPException) as exc:
             await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
         assert exc.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
 

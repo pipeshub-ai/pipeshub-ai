@@ -3,6 +3,8 @@ export { KnowledgeLimitNotice, KnowledgeLimitSummary } from './knowledge-limit-s
 export {
   isKnowledgeLimitValid,
   knowledgeLimitForApi,
+  limitSize,
+  sameKnowledgeLimit,
   selectionFromLimit,
   type KnowledgeLimit,
   type KnowledgeLimitValue,

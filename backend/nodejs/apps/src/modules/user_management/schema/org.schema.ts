@@ -23,6 +23,8 @@ export interface IOrg extends Document {
   signupReferrerDomain?: string;
   /** Written during admin demotion txns to serialize last-admin checks. */
   adminRoleGuardAt?: Date;
+  /** Held by one admin-role change at a time on a standalone MongoDB (no transactions to serialise them). */
+  adminRoleLease?: { holder: string; until: Date };
 }
 
 const orgSchema = new Schema<IOrg>(
@@ -76,6 +78,10 @@ const orgSchema = new Schema<IOrg>(
     isDeleted: { type: Boolean, default: false },
     deletedByUser: { type: String },
     adminRoleGuardAt: { type: Date },
+    adminRoleLease: {
+      type: { holder: { type: String }, until: { type: Date } },
+      default: undefined,
+    },
   },
   { timestamps: true },
 );

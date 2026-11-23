@@ -438,7 +438,7 @@ function TeamConnectorsPageContent() {
             return;
           }
         } else {
-          await ConnectorsApi.toggleConnector(instance._key, 'sync');
+          await ConnectorsApi.toggleConnector(instance._key, 'sync', false);
         }
         await refreshConnectorRowQuiet(instance._key);
         addToast({

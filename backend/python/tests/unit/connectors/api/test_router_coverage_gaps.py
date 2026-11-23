@@ -989,11 +989,15 @@ class TestGetRecordByIdGaps:
 
     @pytest.mark.asyncio
     async def test_exception_raises_500(self):
+        # An unexpected failure after the access check; a failed access check or record read is a 503
+        # (test_record_read_outage.py, test_record_gate_reads.py).
         gp = AsyncMock()
-        gp.check_record_access_with_details = AsyncMock(side_effect=RuntimeError("db err"))
+        gp.check_record_access_with_details = AsyncMock(return_value={"record": {}})
+        gp.get_document = AsyncMock(return_value={})
         req = _mock_request()
 
-        with pytest.raises(HTTPException) as exc_info:
+        with patch("app.connectors.api.router.refuse_hidden_demo_record", AsyncMock(side_effect=RuntimeError("bug"))), \
+             pytest.raises(HTTPException) as exc_info:
             await get_record_by_id("rec-1", req, graph_provider=gp)
         assert exc_info.value.status_code == 500
 

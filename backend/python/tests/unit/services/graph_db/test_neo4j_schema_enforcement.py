@@ -227,7 +227,7 @@ CLASSIFICATION: dict[str, str] = {
     "update_node_if_match": _R,
     # ---- targeted raw writes of one schema'd field
     "compare_and_set_indexing_status": _T, "transition_unsupported": _T, "compare_and_set_record_fields": _T, "stamp_external_org_parents": _T,
-    "update_indexing_status_for_record_ids": _T, "reset_indexing_status_for_connector": _T,
+    "update_indexing_status_for_record_ids": _T, "update_record_fields_for_ids": _T, "reset_indexing_status_for_connector": _T,
     "batch_update_connector_status": _T, "update_drive_sync_state": _T, "update_user_sync_state": _T,
     "update_queued_duplicates_status": _T, "claim_push_record": _T, "retag_push_record": _T,
     "record_purge_failure": _T, "increment_node_field": _T, "take_back_kept_record_group": _T,
@@ -742,6 +742,16 @@ async def test_status_only_update_of_records_rejects_a_bogus_status_without_writ
     assert _writes(p) == []
 
 
+async def test_intent_only_write_of_records_accepts_the_two_fields_and_rejects_a_bad_value() -> None:
+    p = _provider(existing=("r1",))
+    await p.update_record_fields_for_ids(["r1"], {"refreshIntentId": "i1", "refreshIntentAtMs": 5})
+    assert len(_writes(p)) == 1
+    p = _provider(existing=("r1",))
+    with pytest.raises(SchemaValidationError):
+        await p.update_record_fields_for_ids(["r1"], {"refreshIntentAtMs": "not a number"})
+    assert _writes(p) == []
+
+
 async def test_connector_status_batch_writes_booleans() -> None:
     p = _provider()
     await p.batch_update_connector_status("apps", ["a1"], is_active=True, is_agent_active=False)
@@ -989,11 +999,18 @@ COVERED = (
     set(NODE_DRIVERS) | set(EDGE_DRIVERS)
     | {
         "set_record_properties", "compare_and_set_indexing_status", "transition_unsupported", "compare_and_set_record_fields",
-        "update_indexing_status_for_record_ids", "reset_indexing_status_for_connector",
+        "update_indexing_status_for_record_ids", "update_record_fields_for_ids", "reset_indexing_status_for_connector",
         "batch_update_connector_status", "update_drive_sync_state", "update_user_sync_state", "update_edge",
-        "create_organization_if_absent",
+        "create_organization_if_absent", "clone_agent_template",
     }
 )
+
+
+async def test_a_template_copy_the_schema_refuses_reaches_the_caller() -> None:
+    """It answers every other error with None ("no such template"); the agent route answers a rejected copy as our drift."""
+    p = _provider()
+    p.get_document = AsyncMock(return_value=_template(name=5))
+    await _rejected(p, p.clone_agent_template("t1"))
 
 
 async def test_an_extracted_organisation_is_validated_before_it_is_written() -> None:
@@ -1018,7 +1035,7 @@ COVERAGE_GAPS: dict[str, str] = {
         (("update_node_if_unchanged",), "delegates to update_node_fields_if_match on Neo4j, which is driven above"),
         (("upsert_sync_point", "update_sync_point_if", "store_page_token"), "schema-less collections today"),
         (("stamp_external_org_parents",), "stamps parentOrgId from its org_id argument, which is a plain string no caller can make invalid; it validates {parentOrgId: org_id}"),
-        (("update_agent", "update_agent_template", "update_knowledge_base", "clone_agent_template"),
+        (("update_agent", "update_agent_template", "update_knowledge_base"),
          "multi-statement, permission-checked; delegates to update_node / ensure_nodes"),
         (("stage_state_create", "stage_state_compare_and_set"), "stage-state fixture; own schema"),
         (("create_taxonomy_node_if_absent", "create_named_entities_if_absent", "add_taxonomy_aliases",

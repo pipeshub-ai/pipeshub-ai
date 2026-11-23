@@ -846,7 +846,11 @@
       "collectionExists": "Kolekci s názvem \"{{name}}\" už máte. Zvolte jiný název."
     },
     "sourcesNotReady": "Některé zdroje se ještě připravují a zatím nejsou uvedeny ({{count}}). Zkuste to za chvíli znovu.",
-    "sourcePreparing": "Připravujeme tento zdroj… Jeho položky se tu za chvíli zobrazí."
+    "sourcePreparing": "Připravujeme tento zdroj… Jeho položky se tu za chvíli zobrazí.",
+    "selectionActionsNotice": "Indexovat jako první",
+    "selectionActionsNoticeEnterprise": "Výběr, které vybrané položky se indexují jako první, je součástí edice Enterprise.",
+    "uploadExtrasNotice": "Indexovat tyto soubory jako první",
+    "uploadExtrasNoticeEnterprise": "Výběr, které nahrané soubory se indexují jako první, je součástí edice Enterprise."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2309,12 +2313,35 @@
         "pasteBlockLabel": "Připraveno k vložení do vaší MCP konfigurace",
         "copyPasteBlockAria": "Kopírovat blok k vložení",
         "copySuccessTitle": "Zkopírováno",
-        "copyErrorTitle": "Nepodařilo se zkopírovat"
+        "copyErrorTitle": "Nepodařilo se zkopírovat",
+        "knowledgeLimitLaterHint": "Později to můžete změnit, aniž byste token nahradili."
       },
       "scopeCount_one": "{{count}} rozsah",
       "scopeCount_few": "{{count}} rozsahy",
       "scopeCount_many": "{{count}} rozsahu",
-      "scopeCount_other": "{{count}} rozsahů"
+      "scopeCount_other": "{{count}} rozsahů",
+      "access": {
+        "panelTitle": "Změnit přístup",
+        "intro": "Vyberte, co {{name}} uvidí. Token dál funguje a změna platí od jeho dalšího požadavku, takže nemusíte nic, co ho používá, aktualizovat.",
+        "save": "Uložit",
+        "savedTitle": "Přístup změněn",
+        "savedEverything": "{{name}} teď vidí všechno, co vidíte vy.",
+        "savedSome_one": "{{name}} teď vidí {{count}} vybranou položku.",
+        "savedSome_few": "{{name}} teď vidí {{count}} vybrané položky.",
+        "savedSome_many": "{{name}} teď vidí {{count}} vybrané položky.",
+        "savedSome_other": "{{name}} teď vidí {{count}} vybraných položek.",
+        "undo": "Zpět",
+        "undoneTitle": "Změna vrácena",
+        "undoErrorTitle": "Změnu se nepodařilo vrátit. Otevřete Změnit přístup a nastavte ji znovu.",
+        "errorTitle": "Přístup se nepodařilo změnit",
+        "errorDescription": "Nic se nezměnilo. Zkuste to znovu.",
+        "unknownTitle": "Změnu se nepodařilo potvrdit",
+        "unknownDescription": "Možná byla uložena. Než to zkusíte znovu, zkontrolujte zde zobrazený přístup.",
+        "unknownReloadFailedDescription": "Možná byla uložena, ale aktuální přístup se nepodařilo načíst. Než se na zobrazené údaje spolehnete, načtěte stránku znovu.",
+        "rowAction": "Změnit přístup",
+        "rowActionAria": "Změnit, co {{name}} uvidí",
+        "rowActionTooltip": "Změnit přístup: vyberte, co tento token uvidí"
+      }
     },
     "agentSignIns": {
       "title": "Přihlášení agentů",
@@ -2593,7 +2620,8 @@
         "security": "Zabezpečení",
         "personal": "Osobní",
         "people": "Lidé",
-        "developerSettings": "Nastavení pro vývojáře"
+        "developerSettings": "Nastavení pro vývojáře",
+        "help": "Nápověda"
       },
       "nav": {
         "general": "Obecné",
@@ -2939,6 +2967,92 @@
           "pipeshub_code_entry_points": "Vypíše, kde do repozitáře vstupuje běh programu, například trasy, nástroje příkazového řádku, úlohy a hooky. Výchozí bod pro čtení neznámého kódu.",
           "pipeshub_entities": "Najde osoby, týmy, témata, projekty, složky, zákazníky a názvy dokumentů ve znalostním grafu pracovního prostoru, vypíše záznamy propojené s jedním z nich a osoby, firmy nebo produkty zmíněné spolu s ním. Hledání a výpis se nabízejí, jakmile jsou entity zaindexované; seznam společně zmíněných navíc potřebuje rozpoznávání pojmenovaných entit. Aplikace OAuth nebo přístupový token navíc potřebuje oprávnění semantic:read nebo semantic:write.",
           "pipeshub_find_records": "Vypisuje záznamy podle toho, komu patří nebo co zmiňují, nikoli podle jejich slov: záznamy, které má osoba přiřazené nebo které vytvořila, napsala či vlastní, záznamy zmiňující částku, datum, množství nebo procento, a pasáže v záznamech, které jmenují dané osoby, firmy nebo produkty. Částky a data potřebují rozpoznávání pojmenovaných entit a pasáže se nabízejí jen tam, kde nasazení navíc zapne hledání entit. Aplikace OAuth nebo přístupový token navíc potřebuje oprávnění semantic:read nebo semantic:write."
+        },
+        "count": "nabízeno {{offered}} z {{total}}",
+        "searchPlaceholder": "Hledat nástroje, argumenty nebo oprávnění",
+        "searchLabel": "Hledat nástroje",
+        "filterLabel": "Zobrazit",
+        "filters": {
+          "all": "Vše",
+          "read": "Jen čtení",
+          "writes": "Zapisuje nebo mění data",
+          "off": "Vypnuté"
+        },
+        "expandAll": "Rozbalit vše",
+        "collapseAll": "Sbalit vše",
+        "noMatch": "Tomuto hledání neodpovídá žádný nástroj.",
+        "groupCount": "zapnuto {{offered}} z {{total}}",
+        "groupSwitch": "Všechny nástroje ve skupině {{group}}",
+        "showDetails": "Zobrazit podrobnosti nástroje {{tool}}",
+        "hideDetails": "Skrýt podrobnosti nástroje {{tool}}",
+        "groups": {
+          "read": {
+            "label": "Hledání a čtení",
+            "description": "Hledá, čte a stahuje to, k čemu má uživatel přístup."
+          },
+          "people": {
+            "label": "Lidé a entity",
+            "description": "Uživatelé a skupiny pracovního prostoru a lidé, projekty, témata a hodnoty v jeho znalostním grafu."
+          },
+          "chat": {
+            "label": "Chat a agenti",
+            "description": "Dotaz na asistenta PipesHub nebo na některého agenta pracovního prostoru."
+          },
+          "add": {
+            "label": "Přidání obsahu",
+            "description": "Vytváření kolekcí, nahrávání dokumentů, přidávání webů a připojování zdrojů."
+          },
+          "viewer": {
+            "label": "Prohlížeč citací",
+            "description": "Ukazuje zdroje odpovědi v klientech, které ho umí zobrazit."
+          },
+          "code": {
+            "label": "Kód",
+            "description": "Procházení indexovaných repozitářů kódu.",
+            "availability": "Jen uživatelům, kteří mohou číst indexovaný repozitář kódu."
+          },
+          "other": {
+            "label": "Ostatní",
+            "description": "Nástroje, které tato verze stránky ještě nezná."
+          }
+        },
+        "kinds": {
+          "readOnly": "Jen čtení",
+          "changes": "Může měnit data",
+          "openWorld": "Sahá mimo PipesHub"
+        },
+        "blocked": {
+          "writesOff": "Vypnuto, dokud nejsou povoleny zapisující nástroje.",
+          "chatOff": "Vypnuto, dokud je vypnutý chat s PipesHub."
+        },
+        "details": {
+          "scopes": "Potřebná oprávnění OAuth",
+          "noScopes": "Žádná: v PipesHub nic nevolá.",
+          "availability": "Kdy se nabízí",
+          "arguments": "Argumenty · {{n}}",
+          "noArguments": "Nemá žádné argumenty.",
+          "columns": {
+            "name": "Název",
+            "type": "Typ",
+            "description": "Popis"
+          },
+          "required": "povinný",
+          "oneOf": "Jedna z hodnot: {{values}}",
+          "modelText": "Co vidí AI",
+          "hideModelText": "Skrýt, co vidí AI",
+          "modelTextHint": "Popis, který model AI čte, než tento nástroj zvolí."
+        },
+        "availability": {
+          "default": "Kdykoli je zapnutý.",
+          "pipeshub_chat": "Kdykoli je zapnutý. Připojené akce spouští jen tehdy, když jsou povoleny zapisující nástroje.",
+          "pipeshub_agents": "Jen dokud je zapnutý chat s PipesHub.",
+          "pipeshub_create_collection": "Jen dokud jsou povoleny zapisující nástroje.",
+          "pipeshub_upload": "Jen dokud jsou povoleny zapisující nástroje.",
+          "pipeshub_add_web_source": "Jen dokud jsou povoleny zapisující nástroje.",
+          "pipeshub_show_citations": "Jen klientům, které umí zobrazit prohlížeč citací, například Claude.",
+          "pipeshub_preview_record": "Jen prohlížeči citací, nikdy modelu AI.",
+          "pipeshub_entities": "Hledání entit a výpis jejich záznamů, jakmile jsou entity zaindexované. Seznam společně zmíněných navíc potřebuje rozpoznávání pojmenovaných entit.",
+          "pipeshub_find_records": "Záznamy osoby vždy. Částky a data potřebují rozpoznávání pojmenovaných entit a pasáže jmenující osoby nebo firmy navíc potřebují hledání entit zapnuté pro nasazení."
         }
       },
       "appliesNote": "Změny se na nové požadavky MCP uplatní během několika sekund.",
@@ -2947,6 +3061,45 @@
         "saveSuccess": "Nastavení přístupu MCP uloženo",
         "saveError": "Nastavení přístupu MCP se nepodařilo uložit",
         "saveErrorDescription": "Zkontrolujte připojení a zkuste to znovu."
+      },
+      "status": {
+        "on": "Zapnuto · nabízeno {{offered}} z {{total}} nástrojů",
+        "off": "Vypnuto · žádný klient AI se nepřipojí"
+      },
+      "connect": {
+        "title": "Připojit klienta AI",
+        "description": "Klienti se připojují k tomuto koncovému bodu a každý uživatel se přihlásí vlastním účtem PipesHub. Funguje i osobní přístupový token.",
+        "endpointLabel": "Koncový bod MCP",
+        "copy": "Kopírovat",
+        "copied": "Zkopírováno",
+        "copyEndpoint": "Zkopírovat koncový bod MCP",
+        "copySnippet": "Zkopírovat konfiguraci",
+        "clientsLabel": "Klient AI",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "V aplikaci Claude otevřete Přizpůsobit › Konektory, zvolte + a pak Přidat vlastní konektor. Vložte koncový bod výše, zvolte Připojit a přihlaste se do PipesHub. U plánu Team nebo Enterprise musí konektor nejprve přidat vlastník v nastavení organizace.",
+            "tip": "Claude se připojuje z cloudu společnosti Anthropic, ne z vašeho počítače, takže koncový bod musí být dostupný z internetu. Adresa localhost ani adresa v privátní síti fungovat nebude."
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "Na chatgpt.com otevřete Pluginy, zvolte + a pak Přidat vlastní MCP server. Vložte koncový bod výše jako URL serveru, zvolte OAuth, potvrďte upozornění a zvolte Vytvořit jako plugin, pak se přihlaste do PipesHub. V pracovním prostoru Business, Enterprise nebo Edu musí vlastní MCP servery povolit správce.",
+            "tip": "ChatGPT se připojuje ze serverů společnosti OpenAI, ne z vašeho počítače, takže koncový bod musí být dostupný z internetu. Adresa localhost ani adresa v privátní síti fungovat nebude."
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "Přidejte server do ~/.cursor/mcp.json nebo do .cursor/mcp.json v projektu. Cursor vás požádá o přihlášení při prvním použití nástroje."
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "Přidejte server do .vscode/mcp.json, pak ho spusťte ze seznamu serverů MCP a přihlaste se."
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "Spusťte toto v terminálu a pak v Claude Code spusťte /mcp a přihlaste se.",
+            "tip": "Jen pro otázky ke kódu přidejte ke koncovému bodu ?tools=code: klient pak dostane pouze nástroje pro kód."
+          }
+        }
       }
     },
     "labs": {
@@ -3909,7 +4062,9 @@
           "cancelled": "Přihlášení jste zrušili.",
           "signInFailed": "Přihlášení nebylo dokončeno. Zkuste to znovu."
         }
-      }
+      },
+      "indexPriorityNotice": "Upřednostnit indexování pro tento konektor",
+      "indexPriorityNoticeEnterprise": "Priorita indexování je součástí edice Enterprise."
     },
     "mcpServers": {
       "searchPlaceholder": "Hledat MCP servery...",
@@ -3935,7 +4090,6 @@
         "confirm": "Uložit a odebrat přihlášení"
       },
       "cta": {
-        "manage": "Spravovat",
         "delete": "Smazat",
         "reauthenticate": "Znovu ověřit",
         "reconnect": "Znovu připojit",
@@ -3957,6 +4111,18 @@
         "needsAuth": "Vyžaduje ověření",
         "disabled": "Zakázáno"
       },
+      "filters": {
+        "label": "Filtrovat podle stavu",
+        "needsAction": "Vyžaduje akci",
+        "unavailable": "Nedostupné"
+      },
+      "catalog": {
+        "title": "Přidat další servery",
+        "description": "Připravené servery. Přidejte jeden a pak se k němu přihlaste.",
+        "personalDescription": "Servery, které sem přidáte, uvidíte jen vy.",
+        "added": "Přidáno",
+        "addAnother": "Přidat další"
+      },
       "team": {
         "title": "MCP servery",
         "subtitle": "Připojte servery Model Context Protocol a rozšiřte možnosti agentů vašeho týmu.",
@@ -3968,38 +4134,16 @@
         "subtitle": "Připojte se k MCP serverům, které zpřístupnil váš správce, nebo si přidejte vlastní.",
         "emptyTitle": "Žádné dostupné MCP servery",
         "emptyDescription": "Přidejte si vlastní server, nebo požádejte správce, aby přidal server pro všechny.",
-        "yourServersDescription": "Servery, které jste přidali. Vidíte a používáte je pouze vy a nelze je přidat do agentů sdílených s vaší organizací.",
         "tabs": {
           "all": "Vše",
-          "connected": "Připojené",
-          "notConnected": "Nepřipojené"
+          "connected": "Připojené"
         },
         "yours": "Vaše",
         "noneInTab": "Žádné MCP servery."
       },
       "details": {
         "breadcrumbLabel": "MCP servery",
-        "refreshAll": "Obnovit vše",
-        "addInstance": "Přidat další instanci",
-        "configuration": "KONFIGURACE",
-        "transport": "TRANSPORT",
-        "tools": "NÁSTROJE",
-        "discoverTools": "Zjistit nástroje",
-        "discoveredTools_one": "{{count}} dostupný nástroj",
-        "discoveredTools_few": "{{count}} dostupné nástroje",
-        "discoveredTools_many": "{{count}} dostupného nástroje",
-        "discoveredTools_other": "{{count}} dostupných nástrojů",
-        "discovering": "Zjišťování nástrojů…",
-        "discoveryError": "Zjišťování nástrojů se nezdařilo",
-        "discoveryNeedsAuth": "Pro zjištění nástrojů se ověřte",
-        "retry": "Zkusit znovu",
-        "noInstances": "Nejsou nakonfigurovány žádné instance",
-        "authBannerTitle": "Vyžadováno ověření",
-        "authBannerDescription": "Ověřte tento MCP server, aby jej mohli agenti vašeho týmu používat.",
-        "authBannerAuthenticatedTitle": "Připojeno",
-        "reconnectBannerDescription": "Přihlášení k tomuto serveru vypršelo nebo bylo odmítnuto. Znovu se připojte, abyste jej mohli dál používat.",
-        "authBannerAuthenticatedDescription": "Tento MCP server můžete znovu ověřit nebo odpojit.",
-        "createdBy": "Vytvořil(a)"
+        "tools": "NÁSTROJE"
       },
       "deleteDialog": {
         "title": "Smazat MCP server?",
@@ -4059,27 +4203,29 @@
         "tokenUrl": "URL tokenu",
         "scopes": "Rozsahy",
         "scopesPlaceholder": "Přidat rozsah",
-        "useAdminAuth": "Použít sdílené ověření správce pro všechny uživatele",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "Přihlašovací údaje (volitelné)",
-        "credentialsHint": "Přidejte přihlašovací údaje nyní, nebo tento krok přeskočte a připojte se později na kartě Připojení a nástroje.",
+        "credentialsHint": "Přidejte je teď, nebo se přihlaste později na stránce serveru.",
         "multiEnvIncomplete": "Vyplňte všechny požadované proměnné prostředí, nebo je všechny ponechte prázdné a připojte se později.",
         "oauthPairRequired": "Zadejte ID klienta i tajný klíč klienta, nebo ponechte obě pole prázdná.",
-        "connectAfterCreateHint": "Uložte tento server a poté znovu otevřete Spravovat, abyste jej připojili.",
         "timeoutsHeading": "Časové limity",
         "connectTimeout": "Časový limit připojení (sekundy)",
         "callTimeout": "Časový limit volání nástroje (sekundy)",
-        "timeoutRange": "Zadejte číslo od {{min}} do {{max}}, nebo ponechte prázdné pro výchozí hodnotu."
+        "timeoutRange": "Zadejte číslo od {{min}} do {{max}}, nebo ponechte prázdné pro výchozí hodnotu.",
+        "whoSignsIn": "Jak se lidé přihlašují",
+        "signIn": {
+          "personal": "Každý používá své vlastní",
+          "personalHint": "Každý se přihlásí svými přihlašovacími údaji a získá jen přístup, který mají.",
+          "shared": "Jeden sdílený přihlašovací údaj pro všechny",
+          "sharedHint": "Přidáte ho jednou níže. Všichni pak jednají s jeho přístupem."
+        },
+        "advanced": "Pokročilé",
+        "nameTaken": "Tento název už má jiný server. Zvolte jiný."
       },
       "configPanel": {
         "editTitle": "Upravit MCP server",
         "createTitle": "Nový MCP server",
-        "tabs": {
-          "configuration": "Konfigurace",
-          "tools": "Nástroje a schvalování",
-          "toolList": "Nástroje"
-        },
         "synced": "Synchronizováno {{time}}",
         "refreshTools": "Obnovit seznam nástrojů",
         "signInForTools": "Přihlaste se, abyste viděli nástroje tohoto serveru.",
@@ -4123,7 +4269,8 @@
           "remove": "Smazat server",
           "removeHint": "Smaže jej pro všechny.",
           "removeHintPersonal": "Smaže jej i vaše přihlášení."
-        }
+        },
+        "addTemplateTitle": "Přidat {{name}}"
       },
       "oauthConfig": {
         "saved": "OAuth aplikace byla uložena",
@@ -4158,7 +4305,6 @@
         "noState": "Nebyl vrácen žádný parametr state.",
         "backendRejected": "Server autorizační požadavek odmítl."
       },
-      "deleteDisabledTooltip": "Tento server nelze smazat",
       "stdioPolicy": {
         "disabledTitle": "V tomto nasazení zakázáno",
         "disabledDescription": "Vlastní STDIO servery spouštějí příkaz na serveru PipesHub, proto zůstávají vypnuté, dokud operátor nenastaví {{flag}}=true v prostředí nasazení (soubor .env pro Docker Compose nebo config.mcpAllowCustomStdio v Helmu). Do té doby agenti nemohou nástroje tohoto serveru používat. Můžete jej smazat nebo přepnout na vzdálený (HTTP) server.",
@@ -4172,8 +4318,6 @@
         "customDescription": "Libovolný vzdálený MCP server podle URL."
       },
       "toolRules": {
-        "open": "Schvalování nástrojů",
-        "title": "Schvalování nástrojů: {{name}}",
         "description": {
           "personal": "Zvolte, co se stane, když asistent nebo agent chce ve vašich chatech použít některý z těchto nástrojů."
         },
@@ -4230,6 +4374,12 @@
         "orgRulesDescription": "Rozhodněte, které nástroje se spouštějí, které se nejprve ptají a které se nikdy nespustí, a to pro všechny ve vaší organizaci. Lidé si vlastní pravidla nastavují na své stránce MCP serverů.",
         "userServersTitle": "Vlastní MCP servery uživatelů",
         "userServersDescription": "Zkontrolujte a odeberte MCP servery, které si lidé ve vaší organizaci přidali sami."
+      },
+      "added": {
+        "ready": "{{name}} je přidán a připraven k použití.",
+        "signIn": "{{name}} je přidán. Přihlaste se níže, aby jeho nástroje mohly běžet.",
+        "other": "{{name}} je přidán, ale zatím nefunguje. Důvod najdete níže.",
+        "dismiss": "Hotovo"
       }
     },
     "bots": {
@@ -6443,5 +6593,163 @@
       "copyDetails": "Zkopírovat podrobnosti pro správce",
       "copied": "Podrobnosti zkopírovány"
     }
+  },
+  "support": {
+    "menuLabel": "Kontaktovat podporu",
+    "title": "Kontaktovat podporu",
+    "steps": {
+      "area": "Oblast",
+      "details": "Podrobnosti"
+    },
+    "close": "Zavřít",
+    "cancel": "Zrušit",
+    "back": "Zpět",
+    "continue": "Pokračovat",
+    "send": "Odeslat žádost",
+    "sending": "Odesílání…",
+    "changeArea": "Změnit oblast",
+    "change": "Změnit",
+    "issueOther": "Jiné (není v seznamu)",
+    "areaStep": {
+      "title": "S čím potřebujete pomoct?",
+      "subtitle": "Zvolte oblast, která nejlépe odpovídá vašemu problému.",
+      "suggested": "Navrženo",
+      "suggestion": "V oblasti {{area}} došlo v {{time}} k chybě, proto jsme ji navrhli.",
+      "idea": "Máte spíš nápad? Pošlete zpětnou vazbu"
+    },
+    "areas": {
+      "connectors": {
+        "label": "Konektory a synchronizace",
+        "hint": "Připojování aplikací, chyby synchronizace nebo chybějící data"
+      },
+      "chat": {
+        "label": "Chat a vyhledávání",
+        "hint": "Odpovědi, citace nebo výsledky hledání"
+      },
+      "agents": {
+        "label": "Agenti a akce",
+        "hint": "Vytváření, spouštění nebo sdílení agentů"
+      },
+      "files": {
+        "label": "Soubory a kolekce",
+        "hint": "Nahrávání, složky nebo náhledy souborů"
+      },
+      "access": {
+        "label": "Přihlášení a přístup",
+        "hint": "Přihlašování, hesla nebo jednotné přihlášení"
+      },
+      "people": {
+        "label": "Lidé a oprávnění",
+        "hint": "Zvaní uživatelů, role nebo skupiny"
+      },
+      "other": {
+        "label": "Něco jiného",
+        "hint": "Cokoli, co tu není uvedeno"
+      }
+    },
+    "details": {
+      "descriptionLabel": "Co se stalo?",
+      "descriptionPlaceholder": "Co jste se snažili udělat a co se stalo místo toho?",
+      "descriptionMin_one": "Alespoň {{count}} znak.",
+      "descriptionMin_few": "Alespoň {{count}} znaky.",
+      "descriptionMin_many": "Alespoň {{count}} znaku.",
+      "descriptionMin_other": "Alespoň {{count}} znaků.",
+      "descriptionMax_one": "Dosáhli jste limitu {{count}} znaku.",
+      "descriptionMax_few": "Dosáhli jste limitu {{count}} znaků.",
+      "descriptionMax_many": "Dosáhli jste limitu {{count}} znaku.",
+      "descriptionMax_other": "Dosáhli jste limitu {{count}} znaků.",
+      "attach": "Přiložit snímek obrazovky",
+      "removeFile": "Odebrat {{name}}",
+      "fileUnsupported": "{{name}}: tento typ souboru není podporován.",
+      "fileTooLarge": "{{name}} je větší než 5 MB.",
+      "tooManyFiles": "Můžete přiložit až 5 souborů.",
+      "filesTotalTooLarge": "Soubory mohou mít dohromady nejvýše 8 MB.",
+      "smtpTitle": "E-mail není pro tento pracovní prostor nastaven",
+      "smtpBody": "Připravíme vám zprávu, kterou odešlete na {{email}} ze své e-mailové aplikace.",
+      "smtpAdmin": "Chcete-li žádosti odesílat přímo, nakonfigurujte SMTP v nastavení pracovního prostoru.",
+      "smtpMember": "Chcete-li žádosti odesílat přímo, požádejte správce o konfiguraci SMTP.",
+      "includeErrors_one": "Přiložit {{count}} nedávnou chybu",
+      "includeErrors_few": "Přiložit {{count}} nedávné chyby",
+      "includeErrors_many": "Přiložit {{count}} nedávné chyby",
+      "includeErrors_other": "Přiložit {{count}} nedávných chyb",
+      "errorLine": "{{area}}: chyba {{status}} v {{time}}",
+      "errorLineUnknown": "Chyba {{status}} v {{time}}",
+      "sentWith": "Odesláno s vaší žádostí: {{list}}.",
+      "sentParts": {
+        "workspace": "váš pracovní prostor",
+        "identity": "vaše jméno a e-mail",
+        "browser": "váš prohlížeč",
+        "errors": "nedávné chyby"
+      },
+      "viewDetails": "Zobrazit podrobnosti",
+      "hideDetails": "Skrýt podrobnosti",
+      "rows": {
+        "issue": "Problém se týká",
+        "workspace": "Pracovní prostor",
+        "signedInAs": "Přihlášen(a) jako",
+        "browser": "Prohlížeč",
+        "recentErrors": "Nedávné chyby"
+      }
+    },
+    "blocked": {
+      "area": "Pro pokračování zvolte oblast.",
+      "description": "„Co se stalo?“ vyžaduje alespoň {{min}} znaků (zbývá {{left}})."
+    },
+    "result": {
+      "sentTitle": "Žádost odeslána",
+      "sentBody": "Náš tým podpory vaši žádost má. Kopii jsme vám poslali e-mailem a odpovědi přijdou do vaší schránky.",
+      "pendingTitle": "Stále se odesílá",
+      "pendingBody": "E-mail na {{email}} trvá déle než obvykle. Pokud se vám nikdo neozve, kontaktujte nás s tímto referenčním číslem.",
+      "referenceLabel": "Vaše referenční číslo",
+      "copyReference": "Kopírovat referenční číslo",
+      "quote": "Uveďte toto referenční číslo, pokud nás budete kontaktovat ohledně stejného problému.",
+      "done": "Hotovo"
+    },
+    "email": {
+      "title": "Odešlete ji ze své e-mailové aplikace",
+      "noSmtp": "E-mail zde není nastaven, takže žádost {{reference}} nebyla odeslána. Odešlete tuto zprávu ze své e-mailové aplikace, aby ji podpora dostala.",
+      "failed": "Žádost {{reference}} se nepodařilo odeslat e-mailem. Odešlete tuto zprávu ze své e-mailové aplikace, aby ji podpora dostala.",
+      "limit": "Za poslední hodinu jste odeslali několik žádostí. Tuto odešlete ze své e-mailové aplikace.",
+      "unsaved": "Vaši žádost se nepodařilo odeslat. Odešlete tuto zprávu ze své e-mailové aplikace, aby ji podpora dostala.",
+      "to": "Komu",
+      "subject": "Předmět",
+      "copy": "Kopírovat zprávu",
+      "copied": "Zkopírováno",
+      "open": "Otevřít e-mailovou aplikaci",
+      "shortened": "Vaše e-mailová aplikace dostane zkrácenou verzi. Celý text získáte pomocí Kopírovat zprávu.",
+      "attachFiles_one": "Váš {{count}} soubor není součástí této zprávy. Přiložte ho ve své e-mailové aplikaci.",
+      "attachFiles_few": "Vaše {{count}} soubory nejsou součástí této zprávy. Přiložte je ve své e-mailové aplikaci.",
+      "attachFiles_many": "Vašich {{count}} souboru není součástí této zprávy. Přiložte je ve své e-mailové aplikaci.",
+      "attachFiles_other": "Vašich {{count}} souborů není součástí této zprávy. Přiložte je ve své e-mailové aplikaci.",
+      "copyFallback": "Automatické kopírování se nezdařilo. Zpráva je označená, stiskněte Ctrl+C (na Macu ⌘C)."
+    },
+    "errors": {
+      "load": "Možnosti podpory se nepodařilo načíst.",
+      "retry": "Zkusit znovu",
+      "send": "Vaši žádost se nepodařilo odeslat. Zkuste to prosím znovu.",
+      "emailInstead": "Odeslat raději e-mailem"
+    }
+  },
+  "feedback": {
+    "menuLabel": "Poslat zpětnou vazbu",
+    "title": "Poslat zpětnou vazbu",
+    "subtitle": "Napište nám, co funguje, co ne, nebo co byste rádi viděli.",
+    "kindIssue": "Obecná zpětná vazba",
+    "kindFeedback": "Návrh funkce",
+    "descriptionPlaceholder": "Co se stalo, nebo co bychom měli zlepšit?",
+    "addFiles": "Přidat soubory",
+    "removeFile": "Odebrat",
+    "fileHint": "Volitelné. Až 5 souborů, každý do 5 MB. Obrázky, PDF, text nebo CSV.",
+    "cancel": "Zrušit",
+    "submit": "Odeslat",
+    "needReply": "Potřebujete odpověď? Kontaktujte podporu",
+    "success": "Děkujeme, vaši zpětnou vazbu jsme obdrželi.",
+    "pending": "E-mail na adresu {{email}} se odesílá déle než obvykle. Pokud se vám nikdo neozve, kontaktujte nás.",
+    "submitError": "Odeslání se nezdařilo. Zkuste to prosím znovu.",
+    "descriptionTooShort": "Přidejte prosím trochu více podrobností (alespoň 10 znaků).",
+    "invalidType": "Tento typ souboru není podporován.",
+    "fileTooLarge": "Každý soubor smí mít nejvýše 5 MB.",
+    "tooManyFiles": "Můžete přiložit až 5 souborů.",
+    "filesTotalTooLarge": "Soubory mohou mít dohromady nejvýše 8 MB."
   }
 }

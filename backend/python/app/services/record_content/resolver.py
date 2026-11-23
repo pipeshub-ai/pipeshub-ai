@@ -22,15 +22,15 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
 from app.models.entities import Record, RecordType
 
 from .authorizer import TieredRecordAuthorizer
 from .models import (
+    GRAPH_CALLER_BUGS,
     RecordAccessDeniedError,
     RecordContentError,
-    RecordContentUnavailableError,
     RecordNotFoundError,
+    graph_did_not_answer,
 )
 from .strategies import (
     BlobBackedContentStrategy,
@@ -153,14 +153,10 @@ class RecordContentResolver:
         """The record, or None when there is none. A graph that cannot be read is not a missing record."""
         try:
             return await self._graph.get_record_by_id(record_id, raise_on_error=True)
-        except (MissingOrgContext, SystemContextNotAllowed, OrgMismatch, TypeError):
-            # Our bug, not an outage (TypeError: a provider without raise_on_error): no query ran, so nothing has logged it.
+        except GRAPH_CALLER_BUGS:
             raise
         except Exception as exc:
-            # No backend text: it can carry hosts and query values, and goes to the model.
-            raise RecordContentUnavailableError(
-                f"Could not look up record {record_id}: the knowledge graph did not answer. Try again later."
-            ) from exc
+            raise graph_did_not_answer(f"Could not look up record {record_id}") from exc
 
     async def _fetch(
         self,

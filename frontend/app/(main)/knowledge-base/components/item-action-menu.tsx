@@ -5,6 +5,7 @@ import { DropdownMenu, IconButton, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { PermissionLockIcon } from '@/config';
 
 // ========================================
 // Types
@@ -32,6 +33,8 @@ export interface MenuAction {
   isLoading?: boolean;
   /** Render the item in a disabled state (not interactive). */
   disabled?: boolean;
+  /** The caller's group permissions do not allow this action: disabled, with a lock. */
+  permissionLocked?: boolean;
 }
 
 export interface ItemActionMenuProps {
@@ -122,7 +125,11 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
             (action.color === 'red' ? 'var(--red-10)' : 'var(--slate-11)');
           const isPending = pendingIndex === i || action.isLoading === true;
           const anyPending = pendingIndex !== null;
-          const isBlocked = isPending || (anyPending && pendingIndex !== i) || action.disabled === true;
+          const isBlocked =
+            isPending ||
+            (anyPending && pendingIndex !== i) ||
+            action.disabled === true ||
+            action.permissionLocked === true;
 
           return (
             <React.Fragment key={i}>
@@ -175,6 +182,7 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                   >
                     {action.label}
                   </Text>
+                  {action.permissionLocked && <PermissionLockIcon />}
                 </Flex>
               </DropdownMenu.Item>
             </React.Fragment>

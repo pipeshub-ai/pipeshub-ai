@@ -775,6 +775,8 @@ export interface UploadDataSidebarProps {
   /** Folder levels that can still be added under the upload target. */
   remainingFolderLevels?: number;
   maxFolderDepth?: number;
+  /** Extra content above the footer. Editions plug it in via config.ts. */
+  extras?: React.ReactNode;
 }
 
 export function UploadDataSidebar({
@@ -784,6 +786,7 @@ export function UploadDataSidebar({
   isSaving = false,
   remainingFolderLevels = Infinity,
   maxFolderDepth,
+  extras,
 }: UploadDataSidebarProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -1103,6 +1106,10 @@ export function UploadDataSidebar({
             </>
           )}
         </Box>
+
+        {extras ? (
+          <Box style={{ padding: 'var(--space-2) var(--space-4)', flexShrink: 0 }}>{extras}</Box>
+        ) : null}
 
         {/* Footer */}
         <Flex

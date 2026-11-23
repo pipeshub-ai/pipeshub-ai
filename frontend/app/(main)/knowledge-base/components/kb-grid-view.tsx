@@ -24,6 +24,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useCollectionGroupPermissions } from '../hooks/use-collection-group-permissions';
 import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
 import type {
   KnowledgeBaseItem,
@@ -102,6 +103,7 @@ function GridCard({
   const canEditItem = isKnowledgeHubNode(item)
     ? (item.permission?.canEdit ?? false)
     : true;
+  const groupPermissions = useCollectionGroupPermissions();
 
   // Split name into base and extension for files
   const getNameParts = (name: string) => {
@@ -324,6 +326,7 @@ function GridCard({
             onReplace,
             onMove,
             onDelete,
+            groupPermissions,
           })}
         />
       </Flex>
@@ -379,7 +382,7 @@ function GridCard({
             size="2"
             weight="medium"
             title={item.name}
-            onClick={onRename && canEditItem && canHover ? (e: React.MouseEvent) => {
+            onClick={onRename && canEditItem && groupPermissions.canEdit && canHover ? (e: React.MouseEvent) => {
               e.stopPropagation();
               startEditing();
             } : undefined}
@@ -391,7 +394,7 @@ function GridCard({
               overflow: 'hidden',
               wordBreak: 'break-word',
               lineHeight: 'var(--line-height-2)',
-              cursor: onRename && canEditItem && canHover ? 'text' : 'default',
+              cursor: onRename && canEditItem && groupPermissions.canEdit && canHover ? 'text' : 'default',
             }}
           >
             {item.name}

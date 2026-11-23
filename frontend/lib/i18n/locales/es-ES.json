@@ -722,7 +722,11 @@
       "collectionExists": "Ya tienes una colección llamada \"{{name}}\". Elige otro nombre."
     },
     "sourcesNotReady": "Algunas fuentes aún se están preparando y todavía no aparecen ({{count}}). Inténtalo de nuevo en un momento.",
-    "sourcePreparing": "Preparando esta fuente… Sus elementos aparecerán aquí en un momento."
+    "sourcePreparing": "Preparando esta fuente… Sus elementos aparecerán aquí en un momento.",
+    "selectionActionsNotice": "Indexar primero",
+    "selectionActionsNoticeEnterprise": "Elegir qué elementos seleccionados se indexan primero forma parte de la Enterprise Edition.",
+    "uploadExtrasNotice": "Indexar estos archivos primero",
+    "uploadExtrasNoticeEnterprise": "Elegir qué cargas se indexan primero forma parte de la Enterprise Edition."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2366,7 +2370,8 @@
         "security": "Seguridad",
         "personal": "Personal",
         "people": "Personas",
-        "developerSettings": "Configuración de desarrollador"
+        "developerSettings": "Configuración de desarrollador",
+        "help": "Ayuda"
       },
       "nav": {
         "general": "General",
@@ -2712,6 +2717,92 @@
           "pipeshub_code_entry_points": "Enumera por dónde entra la ejecución en un repositorio, como rutas, herramientas de línea de comandos, tareas y hooks. Un punto de partida para leer código desconocido.",
           "pipeshub_entities": "Encuentra personas, equipos, temas, proyectos, carpetas, clientes y títulos de documentos en el grafo de conocimiento del espacio de trabajo, enumera los registros relacionados con uno de ellos y las personas, empresas o productos que se mencionan junto a él. La búsqueda y el listado se ofrecen cuando ya hay entidades indexadas; la lista de menciones conjuntas necesita además la extracción de entidades con nombre. Una aplicación OAuth o un token de acceso necesita además el permiso semantic:read o semantic:write.",
           "pipeshub_find_records": "Enumera registros según a quién pertenecen o qué mencionan, no según sus palabras: los registros que una persona tiene asignados, ha creado, ha escrito o posee, los registros que mencionan un importe, una fecha, una cantidad o un porcentaje, y fragmentos de los registros que nombran a determinadas personas, empresas o productos. Los importes y las fechas necesitan la extracción de entidades con nombre, y los fragmentos solo se ofrecen donde la implementación también activa la búsqueda de entidades. Una aplicación OAuth o un token de acceso necesita además el permiso semantic:read o semantic:write."
+        },
+        "count": "{{offered}} de {{total}} ofrecidas",
+        "searchPlaceholder": "Buscar herramientas, argumentos o permisos",
+        "searchLabel": "Buscar herramientas",
+        "filterLabel": "Mostrar",
+        "filters": {
+          "all": "Todas",
+          "read": "Solo lectura",
+          "writes": "Escribe o cambia datos",
+          "off": "Desactivadas"
+        },
+        "expandAll": "Expandir todo",
+        "collapseAll": "Contraer todo",
+        "noMatch": "Ninguna herramienta coincide con esta búsqueda.",
+        "groupCount": "{{offered}} de {{total}} activadas",
+        "groupSwitch": "Todas las herramientas de {{group}}",
+        "showDetails": "Mostrar detalles de {{tool}}",
+        "hideDetails": "Ocultar detalles de {{tool}}",
+        "groups": {
+          "read": {
+            "label": "Buscar y leer",
+            "description": "Busca, lee y descarga lo que el usuario puede ver."
+          },
+          "people": {
+            "label": "Personas y entidades",
+            "description": "Los usuarios y grupos del espacio de trabajo, y las personas, proyectos, temas y valores de su grafo de conocimiento."
+          },
+          "chat": {
+            "label": "Chat y agentes",
+            "description": "Pregunta al asistente de PipesHub o a uno de los agentes del espacio de trabajo."
+          },
+          "add": {
+            "label": "Añadir contenido",
+            "description": "Crea colecciones, sube documentos, añade sitios web y conecta orígenes."
+          },
+          "viewer": {
+            "label": "Visor de citas",
+            "description": "Muestra las fuentes de una respuesta, en los clientes que pueden mostrarlo."
+          },
+          "code": {
+            "label": "Código",
+            "description": "Explora los repositorios de código indexados.",
+            "availability": "Solo a usuarios que pueden leer un repositorio de código indexado."
+          },
+          "other": {
+            "label": "Otras",
+            "description": "Herramientas que esta versión de la página aún no conoce."
+          }
+        },
+        "kinds": {
+          "readOnly": "Solo lectura",
+          "changes": "Puede cambiar datos",
+          "openWorld": "Sale de PipesHub"
+        },
+        "blocked": {
+          "writesOff": "Desactivada mientras no se permitan las herramientas de escritura.",
+          "chatOff": "Desactivada mientras el chat con PipesHub esté desactivado."
+        },
+        "details": {
+          "scopes": "Permisos OAuth necesarios",
+          "noScopes": "Ninguno: no llama a nada en PipesHub.",
+          "availability": "Cuándo se ofrece",
+          "arguments": "Argumentos · {{n}}",
+          "noArguments": "No recibe argumentos.",
+          "columns": {
+            "name": "Nombre",
+            "type": "Tipo",
+            "description": "Descripción"
+          },
+          "required": "obligatorio",
+          "oneOf": "Uno de: {{values}}",
+          "modelText": "Lo que ve la IA",
+          "hideModelText": "Ocultar lo que ve la IA",
+          "modelTextHint": "La descripción que lee el modelo de IA antes de elegir esta herramienta."
+        },
+        "availability": {
+          "default": "Siempre que esté activada.",
+          "pipeshub_chat": "Siempre que esté activada. Solo ejecuta acciones conectadas mientras se permitan las herramientas de escritura.",
+          "pipeshub_agents": "Solo mientras el chat con PipesHub esté activado.",
+          "pipeshub_create_collection": "Solo mientras se permitan las herramientas de escritura.",
+          "pipeshub_upload": "Solo mientras se permitan las herramientas de escritura.",
+          "pipeshub_add_web_source": "Solo mientras se permitan las herramientas de escritura.",
+          "pipeshub_show_citations": "Solo a los clientes que pueden mostrar el visor de citas, como Claude.",
+          "pipeshub_preview_record": "Solo al visor de citas, nunca al modelo de IA.",
+          "pipeshub_entities": "Buscar entidades y enumerar sus registros, cuando ya hay entidades indexadas. La lista de menciones conjuntas necesita además la extracción de entidades con nombre.",
+          "pipeshub_find_records": "Los registros de una persona, siempre. Los importes y las fechas necesitan la extracción de entidades con nombre, y los fragmentos que nombran personas o empresas necesitan además la búsqueda de entidades activada en la implementación."
         }
       },
       "appliesNote": "Los cambios se aplican a las nuevas solicitudes MCP en unos segundos.",
@@ -2720,6 +2811,45 @@
         "saveSuccess": "Configuración de acceso MCP guardada",
         "saveError": "No se pudo guardar la configuración de acceso MCP",
         "saveErrorDescription": "Comprueba tu conexión e inténtalo de nuevo."
+      },
+      "status": {
+        "on": "Activado · {{offered}} de {{total}} herramientas ofrecidas",
+        "off": "Desactivado · ningún cliente de IA puede conectarse"
+      },
+      "connect": {
+        "title": "Conectar un cliente de IA",
+        "description": "Los clientes se conectan a este endpoint y cada usuario inicia sesión con su propia cuenta de PipesHub. También funciona un token de acceso personal.",
+        "endpointLabel": "Endpoint MCP",
+        "copy": "Copiar",
+        "copied": "Copiado",
+        "copyEndpoint": "Copiar el endpoint MCP",
+        "copySnippet": "Copiar la configuración",
+        "clientsLabel": "Cliente de IA",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "En Claude, abre Personalizar › Conectores, selecciona + y luego Añadir conector personalizado. Pega el endpoint de arriba, elige Conectar e inicia sesión en PipesHub. En un plan Team o Enterprise, primero un propietario añade el conector en la configuración de la organización.",
+            "tip": "Claude se conecta desde la nube de Anthropic, no desde tu ordenador, así que el endpoint debe ser accesible desde internet. Una dirección localhost o de una red privada no funcionará."
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "En chatgpt.com, abre Plugins, selecciona + y luego Añadir servidor MCP personalizado. Pega el endpoint de arriba como URL del servidor, elige OAuth, acepta la advertencia y selecciona Crear como plugin; después inicia sesión en PipesHub. En un espacio de trabajo Business, Enterprise o Edu, un administrador debe permitir los servidores MCP personalizados.",
+            "tip": "ChatGPT se conecta desde los servidores de OpenAI, no desde tu ordenador, así que el endpoint debe ser accesible desde internet. Una dirección localhost o de una red privada no funcionará."
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "Añade el servidor a ~/.cursor/mcp.json, o a .cursor/mcp.json en un proyecto. Cursor te pide iniciar sesión la primera vez que usa una herramienta."
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "Añade el servidor a .vscode/mcp.json, inícialo desde la lista de servidores MCP e inicia sesión."
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "Ejecuta esto en un terminal y luego /mcp en Claude Code para iniciar sesión.",
+            "tip": "Solo para preguntas sobre código, añade ?tools=code al endpoint: el cliente recibe entonces solo las herramientas de código."
+          }
+        }
       }
     },
     "labs": {
@@ -3675,7 +3805,9 @@
           "cancelled": "Cancelaste el inicio de sesión.",
           "signInFailed": "El inicio de sesión no terminó. Inténtalo de nuevo."
         }
-      }
+      },
+      "indexPriorityNotice": "Priorizar la indexación de este conector",
+      "indexPriorityNoticeEnterprise": "La prioridad de indexación forma parte de la Enterprise Edition."
     },
     "mcpServers": {
       "searchPlaceholder": "Buscar servidores MCP...",
@@ -3699,7 +3831,6 @@
         "confirm": "Guardar y eliminar inicios de sesión"
       },
       "cta": {
-        "manage": "Gestionar",
         "delete": "Eliminar",
         "reauthenticate": "Reautenticar",
         "reconnect": "Volver a conectar",
@@ -3721,6 +3852,18 @@
         "needsAuth": "Requiere autenticación",
         "disabled": "Deshabilitado"
       },
+      "filters": {
+        "label": "Filtrar por estado",
+        "needsAction": "Requiere acción",
+        "unavailable": "No disponible"
+      },
+      "catalog": {
+        "title": "Añadir más servidores",
+        "description": "Servidores listos para usar. Añade uno y luego inicia sesión en él.",
+        "personalDescription": "Solo tú verás los servidores que añadas aquí.",
+        "added": "Añadido",
+        "addAnother": "Añadir otro"
+      },
       "team": {
         "title": "Servidores MCP",
         "subtitle": "Conecta servidores Model Context Protocol para ampliar lo que pueden hacer los agentes de tu equipo.",
@@ -3732,37 +3875,16 @@
         "subtitle": "Conéctate a los servidores MCP que tu administrador ha puesto a disposición o añade los tuyos.",
         "emptyTitle": "No hay servidores MCP disponibles",
         "emptyDescription": "Añade uno propio o pide a tu administrador que añada uno para todos.",
-        "yourServersDescription": "Servidores que has añadido. Solo tú puedes verlos y usarlos, y no se pueden añadir a agentes compartidos con tu organización.",
         "tabs": {
           "all": "Todos",
-          "connected": "Conectados",
-          "notConnected": "No conectados"
+          "connected": "Conectados"
         },
         "yours": "Tuyo",
         "noneInTab": "No hay servidores MCP aquí."
       },
       "details": {
         "breadcrumbLabel": "Servidores MCP",
-        "refreshAll": "Actualizar todo",
-        "addInstance": "Añadir otra instancia",
-        "configuration": "CONFIGURACIÓN",
-        "transport": "TRANSPORTE",
-        "tools": "HERRAMIENTAS",
-        "discoverTools": "Descubrir herramientas",
-        "discoveredTools_one": "{{count}} herramienta disponible",
-        "discoveredTools_other": "{{count}} herramientas disponibles",
-        "discovering": "Descubriendo herramientas…",
-        "discoveryError": "Error al descubrir herramientas",
-        "discoveryNeedsAuth": "Autentícate para descubrir herramientas",
-        "retry": "Reintentar",
-        "noInstances": "No hay instancias configuradas",
-        "authBannerTitle": "Se requiere autenticación",
-        "authBannerDescription": "Autentica este servidor MCP para que los agentes de tu equipo puedan usarlo.",
-        "authBannerAuthenticatedTitle": "Conectado",
-        "reconnectBannerDescription": "El inicio de sesión de este servidor caducó o fue rechazado. Vuelve a conectarlo para seguir usándolo.",
-        "authBannerAuthenticatedDescription": "Puedes reautenticar o desconectar este servidor MCP.",
-        "createdBy": "Creado por",
-        "discoveredTools_many": "{{count}} de herramientas disponibles"
+        "tools": "HERRAMIENTAS"
       },
       "deleteDialog": {
         "title": "¿Eliminar el servidor MCP?",
@@ -3822,27 +3944,29 @@
         "tokenUrl": "URL del token",
         "scopes": "Ámbitos",
         "scopesPlaceholder": "Añadir un ámbito",
-        "useAdminAuth": "Usar autenticación de administrador compartida para todos los usuarios",
         "headerValue": "{{headerName}}",
         "apiToken": "Token de API",
         "credentialsHeading": "Credenciales (opcional)",
-        "credentialsHint": "Añade las credenciales ahora, o sáltalo y conéctate más tarde desde la pestaña Conexión y herramientas.",
+        "credentialsHint": "Añádelas ahora o inicia sesión más tarde desde la página del servidor.",
         "multiEnvIncomplete": "Completa todas las variables de entorno obligatorias, o déjalas todas en blanco para conectar más tarde.",
         "oauthPairRequired": "Introduce tanto el ID de cliente como el secreto de cliente, o deja ambos vacíos.",
-        "connectAfterCreateHint": "Guarda este servidor y luego vuelve a abrir Gestionar para conectarlo.",
         "timeoutsHeading": "Tiempos de espera",
         "connectTimeout": "Tiempo de espera de conexión (segundos)",
         "callTimeout": "Tiempo de espera de las llamadas a herramientas (segundos)",
-        "timeoutRange": "Introduce un número entre {{min}} y {{max}}, o déjalo en blanco para usar el valor predeterminado."
+        "timeoutRange": "Introduce un número entre {{min}} y {{max}}, o déjalo en blanco para usar el valor predeterminado.",
+        "whoSignsIn": "Cómo inician sesión las personas",
+        "signIn": {
+          "personal": "Cada persona usa las suyas",
+          "personalHint": "Cada persona inicia sesión con sus propias credenciales y solo obtiene el acceso que estas tienen.",
+          "shared": "Una credencial compartida para todos",
+          "sharedHint": "La añades una vez, abajo. Todos actúan con su acceso."
+        },
+        "advanced": "Avanzado",
+        "nameTaken": "Otro servidor ya tiene este nombre. Elige uno distinto."
       },
       "configPanel": {
         "editTitle": "Editar servidor MCP",
         "createTitle": "Nuevo servidor MCP",
-        "tabs": {
-          "configuration": "Configuración",
-          "tools": "Herramientas y aprobaciones",
-          "toolList": "Herramientas"
-        },
         "synced": "Sincronizado {{time}}",
         "refreshTools": "Actualizar la lista de herramientas",
         "signInForTools": "Inicia sesión para ver las herramientas de este servidor.",
@@ -3884,7 +4008,8 @@
           "remove": "Eliminar servidor",
           "removeHint": "Lo elimina para todos.",
           "removeHintPersonal": "Lo elimina junto con tu inicio de sesión."
-        }
+        },
+        "addTemplateTitle": "Añadir {{name}}"
       },
       "oauthConfig": {
         "saved": "App de OAuth guardada",
@@ -3919,7 +4044,6 @@
         "noState": "No se devolvió ningún parámetro de estado.",
         "backendRejected": "El servidor rechazó la solicitud de autorización."
       },
-      "deleteDisabledTooltip": "Este servidor no se puede eliminar",
       "toolsCount_many": "{{count}} de herramientas",
       "stdioPolicy": {
         "disabledTitle": "Deshabilitado en esta instalación",
@@ -3934,8 +4058,6 @@
         "customDescription": "Cualquier servidor MCP remoto, mediante su URL."
       },
       "toolRules": {
-        "open": "Aprobaciones de herramientas",
-        "title": "Aprobaciones de herramientas: {{name}}",
         "description": {
           "personal": "Elige qué ocurre cuando un asistente o agente quiere usar una de estas herramientas en tus chats."
         },
@@ -3990,6 +4112,12 @@
         "orgRulesDescription": "Decide qué herramientas se ejecutan, piden aprobación o nunca se ejecutan para toda tu organización. Aquí, cada persona define sus propias reglas desde su página de servidores MCP.",
         "userServersTitle": "Servidores MCP propios de las personas",
         "userServersDescription": "Revisa y elimina los servidores MCP que las personas de tu organización añaden para sí mismas."
+      },
+      "added": {
+        "ready": "{{name}} se ha añadido y está listo para usar.",
+        "signIn": "{{name}} se ha añadido. Inicia sesión abajo para que sus herramientas puedan funcionar.",
+        "other": "{{name}} se ha añadido, pero aún no funciona. Abajo verás por qué.",
+        "dismiss": "Listo"
       }
     },
     "bots": {
@@ -4710,11 +4838,33 @@
         "pasteBlockLabel": "Listo para pegar en su configuración de MCP",
         "copyPasteBlockAria": "Copiar el bloque para pegar",
         "copySuccessTitle": "Copiado",
-        "copyErrorTitle": "No se ha podido copiar"
+        "copyErrorTitle": "No se ha podido copiar",
+        "knowledgeLimitLaterHint": "Puedes cambiarlo más adelante sin sustituir el token."
       },
       "scopeCount_one": "{{count}} ámbito",
       "scopeCount_other": "{{count}} ámbitos",
-      "scopeCount_many": "{{count}} de ámbitos"
+      "scopeCount_many": "{{count}} de ámbitos",
+      "access": {
+        "panelTitle": "Cambiar acceso",
+        "intro": "Elige qué puede ver {{name}}. El token sigue funcionando y el cambio se aplica desde su próxima solicitud, así que no tienes que actualizar nada que lo use.",
+        "save": "Guardar",
+        "savedTitle": "Acceso cambiado",
+        "savedEverything": "{{name}} ahora puede ver todo lo que tú puedes ver.",
+        "savedSome_one": "{{name}} ahora puede ver {{count}} elemento elegido.",
+        "savedSome_many": "{{name}} ahora puede ver {{count}} elementos elegidos.",
+        "savedSome_other": "{{name}} ahora puede ver {{count}} elementos elegidos.",
+        "undo": "Deshacer",
+        "undoneTitle": "Cambio deshecho",
+        "undoErrorTitle": "No se pudo deshacer el cambio. Abre Cambiar acceso para volver a configurarlo.",
+        "errorTitle": "No se pudo cambiar el acceso",
+        "errorDescription": "No se cambió nada. Inténtalo de nuevo.",
+        "unknownTitle": "No se pudo confirmar el cambio",
+        "unknownDescription": "Es posible que se haya guardado. Comprueba el acceso que se muestra aquí antes de volver a intentarlo.",
+        "unknownReloadFailedDescription": "Es posible que se haya guardado y no se pudo cargar el acceso actual. Vuelve a cargar la página antes de fiarte de lo que se muestra.",
+        "rowAction": "Cambiar acceso",
+        "rowActionAria": "Cambiar qué puede ver {{name}}",
+        "rowActionTooltip": "Cambiar acceso: elige qué puede ver este token"
+      }
     },
     "agentSignIns": {
       "title": "Inicios de sesión de agentes",
@@ -6364,5 +6514,159 @@
       "copyDetails": "Copiar los detalles para un administrador",
       "copied": "Detalles copiados"
     }
+  },
+  "support": {
+    "menuLabel": "Contactar con soporte",
+    "title": "Contactar con soporte",
+    "steps": {
+      "area": "Área",
+      "details": "Detalles"
+    },
+    "close": "Cerrar",
+    "cancel": "Cancelar",
+    "back": "Atrás",
+    "continue": "Continuar",
+    "send": "Enviar solicitud",
+    "sending": "Enviando…",
+    "changeArea": "Cambiar área",
+    "change": "Cambiar",
+    "issueOther": "Otro (no está en la lista)",
+    "areaStep": {
+      "title": "¿Con qué necesitas ayuda?",
+      "subtitle": "Elige el área más cercana a tu problema.",
+      "suggested": "Sugerida",
+      "suggestion": "Algo falló en {{area}} a las {{time}}, así que te la sugerimos.",
+      "idea": "¿Tienes una idea? Envía comentarios"
+    },
+    "areas": {
+      "connectors": {
+        "label": "Conectores y sincronización",
+        "hint": "Conectar aplicaciones, errores de sincronización o datos que faltan"
+      },
+      "chat": {
+        "label": "Chat y búsqueda",
+        "hint": "Respuestas, citas o resultados de búsqueda"
+      },
+      "agents": {
+        "label": "Agentes y acciones",
+        "hint": "Crear, ejecutar o compartir agentes"
+      },
+      "files": {
+        "label": "Archivos y colecciones",
+        "hint": "Subidas, carpetas o vistas previas de archivos"
+      },
+      "access": {
+        "label": "Inicio de sesión y acceso",
+        "hint": "Iniciar sesión, contraseñas o inicio de sesión único"
+      },
+      "people": {
+        "label": "Personas y permisos",
+        "hint": "Invitar usuarios, roles o grupos"
+      },
+      "other": {
+        "label": "Otra cosa",
+        "hint": "Cualquier cosa que no aparezca aquí"
+      }
+    },
+    "details": {
+      "descriptionLabel": "¿Qué pasó?",
+      "descriptionPlaceholder": "¿Qué intentabas hacer y qué pasó en su lugar?",
+      "descriptionMin_one": "Al menos {{count}} carácter.",
+      "descriptionMin_other": "Al menos {{count}} caracteres.",
+      "descriptionMin_many": "Al menos {{count}} de caracteres.",
+      "descriptionMax_one": "Has llegado al límite de {{count}} carácter.",
+      "descriptionMax_other": "Has llegado al límite de {{count}} caracteres.",
+      "descriptionMax_many": "Has llegado al límite de {{count}} de caracteres.",
+      "attach": "Adjuntar captura de pantalla",
+      "removeFile": "Quitar {{name}}",
+      "fileUnsupported": "{{name}}: este tipo de archivo no es compatible.",
+      "fileTooLarge": "{{name}} ocupa más de 5 MB.",
+      "tooManyFiles": "Puedes adjuntar hasta 5 archivos.",
+      "filesTotalTooLarge": "Los archivos pueden ocupar hasta 8 MB en total.",
+      "smtpTitle": "El correo no está configurado en este espacio de trabajo",
+      "smtpBody": "Te daremos un mensaje para enviar a {{email}} desde tu propia aplicación de correo.",
+      "smtpAdmin": "Para enviar solicitudes directamente, configura SMTP en los ajustes del espacio de trabajo.",
+      "smtpMember": "Para enviar solicitudes directamente, pide a tu administrador que configure SMTP.",
+      "includeErrors_one": "Incluir {{count}} error reciente",
+      "includeErrors_other": "Incluir {{count}} errores recientes",
+      "includeErrors_many": "Incluir {{count}} de errores recientes",
+      "errorLine": "{{area}}: error {{status}} a las {{time}}",
+      "errorLineUnknown": "Error {{status}} a las {{time}}",
+      "sentWith": "Se envía con tu solicitud: {{list}}.",
+      "sentParts": {
+        "workspace": "tu espacio de trabajo",
+        "identity": "tu nombre y correo electrónico",
+        "browser": "tu navegador",
+        "errors": "los errores recientes"
+      },
+      "viewDetails": "Ver detalles",
+      "hideDetails": "Ocultar detalles",
+      "rows": {
+        "issue": "Problema relacionado con",
+        "workspace": "Espacio de trabajo",
+        "signedInAs": "Sesión iniciada como",
+        "browser": "Navegador",
+        "recentErrors": "Errores recientes"
+      }
+    },
+    "blocked": {
+      "area": "Elige un área para continuar.",
+      "description": "«¿Qué pasó?» necesita al menos {{min}} caracteres (faltan {{left}})."
+    },
+    "result": {
+      "sentTitle": "Solicitud enviada",
+      "sentBody": "Nuestro equipo de soporte tiene tu solicitud. Te enviamos una copia por correo y las respuestas llegarán a tu bandeja de entrada.",
+      "pendingTitle": "Aún enviando",
+      "pendingBody": "El correo a {{email}} está tardando más de lo normal. Si no recibes respuesta, contáctanos con esta referencia.",
+      "referenceLabel": "Tu referencia",
+      "copyReference": "Copiar referencia",
+      "quote": "Menciona esta referencia si vuelves a contactarnos por el mismo problema.",
+      "done": "Listo"
+    },
+    "email": {
+      "title": "Envíalo desde tu aplicación de correo",
+      "noSmtp": "El correo no está configurado aquí, así que la solicitud {{reference}} no se envió. Envía este mensaje desde tu propia aplicación de correo para que llegue a soporte.",
+      "failed": "No pudimos enviar por correo la solicitud {{reference}}. Envía este mensaje desde tu propia aplicación de correo para que llegue a soporte.",
+      "limit": "Has enviado varias solicitudes en la última hora. Envía esta desde tu aplicación de correo.",
+      "unsaved": "No pudimos enviar tu solicitud. Envía este mensaje desde tu propia aplicación de correo para que llegue a soporte.",
+      "to": "Para",
+      "subject": "Asunto",
+      "copy": "Copiar mensaje",
+      "copied": "Copiado",
+      "open": "Abrir aplicación de correo",
+      "shortened": "Tu aplicación de correo recibe una versión más corta. Usa Copiar mensaje para obtener el texto completo.",
+      "attachFiles_one": "Tu {{count}} archivo no forma parte de este mensaje. Adjúntalo en tu aplicación de correo.",
+      "attachFiles_other": "Tus {{count}} archivos no forman parte de este mensaje. Adjúntalos en tu aplicación de correo.",
+      "attachFiles_many": "Tus {{count}} de archivos no forman parte de este mensaje. Adjúntalos en tu aplicación de correo.",
+      "copyFallback": "No se pudo copiar automáticamente. El mensaje está seleccionado; pulsa Ctrl+C (⌘C en Mac)."
+    },
+    "errors": {
+      "load": "No se pudieron cargar las opciones de soporte.",
+      "retry": "Reintentar",
+      "send": "No se pudo enviar tu solicitud. Inténtalo de nuevo.",
+      "emailInstead": "Enviar por correo"
+    }
+  },
+  "feedback": {
+    "menuLabel": "Enviar comentarios",
+    "title": "Enviar comentarios",
+    "subtitle": "Cuéntanos qué funciona, qué no y qué te gustaría ver.",
+    "kindIssue": "Comentarios generales",
+    "kindFeedback": "Solicitud de función",
+    "descriptionPlaceholder": "¿Qué ocurrió o qué deberíamos mejorar?",
+    "addFiles": "Añadir archivos",
+    "removeFile": "Quitar",
+    "fileHint": "Opcional. Hasta 5 archivos, 5 MB cada uno. Imágenes, PDF, texto o CSV.",
+    "cancel": "Cancelar",
+    "submit": "Enviar",
+    "needReply": "¿Necesitas una respuesta? Contacta con soporte",
+    "success": "Gracias, hemos recibido tus comentarios.",
+    "pending": "El correo a {{email}} está tardando más de lo habitual. Si no recibes respuesta, contáctanos.",
+    "submitError": "No se pudo enviar. Inténtalo de nuevo.",
+    "descriptionTooShort": "Añade un poco más de detalle (al menos 10 caracteres).",
+    "invalidType": "Ese tipo de archivo no es compatible.",
+    "fileTooLarge": "Cada archivo debe ser de 5 MB o menos.",
+    "tooManyFiles": "Puedes adjuntar hasta 5 archivos.",
+    "filesTotalTooLarge": "Los archivos pueden ocupar hasta 8 MB en total."
   }
 }

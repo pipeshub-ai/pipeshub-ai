@@ -26,6 +26,8 @@ import {
 import { withCause } from '../../../libs/errors/base.error';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { markRequestError } from '../../../libs/middlewares/access-log.middleware';
+import { classifyError } from '../../../libs/utils/error-class';
 
 const SKILLS_BASE = '/api/v1/skills';
 
@@ -86,6 +88,15 @@ function mapAxiosError(error: unknown, action: string): Error {
   );
 }
 
+/**
+ * Sets the status of an answer passed through from the skills service. A 5xx is that service's failure, so the access line
+ * says `upstream_5xx`, as the call's own line does, not `internal`.
+ */
+function passThroughStatus(res: Response, status: number): Response {
+  if (status >= 500) markRequestError(res, classifyError(status));
+  return res.status(status);
+}
+
 type PathBuilder = (req: AuthenticatedUserRequest) => string;
 type HttpMethodValue = (typeof HttpMethod)[keyof typeof HttpMethod];
 
@@ -116,7 +127,7 @@ function forwardJson(method: HttpMethodValue, pathBuilder: PathBuilder, action: 
           validateStatus: () => true,
         };
         const response: AxiosResponse = await axios.request(requestConfig);
-        res.status(response.status).json(response.data);
+        passThroughStatus(res, response.status).json(response.data);
       } catch (error) {
         next(mapAxiosError(error, action));
       }
@@ -220,7 +231,7 @@ export const previewUploadSkillImport =
         validateStatus: () => true,
       });
 
-      res.status(response.status).json(response.data);
+      passThroughStatus(res, response.status).json(response.data);
     } catch (error) {
       next(mapAxiosError(error, 'Preview Upload Skill Import'));
     }
@@ -249,7 +260,7 @@ export const exportSkill =
         validateStatus: () => true,
       });
 
-      res.status(response.status);
+      passThroughStatus(res, response.status);
       res.setHeader('Content-Type', String(response.headers['content-type'] || 'text/markdown'));
       if (response.headers['content-disposition']) {
         res.setHeader('Content-Disposition', String(response.headers['content-disposition']));

@@ -52,7 +52,6 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     backend_unavailable,
@@ -847,9 +846,7 @@ def _web_record(sync: _Sync, path: str, *, parent: str | None, internal: bool, r
 async def _browse(sync: _Sync, user_key: str, external_id: str) -> tuple[bool, set[str]]:
     """Whether the user can open the record in the knowledge hub, and the records it sits under there.
 
-    The hub descends PARENT_CHILD edges. On Neo4j its own parent lookup must agree. ArangoDB's
-    ``get_knowledge_hub_parent_node`` returns no parent for any connector record (its parent id is a
-    subquery's array), a separate bug, so it is not asked there.
+    The hub descends PARENT_CHILD edges, and its own parent lookup must agree with them.
     """
     record = await sync.graph.get_record_by_external_id(sync.connector_id, external_id)
     assert record is not None, external_id
@@ -860,9 +857,9 @@ async def _browse(sync: _Sync, user_key: str, external_id: str) -> tuple[bool, s
         for edge in edges
         if edge.get("relationshipType") == RecordRelations.PARENT_CHILD.value
     }
-    if isinstance(sync.graph, Neo4jProvider):
+    if parents:
         hub_parent = await sync.graph.get_knowledge_hub_parent_node(record.id, [])
-        assert {(hub_parent or {}).get("id")} == parents or not parents, (hub_parent, parents)
+        assert {(hub_parent or {}).get("id")} == parents, (hub_parent, parents)
     return opened is not None, parents
 
 

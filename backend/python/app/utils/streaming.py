@@ -23,6 +23,7 @@ from pydantic import BaseModel, ValidationError
 from app.agent_loop_lib.transport.provider_conflicts import (
     refused_cache_params,
 )
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.prompt_cache import (
     CacheStrategy,
     NoCacheStrategy,
@@ -1040,7 +1041,7 @@ async def call_aiter_llm_stream_simple(
         }
     except Exception as exc:
         log_failure(logger, "llm_stream.failed", exc, include_error_text=False)
-        yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
+        yield {"event": "error", "data": {"error": classify_exception(exc)[1]}}
         return
 
 def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:

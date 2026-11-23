@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from app.agent_loop_lib.sandbox.coding.base import SandboxContext
@@ -24,6 +26,7 @@ _SANDBOX_ENV_KEYS = (
     "E2B_API_KEY",
     "SANDBOX_MAX_TOTAL",
     "SANDBOX_MAX_PER_ORG",
+    "SANDBOX_MAX_RUN_TIMEOUT_S",
 )
 
 
@@ -41,10 +44,10 @@ class TestSandboxSettingsDefaults:
         assert s.allow_network is False
         assert s.max_concurrent_per_request == 5
 
-    def test_governor_settings_defaults(self) -> None:
+    def test_governor_settings_default_to_unset(self) -> None:
         g = GovernorSettings()
-        assert g.max_total_sandboxes == 50
-        assert g.max_per_org == 10
+        assert g.max_total_sandboxes is None
+        assert g.max_per_org is None
 
 
 class TestEnvSandboxSettingsLoader:
@@ -91,6 +94,19 @@ class TestEnvSandboxSettingsLoader:
 
         assert settings.governor.max_total_sandboxes == 20
         assert settings.governor.max_per_org == 5
+
+    @pytest.mark.parametrize("raw", ["", "abc"])
+    async def test_an_empty_or_malformed_cap_is_unset(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str,
+    ) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        monkeypatch.setenv("SANDBOX_MAX_TOTAL", raw)
+        monkeypatch.setenv("SANDBOX_MAX_PER_ORG", raw)
+        settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+
+        assert settings.governor.max_total_sandboxes is None
+        assert settings.governor.max_per_org is None
 
 
 class TestConfigServiceSandboxSettingsLoader:
@@ -316,3 +332,40 @@ class TestLocalModeNeedsDevFlag:
             await EnvSandboxSettingsLoader().load(SandboxContext())
 
         assert "kernel confinement UNAVAILABLE" in caplog.text
+
+
+class TestMaxRunTimeout:
+    @pytest.fixture(autouse=True)
+    def _fresh_warnings(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agent_loop_lib.sandbox.coding import settings as settings_mod
+
+        monkeypatch.setattr(settings_mod, "_warned_run_timeout_values", set())
+
+    def _parse(self, raw: str | None) -> float:
+        from app.agent_loop_lib.sandbox.coding.settings import max_run_timeout_from_env
+
+        return max_run_timeout_from_env({} if raw is None else {"SANDBOX_MAX_RUN_TIMEOUT_S": raw})
+
+    def test_default_is_300(self) -> None:
+        assert self._parse(None) == 300
+        assert SandboxSettings().max_run_timeout_s == 300
+
+    def test_valid_value_is_used(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING):
+            assert self._parse("600") == 600
+        assert "SANDBOX_MAX_RUN_TIMEOUT_S" not in caplog.text
+
+    @pytest.mark.parametrize(("raw", "used"), [("5", 10), ("99999", 3600), ("0", 300), ("-1", 300), ("abc", 300)])
+    def test_out_of_range_or_invalid_warns_once(self, raw: str, used: float, caplog) -> None:
+        with caplog.at_level(logging.WARNING):
+            assert self._parse(raw) == used
+            assert self._parse(raw) == used
+        warnings = [r for r in caplog.records if "SANDBOX_MAX_RUN_TIMEOUT_S" in r.getMessage()]
+        assert len(warnings) == 1
+        assert f"is outside 10..3600; using {used:g}" in warnings[0].getMessage()
+
+    async def test_loader_reads_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "docker")
+        monkeypatch.setenv("SANDBOX_MAX_RUN_TIMEOUT_S", "120")
+        settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+        assert settings.max_run_timeout_s == 120

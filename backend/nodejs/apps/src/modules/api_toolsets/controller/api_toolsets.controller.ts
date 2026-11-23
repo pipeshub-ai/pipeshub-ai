@@ -91,7 +91,6 @@ function proxy(
         }
         // The OAuth callback's query carries the authorization code and state.
         logger.debug(`API toolsets proxy: ${action}`, {
-          userId,
           path: redactSensitiveQueryParams(pathBuilder(req)),
         });
         const connectorResponse = await executeConnectorCommand(
@@ -111,10 +110,6 @@ function proxy(
           `${action} failed`,
         );
       } catch (error: unknown) {
-        logger.error(`Error in API toolsets proxy: ${action}`, {
-          error: error instanceof Error ? error.message : String(error),
-          userId: req.user?.userId as unknown,
-        });
         next(handleBackendError(error, action));
       }
     };

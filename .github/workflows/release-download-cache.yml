@@ -6,6 +6,7 @@ name: Release download cache
 # and no release tag, can restore it. Only a cache saved on main is shared, and none of the workflows that
 # read these caches runs on main.
 # The schedule keeps the caches from expiring: GitHub evicts a cache nobody has read for 7 days.
+# Over the repository's 10 GB cache limit, GitHub also evicts the least recently read caches first.
 on:
   push:
     branches:

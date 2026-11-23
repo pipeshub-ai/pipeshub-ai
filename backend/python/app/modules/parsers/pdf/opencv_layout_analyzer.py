@@ -3081,6 +3081,44 @@ def _demote_lossy_tables(
     return out
 
 
+# A layout model's table box can stop a fraction of a point inside a ruled table's outer border. Cropped to the box, that border is
+# gone and pdfplumber merges the row beside it into its neighbour (a header row into the first data row). A ruled line this close
+# outside a side, running along most of it, is the border: the side is moved out to it.
+_BORDER_SNAP_PT = 3.0
+_BORDER_MIN_SPAN = 0.5
+
+
+def _snap_to_border(page: "Page", bbox: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """*bbox* with each side moved out to a ruled line just outside it; a side with none is left as it is."""
+    x0, top, x1, bottom = bbox
+    try:
+        edges = page.edges
+    except Exception:
+        return bbox
+
+    def span(a0: float, a1: float, b0: float, b1: float) -> float:
+        """The share of [b0, b1] that [a0, a1] covers."""
+        return (min(a1, b1) - max(a0, b0)) / (b1 - b0) if b1 > b0 else 0.0
+
+    new_x0, new_top, new_x1, new_bottom = bbox
+    for edge in edges:
+        try:
+            ex0, ex1, etop, ebottom = float(edge["x0"]), float(edge["x1"]), float(edge["top"]), float(edge["bottom"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if edge.get("orientation") == "h" and span(ex0, ex1, x0, x1) >= _BORDER_MIN_SPAN:
+            if top - _BORDER_SNAP_PT <= etop < top:
+                new_top = min(new_top, etop)
+            if bottom < ebottom <= bottom + _BORDER_SNAP_PT:
+                new_bottom = max(new_bottom, ebottom)
+        elif edge.get("orientation") == "v" and span(etop, ebottom, top, bottom) >= _BORDER_MIN_SPAN:
+            if x0 - _BORDER_SNAP_PT <= ex0 < x0:
+                new_x0 = min(new_x0, ex0)
+            if x1 < ex1 <= x1 + _BORDER_SNAP_PT:
+                new_x1 = max(new_x1, ex1)
+    return new_x0, new_top, new_x1, new_bottom
+
+
 def _reextract_grid_for_bbox(
     page,
     bbox: Tuple[float, float, float, float],
@@ -3088,7 +3126,7 @@ def _reextract_grid_for_bbox(
     page_h: float,
 ) -> Optional[List[List[Optional[str]]]]:
     try:
-        sub = page.within_bbox(_clamp_bbox(bbox, page_w, page_h))
+        sub = page.within_bbox(_clamp_bbox(_snap_to_border(page, bbox), page_w, page_h))
     except Exception:
         return None
     if sub is None:

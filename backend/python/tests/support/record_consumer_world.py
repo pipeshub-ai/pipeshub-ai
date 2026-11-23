@@ -106,7 +106,8 @@ class Message:
             "orgId": self.org_id,
             "connectorId": self.connector_id,
             "extension": self.extension,
-            "mimeType": "text/plain",
+            # A real PDF event carries the PDF mime: a .pdf stored as text/plain is read, and admitted, as text.
+            "mimeType": "application/pdf" if self.extension == "pdf" else "text/plain",
         }
         if self.retry_not_before is not None:
             payload["_retry_not_before"] = self.retry_not_before

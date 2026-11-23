@@ -44,8 +44,9 @@ class InMemoryConfigService:
         self.failing_paths = failing_paths
         self.values.setdefault("/services/endpoints", {"frontend": {"publicEndpoint": "https://pipeshub.example"}})
 
-    async def get_config(self, path: str, default: object = None, use_cache: bool = True) -> object:
-        del use_cache
+    async def get_config(self, path: str, default: object = None, use_cache: bool = True, *,
+                         raise_on_error: bool = False) -> object:
+        del use_cache, raise_on_error
         return copy.deepcopy(self.values.get(path, default))
 
     async def set_config(self, path: str, value: object) -> bool:

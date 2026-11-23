@@ -380,4 +380,6 @@ class TestSavingALimit:
         graph.get_selection_nodes = AsyncMock(side_effect=RuntimeError("graph down"))
         sources = {"jira-1": {"connectorId": "jira-1", "filters": {"records": ["f1"]}}}
         await _refuse_limit_over_the_cap(sources, graph, ORG, logging.getLogger("t"))
-        assert "Could not size" in caplog.text
+        (record,) = [r for r in caplog.records if r.getMessage() == "agent.route.failed"]
+        assert record.op == "size_knowledge_limit"
+        assert "graph down" not in caplog.text
