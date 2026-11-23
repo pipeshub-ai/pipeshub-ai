@@ -322,7 +322,7 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 3G
+          memory: 4G
         reservations:
           cpus: '2'
           memory: 2G
