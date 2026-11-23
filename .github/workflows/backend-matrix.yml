@@ -158,6 +158,7 @@ on:
       - 'backend/python/tests/unit/connectors/sources/test_connector_workflow_integration.py'
       - 'backend/python/tests/unit/modules/entity_resolution/conftest.py'
       - 'backend/python/tests/unit/modules/indexing/test_entity_index_rebuild.py'
+      - 'backend/python/tests/unit/agent_loop_lib/sandbox/live_fakes.py'
       - 'backend/python/tests/unit/modules/pipeline/fakes.py'
       - 'backend/python/tests/unit/modules/transformers/test_entity_vectorstore_delete.py'
       - 'backend/python/tests/unit/services/artifact_registry/fakes.py'

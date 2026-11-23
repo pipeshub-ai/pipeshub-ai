@@ -568,7 +568,8 @@ interface Delivery {
   inbox: Inbox;
   consumer: string;
   eventId: string;
-  orgId: string;
+  /** Unset for a message with no org of its own (one that fans out to several orgs): only `withDeliveryRecorded(fn, org)` records it. */
+  orgId: string | undefined;
   recorded: boolean;
 }
 
@@ -593,8 +594,8 @@ function skipped(d: Delivery, topic: string): void {
 }
 
 /**
- * Only a message naming its event id and org can be matched: the org is the signed one, else the one the handler acts on
- * (`payload.orgId`, or a flat message's `orgId`).
+ * Only a message naming its event id can be matched, and only per org: the signed org, else the one the handler acts on
+ * (`payload.orgId`, or a flat message's `orgId`). A message without an org is matched only per org it fans out to.
  */
 function deliveryOf(
   consumer: string,
@@ -602,8 +603,14 @@ function deliveryOf(
   value: Record<string, unknown>,
 ): Delivery | undefined {
   const orgId = opened.ctx?.orgId ?? value.orgId;
-  if (!inbox || !consumer || !opened.eventId || !isStr(orgId)) return undefined;
-  return { inbox, consumer, eventId: opened.eventId, orgId, recorded: false };
+  if (!inbox || !consumer || !opened.eventId) return undefined;
+  return {
+    inbox,
+    consumer,
+    eventId: opened.eventId,
+    orgId: isStr(orgId) ? orgId : undefined,
+    recorded: false,
+  };
 }
 
 /**
@@ -621,7 +628,7 @@ export async function runWithEnvelope<V, R>(
     return fn(value);
   const opened = await openConfigured(topic, value as Record<string, unknown>);
   const d = deliveryOf(consumer, opened, value as Record<string, unknown>);
-  if (d) {
+  if (d?.orgId) {
     let seen = false;
     try {
       seen = await d.inbox.seen(d.consumer, d.eventId, d.orgId);
@@ -643,7 +650,7 @@ export async function runWithEnvelope<V, R>(
       skipped(d, topic);
       return undefined;
     }
-    if (!d.recorded) {
+    if (d.orgId && !d.recorded) {
       try {
         await d.inbox.record(d.consumer, d.eventId, d.orgId);
       } catch (e) {
@@ -659,15 +666,21 @@ export async function runWithEnvelope<V, R>(
 }
 
 /**
- * For a handler whose effect is one PostgreSQL unit of work: runs `fn` in a unit that also records the delivery, so the effect
- * and the record commit together, and a second delivery of the event running at the same time rolls its effect back (it throws
- * DuplicateEnvelope, which the consumer acknowledges). Outside a delivery with an inbox it just runs `fn`.
+ * For a handler whose effect is one PostgreSQL unit of work: runs `fn` in a unit that also records the delivery for `orgId`
+ * (default: the message's org), so the effect and the record commit together. It throws DuplicateEnvelope, rolling `fn` back,
+ * when the event was already recorded for that org: by a second delivery running at the same time, or, for a message that fans
+ * out to several orgs, by an earlier delivery that reached this org. Outside a delivery with an inbox it just runs `fn`.
  */
 export async function withDeliveryRecorded<T>(
   fn: () => Promise<T>,
+  orgId?: string,
 ): Promise<T> {
   const d = deliveryStorage.getStore();
-  if (!d || d.recorded) return fn();
+  const org = orgId ?? d?.orgId;
+  if (!d || !org) return fn();
+  if (org !== d.orgId)
+    return d.inbox.recordWith(d.consumer, d.eventId, org, fn);
+  if (d.recorded) return fn();
   d.recorded = true;
-  return d.inbox.recordWith(d.consumer, d.eventId, d.orgId, fn);
+  return d.inbox.recordWith(d.consumer, d.eventId, org, fn);
 }

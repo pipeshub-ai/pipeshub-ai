@@ -2,6 +2,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import {
+  DuplicateEnvelope,
   configureEnvelope,
   configureInbox,
   deriveKey,
@@ -147,6 +148,21 @@ describe('envelope: durable consumer inbox', () => {
     expect(await deliver(m, G, inUnit)).to.equal('stored')
     expect(await deliver(m, G, inUnit)).to.equal(undefined)
     expect(runs).to.have.length(2)
+  })
+
+  it('a message with no org of its own is recorded per org it fans out to, never as a whole', async () => {
+    const m = { audience: 'platformAdmins', type: 't', eventId: 'evt-fan' }
+    const fanOut = async () => {
+      let done = 0
+      for (const org of ['org_a', 'org_b']) {
+        try { await withDeliveryRecorded(async () => { runs.push(org) }, org); done += 1 } catch (e) { if (!(e instanceof DuplicateEnvelope)) throw e }
+      }
+      return done
+    }
+    expect(await deliver(m, G, fanOut)).to.equal(2)
+    expect(await deliver(m, G, fanOut)).to.equal(0)
+    expect(runs).to.deep.equal(['org_a', 'org_b'])
+    expect(inbox.calls).to.deep.equal(['recordWith', 'recordWith', 'recordWith', 'recordWith'])
   })
 
   it('outside a delivery, withDeliveryRecorded just runs its function', async () => {

@@ -91,5 +91,9 @@ export { dynamicClientOwnerOrg as dynamicClientOrg } from './modules/oauth_provi
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';
 
+// --- Platform alerts ---
+export { resolvePlatformAdminRecipients } from './modules/notification/utils/platform-admin-recipients';
+export type { PlatformRecipientOrg } from './modules/notification/utils/platform-admin-recipients';
+
 // --- Edition boot hooks ---
 export { noopEditionBoot as editionBoot } from './libs/edition/edition-boot';

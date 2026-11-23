@@ -5,8 +5,13 @@ the coding sandbox — replaces the duplicated env reads scattered across
 Phase 1 (``EnvSandboxSettingsLoader``): reads from process environment,
 same vars the legacy stack used (``SANDBOX_MODE``, ``SANDBOX_DOCKER_IMAGE``,
 ``SANDBOX_EGRESS_NETWORK``, ``SANDBOX_PIP_INDEX_URL``, ``SANDBOX_NPM_REGISTRY``,
-``SANDBOX_ALLOW_NETWORK``, ``E2B_API_KEY``, plus new ``SANDBOX_MAX_TOTAL``,
-``SANDBOX_MAX_PER_ORG``, ``SANDBOX_EGRESS_ALLOW_CIDRS``).
+``SANDBOX_ALLOW_NETWORK``, ``E2B_API_KEY``, plus ``SANDBOX_EGRESS_ALLOW_CIDRS``).
+The capacity variables (``SANDBOX_MAX_TOTAL``, ``SANDBOX_MAX_PER_ORG``,
+``SANDBOX_MIN_TOTAL``, ``SANDBOX_MEMORY_SHARE``, ``SANDBOX_CPU_FACTOR``,
+``SANDBOX_HOST_*``) are parsed by ``sandbox/capacity.py``; unset means the
+ceiling is sized from the machine. The live limit's (``SANDBOX_LIVE_*``,
+``SANDBOX_HOST_MEM_*``, ``SANDBOX_HOST_CPU_*``, ``SANDBOX_MEMORY_OVERCOMMIT``)
+are parsed by ``sandbox/live_settings.py``.
 
 Phase 4 (``ConfigServiceSandboxSettingsLoader``): per-org settings through
 ``ConfigurationService`` — interface defined here, body raises
@@ -16,11 +21,13 @@ Phase 4 (``ConfigServiceSandboxSettingsLoader``): per-org settings through
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from app.agent_loop_lib.sandbox.capacity import CapacitySettings
 from app.agent_loop_lib.sandbox.coding.base import SandboxContext
 from app.agent_loop_lib.sandbox.coding.egress_firewall import parse_cidrs
 
@@ -32,6 +39,7 @@ __all__ = [
     "EnvSandboxSettingsLoader",
     "ConfigServiceSandboxSettingsLoader",
     "resolve_sandbox_mode",
+    "max_run_timeout_from_env",
 ]
 
 logger = logging.getLogger(__name__)
@@ -127,7 +135,10 @@ def _warn_about_host_isolation() -> None:
     if _warned_about_host_isolation:
         return
     _warned_about_host_isolation = True
-    from app.agent_loop_lib.sandbox.confinement import confinement_available
+    from app.agent_loop_lib.sandbox.confinement import (
+        confinement_available,
+        report_unconfined_local_mode,
+    )
 
     logger.warning(
         "%s=local with %s=true: model-generated code runs as a subprocess of "
@@ -137,6 +148,7 @@ def _warn_about_host_isolation() -> None:
         "available" if confinement_available() else "UNAVAILABLE (no bwrap/sandbox-exec)",
         _ENV_SANDBOX_MODE,
     )
+    report_unconfined_local_mode()
 
 
 def _env_bool(key: str, default: bool = True) -> bool:
@@ -156,34 +168,75 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+_warned_float_values: set[tuple[str, str]] = set()
+
+
 def _env_float(key: str, default: float) -> float:
+    """A duration in seconds. Not a number, not finite or below 0 is the
+    default, with one warning: ``nan`` would make a slot wait never end and
+    spin, and a negative timeout would fail every call."""
     raw = os.environ.get(key)
-    if raw is None:
+    if raw is None or not raw.strip():
         return default
     try:
-        return float(raw.strip())
+        value = float(raw.strip())
     except ValueError:
-        return default
+        value = math.nan
+    if math.isfinite(value) and value >= 0:
+        return value
+    if (key, raw) not in _warned_float_values:
+        _warned_float_values.add((key, raw))
+        logger.warning("Ignoring %s=%r: use a number of seconds, 0 or more; using %g", key, raw, default)
+    return default
 
 
-def _env_cap(key: str, default: int) -> int | None:
-    """A sandbox cap: a positive int, or `None` for unlimited.
+ENV_MAX_RUN_TIMEOUT_S = "SANDBOX_MAX_RUN_TIMEOUT_S"
+DEFAULT_MAX_RUN_TIMEOUT_S = 300.0
+_MIN_MAX_RUN_TIMEOUT_S = 10.0
+_MAX_MAX_RUN_TIMEOUT_S = 3600.0
+# Raw values already warned about; `load()` runs on every agent build.
+_warned_run_timeout_values: set[str] = set()
 
-    `<= 0` means unlimited rather than "block everything" — an operator
-    zeroing a cap is disabling it, and the alternative reading would make
-    the platform silently refuse every sandbox.
+
+def max_run_timeout_from_env(env: Any = None) -> float:
+    """`SANDBOX_MAX_RUN_TIMEOUT_S`: the most seconds one code run may take.
+
+    Always finite: the Docker proxy removes sandbox containers older than
+    this cap plus a margin, so a cap that could be switched off would let it
+    remove runs still in progress. Missing → 300. Not a number or `<= 0` →
+    300, and values outside 10..3600 are moved to the nearest bound; both
+    warn once per process. The Docker proxy parses the same variable the
+    same way (it cannot import this module).
     """
-    value = _env_int(key, default)
-    return value if value > 0 else None
+    env = os.environ if env is None else env
+    raw = env.get(ENV_MAX_RUN_TIMEOUT_S)
+    if raw is None or not raw.strip():
+        return DEFAULT_MAX_RUN_TIMEOUT_S
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        value = math.nan
+    if math.isnan(value) or value <= 0:
+        used = DEFAULT_MAX_RUN_TIMEOUT_S
+    else:
+        used = min(max(value, _MIN_MAX_RUN_TIMEOUT_S), _MAX_MAX_RUN_TIMEOUT_S)
+    if used != value and raw not in _warned_run_timeout_values:
+        _warned_run_timeout_values.add(raw)
+        logger.warning(
+            "%s=%r is outside %g..%g; using %g", ENV_MAX_RUN_TIMEOUT_S, raw,
+            _MIN_MAX_RUN_TIMEOUT_S, _MAX_MAX_RUN_TIMEOUT_S, used,
+        )
+    return used
 
 
 class GovernorSettings(BaseModel):
-    """Mirrors ``GovernorLimits`` in ``sandbox/governor.py`` — kept as a
-    separate settings model so ``SandboxSettings`` has no import-time
-    dependency on the governor module."""
+    """The explicit caps from ``SANDBOX_MAX_TOTAL`` and ``SANDBOX_MAX_PER_ORG``,
+    as ``sandbox/capacity.py`` parses them, for logs. ``None`` means not set:
+    the total is then sized from the machine. A per-org cap of ``0`` means
+    none. The governor reads the environment itself."""
 
-    max_total_sandboxes: int | None = 50
-    max_per_org: int | None = 10
+    max_total_sandboxes: int | None = None
+    max_per_org: int | None = None
 
 
 class SandboxSettings(BaseModel):
@@ -205,6 +258,9 @@ class SandboxSettings(BaseModel):
     provision_timeout_s: float = 60.0
     # How long a code run waits for a free governor slot before it fails.
     slot_wait_s: float = 120.0
+    # The most seconds one code run may take; a larger requested timeout is
+    # lowered to this (see `max_run_timeout_from_env`).
+    max_run_timeout_s: float = DEFAULT_MAX_RUN_TIMEOUT_S
     governor: GovernorSettings = Field(default_factory=GovernorSettings)
 
 
@@ -277,6 +333,7 @@ class EnvSandboxSettingsLoader:
         # `backend_options` is `dict[str, Any]` with no `SecretStr` to hide
         # behind — `E2BCodingSandboxFactory` reads `E2B_API_KEY` itself.
 
+        caps = CapacitySettings.from_env()
         return SandboxSettings(
             backend=backend,
             backend_options=backend_options,
@@ -285,9 +342,9 @@ class EnvSandboxSettingsLoader:
             max_lifetime_s=_env_float(self._ENV_MAX_LIFETIME_S, 1800.0),
             provision_timeout_s=_env_float(self._ENV_PROVISION_TIMEOUT_S, 60.0),
             slot_wait_s=_env_float(self._ENV_SLOT_WAIT_S, 120.0),
+            max_run_timeout_s=max_run_timeout_from_env(),
             governor=GovernorSettings(
-                max_total_sandboxes=_env_cap(self._ENV_MAX_TOTAL, 50),
-                max_per_org=_env_cap(self._ENV_MAX_PER_ORG, 10),
+                max_total_sandboxes=caps.max_total, max_per_org=caps.max_per_org,
             ),
         )
 
