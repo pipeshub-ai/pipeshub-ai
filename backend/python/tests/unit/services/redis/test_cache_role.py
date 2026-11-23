@@ -93,19 +93,29 @@ def _fresh_blob_state() -> Iterator[None]:
     bs._record_redis.clear()
 
 
-async def _open_every_cache(config_service: MagicMock, seen: list[RedisConnectionConfig]) -> None:
+async def _open_every_cache(config_service: MagicMock) -> dict[str, list[str]]:
+    """The host each cache connected to, per cache, in the order it asked for them."""
     from app.modules.transformers import blob_storage as bs
     from app.services.cache import accessible_records_cache as arc
     from app.services.permissions.cache import ViewerScopeCache
 
+    seen: list[RedisConnectionConfig] = []
+    hosts: dict[str, list[str]] = {}
     get = _recording_provider(seen)
+    openers = {
+        "viewer_scopes": lambda: ViewerScopeCache.create(config_service),
+        "accessible_records": lambda: arc.AccessibleRecordsCache.create(MagicMock(), config_service),
+        "signed_urls": lambda: bs.get_shared_signed_url_cache(config_service, MagicMock()),
+        "record_cache": lambda: bs._record_redis_client(config_service, MagicMock()),
+    }
     with patch("app.services.redis.connection_provider_factory.get_redis_provider", get), \
             patch.object(arc, "get_redis_provider", get), patch.object(bs, "get_redis_provider", get), \
             patch.object(bs, "signed_url_cache_seconds", return_value=60):
-        await ViewerScopeCache.create(config_service)
-        await arc.AccessibleRecordsCache.create(MagicMock(), config_service)
-        await bs.get_shared_signed_url_cache(config_service, MagicMock())
-        await bs._record_redis_client(config_service, MagicMock())
+        for name, open_cache in openers.items():
+            start = len(seen)
+            await open_cache()
+            hosts[name] = [c.host for c in seen[start:]]
+    return hosts
 
 
 async def _open_main_role_clients(config_service: MagicMock, seen: list[RedisConnectionConfig]) -> None:
@@ -123,21 +133,21 @@ async def _open_main_role_clients(config_service: MagicMock, seen: list[RedisCon
 @pytest.mark.usefixtures("_fresh_blob_state")
 class TestCallersPickTheirRole:
     async def test_without_a_cache_url_every_cache_uses_the_main_redis(self, config_service: MagicMock) -> None:
-        seen: list[RedisConnectionConfig] = []
-        await _open_every_cache(config_service, seen)
-        assert len(seen) == 6  # four caches, plus the counters of the viewer-scope cache and the accessible-records epochs
-        assert {(c.host, c.password) for c in seen} == {("main-redis", "main-secret")}
+        hosts = await _open_every_cache(config_service)
+        # Four caches, plus the counters of the viewer-scope cache and the accessible-records epochs.
+        assert hosts == {"viewer_scopes": ["main-redis"] * 2, "accessible_records": ["main-redis"] * 2,
+                         "signed_urls": ["main-redis"], "record_cache": ["main-redis"]}
 
     async def test_with_a_cache_url_caches_go_there_and_the_main_role_does_not(
         self, config_service: MagicMock, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("REDIS_CACHE_URL", "redis://:cache-secret@cache-redis:6390")
-        caches: list[RedisConnectionConfig] = []
-        await _open_every_cache(config_service, caches)
-        # The cached values go to the cache Redis; the viewer-scope counters and the accessible-records epochs, whose
-        # loss would change what is served, stay on the main one.
-        assert sorted((c.host, c.port, c.password) for c in caches) == (
-            [("cache-redis", 6390, "cache-secret")] * 4 + [("main-redis", 6379, "main-secret")] * 2)
+        hosts = await _open_every_cache(config_service)
+        # The cached values go to the cache Redis (asked for first); the viewer-scope counters and the accessible-records
+        # epochs, whose loss would change what is served, stay on the main one (asked for second).
+        assert hosts == {"viewer_scopes": ["cache-redis", "main-redis"], "accessible_records": ["cache-redis", "main-redis"],
+                         "signed_urls": ["cache-redis"], "record_cache": ["cache-redis"]}
+        assert sum(len(h) for h in hosts.values()) == 6
 
         main: list[RedisConnectionConfig] = []
         await _open_main_role_clients(config_service, main)

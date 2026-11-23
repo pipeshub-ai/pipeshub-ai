@@ -112,15 +112,18 @@ class FakeRedis:
 
     # The server clock `seeded_incr`'s script seeds a missing counter from; each seed reads a later time.
     clock_us = 1_700_000_000_000_000
+    # run_id:master_replid; a restart or a promotion changes it.
+    identity = "run-1:repl-1"
 
-    async def eval(self, script, numkeys, key, by) -> int:
-        """`seeded_incr`'s script (the only one the cache runs): seed a missing key from the clock, then INCRBY."""
+    async def eval(self, script, numkeys, key, by) -> list:
+        """`seeded_incr`'s script (the only one the cache runs): seed a missing key from the clock, INCRBY, and return
+        the server identity with the value."""
         self.calls.append(("eval", key, by))
         if key not in self.strings:
             FakeRedis.clock_us += 1_000_000
             self.strings[key] = str(FakeRedis.clock_us)
         self.strings[key] = str(int(self.strings[key]) + int(by))
-        return int(self.strings[key])
+        return [self.identity, int(self.strings[key])]
 
     async def hdel(self, key: str, *fields: str) -> int:
         self.calls.append(("hdel", key, *fields))
@@ -165,7 +168,7 @@ class BrokenRedis(FakeRedis):
     def pipeline(self, transaction=False):
         raise ConnectionError("redis down")
 
-    async def eval(self, script, numkeys, key, by) -> int:
+    async def eval(self, script, numkeys, key, by) -> list:
         raise ConnectionError("redis down")
 
 
@@ -742,6 +745,25 @@ class TestFillFromBeforeAChangeIsNeverWritten:
         assert cache._user_connector_key(ORG, CONNECTOR) not in maps.hashes
         assert epoch_key in main.strings and epoch_key not in maps.strings
 
+    async def test_an_epoch_restored_to_an_older_value_still_rejects_an_earlier_fill(self) -> None:
+        # A restore from a snapshot (or a failover that dropped the bump) takes the epoch back to the value the fill
+        # read; it comes with a restart or a promotion, so the server identity is new and the fill does not write.
+        redis = FakeRedis()
+        cache = _cache(redis)
+        epoch_key = cache._connector_epoch_key(ORG, CONNECTOR)
+        load, started, release = _held_loader({"old": "r"})
+        fill = asyncio.create_task(cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, load))
+        await started.wait()
+        read_value = redis.strings[epoch_key]
+
+        await cache.invalidate_connector(ORG, CONNECTOR)
+        redis.strings[epoch_key] = read_value  # restored to what the fill read
+        redis.identity = "run-2:repl-1"  # the restore restarted the server
+        release.set()
+
+        assert await fill == {"old": "r"}
+        assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
+
     async def test_an_epoch_lost_on_the_main_redis_still_rejects_an_earlier_fill(self) -> None:
         # A failover or restore can lose an epoch between a change's bump and a fill's write. A missing epoch counts
         # as changed, and a bump after the loss seeds above every earlier value.
@@ -807,14 +829,32 @@ class TestFillFromBeforeAChangeIsNeverWritten:
 
         assert redis.hashes.get(cache._user_connector_key(ORG, CONNECTOR), {}).get(USER) is None
 
-    async def test_unreadable_epoch_skips_the_write_not_the_search(self) -> None:
+    async def test_an_unreadable_epoch_skips_the_write_not_the_search(self) -> None:
+        # Epochs are read only through `seeded_incr` (EVAL); map reads keep working.
         class _EpochDown(FakeRedis):
-            async def get(self, key: str) -> str | None:
-                if ":cgen:" in key:
-                    raise ConnectionError("redis down")
-                return await super().get(key)
+            async def eval(self, script, numkeys, key, by) -> list:
+                raise ConnectionError("redis down")
 
         redis = _EpochDown()
+        cache = _cache(redis)
+
+        assert await cache.get_or_compute_user_connector(
+            ORG, CONNECTOR, USER, _loader({"v": "r"})
+        ) == {"v": "r"}
+        assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
+        assert cache.enabled is False
+
+    async def test_an_epoch_unreadable_at_the_write_check_skips_the_write(self) -> None:
+        class _EpochDownAfterFirstRead(FakeRedis):
+            reads = 0
+
+            async def eval(self, script, numkeys, key, by) -> list:
+                self.reads += 1
+                if self.reads > 1:
+                    raise ConnectionError("redis down")
+                return await super().eval(script, numkeys, key, by)
+
+        redis = _EpochDownAfterFirstRead()
         cache = _cache(redis)
 
         assert await cache.get_or_compute_user_connector(

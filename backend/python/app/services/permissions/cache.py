@@ -1,10 +1,12 @@
 """`ViewerScopeCache`: Redis, keyed by (org, user, acl_version). A prefilter input only; it never admits.
 
 The ACL version is a counter per organisation plus one global counter (for events that name no organisation);
-their sum is the version. The counters live on the main Redis with no TTL, where nothing evicts them; only the entries
-go to the cache Redis (``REDIS_CACHE_URL``, when set), which may evict them freely. A counter lost to a failover or a
-restore is seeded from the server's clock in the same script as its increment (`seeded_incr`), so it restarts far
-above every value it had and cannot make an old entry current again. A permission event bumps it *after* its write
+their sum, tagged with the identity of the Redis server(s) holding them, is the version. The counters live on the main
+Redis with no TTL, where nothing evicts them; only the entries go to the cache Redis (``REDIS_CACHE_URL``, when set),
+which may evict them freely. A counter lost to a failover or a restore is seeded from the server's clock in the same
+script as its increment (`seeded_incr`), so it restarts far above every value it had. A counter taken back to an older
+value it already issued (a restore from a snapshot, a failover that dropped the last bumps) comes with a new server
+identity (a restart or a promotion), so the version is new either way and no old entry becomes current again. A permission event bumps it *after* its write
 committed, so the next lookup uses a new key and cannot see an entry computed before the change. Nothing is deleted
 and nothing needs a scan.
 
@@ -24,6 +26,7 @@ it was away are lost. No direct address to LISTEN on (``PG_LISTEN_URL``, or ``PG
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from typing import TYPE_CHECKING, Protocol, cast
@@ -172,12 +175,14 @@ class ViewerScopeCache:
         assert self._counters is not None
         try:
             client = self._counters()
-            keys = [self._ver_key(_GLOBAL), self._ver_key(org_id)]
-            parts = await client.mget(keys)
-            total = 0
-            for key, part in zip(keys, parts, strict=True):
-                total += int(part) if part is not None else await seeded_incr(client, key, 0)
-            return total
+            identities, total = [], 0
+            for key in (self._ver_key(_GLOBAL), self._ver_key(org_id)):
+                identity, value = await seeded_incr(client, key, 0)
+                identities.append(identity)
+                total += value
+            # The server identities are part of the version: after a restore or a failover that took a counter back
+            # to a value it already issued, the version is still new, so no entry from before is current again.
+            return (int.from_bytes(hashlib.sha256("|".join(identities).encode()).digest()[:8], "big") << 64) + total
         except Exception as exc:
             self._trip("version read", exc)
             return None

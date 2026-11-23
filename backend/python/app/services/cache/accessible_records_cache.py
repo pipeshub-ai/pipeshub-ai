@@ -378,6 +378,10 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             return None
         return stored
 
+    async def _epoch(self, epoch_key: str) -> str:
+        identity, value = await seeded_incr(self._epoch_client(), epoch_key, 0)
+        return f"{identity}/{value}"
+
     async def _read_epoch(self, epoch_key: str) -> str | None:
         """The epoch; None (and the breaker tripped) when Redis could not answer.
 
@@ -386,9 +390,11 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         read the same as the one a fill started from, or a fill that read the
         graph before a change could write the old map back. So a missing epoch
         is seeded from the server's clock in the same script as the read or
-        bump (`seeded_incr`), and `_write` refuses when it is missing."""
+        bump (`seeded_incr`), and the epoch includes the server's identity, so
+        one restored to an older value (which comes with a restart or a
+        promotion) never equals the one a fill read either."""
         try:
-            return str(await seeded_incr(self._epoch_client(), epoch_key, 0))
+            return await self._epoch(epoch_key)
         except Exception as e:
             self._mark_down("read", e)
             return None
@@ -409,9 +415,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         written = False
         try:
             client = self._client()
-            epochs = self._epoch_client()
-            # A missing epoch (None) never equals the one read: lost means changed.
-            if epoch_key is not None and await epochs.get(epoch_key) != epoch:
+            # A lost epoch is reseeded, and an older one comes back with a new server identity: neither equals the one read.
+            if epoch_key is not None and await self._epoch(epoch_key) != epoch:
                 return
             if field is None:
                 await client.set(key, json.dumps(value, separators=(",", ":")), ex=self._ttl)
@@ -420,7 +425,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
                 await client.hset(key, field, envelope)
                 await client.expire(key, self._ttl)
             written = True
-            if epoch_key is not None and await epochs.get(epoch_key) != epoch:
+            if epoch_key is not None and await self._epoch(epoch_key) != epoch:
                 await (client.delete(key) if field is None else client.hdel(key, field))
         except Exception as e:
             self._mark_down("write", e)
