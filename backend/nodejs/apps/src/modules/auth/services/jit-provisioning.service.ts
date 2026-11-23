@@ -1,6 +1,7 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { BadRequestError } from '../../../libs/errors/http.errors';
+import { BadRequestError, ForbiddenError } from '../../../libs/errors/http.errors';
+import { forOrg } from '../../../libs/context/orgContext';
 import { audit } from '../../../libs/services/audit';
 import { authRefusal } from '../utils/sign-in-audit';
 // From the schema module, not the config barrel: the barrel re-exports the auth
@@ -15,7 +16,11 @@ import {
   UserAddedEvent,
   SyncAction,
 } from '../../user_management/services/entity_events.service';
-import { upgradeSlackOnlyAccount } from '../../user_management/services/slack-only-accounts.service';
+import {
+  assertSlackOnlyAccountActive,
+  SLACK_ACCOUNT_UNAVAILABLE_MESSAGE,
+  upgradeSlackOnlyAccount,
+} from '../../user_management/services/slack-only-accounts.service';
 
 export interface JitUserDetails {
   firstName?: string;
@@ -87,32 +92,42 @@ export class JitProvisioningService {
     userDetails: JitUserDetails,
     provider: JitProvider,
   ): Promise<void> {
-    if (!(await upgradeSlackOnlyAccount(user._id, user.orgId))) return;
-    const users = getUserRepository();
     const orgId = String(user.orgId);
     const userId = String(user._id);
-    const previous: Record<string, unknown> = {};
-    try {
-      const current = await users.getLive(orgId, userId);
-      if (current && (current.fullName ?? '') === '') {
-        previous.fullName = current.fullName;
-        await users.updateProfile(orgId, userId, {
+    // A sign-in carries no org context of its own at this point, and the
+    // account's org is the one the server read it from. Every repository call
+    // below runs as that org (PostgreSQL refuses a call with none).
+    return forOrg(orgId, 'jit-upgrade-slack-only', async () => {
+      const users = getUserRepository();
+      // A removed, switched-off or blocked account is never brought back by a
+      // sign-in, the same as an invite leaves it alone.
+      const existing = await users.getLive(orgId, userId);
+      if (!existing) throw new ForbiddenError(SLACK_ACCOUNT_UNAVAILABLE_MESSAGE);
+      await assertSlackOnlyAccountActive(existing);
+      if (!(await upgradeSlackOnlyAccount(userId, orgId))) return;
+      const previous: Record<string, unknown> = {};
+      try {
+        const current = await users.getLive(orgId, userId);
+        if (current && (current.fullName ?? '') === '') {
+          previous.fullName = current.fullName;
+          await users.updateProfile(orgId, userId, {
+            fullName: userDetails.fullName,
+          });
+        }
+        this.logger.info(`Slack-only account upgraded via ${provider}`, {
+          userId: user._id,
+        });
+        await this.joinOrg({
+          _id: user._id,
+          orgId: user.orgId,
+          email: user.email,
           fullName: userDetails.fullName,
         });
+      } catch (error) {
+        await this.undoSlackOnlyUpgrade(orgId, userId, previous);
+        throw error;
       }
-      this.logger.info(`Slack-only account upgraded via ${provider}`, {
-        userId: user._id,
-      });
-      await this.joinOrg({
-        _id: user._id,
-        orgId: user.orgId,
-        email: user.email,
-        fullName: userDetails.fullName,
-      });
-    } catch (error) {
-      await this.undoSlackOnlyUpgrade(orgId, userId, previous);
-      throw error;
-    }
+    });
   }
 
   /**
