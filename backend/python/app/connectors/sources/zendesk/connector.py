@@ -75,6 +75,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.zendesk import (
     oauth_urls,  # noqa: F401 - registers the OAuth URL rule the router and token refresh apply
 )
@@ -382,6 +383,7 @@ class ZendeskConnector(BaseConnector):
         self._ticket_folders: dict[str, tuple[RecordGroup, list[Permission]]] = {}
         self._folder_org_group_ids: dict[str, set[str]] = {}
         self._skipped_this_sync: list[str] = []
+        self._read_everything = True
         self._token_refresh_lock = asyncio.Lock()
         self.records_sync_point = SyncPoint(
             connector_id=self.connector_id,
@@ -443,6 +445,7 @@ class ZendeskConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         self._skipped_this_sync = []
+        self._read_everything = True
         try:
             await self._run_sync()
         except ZendeskAuthError as e:
@@ -475,8 +478,14 @@ class ZendeskConnector(BaseConnector):
                 ),
             )
 
-    def _skip(self, what: str) -> None:
+    def _skip(self, what: str, *, left_unread: bool = True) -> None:
         self._skipped_this_sync.append(what)
+        if left_unread:
+            self._read_everything = False
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that left part of Zendesk unread unlinks nothing it did not write."""
+        return FullSyncCoverage(complete=self._read_everything)
 
     async def _ensure_admin_account(self) -> None:
         """Stop with one actionable error when the connected account is not an admin.
@@ -529,10 +538,10 @@ class ZendeskConnector(BaseConnector):
         )
         await self._ensure_admin_account()
 
-        # A full sync deletes the sync points and every edge with them, keeping the
-        # nodes. Skipping an unchanged record would leave it stranded: still in the
-        # graph, attached to nothing, and never touched again because it will never
-        # look changed. A missing checkpoint is the signal that just happened, so send
+        # A full sync deletes the sync points and unlinks every node it did not write.
+        # Skipping an unchanged record would leave it stranded: still in the graph,
+        # attached to nothing, and never touched again because it will never look
+        # changed. A missing checkpoint is the signal that just happened, so send
         # everything and let the processor rebuild the edges. One flag per stage — a
         # stage that never runs never writes a checkpoint, and would otherwise pin the
         # other stage's flag on forever.
@@ -611,7 +620,7 @@ class ZendeskConnector(BaseConnector):
                 "truncated and the group is rebuilt from scratch on every write"
             )
         if not replace_members:
-            self._skip("custom role access")
+            self._skip("custom role access", left_unread=False)
             self.logger.error(
                 "Zendesk: custom role export failed — keeping existing group and "
                 "all-tickets members, adding only agents whose access is known"
@@ -1384,6 +1393,9 @@ class ZendeskConnector(BaseConnector):
                 )
             except Exception as e:
                 self.logger.warning(f"Zendesk: could not check organization {org_id}: {e}")
+                await self.data_entities_processor.note_kept_user_group(
+                    self.connector_id, f"org_{org_id}"
+                )
                 continue
             if response.status_code == HttpStatusCode.NOT_FOUND.value:
                 for external_id in (f"org_{org_id}", f"{ORG_AGENTS_GROUP_PREFIX}{org_id}"):
@@ -1398,6 +1410,9 @@ class ZendeskConnector(BaseConnector):
             if str(org_data.get("id")) != org_id:
                 self.logger.warning(
                     f"Zendesk: organization {org_id} missing from the export and unreadable"
+                )
+                await self.data_entities_processor.note_kept_user_group(
+                    self.connector_id, f"org_{org_id}"
                 )
                 continue
             self._org_id_to_data[org_id] = org_data
@@ -1594,6 +1609,7 @@ class ZendeskConnector(BaseConnector):
                     self.logger.warning(
                         "Zendesk: ignoring ticket checkpoint from a superseded sync"
                     )
+                    self._skip("tickets")
                     return synced
                 await self.records_sync_point.update_sync_point(
                     SYNC_POINT_KEY,
@@ -2332,7 +2348,7 @@ class ZendeskConnector(BaseConnector):
             datasource.list_articles, "articles", offset_only=True
         )
         if not complete:
-            self._skip("deleted Help Center articles")
+            self._skip("deleted Help Center articles", left_unread=False)
             self.logger.error(
                 "Zendesk: article list truncated — skipping the deleted-article check"
             )
@@ -2566,6 +2582,7 @@ class ZendeskConnector(BaseConnector):
         # Zendesk rejects a start_time inside the last minute; the next sync resumes.
         if next_start > get_epoch_timestamp_in_ms() // 1000 - INCREMENTAL_SAFETY_LAG_SECONDS:
             return None
+        self._skip("Help Center articles")
         return next_start
 
     async def _sync_help_center_sections(self) -> bool:
