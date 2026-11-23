@@ -37467,10 +37467,20 @@ paths:
                   upgradeGrace:
                     type: object
                     nullable: true
+                    description: Set while no key is in force and the upgrade grace runs.
                     properties:
                       endsAt:
                         type: string
                         format: date-time
+                      key:
+                        type: string
+                        enum: [missing, startsLater, ended]
+                        description: No key installed, a key dated ahead, or a key that ended inside the grace.
+                      keyDate:
+                        type: string
+                        format: date-time
+                        nullable: true
+                        description: When the key starts (startsLater) or ended (ended); null when missing.
                   permissionSync:
                     type: boolean
                   notForProduction:

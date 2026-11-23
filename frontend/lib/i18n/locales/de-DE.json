@@ -6365,6 +6365,9 @@
       "limitedTooltip": "Kein Lizenzschlüssel erlaubt die Berechtigungssynchronisierung, daher kann nur die Person, die diesen Connector erstellt hat, seine Inhalte sehen. Installieren Sie einen Schlüssel, um den Zugriff wiederherzustellen. Es wurde nichts gelöscht.",
       "restoring": "Zugriff wird wiederhergestellt",
       "restoringTooltip": "Ein Lizenzschlüssel ist vorhanden. Der Zugriff kehrt zurück, sobald die vollständige Synchronisierung dieses Connectors abgeschlossen ist."
-    }
+    },
+    "graceKeyStartsLater": "Ihr Lizenzschlüssel gilt ab {{start}}. Bis dahin übernehmen unternehmensweite Connectors dank der Kulanzzeit nach dem Upgrade weiter Zugriffsrechte aus ihren Quellen, bis {{date}}.",
+    "graceKeyEnded": "Ihr Lizenzschlüssel ist am {{ended}} abgelaufen. Dank der Kulanzzeit nach dem Upgrade übernehmen unternehmensweite Connectors bis {{date}} weiter Zugriffsrechte aus ihren Quellen. Danach werden sie ohne neuen Schlüssel auf die Personen beschränkt, die sie erstellt haben. Es wird nichts gelöscht.",
+    "openLicensePage": "Lizenzeinstellungen öffnen"
   }
 }

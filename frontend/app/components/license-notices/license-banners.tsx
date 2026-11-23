@@ -73,6 +73,9 @@ export function LicenseBanners() {
   if (!notice) return null;
 
   const graceEnd = notice.upgradeGrace?.endsAt;
+  const graceKey = notice.upgradeGrace?.key ?? 'missing';
+  const keyDate = notice.upgradeGrace?.keyDate ?? '';
+  const day = (iso: string) => (iso ? new Date(iso).toLocaleDateString(i18n.language, { dateStyle: 'medium' }) : '');
   const daysLeft = graceEnd ? daysUntil(graceEnd) : 0;
   const reminder = graceEnd ? `${graceEnd}|${reminderStep(daysLeft)}` : null;
   const showGrace = isAdmin && reminder !== null && dismissed !== reminder;
@@ -100,11 +103,19 @@ export function LicenseBanners() {
     banners.push(
       <Banner key="grace" color={daysLeft <= 3 ? 'red' : 'amber'} icon="schedule" onDismiss={dismissGrace}>
         <Text size="2">
-          {t('licenseNotices.grace', {
-            count: daysLeft,
-            date: new Date(graceEnd).toLocaleDateString(i18n.language, { dateStyle: 'medium' }),
-          })}{' '}
-          <LicensePageLink>{t('licenseNotices.installKey')}</LicensePageLink>
+          {graceKey === 'startsLater' ? (
+            t('licenseNotices.graceKeyStartsLater', { start: day(keyDate), date: day(graceEnd) })
+          ) : graceKey === 'ended' ? (
+            <>
+              {t('licenseNotices.graceKeyEnded', { ended: day(keyDate), date: day(graceEnd) })}{' '}
+              <LicensePageLink>{t('licenseNotices.openLicensePage')}</LicensePageLink>
+            </>
+          ) : (
+            <>
+              {t('licenseNotices.grace', { count: daysLeft, date: day(graceEnd) })}{' '}
+              <LicensePageLink>{t('licenseNotices.installKey')}</LicensePageLink>
+            </>
+          )}
         </Text>
       </Banner>,
     );

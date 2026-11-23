@@ -41,8 +41,8 @@ export interface ConnectorNotice {
 
 /** What every signed-in user may read about the license: no file, no signature, no licensee. */
 export interface LicenseNotice {
-  /** Set while no license key has started and the upgrade grace runs. */
-  upgradeGrace: { endsAt: string } | null;
+  /** Set while no license key is in force and the upgrade grace runs. */
+  upgradeGrace: UpgradeGraceNotice | null;
   /** Whether connectors may copy access from their sources now; true while nothing is enforced. */
   permissionSync: boolean;
   /** A development key is in force. */
@@ -56,6 +56,33 @@ export interface LicenseNotice {
     restoring: number;
     items: ConnectorNotice[] | null;
   };
+}
+
+/**
+ * The upgrade grace and what is keeping it in force: no key (`missing`), a key
+ * dated ahead (`startsLater`, `keyDate` its start) or a key that ended inside
+ * the grace (`ended`, `keyDate` its end).
+ */
+export interface UpgradeGraceNotice {
+  endsAt: string;
+  key: 'missing' | 'startsLater' | 'ended';
+  keyDate: string | null;
+}
+
+/** The upgrade grace while it runs with no key in force, and which key there is; else null. */
+export function upgradeGraceNotice(
+  view: LicenseStatusView,
+  now: Date,
+): UpgradeGraceNotice | null {
+  const endsAt = upgradeGraceEndsAt(view, now);
+  if (endsAt === null) return null;
+  if (view.upcoming) {
+    return { endsAt, key: 'startsLater', keyDate: view.upcoming.startDate };
+  }
+  if (view.license) {
+    return { endsAt, key: 'ended', keyDate: view.license.endDate };
+  }
+  return { endsAt, key: 'missing', keyDate: null };
 }
 
 export interface NoticeViewer {
@@ -105,7 +132,8 @@ export async function licenseNotice(
   now: Date = new Date(),
 ): Promise<LicenseNotice> {
   const view = await licenseStatus(store, now);
-  const graceEndsAt = upgradeGraceEndsAt(view, now);
+  const grace = upgradeGraceNotice(view, now);
+  const graceEndsAt = grace?.endsAt ?? null;
   const permissionSync = view.permissionSync?.allowed ?? true;
 
   const states = (await storedConnectors(store))
@@ -129,7 +157,7 @@ export async function licenseNotice(
     counted.filter((entry) => entry.state === state).length;
 
   return {
-    upgradeGrace: graceEndsAt === null ? null : { endsAt: graceEndsAt },
+    upgradeGrace: grace,
     permissionSync,
     notForProduction:
       IN_FORCE.has(view.status) && view.license?.notForProduction === true,
@@ -157,11 +185,16 @@ export function startupWarnings(view: LicenseStatusView, now: Date): string[] {
       'A development license key is in force: this installation is not for production use.',
     );
   }
-  const graceEndsAt = upgradeGraceEndsAt(view, now);
-  if (graceEndsAt !== null) {
-    warnings.push(
-      `No license key is installed. Company-wide connectors keep copying access from their sources until the upgrade grace ends at ${graceEndsAt}; after that they are limited to their creators until a key is installed.`,
-    );
+  const grace = upgradeGraceNotice(view, now);
+  if (grace !== null) {
+    const keeps = `The upgrade grace keeps company-wide connectors copying access from their sources until ${grace.endsAt}`;
+    const key =
+      grace.key === 'startsLater'
+        ? `The installed license key starts at ${grace.keyDate ?? ''}. ${keeps}; if the grace ends first, they are limited to their creators until the key starts.`
+        : grace.key === 'ended'
+          ? `The license key ended at ${grace.keyDate ?? ''}. ${keeps}; after that they are limited to their creators until a new key is installed.`
+          : `No license key is installed. ${keeps}; after that they are limited to their creators until a key is installed.`;
+    warnings.push(key);
   }
   return warnings;
 }

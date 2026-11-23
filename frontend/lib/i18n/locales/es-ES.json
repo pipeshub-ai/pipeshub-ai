@@ -6447,6 +6447,9 @@
       "limitedTooltip": "Ninguna clave de licencia permite la sincronización de permisos, así que solo la persona que creó este conector puede ver su contenido. Instala una clave para restaurar el acceso. No se ha eliminado nada.",
       "restoring": "Restaurando el acceso",
       "restoringTooltip": "Hay una clave de licencia instalada. El acceso volverá cuando termine la sincronización completa de este conector."
-    }
+    },
+    "graceKeyStartsLater": "Tu clave de licencia empieza el {{start}}. Hasta entonces, el periodo de gracia de la actualización mantiene a los conectores de toda la empresa copiando los accesos de sus orígenes, hasta el {{date}}.",
+    "graceKeyEnded": "Tu clave de licencia terminó el {{ended}}. El periodo de gracia de la actualización mantiene a los conectores de toda la empresa copiando los accesos de sus orígenes hasta el {{date}}. Después, sin una clave nueva, quedarán limitados a las personas que los crearon. No se elimina nada.",
+    "openLicensePage": "Abrir la configuración de la licencia"
   }
 }

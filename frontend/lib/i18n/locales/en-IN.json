@@ -6365,6 +6365,9 @@
       "limitedTooltip": "No license key allows permission sync, so only the person who created this connector can see its content. Install a key to restore access. Nothing was deleted.",
       "restoring": "Restoring access",
       "restoringTooltip": "A license key is in place. Access comes back when this connector's full sync finishes."
-    }
+    },
+    "graceKeyStartsLater": "Your license key starts on {{start}}. Until then, the upgrade grace keeps company-wide connectors copying access from their sources, until {{date}}.",
+    "graceKeyEnded": "Your license key ended on {{ended}}. The upgrade grace keeps company-wide connectors copying access from their sources until {{date}}. After that, without a new key, they'll be limited to the people who created them. Nothing is deleted.",
+    "openLicensePage": "Open license settings"
   }
 }

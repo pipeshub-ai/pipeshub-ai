@@ -127,7 +127,11 @@ describe('license notice: what every signed-in user may read', () => {
       upgradedDaysAgo(UPGRADE_GRACE_DAYS - 5);
       connectors(connector('a'));
       const admin = await licenseNotice(store, ADMIN, NOW);
-      expect(admin.upgradeGrace).to.deep.equal({ endsAt: at(5) });
+      expect(admin.upgradeGrace).to.deep.equal({
+        endsAt: at(5),
+        key: 'missing',
+        keyDate: null,
+      });
       expect(admin.permissionSync).to.equal(true);
       expect(admin.connectors.items).to.deep.equal([
         {
@@ -153,6 +157,8 @@ describe('license notice: what every signed-in user may read', () => {
       const admin = await licenseNotice(store, ADMIN, NOW);
       expect(admin.upgradeGrace).to.deep.equal({
         endsAt: at(UPGRADE_GRACE_DAYS - 5),
+        key: 'ended',
+        keyDate: at(-10),
       });
       expect(admin.permissionSync).to.equal(true);
       expect(admin.connectors.items?.map((item) => item.state)).to.deep.equal([
@@ -252,6 +258,35 @@ describe('license notice: what every signed-in user may read', () => {
     });
   });
 
+  describe('what keeps the grace in force', () => {
+    it('a key dated ahead: the grace runs and the key starts later; no "no key" anywhere', async () => {
+      upgradedDaysAgo(5);
+      install({ startDate: at(3), issuedAt: at(-1), endDate: at(60) });
+      const view = await licenseStatus(store, NOW);
+      expect(view.status).to.equal('pending');
+      expect(
+        (await licenseNotice(store, ADMIN, NOW)).upgradeGrace,
+      ).to.deep.equal({
+        endsAt: at(UPGRADE_GRACE_DAYS - 5),
+        key: 'startsLater',
+        keyDate: at(3),
+      });
+      const [warning] = startupWarnings(view, NOW);
+      expect(warning).to.contain(`starts at ${at(3)}`);
+      expect(warning).to.contain(at(UPGRADE_GRACE_DAYS - 5));
+      expect(warning).not.to.contain('No license key is installed');
+    });
+
+    it('a trial that ended inside the grace: the warning says the key ended', async () => {
+      upgradedDaysAgo(5);
+      install({ startDate: at(-30), issuedAt: at(-30), endDate: at(-10) });
+      const [warning] = startupWarnings(await licenseStatus(store, NOW), NOW);
+      expect(warning).to.contain(`ended at ${at(-10)}`);
+      expect(warning).to.contain(at(UPGRADE_GRACE_DAYS - 5));
+      expect(warning).not.to.contain('No license key is installed');
+    });
+  });
+
   describe('startup warnings', () => {
     it('warns of a development key and of the upgrade grace, and of nothing without them', async () => {
       expect(
@@ -261,6 +296,7 @@ describe('license notice: what every signed-in user may read', () => {
       const grace = startupWarnings(await licenseStatus(store, NOW), NOW);
       expect(grace).to.have.length(1);
       expect(grace[0]).to.contain(at(UPGRADE_GRACE_DAYS - 1));
+      expect(grace[0]).to.contain('No license key is installed');
       install({ type: 'development' });
       expect(
         startupWarnings(await licenseStatus(store, NOW), NOW),

@@ -24,10 +24,17 @@ vi.mock('../use-license-notice', async (importOriginal) => ({
 import { LicenseBanners } from '../license-banners';
 import { LimitedSourcesNote } from '../limited-sources-note';
 import { ConnectorLicenseBadge } from '../connector-license-badge';
-import { daysUntil, reminderStep, type LicenseNotice } from '../use-license-notice';
+import { daysUntil, LICENSE_NOTICE_POLICY, reminderStep, type LicenseNotice } from '../use-license-notice';
 
 const DAY = 24 * 60 * 60 * 1000;
 const inDays = (days: number) => new Date(Date.now() + days * DAY - 60_000).toISOString();
+
+const grace = (endsAt: string, key: 'missing' | 'startsLater' | 'ended' = 'missing', keyDate: string | null = null) => ({
+  endsAt,
+  key,
+  keyDate,
+});
+const shortDate = (iso: string) => new Date(iso).toLocaleDateString('en-US', { dateStyle: 'medium' });
 
 const notice = (over: Partial<LicenseNotice> = {}): LicenseNotice => ({
   upgradeGrace: null,
@@ -57,6 +64,13 @@ describe('reminders at 14, 7, 3 and 1 days', () => {
   });
 });
 
+describe('polling', () => {
+  it('dedupes well inside the 5-minute poll, so every tick fetches', () => {
+    expect(LICENSE_NOTICE_POLICY.refreshInterval).toBe(300_000);
+    expect(LICENSE_NOTICE_POLICY.dedupingInterval).toBeLessThanOrEqual(LICENSE_NOTICE_POLICY.refreshInterval / 2);
+  });
+});
+
 describe('LicenseBanners', () => {
   it('shows nothing with enforcement off and no key (the server says nothing applies)', () => {
     for (const role of ['admin', 'member'] as const) {
@@ -69,7 +83,7 @@ describe('LicenseBanners', () => {
   });
 
   it('during the grace: an admin gets a countdown and a link to the license page; a member nothing', () => {
-    served.notice = notice({ upgradeGrace: { endsAt: inDays(10) } });
+    served.notice = notice({ upgradeGrace: grace(inDays(10)) });
     as('admin');
     show(<LicenseBanners />);
     expect(screen.getByText(/limited to the people who created them in 10 days/)).toBeTruthy();
@@ -80,9 +94,30 @@ describe('LicenseBanners', () => {
     expect(container.textContent).toBe('');
   });
 
+  it('a key dated ahead: says when it starts and that the grace keeps access on, with no install link', () => {
+    as('admin');
+    const start = inDays(12);
+    served.notice = notice({ upgradeGrace: grace(inDays(9), 'startsLater', start) });
+    const { container } = show(<LicenseBanners />);
+    expect(container.textContent).toContain(`Your license key starts on ${shortDate(start)}`);
+    expect(container.textContent).toContain(shortDate(inDays(9)));
+    expect(screen.queryByText('Install a license key')).toBeNull();
+    expect(container.querySelector('a')).toBeNull();
+  });
+
+  it('a key that ended inside the grace: says it ended, with no install-a-key link', () => {
+    as('admin');
+    const ended = inDays(-4);
+    served.notice = notice({ upgradeGrace: grace(inDays(9), 'ended', ended) });
+    const { container } = show(<LicenseBanners />);
+    expect(container.textContent).toContain(`Your license key ended on ${shortDate(ended)}`);
+    expect(screen.queryByText('Install a license key')).toBeNull();
+    expect(screen.getByText('Open license settings').closest('a')?.getAttribute('href')).toBe('/workspace/license/');
+  });
+
   it('a dismissed countdown comes back at the next reminder', () => {
     as('admin');
-    served.notice = notice({ upgradeGrace: { endsAt: inDays(10) } });
+    served.notice = notice({ upgradeGrace: grace(inDays(10)) });
     show(<LicenseBanners />);
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(screen.queryByText(/in 10 days/)).toBeNull();
@@ -90,7 +125,7 @@ describe('LicenseBanners', () => {
     show(<LicenseBanners />);
     expect(screen.queryByText(/in 10 days/)).toBeNull();
     cleanup();
-    served.notice = notice({ upgradeGrace: { endsAt: inDays(7) } });
+    served.notice = notice({ upgradeGrace: grace(inDays(7)) });
     show(<LicenseBanners />);
     expect(screen.getByText(/in 7 days/)).toBeTruthy();
   });
@@ -177,7 +212,7 @@ describe('ConnectorLicenseBadge', () => {
 
   it('marks each listed connector for an admin', () => {
     as('admin');
-    served.notice = notice({ upgradeGrace: { endsAt: inDays(5) }, connectors: { limited: 1, restoring: 1, items } });
+    served.notice = notice({ upgradeGrace: grace(inDays(5)), connectors: { limited: 1, restoring: 1, items } });
     for (const [id, label] of [['a', 'Will be limited'], ['b', 'Limited'], ['c', 'Restoring access']]) {
       show(<ConnectorLicenseBadge connectorId={id} />);
       expect(screen.getByText(label)).toBeTruthy();
