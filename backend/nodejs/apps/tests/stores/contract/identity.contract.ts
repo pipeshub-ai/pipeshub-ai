@@ -478,6 +478,20 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await users.getLive(o1, live._id))!._id).to.equal(live._id);
     });
 
+    it('restoreByEmails brings a removed admin back as a member and leaves live accounts as they are', async () => {
+      const org = await fx.newOrg();
+      const goneAdmin = await person(org, { role: 'admin' });
+      const goneMember = await person(org);
+      const liveAdmin = await person(org, { role: 'admin' });
+      await users.markDeleted(org, goneAdmin._id);
+      await users.markDeleted(org, goneMember._id);
+      const restored = await users.restoreByEmails(org, [goneAdmin.email, goneMember.email, liveAdmin.email]);
+      const roleOf = (id: string) => restored.find((r) => r._id === id)?.role;
+      expect([roleOf(goneAdmin._id), roleOf(goneMember._id), roleOf(liveAdmin._id)]).to.deep.equal(['member', 'member', 'admin']);
+      expect((await users.getLive(org, goneAdmin._id))!.role).to.equal('member');
+      expect((await users.getLive(org, liveAdmin._id))!.role).to.equal('admin');
+    });
+
     it('promoteToAdmin promotes people; a batch that reaches a service account is refused by the schema', async () => {
       const org = await fx.newOrg();
       const p = await person(org);
