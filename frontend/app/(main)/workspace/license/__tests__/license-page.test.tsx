@@ -197,6 +197,8 @@ describe('License page: installing a key', () => {
     renderPage();
     await screen.findByText('No license key');
     const upload = new File(['{"license":{"licenseId":"x"}}'], 'key.json', { type: 'application/json' });
+    // jsdom's File has no text(); browsers do.
+    Object.defineProperty(upload, 'text', { value: async () => '{"license":{"licenseId":"x"}}' });
     fireEvent.change(screen.getByTestId('license-file-input'), { target: { files: [upload] } });
     await waitFor(() =>
       expect((screen.getByLabelText('License key') as HTMLTextAreaElement).value).toBe('{"license":{"licenseId":"x"}}'),

@@ -19,7 +19,7 @@ function Detail({ label, children }: { label: string; children: React.ReactNode 
   return (
     <Flex justify="between" gap="3" wrap="wrap">
       <Text size="2" style={{ color: 'var(--slate-11)' }}>{label}</Text>
-      <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>{children}</Text>
+      <Text as="div" size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>{children}</Text>
     </Flex>
   );
 }
