@@ -3345,6 +3345,10 @@ class IGraphDBProvider(ABC):
         Get all child records for a parent record by parent_external_record_id.
         Optionally filter by record_type.
 
+        Matched on the child's stored ``externalParentId``, not on hierarchy
+        edges: a child whose PARENT_CHILD edge was removed is still returned,
+        which the web connector's relink after a full sync relies on.
+
         Live children only by default, so a folder whose children are all in
         the trash reads as empty.
 

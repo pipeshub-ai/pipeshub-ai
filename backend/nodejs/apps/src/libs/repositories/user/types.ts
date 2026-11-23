@@ -284,11 +284,14 @@ export interface UserRepository {
     fields: UserFields,
     tx?: Tx,
   ): Promise<UserDto | null>;
-  /** Marks the account removed (kept for restore); null when there is none. */
+  /**
+   * Marks the account removed (kept for restore); null when there is none, or,
+   * with `onlyMember`, when it is an admin at the moment of the write.
+   */
   markDeleted(
     orgId: string,
     id: string,
-    extra?: { signedOut?: boolean; deletedBy?: string },
+    extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null>;
   /**
    * Turns a Slack-only account into an ordinary one, same id. True only for the

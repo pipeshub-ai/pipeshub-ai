@@ -118,6 +118,15 @@ export const authorizeConsentSchema = z.object({
   }),
 });
 
+// A client id, secret, code or token never holds a control character, and PostgreSQL cannot store a NUL: refused here as
+// the client's 400, before a store read turns it into our own failure.
+// eslint-disable-next-line no-control-regex
+export const NO_CONTROL_CHARACTERS = /^[^\u0000-\u001f\u007f]*$/;
+const credential = (): z.ZodString =>
+  z
+    .string()
+    .regex(NO_CONTROL_CHARACTERS, 'Must not contain control characters');
+
 export const tokenSchema = z.object({
   body: z.object({
     grant_type: z.enum([
@@ -129,19 +138,19 @@ export const tokenSchema = z.object({
       AGENT_CLAIM_GRANT,
       JWT_BEARER_GRANT,
     ]),
-    code: z.string().optional(),
+    code: credential().optional(),
     redirect_uri: z.string().check(urlCheck()).optional(),
     // RFC 6749: client_id is required but can also come from Authorization header
-    client_id: z.string().min(1).optional(),
-    client_secret: z.string().optional(),
-    refresh_token: z.string().optional(),
+    client_id: credential().min(1).optional(),
+    client_secret: credential().optional(),
+    refresh_token: credential().optional(),
     scope: z.string().optional(),
     // RFC 7636: code_verifier must match the pattern [A-Za-z0-9-._~]{43,128}
     code_verifier: z
       .string()
       .regex(codeVerifierPattern, 'Invalid code_verifier format')
       .optional(),
-    device_code: z.string().min(1).optional(),
+    device_code: credential().min(1).optional(),
     // RFC 8707: the resource the token is for; repeatable in a form body.
     resource: resourceParam,
     // auth.md agent registration
@@ -226,20 +235,20 @@ export const agentClaimCompleteSchema = z.object({
 
 export const revokeSchema = z.object({
   body: z.object({
-    token: z.string().min(1),
+    token: credential().min(1),
     token_type_hint: z.enum(['access_token', 'refresh_token']).optional(),
     // Absent for the agent flow, whose tokens are their own credential.
-    client_id: z.string().min(1).optional(),
-    client_secret: z.string().optional(),
+    client_id: credential().min(1).optional(),
+    client_secret: credential().optional(),
   }),
 });
 
 export const introspectSchema = z.object({
   body: z.object({
-    token: z.string().min(1),
+    token: credential().min(1),
     token_type_hint: z.enum(['access_token', 'refresh_token']).optional(),
-    client_id: z.string().min(1),
-    client_secret: z.string().optional(),
+    client_id: credential().min(1),
+    client_secret: credential().optional(),
   }),
 });
 

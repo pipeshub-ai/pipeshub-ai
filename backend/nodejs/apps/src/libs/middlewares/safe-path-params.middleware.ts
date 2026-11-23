@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import { BadRequestError } from '../errors/http.errors';
+import { bindLogContext, LogContextFields } from '../context/request-context';
 
 // Express has already percent-decoded path params. Pasted into another
 // service's URL, `/` and `\` add path segments, `?` and `#` end the path,
@@ -37,6 +38,25 @@ export const guardPathParams = (router: Router, ...names: string[]): void => {
           return;
         }
         next(new BadRequestError(INVALID_PATH_SEGMENT_MESSAGE));
+      },
+    );
+  }
+};
+
+/**
+ * Names the path's ids on every line of the request (the call, error and access
+ * lines). Register after `guardPathParams`, so only a checked segment is bound.
+ */
+export const bindPathLogFields = (
+  router: Router,
+  fields: Readonly<Record<string, keyof LogContextFields>>,
+): void => {
+  for (const [param, key] of Object.entries(fields)) {
+    router.param(
+      param,
+      (_req: Request, _res: Response, next: NextFunction, value: string) => {
+        bindLogContext({ [key]: value });
+        next();
       },
     );
   }

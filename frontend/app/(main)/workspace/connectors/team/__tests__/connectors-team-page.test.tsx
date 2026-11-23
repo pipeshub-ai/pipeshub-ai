@@ -37,6 +37,7 @@ vi.mock('../../components/instance-panel', () => ({ InstanceManagementPanel: () 
 vi.mock('../../demo-data/components', () => ({ DemoDataRemovalNotice: () => null }));
 vi.mock('@/config', async () => ({
   PermissionLockIcon: () => null,
+  useUserPermission: () => true,
   TEAM_CONNECTOR_VISIBILITY_WARNINGS: {
     ...(await import('../../utils/team-visibility-warning')).TEAM_CONNECTOR_VISIBILITY_WARNINGS,
     // No shipped connector is team-only today; this one keeps that dialog covered.

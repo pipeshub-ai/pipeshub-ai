@@ -23,7 +23,7 @@ import type { ConnectorScope, InstancePanelTab } from '../../types';
 import { OverviewTab } from './overview-tab';
 import { SettingsTab } from './settings-tab';
 import { DisableFirstDialog } from '../disable-first-dialog';
-import { useUserPermission } from '@/config';
+import { PermissionLockIcon, useUserPermission } from '@/config';
 
 // ========================================
 // InstanceManagementPanel
@@ -34,6 +34,7 @@ export function InstanceManagementPanel() {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const canDeleteConnector = useUserPermission('deleteConnector');
+  const canConfigureConnector = useUserPermission('configureConnector');
   const {
     isInstancePanelOpen,
     selectedInstance,
@@ -218,7 +219,8 @@ export function InstanceManagementPanel() {
         ? selectedInstance
         : (instances.find((i) => i._key === pendingDeleteId) ?? selectedInstance);
 
-  const manageConfigDisabled = selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING;
+  const manageConfigDisabled =
+    selectedInstance.status === CONNECTOR_INSTANCE_STATUS.DELETING || !canConfigureConnector;
 
   const titleNode =
     instances.length > 1 ? (
@@ -330,6 +332,7 @@ export function InstanceManagementPanel() {
             >
               <MaterialIcon name="settings" size={14} color="var(--gray-11)" />
               <Text size="1">{t('workspace.connectors.instancePanel.manageConfig')}</Text>
+              {!canConfigureConnector && <PermissionLockIcon />}
             </Button>
           </Flex>
 

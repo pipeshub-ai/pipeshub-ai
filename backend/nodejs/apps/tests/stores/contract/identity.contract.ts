@@ -910,6 +910,41 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(await users.markDeleted(await fx.newOrg(), v._id)).to.equal(null);
     });
 
+    it('markDeleted with onlyMember removes a member, and leaves an admin exactly as it was', async () => {
+      const org = await fx.newOrg();
+      const actor = fx.newId();
+      const m = await person(org, { hasLoggedIn: true });
+      const d = await users.markDeleted(org, m._id, { signedOut: true, deletedBy: actor, onlyMember: true });
+      expect(d).to.include({ isDeleted: true, hasLoggedIn: false, deletedBy: actor, role: 'member' });
+      const a = await person(org, { role: 'admin', hasLoggedIn: true });
+      expect(await users.markDeleted(org, a._id, { signedOut: true, deletedBy: actor, onlyMember: true })).to.equal(null);
+      const kept = await users.getAny(org, a._id);
+      expect(kept).to.include({ isDeleted: false, hasLoggedIn: true, role: 'admin' });
+      expect(kept!.deletedBy ?? undefined).to.equal(undefined);
+      expect(await users.countActiveAdmins(org)).to.equal(1);
+      expect(await users.markDeleted(await fx.newOrg(), m._id, { onlyMember: true })).to.equal(null);
+      // Without the flag an admin is still removed: the other callers keep their behaviour.
+      expect(await users.markDeleted(org, a._id)).to.include({ isDeleted: true, role: 'admin' });
+    });
+
+    it('markDeleted with deletedBy undefined clears who deleted the account', async () => {
+      const org = await fx.newOrg();
+      const m = await person(org);
+      await users.markDeleted(org, m._id, { deletedBy: fx.newId() });
+      const cleared = await users.markDeleted(org, m._id, { deletedBy: undefined });
+      expect(cleared!.deletedBy ?? undefined).to.equal(undefined);
+      expect((await users.getAny(org, m._id))!.deletedBy ?? undefined).to.equal(undefined);
+    });
+
+    it('markDeleted with onlyMember matches a member removed before, so a retried deletion finishes', async () => {
+      const org = await fx.newOrg();
+      const actor = fx.newId();
+      const m = await person(org, { hasLoggedIn: true });
+      await users.markDeleted(org, m._id, { signedOut: true, deletedBy: actor, onlyMember: true });
+      const again = await users.markDeleted(org, m._id, { signedOut: true, deletedBy: actor, onlyMember: true });
+      expect(again).to.include({ _id: m._id, isDeleted: true, hasLoggedIn: false, deletedBy: actor });
+    });
+
     it('countActiveAdmins and listAdminIds exclude removed accounts and service accounts', async () => {
       const org = await fx.newOrg();
       const a1 = await person(org, { role: 'admin' });
