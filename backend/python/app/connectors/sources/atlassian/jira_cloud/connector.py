@@ -620,6 +620,8 @@ class JiraConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # Whether the user read can stand for the whole directory when deciding the authenticator's link; set by _fetch_users.
+        self._listing_complete_for_link: bool = False
         # Emails of every account this sync's user read listed, whatever its status.
         self._listed_user_emails: set[str] = set()
         # Members of the product groups this run, by account id; None when they could not be read.
@@ -1075,7 +1077,7 @@ class JiraConnector(BaseConnector):
             jira_users = await self._fetch_users(active_pipeshub_users=users)
             # Taken here: the withdrawals below prune the stored users this reads.
             # An empty listing is not a read of the directory, whatever is stored.
-            directory_complete = self._directory_read_complete() and bool(self._listed_account_ids)
+            directory_complete = self._listing_complete_for_link
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
                 # was read, since holding it back would leave it with no access at all.
@@ -2445,6 +2447,7 @@ class JiraConnector(BaseConnector):
             raise ValueError("DataSource not initialized")
 
         self._user_read_unfinished = False
+        self._listing_complete_for_link = False
         self._listed_user_emails = set()
 
         # ====================================================================
@@ -2589,7 +2592,44 @@ class JiraConnector(BaseConnector):
                 "every group's members and project role, and the lead and access of projects that name "
                 "a missing user, are kept as stored this sync"
             )
+        self._listing_complete_for_link = await self._user_listing_complete_for_link()
         return list(resolved.values())
+
+    async def _user_listing_complete_for_link(self) -> bool:
+        """Whether this sync's user read shows everyone the authenticator's link depends on. A full read
+        does. A bulk read refused from its first page cannot say who is missing, so the authenticator is
+        looked up on their own; any other shortfall stays incomplete."""
+        if self._user_read_unfinished:
+            return False
+        if not (self._user_bulk_forbidden or self._user_bulk_refused):
+            return self._directory_read_complete() and bool(self._listed_account_ids)
+        return await self._authenticator_is_listed()
+
+    async def _authenticator_is_listed(self) -> bool:
+        """Look the authenticator up by email and add it to the listed emails when found. False when it
+        cannot be looked up or the answer cannot be told from a hidden email: the pass then only ever
+        removes a link."""
+        email = await self.authenticator_email()
+        if not email:
+            return False
+        try:
+            response = await self._call_with_retry(
+                lambda ds: ds.find_users(query=email, maxResults=50), ctx="looking up the authenticator",
+            )
+            if response.status != HttpStatusCode.OK.value:
+                return False
+            rows = self._safe_json_parse(response, "authenticator lookup")
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the Jira users: %s", e)
+            return False
+        if not isinstance(rows, list):
+            return False
+        rows = [r for r in rows if isinstance(r, dict) and r.get("accountType", "atlassian") == "atlassian"]
+        if any((r.get("emailAddress") or "").strip().lower() == email.lower() for r in rows):
+            self._listed_user_emails.add(email.lower())
+            return True
+        # A row with its email hidden may be the authenticator, and a full page may hide the match.
+        return not any(not r.get("emailAddress") for r in rows) and len(rows) < 50
 
     async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
         """

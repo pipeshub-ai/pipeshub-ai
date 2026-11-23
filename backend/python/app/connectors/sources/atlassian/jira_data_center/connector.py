@@ -566,6 +566,8 @@ class JiraDataCenterConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # Whether the user read can stand for the whole directory when deciding the authenticator's link; set by _fetch_users.
+        self._listing_complete_for_link: bool = False
         # Emails of every account this sync's user read listed, whatever its status.
         self._listed_user_emails: set[str] = set()
         self._stored_app_users: list[AppUser] = []
@@ -1088,7 +1090,7 @@ class JiraDataCenterConnector(BaseConnector):
             jira_users = await self._fetch_users()
             # Taken here: the withdrawals below prune the stored users this reads.
             # An empty listing is not a read of the directory, whatever is stored.
-            directory_complete = self._directory_read_complete() and bool(self._listed_user_keys)
+            directory_complete = self._listing_complete_for_link
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
                 # was read, since holding it back would leave it with no access at all.
@@ -1710,6 +1712,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         self._dc_name_to_source_id = {}
         self._user_read_unfinished = False
+        self._listing_complete_for_link = False
         self._listed_user_emails = set()
 
         # A failed read raises: read as no links, it would link no one while product access is unknown.
@@ -1818,7 +1821,45 @@ class JiraDataCenterConnector(BaseConnector):
                 "every group's members and project role, and the lead and access of projects that name "
                 "a missing user, are kept as stored this sync"
             )
+        self._listing_complete_for_link = await self._user_listing_complete_for_link()
         return list(resolved.values())
+
+    async def _user_listing_complete_for_link(self) -> bool:
+        """Whether this sync's user read shows everyone the authenticator's link depends on. A full read
+        does. A read cut down to the search fallback (a release without /user/list) or refused cannot say who
+        is missing, so the authenticator is looked up on their own; any other shortfall stays incomplete."""
+        if self._user_read_unfinished:
+            return False
+        if not (self._user_bulk_incomplete or self._user_bulk_forbidden):
+            return self._directory_read_complete() and bool(self._listed_user_keys)
+        if not self._user_bulk_forbidden and not self._listed_user_keys:
+            return False
+        return await self._authenticator_is_listed()
+
+    async def _authenticator_is_listed(self) -> bool:
+        """Look the authenticator up by email, active or not, and add it to the listed emails when found.
+        False when it cannot be looked up or the answer cannot be told from a hidden email: the pass then
+        only ever removes a link."""
+        email = await self.authenticator_email()
+        if not email:
+            return False
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_user_search_v2(username=email, includeInactive=True, maxResults=50)
+            if response.status != HttpStatusCode.OK.value:
+                return False
+            rows = self._safe_json_parse(response, "authenticator lookup")
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the Jira users: %s", e)
+            return False
+        if not isinstance(rows, list):
+            return False
+        rows = [r for r in rows if isinstance(r, dict)]
+        if any((r.get("emailAddress") or "").strip().lower() == email.lower() for r in rows):
+            self._listed_user_emails.add(email.lower())
+            return True
+        # A row with its email hidden may be the authenticator, and a full page may hide the match.
+        return not any(not r.get("emailAddress") for r in rows) and len(rows) < 50
 
     async def _fetch_users_via_list(self) -> list[dict[str, Any]] | None:
         """

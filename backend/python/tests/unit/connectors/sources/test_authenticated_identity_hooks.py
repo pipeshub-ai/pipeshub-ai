@@ -1011,7 +1011,7 @@ class TestJiraCloudSyncOrder:
             JiraConnector, data_source=MagicMock(), config_service=MagicMock(),
             _authenticated_jira_email="admin@corp.com", _authenticated_jira_account_id="acc-admin",
             _listed_user_emails=set(), _deactivated_account_ids=set(), _shown_inactive_ids=set(),
-            _user_read_unfinished=False, _listed_account_ids={"acc-1"},
+            _user_read_unfinished=False, _listed_account_ids={"acc-1"}, _listing_complete_for_link=complete,
         )
         conn._expire_org_gate = step("gate")
         conn.drop_authenticator_link_if_listed = step("drop")
@@ -1025,7 +1025,7 @@ class TestJiraCloudSyncOrder:
             return [MagicMock()]
 
         conn._fetch_users = AsyncMock(side_effect=fetch)
-        conn._directory_read_complete = MagicMock(return_value=complete)
+        conn._directory_read_complete = MagicMock(return_value=True)
         conn._fetch_application_roles_to_groups_mapping = step("roles", {})
         conn._read_level_roles = step("level")
         conn._keep_licensed_users = step("licence", [MagicMock()])
@@ -1061,8 +1061,7 @@ class TestJiraCloudSyncOrder:
         assert order == ["drop"]
 
     async def test_an_empty_first_listing_is_not_complete(self) -> None:
-        conn = self._conn([], active_users=[MagicMock()], complete=True)
-        conn._listed_account_ids = set()
+        conn = self._conn([], active_users=[MagicMock()], complete=False)
 
         with pytest.raises(_AtlassianStop):
             await self._run(conn)
@@ -1109,7 +1108,7 @@ class TestJiraCloudSyncOrder:
         ]
         conn = _connector(
             JiraConnector, data_source=MagicMock(), connector_name="JIRA", _user_bulk_forbidden=False,
-            _user_read_unfinished=False, _listed_user_emails={"stale@corp.com"},
+            _user_read_unfinished=False, _listed_user_emails={"stale@corp.com"}, _listing_complete_for_link=False,
         )
         conn.data_entities_processor = MagicMock(
             org_id="org", get_all_app_users=AsyncMock(return_value=[]),
@@ -1126,7 +1125,7 @@ class TestJiraDataCenterSyncOrder:
         step = _steps(order)
         conn = _connector(
             JiraDataCenterConnector, data_source=MagicMock(), config_service=MagicMock(), _listed_user_emails=set(),
-            _user_read_unfinished=False, _listed_user_keys={"key-1"},
+            _user_read_unfinished=False, _listed_user_keys={"key-1"}, _listing_complete_for_link=complete,
         )
         conn.drop_authenticator_link_if_listed = step("drop")
         conn._read_own_account = step("own", ("admin@corp.com", "key-admin"))
@@ -1141,7 +1140,7 @@ class TestJiraDataCenterSyncOrder:
             return [MagicMock()]
 
         conn._fetch_users = AsyncMock(side_effect=fetch)
-        conn._directory_read_complete = MagicMock(return_value=complete)
+        conn._directory_read_complete = MagicMock(return_value=True)
         conn._eligible_users = step("eligible", [MagicMock()])
         conn._note_newly_listed = step("noted", set())
         conn._withdraw_unlisted_app_users = step("withdraw")
@@ -1164,8 +1163,7 @@ class TestJiraDataCenterSyncOrder:
         assert order[0] == "drop" and "own" in order and "register" not in order
 
     async def test_an_empty_first_listing_is_not_complete(self) -> None:
-        conn = self._conn([], active_users=[MagicMock()], complete=True)
-        conn._listed_user_keys = set()
+        conn = self._conn([], active_users=[MagicMock()], complete=False)
 
         with pytest.raises(_AtlassianStop):
             await self._run(conn)
@@ -1212,7 +1210,7 @@ class TestJiraDataCenterSyncOrder:
         conn = _connector(
             JiraDataCenterConnector, data_source=MagicMock(), connector_name="JIRA", _user_bulk_forbidden=False,
             _user_bulk_incomplete=False, _user_read_unfinished=False, _listed_user_emails={"stale@corp.com"},
-            _dc_name_to_source_id={}, _seen_user_keys=set(),
+            _dc_name_to_source_id={}, _seen_user_keys=set(), _listing_complete_for_link=False,
         )
         conn.data_entities_processor = MagicMock(
             org_id="org", get_all_app_users=AsyncMock(return_value=[]),
