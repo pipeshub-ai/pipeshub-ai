@@ -1042,6 +1042,9 @@ class JiraConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Main sync flow: users → groups → projects/roles → issues → deletions."""
         try:
+            # First, with no source call: it can raise outside its own try, and must not skip the removal pass.
+            self._listed_user_emails = set()
+            await self.drop_authenticator_link_if_listed()
             await self._expire_org_gate()
             # 1. Init is done by event_service / setup before run_sync is scheduled
             if not self.data_source:
@@ -1050,10 +1053,6 @@ class JiraConnector(BaseConnector):
                 )
                 init_error._notification_sent = True
                 raise init_error
-
-            # Reset so a value left by an earlier run never counts as this run's listing.
-            self._listed_user_emails = set()
-            await self.drop_authenticator_link_if_listed()
 
             # 2. Load latest sync/indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1075,7 +1074,8 @@ class JiraConnector(BaseConnector):
             self._kept_after_refusal = []
             jira_users = await self._fetch_users(active_pipeshub_users=users)
             # Taken here: the withdrawals below prune the stored users this reads.
-            directory_complete = self._directory_read_complete()
+            # An empty listing is not a read of the directory, whatever is stored.
+            directory_complete = self._directory_read_complete() and bool(self._listed_account_ids)
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
                 # was read, since holding it back would leave it with no access at all.

@@ -685,8 +685,11 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 response_data = response.json()
                 users_data = response_data.get("results", [])
 
+                # Only a missing next link ends the listing: the server may cut `limit`, so a short page can have
+                # more after it, and an empty page that points further is a failed read.
+                has_next = bool((response_data.get("_links") or {}).get("next"))
                 if not users_data:
-                    self._users_listing_complete = listed_any
+                    self._users_listing_complete = listed_any and not has_next
                     break
                 listed_any = True
 
@@ -736,10 +739,10 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                 continue
 
                 # Move to next page
-                start += batch_size
+                start += len(users_data)
 
                 # Check if we've reached the end
-                if len(users_data) < batch_size:
+                if len(users_data) < batch_size and not has_next:
                     self._users_listing_complete = True
                     break
 

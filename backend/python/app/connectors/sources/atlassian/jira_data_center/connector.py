@@ -1087,7 +1087,8 @@ class JiraDataCenterConnector(BaseConnector):
             self._kept_after_refusal = []
             jira_users = await self._fetch_users()
             # Taken here: the withdrawals below prune the stored users this reads.
-            directory_complete = self._directory_read_complete()
+            # An empty listing is not a read of the directory, whatever is stored.
+            directory_complete = self._directory_read_complete() and bool(self._listed_user_keys)
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
                 # was read, since holding it back would leave it with no access at all.
