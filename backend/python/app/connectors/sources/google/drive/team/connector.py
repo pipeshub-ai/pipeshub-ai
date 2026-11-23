@@ -1029,6 +1029,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _sync_users(self) -> None:
         """Sync all users from Google Workspace Admin API."""
+        self._listed_aliases = set()
+        self._users_listing_complete = False
         try:
             if not self.admin_data_source:
                 self.logger.error("Admin data source not initialized. Call init() first.")
@@ -1038,6 +1040,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             all_users: List[AppUser] = []
             alias_domains: dict[str, set[str]] = {}
             listed_aliases: set[str] = set()
+            row_failed = False
             admin_address = (
                 (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail") or ""
             ).strip().lower()
@@ -1133,6 +1136,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                         except Exception as e:
                             self.logger.error(f"Error processing user {user.get('id', 'unknown')}: {e}", exc_info=True)
+                            # The creator's own row may be the one lost, which would make them look unlisted.
+                            row_failed = True
                             continue
 
                     # Check for next page
@@ -1157,7 +1162,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 await self._user_status.forget_fingerprint()
             self._listing_cut = not listing_complete
             self._listed_aliases = listed_aliases
-            self._users_listing_complete = listing_complete
+            self._users_listing_complete = listing_complete and not row_failed
             if self._listing_cut:
                 self.logger.warning(
                     "The user listing may be cut (an empty page before its end); no account's status is changed on this run"

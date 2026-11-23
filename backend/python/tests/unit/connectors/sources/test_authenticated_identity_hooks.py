@@ -401,6 +401,47 @@ class TestGoogleWorkspaceListing:
         assert conn._listing_cut is True
         assert conn._users_listing_complete is False
 
+    async def test_an_empty_page_after_users_is_an_incomplete_listing(self) -> None:
+        conn = _directory_conn(
+            GoogleGmailTeamConnector, [{"users": [_row("alice@corp.com", "1")], "nextPageToken": "t"}, {"users": []}]
+        )
+
+        await GoogleGmailTeamConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is False
+
+    @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
+    async def test_a_failed_listing_does_not_keep_the_previous_syncs_result(self, connector_cls: type) -> None:
+        conn = _directory_conn(connector_cls, [{"users": [_row("alice@corp.com", "1", ["a@corp.com"])]}, RuntimeError("down")])
+        conn._listing_cut = False
+        await connector_cls._sync_users(conn)
+        assert conn._users_listing_complete is True
+
+        with pytest.raises(RuntimeError):
+            await connector_cls._sync_users(conn)
+
+        assert conn._users_listing_complete is False
+        assert conn._listed_aliases == set()
+
+    @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
+    async def test_a_row_that_fails_to_process_makes_the_listing_incomplete(self, connector_cls: type) -> None:
+        broken = {"id": "2", "primaryEmail": "bob@corp.com", "name": "not-a-mapping"}
+        conn = _directory_conn(connector_cls, [{"users": [_row("alice@corp.com", "1"), broken]}])
+        conn._listing_cut = False
+
+        await connector_cls._sync_users(conn)
+
+        assert conn._users_listing_complete is False
+
+    @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
+    async def test_a_row_without_an_email_does_not_make_the_listing_incomplete(self, connector_cls: type) -> None:
+        conn = _directory_conn(connector_cls, [{"users": [_row("alice@corp.com", "1"), {"id": "9"}]}])
+        conn._listing_cut = False
+
+        await connector_cls._sync_users(conn)
+
+        assert conn._users_listing_complete is True
+
     @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
     async def test_aliases_of_listed_users_are_passed_but_not_the_admins(self, connector_cls: type) -> None:
         conn = _directory_conn(
@@ -418,6 +459,7 @@ class TestGoogleWorkspaceListing:
 
         assert conn._listed_aliases == {"alice.a@corp.com", "alice@old.corp.com"}
 
+class TestSlackWorkspace:
     def _conn(self, auth: dict | None = None, error: Exception | None = None, authenticator: str | None = None) -> MagicMock:
         datasource = MagicMock()
         datasource.auth_test = AsyncMock(return_value=SimpleNamespace(success=True, data=auth), side_effect=error)

@@ -1441,6 +1441,8 @@ class GoogleGmailTeamConnector(BaseConnector):
 
     async def _sync_users(self) -> None:
         """Sync all users from Google Workspace Admin API."""
+        self._listed_aliases = set()
+        self._users_listing_complete = False
         try:
             if not self.admin_data_source:
                 self.logger.error("Admin data source not initialized. Call init() first.")
@@ -1451,6 +1453,8 @@ class GoogleGmailTeamConnector(BaseConnector):
             page_token: Optional[str] = None
             listed_aliases: set[str] = set()
             listing_complete = True
+            row_failed = False
+            pages_read = 0
             admin_address = (
                 (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail") or ""
             ).strip().lower()
@@ -1468,9 +1472,10 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                     users_data = result.get("users", [])
                     if not users_data:
-                        # More follows an empty page: users may be missing.
-                        listing_complete = not result.get("nextPageToken")
+                        # An empty page after users may be a cut listing, with or without a token.
+                        listing_complete = not (result.get("nextPageToken") or pages_read)
                         break
+                    pages_read += 1
 
                     # Transform Google user dictionaries to AppUser objects
                     for user in users_data:
@@ -1531,6 +1536,8 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                         except Exception as e:
                             self.logger.error(f"Error processing user {user.get('id', 'unknown')}: {e}", exc_info=True)
+                            # The creator's own row may be the one lost, which would make them look unlisted.
+                            row_failed = True
                             continue
 
                     # Check for next page
@@ -1545,7 +1552,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     raise
 
             self._listed_aliases = listed_aliases
-            self._users_listing_complete = listing_complete
+            self._users_listing_complete = listing_complete and not row_failed
 
             if not all_users:
                 self.logger.warning("No users found in Google Workspace")
