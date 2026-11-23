@@ -34,4 +34,7 @@ export enum EmailTemplateType {
   JoinRequestDecision = 'joinRequestDecision',
   SandboxCapacityAlert = 'sandboxCapacityAlert',
   ConnectorAccountConnect = 'connectorAccountConnect',
+  SupportRequest = 'supportRequest',
+  FeedbackReceived = 'feedbackReceived',
+  FeedbackCopy = 'feedbackCopy',
 }
