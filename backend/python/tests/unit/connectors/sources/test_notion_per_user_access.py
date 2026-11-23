@@ -31,8 +31,8 @@ from app.connectors.sources.notion.per_user import (
     active_connection,
     check_identity,
     parse_identity,
-    with_user_grant,
 )
+from app.ee.permission_sync.notion_per_user import with_user_grant
 from app.models.entities import RecordGroup, RecordType
 from app.models.permission import EntityType, PermissionType
 
@@ -72,6 +72,7 @@ def _connector(scope: str = "team") -> NotionConnector:
     ):
         setattr(dep, name, AsyncMock())
     dep.get_all_app_users.return_value = []
+    dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed: the per-user grant is read
     connector = NotionConnector(
         logger=MagicMock(), data_entities_processor=dep, data_store_provider=MagicMock(),
         config_service=AsyncMock(), connector_id="notion-1", scope=scope, created_by="admin",

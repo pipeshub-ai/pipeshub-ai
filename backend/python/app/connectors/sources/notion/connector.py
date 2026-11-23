@@ -143,9 +143,8 @@ from app.connectors.sources.notion.per_user import (
     active_connection,
     refresh_connection,
     refresh_lock,
-    user_grant,
-    with_user_grant,
 )
+from app.ee.permission_sync.notion_per_user import NotionPerUserPermissionsMixin, user_grant
 from app.sources.external.notion.notion import NotionDataSource
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
@@ -444,7 +443,7 @@ class UnconvertibleImageError(Exception):
         ))
     )\
     .build_decorator()
-class NotionConnector(BaseConnector):
+class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
     """Notion connector for syncing pages, databases, and users."""
 
     # Constants for external_record_id parsing
@@ -1993,9 +1992,8 @@ class NotionConnector(BaseConnector):
         if not indexing_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-        connection = active_connection()
-        row = with_user_grant(record, [], connection) if connection else (record, [])
-        await self.data_entities_processor.on_new_records([row])
+        rows = await self._with_user_grants([(record, [])], active_connection())
+        await self.data_entities_processor.on_new_records(rows)
         self.logger.info(
             "Placeholder sweep: resolved %s -> %r",
             stub.external_record_id, record.record_name,
@@ -3128,9 +3126,7 @@ class NotionConnector(BaseConnector):
         """
         if not rows:
             return
-        connection = active_connection()
-        if connection is not None:
-            rows = [with_user_grant(record, permissions, connection) for record, permissions in rows]
+        rows = await self._with_user_grants(rows, active_connection())
         routed = []
         for record, permissions in rows:
             existing = await self.data_entities_processor.get_record_by_external_id(
