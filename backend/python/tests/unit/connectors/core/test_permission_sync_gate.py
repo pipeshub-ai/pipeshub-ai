@@ -112,12 +112,15 @@ def _no_writes(tx_store: AsyncMock) -> list[str]:
     # Exactly what the Node licence check writes (license.service.ts): only ``allowed`` decides.
     ({"allowed": True, "until": "2999-12-23T12:00:00.000Z", "status": "active"}, True),
     ({"allowed": True, "until": "2999-12-23T12:00:00.000Z", "status": "grace"}, True),
+    ({"allowed": True, "until": "2999-12-23T12:00:00.000Z", "status": "expiring"}, True),
     ({"allowed": True, "until": None, "status": "active"}, True),  # no end given
     ({"allowed": False, "until": None, "status": "expired"}, False),
     ({"allowed": False, "until": None, "status": "active"}, False),  # a licence without the feature
+    ({"allowed": False, "until": None, "status": "none"}, False),  # files installed, none verifying here
     # The backstop: an answer whose ``until`` has passed is stale (Node stopped checking), so it is not licensed.
     ({"allowed": True, "until": "2000-01-01T00:00:00.000Z", "status": "active"}, False),
     ({"allowed": True, "until": "2000-01-01T00:00:00+05:30", "status": "grace"}, False),
+    ({"allowed": True, "until": "2000-01-01T00:00:00.000Z", "status": "expiring"}, False),
     # An ``until`` that is not an ISO time with a zone is malformed: not licensed.
     ({"allowed": True, "until": "soon", "status": "active"}, False),
     ({"allowed": True, "until": 4102444800, "status": "active"}, False),
