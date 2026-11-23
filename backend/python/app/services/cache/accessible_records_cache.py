@@ -545,13 +545,17 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         epochs = [key for key in keys if self._is_epoch_key(key)]
         others = [key for key in keys if not self._is_epoch_key(key)]
         client = self._client()
-        for key in epochs:  # one connector per change, so one script call
-            await seeded_incr(self._epoch_client(), key, 1)
-        if others:
-            async with client.pipeline(transaction=False) as pipe:
-                for key in others:
-                    pipe.delete(key)
-                await pipe.execute()
+        try:
+            for key in epochs:  # one connector per change, so one script call
+                await seeded_incr(self._epoch_client(), key, 1)
+        finally:
+            # Epochs and maps can be on different Redis servers: a failed bump must not keep the maps. The bump's error
+            # still propagates, so every key stays queued and the retry bumps again before it deletes.
+            if others:
+                async with client.pipeline(transaction=False) as pipe:
+                    for key in others:
+                        pipe.delete(key)
+                    await pipe.execute()
 
     def _retry_later(self, keys: tuple[str, ...]) -> None:
         """Queue keys for the one retry task on this loop, starting it if none runs.

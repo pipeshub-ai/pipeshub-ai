@@ -726,6 +726,24 @@ class TestFillFromBeforeAChangeIsNeverWritten:
         assert await fill == {"old": "r"}, "the search itself is still answered"
         assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
 
+    async def test_a_failed_epoch_bump_still_drops_the_maps_and_retries(self) -> None:
+        # The main Redis (epochs) is down while the cache Redis (maps) is up: the maps must still go, or other workers keep
+        # serving the map from before the change, and the bump must be retried.
+        class _MainDown(FakeRedis):
+            async def eval(self, script, numkeys, key, by) -> list:
+                raise ConnectionError("main redis down")
+
+        main, maps = _MainDown(), FakeRedis()
+        cache = AccessibleRecordsCache(MagicMock(), maps, 300, True, epoch_client=main)
+        maps.hashes[cache._user_connector_key(ORG, CONNECTOR)] = {USER: "{}"}
+        maps.strings[cache._app_connector_key(ORG, CONNECTOR)] = "{}"
+
+        await cache.invalidate_connector(ORG, CONNECTOR)
+
+        assert cache._user_connector_key(ORG, CONNECTOR) not in maps.hashes
+        assert cache._app_connector_key(ORG, CONNECTOR) not in maps.strings
+        assert cache._connector_epoch_key(ORG, CONNECTOR) in cache._pending_deletes  # the bump is retried
+
     async def test_epochs_live_on_the_main_redis_and_survive_a_flush_of_the_cache_redis(self) -> None:
         # The cache Redis may evict anything; only the maps live there. The epoch that rejects a fill from before a
         # change stays on the main Redis, so losing every map is a miss, never a stale write.
