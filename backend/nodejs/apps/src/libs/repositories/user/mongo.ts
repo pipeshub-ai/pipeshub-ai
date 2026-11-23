@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
-import mongoose from 'mongoose';
-import { Users } from '../../../modules/user_management/schema/users.schema';
+import mongoose, { type UpdateQuery } from 'mongoose';
+import {
+  Users,
+  type User,
+} from '../../../modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../modules/user_management/schema/userGroup.schema';
 import { Org } from '../../../modules/user_management/schema/org.schema';
 import { UserCredentials } from '../../../modules/auth/schema/userCredentials.schema';
@@ -761,15 +764,27 @@ export class MongoUserRepository implements UserRepository {
   async markDeleted(
     orgId: string,
     id: string,
-    extra?: { signedOut?: boolean; deletedBy?: string },
+    extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null> {
-    const user = await Users.findOne({ orgId, _id: id });
-    if (!user) return null;
-    user.isDeleted = true;
-    if (extra?.signedOut) user.hasLoggedIn = false;
-    if (extra && 'deletedBy' in extra) user.deletedBy = extra.deletedBy;
-    await user.save();
-    return dto(user);
+    const $set: Partial<User> = { isDeleted: true };
+    if (extra?.signedOut) $set.hasLoggedIn = false;
+    const update: UpdateQuery<User> = { $set };
+    if (extra && 'deletedBy' in extra) {
+      if (extra.deletedBy === undefined) update.$unset = { deletedBy: '' };
+      else $set.deletedBy = extra.deletedBy;
+    }
+    // One conditional write: the role is judged by the store at the moment it removes the account.
+    // `$ne` rather than 'member': a row from before the role backfill has no role and reads as a member.
+    const row = await Users.findOneAndUpdate(
+      {
+        orgId,
+        _id: id,
+        ...(extra?.onlyMember ? { role: { $ne: 'admin' } } : {}),
+      },
+      update,
+      { returnDocument: 'after' },
+    ).exec();
+    return row ? dto(row) : null;
   }
 
   async restoreByEmails(

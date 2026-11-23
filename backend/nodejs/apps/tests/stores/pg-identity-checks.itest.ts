@@ -21,9 +21,13 @@ import {
   MAX_ORG_ADMINS,
   createUserEnsuringAdminCap,
   saveUserEnsuringAdminCap,
+  saveUserEnsuringOrgRetainsAdmin,
 } from '../../src/modules/user_management/services/user-admin.service';
 import { createOrgLikeSignUp } from './contract/rest.contract';
 import { adminInviter, withoutSideStores } from './admin-invite-race';
+import { deleteRace, gate, waitUntil, type DeleteOutcome, type DeleteRace } from './admin-delete-race';
+import { USER_PROMOTED_DURING_DELETE } from '../../src/modules/user_management/controller/users.controller';
+import type { UserRepository } from '../../src/libs/repositories/user/types';
 import { IdentityWorld } from './pg-identity-harness';
 import {
   OrgLedger,
@@ -356,6 +360,84 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           }
           expect(caught).to.be.instanceOf(UniqueConstraintError);
           expect(String((caught as UniqueConstraintError).metadata?.key)).to.include('email');
+        });
+      });
+
+      describe('deleting a member who is made an admin meanwhile', () => {
+        let race: DeleteRace;
+        let savedDocStore: string | undefined;
+        before(() => {
+          savedDocStore = process.env.DOC_STORE;
+          process.env.DOC_STORE = 'postgres';
+          setUserRepository(users);
+          race = deleteRace(false);
+        });
+        afterEach(() => setUserRepository(users));
+        after(() => {
+          race.restore();
+          setUserRepository();
+          if (savedDocStore === undefined) delete process.env.DOC_STORE;
+          else process.env.DOC_STORE = savedDocStore;
+        });
+
+        const expectKeptAsAdmin = async (org: string, u: string, a: string, outcome: DeleteOutcome) => {
+          expect(outcome.status).to.equal('refused');
+          const error = (outcome as { error: Error }).error;
+          expect(error).to.be.instanceOf(BadRequestError);
+          expect(error.message).to.equal(USER_PROMOTED_DURING_DELETE);
+          expect(await inOrg(org, () => users.getAny(org, u))).to.include({ role: 'admin', isDeleted: false });
+          expect(await inOrg(org, () => users.getAny(org, a))).to.include({ role: 'member' });
+          expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(1);
+        };
+
+        it('a delete that checked a member, then saw them promoted and the other admin demoted, keeps them: the org keeps its admin', async () => {
+          const org = await world.newOrg();
+          const a = await world.adminOf(org);
+          const u = (await account(org))._id;
+          const del = inOrg(org, () => race.start(org, a, u), a);
+          await del.parked;
+          await inOrg(org, () => saveUserEnsuringAdminCap(org, u, { role: 'admin' }, false), a);
+          await inOrg(org, () => saveUserEnsuringOrgRetainsAdmin(org, a, { role: 'member' }, false), a);
+          del.release();
+          await expectKeptAsAdmin(org, u, a, await del.done);
+        });
+
+        it('a removal sent while the promotion holds the row lock waits for it, then keeps the new admin', async () => {
+          const org = await world.newOrg();
+          const a = await world.adminOf(org);
+          const u = (await account(org))._id;
+          const written = gate();
+          const commit = gate();
+          setUserRepository(new Proxy(users, {
+            get: (t, k: keyof UserRepository) => (k === 'updateProfile'
+              ? async (...args: Parameters<UserRepository['updateProfile']>) => {
+                const saved = await users.updateProfile(...args);
+                written.open();
+                await commit.opened; // still inside the unit, holding the row lock
+                return saved;
+              }
+              : (t[k] as (...x: unknown[]) => unknown).bind(t)),
+          }) as UserRepository);
+          const del = inOrg(org, () => race.start(org, a, u), a);
+          await del.parked;
+          const promotion = inOrg(org, () => saveUserEnsuringAdminCap(org, u, { role: 'admin' }, false), a);
+          let settled = false;
+          try {
+            await written.opened;
+            del.release();
+            void del.done.then(() => { settled = true; });
+            await waitUntil('the removal waits on the row lock', async () =>
+              (await count(
+                "SELECT count(*) AS n FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%identity.user_mark_deleted%'",
+              )) > 0);
+            expect(settled, 'the removal finished before the promotion committed').to.equal(false);
+          } finally {
+            commit.open();
+          }
+          await promotion;
+          setUserRepository(users);
+          await inOrg(org, () => saveUserEnsuringOrgRetainsAdmin(org, a, { role: 'member' }, false), a);
+          await expectKeptAsAdmin(org, u, a, await del.done);
         });
       });
 

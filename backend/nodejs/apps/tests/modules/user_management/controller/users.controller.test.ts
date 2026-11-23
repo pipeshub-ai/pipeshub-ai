@@ -3,8 +3,8 @@ import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { UserController, USER_DELETE_NOT_RECORDED, isValidEmail } from '../../../../src/modules/user_management/controller/users.controller';
-import { ConflictError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
+import { UserController, USER_DELETE_NOT_RECORDED, USER_PROMOTED_DURING_DELETE, isValidEmail } from '../../../../src/modules/user_management/controller/users.controller';
+import { BadRequestError, ConflictError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
@@ -39,6 +39,16 @@ function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
   chain.lean.returns(chain);
   sinon.stub(OAuthApp, 'find').returns(chain as unknown as ReturnType<typeof OAuthApp.find>);
   sinon.stub(OAuthApp, 'updateMany').resolves({ modifiedCount: 0 } as any);
+}
+
+/**
+ * The removal `deleteUser` ends with: one conditional `Users.findOneAndUpdate(...).exec()`. `removed` is what the
+ * store answers (the row, or null when it no longer matched).
+ */
+function stubRemoval(removed: unknown) {
+  return sinon.stub(Users, 'findOneAndUpdate').returns({
+    exec: sinon.stub().resolves(removed),
+  } as any);
 }
 
 /** isUserOrgAdmin uses Users.findOne().select('role').lean() when invite has groupIds or role=admin. */
@@ -2075,7 +2085,6 @@ describe('UserController', () => {
         isDeleted: false,
         hasLoggedIn: true,
         role: 'member',
-        save: sinon.stub().resolves(),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2083,12 +2092,16 @@ describe('UserController', () => {
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       const recordActivity = sinon.stub(UserActivities, 'create').resolves({} as any);
+      const removal = stubRemoval({ ...mockUser, isDeleted: true, hasLoggedIn: false });
 
       await controller.deleteUser(req, res, next);
 
-      expect(mockUser.isDeleted).to.be.true;
-      expect(mockUser.hasLoggedIn).to.be.false;
-      expect(mockUser.save.calledOnce).to.be.true;
+      expect(removal.calledOnce).to.be.true;
+      const [filter, update] = removal.firstCall.args as any[];
+      // Removed only while still a member, so a promotion since the check cannot be undone by it.
+      expect(filter.role).to.deep.equal({ $ne: 'admin' });
+      expect(String(filter._id)).to.equal(String(mockUser._id));
+      expect(update.$set).to.deep.equal({ isDeleted: true, hasLoggedIn: false, deletedBy: req.user.userId });
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
       expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
       expect(
@@ -2101,7 +2114,32 @@ describe('UserController', () => {
       ).to.be.true;
       // Recorded before anything is changed, so a deletion always leaves one.
       expect(recordActivity.calledBefore(UserGroups.updateMany as sinon.SinonStub)).to.be.true;
-      expect(recordActivity.calledBefore(mockUser.save)).to.be.true;
+      expect(recordActivity.calledBefore(removal)).to.be.true;
+    });
+
+    it('keeps the account, publishes nothing and says what was already removed when the person was made an admin meanwhile', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      sinon.stub(Users, 'findOne').resolves({
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'test@test.com',
+        isDeleted: false,
+        role: 'member',
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      // The store no longer finds a member to remove: someone promoted them since the check.
+      stubRemoval(null);
+
+      await controller.deleteUser(req, res, next);
+
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(BadRequestError);
+      expect(error.message).to.equal(USER_PROMOTED_DURING_DELETE);
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.json.called).to.be.false;
     });
 
     it('deletes nothing, and says to retry, when the deletion cannot be recorded', async () => {
@@ -2112,21 +2150,20 @@ describe('UserController', () => {
         email: 'test@test.com',
         isDeleted: false,
         role: 'member',
-        save: sinon.stub().resolves(),
       };
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').rejects(new Error('mongo timeout'));
+      const removal = stubRemoval(mockUser);
 
       await controller.deleteUser(req, res, next);
 
       const error = next.firstCall.args[0];
       expect(error).to.be.instanceOf(ServiceUnavailableError);
       expect(error.message).to.equal(USER_DELETE_NOT_RECORDED);
-      expect(mockUser.isDeleted).to.be.false;
-      expect(mockUser.save.called).to.be.false;
+      expect(removal.called).to.be.false;
       expect((UserGroups.updateMany as sinon.SinonStub).called).to.be.false;
       expect((UserCredentials.updateOne as sinon.SinonStub).called).to.be.false;
       expect(mockEventService.publishEvent.called).to.be.false;
@@ -4440,21 +4477,20 @@ describe('UserController', () => {
         isDeleted: false,
         hasLoggedIn: true,
         role: 'member',
-        save: sinon.stub().resolves(),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      const removal = stubRemoval({ ...mockUser, isDeleted: true, hasLoggedIn: false });
 
       await controller.deleteUser(req, res, next);
 
       expect(res.json.calledOnce).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
       expect(jsonArg.message).to.equal('User deleted successfully');
-      expect(mockUser.isDeleted).to.be.true;
-      expect(mockUser.hasLoggedIn).to.be.false;
+      expect((removal.firstCall.args as any[])[1].$set).to.include({ isDeleted: true, hasLoggedIn: false });
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
     });
   });
@@ -4476,7 +4512,7 @@ describe('UserController', () => {
 
     function stubDeletedMember() {
       req.params = { id: String(deletedUserOid) };
-      sinon.stub(Users, 'findOne').resolves({
+      const member = {
         _id: deletedUserOid,
         orgId: orgOid,
         email: 'oauth-owner@test.com',
@@ -4484,8 +4520,9 @@ describe('UserController', () => {
         isDeleted: false,
         hasLoggedIn: true,
         role: 'member',
-        save: sinon.stub().resolves(),
-      } as any);
+      };
+      sinon.stub(Users, 'findOne').resolves(member as any);
+      stubRemoval({ ...member, isDeleted: true });
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
     }
