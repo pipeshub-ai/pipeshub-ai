@@ -1024,10 +1024,14 @@ export class UserController {
     email: string,
     orgId: string,
     groupIds: string[] | undefined,
+    // Runs once the account is a person, before it joins anything: the role
+    // of an account created from Slack cannot be written until then.
+    promote?: () => Promise<void>,
   ): Promise<boolean> {
     if (!(await upgradeSlackOnlyAccount(userId, orgId))) return false;
     let groupWriteAttempted = false;
     try {
+      if (promote) await promote();
       groupWriteAttempted = true;
       if (groupIds && groupIds.length > 0) {
         await getGroupRepository().addMemberToGroups(orgId, groupIds, userId);
@@ -1047,7 +1051,12 @@ export class UserController {
       });
       return true;
     } catch (error) {
-      await this.undoSlackOnlyUpgrade(userId, orgId, groupWriteAttempted);
+      await this.undoSlackOnlyUpgrade(
+        userId,
+        orgId,
+        groupWriteAttempted,
+        promote ? { role: 'member' } : {},
+      );
       throw error;
     }
   }
@@ -2485,7 +2494,10 @@ export class UserController {
             )
           : [];
       if (inviteRole === 'admin') {
+        // An account created from Slack cannot hold the role yet: it is made an
+        // administrator after it has been upgraded, below.
         const ids = [...restored, ...created, ...pendingToPromote]
+          .filter((user) => !isSlackOnlyAccount(user))
           .map((user) => user._id)
           .filter(Boolean);
         if (ids.length > 0) await users.promoteToAdmin(orgId, ids, tx);
@@ -2524,20 +2536,40 @@ export class UserController {
     }
 
     // Inviting a Slack-only account upgrades it in place, so the Slack threads
-    // it already has stay its own. Each upgrade is finished (groups, event)
-    // or undone before the batch goes on. A blocked one is left as it is.
+    // it already has stay its own. Each upgrade is finished (role, groups,
+    // event) or undone before the batch goes on, and one that fails does not
+    // stop the other addresses: they are completed too, and the first failure
+    // is raised once the whole batch has been handled. A blocked one is left
+    // as it is.
     const upgradedIds = new Set<string>();
+    const failedSlackOnlyIds = new Set<string>();
+    let slackOnlyFailure: { error: unknown } | undefined;
+    const rsAvailable = this.config.rsAvailable === 'true';
     for (const user of [...pendingUsersToReinvite, ...restoredUsers]) {
-      if (
-        isSlackOnlyAccount(user) &&
-        (await this.completeSlackOnlyInvite(
+      if (!isSlackOnlyAccount(user)) continue;
+      const makeAdmin =
+        inviteRole === 'admin' && normalizeUserRole(user.role) !== 'admin';
+      try {
+        const upgraded = await this.completeSlackOnlyInvite(
           user._id,
           user.email,
           orgId,
           groupIds,
-        ))
-      ) {
-        upgradedIds.add(user._id);
+          makeAdmin
+            ? async () => {
+                await writeEnsuringAdminCap(
+                  orgId,
+                  rsAvailable,
+                  (tx) => users.promoteToAdmin(orgId, [user._id], tx),
+                  () => users.setRole(orgId, user._id, 'member'),
+                );
+              }
+            : undefined,
+        );
+        if (upgraded) upgradedIds.add(user._id);
+      } catch (error) {
+        failedSlackOnlyIds.add(user._id);
+        slackOnlyFailure ??= { error };
       }
     }
 
@@ -2570,6 +2602,7 @@ export class UserController {
         (user) => normalizeUserRole(user.role) !== 'admin',
       );
       for (const promoted of [...restoredMembers, ...pendingToPromote]) {
+        if (failedSlackOnlyIds.has(promoted._id)) continue;
         auditUserChange('user.role.change', promoted._id, 'promote');
       }
     }
@@ -2602,7 +2635,9 @@ export class UserController {
     const pendingUserByEmail = new Map(
       pendingUsersToReinvite.map((user) => [user.email, user]),
     );
+    // An account whose upgrade was undone is back to Slack-only: it is not mailed.
     const emailsForPendingAccounts = pendingUsersToReinvite
+      .filter((user) => !failedSlackOnlyIds.has(user._id))
       .map((user) => user.email)
       .filter((email): email is string => Boolean(email));
     const emailsForInvites = [
@@ -2670,6 +2705,7 @@ export class UserController {
           'User ID missing while inviting restored user. Please ensure user restoration was successful.',
         );
       }
+      if (failedSlackOnlyIds.has(userId)) continue;
       // An upgraded Slack-only account was announced when it was upgraded.
       if (!upgradedIds.has(userId)) {
         const event: Event = {
@@ -2700,6 +2736,10 @@ export class UserController {
         mailErrorCode = statusCode;
       }
     }
+
+    // The rest of the batch is whole; the account that could not be upgraded
+    // was put back as it was, so the same invite can be sent again.
+    if (slackOnlyFailure) throw slackOnlyFailure.error;
 
     return {
       invited: newUsers.length,

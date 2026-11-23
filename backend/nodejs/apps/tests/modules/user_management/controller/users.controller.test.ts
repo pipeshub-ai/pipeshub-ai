@@ -6617,6 +6617,131 @@ describe('UserController', () => {
       expect(mockEventService.publishEvent.called).to.be.false;
     });
 
+    describe('an invite that makes administrators', () => {
+      const invite = (emails: string[]) =>
+        (controller as any).processInvites(emails, [], orgId, 'Admin', { registeredName: 'Acme' }, 'admin');
+      const adminStubs = () => ({
+        count: sinon.stub(users, 'countActiveAdmins').resolves(1),
+        promote: sinon.stub(users, 'promoteToAdmin').callsFake(async (_o: string, ids: string[]) => {
+          // The stores refuse to make an account created from Slack an administrator.
+          if (ids.includes(slackId)) throw new Error('An account created from Slack cannot be an administrator');
+        }),
+        setRole: sinon.stub(users, 'setRole').resolves(),
+        deleteById: sinon.stub(users, 'deleteById').resolves(),
+      });
+      let slackId: string;
+      let newId: string;
+      beforeEach(() => {
+        newId = new mongoose.Types.ObjectId().toHexString();
+      });
+
+      it('upgrades a Slack-only account first and only then makes it an administrator', async () => {
+        const sam = slackRow();
+        slackId = sam._id;
+        const { upgrade, everyone } = inviteStubs(sam);
+        const { promote } = adminStubs();
+        // The upgrade turns the row into a person; only then may the role be written.
+        upgrade.callsFake(async () => {
+          slackId = '';
+          return true;
+        });
+
+        await invite(['sam@acme.test']);
+
+        expect(promote.calledOnce, 'promoted once').to.be.true;
+        expect(promote.firstCall.args[1]).to.deep.equal([sam._id]);
+        expect(upgrade.calledBefore(promote), 'upgraded before promoted').to.be.true;
+        expect(everyone.calledWith(orgId, sam._id)).to.be.true;
+        expect(mockMailService.sendMail.calledOnce).to.be.true;
+      });
+
+      it('in a batch with a new address, the new address is made an administrator in the grant and the Slack-only one after its upgrade', async () => {
+        const sam = slackRow();
+        slackId = sam._id;
+        const { upgrade, create } = inviteStubs(sam);
+        const { promote } = adminStubs();
+        upgrade.callsFake(async () => {
+          slackId = '';
+          return true;
+        });
+        create.resolves([{ _id: newId, email: 'new@acme.test', orgId } as any]);
+
+        await invite(['sam@acme.test', 'new@acme.test']);
+
+        expect(promote.getCalls().map((c) => c.args[1])).to.deep.equal([[newId], [sam._id]]);
+        expect(upgrade.calledBefore(promote.secondCall)).to.be.true;
+        expect(mockMailService.sendMail.callCount, 'both are mailed').to.equal(2);
+      });
+
+      it('does not write an administrator over the cap: the Slack-only account stays as it was', async () => {
+        const sam = slackRow();
+        slackId = sam._id;
+        const { upgrade, restore } = inviteStubs(sam);
+        const { count } = adminStubs();
+        count.resolves(5);
+
+        let error: any;
+        try {
+          await invite(['sam@acme.test']);
+        } catch (e) {
+          error = e;
+        }
+
+        expect(error?.message).to.match(/at most/);
+        expect(upgrade.called, 'not upgraded').to.be.false;
+        expect(restore.called).to.be.false;
+        expect(mockMailService.sendMail.called).to.be.false;
+      });
+
+      it('undoes the upgrade when the promotion fails, and still finishes the other addresses', async () => {
+        const sam = slackRow();
+        slackId = sam._id; // stays Slack-only for the stub: the promotion fails
+        const { upgrade, restore, leave, create, everyone } = inviteStubs(sam);
+        adminStubs();
+        create.resolves([{ _id: newId, email: 'new@acme.test', orgId } as any]);
+        mockEventService.publishEvent.resetHistory();
+
+        let error: any;
+        try {
+          await invite(['sam@acme.test', 'new@acme.test']);
+        } catch (e) {
+          error = e;
+        }
+
+        expect(error?.message).to.match(/cannot be an administrator/);
+        expect(upgrade.calledOnce).to.be.true;
+        expect(restore.getCalls().some((c) => c.args[1] === sam._id && (c.args[2] as any).kind === 'slack'), 'put back').to.be.true;
+        expect(leave.called, 'it joined no group, so none to leave').to.be.false;
+        // The new address is whole: in everyone, announced, mailed. Nothing is left half done.
+        expect(everyone.calledWith(orgId, newId)).to.be.true;
+        expect(mockEventService.publishEvent.getCalls().map((c) => c.args[0].payload.userId)).to.deep.equal([newId]);
+        expect(mockMailService.sendMail.callCount).to.equal(1);
+        expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['new@acme.test']);
+      });
+
+      it('a plain invite that fails for the Slack-only account does not orphan the new address either', async () => {
+        const sam = slackRow();
+        const { create, everyone } = inviteStubs(sam);
+        create.resolves([{ _id: newId, email: 'new@acme.test', orgId } as any]);
+        everyone.callsFake(async (_o: string, id: string) => {
+          if (id === sam._id) throw new Error('groups down');
+        });
+        mockEventService.publishEvent.resetHistory();
+
+        let error: any;
+        try {
+          await (controller as any).processInvites(['sam@acme.test', 'new@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+        } catch (e) {
+          error = e;
+        }
+
+        expect(error?.message).to.equal('groups down');
+        expect(everyone.calledWith(orgId, newId)).to.be.true;
+        expect(mockEventService.publishEvent.getCalls().map((c) => c.args[0].payload.userId)).to.deep.equal([newId]);
+        expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['new@acme.test']);
+      });
+    });
+
     it('add user upgrades the same record instead of refusing the duplicate', async () => {
       const sam = slackRow();
       req.body = { email: 'sam@acme.test', designation: 'Engineer' };
