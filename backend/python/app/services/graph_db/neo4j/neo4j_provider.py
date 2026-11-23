@@ -13,6 +13,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -75,7 +76,7 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
-from app.core.org_context import MissingOrgContext, spawn_in_request
+from app.core.org_context import MissingOrgContext, spawn_detached, spawn_in_request
 from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
@@ -20974,7 +20975,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _kh_plan_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
         """``parameters`` as the plan cache tells them apart, by name and type: every list emptied, in a map as well, so a
         statement kept for planning again does not hold a request's grant lists."""
-        def typed(value: Any) -> Any:
+        def typed(value: object) -> object:
             if isinstance(value, list):
                 return []
             if isinstance(value, dict):
@@ -20982,7 +20983,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return value
         return {k: typed(v) for k, v in parameters.items()}
 
+    @staticmethod
+    def _kh_size_class(value: object) -> int | None:
+        """The size class a plan-cache key gives a top-level string or list parameter (0, 1, then powers of ten); None for others.
+        A list inside a map carries no size (`_kh_query`), so only top-level values count."""
+        if not isinstance(value, (str, list)):
+            return None
+        n = len(value)
+        return n if n <= 1 else 10 ** math.ceil(math.log10(n))
+
     def _kh_seen(self, key: str, query: str, parameters: dict[str, Any]) -> None:
+        # One entry per size class as well: a search string of another length is another cached plan, kept fresh on its own.
+        sizes = sorted((k, c) for k, v in parameters.items() if (c := self._kh_size_class(v)) is not None)
+        if sizes:
+            key = f"{key}|{sizes}"
         seen, now = self._kh_statements(), time.monotonic()
         entry = seen.get(key)
         if entry is not None:
@@ -21090,11 +21104,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if time.monotonic() < state["next"]:
             return
         if state["check"] is None or state["check"].done():
-            state["check"] = asyncio.ensure_future(self._kh_read_server_start(state))
-        try:
+            # Server-wide, shared by every request that waits on it: its own context, not the first caller's.
+            state["check"] = spawn_detached(self._kh_read_server_start(state), name="kh-server-start")
+        with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(asyncio.shield(state["check"]), self._kh_time_left(self._KH_SERVER_WAIT_S))
-        except asyncio.TimeoutError:
-            pass
 
     async def _kh_read_server_start(self, state: dict[str, Any]) -> None:
         try:
@@ -21255,14 +21268,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return holders, {}
         rows = await self.client.execute_query(
             f"""
-            UNWIND $holders AS kh_h
-            MATCH (kh_g:User|Group|Role|Teams|Organization {{id: kh_h[0]}})
-            MATCH (kh_g)-[kh_p:PERMISSION]->(kh_n:Record|RecordGroup)
-            WHERE kh_n.connectorId IN $others AND (kh_h[1] IS NULL OR kh_n.connectorId = kh_h[1])
-              AND NOT coalesce(kh_n.isDeleted, false) AND {_cypher_grant_edge("kh_g", "kh_p")}
-            WITH DISTINCT kh_n.connectorId AS app, kh_n.id AS id ORDER BY id
-            WITH app, collect(id) AS ids
-            RETURN app, ids[0..$limit] AS ids
+            UNWIND $others AS app
+            // Bounded per connector before collecting, as `_kh_v3_cross_read`: a connector holds at most the bound + 1 ids.
+            CALL (app) {{
+                UNWIND $holders AS kh_h
+                MATCH (kh_g:User|Group|Role|Teams|Organization {{id: kh_h[0]}})
+                MATCH (kh_g)-[kh_p:PERMISSION]->(kh_n:Record|RecordGroup)
+                WHERE kh_n.connectorId = app AND (kh_h[1] IS NULL OR kh_h[1] = app)
+                  AND NOT coalesce(kh_n.isDeleted, false) AND {_cypher_grant_edge("kh_g", "kh_p")}
+                WITH DISTINCT kh_n.id AS id ORDER BY id LIMIT $limit
+                RETURN collect(id) AS ids
+            }}
+            RETURN app, ids
             """,
             parameters={"holders": holders, "others": apps, "limit": self._KH_CROSS_MAX + 1}, plain=True,
         )

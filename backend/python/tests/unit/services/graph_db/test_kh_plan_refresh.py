@@ -71,10 +71,26 @@ async def test_a_failed_refresh_leaves_the_statement_for_the_next_run() -> None:
     age(p, 7200)
     await p._kh_query(QUERY, {"app_id": "a1", "gated": []})
 
-    async def down(*_a, **_k):
+    async def down(*_a: object, **_k: object) -> None:
         raise RuntimeError("unavailable")
 
     p.client = type("Down", (), {"execute_query": staticmethod(down)})()
     assert await p.kh_refresh_plans(max_age=3600) == 0
     p.client = client
     assert await p.kh_refresh_plans(max_age=3600) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_string_of_another_size_class_is_kept_and_planned_again_on_its_own() -> None:
+    # The plan cache keys a top-level string by its size class: "ab" and a 40-character search are two plans.
+    p, client = provider()
+    long_q = "x" * 40
+    for q in ("ab", long_q):
+        await p._kh_query(QUERY, {"app_id": "a1", "q": q, "gated": []})
+    assert len(p._kh_statements()) == 2
+    age(p, 7200)
+    for q in ("cd", "y" * 40):
+        await p._kh_query(QUERY, {"app_id": "a1", "q": q, "gated": []})
+    client.calls.clear()
+    assert await p.kh_refresh_plans(max_age=3600) == 2
+    assert sorted(len(c["parameters"]["q"]) for c in client.calls) == [2, 40]
