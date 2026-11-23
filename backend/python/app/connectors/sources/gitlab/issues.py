@@ -29,7 +29,6 @@ from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.base.sync_point.sync_point import FailedItems
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import Record, RecordGroupType, RecordType, Status, TicketRecord, ItemType
-from app.models.permission import EntityType, Permission, PermissionType
 from app.models.blocks import (
     BlockGroup,
     BlocksContainer,
@@ -38,11 +37,11 @@ from app.models.blocks import (
     GroupType,
 )
 from app.utils.time_conversion import datetime_to_epoch_ms, parse_timestamp, string_to_datetime
+from app.ee.permission_sync.gitlab import GitLabIssuesPermissionsMixin
 
 from app.models.blocks import wire_block_group_parent_children
 
 from .common.utils import parse_item_id_from_url
-from .projects import project_reader_ids
 from .models import GitlabLiterals, RecordUpdate
 
 # Work items split across two ACL groups: GitLab hides confidential issues from
@@ -56,7 +55,7 @@ if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
-class IssuesSync:
+class IssuesSync(GitLabIssuesPermissionsMixin):
     """Handles issue (work-item) synchronisation for ``GitLabConnector``."""
 
     def __init__(self, connector: "GitLabConnector") -> None:
@@ -282,61 +281,6 @@ class IssuesSync:
         except Exception as e:
             self.logger.error("Error processing issue/task/incident to ticket: %s", e, exc_info=True)
             return None
-
-    async def _confidential_exception_permissions(self, issue: Any) -> list[Permission]:
-        """Principals who see a confidential issue regardless of their project role.
-
-        Resolved through the same path as member permissions, so an author without a
-        resolvable identity is parked on a pseudo-group rather than dropped.
-        """
-        c = self.c
-        candidates: list[int] = []
-        author = getattr(issue, "author", None) or {}
-        people = [author, *(getattr(issue, "assignees", None) or [])]
-        # A blocked or banned author or assignee reads nothing on GitLab.
-        candidates.extend(
-            int(person["id"]) for person in people
-            if isinstance(person, dict) and person.get("id") is not None
-            and (person.get("state") or "active") == "active"
-        )
-        # The exception sits on top of reading the project: an author removed from it, or one
-        # who filed it while the project was public, reads nothing there on GitLab. The grant
-        # is direct, so it would outlive the project membership it depends on.
-        readers = await self._project_readers(issue.project_id)
-        if readers is None:
-            self.logger.warning(
-                "Members of project %s unreadable; confidential issue %s gets no author or assignee grant",
-                issue.project_id, getattr(issue, "iid", issue.id),
-            )
-            return []
-        candidates = [user_id for user_id in candidates if user_id in readers]
-
-        permissions: list[Permission] = []
-        seen: set[int] = set()
-        for user_id in candidates:
-            if user_id in seen:
-                continue
-            seen.add(user_id)
-            permission = await c.projects._create_permission_from_principal(
-                EntityType.USER.value,
-                str(user_id),
-                PermissionType.OWNER.value,
-                create_pseudo_group_if_missing=True,
-            )
-            if permission:
-                permissions.append(permission)
-        return permissions
-
-    async def _project_readers(self, project_id: int | str) -> set[int] | None:
-        """This run's reader ids of the project; read now when a reindex comes outside a sync. None if unknown."""
-        c = self.c
-        readers = c._project_reader_ids.get(int(project_id))
-        if readers is not None:
-            return readers
-        res = await c.runtime.ds_call(c.data_source.list_project_members_all, project_id=int(project_id), get_all=True)
-        if not res.success or not res.data:
-            return None
-        return project_reader_ids(res.data)
 
     # ------------------------------------------------------------------
     # Record persistence + checkpoint advancement

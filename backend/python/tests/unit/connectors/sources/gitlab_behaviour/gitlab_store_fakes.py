@@ -91,6 +91,9 @@ class FakeRecordsDb:
     async def has_stored_permissions(self, entity: str, connector_id: str, external_id: str, **_: object) -> bool:
         return bool(self.record_group_permissions.get(external_id))
 
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed
+
     # ------------------------------------------------------------------ writes
 
     async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:

@@ -29,7 +29,7 @@ from app.connectors.sources.linear.connector import (
 from app.connectors.sources.linear.listing_checkpoint import ListingCheckpoint
 from app.connectors.sources.linear.record_removal import RecordRemover
 from app.connectors.sources.linear.source_reconciler import SourceReconciler
-from app.connectors.sources.linear.team_access import WORKSPACE_MEMBERS_GROUP_ID
+from app.ee.permission_sync.linear_team_access import WORKSPACE_MEMBERS_GROUP_ID
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -70,6 +70,7 @@ def _memory_sync_point() -> MagicMock:
 
 def _make_connector() -> LinearConnector:
     processor = MagicMock()
+    processor.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     processor.org_id = "org-1"
     for name, value in (
         ("get_all_active_users", [MagicMock(email="alice@test.com")]),

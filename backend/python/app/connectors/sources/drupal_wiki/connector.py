@@ -92,9 +92,16 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.drupal_wiki.common.apps import DrupalWikiApp
+from app.connectors.sources.drupal_wiki.vocabulary import (
+    PAGE_SIZE,
+    SPACE_ACCESS_PRIVATE,
+    DrupalWikiAuthError,
+    DrupalWikiSyncError,
+    _as_int,
+)
+from app.ee.permission_sync.drupal_wiki import DrupalWikiPermissionsMixin
 from app.models.entities import (
     AppUser,
-    AppUserGroup,
     FileRecord,
     Record,
     RecordGroup,
@@ -102,7 +109,7 @@ from app.models.entities import (
     RecordType,
     WebpageRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import EntityType, Permission
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.drupal_wiki.drupal_wiki import (
     DrupalWikiClient,
@@ -173,12 +180,6 @@ def source_id_from_external(external_id: str, prefix: str) -> int | None:
 # ---------------------------------------------------------------------------
 # Spaces
 # ---------------------------------------------------------------------------
-SPACE_ACCESS_PRIVATE = "PRIVATE"
-SPACE_ACCESS_AUTHENTICATED = "AUTHENTICATED"
-SPACE_ACCESS_ANONYMOUS = "ANONYMOUS"
-# Everyone on the wiki can read these, so they map to an org-wide permission.
-OPEN_SPACE_ACCESS_STATUSES = frozenset({SPACE_ACCESS_AUTHENTICATED, SPACE_ACCESS_ANONYMOUS})
-
 # The only grants this connector writes on a private space. A stored space whose grants
 # include anything else (an org-wide one from when the space was open) cannot stand in
 # for a member list.
@@ -191,7 +192,6 @@ USER_STATUS_DISABLED = "DISABLED"
 # ---------------------------------------------------------------------------
 # Sync
 # ---------------------------------------------------------------------------
-PAGE_SIZE = 100  # the API allows up to 2000; 100 keeps responses small
 RECORD_BATCH_SIZE = 100
 
 
@@ -209,17 +209,6 @@ def _epoch_millis(seconds: int | str | None) -> int | None:
 # ============================================================================
 # Connector
 # ============================================================================
-
-class DrupalWikiSyncError(RuntimeError):
-    """A sync phase failed; the run is reported as failed and no checkpoint moves."""
-
-
-class DrupalWikiAuthError(RuntimeError):
-    """The wiki rejected the token. Nothing else can be read, so the run fails.
-
-    Not a ``DrupalWikiSyncError``: those are recorded and skipped one item at a time.
-    """
-
 
 @dataclass(frozen=True)
 class SpaceProblem:
@@ -336,14 +325,6 @@ def _edge_source_key(edge: dict[str, Any]) -> str | None:
     return str(source).split("/", 1)[-1] if source else None
 
 
-def _as_int(value: object) -> int | None:
-    """Ids arrive as numbers, strings or nulls depending on the endpoint."""
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
 @ConnectorBuilder("Drupal Wiki")\
     .in_group("Drupal Wiki")\
     .with_description("Sync spaces and pages from your Drupal Wiki instance")\
@@ -420,7 +401,7 @@ def _as_int(value: object) -> int | None:
         .with_agent_support(False)
     )\
     .build_decorator()
-class DrupalWikiConnector(BaseConnector):
+class DrupalWikiConnector(DrupalWikiPermissionsMixin, BaseConnector):
     """Syncs a Drupal Wiki instance: users, groups, spaces, pages and attachments."""
 
     def __init__(
@@ -831,77 +812,6 @@ class DrupalWikiConnector(BaseConnector):
             )
         return users_by_id
 
-    async def _sync_groups(self, users_by_id: dict[str, AppUser]) -> None:
-        """Sync every group with its members.
-
-        Membership is replaced wholesale, so a member removed in the wiki loses access
-        on the next run. Groups deleted in the wiki are left in place, as Jira's
-        connector does: their grants disappear anyway when space permissions are
-        rewritten, so a leftover group node grants nothing.
-        """
-        synced = 0
-        read: set[str] = set()
-        all_read = True
-        page = 0
-        while True:
-            payload = self._require_ok(
-                await self.data_source.list_groups(page=page, size=PAGE_SIZE), "reading the list of groups"
-            )
-            content = payload.get("content") or []
-            groups_with_members: list[tuple[AppUserGroup, list[AppUser]]] = []
-            for group in content:
-                group_id = _as_int(group.get("id"))
-                if group_id is None:
-                    self.logger.warning(
-                        "Ignoring a Drupal Wiki group that arrived without an id"
-                    )
-                    continue
-                try:
-                    detail = self._require_ok(
-                        await self.data_source.get_group(group_id), f"reading the members of group {group_id}"
-                    )
-                except DrupalWikiAuthError:
-                    raise
-                except Exception as e:
-                    # Passing an empty member list here would wipe the group's edges,
-                    # so a failed fetch leaves the previous membership in place.
-                    self._fail(
-                        str(e) if isinstance(e, DrupalWikiSyncError)
-                        else f"Could not read the members of group {group_id}: {describe_exception(e)}"
-                    )
-                    all_read = False
-                    continue
-
-                read.add(str(group_id))
-                members = [
-                    users_by_id[str(member.get("id"))]
-                    for member in (detail.get("members") or [])
-                    if str(member.get("id")) in users_by_id
-                    and users_by_id[str(member.get("id"))].is_active
-                ]
-                source = group.get("groupSource")
-                groups_with_members.append((
-                    AppUserGroup(
-                        app_name=Connectors.DRUPAL_WIKI,
-                        connector_id=self.connector_id,
-                        org_id=self.data_entities_processor.org_id,
-                        source_user_group_id=str(group_id),
-                        name=group.get("name") or f"Group {group_id}",
-                        description=f"source={source}" if source else None,
-                    ),
-                    members,
-                ))
-
-            if groups_with_members:
-                await self.data_entities_processor.on_new_user_groups(groups_with_members)
-                synced += len(groups_with_members)
-            if payload.get("last", True) or not content:
-                break
-            page += 1
-
-        self._groups_read = read if all_read else None
-        self.logger.info("Synced %d Drupal Wiki group(s)", synced)
-
     # ------------------------------------------------------------------
     # Spaces -> record groups and their permissions
     # ------------------------------------------------------------------
@@ -913,6 +823,8 @@ class DrupalWikiConnector(BaseConnector):
         could not be read, so stored grants stay put.
         """
         allowed_ids, exclude_ids = self._get_space_id_filters()
+        # Without a licence key no access is read from Drupal Wiki: spaces are still written, as containers.
+        copies_access = not await self._copies_no_source_access()
         spaces: dict[int, dict[str, Any]] = {}
         unreadable_spaces: list[str] = []
 
@@ -938,7 +850,7 @@ class DrupalWikiConnector(BaseConnector):
                     continue
 
                 members = None
-                if (space.get("accessStatus") or "").upper() == SPACE_ACCESS_PRIVATE:
+                if copies_access and (space.get("accessStatus") or "").upper() == SPACE_ACCESS_PRIVATE:
                     if self._disabled_emails is None:
                         # Same as an unreadable member list: writing grants without
                         # a directory would guess. A space first seen this run waits
@@ -972,8 +884,8 @@ class DrupalWikiConnector(BaseConnector):
                         continue
                     confirmed.append(space_id)
 
-                permissions = self._build_space_permissions(space, members)
-                if not permissions:
+                permissions = self._build_space_permissions(space, members) if copies_access else []
+                if copies_access and not permissions:
                     # Synced anyway, with no grants: the pages still need a group to
                     # belong to, and giving someone the read right later then only has
                     # to add the edge instead of waiting for a full resync.
@@ -1127,58 +1039,6 @@ class DrupalWikiConnector(BaseConnector):
             {group.id: group.source_user_group_id for group in groups},
         )
         return self._principals
-
-    def _build_space_permissions(
-        self,
-        space: dict[str, Any],
-        members: dict[str, Any] | None,
-    ) -> list[Permission]:
-        """Permissions for one space.
-
-        Open spaces (``AUTHENTICATED``/``ANONYMOUS``) are readable by every wiki user,
-        which maps to a single org-wide read. Private spaces are readable only by their
-        members, which needs ``members`` from the internal GraphQL API.
-        """
-        access_status = (space.get("accessStatus") or "").upper()
-        if access_status in OPEN_SPACE_ACCESS_STATUSES:
-            return [Permission(
-                external_id=None, email=None,
-                type=PermissionType.READ, entity_type=EntityType.ORG,
-            )]
-
-        if not members:
-            return []
-
-        # Holding any role on a space means being able to see it: a revision approver
-        # or technical reviewer cannot do their job without reading the page, and every
-        # other right is strictly more than read. So membership is the grant, and it is
-        # always READ -- nothing downstream separates the kinds, as in the Jira connector.
-        permissions: dict[tuple[str, str], Permission] = {}
-        disabled = self._disabled_emails or set()
-        for user in members.get("users") or []:
-            email = (user.get("email") or "").strip()
-            if not email or email.lower() in disabled:
-                continue
-            permissions.setdefault(("user", email.lower()), Permission(
-                external_id=None,
-                email=email,
-                type=PermissionType.READ,
-                entity_type=EntityType.USER,
-            ))
-
-        for group in members.get("groups") or []:
-            group_id = group.get("id")
-            if group_id is None:
-                continue
-            external_id = str(group_id)
-            permissions.setdefault(("group", external_id), Permission(
-                external_id=external_id,
-                email=None,
-                type=PermissionType.READ,
-                entity_type=EntityType.GROUP,
-            ))
-
-        return list(permissions.values())
 
     # ------------------------------------------------------------------
     # Pages and attachments

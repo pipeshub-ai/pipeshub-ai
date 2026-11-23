@@ -13,7 +13,7 @@ from app.connectors.sources.gitlab.connector import (
     GitLabConnector,
     GitLabSyncIncompleteError,
 )
-from app.connectors.sources.gitlab.projects import member_has_access
+from app.ee.permission_sync.gitlab import member_has_access
 from app.connectors.sources.gitlab.removed_projects import RemovedProjects
 
 from .conftest import make_mock_connector

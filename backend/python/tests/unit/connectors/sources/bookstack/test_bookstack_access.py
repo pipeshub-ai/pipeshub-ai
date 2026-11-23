@@ -4,7 +4,7 @@ Each case is a rule of BookStack's ``JointPermissionBuilder`` and ``PermissionAp
 checked on a real BookStack v26.05.4 with the connector simulator's differential run.
 """
 
-from app.connectors.sources.bookstack.access import (
+from app.ee.permission_sync.bookstack_access import (
     EXPLICIT_ALLOW,
     EXPLICIT_DENY,
     IMPLICIT_ALLOW,

@@ -28,7 +28,7 @@ from app.connectors.sources.linear.connector import (
     PROJECTS_CHECKPOINT_KEY,
     LinearConnector,
 )
-from app.connectors.sources.linear.team_access import WORKSPACE_MEMBERS_GROUP_ID
+from app.ee.permission_sync.linear_team_access import WORKSPACE_MEMBERS_GROUP_ID
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -100,6 +100,7 @@ def _use_memory_state(connector) -> None:
 def _make_connector():
     logger = MagicMock()
     dep = MagicMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     dep.org_id = "org-1"
     dep.get_all_active_users = AsyncMock(return_value=[MagicMock(email="u@x.com")])
     dep.on_new_app_users = AsyncMock()

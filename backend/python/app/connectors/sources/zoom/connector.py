@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from fastapi import HTTPException  # pyright: ignore[reportMissingImports]
 from fastapi.responses import StreamingResponse  # pyright: ignore[reportMissingImports]
-from pydantic import BaseModel, Field  # pyright: ignore[reportMissingImports]
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -56,6 +55,14 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.zoom.common.apps import ZoomApp
+from app.connectors.sources.zoom.models import (
+    ZoomMeetingDetail,
+    ZoomMeetingReport,
+    ZoomParticipant,
+    ZoomRecordingDetail,
+    ZoomUser,
+)
+from app.ee.permission_sync.zoom import ZoomPermissionsMixin
 from app.models.blocks import (
     BlockGroup,
     BlocksContainer,
@@ -95,88 +102,6 @@ _ZOOM_CODES_MEETING_NOT_FOUND = {3001, 3301}
 # Kept conservative to stay under Zoom's Heavy-rate endpoint limits
 # (GET /v2/report/meetings/{id}/participants is the bottleneck at ~10-20 req/s).
 _MEETING_CONCURRENCY = 8
-
-# ---------------------------------------------------------------------------
-# Zoom API response models
-# ---------------------------------------------------------------------------
-
-
-class ZoomUser(BaseModel):
-    """User object returned by GET /v2/users."""
-
-    id: str = ""
-    email: str = ""
-    first_name: str = ""
-    last_name: str = ""
-    display_name: str = ""
-    created_at: Optional[str] = None
-    user_created_at: Optional[str] = None
-    last_login_time: Optional[str] = None
-
-    model_config = {"extra": "ignore"}
-
-
-class ZoomMeetingReport(BaseModel):
-    """Meeting object returned by GET /v2/report/users/{userId}/meetings."""
-
-    uuid: str = ""
-    id: Optional[int] = None
-    topic: str = "Zoom Meeting"
-    host_id: str = ""
-    start_time: str = ""
-    end_time: str = ""
-    duration: Optional[int] = None
-    type: Optional[int] = None
-
-    model_config = {"extra": "ignore"}
-
-
-class ZoomMeetingInvitee(BaseModel):
-    """Invitee entry inside meeting settings."""
-
-    email: str = ""
-
-    model_config = {"extra": "ignore"}
-
-
-class ZoomMeetingSettings(BaseModel):
-    """Subset of meeting settings used by this connector."""
-
-    alternative_hosts: str = ""
-    meeting_invitees: list[ZoomMeetingInvitee] = Field(default_factory=list)
-
-    model_config = {"extra": "ignore"}
-
-
-class ZoomMeetingDetail(BaseModel):
-    """Full meeting object returned by GET /v2/meetings/{meetingId}."""
-
-    id: Optional[int] = None
-    join_url: str = ""
-    settings: ZoomMeetingSettings = Field(default_factory=ZoomMeetingSettings)
-
-    model_config = {"extra": "ignore"}
-
-
-class ZoomParticipant(BaseModel):
-    """Participant entry returned by GET /v2/report/meetings/{meetingId}/participants."""
-
-    name: str = ""
-    user_email: str = ""
-    duration: int = 0
-    join_time: str = ""
-    leave_time: str = ""
-
-    model_config = {"extra": "ignore"}
-
-
-class ZoomRecordingDetail(BaseModel):
-    """Top-level response from GET /v2/meetings/{meetingId}/recordings."""
-
-    share_url: str = ""
-
-    model_config = {"extra": "ignore"}
-
 
 # ---------------------------------------------------------------------------
 # ConnectorBuilder
@@ -256,7 +181,7 @@ class ZoomRecordingDetail(BaseModel):
         ))
     )\
     .build_decorator()
-class ZoomConnector(BaseConnector):
+class ZoomConnector(ZoomPermissionsMixin, BaseConnector):
     """Zoom connector — syncs past meetings, AI Companion transcripts, and
     builds permissions from host, alt-hosts, participants, and invitees via OAuth."""
 
@@ -988,87 +913,6 @@ class ZoomConnector(BaseConnector):
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
         return record
-
-    # ============================================================================
-    # Permissions
-    # ============================================================================
-
-    async def _build_meeting_permissions(
-        self,
-        meeting_detail: Optional[ZoomMeetingDetail],
-        encoded_uuid: str,
-        host_email: str,
-    ) -> list[Permission]:
-        """Build permission list from host, alt-hosts, participants, and invitees.
-
-        Flow:
-        1. Host email → OWNER
-        2. Alt-hosts (settings.alternative_hosts, semicolon-separated) → READ each
-        3. Participants (report API) → READ each
-        4. Invitees (settings.meeting_invitees[].email) → READ each
-        5. All deduplicated via seen_emails set
-        """
-        perms: list[Permission] = []
-        seen_emails: set[str] = set()
-
-        # 1 — host → OWNER
-        if host_email:
-            perms.append(Permission(
-                email=host_email,
-                type=PermissionType.OWNER,
-                entity_type=EntityType.USER,
-            ))
-            seen_emails.add(host_email)
-
-        settings = meeting_detail.settings if meeting_detail else ZoomMeetingSettings()
-
-        # 2 — alt-hosts → READ
-        for raw_alt in settings.alternative_hosts.split(";"):
-            alt_email = raw_alt.strip().lower()
-            if alt_email and alt_email not in seen_emails:
-                perms.append(Permission(
-                    email=alt_email,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.USER,
-                ))
-                seen_emails.add(alt_email)
-
-        # 3 — participants → READ
-        try:
-            participants = await self._list_meeting_participants(encoded_uuid)
-            self._add_participant_permissions(perms, participants, seen_emails)
-        except Exception as exc:
-            self.logger.warning("Zoom: failed to fetch participants: %s", exc)
-
-        # 4 — invitees → READ
-        for inv in settings.meeting_invitees:
-            inv_email = inv.email.strip().lower()
-            if inv_email and inv_email not in seen_emails:
-                perms.append(Permission(
-                    email=inv_email,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.USER,
-                ))
-                seen_emails.add(inv_email)
-
-        return perms
-
-    @staticmethod
-    def _add_participant_permissions(
-        perms: list[Permission],
-        participants: list[ZoomParticipant],
-        seen_emails: set[str],
-    ) -> None:
-        """Append READ permission per participant email."""
-        for p in participants:
-            p_email = p.user_email.strip().lower()
-            if p_email and p_email not in seen_emails:
-                perms.append(Permission(
-                    email=p_email,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.USER,
-                ))
-                seen_emails.add(p_email)
 
     # ============================================================================
     # stream_record

@@ -15,9 +15,11 @@ import pytest
 
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.connectors.sources.github_teams.projects import (
-    CollaboratorsUnavailable,
     ProjectsSync,
     _dedupe_highest_permissions,
+)
+from app.ee.permission_sync.github_teams import (
+    CollaboratorsUnavailable,
     _highest_role_from_collaborator_permissions,
     _permission_type_from_role,
 )

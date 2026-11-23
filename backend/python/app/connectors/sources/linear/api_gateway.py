@@ -22,6 +22,10 @@ HTTP_TOO_MANY_REQUESTS = 429
 RATE_LIMIT_WAITS: tuple[float, ...] = (5, 15, 30, 60, 120, 240)
 TRANSIENT_WAITS: tuple[float, ...] = (1, 3, 9)
 
+# Page sizes the connector and its permission reading share; each keeps a query well under Linear's 10,000 point cap.
+TEAM_PAGE_SIZE: int = 25
+NESTED_PAGE_SIZE: int = 100
+
 
 class LinearApiError(Exception):
     """A call to Linear failed. ``status`` is the HTTP status when there was one."""

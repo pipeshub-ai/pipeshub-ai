@@ -30,6 +30,7 @@ def _make_connector(
     logger = MagicMock()
     dep = MagicMock()
     dep.org_id = "org-1"
+    dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     dep.on_new_app_users = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()

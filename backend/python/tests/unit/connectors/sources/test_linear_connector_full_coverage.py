@@ -116,6 +116,7 @@ def _use_memory_state(connector) -> None:
 def _make_connector():
     logger = MagicMock()
     data_entities_processor = MagicMock()
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     data_entities_processor.org_id = "org-1"
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.on_new_app_users = AsyncMock()
@@ -612,7 +613,7 @@ class TestProjectToRecords:
 
     @staticmethod
     def _grants(connector, **teams) -> None:
-        from app.connectors.sources.linear.team_access import team_permissions
+        from app.ee.permission_sync.linear_team_access import team_permissions
         connector._team_permissions = {
             team_id: team_permissions({"id": team_id, "visibility": kind}, {}) for team_id, kind in teams.items()}
 
