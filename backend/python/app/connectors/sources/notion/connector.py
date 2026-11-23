@@ -1155,7 +1155,10 @@ class NotionConnector(BaseConnector):
                 current = await get_connection(self.config_service, self.connector_id, connection.user_id)
                 if current is None or current.method != METHOD_CONNECTOR or current.connected_at != connection.connected_at:
                     continue
-                await delete_connection(self.config_service, self.connector_id, connection.user_id)
+                if not await delete_connection(self.config_service, self.connector_id, connection.user_id):
+                    # Still stored: no pass may read with the connector's token for them.
+                    self.logger.warning("Notion per-user sync: could not drop the sign-in connection of %s", connection.user_id)
+                    return False
             user = await self.data_entities_processor.get_user_by_user_id(connection.user_id, raise_on_error=True)
             if user is not None and user.id:
                 await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)

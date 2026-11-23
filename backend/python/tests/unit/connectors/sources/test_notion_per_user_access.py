@@ -1373,6 +1373,17 @@ class TestConnectorSignIn:
         connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "k-old")
         save.assert_not_awaited()
 
+    async def test_a_failed_drop_leaves_the_sign_in_unverified(self) -> None:
+        old = _connection("admin", token="", method="connector")
+        old.source_user_id = "n-admin"
+        connector = _connector()
+        connector.config_service.get_config.return_value = {"auth": {"authType": "API_TOKEN"}}
+        with patch(f"{_MOD}.list_connections", new=AsyncMock(return_value=[old])), \
+                patch(f"{_MOD}.get_connection", new=AsyncMock(return_value=old)), \
+                patch(f"{_MOD}.delete_connection", new=AsyncMock(return_value=False)):
+            assert await connector._connect_through_connector_sign_in(now=5) is False
+        connector.data_entities_processor.withdraw_user_from_connector.assert_not_awaited()
+
     async def test_a_bot_that_names_nobody_clearly_changes_nothing(self) -> None:
         old = _connection("admin", token="", method="connector")
         old.source_user_id = "n-admin"
