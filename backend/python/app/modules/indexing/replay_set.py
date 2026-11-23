@@ -298,9 +298,7 @@ def eviction_policy_warning() -> str | None:
 
 async def _maxmemory_policies(redis: Redis) -> list[str]:
     """``maxmemory-policy`` of every primary. A cluster client sends an untargeted ``INFO`` to one node only."""
-    from redis.asyncio.cluster import RedisCluster
-
-    if isinstance(redis, RedisCluster):
+    if callable(getattr(type(redis), "get_primaries", None)):  # a cluster client (no client import outside the providers)
         infos = [await redis.info("memory", target_nodes=node) for node in redis.get_primaries()]  # type: ignore[misc]
     else:
         infos = [await redis.info("memory")]  # type: ignore[misc]

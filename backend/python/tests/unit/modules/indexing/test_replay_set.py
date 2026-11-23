@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis.aioredis
 import pytest
-from redis.asyncio.cluster import RedisCluster
 
 from app.modules.indexing import replay_set
 from app.modules.indexing.replay_set import REPLAY_SET_SIZE, covers, flags_of
@@ -177,10 +176,15 @@ class TestEvictionPolicy:
     async def test_a_cluster_checks_every_primary(self, policies: list[str], refused: bool) -> None:
         # An untargeted INFO on a cluster client reads one node; a primary with allkeys-* elsewhere would pass.
         nodes = [MagicMock(name=f"primary-{i}") for i in range(len(policies))]
-        cluster = MagicMock(spec=RedisCluster)
-        cluster.get_primaries.return_value = nodes
-        cluster.info = AsyncMock(side_effect=lambda _section, target_nodes: {
-            "maxmemory_policy": policies[nodes.index(target_nodes)]})
+
+        class Cluster:  # the shape of redis-py's RedisCluster that the check uses
+            def get_primaries(self) -> list[MagicMock]:
+                return nodes
+
+            info = AsyncMock(side_effect=lambda _section, target_nodes: {
+                "maxmemory_policy": policies[nodes.index(target_nodes)]})
+
+        cluster = Cluster()
 
         if refused:
             with pytest.raises(replay_set.UnsafeEvictionPolicyError):
