@@ -6450,6 +6450,8 @@
     },
     "graceKeyStartsLater": "Tu clave de licencia empieza el {{start}}. Hasta entonces, el periodo de gracia de la actualización mantiene a los conectores de toda la empresa copiando los accesos de sus orígenes, hasta el {{date}}.",
     "graceKeyEnded": "Tu clave de licencia terminó el {{ended}}. El periodo de gracia de la actualización mantiene a los conectores de toda la empresa copiando los accesos de sus orígenes hasta el {{date}}. Después, sin una clave nueva, quedarán limitados a las personas que los crearon. No se elimina nada.",
-    "openLicensePage": "Abrir la configuración de la licencia"
+    "openLicensePage": "Abrir la configuración de la licencia",
+    "seatsOver": "Tu instalación tiene {{used}} usuarios activos; tu licencia cubre {{seats}}. Puedes añadir usuarios nuevos hasta el {{date}}.",
+    "seatsRefusing": "Tu instalación tiene más usuarios de los que cubre tu licencia. No puedes añadir usuarios nuevos hasta que elimines usuarios o instales una clave con más usuarios."
   }
 }

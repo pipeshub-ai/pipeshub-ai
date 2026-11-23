@@ -6368,6 +6368,8 @@
     },
     "graceKeyStartsLater": "Ihr Lizenzschlüssel gilt ab {{start}}. Bis dahin übernehmen unternehmensweite Connectors dank der Kulanzzeit nach dem Upgrade weiter Zugriffsrechte aus ihren Quellen, bis {{date}}.",
     "graceKeyEnded": "Ihr Lizenzschlüssel ist am {{ended}} abgelaufen. Dank der Kulanzzeit nach dem Upgrade übernehmen unternehmensweite Connectors bis {{date}} weiter Zugriffsrechte aus ihren Quellen. Danach werden sie ohne neuen Schlüssel auf die Personen beschränkt, die sie erstellt haben. Es wird nichts gelöscht.",
-    "openLicensePage": "Lizenzeinstellungen öffnen"
+    "openLicensePage": "Lizenzeinstellungen öffnen",
+    "seatsOver": "Ihre Installation hat {{used}} aktive Benutzer; Ihre Lizenz deckt {{seats}} ab. Neue Benutzer können bis zum {{date}} hinzugefügt werden.",
+    "seatsRefusing": "Ihre Installation hat mehr Benutzer, als die Lizenz abdeckt. Neue Benutzer können erst hinzugefügt werden, wenn Sie Benutzer entfernen oder einen Schlüssel für mehr Benutzer installieren."
   }
 }

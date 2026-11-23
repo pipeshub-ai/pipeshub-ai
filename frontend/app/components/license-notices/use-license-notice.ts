@@ -19,6 +19,22 @@ export interface LicenseNotice {
     /** Admins only; a member never gets the names. */
     items: ConnectorNotice[] | null;
   };
+  /**
+   * Admins only (null for a member): the seats of the license in force against the people using them
+   * (backend `SeatLimit`, ee/modules/license/license-seats.ts). Null when nothing caps seats.
+   */
+  seatLimit: SeatLimitNotice | null;
+}
+
+export interface SeatLimitNotice {
+  seats: number;
+  used: number;
+  /** How many `used` is above `seats`; 0 when within. */
+  over: number;
+  /** When new users start being refused; null when within. */
+  refuseFrom: string | null;
+  /** New users are refused now. */
+  refusing: boolean;
 }
 
 export interface ConnectorNotice {
