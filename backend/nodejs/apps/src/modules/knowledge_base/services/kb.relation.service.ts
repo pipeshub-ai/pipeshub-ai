@@ -18,6 +18,7 @@ import {
 } from './records_events.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { endpoint } from '../../storage/constants/constants';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import {
   SyncEventProducer,
@@ -77,7 +78,7 @@ export class RecordRelationService {
     const url = (await keyValueStoreService.get<string>(endpoint)) || '{}';
 
     const storageUrl =
-      JSON.parse(url).storage.endpoint || this.defaultConfig.endpoint;
+      parseKvObject(url).storage.endpoint || this.defaultConfig.endpoint;
     const signedUrlRoute = `${storageUrl}/api/v1/document/internal/${record.externalRecordId}/download`;
     let extension = '';
     if (fileRecord && fileRecord.extension) {
@@ -148,7 +149,7 @@ export class RecordRelationService {
     const url = (await keyValueStoreService.get<string>('endpoint')) || '{}';
 
     const storageUrl =
-      JSON.parse(url).storage?.endpoint || this.defaultConfig.endpoint;
+      parseKvObject(url).storage?.endpoint || this.defaultConfig.endpoint;
     const signedUrlRoute = `${storageUrl}/api/v1/document/internal/${record.externalRecordId}/download`;
     let mimeType = '';
     if (fileRecord && fileRecord.mimeType) {
