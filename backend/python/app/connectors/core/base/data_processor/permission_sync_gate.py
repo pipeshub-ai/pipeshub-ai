@@ -10,13 +10,14 @@ either way, and personal connectors are owner-only in both editions.
 
 import time
 import weakref
+from datetime import datetime, timezone
 from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.connector_builder import ConnectorScope
 
-# Written by the Node backend once it has checked the licence key: {"allowed": bool}.
+# Written by the Node backend once it has checked the licence key: {"allowed": bool, "until": ISO time or null, ...}.
 PERMISSION_SYNC_LICENCE_KEY = "/services/licence/permissionSync"
 LICENCE_MAX_AGE_SECONDS = 300
 # The answer per config service, with when it was read. The config cache keeps no entry for a missing key, so without
@@ -62,7 +63,7 @@ async def permission_sync_licensed(config_service: ConfigurationService) -> bool
     """Whether the install is licensed, read at most once per ``LICENCE_MAX_AGE_SECONDS`` (a missing key included).
     Licensed means no key at all, or ``{"allowed": true}``; any other stored value (not a dict, or ``allowed`` not
     exactly ``true``) is not licensed. A failed read raises and is not remembered: answered as "no key", it would
-    count as licensed and copy source access again."""
+    count as licensed and copy source access again. An ``until`` already behind the clock is not licensed either."""
     now = time.monotonic()
     answer = _licence_answers.get(config_service)
     if answer is not None and now - answer[0] <= LICENCE_MAX_AGE_SECONDS:
@@ -72,9 +73,23 @@ async def permission_sync_licensed(config_service: ConfigurationService) -> bool
     )
     # shortcut: only a missing key means licensed, so nothing changes before licence keys exist; the major release
     # that turns the check on makes a missing key mean "not licensed". A value that is there but malformed is not.
-    licensed = value is None or (isinstance(value, dict) and value.get("allowed") is True)
+    licensed = value is None or (
+        isinstance(value, dict) and value.get("allowed") is True and not _until_passed(value.get("until"))
+    )
     _licence_answers[config_service] = (now, licensed)
     return licensed
+
+
+def _until_passed(until: object) -> bool:
+    """Whether the answer's ``until`` is behind the clock, so an answer left by a Node that stopped checking lapses on
+    its own. ``None`` (no end given) has not passed; anything that is not an ISO time with a zone counts as passed."""
+    if until is None:
+        return False
+    try:
+        at = datetime.fromisoformat(until) if isinstance(until, str) else None
+    except ValueError:
+        return True
+    return at is None or at.tzinfo is None or at <= datetime.now(timezone.utc)
 
 
 def gated(app: dict[str, Any] | None) -> bool:
