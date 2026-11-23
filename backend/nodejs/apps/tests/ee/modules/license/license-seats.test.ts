@@ -5,8 +5,11 @@ import sinon from 'sinon';
 import { PUBLIC_URL_ENV } from '../../../../src/ee/modules/license/license-binding';
 import {
   installSeats,
+  licenceSeatGuard,
+  licenseEditionBoot,
   setLicenseStore,
 } from '../../../../src/ee/modules/license/license-boot';
+import { setSeatGuard } from '../../../../src/libs/edition/seat-guard';
 import { licenseSigningInput } from '../../../../src/ee/modules/license/license-codec';
 import { useLicenseKeysForTesting } from '../../../../src/ee/modules/license/license-keys';
 import {
@@ -25,7 +28,6 @@ import {
   LICENSE_FORMAT,
   type LicensePayload,
 } from '../../../../src/ee/modules/license/license.types';
-import { NO_LICENSE_STORE } from '../../../helpers/licence-store-global';
 import { ForbiddenError } from '../../../../src/libs/errors/http.errors';
 import { setIdentityPort } from '../../../../src/libs/repositories/identity';
 import { setGroupRepository } from '../../../../src/libs/repositories/group';
@@ -306,12 +308,10 @@ describe('licence seat limit', () => {
         { scopedJwtSecret: 'test-secret' } as never,
         { sendMail: sinon.stub().resolves({ statusCode: 200 }) } as never,
         {
-          passwordMethodEnabled: sinon
-            .stub()
-            .resolves({
-              statusCode: 200,
-              data: { isPasswordAuthEnabled: false },
-            }),
+          passwordMethodEnabled: sinon.stub().resolves({
+            statusCode: 200,
+            data: { isPasswordAuthEnabled: false },
+          }),
         } as never,
         {
           info: sinon.stub(),
@@ -360,6 +360,8 @@ describe('licence seat limit', () => {
         row('bot@service.pipeshub.internal', { kind: 'service' }),
       ];
       setLicenseStore(store);
+      // As app.ts does at start-up with the edition boot's guard.
+      setSeatGuard(licenseEditionBoot.seatGuard);
       setUserRepository({
         countLive: async (_org: string, withServiceAccounts: boolean) =>
           rows.filter(
@@ -404,7 +406,8 @@ describe('licence seat limit', () => {
 
     afterEach(() => {
       sinon.restore();
-      setLicenseStore(NO_LICENSE_STORE);
+      setLicenseStore(null);
+      setSeatGuard();
       setUserRepository();
       setIdentityPort();
       setGroupRepository();
@@ -536,6 +539,10 @@ describe('licence seat limit', () => {
         'google',
       );
       expect(created).to.deep.equal(['new1@example.com']);
+    });
+
+    it('the licence edition boot supplies the licence guard', () => {
+      expect(licenseEditionBoot.seatGuard).to.equal(licenceSeatGuard);
     });
 
     it('service accounts are not counted toward the seats', async () => {

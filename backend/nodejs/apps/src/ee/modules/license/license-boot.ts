@@ -8,14 +8,12 @@ import {
 import type { Container } from 'inversify';
 import { spawnDetached } from '../../../libs/context/orgContext';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
-import {
-  ForbiddenError,
-  NotFoundError,
-} from '../../../libs/errors/http.errors';
+import { NotFoundError } from '../../../libs/errors/http.errors';
 import {
   noopEditionBoot,
   type EditionBoot,
 } from '../../../libs/edition/edition-boot';
+import type { SeatGuard } from '../../../libs/edition/seat-guard';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import type { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
@@ -31,6 +29,7 @@ import type { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { licenseNotice, startupWarnings } from './license-notice';
 import {
   checkSeats,
+  SEAT_REFUSAL_AT_SIGN_IN,
   seatRefusal,
   seatRoom,
   SERVICE_ACCOUNTS_HOLD_SEATS,
@@ -110,25 +109,32 @@ export const installSeats = (
 ): Promise<SeatLimit | null> =>
   checkSeats(licenseStore, countInstallPeople, now);
 
-// shortcut: checked before the write, not with it, so two adds at once can both pass; the next check records the true count.
-/** Refuses to add one more person once new users are refused; `message` replaces the admin's wording. */
-export async function assertSeatFor(message?: string): Promise<void> {
-  const limit = await installSeats();
-  if (limit && seatRoom(limit) < 1) {
-    throw message ? new ForbiddenError(message) : seatRefusal(limit.seats);
-  }
-}
-
-/** After people were added or removed: stores the new seat state, or logs why it could not; the periodic check repairs it. */
-export async function noteSeatChange(): Promise<void> {
-  try {
-    await installSeats();
-  } catch (error) {
-    logger.warn('Could not update the seat count after a user change', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
+/**
+ * The licence's seat limit, for the open code's `SeatGuard` seam.
+ * shortcut: checked before the write, not with it, so two adds at once can both pass; the next check records the true count.
+ */
+export const licenceSeatGuard: SeatGuard = {
+  async check() {
+    const limit = await installSeats();
+    return {
+      room: seatRoom(limit),
+      refusal: {
+        admin: limit ? seatRefusal(limit.seats) : '',
+        signIn: SEAT_REFUSAL_AT_SIGN_IN,
+      },
+    };
+  },
+  // Stores the new seat state after people were added or removed; the periodic check repairs a failure.
+  async afterChange() {
+    try {
+      await installSeats();
+    } catch (error) {
+      logger.warn('Could not update the seat count after a user change', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
+};
 
 export type LicenseStatusWithSeats = LicenseStatusView & {
   /** Null when nothing limits seats: no license in force, or `unlimited` seats. */
@@ -292,6 +298,7 @@ export function stopLicenseCheck(): void {
 /** The open-source build's start-up hooks: the license routes and the periodic check. */
 export const licenseEditionBoot: EditionBoot = {
   ...noopEditionBoot,
+  seatGuard: licenceSeatGuard,
   mountRoutes: (app, containers) => {
     if (containers.entityManager) {
       app.use('/api/v1/license', createLicenseRouter(containers.entityManager));

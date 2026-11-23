@@ -1,4 +1,3 @@
-import { ForbiddenError } from '../../../libs/errors/http.errors';
 import { seatsInForce, type LicenseStore } from './license.service';
 import { isUnlimitedSeats, type LicenseSeats } from './license.types';
 
@@ -13,7 +12,7 @@ export const SEAT_WARNING_MS = SEAT_WARNING_DAYS * DAY_MS;
 /**
  * Service accounts are identities for agents, not people, so they hold no
  * seat. A choice the owner can reverse: set true, and guard service-account
- * creation with `assertSeatFor` as well.
+ * creation with `assertSeatFor` (libs/edition/seat-guard) as well.
  */
 export const SERVICE_ACCOUNTS_HOLD_SEATS = false;
 
@@ -92,10 +91,8 @@ export const seatRoom = (limit: SeatLimit | null): number =>
   limit?.refusing ? Math.max(0, limit.seats - limit.used) : Infinity;
 
 /** What an admin adding users is told once the seats are full. */
-export const seatRefusal = (seats: number): ForbiddenError =>
-  new ForbiddenError(
-    `Your licence covers ${String(seats)} users. Remove users or add seats to invite more.`,
-  );
+export const seatRefusal = (seats: number): string =>
+  `Your licence covers ${String(seats)} users. Remove users or add seats to invite more.`;
 
 /** What a person signing in for the first time is told once the seats are full. */
 export const SEAT_REFUSAL_AT_SIGN_IN =

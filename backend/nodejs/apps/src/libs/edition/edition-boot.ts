@@ -2,6 +2,7 @@ import type { Express } from 'express';
 import type { Container } from 'inversify';
 import type { Logger } from '../services/logger.service';
 import type { TopicDefinition } from '../types/messaging.types';
+import { noopSeatGuard, type SeatGuard } from './seat-guard';
 import type { AppConfig } from '../../modules/tokens_manager/config/config';
 import type { ConfigurationManagerConfig } from '../../modules/configuration_manager/config/config';
 
@@ -27,6 +28,8 @@ export interface EditionBoot {
   topics: TopicDefinition[];
   /** Added to the built-in lists when STRICT_MODE turns the CSP on. */
   cspSources: EditionCspSources;
+  /** How many people the install may add; app.ts installs it at start-up. */
+  seatGuard: SeatGuard;
   initialize(
     configurationManagerConfig: ConfigurationManagerConfig,
     appConfig: AppConfig,
@@ -46,6 +49,7 @@ export interface EditionBoot {
 export const noopEditionBoot: EditionBoot = {
   topics: [],
   cspSources: { connectSrc: [], scriptSrc: [], frameSrc: [] },
+  seatGuard: noopSeatGuard,
   initialize: async () => {},
   mountRawRoutes: () => {},
   mountRoutes: () => {},

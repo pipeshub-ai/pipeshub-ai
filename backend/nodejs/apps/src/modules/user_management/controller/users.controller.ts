@@ -63,16 +63,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { isServiceAccountEmail } from '../constants/service-account.constants';
-import {
-  assertSeatFor,
-  installSeats,
-  noteSeatChange,
-} from '../../../ee/modules/license/license-boot';
-import {
-  SEAT_REFUSAL_AT_SIGN_IN,
-  seatRefusal,
-  seatRoom,
-} from '../../../ee/modules/license/license-seats';
+import { assertSeatFor, getSeatGuard } from '../../../libs/edition/seat-guard';
 import type {
   GraphUserListResponse,
   UserGroupSummary,
@@ -834,7 +825,7 @@ export class UserController {
       } finally {
         await this.eventService.stop();
       }
-      await noteSeatChange();
+      await getSeatGuard().afterChange();
       auditUserChange(
         'user.create',
         newUser._id,
@@ -867,7 +858,7 @@ export class UserController {
         'User account deleted by admin. Please contact your admin to restore your account.',
       );
     }
-    await assertSeatFor(SEAT_REFUSAL_AT_SIGN_IN);
+    await assertSeatFor('signIn');
 
     const newUser = await getUserRepository().create(orgId, {
       email,
@@ -905,7 +896,7 @@ export class UserController {
       await this.eventService.stop();
     }
 
-    await noteSeatChange();
+    await getSeatGuard().afterChange();
     logger.info(`User auto-provisioned successfully via ${provider}`, {
       userId: newUser._id,
     });
@@ -1678,7 +1669,7 @@ export class UserController {
         deletedBy: req.user?.userId ?? req.user?._id,
       });
       auditUserChange('user.delete', userId);
-      await noteSeatChange();
+      await getSeatGuard().afterChange();
 
       await this.eventService.start();
       const event: Event = {
@@ -2226,10 +2217,10 @@ export class UserController {
     const live = new Set(
       found.filter((user) => !user.isDeleted).map((user) => user.email),
     );
-    const limit = await installSeats();
+    const seats = await getSeatGuard().check();
     const refused = emails
       .filter((email) => !live.has(email))
-      .slice(seatRoom(limit));
+      .slice(seats.room);
     if (refused.length > 0) {
       emails = emails.filter((email) => !refused.includes(email));
     }
@@ -2319,7 +2310,9 @@ export class UserController {
       }
     }
 
-    if (newUsers.length + restoredUsers.length > 0) await noteSeatChange();
+    if (newUsers.length + restoredUsers.length > 0) {
+      await getSeatGuard().afterChange();
+    }
 
     // Apply invite role to restored / re-invited pending users when promoting to admin
     if (inviteRole === 'admin') {
@@ -2469,10 +2462,7 @@ export class UserController {
       mailFailed,
       mailErrorCode,
       refused,
-      refusedReason:
-        limit && refused.length > 0
-          ? seatRefusal(limit.seats).message
-          : undefined,
+      refusedReason: refused.length > 0 ? seats.refusal.admin : undefined,
     };
   }
 
