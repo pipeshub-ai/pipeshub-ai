@@ -109,7 +109,7 @@ def _no_writes(tx_store: AsyncMock) -> list[str]:
     (LICENSED, True),
     (UNLICENSED, False),
     ({}, False),
-    # Exactly what the Node licence check writes (license.service.ts): only ``allowed`` decides.
+    # Exactly what the Node licence check writes (license.service.ts): ``allowed`` decides, unless ``until`` has passed.
     ({"allowed": True, "until": "2999-12-23T12:00:00.000Z", "status": "active"}, True),
     ({"allowed": True, "until": "2999-12-23T12:00:00.000Z", "status": "grace"}, True),
     ({"allowed": True, "until": "2999-12-23T12:00:00.000Z", "status": "expiring"}, True),
