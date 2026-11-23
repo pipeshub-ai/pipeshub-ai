@@ -188,6 +188,10 @@ CONTENT_EXPAND_PARAMS = (
     "childTypes.comment"
 )
 
+# Page size Confluence gives an expanded v1 collection (children.attachment) when it names
+# no limit; CONTENT_EXPAND_PARAMS asks for none.
+V1_EXPANSION_DEFAULT_LIMIT = 25
+
 # Expand parameters for fetching folders with required metadata
 # Folders don't need attachment or comment children
 FOLDER_EXPAND_PARAMS = (
@@ -2369,6 +2373,15 @@ class ConfluenceConnector(BaseConnector):
 
                             try:
                                 embedded_image_ids: set[str] = set()
+                                # The v1 list is kept when v2 gives nothing, so its own truncation leaves the rest unread.
+                                # A full page may say neither, so it counts as cut short too.
+                                v1_limit = attachment_data.get("limit")
+                                v1_cut_short = (
+                                    bool((attachment_data.get("_links") or {}).get("next"))
+                                    or (attachment_data.get("size") or 0) > len(attachments)
+                                    or len(attachments)
+                                    >= (v1_limit if isinstance(v1_limit, int) and v1_limit > 0 else V1_EXPANSION_DEFAULT_LIMIT)
+                                )
 
                                 try:
                                     attachments_v2, v2_base_url, attachments_cut_short = (
@@ -2378,13 +2391,16 @@ class ConfluenceConnector(BaseConnector):
                                     if attachments_v2:
                                         attachments = attachments_v2
                                         v2_attachments_base_url = v2_base_url
-                                    if attachments_cut_short:
-                                        listing_complete = False
-                                        self._note_skipped(
-                                            space_key, f"{content_type}s whose attachment list could not be read in full"
-                                        )
+                                    else:
+                                        attachments_cut_short = attachments_cut_short or v1_cut_short
                                 except Exception as v2_error:
                                     self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
+                                    attachments_cut_short = v1_cut_short
+                                if attachments_cut_short:
+                                    listing_complete = False
+                                    self._note_skipped(
+                                        space_key, f"{content_type}s whose attachment list could not be read in full"
+                                    )
 
                                 attachment_mime_types: dict[str, str] = {}
                                 for att in attachments:
@@ -2893,6 +2909,17 @@ class ConfluenceConnector(BaseConnector):
             archived = [r.id for r in stored if existing.get(r.external_record_id) == "archived"]
             if archived:
                 self.data_entities_processor.note_kept_records(self.connector_id, archived)
+            if self.data_entities_processor.full_sync_running(self.connector_id):
+                try:
+                    kept = await self._dependents_kept_as_stored(space, stored, existing)
+                except Exception as e:
+                    self.logger.warning(
+                        f"Could not read the stored comments and files of space {space.short_name}; "
+                        f"nothing removed: {e}"
+                    )
+                    return False
+                if kept:
+                    self.data_entities_processor.note_kept_records(self.connector_id, kept)
         doomed = [r for r in stored if r.external_record_id not in existing]
         if doomed:
             self.logger.info(
@@ -3107,13 +3134,47 @@ class ConfluenceConnector(BaseConnector):
             visited.add(next_cursor)
             cursor = next_cursor
 
+    async def _dependents_kept_as_stored(
+        self, space: RecordGroup, stored: list[Record], existing: dict[str, str]
+    ) -> list[str]:
+        """Ids of stored records under still-listed content that the sync keeps without rewriting.
+
+        Comment records from older versions stay until their page is stored as blocks, and an
+        archived page's attachments are not re-read, so a full sync would otherwise unlink them.
+        """
+        listed = {r.external_record_id for r in stored if r.external_record_id in existing}
+        archived = {r.external_record_id for r in stored if existing.get(r.external_record_id) == "archived"}
+        dependents = await self._stored_content(
+            space.external_group_id, (RecordType.COMMENT, RecordType.INLINE_COMMENT, RecordType.FILE)
+        )
+        comments = [r for r in dependents if r.record_type != RecordType.FILE]
+        parent_of = {c.external_record_id: c.parent_external_record_id for c in comments}
+        kept: list[str] = []
+        for comment in comments:
+            node, visited = comment.external_record_id, set()
+            while node in parent_of and node not in visited:
+                visited.add(node)
+                node = parent_of[node]
+            if node in listed:
+                kept.append(comment.id)
+        kept.extend(
+            r.id for r in dependents
+            if r.record_type == RecordType.FILE and not _is_folder(r) and r.parent_external_record_id in archived
+        )
+        return kept
+
     async def _stored_content(
-        self, space_id: str, record_type: RecordType, *, with_placeholders: bool = False
+        self,
+        space_id: str,
+        record_type: RecordType | tuple[RecordType, ...],
+        *,
+        with_placeholders: bool = False,
     ) -> list[Record]:
-        """Stored records of this type in the space, without placeholder ancestors unless asked.
+        """Stored records of this type (or these types) in the space, without placeholder ancestors unless asked.
 
         Placeholders hold the breadcrumb of in-scope pages and are never listed themselves.
         """
+        types = record_type if isinstance(record_type, tuple) else (record_type,)
         stored: list[Record] = []
         after_key: str | None = None
         while True:
@@ -3123,7 +3184,7 @@ class ConfluenceConnector(BaseConnector):
                 visibility=RecordVisibility.ALL,
             )
             stored.extend(
-                r for r in page if r.record_type == record_type and (with_placeholders or not r.is_placeholder)
+                r for r in page if r.record_type in types and (with_placeholders or not r.is_placeholder)
             )
             if len(page) < RECORD_SCAN_PAGE_SIZE:
                 return stored
@@ -3251,19 +3312,21 @@ class ConfluenceConnector(BaseConnector):
         if not stored:
             return
         listed = await self._list_folder_ids(space.short_name)
+        if self.data_entities_processor.full_sync_running(self.connector_id):
+            # A folder filled in above an in-scope page is not listed when the filters leave it out,
+            # nor when the listing fails; unseen, the full sync would unlink it and hide the pages under it.
+            for folder in stored:
+                if (
+                    listed is None or str(folder.external_record_id) in listed
+                ) and await self.data_entities_processor.get_records_by_parent(
+                    self.connector_id, folder.external_record_id
+                ):
+                    self.data_entities_processor.note_kept_records(self.connector_id, [folder.id])
         if listed is None:
             self._note_problem(
                 f"Space {space.short_name}: couldn't check for deleted folders; the next sync tries again", unread=False
             )
             return
-        if self.data_entities_processor.full_sync_running(self.connector_id):
-            # A folder filled in above an in-scope page is not listed when the filters leave it out;
-            # unseen, the full sync would unlink it and hide the pages under it.
-            for folder in stored:
-                if str(folder.external_record_id) in listed and await self.data_entities_processor.get_records_by_parent(
-                    self.connector_id, folder.external_record_id
-                ):
-                    self.data_entities_processor.note_kept_records(self.connector_id, [folder.id])
         gone: list[Record] = []
         for folder in (f for f in stored if str(f.external_record_id) not in listed):
             try:
@@ -4423,7 +4486,10 @@ class ConfluenceConnector(BaseConnector):
                         external_id=principal_id,
                     )
 
-                    if not pseudo_group:
+                    if pseudo_group:
+                        # Reused, not rewritten: without this the full sync unlinks it with its grants.
+                        self.data_entities_processor.note_kept_user_groups(self.connector_id, [pseudo_group])
+                    else:
                         # Create pseudo-group on-the-fly
                         pseudo_group = await self._create_pseudo_group(principal_id)
 
