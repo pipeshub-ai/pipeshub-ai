@@ -1,5 +1,6 @@
 """Without a licence key a company-wide Dropbox or Google Drive connector reads no access through these methods."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -29,6 +30,8 @@ def _connector(mixin: type, *, gated: bool) -> object:
     connector._load_limited_pending = AsyncMock(return_value={})
     connector._save_limited_pending = AsyncMock()
     connector._upgrade_drives = set()
+    connector.drive_data_source = MagicMock()
+    connector.drive_delta_sync_point = MagicMock()
     return connector
 
 
@@ -37,6 +40,8 @@ def _assert_nothing_read(connector: object) -> None:
     assert connector.data_source.method_calls == []
     assert connector.admin_data_source.method_calls == []
     assert connector.dropbox_cursor_sync_point.method_calls == []
+    assert connector.drive_data_source.method_calls == []
+    assert connector.drive_delta_sync_point.method_calls == []
     connector._load_limited_pending.assert_not_awaited()
     # Only the gate was asked: nothing was written either.
     assert [call[0] for call in connector.data_entities_processor.mock_calls] == ["skips_permission_writes"]
@@ -51,6 +56,15 @@ ENTRY_POINTS = [
     (DropboxPermissionsMixin, "_sync_sharing_changes_with_cursor", ("sharing-key", "cursor-1"), None),
     (GoogleDriveWorkspacePermissionsMixin, "_sync_user_groups", (), None),
     (GoogleDriveWorkspacePermissionsMixin, "_clear_cut_out_grants_below_limited_folders", (), None),
+    # A new item gets no grants, as one whose list came back empty, and counts as changed like any item read.
+    (
+        GoogleDriveWorkspacePermissionsMixin, "_read_item_access",
+        ("file-1", {"id": "file-1"}, MagicMock(), None, "alice@example.com", None, set()),
+        ([], [], True, False, False),
+    ),
+    (GoogleDriveWorkspacePermissionsMixin, "_reconcile_drive_restrictions", ({"id": "sd-1"},), None),
+    (GoogleDriveWorkspacePermissionsMixin, "_drop_reporters_grant", (MagicMock(), MagicMock(), {}, None), None),
+    (GoogleDriveWorkspacePermissionsMixin, "_recheck_parked_holders", (), None),
 ]
 
 
@@ -97,6 +111,34 @@ async def test_licensed_drive_still_settles_limited_folders() -> None:
     await connector._clear_cut_out_grants_below_limited_folders()
 
     connector._load_limited_pending.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gated_stored_drive_item_counts_as_changed_and_keeps_its_inherit_flag() -> None:
+    connector = _connector(GoogleDriveWorkspacePermissionsMixin, gated=True)
+    record = SimpleNamespace()
+
+    *_, updated, metadata_changed = await connector._read_item_access(
+        "file-1", {"id": "file-1", "inheritedPermissionsDisabled": True}, record, MagicMock(), "a@example.com", None, set(),
+    )
+
+    # As for any item whose list was read; the processor keeps its stored grants and edges.
+    assert updated is True and metadata_changed is False
+    assert vars(record) == {}
+
+
+@pytest.mark.asyncio
+async def test_licensed_drive_still_asks_about_parked_holders() -> None:
+    from app.ee.permission_sync.google_drive_workspace import (
+        HOLDER_RECHECK_SYNC_POINT_KEY,
+    )
+
+    connector = _connector(GoogleDriveWorkspacePermissionsMixin, gated=False)
+    connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={})
+
+    await connector._recheck_parked_holders()
+
+    connector.drive_delta_sync_point.read_sync_point.assert_awaited_once_with(HOLDER_RECHECK_SYNC_POINT_KEY)
 
 
 @pytest.mark.parametrize(

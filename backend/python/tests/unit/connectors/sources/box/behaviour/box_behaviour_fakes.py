@@ -395,6 +395,9 @@ class FakeBoxRecordsDb:
     are implemented; ``failing`` names methods that raise as if the database were down.
     """
 
+    async def skips_permission_writes(self, connector_id: str | None) -> bool:
+        return False  # licensed: the licence gate has its own tests
+
     def __init__(self, org_id: str = "org-1") -> None:
         self.org_id = org_id
         self.records: dict[str, Any] = {}

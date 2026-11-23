@@ -9,9 +9,8 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+from app.ee.permission_sync.onedrive import GraphReadFailedError, _FolderWalk
 from app.connectors.sources.microsoft.onedrive.connector import (
-    GraphReadFailedError,
-    _FolderWalk,
     OneDriveConnector,
     OneDriveCredentials,
     OneDriveSubscriptionManager,
@@ -45,6 +44,7 @@ def _make_mock_deps():
     logger = _make_mock_logger()
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-123"
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
@@ -1787,6 +1787,7 @@ def _make_mock_deps_cov():
     logger = _make_mock_logger_cov()
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-123"
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
