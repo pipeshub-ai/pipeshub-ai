@@ -269,6 +269,11 @@ describe('license notice: what every signed-in user may read', () => {
         },
       } as never);
       app.use('/api/v1/license', createLicenseRouter(container, store));
+      // Four parameters, or Express does not treat it as the error handler; answers the status without logging.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      app.use(((err, _req, res, _next) => {
+        res.status((err as { statusCode?: number }).statusCode ?? 500).end();
+      }) as express.ErrorRequestHandler);
       const server = app.listen(0);
       try {
         const { port } = server.address() as AddressInfo;
