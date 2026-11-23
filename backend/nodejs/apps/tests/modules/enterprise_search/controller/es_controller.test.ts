@@ -69,6 +69,7 @@ import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.se
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
 import { runWithRequestContext } from '../../../../src/libs/context/request-context'
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { BadRequestError, ConflictError, InternalServerError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
@@ -10359,6 +10360,43 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
       expect(next.calledOnce).to.be.true
     })
+  })
+
+  // On PostgreSQL a read outside an org context fails closed, and a Slack bot's token
+  // names no org: each internal stream handler must run the real handler as the org of
+  // the caller it hydrated. The handler's first read of `req.context` records the org
+  // that is bound at that point.
+  describe('internal stream handlers run as the org of the hydrated caller', () => {
+    const cases: Array<[string, (appConfig: any) => any]> = [
+      ['streamChatInternal', (c) => streamChatInternal(c)],
+      ['addMessageStreamInternal', (c) => addMessageStreamInternal(c)],
+      ['streamAgentConversationInternal', (c) => streamAgentConversationInternal(c)],
+      ['addMessageStreamToAgentConversationInternal', (c) => addMessageStreamToAgentConversationInternal(c)],
+    ]
+    for (const [name, make] of cases) {
+      it(`${name}`, async () => {
+        const seen: Array<string | undefined> = []
+        const req: any = createMockRequest({
+          body: {},
+          params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+          user: { userId: VALID_OID, orgId: VALID_OID2 },
+        })
+        Object.defineProperty(req, 'context', {
+          get: () => {
+            seen.push(getCurrentOrgId())
+            return { requestId: 'req-123' }
+          },
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        expect(getCurrentOrgId(), 'nothing bound at the entry').to.equal(undefined)
+        await make(createMockAppConfig())(req, res, next)
+
+        expect(seen.length, 'the real handler ran').to.be.greaterThan(0)
+        for (const org of seen) expect(org).to.equal(VALID_OID2)
+      })
+    }
   })
 
   // -----------------------------------------------------------------------
