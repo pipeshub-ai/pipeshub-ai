@@ -21,6 +21,7 @@ import { useOnboardingRedirect } from "./onboarding/use-onboarding-redirect"
 import { useAppliedSidebarWidth } from "@/lib/store/sidebar-width-store"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
+import { LicenseBanners } from '@/app/components/license-notices/license-banners'
 import { AuthHydrator } from '@/lib/store/auth-hydrator'
 import { OrgUrlCleaner } from '@/lib/navigation'
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
@@ -222,6 +223,7 @@ function AppLayout({
           <SidebarExpandButton placement="shell" />
           {/* Mobile hamburger — fixed top-left, only on routes with a mobile sidebar. */}
           <MobileMenuButton key="app-mobile-menu-anchor" />
+          <LicenseBanners key="license-banners" />
           <Box
             key="app-main-scroll"
             data-app-main-scroll

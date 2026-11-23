@@ -8,6 +8,7 @@ import {
 import type { Container } from 'inversify';
 import { spawnDetached } from '../../../libs/context/orgContext';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
+import { NotFoundError } from '../../../libs/errors/http.errors';
 import {
   noopEditionBoot,
   type EditionBoot,
@@ -19,6 +20,9 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { Logger } from '../../../libs/services/logger.service';
 import { loadConfigurationManagerConfig } from '../../../modules/configuration_manager/config/config';
 import { userAdminCheck } from '../../../modules/user_management/middlewares/userAdminCheck';
+import { isUserOrgAdmin } from '../../../modules/user_management/services/user-admin.service';
+import type { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import { licenseNotice, startupWarnings } from './license-notice';
 import {
   installLicense,
   licenseStatus,
@@ -96,6 +100,32 @@ export function createLicenseRouter(
       }
     },
   );
+  // Any signed-in user: what the notices need, without the file, its signature or the licensee.
+  router.get(
+    '/notice',
+    authenticate,
+    requireScopes(OAuthScopeNames.ORG_READ),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const user = (req as AuthenticatedUserRequest).user as
+          { userId?: unknown; orgId?: unknown } | undefined;
+        const userId = typeof user?.userId === 'string' ? user.userId : '';
+        const orgId = typeof user?.orgId === 'string' ? user.orgId : '';
+        if (userId === '' || orgId === '') {
+          throw new NotFoundError('Account not found');
+        }
+        res.json(
+          await licenseNotice(licenseStore, {
+            userId,
+            orgId,
+            isAdmin: await isUserOrgAdmin(userId, orgId),
+          }),
+        );
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
   // Body: { license: <the license file's JSON> }. Installs it, or replaces the one in force with a newer one.
   router.post(
     '/',
@@ -124,10 +154,21 @@ export function createLicenseRouter(
 
 let timer: NodeJS.Timeout | null = null;
 let lastAllowed: boolean | undefined;
+let warnedAtStart = false;
 
 async function checkLicense(licenseStore: LicenseStore): Promise<void> {
   try {
     const answer = await publishPermissionSync(licenseStore);
+    if (!warnedAtStart) {
+      warnedAtStart = true;
+      const now = new Date();
+      for (const warning of startupWarnings(
+        await licenseStatus(licenseStore, now),
+        now,
+      )) {
+        logger.warn(warning);
+      }
+    }
     if (answer && answer.allowed !== lastAllowed) {
       if (answer.allowed) {
         logger.info('A license key allows permission sync', { ...answer });

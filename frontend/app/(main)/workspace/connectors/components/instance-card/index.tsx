@@ -16,6 +16,7 @@ import {
   FullSyncButton,
 } from './primitives';
 import { InlineEditableName } from '../inline-editable-name';
+import { ConnectorLicenseBadge } from '@/app/components/license-notices/connector-license-badge';
 import {
   InstanceActionNeededBadge,
   InstanceSyncOperationIndicator,
@@ -174,6 +175,7 @@ export function InstanceCard({
             style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
           />
 
+          <ConnectorLicenseBadge connectorId={instance._key} />
           <InstanceActionNeededBadge instance={instance} onOpen={onChevronClick} />
 
           {onRefresh ? (

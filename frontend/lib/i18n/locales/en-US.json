@@ -6337,5 +6337,32 @@
       "copyDetails": "Copy details for an admin",
       "copied": "Details copied"
     }
+  },
+  "licenseNotices": {
+    "dismiss": "Dismiss",
+    "developmentKey": "This installation runs on a development license key. It is not for production use.",
+    "grace_one": "Company-wide connectors that copy access from their sources need a license key. Without one, they'll be limited to the people who created them in {{count}} day, on {{date}}. Nothing is deleted.",
+    "grace_other": "Company-wide connectors that copy access from their sources need a license key. Without one, they'll be limited to the people who created them in {{count}} days, on {{date}}. Nothing is deleted.",
+    "installKey": "Install a license key",
+    "limited_one": "{{count}} company-wide connector is limited to the person who created it, because no license key allows permission sync. Nothing was deleted.",
+    "limited_other": "{{count}} company-wide connectors are limited to the people who created them, because no license key allows permission sync. Nothing was deleted.",
+    "restoring": {
+      "admin_one": "Restoring access: {{count}} connector is running the full sync that brings back its access.",
+      "admin_other": "Restoring access: {{count}} connectors are running the full syncs that bring back their access.",
+      "member": "Access to some company sources is being restored. Your results may be incomplete until that finishes.",
+      "queued": "waiting to sync",
+      "syncing": "syncing",
+      "waiting": "waiting"
+    },
+    "memberLimited": "Some company sources aren't included in your results right now. Ask your administrator if you need them.",
+    "memberRestoring": "Access to some company sources is being restored, so your results may be incomplete for now.",
+    "connector": {
+      "affected": "Will be limited",
+      "affectedTooltip": "This connector copies access from its source, which needs a license key. Without one, from {{date}} only the person who created it can see its content. Nothing is deleted.",
+      "limited": "Limited",
+      "limitedTooltip": "No license key allows permission sync, so only the person who created this connector can see its content. Install a key to restore access. Nothing was deleted.",
+      "restoring": "Restoring access",
+      "restoringTooltip": "A license key is in place. Access comes back when this connector's full sync finishes."
+    }
   }
 }

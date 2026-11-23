@@ -8,6 +8,7 @@ import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
 import { SearchDegradedNote } from './search-degraded-note';
 import { AccessNotices, type AccessNotice } from '@/app/components/feedback/access-notice';
+import { LimitedSourcesNote } from '@/app/components/license-notices/limited-sources-note';
 import { AnswerContent } from './answer-content';
 import { QuoteSelectionLayer } from './quote-selection-toolbar';
 import { StatusMessageComponent } from './status-message';
@@ -933,6 +934,7 @@ export const ChatResponse = React.memo(function ChatResponse({
             )}
 
             {!isStreaming && searchDegraded && <SearchDegradedNote />}
+            {!isStreaming && <LimitedSourcesNote />}
             {!isStreaming && <AccessNotices notices={accessNotices} />}
 
             {/* After an answered question the reply carries on in this row and can stop on an

@@ -6495,5 +6495,38 @@
       "copyDetails": "Zkopírovat podrobnosti pro správce",
       "copied": "Podrobnosti zkopírovány"
     }
+  },
+  "licenseNotices": {
+    "dismiss": "Zavřít",
+    "developmentKey": "Tato instalace běží na vývojovém licenčním klíči. Není určena pro produkční provoz.",
+    "grace_one": "Celofiremní konektory, které přebírají přístupová práva ze svých zdrojů, potřebují licenční klíč. Bez něj budou za {{count}} den, {{date}}, omezené na osoby, které je vytvořily. Nic se nesmaže.",
+    "grace_few": "Celofiremní konektory, které přebírají přístupová práva ze svých zdrojů, potřebují licenční klíč. Bez něj budou za {{count}} dny, {{date}}, omezené na osoby, které je vytvořily. Nic se nesmaže.",
+    "grace_many": "Celofiremní konektory, které přebírají přístupová práva ze svých zdrojů, potřebují licenční klíč. Bez něj budou za {{count}} dne, {{date}}, omezené na osoby, které je vytvořily. Nic se nesmaže.",
+    "grace_other": "Celofiremní konektory, které přebírají přístupová práva ze svých zdrojů, potřebují licenční klíč. Bez něj budou za {{count}} dní, {{date}}, omezené na osoby, které je vytvořily. Nic se nesmaže.",
+    "installKey": "Nainstalovat licenční klíč",
+    "limited_one": "{{count}} celofiremní konektor je omezený na osobu, která ho vytvořila, protože žádný licenční klíč nepovoluje synchronizaci oprávnění. Nic nebylo smazáno.",
+    "limited_few": "{{count}} celofiremní konektory jsou omezené na osoby, které je vytvořily, protože žádný licenční klíč nepovoluje synchronizaci oprávnění. Nic nebylo smazáno.",
+    "limited_many": "{{count}} celofiremního konektoru je omezeno na osoby, které je vytvořily, protože žádný licenční klíč nepovoluje synchronizaci oprávnění. Nic nebylo smazáno.",
+    "limited_other": "{{count}} celofiremních konektorů je omezeno na osoby, které je vytvořily, protože žádný licenční klíč nepovoluje synchronizaci oprávnění. Nic nebylo smazáno.",
+    "restoring": {
+      "admin_one": "Obnovuje se přístup: {{count}} konektor provádí úplnou synchronizaci, která vrátí jeho přístup.",
+      "admin_few": "Obnovuje se přístup: {{count}} konektory provádějí úplné synchronizace, které vrátí jejich přístup.",
+      "admin_many": "Obnovuje se přístup: {{count}} konektoru provádí úplné synchronizace, které vrátí jejich přístup.",
+      "admin_other": "Obnovuje se přístup: {{count}} konektorů provádí úplné synchronizace, které vrátí jejich přístup.",
+      "member": "Přístup k některým firemním zdrojům se obnovuje. Do té doby můžou být vaše výsledky neúplné.",
+      "queued": "čeká na synchronizaci",
+      "syncing": "synchronizuje se",
+      "waiting": "čeká"
+    },
+    "memberLimited": "Některé firemní zdroje teď nejsou ve vašich výsledcích. Pokud je potřebujete, obraťte se na správce.",
+    "memberRestoring": "Přístup k některým firemním zdrojům se obnovuje, takže vaše výsledky můžou být zatím neúplné.",
+    "connector": {
+      "affected": "Bude omezen",
+      "affectedTooltip": "Tento konektor přebírá přístupová práva ze svého zdroje, k čemuž je potřeba licenční klíč. Bez něj od {{date}} uvidí jeho obsah jen osoba, která ho vytvořila. Nic se nesmaže.",
+      "limited": "Omezený",
+      "limitedTooltip": "Žádný licenční klíč nepovoluje synchronizaci oprávnění, takže obsah tohoto konektoru vidí jen osoba, která ho vytvořila. Přístup obnovíte instalací klíče. Nic nebylo smazáno.",
+      "restoring": "Obnovuje se přístup",
+      "restoringTooltip": "Licenční klíč je nainstalovaný. Přístup se vrátí, jakmile skončí úplná synchronizace tohoto konektoru."
+    }
   }
 }

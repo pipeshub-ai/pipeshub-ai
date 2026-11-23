@@ -16,6 +16,7 @@ export const SWR_NS = {
   userDirectory: 'users/directory',
   connectorConfigs: 'connectors/configs',
   webSearchConfig: 'web-search/config',
+  licenseNotice: 'license/notice',
 } as const;
 
 export type SwrNamespace = (typeof SWR_NS)[keyof typeof SWR_NS];

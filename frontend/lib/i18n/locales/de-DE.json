@@ -6337,5 +6337,32 @@
       "copyDetails": "Details für einen Admin kopieren",
       "copied": "Details kopiert"
     }
+  },
+  "licenseNotices": {
+    "dismiss": "Schließen",
+    "developmentKey": "Diese Installation läuft mit einem Entwicklungs-Lizenzschlüssel. Sie ist nicht für den Produktivbetrieb bestimmt.",
+    "grace_one": "Unternehmensweite Connectors, die Zugriffsrechte aus ihren Quellen übernehmen, brauchen einen Lizenzschlüssel. Ohne ihn werden sie in {{count}} Tag, am {{date}}, auf die Personen beschränkt, die sie erstellt haben. Es wird nichts gelöscht.",
+    "grace_other": "Unternehmensweite Connectors, die Zugriffsrechte aus ihren Quellen übernehmen, brauchen einen Lizenzschlüssel. Ohne ihn werden sie in {{count}} Tagen, am {{date}}, auf die Personen beschränkt, die sie erstellt haben. Es wird nichts gelöscht.",
+    "installKey": "Lizenzschlüssel installieren",
+    "limited_one": "{{count}} unternehmensweiter Connector ist auf die Person beschränkt, die ihn erstellt hat, weil kein Lizenzschlüssel die Berechtigungssynchronisierung erlaubt. Es wurde nichts gelöscht.",
+    "limited_other": "{{count}} unternehmensweite Connectors sind auf die Personen beschränkt, die sie erstellt haben, weil kein Lizenzschlüssel die Berechtigungssynchronisierung erlaubt. Es wurde nichts gelöscht.",
+    "restoring": {
+      "admin_one": "Zugriff wird wiederhergestellt: {{count}} Connector führt die vollständige Synchronisierung aus, die seinen Zugriff zurückbringt.",
+      "admin_other": "Zugriff wird wiederhergestellt: {{count}} Connectors führen die vollständigen Synchronisierungen aus, die ihren Zugriff zurückbringen.",
+      "member": "Der Zugriff auf einige Unternehmensquellen wird wiederhergestellt. Bis dahin sind Ihre Ergebnisse womöglich unvollständig.",
+      "queued": "wartet auf Synchronisierung",
+      "syncing": "wird synchronisiert",
+      "waiting": "wartet"
+    },
+    "memberLimited": "Einige Unternehmensquellen sind gerade nicht in Ihren Ergebnissen enthalten. Wenden Sie sich an Ihre Administration, wenn Sie sie brauchen.",
+    "memberRestoring": "Der Zugriff auf einige Unternehmensquellen wird wiederhergestellt, daher sind Ihre Ergebnisse vorerst womöglich unvollständig.",
+    "connector": {
+      "affected": "Wird beschränkt",
+      "affectedTooltip": "Dieser Connector übernimmt Zugriffsrechte aus seiner Quelle, wofür ein Lizenzschlüssel nötig ist. Ohne ihn kann ab {{date}} nur die Person, die ihn erstellt hat, seine Inhalte sehen. Es wird nichts gelöscht.",
+      "limited": "Beschränkt",
+      "limitedTooltip": "Kein Lizenzschlüssel erlaubt die Berechtigungssynchronisierung, daher kann nur die Person, die diesen Connector erstellt hat, seine Inhalte sehen. Installieren Sie einen Schlüssel, um den Zugriff wiederherzustellen. Es wurde nichts gelöscht.",
+      "restoring": "Zugriff wird wiederhergestellt",
+      "restoringTooltip": "Ein Lizenzschlüssel ist vorhanden. Der Zugriff kehrt zurück, sobald die vollständige Synchronisierung dieses Connectors abgeschlossen ist."
+    }
   }
 }

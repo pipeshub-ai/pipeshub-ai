@@ -37438,6 +37438,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /license/notice:
+    get:
+      tags:
+        - Organizations
+      summary: Read the licence notices
+      description: |
+        What the in-app licence notices need, for any signed-in user: whether the upgrade grace runs and when it
+        ends, whether permission sync is allowed, whether a development key (not for production) is in force, and
+        how many company-wide connectors are limited or restoring access. Admins also get each such connector's
+        name and sync status; a member gets only counts, of the connectors someone else created. Never includes
+        the licence file, its signature or the licensee.
+
+        **Requirements:** a signed-in user (a session, or an OAuth access token with `org:read`).
+      operationId: getLicenseNotice
+      security:
+        - bearerAuth: []
+        - oauth2: [org:read]
+      responses:
+        '200':
+          description: The licence notices
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [upgradeGrace, permissionSync, notForProduction, connectors]
+                properties:
+                  upgradeGrace:
+                    type: object
+                    nullable: true
+                    properties:
+                      endsAt:
+                        type: string
+                        format: date-time
+                  permissionSync:
+                    type: boolean
+                  notForProduction:
+                    type: boolean
+                  connectors:
+                    type: object
+                    required: [limited, restoring, items]
+                    properties:
+                      limited:
+                        type: integer
+                      restoring:
+                        type: integer
+                      items:
+                        type: array
+                        nullable: true
+                        description: Admins only; null for a member.
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            name:
+                              type: string
+                            type:
+                              type: string
+                            state:
+                              type: string
+                              enum: [affected, limited, restoring]
+                            status:
+                              type: string
+                              nullable: true
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /org:
     post:
       tags:
