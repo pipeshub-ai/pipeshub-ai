@@ -831,6 +831,64 @@ components:
             mcp:write: Add, configure and authenticate MCP servers
             mcp:delete: Remove MCP servers and their credentials
   schemas:
+    LicenseView:
+      type: object
+      additionalProperties: false
+      required: [licenseId, licensee, type, seats, features, url, startDate, endDate, graceEndsAt]
+      properties:
+        licenseId: { type: string }
+        licensee: { type: string }
+        type: { type: string, enum: [trial, pro] }
+        seats:
+          oneOf:
+            - type: integer
+            - type: string
+              enum: [unlimited]
+        features:
+          type: array
+          items: { type: string }
+          description: What the licence turns on; a licence issued without the field shows `permissionSync`.
+        url: { type: string, nullable: true }
+        startDate: { type: string, format: date-time }
+        endDate: { type: string, format: date-time }
+        graceEndsAt: { type: string, format: date-time }
+    LicenseStatus:
+      type: object
+      additionalProperties: false
+      required: [status, license, upcoming, permissionSync, ignored, upgradeGrace]
+      properties:
+        status:
+          type: string
+          enum: [none, pending, active, expiring, grace, expired]
+        license:
+          allOf: [{ $ref: '#/components/schemas/LicenseView' }]
+          nullable: true
+          description: The licence in force, or for an expired installation the one that ended last.
+        upcoming:
+          allOf: [{ $ref: '#/components/schemas/LicenseView' }]
+          nullable: true
+        permissionSync:
+          type: object
+          nullable: true
+          description: What the connectors are told. Null while no licence has ever started here, which they read as allowed.
+          additionalProperties: false
+          required: [allowed, until, status]
+          properties:
+            allowed: { type: boolean }
+            until: { type: string, format: date-time, nullable: true }
+            status: { type: string }
+        ignored:
+          type: integer
+          description: Installed files that do not count here (signature, trusted key or web address).
+        upgradeGrace:
+          type: object
+          nullable: true
+          description: Set once licence enforcement is on. When the upgrade grace ends (null when none is given), and whether the installation was using licensed features at the upgrade (null until the connectors report).
+          additionalProperties: false
+          required: [endsAt, affected]
+          properties:
+            endsAt: { type: string, format: date-time, nullable: true }
+            affected: { type: boolean, nullable: true }
     ConnectorUserConnection:
       type: object
       description: One user's connection to a per-user connector. The credential is never included.
@@ -37275,6 +37333,104 @@ paths:
             Not produced by the health check itself.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /license:
+    get:
+      tags:
+        - Organizations
+      summary: Read the licence status
+      description: |
+        The licence key in force on this installation, one installed ahead of its start date, and what the
+        connectors are told about permission sync. Never includes a licence's signature.
+
+        **Requirements:** an admin of the organization (a session, or an OAuth access token with `org:admin`).
+      operationId: getLicenseStatus
+      security:
+        - bearerAuth: []
+        - oauth2: [org:admin]
+      responses:
+        '200':
+          description: The licence status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LicenseStatus'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: "The caller is not an admin of this organization, or an OAuth access token lacks the `org:admin` scope (`Insufficient scope. Required: org:admin`)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - Organizations
+      summary: Install or replace the licence key
+      description: |
+        Installs a licence file. A newer file replaces the one in force; one dated ahead takes over when it starts.
+        The file is checked against its signature, so it is passed through byte for byte. The connectors' answer
+        on permission sync is updated at once.
+
+        **Requirements:** an admin of the organization (a session, or an OAuth access token with `org:admin`).
+      operationId: installLicense
+      security:
+        - bearerAuth: []
+        - oauth2: [org:admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license]
+              properties:
+                license:
+                  type: object
+                  description: The licence file's JSON exactly as issued (`format`, `keyId`, `license`, `signature`).
+      responses:
+        '200':
+          description: Installed, or already installed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [installed, alreadyInstalled, status]
+                properties:
+                  installed:
+                    type: boolean
+                  alreadyInstalled:
+                    type: boolean
+                  status:
+                    $ref: '#/components/schemas/LicenseStatus'
+        '400':
+          description: "The file was refused. `code` is `HTTP_LICENSE_<REASON>`: MALFORMED, UNSUPPORTED_FORMAT, NO_TRUSTED_KEY, BAD_SIGNATURE, ISSUED_IN_FUTURE, INVALID_DATES, EXPIRED, NEVER_IN_FORCE, ADDRESS_REQUIRED or WRONG_ADDRESS."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: "The caller is not an admin of this organization, or an OAuth access token lacks the `org:admin` scope (`Insufficient scope. Required: org:admin`)."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: A different file with the same licence ID is already installed.
           content:
             application/json:
               schema:
