@@ -13,6 +13,7 @@ import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/u
 import { CONVERSATION_ID_HEADER } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import {
   FakeAIBackend,
   FakeSSEResponse,
@@ -600,6 +601,35 @@ describe('es_controller non-streaming chat routes', () => {
       expect(token).not.to.equal('scoped')
       expect((jwt.decode(token) as { userId: string }).userId).to.equal(String(userId))
     })
+
+    // On PostgreSQL a read outside an org context fails closed, and a Slack bot's token
+    // names no org: the turn must run as the org of the user it just hydrated.
+    for (const flow of [flows[0]!, flows[1]!]) {
+      it(`${flow.name} runs the turn as the org of the hydrated caller`, async () => {
+        sinon.stub(Users, 'findOne').resolves({
+          _id: OWNER,
+          orgId: ORG,
+          email: 'owner@example.com',
+          fullName: 'Owner',
+          slug: 'owner',
+        } as never)
+        let seen: string | undefined
+        expect(getCurrentOrgId(), 'nothing bound at the entry').to.equal(undefined)
+        const r = await run(
+          flow,
+          (ai) =>
+            ai.replyWith(exactPath(flow.aiPath), () => {
+              // The AI call is the last step of the turn: it runs after the conversation was read or written.
+              seen = getCurrentOrgId()
+              return { status: 200, body: answer('hi') }
+            }),
+          { req: { user: undefined, tokenPayload: { email: 'owner@example.com' }, headers: { authorization: 'Bearer scoped' } } },
+        )
+
+        expect(r.next.called, String(r.error()?.message)).to.be.false
+        expect(seen, 'the AI call ran as the hydrated caller org').to.equal(String(ORG))
+      })
+    }
 
     it('with no matching user are a 404 and nothing is written', async () => {
       sinon.stub(Users, 'findOne').resolves(null)

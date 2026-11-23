@@ -39,7 +39,10 @@ import {
   extractModelInfo,
   searchDegradedMeta,
 } from '../utils/utils';
-import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
+import {
+  hydrateScopedRequestAsUser,
+  runAsHydratedCaller,
+} from '../utils/scoped-request';
 import {
   redactConversationFor,
   viewerOf,
@@ -111,124 +114,128 @@ const nonStreamingTurn =
       validateNoFormatSpecifiers(query, 'query');
 
       await hydrateScopedRequestAsUser(req, appConfig);
-      const { userId, orgId } = (req as AuthenticatedUserRequest).user as {
-        userId: string;
-        orgId: string;
-      };
-
-      const target = targetOf(req);
-      const userMessage = buildUserQueryMessage(
-        query,
-        body.appliedFilters as never,
-        body.chatMode as string | undefined,
-        body.attachments as never,
-      );
-
-      let conversation: ChatSessionDto;
-      let previousConversations: unknown[];
-      let access: Readable | undefined;
-      let project: ProjectDto | undefined;
-      if (mode === 'create') {
-        const link = await resolveProjectLink(
-          orgId,
-          userId,
-          body,
-          projectCallerFromRequest(req, appConfig),
-        );
-        conversation = await openConversation(
-          {
-            ...sessionFields(target, body, userId, orgId),
-            ...(link.projectId
-              ? {
-                  projectId: link.projectId,
-                  projectVisibility: link.projectVisibility,
-                }
-              : {}),
-          },
-          userMessage,
-        );
-        // A new conversation has no stored history, and history is never taken from the client (CE-19).
-        previousConversations = [];
-        project = link.project;
-      } else {
-        // Project context always comes from the session row, never the
-        // request body — a follow-up turn cannot move itself into a project.
-        const scope: SessionScope =
-          target.kind === 'agent'
-            ? { kind: 'agent', agentKey: target.agentKey }
-            : { kind: 'chat' };
-        const continued = await continueConversation(
-          scope,
-          req.params.conversationId as string,
-          userMessage,
-          { userId, orgId },
-          appConfig,
-        );
-        conversation = continued.conversation;
-        previousConversations = continued.previousConversations;
-        access = continued.access;
-        project = await loadProjectForSession(
-          conversation.orgId,
-          conversation.userId,
-          conversation.projectId,
-          {
-            caller: projectCallerFromRequest(req, appConfig),
-            conversationId: conversation._id,
-          },
-        );
-      }
-
-      const conversationId = conversation._id;
-      res.setHeader(CONVERSATION_ID_HEADER, conversationId);
-      if (project) {
-        void ProjectService.touchActivity(project._id);
-      }
-
-      const turn = await completeTurn({
-        target,
-        conversation,
-        aiBackend: appConfig.aiBackend,
-        request: buildAiChatRequest(target, body, {
-          conversationId,
-          previousConversations,
-          isNewConversation: mode === 'create',
-          project,
-        }),
-        headers: req.headers as Record<string, string>,
-        modelInfo: extractModelInfo(body),
-        requestId,
-      });
-
-      const meta = {
-        requestId,
-        timestamp: new Date().toISOString(),
-        duration: Date.now() - startTime,
-        ...searchDegradedMeta(turn),
-      };
-      if (mode === 'create') {
-        res
-          .status(HTTP_STATUS.CREATED)
-          .json({ conversation: turn.conversation, meta });
-      } else {
-        // The response carries the whole stored history: answers the reader lost access to go out hidden.
-        const stored = turn.conversation as {
-          messages?: Array<{ _id?: unknown; messageType?: string }>;
+      // A Slack bot's token names no org, so nothing bound one; the turn runs as
+      // the org of the user hydrated above (PostgreSQL refuses a read with none).
+      await runAsHydratedCaller(req, async () => {
+        const { userId, orgId } = (req as AuthenticatedUserRequest).user as {
+          userId: string;
+          orgId: string;
         };
-        const freshId = [...(stored.messages ?? [])]
-          .reverse()
-          .find((m) => m.messageType === 'bot_response')?._id;
-        const conversation = await redactConversationFor(
-          appConfig,
-          viewerOf(userId, orgId),
-          turn.conversation as Record<string, unknown> & { messages?: unknown },
-          { known: access, freshIds: [freshId] },
+
+        const target = targetOf(req);
+        const userMessage = buildUserQueryMessage(
+          query,
+          body.appliedFilters as never,
+          body.chatMode as string | undefined,
+          body.attachments as never,
         );
-        res.status(HTTP_STATUS.OK).json({
+
+        let conversation: ChatSessionDto;
+        let previousConversations: unknown[];
+        let access: Readable | undefined;
+        let project: ProjectDto | undefined;
+        if (mode === 'create') {
+          const link = await resolveProjectLink(
+            orgId,
+            userId,
+            body,
+            projectCallerFromRequest(req, appConfig),
+          );
+          conversation = await openConversation(
+            {
+              ...sessionFields(target, body, userId, orgId),
+              ...(link.projectId
+                ? {
+                    projectId: link.projectId,
+                    projectVisibility: link.projectVisibility,
+                  }
+                : {}),
+            },
+            userMessage,
+          );
+          // A new conversation has no stored history, and history is never taken from the client (CE-19).
+          previousConversations = [];
+          project = link.project;
+        } else {
+          // Project context always comes from the session row, never the
+          // request body — a follow-up turn cannot move itself into a project.
+          const scope: SessionScope =
+            target.kind === 'agent'
+              ? { kind: 'agent', agentKey: target.agentKey }
+              : { kind: 'chat' };
+          const continued = await continueConversation(
+            scope,
+            req.params.conversationId as string,
+            userMessage,
+            { userId, orgId },
+            appConfig,
+          );
+          conversation = continued.conversation;
+          previousConversations = continued.previousConversations;
+          access = continued.access;
+          project = await loadProjectForSession(
+            conversation.orgId,
+            conversation.userId,
+            conversation.projectId,
+            {
+              caller: projectCallerFromRequest(req, appConfig),
+              conversationId: conversation._id,
+            },
+          );
+        }
+
+        const conversationId = conversation._id;
+        res.setHeader(CONVERSATION_ID_HEADER, conversationId);
+        if (project) {
+          void ProjectService.touchActivity(project._id);
+        }
+
+        const turn = await completeTurn({
+          target,
           conversation,
-          recordsUsed: turn.recordsUsed,
-          meta: { ...meta, recordsUsed: turn.recordsUsed },
+          aiBackend: appConfig.aiBackend,
+          request: buildAiChatRequest(target, body, {
+            conversationId,
+            previousConversations,
+            isNewConversation: mode === 'create',
+            project,
+          }),
+          headers: req.headers as Record<string, string>,
+          modelInfo: extractModelInfo(body),
+          requestId,
         });
-      }
+
+        const meta = {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+          ...searchDegradedMeta(turn),
+        };
+        if (mode === 'create') {
+          res
+            .status(HTTP_STATUS.CREATED)
+            .json({ conversation: turn.conversation, meta });
+        } else {
+          // The response carries the whole stored history: answers the reader lost access to go out hidden.
+          const stored = turn.conversation as {
+            messages?: Array<{ _id?: unknown; messageType?: string }>;
+          };
+          const freshId = [...(stored.messages ?? [])]
+            .reverse()
+            .find((m) => m.messageType === 'bot_response')?._id;
+          const conversation = await redactConversationFor(
+            appConfig,
+            viewerOf(userId, orgId),
+            turn.conversation as Record<string, unknown> & { messages?: unknown },
+            { known: access, freshIds: [freshId] },
+          );
+          res.status(HTTP_STATUS.OK).json({
+            conversation,
+            recordsUsed: turn.recordsUsed,
+            meta: { ...meta, recordsUsed: turn.recordsUsed },
+          });
+        }
+      });
     } catch (error: unknown) {
       logger[logLevelFor(error)]('Non-streaming chat turn failed', {
         requestId,
