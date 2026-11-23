@@ -42,6 +42,7 @@ function unordered(v: unknown): unknown {
 export const READ_METHODS: ReadonlySet<string> = new Set([
   'count',
   'countActiveAdmins',
+  'countLive',
   'countByProject',
   'countFor',
   'countLiveAccessForUser',

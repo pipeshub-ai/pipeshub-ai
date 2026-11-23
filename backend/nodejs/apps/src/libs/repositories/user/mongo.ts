@@ -571,6 +571,17 @@ export class MongoUserRepository implements UserRepository {
     return session ? query.session(session) : query;
   }
 
+  async countLive(
+    orgId: string,
+    withServiceAccounts: boolean,
+  ): Promise<number> {
+    return Users.countDocuments({
+      orgId,
+      isDeleted: { $ne: true },
+      ...(withServiceAccounts ? {} : NOT_A_SERVICE_ACCOUNT),
+    });
+  }
+
   async existsLiveEmail(email: string): Promise<boolean> {
     return !!(await Users.findOne({ email, isDeleted: false }));
   }

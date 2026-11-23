@@ -8,7 +8,10 @@ import {
 import type { Container } from 'inversify';
 import { spawnDetached } from '../../../libs/context/orgContext';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
-import { NotFoundError } from '../../../libs/errors/http.errors';
+import {
+  ForbiddenError,
+  NotFoundError,
+} from '../../../libs/errors/http.errors';
 import {
   noopEditionBoot,
   type EditionBoot,
@@ -16,6 +19,9 @@ import {
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import type { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { getIdentityPort } from '../../../libs/repositories/identity';
+import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
+import { getUserRepository } from '../../../libs/repositories/user';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { loadConfigurationManagerConfig } from '../../../modules/configuration_manager/config/config';
@@ -24,9 +30,17 @@ import { isUserOrgAdmin } from '../../../modules/user_management/services/user-a
 import type { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { licenseNotice, startupWarnings } from './license-notice';
 import {
+  checkSeats,
+  seatRefusal,
+  seatRoom,
+  SERVICE_ACCOUNTS_HOLD_SEATS,
+  type SeatLimit,
+} from './license-seats';
+import {
   installLicense,
   licenseStatus,
   publishPermissionSync,
+  type LicenseStatusView,
   type LicenseStore,
 } from './license.service';
 
@@ -65,6 +79,10 @@ const configuredStore = (): LicenseStore => {
   }
   return store;
 };
+/** Replaces the configured store (tests); null opens the configured one again on next use. */
+export const setLicenseStore = (replacement: LicenseStore | null): void => {
+  store = replacement;
+};
 /** Opens the configured store on first use, so a store that cannot open fails one check, not start-up. */
 const defaultStore: LicenseStore = {
   read: (key) => configuredStore().read(key),
@@ -72,6 +90,58 @@ const defaultStore: LicenseStore = {
 };
 
 const logger = Logger.getInstance({ service: 'License' });
+
+/** The people holding seats, counted in the oldest organization: an install has one, and a second cannot be created. */
+async function countInstallPeople(): Promise<number> {
+  const orgId = await getIdentityPort().oldestOrgId();
+  return orgId === null
+    ? 0
+    : inInstallOrg(
+        'licence-seats',
+        () => getUserRepository().countLive(orgId, SERVICE_ACCOUNTS_HOLD_SEATS),
+        0,
+      );
+}
+
+/** The seat state of the install, stored as it changes. */
+export const installSeats = (
+  licenseStore: LicenseStore = defaultStore,
+  now: Date = new Date(),
+): Promise<SeatLimit | null> =>
+  checkSeats(licenseStore, countInstallPeople, now);
+
+// shortcut: checked before the write, not with it, so two adds at once can both pass; the next check records the true count.
+/** Refuses to add one more person once new users are refused; `message` replaces the admin's wording. */
+export async function assertSeatFor(message?: string): Promise<void> {
+  const limit = await installSeats();
+  if (limit && seatRoom(limit) < 1) {
+    throw message ? new ForbiddenError(message) : seatRefusal(limit.seats);
+  }
+}
+
+/** After people were added or removed: stores the new seat state, or logs why it could not; the periodic check repairs it. */
+export async function noteSeatChange(): Promise<void> {
+  try {
+    await installSeats();
+  } catch (error) {
+    logger.warn('Could not update the seat count after a user change', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export type LicenseStatusWithSeats = LicenseStatusView & {
+  /** Null when nothing limits seats: no license in force, or `unlimited` seats. */
+  seatLimit: SeatLimit | null;
+};
+
+const withSeats = async (
+  licenseStore: LicenseStore,
+  status: LicenseStatusView,
+): Promise<LicenseStatusWithSeats> => ({
+  ...status,
+  seatLimit: await installSeats(licenseStore),
+});
 
 /** Only an admin reads or installs the license; an OAuth app the admin authorised for something else is refused. */
 export function createLicenseRouter(
@@ -94,7 +164,9 @@ export function createLicenseRouter(
     ...admin,
     async (_req: Request, res: Response, next: NextFunction) => {
       try {
-        res.json(await licenseStatus(licenseStore));
+        res.json(
+          await withSeats(licenseStore, await licenseStatus(licenseStore)),
+        );
       } catch (error) {
         next(error);
       }
@@ -143,7 +215,10 @@ export function createLicenseRouter(
             permissionSync: result.status.permissionSync,
           });
         }
-        res.json(result);
+        res.json({
+          ...result,
+          status: await withSeats(licenseStore, result.status),
+        });
       } catch (error) {
         next(error);
       }
@@ -155,6 +230,7 @@ export function createLicenseRouter(
 let timer: NodeJS.Timeout | null = null;
 let lastAllowed: boolean | undefined;
 let warnedAtStart = false;
+let lastRefusing: boolean | undefined;
 
 async function checkLicense(licenseStore: LicenseStore): Promise<void> {
   try {
@@ -180,6 +256,14 @@ async function checkLicense(licenseStore: LicenseStore): Promise<void> {
       }
     }
     lastAllowed = answer?.allowed;
+    const seats = await installSeats(licenseStore);
+    if (seats?.refusing && !lastRefusing) {
+      logger.warn('More users than the licence covers: new users are refused', {
+        seats: seats.seats,
+        used: seats.used,
+      });
+    }
+    lastRefusing = seats?.refusing;
   } catch (error) {
     logger.error('License check failed', {
       error: error instanceof Error ? error.message : String(error),

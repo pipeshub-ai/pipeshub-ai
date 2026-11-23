@@ -42,6 +42,7 @@ import {
 } from '../../../../src/ee/modules/license/license.types';
 import { EncryptionService } from '../../../../src/libs/encryptor/encryptor';
 import { BaseError } from '../../../../src/libs/errors/base.error';
+import { setIdentityPort } from '../../../../src/libs/repositories/identity';
 import { xssSanitizationMiddleware } from '../../../../src/libs/middlewares/xss-sanitization.middleware';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 
@@ -680,9 +681,14 @@ describe('license check: features, install and the permission sync answer', () =
       sinon
         .stub(userAdminService, 'isUserOrgAdmin')
         .callsFake(async (userId: string) => userId === 'admin');
+      // The status counts the install's people against the seats: an install with no organization yet has none.
+      setIdentityPort({ oldestOrgId: async () => null } as never);
     });
 
-    afterEach(() => sinon.restore());
+    afterEach(() => {
+      sinon.restore();
+      setIdentityPort();
+    });
 
     it('installs a key and reads the status back without the signature', async () => {
       // The route runs on the real clock: a file that starts now and runs a year.
@@ -704,6 +710,11 @@ describe('license check: features, install and the permission sync answer', () =
         expect(JSON.parse(text)).to.deep.include({ status: 'active' });
         expect(JSON.parse(text).permissionSync).to.deep.include({
           allowed: true,
+        });
+        expect(JSON.parse(text).seatLimit).to.deep.include({
+          seats: 100,
+          used: 0,
+          refusing: false,
         });
       });
     });

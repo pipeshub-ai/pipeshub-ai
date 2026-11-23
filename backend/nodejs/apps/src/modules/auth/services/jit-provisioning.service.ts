@@ -10,6 +10,11 @@ import { authRefusal } from '../utils/sign-in-audit';
 import { getUserRepository } from '../../../libs/repositories/user';
 import { getGroupRepository } from '../../../libs/repositories/group';
 import {
+  assertSeatFor,
+  noteSeatChange,
+} from '../../../ee/modules/license/license-boot';
+import { SEAT_REFUSAL_AT_SIGN_IN } from '../../../ee/modules/license/license-seats';
+import {
   EntitiesEventProducer,
   EventType,
   UserAddedEvent,
@@ -57,6 +62,8 @@ export class JitProvisioningService {
       );
     }
 
+    await assertSeatFor(SEAT_REFUSAL_AT_SIGN_IN);
+
     const newUser = await getUserRepository().create(orgId, {
       email,
       ...userDetails,
@@ -92,6 +99,7 @@ export class JitProvisioningService {
       await this.eventService.stop();
     }
 
+    await noteSeatChange();
     audit('auth.jit_provision', {
       actor: newUser._id,
       org: orgId,

@@ -705,6 +705,20 @@ export class PgUserRepository implements UserRepository, Importable {
     });
   }
 
+  async countLive(
+    orgId: string,
+    withServiceAccounts: boolean,
+  ): Promise<number> {
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ n: string }>(
+        "/* pipeshub:identity.user_count_live */ SELECT count(*) AS n FROM identity.users u WHERE u.org_id = $1 AND NOT u.is_deleted AND ($2 OR u.kind <> 'service')",
+        [k.orgId, withServiceAccounts],
+      );
+      return Number(rows[0]?.n ?? 0);
+    });
+  }
+
   // ---- address checks
   async existsLiveEmail(email: string): Promise<boolean> {
     return (await this.getLiveByEmailAmbient(email)) !== null;

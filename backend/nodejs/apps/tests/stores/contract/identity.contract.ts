@@ -845,6 +845,18 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(await users.countActiveAdmins(await fx.newOrg())).to.equal(0);
     });
 
+    it('countLive counts accounts not removed, invited ones too, and service accounts only when asked', async () => {
+      const org = await fx.newOrg();
+      await person(org, { role: 'admin' });
+      await person(org, { hasLoggedIn: false });
+      const gone = await person(org);
+      await users.create(org, { email: svcEmail(org), kind: 'service', fullName: 's' });
+      await users.markDeleted(org, gone._id);
+      expect(await users.countLive(org, false)).to.equal(2);
+      expect(await users.countLive(org, true)).to.equal(3);
+      expect(await users.countLive(await fx.newOrg(), false)).to.equal(0);
+    });
+
     it('setRole changes the role of a not-removed account', async () => {
       const org = await fx.newOrg();
       const u = await person(org);

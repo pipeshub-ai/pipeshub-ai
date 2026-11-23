@@ -7,6 +7,7 @@ require:
   - './tests/helpers/keep-worker-coverage.ts'
   - './tests/helpers/telemetry-env-global.ts'
   - './tests/helpers/logger-isolation-global.ts'
+  - './tests/helpers/licence-store-global.ts'
 spec: 'tests/**/*.test.ts'
 timeout: 10000
 recursive: true
