@@ -177,9 +177,14 @@ class TestEvictionPolicy:
         # An untargeted INFO on a cluster client reads one node; a primary with allkeys-* elsewhere would pass.
         nodes = [MagicMock(name=f"primary-{i}") for i in range(len(policies))]
 
-        class Cluster:  # the shape of redis-py's RedisCluster that the check uses
+        class Cluster:  # like redis-py's RedisCluster: no nodes until initialize() has loaded the slot map
+            loaded = False
+
+            async def initialize(self) -> None:
+                self.loaded = True
+
             def get_primaries(self) -> list[MagicMock]:
-                return nodes
+                return nodes if self.loaded else []
 
             info = AsyncMock(side_effect=lambda _section, target_nodes: {
                 "maxmemory_policy": policies[nodes.index(target_nodes)]})
@@ -193,6 +198,22 @@ class TestEvictionPolicy:
             warning = await replay_set.check_eviction_policy(cluster)
             assert ("volatile-lru" in (warning or "")) == ("volatile-lru" in policies)
         assert cluster.info.await_count == len(policies)
+
+    async def test_a_cluster_that_reports_no_primaries_is_unreadable_not_safe(self) -> None:
+        logger = MagicMock()
+
+        class Cluster:
+            async def initialize(self) -> None:
+                return None
+
+            def get_primaries(self) -> list[MagicMock]:
+                return []
+
+            info = AsyncMock()
+
+        replay_set._eviction_warning = "earlier warning"
+        assert await replay_set.check_eviction_policy(Cluster(), logger) == "earlier warning"
+        logger.warning.assert_called_once()
 
     async def test_noeviction_is_safe_and_clears_an_earlier_warning(self) -> None:
         await replay_set.check_eviction_policy(_Info("volatile-lru"))

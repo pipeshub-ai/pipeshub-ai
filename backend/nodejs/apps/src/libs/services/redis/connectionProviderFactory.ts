@@ -16,7 +16,10 @@ import {
 } from './connectionConfig';
 import type { Cluster } from 'ioredis';
 import { ClusterRedisProvider } from './clusterRedisProvider';
-import { IRedisConnectionProvider } from './connectionProvider.interface';
+import {
+  IRedisConnectionProvider,
+  RedisClient,
+} from './connectionProvider.interface';
 import { StandaloneRedisProvider } from './standaloneRedisProvider';
 import { NoRedisProvider } from './noRedisProvider';
 import { Logger } from '../logger.service';
@@ -255,10 +258,16 @@ export async function checkRedisEvictionPolicy(
   let policies: string[];
   try {
     const client = provider.getClient();
-    // A cluster client sends an untargeted INFO to one node; any primary can hold any key.
-    const nodes = provider.isCluster
-      ? (client as Cluster).nodes('master')
-      : [client];
+    let nodes: RedisClient[] = [client];
+    if (provider.isCluster) {
+      // An untargeted INFO reaches one node, and any primary can hold any key. `nodes()` is the cached
+      // topology, empty until the cluster has connected; an empty list is unreadable, never safe.
+      const cluster = client as Cluster;
+      if (cluster.status !== 'ready') await cluster.ping();
+      nodes = cluster.nodes('master');
+      if (nodes.length === 0)
+        throw new Error('Redis Cluster reported no primaries');
+    }
     const infos: string[] = await Promise.all(
       nodes.map((node) => node.info('memory')),
     );

@@ -299,7 +299,12 @@ def eviction_policy_warning() -> str | None:
 async def _maxmemory_policies(redis: Redis) -> list[str]:
     """``maxmemory-policy`` of every primary. A cluster client sends an untargeted ``INFO`` to one node only."""
     if callable(getattr(type(redis), "get_primaries", None)):  # a cluster client (no client import outside the providers)
-        infos = [await redis.info("memory", target_nodes=node) for node in redis.get_primaries()]  # type: ignore[misc]
+        # The node list is empty until the client has loaded the slot map, and an empty list must not read as safe.
+        await redis.initialize()  # type: ignore[attr-defined]
+        primaries = redis.get_primaries()  # type: ignore[attr-defined]
+        if not primaries:
+            raise RuntimeError("Redis Cluster reported no primaries")
+        infos = [await redis.info("memory", target_nodes=node) for node in primaries]  # type: ignore[misc]
     else:
         infos = [await redis.info("memory")]  # type: ignore[misc]
     return [str(info.get("maxmemory_policy") or "").strip().lower() for info in infos]
