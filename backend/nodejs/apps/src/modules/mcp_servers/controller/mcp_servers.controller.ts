@@ -163,7 +163,7 @@ export const listMcpCatalog = proxyMcp(
 /** The organization's servers people signed in to, most used first: counts only, never who. */
 export const listPopularMcpServers = proxyMcp(
   HttpMethod.GET,
-  (req) => `/popular${queryString(req.query as Record<string, unknown>, ['limit'])}`,
+  (req) => `/popular${queryString(req.query, ['limit'])}`,
   'List popular MCP servers',
 );
 
