@@ -6132,7 +6132,8 @@
     "timedOut": "Zeitüberschreitung der Anfrage",
     "somethingWentWrong": "Etwas ist schiefgelaufen",
     "tryAgainShortly": "Bitte versuchen Sie es gleich noch einmal",
-    "connectedServiceProblem": "Problem mit einem verbundenen Dienst"
+    "connectedServiceProblem": "Problem mit einem verbundenen Dienst",
+    "openGuide": "Anleitung öffnen"
   },
   "validation": {
     "password": {

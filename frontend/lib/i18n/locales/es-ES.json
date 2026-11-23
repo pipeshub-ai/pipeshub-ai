@@ -6209,7 +6209,8 @@
     "timedOut": "La solicitud ha caducado",
     "somethingWentWrong": "Algo salió mal",
     "tryAgainShortly": "Inténtalo de nuevo en unos momentos",
-    "connectedServiceProblem": "Problema con un servicio conectado"
+    "connectedServiceProblem": "Problema con un servicio conectado",
+    "openGuide": "Abrir guía"
   },
   "validation": {
     "password": {

@@ -6094,7 +6094,8 @@
     "timedOut": "請求逾時",
     "somethingWentWrong": "發生錯誤",
     "tryAgainShortly": "請稍後再試",
-    "connectedServiceProblem": "連線的服務發生問題"
+    "connectedServiceProblem": "連線的服務發生問題",
+    "openGuide": "打開指南"
   },
   "validation": {
     "password": {

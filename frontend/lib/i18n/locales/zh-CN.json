@@ -6094,7 +6094,8 @@
     "timedOut": "请求超时",
     "somethingWentWrong": "出了点问题",
     "tryAgainShortly": "请稍后重试",
-    "connectedServiceProblem": "关联服务出现问题"
+    "connectedServiceProblem": "关联服务出现问题",
+    "openGuide": "打开指南"
   },
   "validation": {
     "password": {
