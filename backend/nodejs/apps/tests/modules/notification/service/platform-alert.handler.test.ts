@@ -267,6 +267,64 @@ describe('notification/service/platform-alert.handler', () => {
       expect(mailProducer.publishEvent.callCount).to.equal(2);
     });
 
+    /** Runs every published mail job through the mail consumer's wrapper and inbox; returns the addresses actually sent to. */
+    const sendAll = async () => {
+      const sent: string[] = [];
+      for (const call of mailProducer.publishEvent.getCalls()) {
+        const job = call.args[0].payload;
+        await runWithEnvelope('mail', JSON.parse(JSON.stringify(job)), async (v: any) => { sent.push(v.mail.sendEmailTo[0]); }, 'mail-consumer-group');
+      }
+      return sent.sort();
+    };
+
+    it('a stop after the last org was stored and before its mail was queued: the redelivery queues it, and each admin gets one email', async () => {
+      const msg = { ...event(), eventId: 'evt-p3' };
+      const hang = new Promise<void>(() => {});
+      mailProducer.publishEvent.onFirstCall().returns(hang);
+      // the first delivery stops inside its first mail publish: never acknowledged, so the broker delivers it again
+      void deliver(handler, msg);
+      for (let i = 0; i < 100 && !mailProducer.publishEvent.called; i++) await new Promise((r) => setTimeout(r, 5));
+      expect(insertOrgs).to.deep.equal([orgA, orgB]);
+      await deliver(fresh(), msg);
+      await deliver(fresh(), msg);
+      expect(insertOrgs).to.deep.equal([orgA, orgB]);
+      // the hung publish may still have reached the broker: it carries the same event id as the redelivery's
+      const ids = mailProducer.publishEvent.getCalls().map((c) => c.args[0].payload.eventId);
+      expect(ids[0]).to.equal(ids[1]);
+      expect(await sendAll()).to.deep.equal([`${admin1}@example.com`, `${admin2}@example.com`]);
+    });
+
+    it('a publish that failed partway is published again with the same ids, and each admin gets one email', async () => {
+      resolveRecipients.resolves([{ orgId: orgA, userIds: [admin1, admin2] }]);
+      const msg = { ...event(), eventId: 'evt-p4' };
+      mailProducer.publishEvent.onSecondCall().rejects(new Error('broker away'));
+      await deliver(handler, msg);
+      await deliver(fresh(), msg);
+      await deliver(fresh(), msg);
+      expect(mailProducer.publishEvent.callCount).to.equal(4);
+      expect(await sendAll()).to.deep.equal([`${admin1}@example.com`, `${admin2}@example.com`]);
+    });
+
+    it('an org stored by an earlier delivery still gets its email when the other org has no recipients left', async () => {
+      const msg = { ...event(), eventId: 'evt-p5' };
+      insertMany.callsFake(async (docs: any[]) => {
+        const org = getCurrentOrgId();
+        if (org === orgB) throw new DocStoreReadOnlyError();
+        insertOrgs.push(org);
+        return docs.map((doc, i) => ({ ...doc, _id: `n${i}` }));
+      });
+      let thrown: unknown;
+      try { await deliver(handler, msg); } catch (e) { thrown = e; }
+      expect(thrown).to.be.instanceOf(DocStoreReadOnlyError);
+      // before the retry, org B loses its last admin
+      resolveRecipients.resolves([{ orgId: orgA, userIds: [admin1] }]);
+      await deliver(handler, msg);
+      expect(insertOrgs).to.deep.equal([orgA]);
+      expect(mailProducer.publishEvent.callCount).to.equal(1);
+      expect(mailProducer.publishEvent.firstCall.args[0].payload.mail.sendEmailTo).to.deep.equal([`${admin1}@example.com`]);
+      expect(logger.warn.calledWithMatch('Platform alert not delivered: no recipients')).to.be.false;
+    });
+
     it('a redelivery after a restart stores nothing, queues no email and warns nothing', async () => {
       const msg = { ...event(), eventId: 'evt-p2' };
       await deliver(handler, msg);

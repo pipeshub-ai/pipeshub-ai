@@ -5,6 +5,8 @@ import {
   DuplicateEnvelope,
   configureEnvelope,
   configureInbox,
+  deliveryStepDone,
+  recordDeliveryStep,
   deriveKey,
   replayWindowSeconds,
   runWithEnvelope,
@@ -163,6 +165,21 @@ describe('envelope: durable consumer inbox', () => {
     expect(await deliver(m, G, fanOut)).to.equal(0)
     expect(runs).to.deep.equal(['org_a', 'org_b'])
     expect(inbox.calls).to.deep.equal(['recordWith', 'recordWith', 'recordWith', 'recordWith'])
+  })
+
+  it('a step per org is done only once recorded; an inbox that cannot answer says not done; outside a delivery it is never done', async () => {
+    const m = { audience: 'platformAdmins', type: 't', eventId: 'evt-step' }
+    const step = async () => {
+      const before = await deliveryStepDone('mail', 'org_a')
+      await recordDeliveryStep('mail', 'org_a')
+      return before
+    }
+    expect(await deliver(m, G, step)).to.equal(false)
+    expect(await deliver(m, G, step)).to.equal(true)
+    expect(await deliver({ ...m, eventId: 'evt-other' }, G, async () => deliveryStepDone('mail', 'org_a'))).to.equal(false)
+    inbox.failSeen = true
+    expect(await deliver(m, G, async () => deliveryStepDone('mail', 'org_a'))).to.equal(false)
+    expect(await deliveryStepDone('mail', 'org_a')).to.equal(false)
   })
 
   it('outside a delivery, withDeliveryRecorded just runs its function', async () => {

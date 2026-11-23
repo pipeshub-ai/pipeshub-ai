@@ -665,6 +665,42 @@ export async function runWithEnvelope<V, R>(
   return runWithOrgContext(opened.ctx, run);
 }
 
+/** The inbox id of `step` of the current delivery's event (event ids are UUIDs, so no event id ends in `#<step>`). */
+const stepId = (d: Delivery, step: string): string => `${d.eventId}#${step}`;
+
+/**
+ * Whether the current delivery's event already finished `step` for `orgId`: a step with no transaction to join (publishing
+ * mail), recorded by `recordDeliveryStep` once it has run. False outside a delivery with an inbox, and when the inbox cannot
+ * answer, so the step runs again; it must be safe to repeat.
+ */
+export async function deliveryStepDone(
+  step: string,
+  orgId: string,
+): Promise<boolean> {
+  const d = deliveryStorage.getStore();
+  if (!d) return false;
+  try {
+    return await d.inbox.seen(d.consumer, stepId(d, step), orgId);
+  } catch (e) {
+    inboxFailed('seen', d.consumer, e);
+    return false;
+  }
+}
+
+/** Records that the current delivery's event finished `step` for `orgId`; call it after the step ran. Never throws. */
+export async function recordDeliveryStep(
+  step: string,
+  orgId: string,
+): Promise<void> {
+  const d = deliveryStorage.getStore();
+  if (!d) return;
+  try {
+    await d.inbox.record(d.consumer, stepId(d, step), orgId);
+  } catch (e) {
+    inboxFailed('record', d.consumer, e);
+  }
+}
+
 /**
  * For a handler whose effect is one PostgreSQL unit of work: runs `fn` in a unit that also records the delivery for `orgId`
  * (default: the message's org), so the effect and the record commit together. It throws DuplicateEnvelope, rolling `fn` back,

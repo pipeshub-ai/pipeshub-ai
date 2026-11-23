@@ -1,9 +1,12 @@
 import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { enforcing, forOrg } from '../../../libs/context/orgContext';
+import { createHash } from 'node:crypto';
 import {
   DuplicateEnvelope,
   ctxRequired,
+  deliveryStepDone,
+  recordDeliveryStep,
   signEnabled,
 } from '../../../libs/context/envelope';
 import { getUserRepository } from '../../../libs/repositories/user';
@@ -106,6 +109,23 @@ export function logIfPlatformAlertsBlocked(logger: Logger): void {
       `unsigned notification messages are rejected (${why})`,
     { reason: why },
   );
+}
+
+const MAIL_STEP = 'mail';
+
+/**
+ * One alert's mail to one address in one org always carries this event id, so with the durable inbox the mail consumer sends it
+ * once however often it is published: by a redelivery that cannot tell whether the earlier one published it, or by two
+ * deliveries running at once. Hashed, so the inbox row does not hold the address.
+ */
+export function alertMailEventId(
+  alertId: string,
+  orgId: string,
+  email: string,
+): string {
+  return createHash('sha256')
+    .update(`sandbox-alert-mail\n${alertId}\n${orgId}\n${email}`)
+    .digest('hex');
 }
 
 /** A token taken from an `HourlyBudget`, to give back if the delivery fails. */
@@ -235,8 +255,15 @@ export class PlatformAlertHandler {
   /**
    * Store errors from the in-app part are thrown, so the broker can deliver
    * the event again. Mail is queued only after every org's in-app part
-   * succeeded, and its errors are logged, never thrown: a redelivery must
-   * not send the email twice.
+   * succeeded, and its errors are logged, never thrown.
+   *
+   * With the durable consumer inbox: an org's notifications commit with its
+   * inbox record, so a redelivery stores only the orgs still missing. An org's
+   * mail is skipped only when a record written after its last publish says it
+   * was queued; otherwise it is published again. Each mail job carries a stable
+   * event id (`alertMailEventId`), so the mail consumer sends a job published
+   * twice once, unless both copies are being sent at the same moment. Without
+   * the inbox, a redelivery after a stop can notify and mail again.
    */
   async handle(raw: unknown): Promise<void> {
     const now = Date.now();
@@ -308,25 +335,17 @@ export class PlatformAlertHandler {
       this.deliveries.refund(token);
       throw error;
     }
-    if (recipients === 0 && storedBefore > 0) {
-      // A redelivery of an alert every org already has: the delivery that stored the last org owned the email, so none is queued twice.
-      this.deliveries.refund(token);
-      this.remember(alertId, now);
-      this.logger.debug('Platform alert skipped: already delivered', {
-        type,
-        alertId,
-        orgs: storedBefore,
-      });
-      return;
-    }
     if (recipients === 0) {
       this.deliveries.refund(token);
-      this.logger.warn('Platform alert not delivered: no recipients', {
-        type,
-        alertId,
-        orgs: orgs.length,
-      });
-      return;
+      // Orgs an earlier delivery already stored still get their email below, if that delivery did not queue it.
+      if (storedBefore === 0) {
+        this.logger.warn('Platform alert not delivered: no recipients', {
+          type,
+          alertId,
+          orgs: orgs.length,
+        });
+        return;
+      }
     }
     this.remember(alertId, now);
 
@@ -391,6 +410,8 @@ export class PlatformAlertHandler {
         error: error instanceof Error ? error.message : String(error),
       });
     };
+    // An earlier delivery of this event queued this org's mail (recorded after its last publish).
+    if (await deliveryStepDone(MAIL_STEP, org.orgId)) return 0;
     try {
       const mail = buildSandboxCapacityMail(alert);
       if (!mail) return 0;
@@ -414,6 +435,7 @@ export class PlatformAlertHandler {
         },
       );
       let queued = 0;
+      let failed = false;
       for (const email of new Set(emails)) {
         try {
           await this.mailProducer.publishEvent({
@@ -429,13 +451,16 @@ export class PlatformAlertHandler {
               },
               orgId: org.orgId,
               ifSmtpConfigured: true,
+              eventId: alertMailEventId(alertId, org.orgId, email),
             },
           });
           queued += 1;
         } catch (error) {
+          failed = true;
           logFailure(error);
         }
       }
+      if (!failed) await recordDeliveryStep(MAIL_STEP, org.orgId);
       return queued;
     } catch (error) {
       logFailure(error);
