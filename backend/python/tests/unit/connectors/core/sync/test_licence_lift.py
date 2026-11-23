@@ -221,3 +221,57 @@ async def test_a_failed_licence_read_is_retried_not_taken_for_licensed() -> None
         with patch.object(licence_lift.asyncio, "sleep", new=sleep), pytest.raises(asyncio.CancelledError):
             await watch_licence(MagicMock(), MagicMock(), _LOG)
     queue.assert_awaited_once()
+
+
+# --- What the Node licence notices read (``publish_connector_states``) ---
+
+def _named(key: str, **kw: object) -> dict:
+    return {**_app(key, **kw), "name": f"Conn {key}", "createdBy": "u-1", "orgId": "org-1"}
+
+
+@pytest.mark.asyncio
+async def test_published_states_list_gated_connectors_only_with_limit_and_status() -> None:
+    apps = [
+        _named("a"),                                   # limited
+        _named("b", limit=None, status="SYNCING"),     # copies access, not limited
+        _named("s3", type_="S3", limit=None),          # storage: never listed
+        {**_named("p"), "scope": "personal"},          # personal: never listed
+        _named("gone", status="DELETING"),
+    ]
+    gp, config = _graph(apps), AsyncMock()
+    published = await licence_lift.publish_connector_states(config, gp, _LOG, None)
+    assert published == {"connectors": [
+        {"id": "a", "orgId": "org-1", "name": "Conn a", "type": "JIRA", "createdBy": "u-1", "accessLimit": "CREATOR",
+         "status": "IDLE"},
+        {"id": "b", "orgId": "org-1", "name": "Conn b", "type": "JIRA", "createdBy": "u-1", "accessLimit": None,
+         "status": "SYNCING"},
+    ]}
+    config.set_config.assert_awaited_once_with(licence_lift.LICENCE_CONNECTORS_KEY, published)
+
+
+@pytest.mark.asyncio
+async def test_unchanged_states_are_not_written_again() -> None:
+    gp, config = _graph([_named("a")]), AsyncMock()
+    first = await licence_lift.publish_connector_states(config, gp, _LOG, None)
+    assert await licence_lift.publish_connector_states(config, gp, _LOG, first) == first
+    config.set_config.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_publishes_nothing_and_keeps_the_last_states() -> None:
+    gp, config = _graph([_named("a")]), AsyncMock()
+    gp.get_org_apps = AsyncMock(side_effect=ConnectionError("graph down"))
+    last = {"connectors": []}
+    assert await licence_lift.publish_connector_states(config, gp, _LOG, last) is last
+    gp.get_all_orgs = AsyncMock(side_effect=ConnectionError("graph down"))
+    assert await licence_lift.publish_connector_states(config, gp, _LOG, last) is last
+    config.set_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_every_check_publishes_after_its_pass() -> None:
+    publish = AsyncMock(side_effect=lambda _c, _g, _l, last: {"n": (last or {}).get("n", 0) + 1})
+    with patch.object(licence_lift, "publish_connector_states", new=publish):
+        await _run_watch([False, True, True], AsyncMock(return_value=True))
+    assert publish.await_count == 3
+    assert publish.await_args_list[2].args[3] == {"n": 2}, "each check is given what the last one published"

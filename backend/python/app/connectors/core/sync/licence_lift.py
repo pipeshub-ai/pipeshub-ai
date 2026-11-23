@@ -30,6 +30,11 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
+#: Read by the Node licence notices (``ee/modules/license/license-notice.ts``): every company-wide connector that copies
+#: access from its source, with its limit and sync status, as ``{"connectors": [...]}``. Storage and database connectors
+#: (``gated`` false) are never in it, so they never show as limited.
+LICENCE_CONNECTORS_KEY = "/services/licence/connectors"
+
 #: Full syncs one check after another queues for a connector that is still limited, before leaving it to its schedule or a person.
 MAX_QUEUED_FULL_SYNCS = 3
 
@@ -113,6 +118,40 @@ async def queue_limited_full_syncs(
     return not failed and not failed_orgs and not watched
 
 
+def connector_states(apps_by_org: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """What the Node notices read: each gated connector's id, org, name, type, creator, limit and sync status."""
+    return {"connectors": [
+        {"id": app.get("_key") or app.get("id"), "orgId": org_id, "name": app.get("name") or "",
+         "type": app.get("type") or "", "createdBy": app.get("createdBy"), "accessLimit": app.get("accessLimit"),
+         "status": app.get("status")}
+        for org_id, apps in apps_by_org.items() for app in apps
+        if gated(app) and (app.get("_key") or app.get("id")) and app.get("status") != "DELETING"
+    ]}
+
+
+async def publish_connector_states(
+    config_service: ConfigurationService, graph_provider: IGraphDBProvider, logger: logging.Logger,
+    last: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Writes ``connector_states`` when it changed since ``last``, and returns what is published. Only after every org
+    was read: a partial list would tell members their results are complete. A failure is logged and keeps ``last``."""
+    apps_by_org: dict[str, list[dict[str, Any]]] = {}
+
+    async def read(org_id: str) -> None:
+        apps_by_org[org_id] = await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
+
+    try:
+        if await for_each_org(graph_provider, "licence_connector_states", read, logger, raise_on_error=True):
+            return last
+        states = connector_states(apps_by_org)
+        if states != last:
+            await config_service.set_config(LICENCE_CONNECTORS_KEY, states)
+        return states
+    except Exception as e:
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="licence_connector_states")
+        return last
+
+
 async def watch_licence(
     config_service: ConfigurationService, graph_provider: IGraphDBProvider, logger: logging.Logger,
     interval_s: float = LICENCE_MAX_AGE_SECONDS,
@@ -124,6 +163,7 @@ async def watch_licence(
     is queued again."""
     done = False
     tries: dict[str, int] = {}
+    published: dict[str, Any] | None = None
     while True:
         try:
             if not await permission_sync_licensed(config_service):
@@ -134,4 +174,6 @@ async def watch_licence(
         except Exception as e:
             done = False
             error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="licence_lift")
+        # After the pass, so a connector it queued is published as such.
+        published = await publish_connector_states(config_service, graph_provider, logger, published)
         await asyncio.sleep(interval_s)
