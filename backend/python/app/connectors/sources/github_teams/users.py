@@ -449,11 +449,17 @@ class UsersSync:
             remaining = [(uid, login) for uid, login in candidates if uid not in resolved]
             if not remaining:
                 break
+            earlier_chunk_read = False
             for start in range(0, len(remaining), VERIFIED_DOMAIN_EMAIL_BATCH):
                 chunk = remaining[start : start + VERIFIED_DOMAIN_EMAIL_BATCH]
                 query = self._verified_domain_query(org, [login for _, login in chunk])
                 res = await c.runtime.ds_call(c.data_source.graphql_query, query)
                 if not res.success:
+                    # A first-chunk failure is how a token that is not an org owner always
+                    # answers, and must not stop it linking; a failure after a chunk was
+                    # read is an outage that left members unresolved.
+                    if earlier_chunk_read:
+                        self._listing_read_to_the_end = False
                     self.logger.info(
                         "Verified-domain email lookup unavailable for org %s: %s. "
                         "(Requires an org-owner token and a verified domain on the "
@@ -461,6 +467,7 @@ class UsersSync:
                         org, str(getattr(res, "error", ""))[:200],
                     )
                     break
+                earlier_chunk_read = True
                 data = res.data if isinstance(res.data, dict) else {}
                 for idx, (uid, _login) in enumerate(chunk):
                     node = data.get(f"u{idx}")
@@ -562,6 +569,9 @@ class UsersSync:
                 reused, int(_GITHUB_PROFILE_REUSE_SECONDS // 3600), fetched,
             )
         if failed:
+            # The profile email is what presence is judged by, so a member whose fetch
+            # failed may be an unseen creator. Failed fetches are not cached: the next sync retries.
+            self._listing_read_to_the_end = False
             self.logger.info(
                 "Could not fetch full GitHub profile for %s user(s); using partial payload",
                 failed,

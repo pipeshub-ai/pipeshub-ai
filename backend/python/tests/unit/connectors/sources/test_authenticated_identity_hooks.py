@@ -1768,3 +1768,110 @@ class TestGitHubTeamsSyncOrder:
             await GitHubTeamsConnector.run_sync(conn)
 
         assert order == ["drop"]
+
+
+class TestGitHubTeamsListingReads:
+    def _users(self, ds_call: object) -> object:
+        from app.connectors.sources.github_teams.users import UsersSync
+
+        conn = MagicMock()
+        conn.data_source = MagicMock()
+        conn.data_entities_processor.org_id = "org-fix1"
+        conn.runtime.ds_call = ds_call
+        users = UsersSync(conn)
+        users._listing_read_to_the_end = True
+        return users
+
+    @staticmethod
+    def _members(count: int, base: int = 5000) -> dict:
+        return {base + i: SimpleNamespace(id=base + i, login=f"login{base + i}", type="User") for i in range(count)}
+
+    async def test_a_failed_profile_fetch_is_an_incomplete_listing(self) -> None:
+        async def ds_call(fn: object, *args: object) -> object:
+            return SimpleNamespace(success=False, error="502", data=None)
+
+        users = self._users(ds_call)
+        members = self._members(2, base=7000)
+
+        await users._enrich_members_with_full_profile(members, set(members))
+
+        assert users._listing_read_to_the_end is False
+
+    async def test_profiles_all_fetched_leave_the_listing_complete(self) -> None:
+        async def ds_call(fn: object, login: str) -> object:
+            return SimpleNamespace(success=True, data=SimpleNamespace(login=login, email=f"{login}@corp.com"))
+
+        users = self._users(ds_call)
+        members = self._members(2, base=8000)
+
+        await users._enrich_members_with_full_profile(members, set(members))
+
+        assert users._listing_read_to_the_end is True
+
+    async def test_a_failure_after_an_earlier_verified_domain_chunk_is_incomplete(self) -> None:
+        answers = iter([SimpleNamespace(success=True, data={}), SimpleNamespace(success=False, error="502")])
+
+        async def ds_call(fn: object, *args: object) -> object:
+            return next(answers)
+
+        users = self._users(ds_call)
+        members = self._members(250)
+        users._member_ids = set(members)
+
+        await users._resolve_via_verified_domains(members, set(members), ["org1"])
+
+        assert users._listing_read_to_the_end is False
+
+    async def test_a_failure_on_the_first_verified_domain_chunk_stays_complete(self) -> None:
+        async def ds_call(fn: object, *args: object) -> object:
+            return SimpleNamespace(success=False, error="403 not an owner")
+
+        users = self._users(ds_call)
+        members = self._members(250)
+        users._member_ids = set(members)
+
+        await users._resolve_via_verified_domains(members, set(members), ["org1"])
+
+        assert users._listing_read_to_the_end is True
+
+
+class TestUserSyncRaisesNoFullPass:
+    async def test_slack(self) -> None:
+        order: list[str] = []
+        step = _steps(order)
+        conn = _connector(SlackConnector, external_client=MagicMock(), config_service=MagicMock())
+        conn.data_entities_processor = MagicMock(org_id="org")
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn._sync_users = step("users", error=RuntimeError("users.list down"))
+        conn._register_authenticated_identity = step("register")
+
+        with patch(
+            "app.connectors.sources.slack.team.connector.load_connector_filters",
+            AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ), pytest.raises(RuntimeError):
+            await SlackConnector.run_sync(conn)
+
+        assert order == ["drop", "users"]
+
+    async def test_github_teams(self) -> None:
+        order: list[str] = []
+        step = _steps(order)
+        conn = _connector(
+            GitHubTeamsConnector, record_sync_point=MagicMock(), repos=MagicMock(), runtime=MagicMock(),
+            users=MagicMock(), projects=MagicMock(), config_service=MagicMock(),
+        )
+        conn.data_entities_processor = MagicMock(org_id="org")
+        conn.repos.timestamps.cancel = AsyncMock()
+        conn.runtime.refresh_token_if_needed = AsyncMock()
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn.users.sync_users = step("users", error=RuntimeError("org discovery failed"))
+        conn._register_authenticated_identity = step("register")
+        conn._require_scope_filter = MagicMock()
+
+        with patch(
+            "app.connectors.sources.github_teams.connector.load_connector_filters",
+            AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ), pytest.raises(RuntimeError):
+            await GitHubTeamsConnector.run_sync(conn)
+
+        assert order == ["drop", "users"]
