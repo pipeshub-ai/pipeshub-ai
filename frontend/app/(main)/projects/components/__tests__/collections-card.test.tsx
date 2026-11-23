@@ -42,6 +42,7 @@ describe('CollectionsCard', () => {
   beforeEach(() => {
     api.listCollectionsForChat.mockReset();
     api.getNodeChildren.mockReset();
+    api.getNodeChildren.mockResolvedValue({ nodes: [], breadcrumbs: [] });
   });
 
   it('renders loading state then empty state when no collections exist', async () => {
@@ -177,5 +178,127 @@ describe('CollectionsCard', () => {
 
     const checkbox = screen.getByRole('checkbox');
     expect(checkbox.getAttribute('data-state') === 'checked' || checkbox.getAttribute('aria-checked') === 'true').toBe(true);
+  });
+
+  it('paginates across multiple pages until nextCursor is exhausted', async () => {
+    api.listCollectionsForChat
+      .mockResolvedValueOnce({
+        knowledgeBases: [root('col-1', 'Page 1 Collection')],
+        nextCursor: 'cursor-page-2',
+      })
+      .mockResolvedValueOnce({
+        knowledgeBases: [root('col-2', 'Page 2 Collection')],
+        nextCursor: null,
+      });
+
+    render(
+      <Theme>
+        <CollectionsCard
+          knowledgeScope={{ apps: [], kb: [] }}
+          appliedFilters={{ apps: [], kb: [] }}
+          canEdit={true}
+          onChange={vi.fn()}
+        />
+      </Theme>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Page 1 Collection')).toBeTruthy();
+      expect(screen.getByText('Page 2 Collection')).toBeTruthy();
+    });
+
+    expect(api.listCollectionsForChat).toHaveBeenCalledTimes(2);
+  });
+
+  it('translates unnamed collection with untitledCollection fallback', async () => {
+    api.listCollectionsForChat.mockResolvedValue({
+      knowledgeBases: [root('col-blank', '   ')],
+      nextCursor: null,
+    });
+
+    render(
+      <Theme>
+        <CollectionsCard
+          knowledgeScope={{ apps: [], kb: [] }}
+          appliedFilters={{ apps: [], kb: [] }}
+          canEdit={true}
+          onChange={vi.fn()}
+        />
+      </Theme>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Untitled collection')).toBeTruthy();
+    });
+  });
+
+  it('excludes connector-owned record groups from saved rows and preserves them on change', async () => {
+    api.listCollectionsForChat.mockResolvedValue({
+      knowledgeBases: [root('col-1', 'Engineering Wiki')],
+      nextCursor: null,
+    });
+
+    const onChange = vi.fn();
+    const initialScope: ProjectKnowledgeScope = {
+      apps: ['app-jira'],
+      kb: [],
+      recordGroups: ['rg-jira-project', 'rg-kb-folder'],
+      records: ['rec-jira-issue', 'rec-kb-doc'],
+    };
+    const initialFilters: AppliedFilters = {
+      apps: [{ id: 'app-jira', name: 'Jira', nodeType: 'app', connector: 'jira' }],
+      kb: [],
+      recordGroups: [
+        { id: 'rg-jira-project', name: 'PROJ-1', nodeType: 'recordGroup', connector: 'jira' },
+        { id: 'rg-kb-folder', name: 'Architecture Docs', nodeType: 'recordGroup', connector: 'KB' },
+      ],
+      records: [
+        { id: 'rec-jira-issue', name: 'Issue 123', nodeType: 'record', connector: 'jira' },
+        { id: 'rec-kb-doc', name: 'Runbook.md', nodeType: 'folder', connector: 'KB' },
+      ],
+    };
+
+    render(
+      <Theme>
+        <CollectionsCard
+          knowledgeScope={initialScope}
+          appliedFilters={initialFilters}
+          canEdit={true}
+          onChange={onChange}
+        />
+      </Theme>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Engineering Wiki')).toBeTruthy();
+      expect(screen.getByText('Architecture Docs')).toBeTruthy();
+      expect(screen.getByText('Runbook.md')).toBeTruthy();
+    });
+
+    // Connector-owned rows must NOT be shown as collection rows
+    expect(screen.queryByText('PROJ-1')).toBeNull();
+    expect(screen.queryByText('Issue 123')).toBeNull();
+
+    // Toggling preserves connector-owned recordGroups and records
+    const checkboxes = screen.getAllByRole('checkbox');
+    fireEvent.click(checkboxes[0]);
+
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        knowledgeScope: expect.objectContaining({
+          apps: ['app-jira'],
+          recordGroups: expect.arrayContaining(['rg-jira-project']),
+          records: expect.arrayContaining(['rec-jira-issue']),
+        }),
+        appliedFilters: expect.objectContaining({
+          recordGroups: expect.arrayContaining([
+            expect.objectContaining({ id: 'rg-jira-project', connector: 'jira' }),
+          ]),
+          records: expect.arrayContaining([
+            expect.objectContaining({ id: 'rec-jira-issue', connector: 'jira' }),
+          ]),
+        }),
+      }),
+    );
   });
 });

@@ -10,7 +10,6 @@ import type { AppliedFilterNode, AppliedFilters, ChatKnowledgeFilters } from '@/
 import type { ProjectKnowledgeScope } from '@/chat/project-types';
 
 const COLLECTIONS_PAGE_LIMIT = 100;
-const COLLECTIONS_MAX_PAGES = 10;
 
 export interface CollectionRow {
   id: string;
@@ -56,7 +55,7 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
         const seen = new Set<string>();
         const rows: CollectionRow[] = [];
         let cursor: string | null = null;
-        for (let page = 0; page < COLLECTIONS_MAX_PAGES; page += 1) {
+        while (true) {
           const res = await ChatApi.listCollectionsForChat({
             cursor,
             limit: COLLECTIONS_PAGE_LIMIT,
@@ -68,13 +67,16 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
             seen.add(item.id);
             rows.push({
               id: item.id,
-              name: (item.name ?? '').trim() || 'Untitled Collection',
+              name:
+                (item.name ?? '').trim() ||
+                t('chat.projects.workspace.untitledCollection', { defaultValue: 'Untitled collection' }),
               nodeType: item.nodeType || 'app',
               connector: item.connector || 'KB',
             });
           }
-          cursor = res.nextCursor;
-          if (!cursor) break;
+          const nextCursor = res.nextCursor;
+          if (!nextCursor || nextCursor === cursor) break;
+          cursor = nextCursor;
         }
         if (!cancelled) setCollections(rows);
       } catch {
@@ -87,7 +89,7 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t]);
 
   const metaCache = useChatStore((s) => s.collectionMetaCache);
   const catalogById = useMemo(() => new Map(collections.map((c) => [c.id, c])), [collections]);
@@ -97,15 +99,23 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
     () => ({
       apps: [],
       kb: knowledgeScope?.kb ?? [],
-      recordGroups: knowledgeScope?.recordGroups ?? [],
-      records: knowledgeScope?.records ?? [],
+      recordGroups: (knowledgeScope?.recordGroups ?? []).filter((id) => {
+        const node = appliedFilters?.recordGroups?.find((n) => n.id === id);
+        return node?.connector === 'KB';
+      }),
+      records: (knowledgeScope?.records ?? []).filter((id) => {
+        const node = appliedFilters?.records?.find((n) => n.id === id);
+        return node?.connector === 'KB';
+      }),
     }),
-    [knowledgeScope],
+    [knowledgeScope, appliedFilters],
   );
 
   /**
    * What the project already lists below app level for collections and this session
    * has not placed in a collection's tree yet: shown as rows of their own.
+   * Connector-owned rows (connector !== 'KB') and rows whose ownership cannot be
+   * determined are kept out so they are not shown as collection rows.
    */
   const savedNodes = useMemo(
     () =>
@@ -114,13 +124,15 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
           .filter((id) => !metaCache[id]?.ancestorIds)
           .map((id) => {
             const saved = appliedFilters?.[key]?.find((node) => node.id === id);
-            return {
-              id,
-              name: saved?.name ?? id,
-              nodeType: saved?.nodeType || BELOW_APPS[key],
-              connector: saved?.connector ?? 'KB',
-            };
-          }),
+            return { id, saved };
+          })
+          .filter(({ saved }) => saved?.connector === 'KB')
+          .map(({ id, saved }) => ({
+            id,
+            name: saved?.name ?? id,
+            nodeType: saved?.nodeType || BELOW_APPS[key],
+            connector: 'KB',
+          })),
       ),
     [knowledgeScope, appliedFilters, metaCache],
   );
@@ -138,15 +150,43 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
         if (row) return { id, name: row.name, nodeType: row.nodeType, connector: row.connector || 'KB' };
         return saved.get(id) ?? { id, name: id, nodeType: fallbackType, connector: 'KB' };
       };
-      const recordGroups = next.recordGroups ?? [];
-      const records = next.records ?? [];
+
+      // Leave connector-owned IDs in the emitted knowledgeScope so that the Connectors card keeps managing them.
+      const isConnectorNode = (node: AppliedFilterNode | undefined) => Boolean(node && node.connector !== 'KB');
+
+      const connectorRecordGroups = (knowledgeScope?.recordGroups ?? []).filter((id) => {
+        const node = appliedFilters?.recordGroups?.find((n) => n.id === id);
+        return isConnectorNode(node);
+      });
+      const connectorRecords = (knowledgeScope?.records ?? []).filter((id) => {
+        const node = appliedFilters?.records?.find((n) => n.id === id);
+        return isConnectorNode(node);
+      });
+
+      const connectorFilterRecordGroups = (appliedFilters?.recordGroups ?? []).filter(isConnectorNode);
+      const connectorFilterRecords = (appliedFilters?.records ?? []).filter(isConnectorNode);
+
+      const collectionRecordGroups = next.recordGroups ?? [];
+      const collectionRecords = next.records ?? [];
+
+      const mergedRecordGroups = Array.from(new Set([...connectorRecordGroups, ...collectionRecordGroups]));
+      const mergedRecords = Array.from(new Set([...connectorRecords, ...collectionRecords]));
+
+      const collectionFilterRecordGroups = collectionRecordGroups.map((id) => nodeOf(id, BELOW_APPS.recordGroups));
+      const collectionFilterRecords = collectionRecords.map((id) => nodeOf(id, BELOW_APPS.records));
+
       onChange({
-        knowledgeScope: { apps: knowledgeScope?.apps ?? [], kb: next.kb ?? [], recordGroups, records },
+        knowledgeScope: {
+          apps: knowledgeScope?.apps ?? [],
+          kb: next.kb ?? [],
+          recordGroups: mergedRecordGroups,
+          records: mergedRecords,
+        },
         appliedFilters: {
           apps: appliedFilters?.apps ?? [],
           kb: (next.kb ?? []).map((id) => nodeOf(id, 'app')),
-          recordGroups: recordGroups.map((id) => nodeOf(id, BELOW_APPS.recordGroups)),
-          records: records.map((id) => nodeOf(id, BELOW_APPS.records)),
+          recordGroups: [...connectorFilterRecordGroups, ...collectionFilterRecordGroups],
+          records: [...connectorFilterRecords, ...collectionFilterRecords],
         },
       });
     },

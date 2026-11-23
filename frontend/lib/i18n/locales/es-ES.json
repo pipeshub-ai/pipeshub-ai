@@ -1267,13 +1267,14 @@
         "toolNeedsApproval": "Requiere aprobación",
         "toolNeedsApprovalHint": "Esta herramienta puede eliminar datos. En un chat de proyecto solo se ejecuta después de que alguien la apruebe.",
         "indexingStatusLabel": "Indexación: {{status}}",
-        "collectionsTitle": "Collections",
-        "collectionsSubtitle": "Chats in this project search only these collections.",
-        "noCollectionsAvailable": "No collections to add yet.",
-        "failedToLoadCollections": "Failed to load collections",
-        "updateCollectionsFailed": "Failed to update collections",
-        "collectionsStatusCount": "{{count}} connected",
-        "collectionsStatusNone": "None"
+        "collectionsTitle": "Colecciones",
+        "collectionsSubtitle": "Los chats de este proyecto buscan en las colecciones seleccionadas y en los archivos subidos del proyecto.",
+        "noCollectionsAvailable": "Aún no hay colecciones para agregar.",
+        "failedToLoadCollections": "Error al cargar las colecciones",
+        "updateCollectionsFailed": "Error al actualizar las colecciones",
+        "collectionsStatusCount": "{{count}} seleccionadas",
+        "collectionsStatusNone": "Ninguna",
+        "untitledCollection": "Colección sin título"
       },
       "moveDialog": {
         "title": "Mover a proyecto",

@@ -1248,13 +1248,14 @@
         "toolNeedsApproval": "स्वीकृति आवश्यक",
         "toolNeedsApprovalHint": "यह टूल डेटा हटा सकता है। प्रोजेक्ट चैट में यह किसी की स्वीकृति के बाद ही चलता है।",
         "indexingStatusLabel": "इंडेक्सिंग: {{status}}",
-        "collectionsTitle": "Collections",
-        "collectionsSubtitle": "Chats in this project search only these collections.",
-        "noCollectionsAvailable": "No collections to add yet.",
-        "failedToLoadCollections": "Failed to load collections",
-        "updateCollectionsFailed": "Failed to update collections",
-        "collectionsStatusCount": "{{count}} connected",
-        "collectionsStatusNone": "None"
+        "collectionsTitle": "संग्रह",
+        "collectionsSubtitle": "इस प्रोजेक्ट में चैट चयनित संग्रहों और अपलोड की गई प्रोजेक्ट फ़ाइलों में खोज करते हैं।",
+        "noCollectionsAvailable": "जोड़ने के लिए अभी कोई संग्रह नहीं है।",
+        "failedToLoadCollections": "संग्रह लोड करने में विफल",
+        "updateCollectionsFailed": "संग्रह अपडेट करने में विफल",
+        "collectionsStatusCount": "{{count}} चयनित",
+        "collectionsStatusNone": "कोई नहीं",
+        "untitledCollection": "शीर्षकहीन संग्रह"
       },
       "moveDialog": {
         "title": "प्रोजेक्ट में ले जाएँ",
