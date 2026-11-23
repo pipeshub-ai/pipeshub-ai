@@ -249,6 +249,71 @@ describe('enterprise_search/utils/chat-compare-feature', () => {
       expect(await ChatCompareFeature.isEnabled()).to.equal(false);
     });
 
+    describe('a read still running when the cache is invalidated', () => {
+      const sameKey = (store: object) => () => ({
+        cacheKey: 'workspace',
+        store: async () => store as never,
+      });
+
+      // Starts a read on the "on" store and holds it until `release` is called.
+      async function startHeldRead() {
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        reads.callsFake(async (store: unknown) => {
+          await held;
+          return {
+            fileUploadMaxSizeBytes: 1,
+            featureFlags: {
+              ENABLE_CHAT_COMPARE: (store as { name: string }).name === 'on',
+            },
+          };
+        });
+        setChatCompareSettingsSource(sameKey(workspaceStores.on));
+        const pending = ChatCompareFeature.isEnabled();
+        return { pending, release };
+      }
+
+      it('does not cache its answer once the source was replaced', async () => {
+        const { pending, release } = await startHeldRead();
+        setChatCompareSettingsSource(sameKey(workspaceStores.off));
+        release();
+        await pending;
+
+        expect(await ChatCompareFeature.isEnabled()).to.equal(false);
+      });
+
+      it('does not cache its answer once the cache was reset', async () => {
+        // The source object stays; only the store behind its key changes.
+        setChatCompareSettingsSource(() => ({
+          cacheKey: 'workspace',
+          store: async () => workspaceStores[current] as never,
+        }));
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        reads.callsFake(async (store: unknown) => {
+          await held;
+          return {
+            fileUploadMaxSizeBytes: 1,
+            featureFlags: {
+              ENABLE_CHAT_COMPARE: (store as { name: string }).name === 'on',
+            },
+          };
+        });
+        current = 'on';
+        const pending = ChatCompareFeature.isEnabled();
+        current = 'off';
+        ChatCompareFeature.resetCache();
+        release();
+        await pending;
+
+        expect(await ChatCompareFeature.isEnabled()).to.equal(false);
+      });
+    });
+
     it('goes back to the default settings document when called with no argument', async () => {
       current = 'on';
       expect(await ChatCompareFeature.isEnabled()).to.equal(true);

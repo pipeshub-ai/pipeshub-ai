@@ -59,11 +59,15 @@ const readSettingsDocument: ChatCompareSettingsSource = () => {
 
 let resolveSource: ChatCompareSettingsSource = readSettingsDocument;
 
+// A read that began before a source swap or a cache reset must not write its answer afterwards.
+let generation = 0;
+
 /** Replaces where the Compare models flag is read from; no argument restores the default. */
 export function setChatCompareSettingsSource(
   fn: ChatCompareSettingsSource = readSettingsDocument,
 ): void {
   resolveSource = fn;
+  generation += 1;
   cached.clear();
 }
 
@@ -84,11 +88,12 @@ export const ChatCompareFeature = {
       if (!source) return false;
       const hit = cached.get(source.cacheKey);
       if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
+      const startedAt = generation;
       const { featureFlags } = await getPlatformSettingsFromStore(
         await source.store(),
       );
       const value = featureFlags.ENABLE_CHAT_COMPARE === true;
-      remember(source.cacheKey, value);
+      if (startedAt === generation) remember(source.cacheKey, value);
       return value;
     } catch (error) {
       logger.warn('Could not read the Compare models flag; leaving it off', {
@@ -106,6 +111,7 @@ export const ChatCompareFeature = {
   },
 
   resetCache(): void {
+    generation += 1;
     cached.clear();
   },
 };
