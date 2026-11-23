@@ -279,8 +279,9 @@ def _make_config_service():
     async def get_config(key, default=None, raise_on_error=False):
         return store.get(key, default)
 
-    async def set_config(key, value):
+    async def set_config(key, value, **_):  # ttl_seconds, keep_in_cache: no expiry and no cache here
         store[key] = value
+        return True
 
     svc = MagicMock()
     svc.get_config = AsyncMock(side_effect=get_config)

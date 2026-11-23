@@ -683,9 +683,10 @@ export class ProjectService {
     try {
       await getProjectRepository().touchActivity(projectId);
     } catch (error) {
-      logger.error('Failed to bump project lastActivityAt', {
-        projectId,
-        error: error instanceof Error ? error.message : String(error),
+      // Best effort: the request it belongs to goes on.
+      logger.warn('Failed to bump project lastActivityAt', {
+        project_id: projectId,
+        error,
       });
     }
   }

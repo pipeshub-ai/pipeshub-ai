@@ -137,6 +137,39 @@ async def test_asking_nothing_is_refused_not_answered(questions: list) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_call_with_no_arguments_is_refused_like_an_empty_one() -> None:
+    """Models send `{}`; it must not die on a TypeError naming the Python signature."""
+    from app.agent_loop_lib.core.messages import ToolCall
+    from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
+    from app.agent_loop_lib.tools.executor import ToolExecutor
+    from app.agent_loop_lib.tools.registry import ToolRegistry
+
+    tools = InternalTools()
+    registry = ToolRegistry()
+    registry.register_tool(BoundMethodTool(tools.ask_user_question, getattr(InternalTools.ask_user_question, TOOL_META_ATTR)))
+
+    result = await ToolExecutor(registry).call_tool(
+        ToolCall(id="ask-1", name="internaltools__ask_user_question", arguments={}),
+    )
+
+    assert result.is_error
+    assert "without a question" in str(result.content)
+    assert "positional argument" not in str(result.content)
+
+
+@pytest.mark.asyncio
+async def test_questions_without_user_intent_still_fail() -> None:
+    from app.agent_loop_lib.tools.base import ToolOutput
+
+    result = await InternalTools().ask_user_question(
+        questions=[{"question": "Which ticket?", "options": [{"label": "PROJ-42"}, {"label": "PROJ-57"}]}],
+    )
+
+    assert isinstance(result, ToolOutput)
+    assert result.success is False
+
+
+@pytest.mark.asyncio
 async def test_blank_questions_beside_a_real_one_are_dropped() -> None:
     """Only the real question becomes a card; a blank one would render empty."""
     result_json = await InternalTools().ask_user_question(

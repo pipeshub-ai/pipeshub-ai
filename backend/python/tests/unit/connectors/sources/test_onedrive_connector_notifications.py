@@ -418,6 +418,7 @@ class TestRunSyncNotifications:
         connector._sync_users = AsyncMock(return_value=[MagicMock()])
         connector._sync_user_groups = AsyncMock()
         connector._process_users_in_batches = AsyncMock(side_effect=_set_synced_users)
+        connector._remove_deleted_drives = AsyncMock()
 
         with patch(
             "app.connectors.sources.microsoft.onedrive.connector.load_connector_filters",
@@ -445,6 +446,7 @@ class TestRunSyncNotifications:
         connector._sync_users = AsyncMock(return_value=[])
         connector._sync_user_groups = AsyncMock()
         connector._process_users_in_batches = AsyncMock(side_effect=_set_no_synced_users)
+        connector._remove_deleted_drives = AsyncMock()
 
         with patch(
             "app.connectors.sources.microsoft.onedrive.connector.load_connector_filters",

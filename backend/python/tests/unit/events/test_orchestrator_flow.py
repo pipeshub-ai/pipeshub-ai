@@ -31,6 +31,7 @@ from app.services.messaging.error_classifier import (
     is_expected_outcome,
 )
 from app.services.parsing.interface import ParseResult, ParserProvider
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Factories
@@ -93,6 +94,7 @@ def _make_event_processor(
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         graph_provider.batch_update_nodes = AsyncMock(return_value=True)
         graph_provider.update_node = AsyncMock(return_value=True)
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
         graph_provider.find_duplicate_records = AsyncMock(return_value=[])
 
     if stage_ingress is None:
@@ -322,6 +324,8 @@ async def test_statuses_track_active_parse_and_index_phases() -> None:
 
     graph_provider.update_node = AsyncMock(side_effect=_capture_update)
 
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
+
     ep = _make_event_processor(
         parsing_client=parsing_client,
         extraction_client=extraction_client,
@@ -424,6 +428,8 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
     graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
     graph_provider.batch_update_nodes = AsyncMock(return_value=True)
     graph_provider.update_node = AsyncMock(return_value=True)
+    graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     graph_provider.find_duplicate_records = AsyncMock(return_value=[{
         "_key": "rec-2",
         "virtualRecordId": "vr-existing",
@@ -790,6 +796,20 @@ async def test_service_pipeline_forwards_the_record_file_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_service_path_ties_the_page_count_to_the_revision_of_the_bytes_it_parsed() -> None:
+    parsing_client = _service_parsing_client()
+    ep = _make_event_processor(parsing_client=parsing_client, extraction_client=MagicMock(), sink_orchestrator=_indexing_sink())
+    ep._persist_parsing_completed = AsyncMock()  # type: ignore[method-assign]
+
+    _ = [e async for e in ep._orchestrate_via_services(
+        record_id="rec-1", org_id="org-1", virtual_record_id="v-1", record_name="d.pdf", mime_type="application/pdf",
+        extension="pdf", event_type="newRecord", prev_virtual_record_id=None, file_content=b"%PDF", content_rev="rev-a",
+    )]
+
+    assert ep._persist_parsing_completed.await_args.args[2] == "rev-a"
+
+
+@pytest.mark.asyncio
 async def test_an_emptied_code_file_loses_its_old_blocks() -> None:
     """B3: the service path marked an emptied code file EMPTY but kept its last
     version's blocks, so their calls and imports stayed in the code graph."""
@@ -842,3 +862,74 @@ async def test_a_record_deleted_during_parsing_ends_as_an_expected_outcome(
     assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
     sink_orchestrator.index.assert_not_awaited()
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def _pdf_bytes(pages: int) -> bytes:
+    import io
+
+    import pypdfium2
+
+    doc = pypdfium2.PdfDocument.new()
+    for _ in range(pages):
+        doc.new_page(200, 200)
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue()
+
+
+def _xlsx_bytes(dimension: str) -> bytes:
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+        zf.writestr("xl/worksheets/sheet1.xml", f'<worksheet><dimension ref="{dimension}"/><sheetData/></worksheet>')
+    return buf.getvalue()
+
+
+async def _first_events(
+    monkeypatch: pytest.MonkeyPatch, admission: str, count: int, *, extension: str = "pdf", mime: str = "application/pdf",
+    buffer: bytes | None = None,
+) -> list[Any]:
+    monkeypatch.setenv("USE_PARSING_SERVICE", "true")
+    monkeypatch.setenv("PARSE_ADMISSION", admission)
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    ep = _make_event_processor(
+        parsing_client=MagicMock(circuit_open=False, parse=AsyncMock(return_value=_make_parse_result())),
+        extraction_client=MagicMock(classify=AsyncMock(return_value=None)),
+        sink_orchestrator=MagicMock(index=AsyncMock()),
+    )
+    event_data = _make_event_data()
+    event_data["payload"]["extension"] = extension
+    event_data["payload"]["mimeType"] = mime
+    event_data["payload"]["buffer"] = _pdf_bytes(9) if buffer is None else buffer
+    gen = ep.on_event(event_data)
+    return [await gen.__anext__() for _ in range(count)]
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_is_inspected_before_it_asks_for_its_parse_slot_under_classes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """START_INSPECT first, then START_PARSING carrying the page count and the scan flag the class is decided from."""
+    inspect_event, parsing_event = await _first_events(monkeypatch, "classes", 2)
+    assert inspect_event.event == IndexingEvent.START_INSPECT
+    assert parsing_event.event == IndexingEvent.START_PARSING
+    assert (parsing_event.data.pages, parsing_event.data.scanned) == (9, True)
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_is_not_inspected_without_classes(monkeypatch: pytest.MonkeyPatch) -> None:
+    (first,) = await _first_events(monkeypatch, "legacy", 1)
+    assert first.event == IndexingEvent.START_PARSING
+    assert (first.data.pages, first.data.scanned) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_workbook_is_inspected_and_its_cell_area_travels_with_start_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    inspect_event, parsing_event = await _first_events(
+        monkeypatch, "classes", 2, extension="xlsx", mime="", buffer=_xlsx_bytes("A1:Z400000")
+    )
+    assert inspect_event.event == IndexingEvent.START_INSPECT
+    assert parsing_event.event == IndexingEvent.START_PARSING
+    assert parsing_event.data.cells == 26 * 400_000
+    assert (parsing_event.data.pages, parsing_event.data.scanned) == (None, None)

@@ -19,6 +19,7 @@ from app.modules.pipeline.parse_now import (
     parse_outcome,
 )
 from app.services.messaging.config import StreamMessage
+from tests.support.loop_clock import virtual_loop_time
 from tests.unit.services.messaging.test_record_handler_parse_now import (
     Harness,
     _payload,
@@ -90,14 +91,28 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-async def test_a_failed_marker_ends_the_wait_and_the_next_read_asks_again() -> None:
-    failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
+def _pinned_clocks(monkeypatch: pytest.MonkeyPatch) -> tuple[asyncio.AbstractEventLoop, int]:
+    """The loop on a clock the test controls, and the epoch time every ask is stamped with.
+
+    A FAILED marker the test stamps with that time is fresh. Stamped from the wall clock before the test's setup
+    instead, a runner that spent over the 2 s skew getting to the ask saw it as an earlier run's and waited out
+    the budget.
+    """
+    asked_at = _now_ms()
+    monkeypatch.setattr(f"{MODULE}.get_epoch_timestamp_in_ms", lambda: asked_at)
+    virtual_loop_time(monkeypatch)
+    return asyncio.get_running_loop(), asked_at
+
+
+async def test_a_failed_marker_ends_the_wait_and_the_next_read_asks_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop, asked_at = _pinned_clocks(monkeypatch)
+    failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=asked_at)
     asker, send = _asker(wait=20)
-    t0 = time.monotonic()
+    t0 = loop.time()
     first = await _fetch(
         ["rec-1"], graph_provider=_provider(_Docs({"rec-1": [_row("AUTO_INDEX_OFF"), failed]})), parse_now=asker,
     )
-    assert time.monotonic() - t0 < 10  # ended by the marker, far before the 20 s budget a busy runner cannot reach
+    assert loop.time() - t0 == pytest.approx(0.01)  # ended by the marker at the first 0.01 s look, not the 20 s budget
     assert first["not_indexed_records"]["rec-1"]["status"] == "FAILED"
     assert "preparing" not in first["not_indexed_records"]["rec-1"]
     # A later read of a record that still carries the FAILED marker asks again.
@@ -126,14 +141,15 @@ async def test_a_hung_blob_read_after_ready_is_cut_near_the_budget(monkeypatch) 
     async def hang(*_a, **_k) -> None:
         await asyncio.sleep(30)
 
+    loop, _ = _pinned_clocks(monkeypatch)
     docs = _Docs({"rec-1": [_row("QUEUED"), _stored(_row("QUEUED"))]})
     asker, _ = _asker(wait=0.2)
     with patch(f"{MODULE}.get_record", side_effect=hang):
-        t0 = time.monotonic()
+        t0 = loop.time()
         result = await _fetch(["rec-1"], graph_provider=_provider(docs), parse_now=asker)
-        elapsed = time.monotonic() - t0
+        elapsed = loop.time() - t0
 
-    assert elapsed < 10  # cut near the 0.2 s budget plus grace, not after the 30 s hang
+    assert elapsed == pytest.approx(0.4)  # cut at the 0.2 s budget plus 0.2 s grace, not after the 30 s hang
     assert result["ok"] is False and "being prepared" in result["error"]
 
 
@@ -201,29 +217,31 @@ async def test_store_only_never_writes_a_record_status(status) -> None:
     assert set(written) <= {"contentRev", "virtualRecordId", "parseNowStatus", "parseNowRev", "parseNowReason", "parseNowAt"}
 
 
-async def test_a_fast_failure_after_a_stale_one_ends_the_wait_in_about_one_poll(stored_content) -> None:
+async def test_a_fast_failure_after_a_stale_one_ends_the_wait_in_about_one_poll(stored_content, monkeypatch) -> None:
+    loop, asked_at = _pinned_clocks(monkeypatch)
     stale = _row("FAILED", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=1)
-    fresh = _row("FAILED", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
+    fresh = _row("FAILED", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=asked_at)
     docs = _Docs({"rec-1": [stale, fresh]})
     asker, send = _asker(wait=20)
-    t0 = time.monotonic()
+    t0 = loop.time()
 
     result = await _fetch(["rec-1"], graph_provider=_provider(docs), parse_now=asker)
 
     send.assert_awaited_once()
     assert result["ok"] is False
     assert docs.reads["rec-1"] == 2  # ended at the first poll, by the fresh marker
-    assert time.monotonic() - t0 < 10  # far before the 20 s budget
+    assert loop.time() - t0 == pytest.approx(0.01)  # the first 0.01 s look, not the 20 s budget
 
 
-async def test_a_stale_failed_marker_alone_does_not_end_the_wait(stored_content) -> None:
+async def test_a_stale_failed_marker_alone_does_not_end_the_wait(stored_content, monkeypatch) -> None:
+    loop, _ = _pinned_clocks(monkeypatch)
     stale = _row("FAILED", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=1)
     asker, _ = _asker(wait=1.5)
-    t0 = time.monotonic()
+    t0 = loop.time()
 
     await _fetch(["rec-1"], graph_provider=_provider(_Docs({"rec-1": [stale]})), parse_now=asker)
 
-    assert time.monotonic() - t0 >= 1.4
+    assert loop.time() - t0 == pytest.approx(1.5)  # the whole budget
 
 
 async def test_a_folder_is_not_eligible_so_nothing_is_published() -> None:
@@ -306,16 +324,18 @@ def _asker_with_redis(wait: float) -> tuple[ParseNow, AsyncMock, _Redis]:
     return ParseNow(asker.config_service, logging.getLogger("qa"), asker._producer, provider), send, redis
 
 
-async def test_the_claim_is_freed_after_a_failed_outcome_so_a_repeat_read_asks_again() -> None:
-    failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
+async def test_the_claim_is_freed_after_a_failed_outcome_so_a_repeat_read_asks_again(monkeypatch) -> None:
+    loop, asked_at = _pinned_clocks(monkeypatch)
+    failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=asked_at)
     asker, send, redis = _asker_with_redis(wait=20)
     await _fetch(
         ["rec-1"], graph_provider=_provider(_Docs({"rec-1": [_row("AUTO_INDEX_OFF"), failed]})), parse_now=asker,
     )
     assert redis.keys == set()
-    t0 = time.monotonic()
+    t0 = loop.time()
     await _fetch(["rec-1"], graph_provider=_provider(_Docs({"rec-1": [failed, _row("AUTO_INDEX_OFF"), failed]})), parse_now=asker)
-    assert send.await_count == 2 and time.monotonic() - t0 < 10  # ended by the marker, not the 20 s budget
+    # Ended by the marker at the second 0.01 s look (the first reads the plain row), not the 20 s budget.
+    assert send.await_count == 2 and loop.time() - t0 == pytest.approx(0.02)
 
 
 async def test_the_claim_is_kept_when_the_wait_times_out() -> None:
@@ -326,8 +346,9 @@ async def test_the_claim_is_kept_when_the_wait_times_out() -> None:
     assert send.await_count == 1
 
 
-async def test_parallel_reads_send_one_event_even_when_the_outcome_is_final() -> None:
-    failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=_now_ms())
+async def test_parallel_reads_send_one_event_even_when_the_outcome_is_final(monkeypatch) -> None:
+    _, asked_at = _pinned_clocks(monkeypatch)
+    failed = _row("AUTO_INDEX_OFF", parseNowStatus="FAILED", parseNowRev="rev-1", parseNowAt=asked_at)
     asker, send, _ = _asker_with_redis(wait=1)
     plain = _row("AUTO_INDEX_OFF")
     # The claim is taken before any wait, so every reader's request meets it.

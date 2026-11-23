@@ -76,7 +76,9 @@ class Graph:
         self.app[field] = int(self.app.get(field) or 0) + 1
         return self.app[field]
 
-    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, *a: Any) -> bool:
+    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, *a: Any, clock_at_most: float | None = None) -> bool:
+        if clock_at_most is not None and await self.store_time() > clock_at_most:      # the store's own clock, as the statement writes
+            return False
         if self.lost_race is not None:
             hook, self.lost_race = self.lost_race, None
             hook(self.app)

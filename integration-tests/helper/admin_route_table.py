@@ -110,6 +110,10 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("PUT", f"{_CM}/slack-bot/:configId", admin="invalid"),
     AdminRoute("DELETE", f"{_CM}/slack-bot/:configId", admin="invalid"),
     AdminRoute("GET", f"{_CM}/prompts/system"),
+    # mcp/routes/mcp-access.routes.ts
+    AdminRoute("GET", f"{_CM}/mcp/access"),
+    AdminRoute("PUT", f"{_CM}/mcp/access", admin="invalid"),
+    AdminRoute("GET", f"{_CM}/mcp/access/tools"),
     _no_admin("PUT", f"{_CM}/prompts/system",
               "replaces the org's system prompt; nothing after the check stops a write"),
     _no_admin("POST", f"{_CM}/connectors/googleWorkspaceCredentials",
@@ -152,6 +156,8 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("GET", f"{_CM}/metricsCollection"),
     AdminRoute("PATCH", f"{_CM}/metricsCollection/pushInterval", admin="invalid"),
     AdminRoute("PATCH", f"{_CM}/metricsCollection/serverUrl", admin="invalid"),
+    # agent_activity/agent-activity.routes.ts
+    AdminRoute("GET", "/api/v1/agent-activity"),
     # crawling_manager/routes/cm_routes.ts
     AdminRoute("GET", "/api/v1/crawlingManager/schedule/all"),
     _no_admin("DELETE", "/api/v1/crawlingManager/schedule/all",
@@ -271,6 +277,20 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     # A member gets the 404 of a missing connector, so the route does not confirm the connector exists.
     _py("GET", "/api/v1/connectors/:connectorId/permissions/status",
         "connectors/api/router.py::get_permission_status", refusal_status=404, refusal_words="removed"),
+    # The same 404 for a member; an admin's request names a connector that does not exist, so nothing is written.
+    _py("PATCH", "/api/v1/connectors/:connectorId/permissions/filter",
+        "connectors/api/router.py::set_permission_filter", member_body={"mode": "legacy"}, refusal_status=404, refusal_words="removed"),
+    # Per-user access: Node answers a member with the 404 of a route that does not exist. The admin's
+    # request names no connector, so the connector service answers 404 and nothing is sent or removed.
+    _py("GET", "/api/v1/connectors/:connectorId/user-access/roster",
+        "connectors/api/user_access_router.py::get_roster", refusal_status=404, refusal_words="not found"),
+    _py("POST", "/api/v1/connectors/:connectorId/user-access/invites",
+        "connectors/api/user_access_router.py::send_invites", member_body={"all": True},
+        refusal_status=404, refusal_words="not found"),
+    _py("GET", "/api/v1/connectors/:connectorId/user-access/users",
+        "connectors/api/user_access_router.py::list_connected_users", refusal_status=404, refusal_words="not found"),
+    _py("DELETE", "/api/v1/connectors/:connectorId/user-access/users/:userId",
+        "connectors/api/user_access_router.py::remove_connected_user", refusal_status=404, refusal_words="not found"),
 )
 
 # The admin body for rows marked ``admin="admin_body"``: past the admin check,

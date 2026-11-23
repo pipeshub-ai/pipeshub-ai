@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext, ToolCallStatus
 from app.agents.agent_loop.error_classification import _USER_MESSAGES
@@ -607,6 +610,42 @@ class TestRunAgentLoopStream:
         assert payload["type"] == "unknown"
         assert "boom" not in payload["message"]
 
+    @pytest.mark.parametrize("keeps_raw_text", [True, False])
+    async def test_a_failed_run_is_answered_from_its_raw_error(self, keeps_raw_text: bool) -> None:
+        """The answer's code comes from the provider's own text (`error_detail`): `error` holds only why, for the
+        frames and the parent model, and would read as an unknown failure. A result that keeps no raw text (a
+        duck-typed one) is answered from its `error`."""
+        from app.agent_loop_lib.core.types import AgentResult, Goal
+
+        raw = "LLM call failed: LangChain transport error (complete): RateLimitError: Error code: 429 - slow down"
+        failed: Any = (
+            AgentResult(goal=Goal(description="q"), success=False,
+                        error="LLM call failed: rate_limited (RateLimitError, HTTP 429)").with_error_detail(raw)
+            if keeps_raw_text else SimpleNamespace(success=False, error=raw, cancelled=False, confidence=None,
+                                                   output=None, needs_input=None, end_event="llm_call_failed",
+                                                   error_class="rate_limited")
+        )
+        seen: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None) -> tuple[Any, ...]:
+            return _stream_agent(failed), MagicMock(), MagicMock(), []
+
+        async def _fake_finalizer_run(self, **kwargs: object) -> dict[str, str]:
+            seen.update(kwargs)
+            return {"answer": "x"}
+
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state",
+                  return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"}),
+            patch("app.utils.execute_query.has_sql_connector_configured", new=AsyncMock(return_value=False)),
+            patch("app.utils.fetch_slack_thread.has_slack_connector_configured", new=AsyncMock(return_value=False)),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_agent_loop_stream(**self._base_kwargs())]
+
+        assert (seen["agent_success"], seen["agent_error"]) == (False, raw)
+
     async def test_successful_run_streams_events_then_completes(self) -> None:
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
             await context.event_sink.write({"event": "status", "data": {"status": "planning", "message": "..."}})
@@ -726,6 +765,41 @@ class TestRunAgentLoopStream:
             [chunk async for chunk in run_agent_loop_stream(**self._base_kwargs())]
 
         assert captured["allowed"] == {"pg-attached"}
+
+    @pytest.mark.parametrize(("is_service_account", "expected"), [
+        (False, {"pg-mine", "pg-team"}),
+        # The agent runs as its creator but anyone in the org may use it.
+        (True, {"pg-team"}),
+    ])
+    async def test_a_service_account_agent_queries_only_the_orgs_databases(self, is_service_account, expected) -> None:
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            captured["allowed"] = context.tool_state.get("allowed_sql_connector_ids")
+            return _stream_agent(MagicMock(success=True, error=None)), MagicMock(), MagicMock(), []
+
+        async def _fake_finalizer_run(self, **kwargs: object) -> dict[str, str]:
+            return {"answer": "ok"}
+
+        instances = [
+            {"_key": "pg-mine", "type": "POSTGRESQL", "isConfigured": True, "orgId": "org-1", "scope": "personal"},
+            {"_key": "pg-team", "type": "POSTGRESQL", "isConfigured": True, "orgId": "org-1", "scope": "team"},
+        ]
+        knowledge = [{"connectorId": "pg-mine", "type": "POSTGRESQL"}, {"connectorId": "pg-team", "type": "POSTGRESQL"}]
+        kwargs = self._base_kwargs()
+        kwargs["query_info"]["is_service_account"] = is_service_account
+        with (
+            patch("app.utils.connector_instances.fetch_user_connector_instances", new=AsyncMock(return_value=instances)),
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello", "agent_knowledge": knowledge},
+            ),
+            patch("app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.agent_loop.stream_bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_agent_loop_stream(**kwargs)]
+
+        assert captured["allowed"] == expected
 
     async def test_terminal_answer_streamed_live_before_finalizer_runs(self) -> None:
         """`_produce()` must drive the agent via `agent.stream(goal)` and

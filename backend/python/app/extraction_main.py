@@ -9,7 +9,6 @@ departments and passes them in the request body.
 """
 import asyncio
 import logging
-import os
 import signal
 import sys
 import types
@@ -21,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+import app.utils.runtime_threads  # must precede all ML library imports
 from app.api.middlewares.body_limit import BodyLimitMiddleware
 from app.api.routes.extraction import (
     CLASSIFY_PATH,
@@ -29,10 +29,13 @@ from app.api.routes.extraction import (
 from app.api.routes.extraction import router as extraction_router
 from app.api.validation_errors import input_free_422
 from app.containers.extraction import ExtractionAppContainer, initialize_container
+from app.edition import check_runtime_settings
 from app.edition_services import configure_app
 from app.modules.transformers.document_extraction import DocumentExtraction
+from app.services.llm_gateway.fleet_redis import bind_fleet_redis, bind_service_fleet
 from app.services.llm_gateway.gateway import get_llm_gateway
-from app.utils.env_utils import env_int
+from app.services.llm_gateway.wire import hook_status as wire_hook_status
+from app.utils.env_utils import bind_host, bind_port, env_int
 from app.utils.logger import install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 
@@ -46,6 +49,9 @@ def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
 
 signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 container = ExtractionAppContainer.init("extraction_service")
 container_lock = asyncio.Lock()
@@ -94,11 +100,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         config_service=config_service,
     )
 
+    # The model providers' circuit breaker is the fleet's: shared with the indexing service through Redis, so every
+    # process and pod sees the same outage.
+    fleet_registry = await bind_service_fleet(config_service, app_logger)
+
     app_logger.info("✅ Extraction Service started")
 
     yield
 
     app_logger.info("🔄 Extraction Service shutting down")
+    bind_fleet_redis(None)
+    await fleet_registry.aclose()
     try:
         config_service.close()
     except Exception:
@@ -125,6 +137,7 @@ async def health_check() -> JSONResponse:
     try:
         # Classification calls the model through this process's gateway: its cap and breakers.
         content["llm_gateway"] = get_llm_gateway().stats()
+        content["llm_wire_hooks"] = wire_hook_status()
     except Exception:
         # Logged, not returned: exception text does not belong in an unauthenticated response.
         logger.exception("Could not read the LLM gateway's stats")
@@ -132,11 +145,16 @@ async def health_check() -> JSONResponse:
     return JSONResponse(content=content)
 
 
-if __name__ == "__main__":
-    port = int(os.getenv("EXTRACTION_SERVICE_PORT", "8093"))
+def run(host: str | None = None, port: int | None = None, *, reload: bool = False) -> None:
+    """Run the Extraction service"""
     uvicorn.run(
         "app.extraction_main:app",
-        host="0.0.0.0",
-        port=port,
+        host=host or bind_host(),
+        port=port if port is not None else bind_port(8093, "EXTRACTION_SERVICE_PORT"),
         log_level="info",
+        reload=reload,
     )
+
+
+if __name__ == "__main__":
+    run()

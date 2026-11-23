@@ -53,10 +53,8 @@ import {
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
-import {
-  CHAT_ERROR_MESSAGES,
-  userFacingChatError,
-} from './chat-error-messages';
+import { readAIStreamChunk } from './chat-stream-reader';
+import { userFacingChatError } from './chat-error-messages';
 import { stripModelAuthoredMarkers } from './answer-markers';
 
 const logger = new Logger({
@@ -1799,7 +1797,6 @@ const failConversation = async (
     logger.error(`Failed to save ${noun} error state`, {
       conversationId: conversation._id,
       agentKey: conversation.agentKey,
-      failReason,
     });
   }
 };
@@ -1824,7 +1821,6 @@ export const markConversationFailed = async (
     );
     logger.debug('Conversation marked as failed', {
       conversationId: conversation._id,
-      failReason,
     });
   } catch (error: any) {
     logger.error('Error marking conversation as failed', {
@@ -1958,14 +1954,12 @@ export const replaceMessageWithError = async (
       logger.error('Failed to replace message with error', {
         conversationId: conversation._id,
         messageId,
-        errorMessage,
       });
     }
 
     logger.debug('Message replaced with error', {
       conversationId: conversation._id,
       messageId,
-      errorMessage,
     });
   } catch (error: any) {
     logger.error('Error replacing message with error', {
@@ -2030,7 +2024,6 @@ export const markAgentConversationFailed = async (
     logger.debug('Agent conversation marked as failed', {
       conversationId: conversation._id,
       agentKey: conversation.agentKey,
-      failReason,
     });
   } catch (error: any) {
     logger.error('Failed to mark agent conversation as failed', {
@@ -2185,9 +2178,15 @@ export const sendSSEErrorEvent = async (
 
 /** The answer's search was served with less than the full search (the query service says so): the UI shows a note. */
 export const searchDegradedMeta = (
-  data: Pick<IAIResponse, 'searchDegraded'> | null | undefined,
-): { searchDegraded?: true } =>
-  data?.searchDegraded === true ? { searchDegraded: true } : {};
+  data:
+    Pick<IAIResponse, 'searchDegraded' | 'accessNotices'> | null | undefined,
+): {
+  searchDegraded?: true;
+  accessNotices?: NonNullable<IAIResponse['accessNotices']>;
+} => ({
+  ...(data?.searchDegraded === true ? { searchDegraded: true as const } : {}),
+  ...(data?.accessNotices?.length ? { accessNotices: data.accessNotices } : {}),
+});
 
 /**
  * Send complete event to client with conversation data — `RUN_FINISHED`
@@ -2224,7 +2223,8 @@ export const sendSSECompleteEvent = (
 };
 
 /**
- * Handle regeneration stream data events
+ * Regenerate's hooks on the shared AI-stream reader: an error replaces the regenerated message,
+ * and a question is handed back to be attached to the answer when it is saved.
  */
 export const handleRegenerationStreamData = (
   chunk: Buffer,
@@ -2232,228 +2232,33 @@ export const handleRegenerationStreamData = (
   existingConversation: ChatSessionDto | null,
   messageId: string | null,
   session: Tx | null,
-  requestId: string,
   res: Response,
   onCompleteData: (data: IAIResponse) => void,
-  protocol?: SSEProtocol,
   accumulator?: StreamedContentAccumulator,
-  onUpstreamError?: () => void,
+  onUpstreamError?: (code: unknown) => void,
   onAskUserQuestion?: (payload: unknown) => void,
-): string => {
-  const chunkStr = chunk.toString();
-  let newBuffer = buffer + chunkStr;
-
-  const events = newBuffer.split('\n\n');
-  newBuffer = events.pop() || '';
-
-  let filteredChunk = '';
-  const agui = isAGUI(protocol);
-
-  for (const event of events) {
-    if (event.trim()) {
-      const lines = event.split('\n');
-      const eventType = lines
-        .find((line) => line.startsWith('event:'))
-        ?.replace('event:', '')
-        .trim();
-      const dataLines = lines
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.replace(/^data: ?/, ''));
-      const dataLine = dataLines.join('\n');
-      if (agui && eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
-        accumulator?.feedToolCallStart(dataLine);
+): string =>
+  readAIStreamChunk(chunk, buffer, res, accumulator, {
+    onAnswer: onCompleteData,
+    onRunError: (error) => {
+      onUpstreamError?.(error.data.code);
+      if (existingConversation && messageId) {
+        replaceMessageWithError(
+          existingConversation,
+          messageId,
+          error.message,
+          session,
+          'streaming_error',
+          error.stack,
+        ).catch((err: unknown) => {
+          logger.error('Failed to replace message with error', { error: err });
+        });
       }
-
-      if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
-        // Mirrors the legacy `complete` branch below — `result` on
-        // Python's RUN_FINISHED IS the same completion_data shape
-        // `complete.data` carries today (see `AGUIFormatter.answer_final`).
-        try {
-          const parsed = JSON.parse(dataLine);
-          onCompleteData(parsed.result ?? parsed);
-        } catch (parseError: any) {
-          logger.error('Failed to parse RUN_FINISHED event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          filteredChunk += event + '\n\n';
-        }
-      } else if (
-        agui &&
-        eventType === AGUIEventType.TEXT_MESSAGE_CONTENT &&
-        dataLine
-      ) {
-        // Feed the passive-disconnect accumulator so a partial answer
-        // survives a dropped connection — see savePartialConversation.
-        try {
-          accumulator?.feedTextMessageContent(JSON.parse(dataLine));
-        } catch {
-          // Non-fatal: still forward the frame below.
-        }
-        filteredChunk += event + '\n\n';
-      } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
-        try {
-          const errorData = JSON.parse(dataLine);
-          onUpstreamError?.();
-          if (existingConversation && messageId) {
-            const errorMessage =
-              errorData.message || CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'streaming_error',
-              errorData.stack,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
-          filteredChunk += event + '\n\n';
-        } catch (parseError: any) {
-          logger.error('Failed to parse RUN_ERROR event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          filteredChunk += event + '\n\n';
-        }
-      } else if (
-        agui &&
-        eventType === AGUIEventType.CUSTOM &&
-        dataLine &&
-        existingConversation
-      ) {
-        try {
-          const eventData = JSON.parse(dataLine);
-          if (eventData?.name === 'ask_user_question' && eventData.value) {
-            const payload = eventData.value.toolData ?? eventData.value;
-            onAskUserQuestion?.(payload);
-          }
-        } catch (parseErr: any) {
-          logger.warn('Failed to parse CUSTOM event data during regenerate', {
-            requestId,
-            error: parseErr?.message,
-          });
-        }
-        filteredChunk += event + '\n\n';
-      } else if (!agui && eventType === 'complete' && dataLine) {
-        try {
-          const completeData = JSON.parse(dataLine);
-          onCompleteData(completeData);
-        } catch (parseError: any) {
-          logger.error('Failed to parse complete event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          filteredChunk += event + '\n\n';
-        }
-      } else if (!agui && eventType === 'answer_chunk' && dataLine) {
-        // `accumulated` is the running full text, not a delta — see
-        // LegacyFormatter.answer_delta.
-        try {
-          const parsed = JSON.parse(dataLine) as Record<string, unknown>;
-          if (typeof parsed.accumulated === 'string') {
-            accumulator?.setAccumulatedText(parsed.accumulated);
-          }
-        } catch {
-          // Non-fatal: still forward the frame below.
-        }
-        filteredChunk += event + '\n\n';
-      } else if (!agui && eventType === 'error' && dataLine) {
-        onUpstreamError?.();
-        try {
-          const errorData = JSON.parse(dataLine);
-          if (existingConversation && messageId) {
-            const errorMessage =
-              errorData.error ||
-              errorData.message ||
-              CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'streaming_error',
-              errorData.stack,
-              errorData.metadata
-                ? new Map(Object.entries(errorData.metadata))
-                : undefined,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
-          filteredChunk += event + '\n\n';
-        } catch (parseError: any) {
-          logger.error('Failed to parse error event data', {
-            requestId,
-            parseError: parseError.message,
-            dataLine,
-          });
-          if (existingConversation && messageId) {
-            const errorMessage = CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'parse_error',
-              parseError.stack,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
-          filteredChunk += event + '\n\n';
-        }
-      } else if (
-        eventType === 'ask_user_question' &&
-        dataLine &&
-        existingConversation
-      ) {
-        try {
-          const eventData = JSON.parse(dataLine);
-          if (
-            eventData &&
-            typeof eventData === 'object' &&
-            eventData.status === 'success'
-          ) {
-            const payload = eventData.toolData ?? eventData;
-            onAskUserQuestion?.(payload);
-          }
-        } catch (parseErr: any) {
-          logger.warn(
-            'Failed to parse ask_user_question event data during regenerate',
-            {
-              requestId,
-              error: parseErr?.message,
-            },
-          );
-        }
-        filteredChunk += event + '\n\n';
-      } else {
-        filteredChunk += event + '\n\n';
-      }
-    }
-  }
-
-  if (filteredChunk) {
-    res.write(filteredChunk);
-    (res as any).flush?.();
-  }
-
-  return newBuffer;
-};
+    },
+    onAskUserQuestion: (payload) => {
+      if (existingConversation) onAskUserQuestion?.(payload);
+    },
+  });
 
 /**
  * Handle successful regeneration completion
@@ -2643,38 +2448,3 @@ export const handleRegenerationError = async (
     );
   }
 };
-
-/**
- * Monotonic stage timings for one streaming chat request, emitted as a single
- * log line. Pairs with the Python `StageTimer` so the Node and Python halves of
- * a request can be read side by side.
- */
-export class StageTimer {
-  private readonly t0 = process.hrtime.bigint();
-  private last = this.t0;
-  private readonly marks: Array<[string, number]> = [];
-  private emitted = false;
-
-  mark(stage: string): void {
-    const now = process.hrtime.bigint();
-    this.marks.push([stage, Number(now - this.last) / 1e6]);
-    this.last = now;
-  }
-
-  get totalMs(): number {
-    return Number(process.hrtime.bigint() - this.t0) / 1e6;
-  }
-
-  /** Safe to call more than once; only the first call logs. */
-  emit(label: string, extra: Record<string, unknown> = {}): void {
-    if (this.emitted) return;
-    this.emitted = true;
-    const stages = this.marks
-      .map(([n, ms]) => `${n}=${ms.toFixed(0)}ms`)
-      .join(' ');
-    logger.info(
-      `⏱ ${label} total=${this.totalMs.toFixed(0)}ms | ${stages}`,
-      extra,
-    );
-  }
-}

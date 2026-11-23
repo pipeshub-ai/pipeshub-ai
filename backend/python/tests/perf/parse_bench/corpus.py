@@ -16,17 +16,24 @@ Kinds (the PDF-weighted mix of the parallelism plan):
 * ``docx``     Word files (the Docling path)
 * ``md``, ``json``, ``txt``  small light files, for the I/O-heavy mixes
 
+The ``cost-*`` profiles (``cost-smoke``, ``cost-standard``, ``cost-huge``) label every file with its
+cost class instead, the oracle the end-to-end bench reports latency by: ``small-text``,
+``small-pdf``, ``office``, ``scanned``, ``large-pdf`` and ``huge-pdf``. ``pages`` is the unit count
+of the file: PDF pages, DOCX pages, PPTX slides, XLSX data rows are not pages so it is 1.
+
 Run: ``python -m tests.perf.parse_bench.corpus --out DIR [--profile standard]``
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import io
 import json
 import math
 import random
+import re
 import shutil
 import sys
 import tempfile
@@ -44,6 +51,28 @@ MIME = {
     "md": "text/markdown",
     "json": "application/json",
     "txt": "text/plain",
+    "html": "text/html",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+# Cost-class corpora. Per class: file count, or (count, pages) for page-based classes
+# (``small-pdf``, ``scanned`` and ``large-pdf`` take the *largest* page count and spread the files over 1..max).
+COST_CLASSES = ("small-text", "small-pdf", "office", "scanned", "large-pdf", "huge-pdf")
+COST_PROFILES: dict[str, dict[str, Any]] = {
+    "cost-smoke": {
+        "small-text": 3, "small-pdf": (2, 4), "office": 3, "scanned": (1, 2),
+        "large-pdf": (0, 60), "huge-pdf": (0, 1000),
+    },
+    "cost-standard": {
+        "small-text": 20, "small-pdf": (12, 20), "office": 9, "scanned": (4, 10),
+        "large-pdf": (2, 60), "huge-pdf": (0, 1000),
+    },
+    # B-01: the huge documents come first in the schedule; the smalls are the probes.
+    "cost-huge": {
+        "small-text": 20, "small-pdf": (24, 20), "office": 9, "scanned": (4, 10),
+        "large-pdf": (2, 120), "huge-pdf": (10, 1000),
+    },
 }
 
 # Counts per kind for scale 1.0. ``pages`` is the page count of each file.
@@ -308,13 +337,17 @@ def large_pdf(seed: int, target_mb: int) -> bytes:
 # -- DOCX and light files -----------------------------------------------------
 
 
-def docx_file(words: Words, pages: int) -> bytes:
-    import datetime
+def seed_stamp(seed: int = 0) -> datetime.datetime:
+    """The one timestamp every generated file carries: a pure function of the seed, never of the clock."""
+    return datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC) + datetime.timedelta(seconds=seed % 31_536_000)
 
+
+def docx_file(words: Words, pages: int, stamp: datetime.datetime | None = None) -> bytes:
     from docx import Document
 
+    stamp = stamp or seed_stamp()
     doc = Document()
-    doc.core_properties.created = doc.core_properties.modified = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+    doc.core_properties.created = doc.core_properties.modified = stamp
     doc.core_properties.author = "bench"
     for _ in range(pages):
         doc.add_heading(words.title(), level=1)
@@ -328,18 +361,31 @@ def docx_file(words: Words, pages: int) -> bytes:
         doc.add_picture(io.BytesIO(_chart_png(words.rng, (500, 300))))
     raw = io.BytesIO()
     doc.save(raw)
-    return _fixed_zip(raw.getvalue())
+    return _fixed_zip(raw.getvalue(), stamp)
 
 
-def _fixed_zip(data: bytes) -> bytes:
-    """Same entries, same order, one fixed timestamp: the bytes stop depending on the clock."""
+_CORE_DATE = re.compile(r"(<dcterms:(?:created|modified)\b[^>]*>)[^<]*(</dcterms:(?:created|modified)>)")
+
+
+def _fixed_zip(data: bytes, stamp: datetime.datetime | None = None) -> bytes:
+    """Same entries, same order, one timestamp taken from the seed: the bytes never depend on the clock.
+
+    Libraries stamp the save time into ``docProps/core.xml`` (openpyxl overwrites whatever was set), so the
+    package's created/modified dates are rewritten here too, and the zip entries carry the same moment.
+    """
+    stamp = stamp or seed_stamp()
+    iso = stamp.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     out = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(data)) as src, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
         for info in sorted(src.infolist(), key=lambda i: i.filename):
-            clone = zipfile.ZipInfo(info.filename, date_time=(2026, 1, 1, 0, 0, 0))
+            clone = zipfile.ZipInfo(info.filename, date_time=(stamp.year, stamp.month, stamp.day,
+                                                              stamp.hour, stamp.minute, stamp.second - stamp.second % 2))
             clone.compress_type = zipfile.ZIP_DEFLATED
             clone.external_attr = info.external_attr
-            dst.writestr(clone, src.read(info.filename))
+            body = src.read(info.filename)
+            if info.filename == "docProps/core.xml":
+                body = _CORE_DATE.sub(lambda m: f"{m.group(1)}{iso}{m.group(2)}", body.decode("utf-8")).encode("utf-8")
+            dst.writestr(clone, body)
     return out.getvalue()
 
 
@@ -511,6 +557,8 @@ def generate(
     boundary_pages: int | None = None,
     max_mb: int = 1024,
 ) -> Manifest:
+    if profile in COST_PROFILES:
+        return generate_cost(out, seed=seed, profile=profile, scale=scale, max_mb=max_mb)
     params = resolve_params(profile, scale, large_mb, boundary_pages)
     estimate = estimate_bytes(params)
     if estimate > max_mb * MIB:
@@ -558,10 +606,240 @@ def generate(
     return manifest
 
 
+# -- cost-class corpus ----------------------------------------------------------
+
+
+def html_file(words: Words) -> bytes:
+    body = "".join(f"<h2>{words.title()}</h2><p>{words.paragraph(5)}</p>" for _ in range(words.rng.randint(3, 8)))
+    return f"<!doctype html><html><head><title>{words.title()}</title></head><body>{body}</body></html>".encode()
+
+
+def light_pdf(words: Words, pages: int) -> bytes:
+    """A long text PDF that is cheap to build (about 25 lines a page): the huge-document kind."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=A4, invariant=1)
+    for page in range(pages):
+        pdf.setFont("Helvetica-Bold", 14)
+        pdf.drawString(50, 800, f"{words.title()} (section {page + 1})")
+        pdf.setFont("Helvetica", 9)
+        for line in range(48):
+            pdf.drawString(50, 780 - line * 15, words.sentence(8, 14))
+        pdf.showPage()
+    pdf.save()
+    return buf.getvalue()
+
+
+def xlsx_small(words: Words, rows: int, stamp: datetime.datetime | None = None) -> bytes:
+    """A workbook of *rows* data rows on one sheet (the ``office`` class keeps it at 200 or fewer)."""
+    import openpyxl
+
+    stamp = stamp or seed_stamp()
+    book = openpyxl.Workbook()
+    book.properties.created = book.properties.modified = stamp
+    book.properties.creator = "bench"
+    sheet = book.active
+    sheet.append(["id", "name", "note", "amount"])
+    for i in range(rows):
+        sheet.append([i, words.title(), words.sentence(), round(words.rng.random() * 1000, 2)])
+    raw = io.BytesIO()
+    book.save(raw)
+    return _fixed_zip(raw.getvalue(), stamp)
+
+
+_NS_P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+_NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_NS_R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+_XML = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+
+
+def _xml_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _rels(*items: tuple[str, str, str]) -> str:
+    body = "".join(f'<Relationship Id="{i}" Type="{_REL}/{t}" Target="{target}"/>' for i, t, target in items)
+    return f'{_XML}<Relationships xmlns="{_PKG_REL}">{body}</Relationships>'
+
+
+_THEME = (
+    _XML + f'<a:theme xmlns:a="{_NS_A}" name="bench"><a:themeElements>'
+    '<a:clrScheme name="bench"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>'
+    '<a:dk2><a:srgbClr val="1F1F1F"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2>'
+    + "".join(f'<a:accent{n}><a:srgbClr val="{c}"/></a:accent{n}>' for n, c in enumerate(
+        ("4472C4", "ED7D31", "A5A5A5", "FFC000", "5B9BD5", "70AD47"), 1))
+    + '<a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme>'
+    '<a:fontScheme name="bench"><a:majorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>'
+    '<a:minorFont><a:latin typeface="Arial"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme>'
+    '<a:fmtScheme name="bench"><a:fillStyleLst>' + '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' * 3
+    + '</a:fillStyleLst><a:lnStyleLst>' + '<a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln>' * 3
+    + '</a:lnStyleLst><a:effectStyleLst>' + '<a:effectStyle><a:effectLst/></a:effectStyle>' * 3
+    + '</a:effectStyleLst><a:bgFillStyleLst>' + '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>' * 3
+    + '</a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>'
+)
+_EMPTY_TREE = (
+    '<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+    '<p:grpSpPr/></p:spTree></p:cSld>'
+)
+
+
+def _slide_xml(title: str, lines: list[str]) -> str:
+    def shape(shape_id: int, name: str, texts: list[str], x: int, y: int, cx: int, cy: int) -> str:
+        paras = "".join(f"<a:p><a:r><a:rPr lang=\"en-US\"/><a:t>{_xml_escape(t)}</a:t></a:r></a:p>" for t in texts)
+        return (
+            f'<p:sp><p:nvSpPr><p:cNvPr id="{shape_id}" name="{name}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
+            f'<p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+            f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/>{paras}</p:txBody></p:sp>'
+        )
+
+    return (
+        f'{_XML}<p:sld xmlns:a="{_NS_A}" xmlns:r="{_NS_R}" xmlns:p="{_NS_P}"><p:cSld><p:spTree>'
+        '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>'
+        + shape(2, "Title", [title], 457200, 274638, 8229600, 800000)
+        + shape(3, "Body", lines, 457200, 1200000, 8229600, 4500000)
+        + '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
+    )
+
+
+def pptx_file(words: Words, slides: int, stamp: datetime.datetime | None = None) -> bytes:
+    """A minimal hand-built OOXML presentation: *slides* slides of a title and three text lines each.
+
+    One master, one layout and one theme, written entry by entry with one fixed timestamp, so the
+    bytes depend only on the seed.
+    """
+    ct = (
+        f'{_XML}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>'
+        '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>'
+        '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>'
+        '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
+        + "".join(
+            f'<Override PartName="/ppt/slides/slide{n}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
+            for n in range(1, slides + 1))
+        + "</Types>"
+    )
+    slide_ids = "".join(f'<p:sldId id="{255 + n}" r:id="rId{n + 2}"/>' for n in range(1, slides + 1))
+    presentation = (
+        f'{_XML}<p:presentation xmlns:a="{_NS_A}" xmlns:r="{_NS_R}" xmlns:p="{_NS_P}">'
+        f'<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>'
+        f'<p:sldIdLst>{slide_ids}</p:sldIdLst><p:sldSz cx="9144000" cy="6858000"/><p:notesSz cx="6858000" cy="9144000"/>'
+        "</p:presentation>"
+    )
+    parts: dict[str, str] = {
+        "[Content_Types].xml": ct,
+        "_rels/.rels": _rels(("rId1", "officeDocument", "ppt/presentation.xml")),
+        "ppt/presentation.xml": presentation,
+        "ppt/_rels/presentation.xml.rels": _rels(
+            ("rId1", "slideMaster", "slideMasters/slideMaster1.xml"),
+            ("rId2", "theme", "theme/theme1.xml"),
+            *((f"rId{n + 2}", "slide", f"slides/slide{n}.xml") for n in range(1, slides + 1)),
+        ),
+        "ppt/slideMasters/slideMaster1.xml": (
+            f'{_XML}<p:sldMaster xmlns:a="{_NS_A}" xmlns:r="{_NS_R}" xmlns:p="{_NS_P}">{_EMPTY_TREE}'
+            '<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" '
+            'accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>'
+            '<p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>'
+        ),
+        "ppt/slideMasters/_rels/slideMaster1.xml.rels": _rels(
+            ("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml"), ("rId2", "theme", "../theme/theme1.xml")),
+        "ppt/slideLayouts/slideLayout1.xml": (
+            f'{_XML}<p:sldLayout xmlns:a="{_NS_A}" xmlns:r="{_NS_R}" xmlns:p="{_NS_P}" type="blank">{_EMPTY_TREE}'
+            "<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>"
+        ),
+        "ppt/slideLayouts/_rels/slideLayout1.xml.rels": _rels(("rId1", "slideMaster", "../slideMasters/slideMaster1.xml")),
+        "ppt/theme/theme1.xml": _THEME,
+    }
+    for n in range(1, slides + 1):
+        parts[f"ppt/slides/slide{n}.xml"] = _slide_xml(words.title(), [words.sentence() for _ in range(3)])
+        parts[f"ppt/slides/_rels/slide{n}.xml.rels"] = _rels(("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml"))
+    stamp = stamp or seed_stamp()
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, text in parts.items():  # [Content_Types].xml first, as Office writes it
+            info = zipfile.ZipInfo(name, date_time=(stamp.year, stamp.month, stamp.day, stamp.hour, stamp.minute,
+                                                    stamp.second - stamp.second % 2))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(info, text.encode())
+    return out.getvalue()
+
+
+def _spread(index: int, maximum: int, low: int = 1) -> int:
+    """A deterministic page count for file *index*, cycling through ``low..maximum``."""
+    return low + (index * 7) % max(1, maximum - low + 1)
+
+
+def resolve_cost_params(profile: str, scale: float) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    for cls, value in COST_PROFILES[profile].items():
+        if isinstance(value, tuple):
+            params[cls] = (max(0, round(value[0] * scale)) if value[0] else 0, value[1])
+        else:
+            params[cls] = max(1, round(value * scale))
+    return params
+
+
+def generate_cost(out: Path, *, seed: int, profile: str, scale: float, max_mb: int) -> Manifest:
+    """The cost-class corpus: every entry's ``kind`` is its class, ``pages`` its unit count."""
+    params = resolve_cost_params(profile, scale)
+    out.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=out))
+    manifest = Manifest(seed=seed, profile=profile, params={**params, "scale": scale})
+    manifest.budget = max_mb * MIB
+    try:
+        words = Words(random.Random(seed))
+        stamp = seed_stamp(seed)
+        for i in range(params["small-text"]):
+            which = i % 3
+            if which == 0:
+                _put(staging, f"small-text-{i:02d}.txt", "small-text", "txt", text_file(words), 0, manifest)
+            elif which == 1:
+                size = 2_000 + words.rng.randint(0, 38_000)
+                _put(staging, f"small-text-{i:02d}.md", "small-text", "md", sized_markdown(words, size), 0, manifest)
+            else:
+                _put(staging, f"small-text-{i:02d}.html", "small-text", "html", html_file(words), 0, manifest)
+        count, top = params["small-pdf"]
+        for i in range(count):
+            pages = _spread(i, top)
+            _put(staging, f"small-pdf-{i:02d}.pdf", "small-pdf", "pdf", digital_pdf(words, pages), pages, manifest)
+        for i in range(params["office"]):
+            which = i % 3
+            if which == 0:
+                pages = _spread(i, 20, low=2)
+                _put(staging, f"office-{i:02d}.docx", "office", "docx", docx_file(words, min(pages, 8), stamp), min(pages, 8), manifest)
+            elif which == 1:
+                _put(staging, f"office-{i:02d}.xlsx", "office", "xlsx", xlsx_small(words, 20 + (i * 37) % 181, stamp), 1, manifest)
+            else:
+                slides = _spread(i, 20, low=5)
+                _put(staging, f"office-{i:02d}.pptx", "office", "pptx", pptx_file(words, slides, stamp), slides, manifest)
+        count, top = params["scanned"]
+        for i in range(count):
+            pages = _spread(i, top, low=2)
+            _put(staging, f"scanned-{i:02d}.pdf", "scanned", "pdf", scanned_pdf(words, pages), pages, manifest)
+        count, pages = params["large-pdf"]
+        for i in range(count):
+            make = digital_pdf if i % 2 == 0 else tables_pdf
+            _put(staging, f"large-pdf-{i:02d}.pdf", "large-pdf", "pdf", make(words, pages), pages, manifest)
+        count, pages = params["huge-pdf"]
+        for i in range(count):
+            _put(staging, f"huge-pdf-{i:02d}.pdf", "huge-pdf", "pdf", light_pdf(words, pages), pages, manifest)
+        (staging / MANIFEST).write_text(manifest.to_json())
+        for path in sorted(staging.iterdir()):
+            path.replace(out / path.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return manifest
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--profile", choices=sorted(PROFILES), default="standard")
+    ap.add_argument("--profile", choices=sorted([*PROFILES, *COST_PROFILES]), default="standard")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--scale", type=float, default=1.0, help="multiplies file counts")
     ap.add_argument("--large-mb", type=int, default=None, help="size of the over-100 MB PDF; 0 skips it")

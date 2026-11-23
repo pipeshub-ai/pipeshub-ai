@@ -54,6 +54,8 @@ if TYPE_CHECKING:
 
     from app.agent_loop_lib.tools.base import Tool
     from app.agents.agent_loop.context import AgentContext
+    from app.web.models import CallerContext
+    from app.web.services import WebFetchService
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +262,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
             from app.web.budget import WebBudget
             from app.web.container import build_web_services
             from app.web.models import CallerContext
+            from app.web.own_files import ISSUED_DOWNLOAD_LINKS_KEY
             from app.web.tools.fetch_url import create_fetch_url_tool
             from app.web.tools.web_search import create_web_search_tool
 
@@ -267,18 +270,36 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 web_search_config, get_web_access_gate(), WebBudget.for_answer(deep_research=context.deep_research),
             )
             caller = CallerContext(org_id=context.org_id, user_id=context.user_id, conversation_id=context.conversation_id)
-            web_tools = [
-                create_web_search_tool(services.search, caller),
-                create_fetch_url_tool(services.fetch, caller, ref_mapper=ref_mapper),
-            ]
+            fetch_url = create_fetch_url_tool(
+                services.fetch, caller, ref_mapper=ref_mapper,
+                issued_links=state.setdefault(ISSUED_DOWNLOAD_LINKS_KEY, {}),
+            )
+            web_tools = [create_web_search_tool(services.search, caller), fetch_url]
+            image_options = _page_image_options(web_search_config, services.fetch, caller)
         except Exception as e:
-            web_tools = []
+            web_tools, fetch_url, image_options = [], None, {}
             log_failure(logger, "tool.build_failed", e, tool="web", include_error_text=False)
         for web_tool in web_tools:
             a, t = split_original_tool_name(web_tool)
-            tools.append(WebToolAdapter(web_tool, a, t, context))
+            tools.append(WebToolAdapter(web_tool, a, t, context, **(image_options if web_tool is fetch_url else {})))
 
     return tools
+
+
+def _page_image_options(web_search_config: dict, fetch_service: "WebFetchService", caller: "CallerContext") -> dict:
+    """``WebToolAdapter`` options that send a fetched page's images to the model: none unless an
+    admin turned "Send images to LLM" on (``settings.includeImages``), then up to
+    ``settings.maxImages`` per page, read through the run's gated fetch service."""
+    from app.web.config import image_settings
+
+    settings = image_settings(web_search_config.get("settings"))
+    if not settings["includeImages"]:
+        return {}
+
+    async def load(urls: list[str]) -> list[str | None]:
+        return await fetch_service.fetch_images(urls, caller)
+
+    return {"image_loader": load, "max_images": settings["maxImages"]}
 
 
 def _normalized_toolset_name(toolset: dict) -> str:

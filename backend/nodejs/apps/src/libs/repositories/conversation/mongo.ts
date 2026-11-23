@@ -238,6 +238,8 @@ const SUMMARY_FIELDS = {
   modelInfo: 1,
   projectId: 1,
   projectVisibility: 1,
+  metadata: 1,
+  agentKey: 1,
 };
 
 const msgOf = (doc: unknown): MessageDto => toPlain<MessageDto>(doc);
@@ -375,6 +377,25 @@ export class MongoConversationRepository implements ConversationRepository {
       tx ? opts(tx) : {},
     );
     return doc ? toPlain<ChatSessionDto>(doc) : null;
+  }
+
+  async listForksOf(
+    scope: SessionScope,
+    sourceId: string,
+    actor: SessionActor,
+  ): Promise<ChatSessionDto[]> {
+    const docs = await ChatSession.find({
+      orgId: actor.orgId,
+      userId: actor.userId,
+      isDeleted: false,
+      isArchived: { $ne: true },
+      'metadata.forkedFromConversationId': sourceId,
+      ...scopeFilter(scope),
+    })
+      .select(SUMMARY_FIELDS)
+      .sort({ createdAt: 1 })
+      .limit(50);
+    return docs.map((d) => toPlain<ChatSessionDto>(d));
   }
 
   async findForShare(

@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.models.entities import ArtifactRecord, ArtifactType, ArtifactVisibility, deserialize_artifact_versions
 from app.services.artifact_registry.access import ArtifactNotFoundError
 from app.services.artifact_registry.models import Actor
+from app.utils.user_lookup import get_caller_user
 
 __all__ = [
     "ALLOWED_GALLERY_ARTIFACT_TYPES",
@@ -192,7 +193,7 @@ class ArtifactGalleryService:
         return detail.versions
 
     async def _resolve_user_key(self, actor: Actor) -> str:
-        user = await self._graph.get_user_by_user_id(actor.user_id)
+        user = await get_caller_user(self._graph, actor.user_id)
         if not user:
             raise ArtifactNotFoundError("User not found")
         user_key = user.get("_key") or user.get("id")

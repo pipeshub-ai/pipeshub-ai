@@ -11,6 +11,9 @@ EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS = 600.0
 # (embedding_main.EncodeGate); any other value, or none, is bulk.
 EMBEDDING_PRIORITY_HEADER = "X-Embedding-Priority"
 EMBEDDING_PRIORITY_QUERY = "query"
+# Request header that carries the cost class of the record an indexing batch belongs to (small, large, huge)
+# under PARSE_ADMISSION=classes. The server's encode gate serves small ahead of large and huge.
+PARSE_CLASS_HEADER = "X-Parse-Class"
 # One /v1/tokenize request: the server rejects more (413), the indexing client splits to fit.
 TOKENIZE_MAX_ITEMS = 2048
 TOKENIZE_MAX_CHARS = 2_000_000

@@ -52,7 +52,7 @@ export class UserManagerContainer {
   ): Promise<void> {
     try {
 
-      const authService = new AuthService(appConfig, container.get('Logger'));
+      const authService = new AuthService(appConfig);
       container
         .bind<AuthService>('AuthService')
         .toDynamicValue(() => authService);
@@ -137,7 +137,6 @@ export class UserManagerContainer {
       });
 
       const serviceAccountsService = new ServiceAccountsService(
-        container.get('Logger'),
         container.get<EntitiesEventProducer>('EntitiesEventProducer'),
       );
       container

@@ -60,10 +60,12 @@ from app.modules.artifacts.store import (
     PROPERTIES_FILE,
     ArtifactRoutesUnavailable,
     NodeArtifactStore,
+    SetPerWriteUnsupported,
     artifact_writes_available,
 )
 from app.modules.record_metadata.builtin import ticket_metadata
 from app.modules.transformers.blob_storage import SHARED_CONTENT_FIELDS
+from app.modules.transformers.stored_write import write_id
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 PART_MAX_BYTES = 8 * 1024 * 1024
@@ -312,13 +314,13 @@ class ArtifactWriter:
         self.producer_versions = dict(producer_versions or {})
 
     async def _presign(
-        self, built: BuiltRevision, org_id: str, virtual_record_id: str, rev: str,
+        self, built: BuiltRevision, org_id: str, virtual_record_id: str, rev: str, set_id: str,
     ) -> RevisionUploadPlan:
         def files() -> list[tuple[str, str]]:
             return [(p, built.files[p].content_type) for p in sorted(built.files)] + [(MANIFEST_PATH, _JSON)]
 
         try:
-            return await self.store.presign_revision(org_id, virtual_record_id, rev, files())
+            return await self.store.presign_revision(org_id, virtual_record_id, rev, files(), write_id=set_id)
         except StorageRequestRejectedError as refused:
             # A storage service older than properties.json refuses the whole set
             # (400) over that one path; the rest of the revision is still worth
@@ -333,7 +335,7 @@ class ArtifactWriter:
             ):
                 raise
             _drop_properties(built)
-            plan = await self.store.presign_revision(org_id, virtual_record_id, rev, files())
+            plan = await self.store.presign_revision(org_id, virtual_record_id, rev, files(), write_id=set_id)
             if PROPERTIES_FILE.mark_unavailable(refused.status):
                 self.logger.warning(
                     "Storage refuses %s (HTTP %d); revisions are stored without it until this "
@@ -356,18 +358,24 @@ class ArtifactWriter:
         stored_run: str,
         still_current: Callable[[], Awaitable[bool]] | None = None,
     ) -> WrittenRevision | None:
-        """Store every file of revision ``rev``, the manifest last.
+        """Store every file of revision ``rev``, the manifest last, in the set of the stored write ``stored_run``.
 
-        None when nothing was written because artifact writes are unavailable
-        (a storage service without the routes), or because ``still_current``
-        said another stored write took over while the files went up: a manifest
-        written then would name this run over the newer write's set. Raises when
-        a file could not be stored; the manifest is then not written.
+        Each stored write has a set of its own (``write_id``), so two writes of one revision never share a
+        file: whatever lands late, from a write that lost its place or an upload storage commits after it
+        was given up, lands in its own write's set, which the pointer never names over a newer write.
+        None when nothing was written: artifact writes are unavailable (a storage service without the
+        routes, or one that gives the write no set of its own and would file it in the revision's shared
+        set: no lock in one process could keep another process's late files out of it), the run keeps no set (a ``none`` run), or ``still_current`` said another stored write took
+        over, so the rest of this write's set would be wasted. Raises when a file could not be stored; the
+        manifest is then not written.
         """
         if not artifact_writes_available():
             return None
         if not REV_PATTERN.match(rev):
             raise ValueError("revision is not 8 to 64 lowercase hex digits")
+        set_id = write_id(stored_run)
+        if set_id is None:
+            return None
 
         async def current() -> bool:
             return still_current is None or await still_current()
@@ -386,14 +394,11 @@ class ArtifactWriter:
         if not PROPERTIES_FILE.available:
             _drop_properties(built)
         try:
-            plan = await self._presign(built, org_id, virtual_record_id, rev)
-        except ArtifactRoutesUnavailable:
+            plan = await self._presign(built, org_id, virtual_record_id, rev, set_id)
+        except (ArtifactRoutesUnavailable, SetPerWriteUnsupported):
             return None
-        # The files and the manifest are one set per revision: a write that lost its place must not overwrite them.
         if not await current():
             return None
-        paths = sorted(built.files)
-
         limit = asyncio.Semaphore(max(1, self.upload_concurrency))
 
         async def upload(path: str) -> None:
@@ -404,13 +409,11 @@ class ArtifactWriter:
         # A TaskGroup cancels the remaining uploads on the first failure.
         try:
             async with asyncio.TaskGroup() as uploads:
-                for path in paths:
+                for path in sorted(built.files):
                     uploads.create_task(upload(path))
         except ExceptionGroup as failed:
             raise failed.exceptions[0] from None
 
-        # shortcut: a check and the write after it are two requests, so a write stalled between them still
-        # lands; close it with a conditional write if storage ever offers one.
         if not await current():
             return None
         manifest = Manifest(

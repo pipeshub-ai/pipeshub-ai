@@ -624,51 +624,60 @@ def test_excel_on_one_lane_runs_serially_behind_a_layout_job(
 
 
 def test_waiting_excel_loads_do_not_stall_the_event_loop(
-    make_budget: Callable[..., LaneBudget], make_pool: Callable[..., LanePool], hub: StubHub
+    make_budget: Callable[..., LaneBudget], make_pool: Callable[..., LanePool], hub: StubHub,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Loads waiting for a lane sleep between polls, so they leave the GIL (and with it the event loop) free: every
+    refused poll is followed by a real sleep. Counted, not inferred from the loop's longest gap, which a busy runner
+    stretches."""
+    from app.services.resource_governor import lanes as lanes_mod
+
     budget = make_budget(1)
     pool = make_pool(budget, hub=hub, threads=6)
     release = threading.Event()
     blocker = submit(pool, hold, release, kind=ParseKind.EXCEL_LOAD, covered=True, size=MIB)
     assert wait_for(lambda: pool.stats()["busy"] == 1)
+    lock = threading.Lock()
+    refused: list[int] = []
+    slept: list[float] = []
+    real_try, real_sleep = budget.try_acquire, time.sleep
 
-    async def scenario() -> float:
-        lag = 0.0
-        loops = 0
+    def counting_try(**kw: object) -> object:
+        lease = real_try(**kw)
+        if lease is None and not release.is_set():
+            with lock:
+                refused.append(threading.get_ident())
+        return lease
 
-        async def beat() -> None:
-            nonlocal lag, loops
-            while True:
-                t = time.monotonic()
-                await asyncio.sleep(0.01)
-                lag = max(lag, time.monotonic() - t - 0.01)
-                loops += 1
+    def recording_sleep(seconds: float) -> None:
+        if not release.is_set():
+            with lock:
+                slept.append(seconds)
+        real_sleep(seconds)
 
-        heartbeat = asyncio.create_task(beat())
-
-        def load() -> object:
-            job = _Job(quick, (), "xlsx", 20 * MIB, kind=ParseKind.EXCEL_LOAD, covered=True)
-            pool.enqueue(job)
-            return job.future.result(timeout=30)
-
-        waiting = [asyncio.create_task(asyncio.to_thread(load)) for _ in range(5)]
-        await asyncio.sleep(0.6)
-        assert not any(w.done() for w in waiting), "they are waiting"
-        release.set()
-        await asyncio.wait_for(asyncio.gather(*waiting), 30)
-        heartbeat.cancel()
-        assert loops > 20
-        return lag
-
-    lag = asyncio.run(scenario())
-    assert lag <= 0.1, f"the loop lagged {lag * 1000:.0f} ms while loads waited"
+    monkeypatch.setattr(budget, "try_acquire", counting_try)
+    monkeypatch.setattr(lanes_mod, "time", SimpleNamespace(**{**vars(time), "sleep": recording_sleep}))
+    loads = [_Job(quick, (), "xlsx", 20 * MIB, kind=ParseKind.EXCEL_LOAD, covered=True) for _ in range(5)]
+    for job in loads:
+        pool.enqueue(job)
+    assert wait_for(lambda: len(refused) >= 15), "no load is waiting for the lane"
+    assert not any(job.future.done() for job in loads), "they are waiting"
+    release.set()
+    for job in loads:
+        assert job.future.result(timeout=30) == 1
+    with lock:
+        polls, sleeps = len(refused), sorted(slept)
+    # Each refused poll sleeps before the next (a last one per waiter may be cut off by the release): none spins.
+    assert len(sleeps) >= polls - 5, (polls, len(sleeps))
+    assert sleeps[0] >= 0.004, sleeps[:5]
     blocker.future.result(timeout=10)
 
 
 def test_loop_heartbeat_during_excel_wait(
-    make_budget: Callable[..., LaneBudget], make_pool: Callable[..., LanePool], hub: StubHub
+    make_budget: Callable[..., LaneBudget], make_pool: Callable[..., LanePool], hub: StubHub,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    test_waiting_excel_loads_do_not_stall_the_event_loop(make_budget, make_pool, hub)
+    test_waiting_excel_loads_do_not_stall_the_event_loop(make_budget, make_pool, hub, monkeypatch)
 
 
 def test_waiting_excel_loads_do_not_exhaust_the_default_executor(

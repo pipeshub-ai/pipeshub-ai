@@ -27,6 +27,7 @@ from app.modules.transformers.entity_vectorstore import (
     EntityVectorStore,
 )
 from app.services.vector_db.models import ScrollWindowExceededError, VectorPoint
+from app.services.vector_db.precision_guard import PrecisionUnreadable
 from tests.support.embedding_config import (
     another_process,
     config_service,
@@ -368,9 +369,9 @@ class TestReplicas:
         await leader.upsert_entities_batch([_topic()], merge_membership=False)
 
         with patch.object(config_b.store, "get_key", side_effect=RuntimeError("kv store timed out")):
-            outcome = await other.upsert_entities_batch([_topic()], merge_membership=False)
+            with pytest.raises(PrecisionUnreadable):  # nobody knows what the index holds: raised for a retry, not counted
+                await other.upsert_entities_batch([_topic()], merge_membership=False)
 
-        assert (outcome.written, outcome.failed) == (0, 1)
         assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
 
 
@@ -606,10 +607,14 @@ class TestConfigReads:
             for _ in range(3):
                 await store.search_entities("pricing", ORG, set(), {"c1"})
             assert reads == 1
-            # A write re-reads the store once per batch, before it upserts.
+            # A write reads the store a few times per batch, before it upserts.
+            per_batch = []
             for entity_id in ("t1", "t2", "t3"):
+                before = reads
                 await store.upsert_entities_batch([_topic(entity_id)], merge_membership=False)
-            assert reads == 4
+                per_batch.append(reads - before)
+            # The config re-read, the epoch pointer and the pin, each fresh; the first batch also creates the epoch.
+            assert per_batch == [4, 3, 3]
 
     async def test_a_missed_notification_is_caught_by_the_periodic_read(self, monkeypatch) -> None:
         db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
@@ -634,9 +639,9 @@ class TestConfigReads:
         with patch.object(config.store, "get_key", side_effect=RuntimeError("kv store down")):
             assert await store.embedding_fingerprint() == SMALL_FP
             await store.search_entities("pricing", ORG, set(), {"c1"})
-            outcome = await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
+            with pytest.raises(PrecisionUnreadable):
+                await store.upsert_entities_batch([_topic("t2")], merge_membership=False)
 
-        assert (outcome.written, outcome.failed) == (0, 1)
         assert db.deletions == 0
         assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
         await store.upsert_entities_batch([_topic("t2")], merge_membership=False)

@@ -1,12 +1,13 @@
 'use client';
 
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
-import { Box, Button, Flex, Text } from '@radix-ui/themes';
+import { Box, Button, Callout, Flex, Text } from '@radix-ui/themes';
 import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
 import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
 import { SearchDegradedNote } from './search-degraded-note';
+import { AccessNotices, type AccessNotice } from '@/app/components/feedback/access-notice';
 import { AnswerContent } from './answer-content';
 import { QuoteSelectionLayer } from './quote-selection-toolbar';
 import { StatusMessageComponent } from './status-message';
@@ -110,6 +111,7 @@ interface ChatResponseProps {
   confidence?: ConfidenceLevel;
   /** A search behind this answer was served with less than the full search. */
   searchDegraded?: boolean;
+  accessNotices?: AccessNotice[];
   isStreaming?: boolean;
   modelInfo?: ModelInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
@@ -187,6 +189,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationCallbacks,
   confidence,
   searchDegraded = false,
+  accessNotices,
   isStreaming = false,
   modelInfo,
   collections,
@@ -216,6 +219,9 @@ export const ChatResponse = React.memo(function ChatResponse({
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
   const mcpConnectDetails = isStreaming ? null : mcpConfigMissingDetails(streamError);
+  // The reply failed (the provider was rate limiting, overloaded, ...): its text says why,
+  // shown as an error so it doesn't read like an answer.
+  const answerFailed = !isStreaming && !!streamError && !mcpConnectDetails;
   const isMobile = useIsMobile();
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
@@ -904,18 +910,30 @@ export const ChatResponse = React.memo(function ChatResponse({
                       : undefined,
                 }}
               >
-                <QuoteSelectionLayer enabled={!isStreaming && isChatOwner}>
-                  <AnswerContent
-                    content={answerShown}
-                    citationMaps={effectiveCitationMaps}
-                    citationCallbacks={wrappedCallbacks}
-                    isStreaming={isStreaming}
-                  />
-                </QuoteSelectionLayer>
+                {answerFailed ? (
+                  <Callout.Root color="red" variant="soft" size="1" role="status" data-testid="answer-failed">
+                    <Callout.Icon aria-hidden>
+                      <MaterialIcon name="error" size={16} />
+                    </Callout.Icon>
+                    <Callout.Text size="2" style={{ lineHeight: 1.45 }}>
+                      {answerShown}
+                    </Callout.Text>
+                  </Callout.Root>
+                ) : (
+                  <QuoteSelectionLayer enabled={!isStreaming && isChatOwner}>
+                    <AnswerContent
+                      content={answerShown}
+                      citationMaps={effectiveCitationMaps}
+                      citationCallbacks={wrappedCallbacks}
+                      isStreaming={isStreaming}
+                    />
+                  </QuoteSelectionLayer>
+                )}
               </Box>
             )}
 
             {!isStreaming && searchDegraded && <SearchDegradedNote />}
+            {!isStreaming && <AccessNotices notices={accessNotices} />}
 
             {/* After an answered question the reply carries on in this row and can stop on an
                 approval: its card shows under the question. Only an unanswered question comes first. */}

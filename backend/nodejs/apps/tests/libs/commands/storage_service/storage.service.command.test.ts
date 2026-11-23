@@ -6,8 +6,12 @@ import {
   StorageCommandOptions,
 } from '../../../../src/libs/commands/storage_service/storage.service.command'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 describe('StorageServiceCommand', () => {
+  beforeEach(() => registerUpstreams({ nodejs: ['http://storage.local'] }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {

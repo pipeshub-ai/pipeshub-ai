@@ -6,7 +6,8 @@
 
 type ToolScopes = (toolName: string) => readonly string[] | undefined;
 
-const calledTools = (body: unknown): string[] => {
+/** The names of the tools a JSON-RPC message or batch calls. */
+export const calledTools = (body: unknown): string[] => {
   const messages: unknown[] = Array.isArray(body) ? body : [body];
   return messages.flatMap((m) => {
     const msg = m as { method?: unknown; params?: { name?: unknown } } | null;

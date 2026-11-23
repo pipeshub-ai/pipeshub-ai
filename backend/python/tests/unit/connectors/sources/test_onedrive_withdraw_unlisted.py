@@ -4,6 +4,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiolimiter import AsyncLimiter
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from app.config.constants.arangodb import Connectors
@@ -320,3 +321,157 @@ async def test_listing_with_an_empty_page_then_users_and_a_matching_count_is_com
 async def test_listing_with_an_empty_page_and_lost_users_is_incomplete_through_the_count() -> None:
     client, _ = _client(_result([_graph_user("a")], "https://next", count=3), _result([], "https://next2"), _result([_graph_user("b")]))
     assert (await client.get_all_users()).complete is False
+
+
+class _Checkpoints:
+    def __init__(self, data: dict | None = None) -> None:
+        self.data = data or {}
+
+    async def read_sync_point(self, key: str) -> dict | None:
+        return self.data.get(key)
+
+    async def update_sync_point(self, key: str, sync_point_data: dict) -> None:
+        self.data[key] = sync_point_data
+
+
+def _odata(status: int) -> ODataError:
+    e = ODataError()
+    e.response_status_code = status
+    return e
+
+
+KNOWN = "onedrive-known-drives"
+
+
+def _drive_reader(
+    answers: dict[str, object], owners: dict[str, str] | None = None, stored: list[str] | None = None,
+    owner_status: object = "gone",
+) -> tuple[OneDriveConnector, _Checkpoints]:
+    """A connector whose tracker knows the drives in ``owners`` (drive -> owner), whose graph store holds the OneDrive
+    record groups ``stored``, and to which GET /drives/{id} answers from ``answers`` (an exception to raise, else the
+    drive) and GET /users/{owner} with ``owner_status``."""
+    owners = {d: "owner-" + d for d in answers} if owners is None else owners
+    c, _ = _connector([], [])
+    c.data_entities_processor.on_record_group_deleted = AsyncMock(return_value=True)
+    c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+    c.data_entities_processor.get_nodes_by_filters = AsyncMock(return_value=[{"externalGroupId": d} for d in stored or []])
+    checkpoints = _Checkpoints({KNOWN: {"ids": sorted(f"{d}|{o}" for d, o in owners.items())}})
+    c.drive_delta_sync_point = checkpoints
+
+    def by_drive_id(drive_id: str) -> MagicMock:
+        answer = answers[drive_id.partition("|")[0]]    # an older tracker kept bare drive ids
+        return MagicMock(get=AsyncMock(side_effect=answer) if isinstance(answer, Exception) else AsyncMock(return_value=answer))
+
+    c.msgraph_client.client.drives.by_drive_id = MagicMock(side_effect=by_drive_id)
+    c.msgraph_client.rate_limiter = AsyncLimiter(1000, 1)
+    c.msgraph_client.get_user_status = (AsyncMock(side_effect=owner_status) if isinstance(owner_status, Exception)
+                                        else AsyncMock(return_value=owner_status))
+    return c, checkpoints
+
+
+def _known(checkpoints: _Checkpoints) -> list[str]:
+    return checkpoints.data[KNOWN]["ids"]
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_users_onedrive_is_removed_once_graph_says_it_is_gone() -> None:
+    """The retention period of a deleted user's OneDrive has ended: its drive answers 404, its owner is gone from the
+    directory, and a drive synced this run still answers. Nobody reads what it shared."""
+    c, checkpoints = _drive_reader({"d-live": MagicMock(), "d-kept": MagicMock(owner=None), "d-gone": _odata(404)})
+    c._drives_read = {"d-live": "owner-d-live", "d-new": "u-new"}
+    await c._remove_deleted_drives()
+    c.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("d-gone", "c1")
+    c.msgraph_client.get_user_status.assert_awaited_once_with("owner-d-gone")
+    assert [ca.args[0] for ca in c.msgraph_client.client.drives.by_drive_id.call_args_list] == ["d-gone", "d-live", "d-kept"]
+    assert _known(checkpoints) == ["d-kept|owner-d-kept", "d-live|owner-d-live", "d-new|u-new"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [_odata(403), _odata(429), _odata(503), RuntimeError("timeout")])
+async def test_a_onedrive_that_cannot_be_read_is_kept_and_read_again(answer: Exception) -> None:
+    c, checkpoints = _drive_reader({"d": answer})
+    await c._remove_deleted_drives()
+    c.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert _known(checkpoints) == ["d|owner-d"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_status", ["present", "disabled", RuntimeError("throttled")])
+async def test_a_404_while_the_owner_is_still_in_the_directory_keeps_the_records(owner_status: object) -> None:
+    """Graph answers 404 for a drive the app can no longer read too: without a deleted owner nothing is removed."""
+    c, checkpoints = _drive_reader({"d-live": MagicMock(), "d": _odata(404)}, owner_status=owner_status)
+    c._drives_read = {"d-live": "owner-d-live"}
+    await c._remove_deleted_drives()
+    c.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert "d|owner-d" in _known(checkpoints)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("synced", [{}, {"d-live": "owner-d-live"}])
+async def test_a_404_is_not_trusted_while_no_synced_drive_answers(synced: dict[str, str]) -> None:
+    """The app may have lost access to every drive: none synced this run, or the synced one fails too."""
+    c, checkpoints = _drive_reader({"d-live": _odata(404), "d": _odata(404)})
+    c._drives_read = dict(synced)
+    await c._remove_deleted_drives()
+    c.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert "d|owner-d" in _known(checkpoints)
+
+
+@pytest.mark.asyncio
+async def test_a_404_with_no_known_owner_keeps_the_records() -> None:
+    c, checkpoints = _drive_reader({"d-live": MagicMock(), "d": _odata(404)}, owners={"d": ""})
+    c._drives_read = {"d-live": "owner-d-live"}
+    await c._remove_deleted_drives()
+    c.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    c.msgraph_client.get_user_status.assert_not_awaited()
+    assert "d|" in _known(checkpoints)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_delete_keeps_the_drive_to_be_checked_again() -> None:
+    """``on_record_group_deleted`` answers False on a failure it logs; the drive stays known until it is gone."""
+    c, checkpoints = _drive_reader({"d-live": MagicMock(), "d-gone": _odata(404)})
+    c._drives_read = {"d-live": "owner-d-live"}
+    c.data_entities_processor.on_record_group_deleted = AsyncMock(return_value=False)
+    await c._remove_deleted_drives()
+    assert "d-gone|owner-d-gone" in _known(checkpoints)
+
+    c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)    # an earlier delete took it
+    await c._remove_deleted_drives()
+    assert _known(checkpoints) == ["d-live|owner-d-live"]
+
+
+@pytest.mark.asyncio
+async def test_a_onedrive_stored_before_the_tracker_was_kept_is_checked_and_learns_its_owner() -> None:
+    """Drives synced before this code, or whose tracker a resync deleted, come from the stored record groups."""
+    drive = MagicMock()
+    drive.owner.user.id = "owner-old"
+    c, checkpoints = _drive_reader({"d-old": drive}, owners={}, stored=["d-old"])
+    await c._remove_deleted_drives()
+    filters = c.data_entities_processor.get_nodes_by_filters.await_args.args[1]
+    assert filters == {"connectorId": "c1", "groupType": "DRIVE"}
+    assert _known(checkpoints) == ["d-old|owner-old"]
+
+
+@pytest.mark.asyncio
+async def test_each_run_starts_with_no_drive_read() -> None:
+    c, _ = _drive_reader({"d-live": MagicMock(), "d-gone": _odata(404)})
+    c._drives_read = {"d-gone": "owner-d-gone"}         # read in an earlier run
+    c._process_users_in_batches = AsyncMock(side_effect=lambda _users: c._drives_read.update({"d-live": "owner-d-live"}))
+    c.msgraph_client.get_all_users = AsyncMock(return_value=UserListing([]))
+    c._reinitialize_credential_if_needed = AsyncMock()
+    c._remind_about_certificate = AsyncMock()
+    c._collect_action_items = AsyncMock()
+    await c.run_incremental_sync()
+    c.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("d-gone", "c1")
+
+
+@pytest.mark.asyncio
+async def test_one_synced_drive_that_does_not_answer_does_not_hide_another_that_does() -> None:
+    """The app reads drives if any synced drive answers; the first one failing is not enough to keep a dead drive."""
+    c, checkpoints = _drive_reader({"d-a": RuntimeError("timeout"), "d-b": MagicMock(), "d-gone": _odata(404)},
+                                   owners={"d-gone": "owner-d-gone"})
+    c._drives_read = {"d-a": "owner-d-a", "d-b": "owner-d-b"}
+    await c._remove_deleted_drives()
+    c.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("d-gone", "c1")
+    assert _known(checkpoints) == ["d-a|owner-d-a", "d-b|owner-d-b"]

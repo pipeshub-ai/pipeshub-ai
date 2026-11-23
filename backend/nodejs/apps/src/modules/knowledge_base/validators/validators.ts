@@ -60,6 +60,8 @@ export const restoreRecordsSchema = z.object({
 
 // Matches MAX_TRASH_PAGE_SIZE in the connector service.
 export const MAX_TRASH_PAGE_SIZE = 100;
+// Matches MAX_TRASH_CURSOR_LENGTH in the connector service.
+export const MAX_TRASH_CURSOR_LENGTH = 1024;
 
 const positiveIntString = (label: string, max?: number) =>
   z
@@ -75,6 +77,11 @@ export const listTrashSchema = z.object({
   query: z.object({
     page: positiveIntString('Page').optional(),
     limit: positiveIntString('Limit', MAX_TRASH_PAGE_SIZE).optional(),
+    cursor: z
+      .string()
+      .min(1, 'Cursor must not be empty.')
+      .max(MAX_TRASH_CURSOR_LENGTH, `Cursor must be at most ${MAX_TRASH_CURSOR_LENGTH} characters.`)
+      .optional(),
   }),
 });
 
@@ -84,6 +91,8 @@ export const reindexRecordSchema = z.object({
     .object({
       depth: z.number().check(integerCheck()).min(-1).max(100).optional(),
       statusFilters: z.array(z.string()).optional(),
+      // A user's Force reindex: every stored result is bypassed and paid for again.
+      force: z.boolean().optional(),
     })
     .optional(),
 });

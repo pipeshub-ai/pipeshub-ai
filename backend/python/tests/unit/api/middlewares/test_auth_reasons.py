@@ -29,12 +29,13 @@ JWT_SECRET = "session-secret-for-reason-tests"
 SCOPED_SECRET = "scoped-secret-for-reason-tests"
 LOGGER = "test-auth-reasons"
 BEARER = {"WWW-Authenticate": "Bearer"}
-NOW = int(time.time())
-USER_CLAIMS = {"userId": "u1", "orgId": "o1", "role": "member", "iat": NOW, "exp": NOW + 600}
+USER_CLAIMS = {"userId": "u1", "orgId": "o1", "role": "member"}
 
 
-def _token(claims: dict, secret: str = JWT_SECRET) -> str:
-    return jwt.encode(claims, secret, "HS256")
+def _token(claims: dict, secret: str = JWT_SECRET, ttl_seconds: int = 600) -> str:
+    """Signed when the test runs: a token made at collection expires if a long CI job reaches this file late."""
+    now = int(time.time())
+    return jwt.encode({"iat": now, "exp": now + ttl_seconds, **claims}, secret, "HS256")
 
 
 class _Config:
@@ -77,26 +78,29 @@ def _same_as_main(exc: AuthRejected, status: int, detail: str, headers: dict | N
 @pytest.mark.parametrize(
     ("authorization", "status", "detail", "headers", "reason"),
     [
-        (None, 401, "Authorization header is missing", BEARER, "missing_header"),
-        ("Basic dXNlcjpwYXNz", 401, "Authorization header must start with 'Bearer '", BEARER, "bad_scheme"),
-        ("Bearer    ", 401, "Token is missing in Authorization header", BEARER, "missing_token"),
-        (f"Bearer {_token({**USER_CLAIMS, 'exp': NOW - 60})}", 401, "Could not validate credentials", BEARER, "expired"),
-        (f"Bearer {_token(USER_CLAIMS, 'not-the-secret-0123456789')}", 401, "Could not validate credentials", BEARER,
-         "invalid_token"),
-        (f"Bearer {_token({**USER_CLAIMS, 'tokenType': 'oauth', 'scope': ''})}", 401, "Could not validate credentials",
-         BEARER, "no_scopes"),
-        (f"Bearer {_token({'orgId': 'o1', 'scopes': ['not:accepted'], 'exp': NOW + 600}, SCOPED_SECRET)}", 401,
+        (lambda: None, 401, "Authorization header is missing", BEARER, "missing_header"),
+        (lambda: "Basic dXNlcjpwYXNz", 401, "Authorization header must start with 'Bearer '", BEARER, "bad_scheme"),
+        (lambda: "Bearer    ", 401, "Token is missing in Authorization header", BEARER, "missing_token"),
+        (lambda: f"Bearer {_token(USER_CLAIMS, ttl_seconds=-60)}", 401, "Could not validate credentials", BEARER,
+         "expired"),
+        (lambda: f"Bearer {_token(USER_CLAIMS, 'not-the-secret-0123456789')}", 401, "Could not validate credentials",
+         BEARER, "invalid_token"),
+        (lambda: f"Bearer {_token({**USER_CLAIMS, 'tokenType': 'oauth', 'scope': ''})}", 401,
+         "Could not validate credentials", BEARER, "no_scopes"),
+        (lambda: f"Bearer {_token({'orgId': 'o1', 'scopes': ['not:accepted']}, SCOPED_SECRET)}", 401,
          "Could not validate credentials", BEARER, "scope_not_accepted"),
-        (f"Bearer {_token({'scopes': [TokenScopes.FETCH_CONFIG.value], 'exp': NOW + 600}, SCOPED_SECRET)}", 401,
+        (lambda: f"Bearer {_token({'scopes': [TokenScopes.FETCH_CONFIG.value]}, SCOPED_SECRET)}", 401,
          "Token missing orgId", None, "missing_org"),
     ],
+    ids=["missing_header", "bad_scheme", "missing_token", "expired", "invalid_token", "no_scopes", "scope_not_accepted",
+         "missing_org"],  # the values are header factories: each token is signed when its test runs
 )
 async def test_token_refusals_carry_a_reason_and_answer_as_before(authorization, status, detail, headers, reason) -> None:
-    _same_as_main(await _refusal(authorization), status, detail, headers, reason)
+    _same_as_main(await _refusal(authorization()), status, detail, headers, reason)
 
 
 async def test_expired_with_only_the_session_secret_is_still_expired() -> None:
-    expired = f"Bearer {_token({**USER_CLAIMS, 'exp': NOW - 60})}"
+    expired = f"Bearer {_token(USER_CLAIMS, ttl_seconds=-60)}"
 
     exc = await _refusal(expired, keys={"jwtSecret": JWT_SECRET})
 
@@ -193,16 +197,17 @@ async def test_a_non_admin_is_refused_with_a_reason() -> None:
 @pytest.mark.parametrize(
     "authorization",
     [
-        None,
-        f"Bearer {_token({**USER_CLAIMS, 'exp': NOW - 60})}",
-        f"Bearer {_token(USER_CLAIMS, 'not-the-secret-0123456789')}",
+        lambda: None,
+        lambda: f"Bearer {_token(USER_CLAIMS, ttl_seconds=-60)}",
+        lambda: f"Bearer {_token(USER_CLAIMS, 'not-the-secret-0123456789')}",
     ],
+    ids=["missing_header", "expired", "invalid_token"],
 )
 async def test_routine_refusals_log_no_warning_here(authorization, caplog: pytest.LogCaptureFixture) -> None:
     """The request's ``http.request.end`` line says it, once."""
     caplog.set_level(logging.DEBUG, logger=LOGGER)
 
-    await _refusal(authorization)
+    await _refusal(authorization())
 
     assert [r.getMessage() for r in caplog.records if r.name == LOGGER and r.levelno >= logging.WARNING] == []
 
@@ -210,7 +215,7 @@ async def test_routine_refusals_log_no_warning_here(authorization, caplog: pytes
 async def test_control_a_refused_service_scope_still_names_the_scopes(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger=LOGGER)
 
-    await _refusal(f"Bearer {_token({'orgId': 'o1', 'scopes': ['not:accepted'], 'exp': NOW + 600}, SCOPED_SECRET)}")
+    await _refusal(f"Bearer {_token({'orgId': 'o1', 'scopes': ['not:accepted']}, SCOPED_SECRET)}")
 
     warnings = [r.getMessage() for r in caplog.records if r.name == LOGGER and r.levelno == logging.WARNING]
     assert len(warnings) == 1 and "not:accepted" in warnings[0]

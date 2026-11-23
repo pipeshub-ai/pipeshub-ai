@@ -159,6 +159,12 @@ class TestDeclaredConnectors:
         assert models == {PermissionModel.RECORD_LEVEL.value}
 
 
+def _graph() -> MagicMock:
+    graph = MagicMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1"}])
+    return graph
+
+
 def _registry() -> ConnectorRegistry:
     container = MagicMock()
     container.logger.return_value = MagicMock()
@@ -201,7 +207,7 @@ class TestPersistAndBackfill:
     @pytest.mark.asyncio
     async def test_new_instance_carries_the_flag(self) -> None:
         registry = _registry()
-        graph = MagicMock()
+        graph = _graph()
         graph.get_document = AsyncMock(return_value={"_key": "org-1"})
         graph.batch_upsert_nodes = AsyncMock(return_value=True)
         graph.batch_create_edges = AsyncMock(return_value=True)
@@ -233,7 +239,7 @@ class TestPersistAndBackfill:
             "S3": {"config": {"permissionModel": PermissionModel.APP_LEVEL.value}},
             "DRIVE": {"config": {"permissionModel": PermissionModel.RECORD_LEVEL.value}},
         }
-        graph = MagicMock()
+        graph = _graph()
         graph.get_all_documents = AsyncMock(
             return_value=[
                 {"_key": "a", "type": "S3", "isActive": True},  # missing flag
@@ -275,7 +281,7 @@ class TestPersistAndBackfill:
             "SLACK": {"config": {"permissionModel": PermissionModel.RECORD_LEVEL.value}},
             "DRIVE": {"config": {"permissionModel": PermissionModel.RECORD_LEVEL.value}},
         }
-        graph = MagicMock()
+        graph = _graph()
         graph.get_all_documents = AsyncMock(
             return_value=[
                 {"_key": "slack-old", "type": "SLACK", "isActive": True,
@@ -312,7 +318,7 @@ class TestPersistAndBackfill:
         registry._connectors = {
             "SLACK": {"config": {"permissionModel": PermissionModel.RECORD_LEVEL.value}}
         }
-        graph = MagicMock()
+        graph = _graph()
         graph.get_all_documents = AsyncMock(
             return_value=[{"_key": "slack-new", "type": "SLACK", "isActive": True,
                            "permissionModel": PermissionModel.RECORD_LEVEL.value,
@@ -348,7 +354,7 @@ class TestPersistAndBackfill:
                 "config": {"permissionModel": PermissionModel.RECORD_LEVEL.value},
             }
             registry._connectors = {connector_type: meta}
-            graph = MagicMock()
+            graph = _graph()
             graph.batch_upsert_nodes = AsyncMock(return_value=[{"_key": "k"}])
             graph.batch_create_edges = AsyncMock(return_value=[{"_key": "e"}])
             graph.get_document = AsyncMock(return_value={"_key": "o"})
@@ -375,7 +381,7 @@ class TestPersistAndBackfill:
         registry._connectors = {
             "SLACK": {"config": {"permissionModel": PermissionModel.RECORD_LEVEL.value}}
         }
-        graph = MagicMock()
+        graph = _graph()
         graph.get_all_documents = AsyncMock(
             return_value=[{"_key": "slack-old", "type": "SLACK", "isActive": True,
                            "permissionModel": PermissionModel.RECORD_LEVEL.value}]
@@ -390,7 +396,7 @@ class TestPersistAndBackfill:
     async def test_backfill_failure_does_not_fail_sync(self) -> None:
         registry = _registry()
         registry._connectors = {"S3": {"config": {"permissionModel": PermissionModel.APP_LEVEL.value}}}
-        graph = MagicMock()
+        graph = _graph()
         graph.get_all_documents = AsyncMock(
             return_value=[{"_key": "a", "type": "S3", "isActive": True}]
         )
@@ -404,7 +410,7 @@ class TestPersistAndBackfill:
     async def test_unregistered_types_are_left_alone(self) -> None:
         registry = _registry()
         registry._connectors = {}
-        graph = MagicMock()
+        graph = _graph()
         graph.get_all_documents = AsyncMock(
             return_value=[{"_key": "a", "type": "RETIRED", "isActive": False}]
         )
@@ -421,7 +427,7 @@ class TestPersistAndBackfill:
         registry._connectors = {
             Connectors.KNOWLEDGE_BASE.value: {"config": {}},
         }
-        graph = MagicMock()
+        graph = _graph()
         graph.get_all_documents = AsyncMock(
             return_value=[{"_key": "kb", "type": Connectors.KNOWLEDGE_BASE.value, "isActive": True}]
         )

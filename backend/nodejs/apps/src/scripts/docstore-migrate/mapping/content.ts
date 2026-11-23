@@ -220,6 +220,7 @@ const notifications: CollectionMapping = {
     { col: 'payload', path: 'payload', type: 'json' },
     { col: 'is_deleted', path: 'isDeleted', type: 'bool', readAbsentAs: false },
     { col: 'deleted_by', path: 'deletedBy', type: 'oid' },
+    { col: 'visible_at', path: 'visibleAt', type: 'date' },
     ...CREATED,
   ],
   derived: [],
@@ -417,6 +418,7 @@ const oauthApps: CollectionMapping = {
       readAbsentAs: true,
     },
     { col: 'is_dynamic', path: 'isDynamic', type: 'bool', readAbsentAs: false },
+    { col: 'owner_format', path: 'ownerFormat', type: 'int' },
     {
       col: 'access_token_lifetime',
       path: 'accessTokenLifetime',
@@ -774,6 +776,12 @@ export const CONTENT_MAPPINGS: CollectionMapping[] = LISTED.map((m) =>
 );
 
 export const CONTENT_IGNORED: IgnoredCollection[] = [
+  // shortcut: a store move starts the agent activity log afresh; map it (import access, change-log trigger) if it must survive a move
+  {
+    collection: 'agentCallEvents',
+    reason:
+      'agent activity log with a 30-day retention: a store move starts a new log on the target rather than copying the old one',
+  },
   {
     collection: 'crawlingManagerConfigs',
     reason:

@@ -217,6 +217,11 @@ def is_generated_content(content: bytes) -> bool:
         lines = content.count(b"\n") + 1
         if len(content) / lines > _MINIFIED_AVG_LINE_CHARS:
             return True
+    return has_generator_header(content)
+
+
+def has_generator_header(content: bytes) -> bool:
+    """True when the first lines say a generator wrote the file (a data file with a long line is not judged by its shape)."""
     return bool(_GENERATED_HEADER.search(content[:_GENERATED_HEADER_BYTES]))
 
 

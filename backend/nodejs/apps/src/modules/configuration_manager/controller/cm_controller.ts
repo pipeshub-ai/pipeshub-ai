@@ -16,7 +16,9 @@ import {
   ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
-import { handleBackendError } from '../../../libs/errors/backend-error';
+import { handleBackendError, safeCause } from '../../../libs/errors/backend-error';
+import { withCause } from '../../../libs/errors/base.error';
+import { markClientSafe } from '../../../libs/errors/reader-friendly';
 import {
   googleWorkspaceBusinessCredentialsSchema,
   googleWorkspaceIndividualCredentialsSchema,
@@ -172,11 +174,20 @@ const DEFAULT_WEB_SEARCH_SETTINGS = Object.freeze({
   maxImages: 3,
 });
 
-const DUCKDUCKGO_WEB_SEARCH_PROVIDER = Object.freeze({
-  provider: 'duckduckgo',
-  providerKey: 'duckduckgo',
-  configuration: {},
-});
+// The id the settings UI sends to choose DuckDuckGo: it needs no configuration, but it is stored
+// like any provider, so an org that never chose it has no search provider at all.
+const DUCKDUCKGO_PROVIDER = 'duckduckgo';
+
+// Health-check refusals that do not stop an admin choosing DuckDuckGo (`errorType` from the AI service).
+const WEB_SEARCH_PASSING_REFUSALS: ReadonlySet<unknown> = new Set([
+  'blocked',
+  'rate_limited',
+]);
+
+// Whether web search is set up: a provider that can search is marked default.
+const isWebSearchConfigured = (
+  providers: WebSearchProviderConfiguration[],
+): boolean => providers.some((p) => p.isDefault && canSearch(p.provider));
 
 const normalizeWebSearchSettings = (
   settings?: Partial<{ includeImages: unknown; maxImages: unknown }>,
@@ -3332,14 +3343,27 @@ const takeoverRefusalMessage = (
     ? embeddingRefusalMessage(takeover)
     : healthCheckFailureMessage(takeover.data, fallback);
 
+// The AI service answers a failed check as `{ message }`, `{ error: text | { message } }`, or
+// FastAPI's `{ detail: text | { message } }`, and a body of plain text in places. Each of them
+// carries the reason the admin needs; a shape not read here showed only the fallback.
 const healthCheckFailureMessage = (data: unknown, fallback: string): string => {
-  const body = (data ?? {}) as {
-    message?: string;
-    error?: string | { message?: string };
+  const textOf = (value: unknown): string | undefined => {
+    const text =
+      value !== null && typeof value === 'object'
+        ? (value as { message?: unknown }).message
+        : value;
+    return typeof text === 'string' && text.trim() !== ''
+      ? text.trim()
+      : undefined;
   };
+  if (data === null || typeof data !== 'object') {
+    return textOf(data) ?? fallback;
+  }
+  const body = data as { message?: unknown; error?: unknown; detail?: unknown };
   return (
-    body.message ??
-    (typeof body.error === 'string' ? body.error : body.error?.message) ??
+    textOf(body.message) ??
+    textOf(body.error) ??
+    textOf(body.detail) ??
     fallback
   );
 };
@@ -3417,8 +3441,10 @@ export const addAIModelProvider =
         const reasonMessage =
           modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
             ? embeddingRefusalMessage(aiResponseData)
-            : ((errData && (errData.message ?? errData.error?.message)) ??
-              `Failed to do health check of ${modelType} configuration, check credentials again`);
+            : healthCheckFailureMessage(
+                errData,
+                `Failed to do health check of ${modelType} configuration, check credentials again`,
+              );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.
@@ -3660,8 +3686,10 @@ export const updateAIModelProvider =
         const reasonMessage =
           modelType === 'embedding' && isEmbeddingInUseRefusal(aiResponseData)
             ? embeddingRefusalMessage(aiResponseData)
-            : ((errData && (errData.message ?? errData.error?.message)) ??
-              `Failed to do health check of ${modelType} configuration, check credentials again`);
+            : healthCheckFailureMessage(
+                errData,
+                `Failed to do health check of ${modelType} configuration, check credentials again`,
+              );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
         // API key provided"); the raw body behind it is for the log only.
@@ -3782,6 +3810,53 @@ export const updateAIModelProvider =
     }
   };
 
+const MODEL_USAGE_UNVERIFIABLE =
+  "We couldn't check which agents use this model, so it wasn't deleted. Please try again in a few seconds.";
+const WEB_SEARCH_USAGE_UNVERIFIABLE =
+  "We couldn't check which agents use this web search provider, so it wasn't deleted. Please try again in a few seconds.";
+// No usage check in this module sets a budget to match; AIServiceCommand's default (620s) is sized for model downloads.
+// shortcut: a usage read slower than 30s refuses the delete; raise it if large orgs hit that.
+const AGENT_USAGE_TIMEOUT_MS = 30_000;
+
+type AgentUsage = { name?: string; _key?: string; creatorName?: string | null };
+
+/**
+ * The agents the AI service says use a model or web search provider (`path` under /api/v1/agent/).
+ * Anything but a well-formed 200 refuses the delete with a 503 in `refusal`'s words: a check that
+ * cannot be made must never read as "no agents".
+ */
+async function readAgentUsage(
+  path: string,
+  req: AuthenticatedUserRequest,
+  appConfig: AppConfig,
+  refusal: string,
+): Promise<AgentUsage[]> {
+  const unverifiable = (cause: unknown): ServiceUnavailableError =>
+    withCause(markClientSafe(new ServiceUnavailableError(refusal)), cause);
+  const answer = await new AIServiceCommand<{ success?: boolean; agents?: AgentUsage[] }>({
+    uri: `${appConfig.aiBackend}/api/v1/agent/${path}`,
+    method: HttpMethod.GET,
+    headers: {
+      ...(req.headers as Record<string, string>),
+      'Content-Type': 'application/json',
+    },
+    timeoutMs: AGENT_USAGE_TIMEOUT_MS,
+  })
+    .execute()
+    // safeCause: a non-JSON body's SyntaxError quotes the body, which must not reach the log
+    .catch((error: unknown) => {
+      throw unverifiable(safeCause(error));
+    });
+  if (
+    answer.statusCode !== 200 ||
+    answer.data?.success !== true ||
+    !Array.isArray(answer.data.agents)
+  ) {
+    throw unverifiable({ status: answer.statusCode });
+  }
+  return answer.data.agents;
+}
+
 export const deleteAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -3830,40 +3905,13 @@ export const deleteAIModelProvider =
         return;
       }
 
-      // Check if any agents are using this model before allowing deletion.
-      // Fail-closed: if the usage check itself errors, block deletion rather than risk
-      // deleting a model that active agents depend on.
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
-        method: HttpMethod.GET,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-      };
-      const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
-
-      let aiResponse;
-      try {
-        aiResponse = await aiCommand.execute();
-      } catch (usageError: any) {
-        logger.error('Agent usage check failed; blocking AI model deletion (fail-closed)', { error: usageError.message });
-        throw new InternalServerError(
-          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
-        );
-      }
-
-      if (aiResponse?.statusCode !== 200 || !aiResponse?.data?.success) {
-        logger.error('Agent usage check returned non-success response; blocking AI model deletion', {
-          statusCode: aiResponse?.statusCode,
-          data: aiResponse?.data,
-        });
-        throw new InternalServerError(
-          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
-        );
-      }
-
-      const agentsUsing = Array.isArray(aiResponse.data.agents) ? aiResponse.data.agents : [];
+      // Before the delete: a model agents still name leaves them unable to chat.
+      const agentsUsing = await readAgentUsage(
+        `model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
+        req,
+        appConfig,
+        MODEL_USAGE_UNVERIFIABLE,
+      );
 
       if (agentsUsing.length > 0) {
         // Bake agent names into the message string itself. The error middleware
@@ -4005,7 +4053,6 @@ export const deleteAIModelProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error deleting AI model provider', { error });
       next(error);
     }
   };
@@ -4464,7 +4511,8 @@ export const getWebSearchProviders =
       if (!encryptedWebSearchConfig) {
         res.status(200).json({
           status: 'success',
-          providers: [{ ...DUCKDUCKGO_WEB_SEARCH_PROVIDER, isDefault: true }],
+          providers: [],
+          configured: false,
           settings: DEFAULT_WEB_SEARCH_SETTINGS,
           message: 'No web search providers found',
         });
@@ -4489,22 +4537,17 @@ export const getWebSearchProviders =
       const mask = isAdmin
         ? maskWebSearchProvider
         : maskWebSearchProviderForMember;
-      const providers = [
-        {
-          ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,
-          isDefault: !storedProviders.some((p) => p.isDefault),
-        },
-        ...storedProviders.map((p) =>
-          hideSecrets && p.configuration
-            ? { ...p, configuration: mask(p.configuration) }
-            : p,
-        ),
-      ];
+      const providers = storedProviders.map((p) =>
+        hideSecrets && p.configuration
+          ? { ...p, configuration: mask(p.configuration) }
+          : p,
+      );
       const settings = normalizeWebSearchSettings(webSearchConfig.settings);
 
       res.status(200).json({
         status: 'success',
         providers,
+        configured: isWebSearchConfigured(storedProviders),
         settings,
         message: 'Web search providers retrieved successfully',
       });
@@ -4877,34 +4920,19 @@ export const deleteWebSearchProvider =
 
       const deletedProvider = webSearchConfig.providers[providerIndex];
 
-      // Check if any agents are using this provider before allowing deletion
-      try {
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/agent/web-search-usage/${encodeURIComponent(deletedProvider.provider)}`,
-          method: HttpMethod.GET,
-          headers: {
-            ...(req.headers as Record<string, string>),
-            'Content-Type': 'application/json',
-          },
-        };
-        const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
-        const aiResponse = await aiCommand.execute();
-
-        const agents =
-          aiResponse?.data?.success && Array.isArray(aiResponse.data.agents)
-            ? aiResponse.data.agents
-            : [];
-
-        if (agents.length > 0) {
-          res.status(409).json({
-            status: 'error',
-            message: `Cannot delete this provider because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove the web search configuration from these agents first.`,
-            agents,
-          });
-          return;
-        }
-      } catch (usageError: any) {
-        logger.warn('Failed to check agent usage before deleting web search provider; proceeding with deletion', { error: usageError.message });
+      const agents = await readAgentUsage(
+        `web-search-usage/${encodeURIComponent(deletedProvider.provider)}`,
+        req,
+        appConfig,
+        WEB_SEARCH_USAGE_UNVERIFIABLE,
+      );
+      if (agents.length > 0) {
+        res.status(409).json({
+          status: 'error',
+          message: `Cannot delete this provider because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove the web search configuration from these agents first.`,
+          agents,
+        });
+        return;
       }
 
       const wasDefault = deletedProvider.isDefault || false;
@@ -4913,7 +4941,7 @@ export const deleteWebSearchProvider =
       webSearchConfig.providers.splice(providerIndex, 1);
 
       // If the deleted provider was default, the first remaining one that can search takes over;
-      // with none, DuckDuckGo is the default again.
+      // with none, web search is not set up until an admin chooses a provider again.
       if (wasDefault) {
         const next = (webSearchConfig as WebSearchConfig).providers.find((p) =>
           canSearch(p.provider),
@@ -4944,7 +4972,6 @@ export const deleteWebSearchProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error deleting web search provider', { error });
       next(error);
     }
   };
@@ -4960,38 +4987,104 @@ export const updateDefaultWebSearchProvider =
         configPaths.webSearch,
       );
 
-      // DuckDuckGo is a built-in provider that requires no stored configuration.
-      // Setting it as default means clearing the default flag from all stored providers.
-      if (providerKey === 'duckduckgo') {
-        if (encryptedWebSearchConfig) {
-          const webSearchConfigForDDG = JSON.parse(
-            EncryptionService.getInstance(
-              configManagerConfig.algorithm,
-              configManagerConfig.secretKey,
-            ).decrypt(encryptedWebSearchConfig),
-          );
-
-          for (const config of webSearchConfigForDDG.providers || []) {
-            config.isDefault = false;
-          }
-
-          const encryptedUpdatedConfig = EncryptionService.getInstance(
+      // DuckDuckGo needs no settings, so choosing it is the one case where the key names a provider
+      // that may not be stored yet: store it, then make it the default. Once stored it has a
+      // generated key like any provider, and choosing it by that key follows the same rule.
+      let storedDuckDuckGo = false;
+      if (encryptedWebSearchConfig !== null) {
+        const current = JSON.parse(
+          EncryptionService.getInstance(
             configManagerConfig.algorithm,
             configManagerConfig.secretKey,
-          ).encrypt(JSON.stringify(webSearchConfigForDDG));
-
-          await keyValueStoreService.set<string>(
-            configPaths.webSearch,
-            encryptedUpdatedConfig,
+          ).decrypt(encryptedWebSearchConfig),
+        ) as WebSearchConfig;
+        storedDuckDuckGo =
+          Array.isArray(current.providers) &&
+          current.providers.some(
+            (p) =>
+              p.providerKey === providerKey &&
+              p.provider === DUCKDUCKGO_PROVIDER,
           );
+      }
+      if (providerKey === DUCKDUCKGO_PROVIDER || storedDuckDuckGo) {
+        const duckduckgoCheckOptions: AICommandOptions = {
+          uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
+          method: HttpMethod.POST,
+          headers: req.headers as Record<string, string>,
+          body: { provider: DUCKDUCKGO_PROVIDER, configuration: {} },
+        };
+        const duckduckgoHealth = (await new AIServiceCommand(
+          duckduckgoCheckOptions,
+        ).execute()) as AIServiceResponse;
+        // Choosing DuckDuckGo stays possible while it refuses the test search (blocked, rate limited):
+        // that is how a shared server looks, not a broken setup, and it often passes later. The admin
+        // is told. Any other failure still refuses, as it does for every other provider.
+        let warning: string | undefined;
+        if (duckduckgoHealth.statusCode !== 200) {
+          const errData = (duckduckgoHealth.data ?? {}) as {
+            error?: string;
+            errorType?: string;
+          };
+          if (!WEB_SEARCH_PASSING_REFUSALS.has(errData.errorType)) {
+            res.status(duckduckgoHealth.statusCode).json({
+              status: 'error',
+              message:
+                errData.error ??
+                'Failed to validate web search provider configuration',
+              details: errData,
+            });
+            return;
+          }
+          warning = `${errData.error ?? 'DuckDuckGo refused the test search.'} DuckDuckGo was saved anyway; if search keeps failing, add a provider that uses an API key.`;
+        }
+
+        const encryption = EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        );
+        const stored: WebSearchConfig = encryptedWebSearchConfig
+          ? JSON.parse(encryption.decrypt(encryptedWebSearchConfig))
+          : { providers: [] };
+        if (!Array.isArray(stored.providers)) {
+          stored.providers = [];
+        }
+        for (const config of stored.providers) {
+          config.isDefault = false;
+        }
+        let duckduckgo = stored.providers.find(
+          (p) => p.provider === DUCKDUCKGO_PROVIDER,
+        );
+        if (!duckduckgo) {
+          duckduckgo = {
+            provider: DUCKDUCKGO_PROVIDER,
+            configuration: {},
+            providerKey: randomUUID(),
+            isDefault: true,
+          };
+          stored.providers.push(duckduckgo);
+        }
+        duckduckgo.isDefault = true;
+
+        const saved = await keyValueStoreService.compareAndSet<string>(
+          configPaths.webSearch,
+          encryptedWebSearchConfig ?? null,
+          encryption.encrypt(JSON.stringify(stored)),
+        );
+        if (!saved) {
+          res.status(409).json({
+            status: 'error',
+            message: 'Unable to save changes. Please retry.',
+          });
+          return;
         }
 
         res.status(200).json({
           status: 'success',
           message: 'Default web search provider updated successfully',
+          ...(warning !== undefined ? { warning } : {}),
           details: {
-            providerKey,
-            provider: 'duckduckgo',
+            providerKey: duckduckgo.providerKey,
+            provider: DUCKDUCKGO_PROVIDER,
           },
         });
         return;
@@ -5073,10 +5166,18 @@ export const updateDefaultWebSearchProvider =
         configManagerConfig.secretKey,
       ).encrypt(JSON.stringify(webSearchConfig));
 
-      await keyValueStoreService.set<string>(
+      const savedDefault = await keyValueStoreService.compareAndSet<string>(
         configPaths.webSearch,
+        encryptedWebSearchConfig,
         encryptedUpdatedConfig,
       );
+      if (!savedDefault) {
+        res.status(409).json({
+          status: 'error',
+          message: 'Unable to save changes. Please retry.',
+        });
+        return;
+      }
 
       res.status(200).json({
         status: 'success',

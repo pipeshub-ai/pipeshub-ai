@@ -139,6 +139,12 @@ import {
   SyncEventProducer,
 } from '../services/kafka_events.service';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import {
+  getMcpAccessPolicy,
+  listMcpAccessTools,
+  putMcpAccessPolicy,
+  putMcpAccessPolicySchema,
+} from '../../mcp/routes/mcp-access.routes';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
@@ -912,6 +918,35 @@ export function createConfigurationManagerRouter(container: Container): Router {
       aiConfigEventService,
       appConfig,
     ),
+  );
+
+  // What an admin allows on the org's inbound /mcp endpoint.
+  router.get(
+    '/mcp/access',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- the route guards compare this exact function, as on every route here
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    getMcpAccessPolicy,
+  );
+
+  router.put(
+    '/mcp/access',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- the route guards compare this exact function, as on every route here
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(putMcpAccessPolicySchema),
+    putMcpAccessPolicy,
+  );
+
+  router.get(
+    '/mcp/access/tools',
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- the route guards compare this exact function, as on every route here
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    listMcpAccessTools,
   );
 
   router.get(

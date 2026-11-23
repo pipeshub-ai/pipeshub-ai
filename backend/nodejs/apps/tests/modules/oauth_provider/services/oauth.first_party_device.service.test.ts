@@ -15,6 +15,7 @@ import { setOAuthAppRepository } from '../../../../src/libs/repositories/oauth-a
 import { setIdentityPort } from '../../../../src/libs/repositories/identity'
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
 import { createMockLogger } from '../../../helpers/mock-logger'
+import { NO_APP_CREATOR } from '../../../../src/libs/repositories/oauth-app'
 
 describe('FirstPartyDeviceAppService', () => {
   let service: FirstPartyDeviceAppService
@@ -184,6 +185,10 @@ describe('FirstPartyDeviceAppService', () => {
     )
     expect(data.allowedScopes).to.deep.equal([...AgentMcpScopes])
     expect(mockEncryptionService.encrypt.calledOnce).to.be.true
+    // One app for the whole instance: it belongs to the install organisation and names no person as its creator.
+    expect(String(data.orgId)).to.equal(orgId.toString())
+    expect(String(data.createdBy)).to.equal(NO_APP_CREATOR)
+    expect((Users.findOne as sinon.SinonStub).called).to.be.false
   })
 
   it('should return null when the instance has no org', async () => {
@@ -199,17 +204,17 @@ describe('FirstPartyDeviceAppService', () => {
     expect(create.called).to.be.false
   })
 
-  it('should return null when the org has no users yet', async () => {
+  it('does not wait for a user to borrow as the creator', async () => {
     ;(Users.findOne as sinon.SinonStub).returns({
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
       lean: sinon.stub().resolves(null),
     })
     sinon.stub(OAuthApp, 'findOne').resolves(null)
-    const create = sinon.stub(OAuthApp, 'create')
+    const create = sinon.stub(OAuthApp, 'create').resolves({ clientId: FIRST_PARTY_DEVICE_CLIENT_ID } as any)
 
-    expect(await service.getOrCreate()).to.equal(null)
-    expect(create.called).to.be.false
+    expect(await service.getOrCreate()).to.equal(FIRST_PARTY_DEVICE_CLIENT_ID)
+    expect(String((create.firstCall.args[0] as Record<string, unknown>).createdBy)).to.equal(NO_APP_CREATOR)
   })
 
   it('should return the winner when two creates race on clientId', async () => {

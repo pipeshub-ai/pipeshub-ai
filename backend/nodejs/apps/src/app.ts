@@ -12,6 +12,7 @@ import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
+import { createLocalReposRouter } from './modules/local_repos/routes/local_repos.routes';
 import { createGraphViewRouter } from './modules/enterprise_search/routes/graph-view.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -56,6 +57,8 @@ import {
   createOrgAuthConfigRouter,
   MailServiceContainer,
   createMailServiceRouter,
+  createSupportRouter,
+  createFeedbackRouter,
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
@@ -74,6 +77,7 @@ import {
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
+  dynamicClientOrg,
 } from './config';
 import type { EditionContainers } from './libs/edition/edition-boot';
 import { NotificationContainer } from './modules/notification/container/notification.container';
@@ -83,6 +87,7 @@ import { MailSenderService } from './modules/mail/services/mail.sender.service';
 import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import { createOpenAIModelsRouter } from './modules/configuration_manager/routes/openai_models.routes';
+import { createOpenAICompatRouter } from './modules/openai_compat/routes/openai_compat.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -142,8 +147,10 @@ import {
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
+import { createAgentActivityRouter } from './modules/agent_activity/agent-activity.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 import { mcpJsonBodyParser } from './modules/mcp/middlewares/mcp-body.middleware';
+import { releaseOnClientClose } from './libs/utils/release-on-close';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
 import {
@@ -554,9 +561,26 @@ export class Application {
       cors({
         origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
-        exposedHeaders: ['x-session-token', 'content-disposition'],
+        exposedHeaders: [
+          'x-session-token',
+          'content-disposition',
+          'etag',
+          'accept-ranges',
+          'content-range',
+          'content-length',
+        ],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
-        allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'x-request-id', 'client-name']
+        allowedHeaders: [
+          'Content-Type',
+          'Authorization',
+          'x-session-token',
+          'x-request-id',
+          'client-name',
+          'x-record-content-open',
+          'if-none-match',
+          'range',
+          'if-range',
+        ]
       }),
     );
 
@@ -689,6 +713,12 @@ export class Application {
       createCodeGraphRouter(this.esAgentContainer),
     );
 
+    // push a local repository to be indexed into the code graph (proxy to the connectors service)
+    this.app.use(
+      '/api/v1/local-repos',
+      createLocalReposRouter(this.tokenManagerContainer),
+    );
+
     // the graph explorer's reads: expand and revalidate (permission-aware, never cached)
     this.app.use('/api/v1/graph', createGraphViewRouter(this.esAgentContainer));
 
@@ -738,6 +768,11 @@ export class Application {
     this.app.use(
       '/v1',
       createOpenAIModelsRouter(this.configurationManagerContainer),
+    );
+    // OpenAI-compatible chat (models = configured chat LLMs); base URL `{origin}/api/v1/openai`.
+    this.app.use(
+      '/api/v1/openai',
+      createOpenAICompatRouter(this.esAgentContainer),
     );
     this.app.use(
       '/api/v1',
@@ -791,6 +826,17 @@ export class Application {
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
+    );
+
+    // Contact support and Send feedback. Imported from `./config`: an edition
+    // can serve its own version of either form.
+    this.app.use(
+      '/api/v1/support',
+      createSupportRouter(this.mailServiceContainer),
+    );
+    this.app.use(
+      '/api/v1/feedback',
+      createFeedbackRouter(this.mailServiceContainer),
     );
 
     // crawling manager routes
@@ -850,6 +896,11 @@ export class Application {
     this.app.use(
       '/api/v1/service-account-delegations',
       createDelegationRouter(this.oauthProviderContainer),
+    );
+
+    this.app.use(
+      '/api/v1/agent-activity',
+      createAgentActivityRouter(this.oauthProviderContainer),
     );
 
     this.app.use(
@@ -926,11 +977,22 @@ export class Application {
 
   async start(): Promise<void> {
     try {
-      await new Promise<void>((resolve) => {
-        this.server.listen(this.port, () => {
+      await new Promise<void>((resolve, reject) => {
+        // listen reports a bind failure (port in use, address not available) as an 'error' event, not a throw.
+        const onError = (error: Error): void => {
+          this.server.off('error', onError);
+          reject(error);
+        };
+        const onListening = (): void => {
+          this.server.off('error', onError);
           this.logger.info(`Server started on port ${this.port}`);
           resolve();
-        });
+        };
+        this.server.once('error', onError);
+        // Every interface unless told otherwise (right inside a container); a process outside one sets loopback.
+        const host = process.env.PIPESHUB_BIND_HOST?.trim();
+        if (host) this.server.listen(this.port, host, onListening);
+        else this.server.listen(this.port, onListening);
       });
       await editionBoot.afterListen(this.logger, this.editionContainers());
     } catch (error) {
@@ -1128,7 +1190,11 @@ export class Application {
             });
           }, SCHEDULE_REPAIR_INTERVAL_MS);
           this.scheduleRepairTimer.unref();
-          await migrations.runMigration({ scheduler, appConfig });
+          await migrations.runMigration({
+            scheduler,
+            appConfig,
+            dynamicClientOrg: () => dynamicClientOrg(),
+          });
           this.logger.info('Migration completed successfully');
         } catch (error) {
           this.logger.error('Failed to run migration', {
@@ -1230,9 +1296,15 @@ export class Application {
             // pipe() leaves `res` open when the bot's answer is cut midway.
             proxyRes.on('error', fail);
             proxyRes.pipe(res);
+            // A client that leaves mid-answer must not leave the upstream read open.
+            releaseOnClientClose(res, proxyRes);
           },
         );
         proxyReq.on('error', fail);
+        // A client that leaves before the bot answers must not leave the upstream request open.
+        res.on('close', () => {
+          if (!res.writableFinished && !proxyReq.destroyed) proxyReq.destroy();
+        });
 
         req.pipe(proxyReq);
       },

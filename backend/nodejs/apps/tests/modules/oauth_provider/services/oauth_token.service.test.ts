@@ -15,6 +15,11 @@ import {
   InvalidTargetError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { createMockLogger } from '../../../helpers/mock-logger'
+import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
+import { NO_APP_CREATOR } from '../../../../src/libs/repositories/oauth-app'
+
+// OAuthAccessToken.findOne is read with .lean(); a fake has to answer it.
+const leanResult = (value: unknown): any => ({ lean: () => Promise.resolve(value) })
 
 // The re-read after a user grant stores its tokens.
 function stubCurrentApp(doc: { allowedScopes: string[]; knowledgeLimit?: unknown } | null) {
@@ -149,6 +154,53 @@ describe('OAuthTokenService', () => {
       expect(result.tokenType).to.equal('Bearer')
       expect(result.expiresIn).to.equal(3600)
       expect(result.refreshToken).to.be.undefined
+    })
+
+    it('names no creator in the tokens of a client registered once for the instance; an app a person made keeps theirs', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+      const userId = new Types.ObjectId().toString()
+      const org = new Types.ObjectId().toString()
+      const claims = async (app: any) => {
+        const t = await service.generateTokens(app, userId, org, ['org:read', 'offline_access'], true)
+        return [jwt.decode(t.accessToken) as any, jwt.decode(t.refreshToken as string) as any]
+      }
+
+      // A dynamic client stored before this change still names the person it borrowed.
+      for (const app of [
+        { ...mockApp, isDynamic: true, createdBy: new Types.ObjectId().toString() },
+        { ...mockApp, clientId: FIRST_PARTY_DEVICE_CLIENT_ID, createdBy: NO_APP_CREATOR },
+        { ...mockApp, createdBy: NO_APP_CREATOR },
+      ]) {
+        for (const payload of await claims(app)) {
+          expect(payload, app.clientId).to.not.have.property('createdBy')
+          expect(payload.userId).to.equal(userId)
+        }
+      }
+
+      const creator = new Types.ObjectId().toString()
+      for (const payload of await claims({ ...mockApp, createdBy: creator })) {
+        expect(payload.createdBy).to.equal(creator)
+      }
+    })
+
+    it('marks only a token that acts as the app\'s service account', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const org = new Types.ObjectId().toString()
+      const serviceAccount = new Types.ObjectId()
+      const marker = async (app: any, userId: string | null) =>
+        (jwt.decode((await service.generateTokens(app, userId, org, ['org:read'], false)).accessToken) as any)
+          .actsAsServiceAccount
+
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount }, null)).to.equal(true)
+      // An app that still acts as its creator speaks as a person.
+      expect(await marker(mockApp, null)).to.equal(undefined)
+      // A user grant on the same app speaks as the user who granted it.
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount }, new Types.ObjectId().toString()))
+        .to.equal(undefined)
+      // An instance app names no identity at all.
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount, isDynamic: true }, null))
+        .to.equal(undefined)
     })
 
     it('stamps the agent registration on the access token only when asked', async () => {
@@ -419,11 +471,13 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ _id: 'row-1', isRevoked: false } as any))
 
       const result = await service.verifyAccessToken(token)
       expect(result.userId).to.equal('user-1')
       expect(result.client_id).to.equal('client-1')
+      // The stored row's id, which token lists and revocation use, not the jti claim.
+      expect(result.tokenRowId).to.equal('row-1')
     })
 
     it('rejects a signed token whose scope claim is empty or missing', async () => {
@@ -435,7 +489,7 @@ describe('OAuthTokenService', () => {
         tokenType: 'oauth',
         jti: 'jti-1',
       }
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false } as any))
 
       for (const claims of [{ ...base, scope: '' }, base]) {
         const token = jwt.sign(claims, testSecret, { algorithm: 'HS256' })
@@ -463,7 +517,7 @@ describe('OAuthTokenService', () => {
 
       const findOneStub = sinon
         .stub(OAuthAccessToken, 'findOne')
-        .resolves({ isRevoked: false } as any)
+        .returns(leanResult({ isRevoked: false } as any))
 
       const result = await service.verifyAccessToken(`phpat_${token}`)
       expect(result.userId).to.equal('user-1')
@@ -475,6 +529,96 @@ describe('OAuthTokenService', () => {
         findOneStub.secondCall.args[0].tokenHash,
       )
       expect(bareResult.userId).to.equal('user-1')
+    })
+
+    describe('knowledge limit', () => {
+      const signedLimit = { apps: ['signed-app'], recordGroups: [], records: [] }
+      const storedLimit = { apps: [], recordGroups: ['stored-rg'], records: [] }
+      const signed = (clientId: string) =>
+        jwt.sign(
+          {
+            userId: 'user-1', orgId: 'org-1', iss: testIssuer, scope: 'org:read',
+            client_id: clientId, tokenType: 'oauth', jti: 'jti-kl', knowledgeLimit: signedLimit,
+          },
+          testSecret,
+          { algorithm: 'HS256' },
+        )
+
+      it("answers with a personal access token's stored limit, which its owner may have changed", async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: storedLimit } as any))
+
+        const result = await service.verifyAccessToken(`phpat_${signed('pat-system:org-1')}`)
+
+        expect(result.knowledgeLimit).to.deep.equal(storedLimit)
+      })
+
+      it('drops the signed limit of a personal access token whose owner removed it', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false } as any))
+
+        const result = await service.verifyAccessToken(signed('pat-system:org-1'))
+
+        expect(result.knowledgeLimit).to.equal(undefined)
+      })
+
+      // A stored value that is neither absent nor a readable limit must not
+      // be read as "everything": the token is refused until its owner saves it again.
+      const unreadable: Array<[string, unknown]> = [
+        ['false', false],
+        ['a string', 'app-1'],
+        ['a list that is not an array', { apps: 'app-1', recordGroups: [], records: [] }],
+        ['ids that are not strings', { apps: [1], recordGroups: [], records: [] }],
+        ['three empty lists', { apps: [], recordGroups: [], records: [] }],
+      ]
+      for (const [what, stored] of unreadable) {
+        it(`refuses a personal access token whose stored limit is ${what}`, async () => {
+          sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: stored } as any))
+
+          try {
+            await service.verifyAccessToken(signed('pat-system:org-1'))
+            expect.fail('Should have thrown')
+          } catch (error) {
+            expect(error).to.be.instanceOf(InvalidTokenError)
+          }
+        })
+      }
+
+      it('reads a stored limit that leaves out an empty list', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: { apps: ['app-1'] } } as any))
+
+        const result = await service.verifyAccessToken(signed('pat-system:org-1'))
+
+        expect(result.knowledgeLimit).to.deep.equal({ apps: ['app-1'], recordGroups: [], records: [] })
+      })
+
+      it('treats a stored null as everything', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: null } as any))
+
+        const result = await service.verifyAccessToken(signed('pat-system:org-1'))
+
+        expect(result.knowledgeLimit).to.equal(undefined)
+      })
+
+      it('verifies a token signed without a client id, leaving its claims alone', async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: storedLimit } as any))
+        const token = jwt.sign(
+          { userId: 'user-1', orgId: 'org-1', iss: testIssuer, scope: 'org:read', tokenType: 'oauth', jti: 'jti-nc' },
+          testSecret,
+          { algorithm: 'HS256' },
+        )
+
+        const result = await service.verifyAccessToken(token)
+
+        expect(result.userId).to.equal('user-1')
+        expect(result.knowledgeLimit).to.equal(undefined)
+      })
+
+      it("keeps an OAuth app token's signed limit, the one its user agreed to", async () => {
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false, knowledgeLimit: storedLimit } as any))
+
+        const result = await service.verifyAccessToken(signed('client-1'))
+
+        expect(result.knowledgeLimit).to.deep.equal(signedLimit)
+      })
     })
 
     it('should throw InvalidTokenError for refresh token used as access token', async () => {
@@ -510,7 +654,7 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(null))
 
       try {
         await service.verifyAccessToken(token)
@@ -527,7 +671,7 @@ describe('OAuthTokenService', () => {
       const clock = sinon.useFakeTimers({ now: Date.now(), toFake: ['Date'] })
       try {
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
-        sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+        sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ isRevoked: false } as any))
         const sevenDays = 7 * 24 * 60 * 60
         const { accessToken } = await service.generateTokens(
           { clientId: 'svc-system:org-1', allowedScopes: ['kb:read'], accessTokenLifetime: 3600 } as any,
@@ -708,10 +852,10 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({
         isRevoked: false,
         userId: new Types.ObjectId(),
-      } as any)
+      } as any))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.active).to.be.true
@@ -764,7 +908,7 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(null))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.active).to.be.false
@@ -843,7 +987,7 @@ describe('OAuthTokenService', () => {
       expect(decoded.exp - decoded.iat).to.equal(oneYearSeconds)
       // App's own accessTokenLifetime (3600) must not leak in when overridden.
       expect(result.expiresIn).to.not.equal(mockApp.accessTokenLifetime)
-      void createStub
+      createStub
     })
 
     it('passes opts.name through to the stored OAuthAccessToken document', async () => {
@@ -1098,7 +1242,7 @@ describe('OAuthTokenService', () => {
 
     it('updates lastUsedAt when the stored token has never been touched', async () => {
       const tokenDoc = { _id: new Types.ObjectId(), isRevoked: false, lastUsedAt: undefined }
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(tokenDoc as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(tokenDoc as any))
       const updateStub = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
 
       await service.verifyAccessToken(signValidToken())
@@ -1114,7 +1258,7 @@ describe('OAuthTokenService', () => {
         isRevoked: false,
         lastUsedAt: new Date(Date.now() - 60 * 1000), // 1 minute ago
       }
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(tokenDoc as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(tokenDoc as any))
       const updateStub = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
 
       await service.verifyAccessToken(signValidToken())
@@ -1129,7 +1273,7 @@ describe('OAuthTokenService', () => {
         isRevoked: false,
         lastUsedAt: new Date(Date.now() - 6 * 60 * 1000), // 6 minutes ago
       }
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(tokenDoc as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(tokenDoc as any))
       const updateStub = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
 
       await service.verifyAccessToken(signValidToken())
@@ -1310,7 +1454,7 @@ describe('OAuthTokenService - branch coverage', () => {
       // Create a token with isRefreshToken: true
       const token = jwt.sign({ isRefreshToken: true, userId: 'u1', orgId: 'o1' }, 'test-secret-key-for-signing-tokens-at-least-32-bytes')
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({} as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({} as any))
 
       try {
         await service.verifyAccessToken(token)
@@ -1327,7 +1471,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(null))
 
       try {
         await service.verifyAccessToken(token)
@@ -1367,7 +1511,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ tokenHash: 'hash' } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ tokenHash: 'hash' } as any))
 
       const payload = await service.verifyAccessToken(token)
       expect(payload.userId).to.equal('u1')
@@ -1885,7 +2029,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult(null))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.active).to.be.false
@@ -1897,9 +2041,9 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({
         userId: new Types.ObjectId(),
-      } as any)
+      } as any))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.active).to.be.true
@@ -1934,7 +2078,7 @@ describe('OAuthTokenService - branch coverage', () => {
       )
 
       const userId = new Types.ObjectId()
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ userId } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ userId } as any))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.username).to.equal(userId.toString())
@@ -1946,7 +2090,7 @@ describe('OAuthTokenService - branch coverage', () => {
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ userId: null } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').returns(leanResult({ userId: null } as any))
 
       const result = await service.introspectToken(token, 'client-1')
       expect(result.username).to.be.undefined

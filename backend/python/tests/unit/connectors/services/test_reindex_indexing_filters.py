@@ -26,6 +26,7 @@ def stub_lease_manager() -> Iterator[object]:
 def service() -> EventService:
     gp = AsyncMock()
     gp.update_indexing_status_for_record_ids = AsyncMock()
+    gp.get_document = AsyncMock(return_value=None)
     return EventService(MagicMock(spec=logging.Logger), MagicMock(), gp)
 
 

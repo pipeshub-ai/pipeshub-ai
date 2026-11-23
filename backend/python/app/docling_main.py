@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from app.api.validation_errors import input_free_422
 from app.config.constants.http_status_code import HttpStatusCode
 from app.containers.docling import DoclingAppContainer, initialize_container
+from app.edition import check_runtime_settings
 from app.modules.parsers.pdf.docling_processor import (
     shutdown_docling_pool,
     set_resource_governor as set_docling_processor_governor,
@@ -37,11 +38,14 @@ from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.policy import docling_working_set_gb
 from app.telemetry.setup import setup_telemetry
-from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.logger import install_log_redaction
 from app.utils.memory_release import limit_malloc_arenas
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 
 # Only for development/debugging
@@ -250,8 +254,10 @@ async def health_check() -> JSONResponse:
             },
         )
 
-def run(host: str = "0.0.0.0", port: int = 8081, *, reload: bool = False) -> None:
+def run(host: str | None = None, port: int | None = None, *, reload: bool = False) -> None:
     """Run the Docling service"""
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8081)
     workers = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
     if reload and workers > 1:
         workers = 1

@@ -19,6 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# The forced TYPE_CHECKING reload below imports these; loaded first, the reload imports nothing new under its patch.dict(sys.modules).
+import app.modules.named_entities.graph_ops
+import app.services.graph_db.common.utils
+import app.services.permissions.ports  # noqa: F401
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # ---------------------------------------------------------------------------
@@ -214,6 +218,7 @@ class TestAbstractMethodInventory:
         "delete_nodes",
         "update_node",
         "update_node_if_match",
+        "write_attempt_start",
         # Edge operations
         "batch_create_edges",
         "batch_create_entity_relations",
@@ -283,6 +288,8 @@ class TestAbstractMethodInventory:
         "update_indexing_status_for_record_ids",
         "reset_indexing_status_for_connector",
         "compare_and_set_indexing_status",
+        "list_unsupported_page",
+        "transition_unsupported",
         "claim_push_record",
         "retag_push_record",
         "get_existing_record_keys",
@@ -360,7 +367,6 @@ class TestAbstractMethodInventory:
         "get_kb_permissions",
         "update_kb_permission",
         "list_kb_permissions",
-        "list_kb_records",
         "list_accessible_artifacts",
         "get_artifact_detail",
         # KB migration and legacy operations
@@ -567,6 +573,12 @@ class TestAbstractMethodInventory:
         "delete_all_edges_for_node",
         "get_template",
         "clone_agent_template",
+        "get_all_agent_templates",
+        "update_agent_template",
+        "delete_agent_template",
+        "get_all_agents",
+        "update_agent",
+        "delete_agent",
     ]
 
     def test_all_expected_methods_are_abstract(self):

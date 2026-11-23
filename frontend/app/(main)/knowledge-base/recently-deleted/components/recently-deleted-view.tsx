@@ -9,7 +9,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { TableSkeleton } from '@/app/components/data-display';
 import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar/constants';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
-import { getUserFacingErrorMessage } from '@/lib/api/api-error';
+import { getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
 import { toast } from '@/lib/store/toast-store';
 import { KbNodeNameIcon } from '../../utils/kb-node-name-icon';
 import { TrashApi } from '../api';
@@ -27,7 +27,6 @@ import {
   outcomeOfBulkError,
   outcomeOfSingle,
   outcomeOfSingleError,
-  pageAfterRemoval,
   removalLabel,
   restoreMessage,
   retentionNote,
@@ -169,7 +168,10 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
   const isMobile = useIsMobile();
   // The fixed-width columns need about 710px, more than a tablet leaves next to the sidebar.
   const compact = useIsBelowDesktop();
-  const [page, setPage] = useState(1);
+  // The cursor each page was read with: page n is cursors[n - 1], and the first page has none.
+  const [cursors, setCursors] = useState<Array<string | null>>([null]);
+  const page = cursors.length;
+  const cursor = cursors[cursors.length - 1];
   const [data, setData] = useState<TrashListResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -180,15 +182,15 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
   const latestRequest = useRef(0);
 
   const load = useCallback(
-    async (targetPage: number) => {
+    async (targetPage: number, targetCursor: string | null) => {
       const request = ++latestRequest.current;
       setIsLoading(true);
       try {
-        const result = await TrashApi.list(kbId, targetPage, TRASH_PAGE_SIZE);
+        const result = await TrashApi.list(kbId, targetPage, TRASH_PAGE_SIZE, targetCursor);
         if (request !== latestRequest.current) return;
-        const total = result.pagination?.totalCount ?? 0;
-        if (result.items.length === 0 && targetPage > 1 && total > 0) {
-          setPage(pageAfterRemoval(targetPage, TRASH_PAGE_SIZE, total));
+        // Everything on this page was restored: show the page before it.
+        if (result.items.length === 0 && targetPage > 1) {
+          setCursors((previous) => previous.slice(0, -1));
           return;
         }
         setData(result);
@@ -196,6 +198,11 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
         setSelected((previous) => new Set(result.items.filter((i) => previous.has(i.id)).map((i) => i.id)));
       } catch (error) {
         if (request !== latestRequest.current) return;
+        // A cursor the server no longer accepts (the caller's access changed): start again from the first page.
+        if (targetCursor && isProcessedError(error) && error.statusCode === 400) {
+          setCursors([null]);
+          return;
+        }
         setLoadError(getUserFacingErrorMessage(error, t('collections.trash.loadFailed')));
       } finally {
         if (request === latestRequest.current) setIsLoading(false);
@@ -205,8 +212,8 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
   );
 
   useEffect(() => {
-    void load(page);
-  }, [load, page]);
+    void load(page, cursor);
+  }, [load, page, cursor]);
 
   // Opened straight from a link, the collections sidebar has not loaded its list yet.
   useEffect(() => {
@@ -269,10 +276,10 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
       });
       if (outcome.restored > 0) {
         setSelected(new Set());
-        await load(page);
+        await load(page, cursor);
       }
     },
-    [load, page, t],
+    [load, page, cursor, t],
   );
 
   const backToCollection = useCallback(() => {
@@ -280,10 +287,9 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
   }, [router, kbId]);
 
   const pagination = data?.pagination;
-  const from = pagination && pagination.totalCount > 0 ? (pagination.page - 1) * pagination.limit + 1 : 0;
-  const to = pagination ? Math.min(pagination.page * pagination.limit, pagination.totalCount) : 0;
-  const hasPrev = (pagination?.page ?? 1) > 1;
-  const hasNext = !!pagination && pagination.page < pagination.totalPages;
+  const from = pagination && items.length > 0 ? (pagination.page - 1) * pagination.limit + 1 : 0;
+  const to = from > 0 ? from + items.length - 1 : 0;
+  const nextCursor = pagination?.nextCursor ?? null;
   const title = t('collections.trash.title');
 
   return (
@@ -317,7 +323,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
             {title}
           </Text>
         </Flex>
-        <Button variant="ghost" size="1" color="gray" onClick={() => void load(page)} disabled={isLoading} style={{ cursor: 'pointer', fontSize: '14px' }}>
+        <Button variant="ghost" size="1" color="gray" onClick={() => void load(page, cursor)} disabled={isLoading} style={{ cursor: 'pointer', fontSize: '14px' }}>
           <MaterialIcon name="refresh" size={16} color="var(--slate-11)" />
           {!isMobile && t('action.refresh')}
         </Button>
@@ -413,7 +419,7 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
             <Flex direction="column" align="center" gap="3" style={{ padding: 'var(--space-8) var(--space-4)', textAlign: 'center' }}>
               <MaterialIcon name="error_outline" size={32} color="var(--slate-9)" />
               <Text size="2" style={{ color: 'var(--slate-11)', maxWidth: '28rem' }}>{loadError}</Text>
-              <Button variant="soft" size="1" onClick={() => void load(page)} style={{ cursor: 'pointer' }}>
+              <Button variant="soft" size="1" onClick={() => void load(page, cursor)} style={{ cursor: 'pointer' }}>
                 {t('action.tryAgain')}
               </Button>
             </Flex>
@@ -460,15 +466,19 @@ export function RecentlyDeletedView({ kbId }: { kbId: string }) {
           }}
         >
           <Text size="2" style={{ color: 'var(--slate-9)' }}>
-            {t('collections.trash.showing', { from, to, total: pagination.totalCount })}
+            {t(pagination.totalCapped ? 'collections.trash.showingAtLeast' : 'collections.trash.showing', {
+              from,
+              to,
+              total: pagination.totalCount,
+            })}
           </Text>
           <Flex gap="3" align="center">
-            <Button variant="ghost" size="1" color="gray" disabled={!hasPrev || isLoading} onClick={() => setPage((p) => p - 1)} style={{ cursor: 'pointer' }}>
+            <Button variant="ghost" size="1" color="gray" disabled={page <= 1 || isLoading} onClick={() => setCursors((previous) => previous.slice(0, -1))} style={{ cursor: 'pointer' }}>
               <MaterialIcon name="chevron_left" size={16} />
               {t('collections.trash.previous')}
             </Button>
-            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>{pagination.page}</Text>
-            <Button variant="ghost" size="1" color="gray" disabled={!hasNext || isLoading} onClick={() => setPage((p) => p + 1)} style={{ cursor: 'pointer' }}>
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>{page}</Text>
+            <Button variant="ghost" size="1" color="gray" disabled={!nextCursor || isLoading} onClick={() => nextCursor && setCursors((previous) => [...previous, nextCursor])} style={{ cursor: 'pointer' }}>
               {t('collections.trash.next')}
               <MaterialIcon name="chevron_right" size={16} />
             </Button>

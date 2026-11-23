@@ -6,6 +6,7 @@ after the lock is taken.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -16,7 +17,12 @@ from app.services.graph_db.postgres.kg.dependents import (
     moved_parents,
     parents_of,
 )
-from app.services.graph_db.postgres.kg.locks import MAX_ROUNDS, NeedLocks, lock_apps
+from app.services.graph_db.postgres.kg.locks import (
+    MAX_ROUNDS,
+    NeedLocks,
+    bump,
+    lock_apps,
+)
 from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
     COLL_CODE,
@@ -35,10 +41,19 @@ from app.services.graph_db.postgres.kg.reader import (
     snapshot,
 )
 from app.services.graph_db.postgres.kg.stamp import StampStats, stamp
-from app.services.graph_db.postgres.kg.writers import KgWriter
+from app.services.graph_db.postgres.kg.writers import (
+    GRANT_TYPE_LENGTH,
+    KgWriter,
+    record_refusals,
+)
+from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import Tx
+
+logger = logging.getLogger(__name__)
+REFUSED = METRICS_BACKEND.counter("pipeshub_kg_refused_rows_total", "Rows with a value a kg writer refuses (a node written without it, a grant left out), and their connector taken off the readers", ["coll"])
+TRASH_HELD = "/* pipeshub:kg.trash_held */ SELECT sk, deleted_ms, delete_batch FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"
 
 
 @dataclass
@@ -51,8 +66,11 @@ class Stats:
     closure: int = 0
     apps: set[str] = field(default_factory=set)
     orphaned: set[str] = field(default_factory=set)           # connectors this call read a node of while their own node was missing (their rows were taken off the readers)
+    refused: set[Key] = field(default_factory=set)            # nodes with a value the records writer refuses: written without it, and their connector taken off the readers
     stamps: StampStats = field(default_factory=StampStats)    # what the stamping after the structural rows did
+    wide: bool = False                                        # the unit held the organization-wide lock
     keys: set[Key] = field(default_factory=set)               # the nodes this call took as its focus and looked at the dependants of: a change-log row naming only these is satisfied by it
+    off: set[int] = field(default_factory=set)                # the connectors (app sks) this call took off the readers: their copy is not exact and must be copied and verified again
 
 
 async def expand(tx: Tx, org: str, focus: set[Key]) -> set[Key]:
@@ -166,7 +184,9 @@ async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | Non
     for _ in range(MAX_ROUNDS):
         try:
             async with tx.savepoint("kg_project"):
-                return await _project(tx, org, focus, lock_for=lock_for, expand_neighbours=expand_neighbours, stamps=stamps, extra=extra, wide=wide)
+                st = await _project(tx, org, focus, lock_for=lock_for, expand_neighbours=expand_neighbours, stamps=stamps, extra=extra, wide=wide)
+            bump(org, st.apps, wide=st.wide)
+            return st
         except NeedLocks as e:
             extra |= e.apps
             wide = wide or e.wide
@@ -186,7 +206,9 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     org_wide = wide or "" in locked or any(k[0] not in RECORD_COLLS or k not in docs for k in focus) or not locked
     await lock_apps(tx, org, locked, org_wide=org_wide)
     st.apps = locked - {""}
+    st.wide = org_wide
     leaf_only: set[Key] = set()
+    logged_apps = {k for k in focus if k[0] == "apps"}
     if expand_neighbours:
         focus = await _expanded(tx, org, focus)
         while True:
@@ -212,14 +234,38 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
 
     snap = await snapshot(tx, org, every, allocate, known_children=expand_neighbours)
     d = derive(every, snap)
+    # A value the writer refuses would fail the whole unit, and with it every other row of the batch, every time it is retried. The row is written without it (the column empty) and
+    # everything else of the node is projected as usual, so no row is left as it was (under a connector the node has left, or with a parent, a group or stamps it no longer has);
+    # the connector the row is now under is taken off the readers below, since its copy of this node is not exact, and a verify finds the difference while the value stays.
+    for k in sorted(every):
+        row = d.records.get(snap.sk.get(k))
+        if row is not None and (bad := record_refusals(row)):
+            st.refused.add(k)
+            REFUSED.inc(k[0])
+            logger.error("kg: the records writer refuses the %s column of %s %s; the row is written without it and its connector is taken off the readers", ", ".join(bad), *k)
+            row.update(dict.fromkeys(bad))
+    # A grant's type is part of its key, so a grant whose type the writer refuses cannot be stored at all. It is left out (no row of its key can exist to go stale) and the connector of
+    # the node it is on is taken off the readers below: the walk reads the graph and sees it, and a verify finds it missing, so the copy is not served again while the type stays.
+    refused_g_apps: set[int] = set()
+    for g in sorted(g for g in d.grants if not GRANT_TYPE_LENGTH[0] <= len(g[2]) <= GRANT_TYPE_LENGTH[1]):
+        REFUSED.inc("permission")
+        logger.error("kg: the grants writer refuses the type (%d characters) of the grant of principal %s on node %s; it is left out and its connector is taken off the readers",
+                     len(g[2]), g[0], g[1])
+        if (app := d.grants.pop(g)[1]) is not None:
+            refused_g_apps.add(app)
     if d.gone and not org_wide:      # gone since `_held`: its key can already be another connector's, and only the whole org holds that connector off
         raise NeedLocks(set(), wide=True)
     st.focus = len(every)
-    st.keys = set(focus)
+    st.keys = {k for k in focus if k[0] != "apps" or k in logged_apps}       # an app only the expansion brought in is not restamped (below): a change of its own waits for its own projection
     cur_links, cur_grants, cur_closure = await current(tx, org, d)
 
     if d.records:
         await w.records_upsert([{"sk": sk, **cols} for sk, cols in sorted(d.records.items())])
+        await w.listing_set([(sk, c["coll"], c["id"], c["kind"], c["folder"], c["hide_children"], c["alien"], c["name_sort"]) for sk, c in sorted(d.records.items())])
+        # Only the rows whose trash columns change: a live record (both NULL) is no further tuple to write, nor a statement for the counters' trigger.
+        held = {r["sk"]: (r["deleted_ms"], r["delete_batch"]) for r in await tx.fetch(TRASH_HELD, org, sorted(d.records))}
+        await w.trash_set([(sk, c["coll"], c["id"], c["kind"], c["deleted_ms"], c["delete_batch"]) for sk, c in sorted(d.records.items())
+                           if held.get(sk, (None, None)) != (c["deleted_ms"], c["delete_batch"])])
         st.records = len(d.records)
     if d.gone:
         st.records_deleted = await w.records_delete(sorted(d.gone))
@@ -233,7 +279,9 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
     # A node read while its connector's node is missing is written without an app (grants too: they carry the app of the node they are on). If the node comes back before anything
     # projects the deletion, nothing re-derives those rows and the connector would stay verified over them.
     st.orphaned = {a for k, doc in snap.nodes.items() if (org_wide or k in every) and k[0] != "apps" and (a := app_id_of(k, doc)) and ("apps", a) not in snap.nodes}
-    off = {*gone_apps, *(snap.sk[("apps", a)] for a in st.orphaned if ("apps", a) in snap.sk)}
+    refused_under = {d.records[snap.sk[k]]["app_sk"] for k in st.refused} - {None}      # the connectors the refused rows were just written under
+    off = {*gone_apps, *refused_under, *refused_g_apps, *(snap.sk[("apps", a)] for a in st.orphaned if ("apps", a) in snap.sk)}
+    st.off = off
     if off:
         # What was verified for a connector is the state of a node that no longer exists: it is taken off the readers in the same commit, and must be copied and verified again.
         for r in await tx.fetch("""/* pipeshub:kg.gone_app_state */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND app_sk = ANY($2::bigint[])
@@ -260,7 +308,10 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
         await w.closure_set(new_c)
     st.closure = len(drop_c) + len(new_c)
     if stamps:      # after the structural rows: a stamp reads the rows of its parents and groups from kg. ``stamps=False`` is the backfill, which restamps a connector whole once it has copied it.
-        st.stamps = await stamp(tx, org, {k for k in focus if k[0] in RECORD_COLLS}, also=leaf_only, locked=locked, org_wide=org_wide)
+        # An app among the seeds is restamped whole. One that only the expansion brought in (a principal linked to it or granted on it is in the focus, as for any membership)
+        # changed no stamp: no stamp reads who links to an app, and what records' stamps do read of their app (its facts) is compared whenever one of them is stamped.
+        seeds = {k for k in focus if k[0] in RECORD_COLLS and (k[0] != "apps" or k in logged_apps)}
+        st.stamps = await stamp(tx, org, seeds, also=leaf_only, locked=locked, org_wide=org_wide)
     return st
 
 

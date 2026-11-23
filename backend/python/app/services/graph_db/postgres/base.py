@@ -100,8 +100,11 @@ class _Txn:
     error, and later calls fail at once; a caller is never left awaiting a task that is gone. Cancelling the calling task rolls the unit back and
     gives the connection up."""
 
-    def __init__(self, db: KernelDB, ctx: OrgContext) -> None:
+    def __init__(self, db: KernelDB, ctx: OrgContext, *, snapshot: bool = False) -> None:
         self._db = db
+        # a read-only repeatable-read unit: every call reads one snapshot (custom plans, as the listing's own reads)
+        self.snapshot = snapshot
+        self._opts: dict[str, Any] = {"isolation": "repeatable_read", "custom_plan": True} if snapshot else {"write": True}
         self._who = (ctx.kind, ctx.org_id)       # the org the transaction began under; every call must run under it
         self._q: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
@@ -110,7 +113,7 @@ class _Txn:
 
     async def _main(self) -> None:
         try:
-            async with (self._db.jobs_uow(write=True) if current_or_system().kind == "system" else self._db.uow(write=True)) as tx:
+            async with (self._db.jobs_uow(**self._opts) if current_or_system().kind == "system" else self._db.uow(**self._opts)) as tx:
                 while True:
                     item = await self._q.get()
                     if item in ("commit", "rollback"):
@@ -212,11 +215,13 @@ class PgBase:
         self._txns: dict[str, _Txn] = {}
 
     # ---- plumbing ----------------------------------------------------------------------------------------------
-    async def _q(self, fn: Callable[[Tx], Awaitable[Any]], transaction: str | None, *, write: bool = False) -> Any:  # noqa: ANN401
+    async def _q(self, fn: Callable[[Tx], Awaitable[Any]], transaction: str | None, *, write: bool = False,
+                 isolation: str = "read_committed") -> Any:  # noqa: ANN401
+        """``fn`` in the caller's transaction, or in a unit of its own (``isolation`` applies to that unit only)."""
         if transaction:
             return await self._txn(transaction).run(fn)
         # Fails closed: no ambient org raises MissingOrgContext. A system context (org enumeration at start-up) reads through the jobs role.
-        return await self._db.run(fn, write=write, jobs=current_or_system().kind == "system")
+        return await self._db.run(fn, write=write, isolation=isolation, jobs=current_or_system().kind == "system")
 
     async def _validate_upserts(self, collection: str, docs: list[dict], transaction: str | None = None) -> None:
         """Check every document before the first write. A payload lacking required fields is legal only for a node that exists: one read per batch
@@ -267,6 +272,12 @@ class PgBase:
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         tid = str(uuid.uuid4())
         self._txns[tid] = _Txn(self._db, current_or_system())     # the org is fixed here
+        return tid
+
+    async def begin_snapshot(self) -> str:
+        """A read-only transaction whose calls all read one snapshot; ended by :meth:`rollback_transaction`."""
+        tid = str(uuid.uuid4())
+        self._txns[tid] = _Txn(self._db, current_or_system(), snapshot=True)
         return tid
 
     async def commit_transaction(self, transaction: str) -> None:
@@ -343,7 +354,7 @@ def _hot(collection: str, filters: dict | None) -> tuple[str, tuple[str, ...]] |
         return "blocks_by_record", (rec,)
     if collection == "blocks" and 0 < len(conn) <= 200 and 0 < len(name) <= 1000:
         return "blocks_by_name", (conn, name)
-    if collection == "codeFiles" and 0 < len(path) <= 2000:
+    if collection == "codeFiles" and 0 < len(path) <= 4096:
         return "code_files_by_path", (path,)
     return None
 

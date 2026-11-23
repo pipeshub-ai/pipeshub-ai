@@ -399,6 +399,23 @@ describe('ErrorMiddleware', () => {
       expect(response.error.metadata).to.deep.equal({ extra: 'info' })
     })
 
+    for (const mode of ['development', 'production']) {
+      it(`sends the access notices once, at the top level, in ${mode} (never as "[Circular]")`, () => {
+        process.env.NODE_ENV = mode
+        const notices = [{ code: 'connector_syncing', connectorId: 'c1' }]
+        const error = new BadRequestError('test', { extra: 'info', accessNotices: notices })
+        const res = createMockResponse()
+
+        handler(error, createMockRequest(), res, createMockNext())
+
+        const response = res.json.firstCall.args[0]
+        expect(response.accessNotices).to.deep.equal(notices)
+        expect(response.error.metadata?.accessNotices).to.equal(undefined)
+        expect(response.error.metadata).to.deep.equal(mode === 'development' ? { extra: 'info' } : undefined)
+        expect(JSON.stringify(response)).to.not.contain('[Circular]')
+      })
+    }
+
     it('should include metadata in dev mode (short alias)', () => {
       process.env.NODE_ENV = 'dev'
 

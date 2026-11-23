@@ -17,8 +17,18 @@ on:
       - 'backend/python/pyproject.toml'
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
+      # The sandbox-live job builds the sandbox image from it.
+      - 'deployment/sandbox/**'
+      # The knowledge-hub sort-field parity test reads it (pr_changes.py python_unit).
+      - 'frontend/app/(main)/knowledge-base/sort-fields.json'
       - 'scripts/unit_shards.py'
       - 'scripts/unit_shard_durations.json'
+      - 'deployment/docker-compose/docker-compose.yml'
+      - 'deployment/docker-compose/env.template'
+      - 'deployment/docker-compose/tests/capacity_blank_env_test.sh'
+      - 'deployment/helm/pipeshub-ai/templates/deployment.yaml'
+      - 'deployment/helm/pipeshub-ai/values.yaml'
+      - 'deployment/process_monitor.sh'
       - 'deployment/docker-compose/docker-compose.integration.redis-cluster.yml'
       - 'scripts/pr_changes.py'
       - '.github/actions/pr-changes/**'
@@ -62,6 +72,7 @@ jobs:
       node_unit: ${{ steps.changes.outputs.node_unit }}
       python_unit: ${{ steps.changes.outputs.python_unit }}
       redis_cluster: ${{ steps.changes.outputs.redis_cluster }}
+      sandbox_live: ${{ steps.changes.outputs.sandbox_live }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -170,10 +181,39 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
+      # Real-file conversions run in the modules shard and must not skip there (checked below). The
+      # same LibreOffice components as the application image: Writer (doc, odt, rtf), Calc (xls), Impress (ppt).
+      # The ~108 MB download once took 16-26 minutes from the runner's mirror (azure.archive.ubuntu.com, ~100 kB/s)
+      # and the job hit its 30-minute limit mid-pytest. apt only fails over between the image's mirrors
+      # (/etc/apt/apt-mirrors.txt) on an error, never on a slow transfer, so each download attempt is bounded and the
+      # second one goes to archive.ubuntu.com. Rewriting the mirror list keeps the package lists the image shipped:
+      # their names follow the source URI (mirror+file:...), not the mirror. Only the download is bounded; the
+      # install reads local files, so a timeout can never interrupt dpkg.
+      - name: Install LibreOffice
+        if: ${{ matrix.shard == 'modules' }}
+        timeout-minutes: 10
+        env:
+          ATTEMPT_SECONDS: '240'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
+          packages=(libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui)
+          download() {
+            sudo timeout --kill-after=10 "$ATTEMPT_SECONDS" apt-get install -y --no-install-recommends --download-only \
+              -o Acquire::Retries=3 -o Acquire::http::Timeout=30 "${packages[@]}"
+          }
+          if ! download; then
+            echo "::warning::The LibreOffice download from the runner's apt mirror failed or took over ${ATTEMPT_SECONDS}s; retrying from archive.ubuntu.com"
+            if ! grep -rqs 'mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list /etc/apt/sources.list.d/; then
+              echo "::error::The runner's apt sources no longer use /etc/apt/apt-mirrors.txt, so there is no mirror to fall back to"
+              exit 1
+            fi
+            printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://security.ubuntu.com/ubuntu/\tpriority:2\n' \
+              | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+            if ! download; then
+              echo "::error::The LibreOffice download failed or took over ${ATTEMPT_SECONDS}s from both the runner's apt mirror and archive.ubuntu.com"
+              exit 1
+            fi
+          fi
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
 
       - name: Install uv
         run: pip install uv
@@ -228,6 +268,12 @@ jobs:
       # the workers' data into COVERAGE_FILE. GitHub's 4 vCPUs are 2 cores, so
       # each of the 4 workers runs a test at about half serial speed:
       # --timeout=60 keeps pytest.ini's 30s hang guard at the same CPU budget.
+      # That guard (SIGALRM) cannot stop a test that swallows the alarm or waits in
+      # C code, and a modules run once sat silent until the job's 30-minute
+      # cancel, with no stack. faulthandler_timeout prints every thread's stack
+      # from a C watchdog, which works even then. It only prints: exiting the
+      # worker would make xdist re-queue that worker's finished files, and
+      # --dist loadfile then never completes. 300 is the longest timeout mark.
       - name: Run unit tests (${{ matrix.shard }})
         working-directory: backend/python
         env:
@@ -242,8 +288,16 @@ jobs:
         run: |
           args=$(python3 ../../scripts/unit_shards.py args "$SHARD")
           mapfile -t shard_args <<< "$args"
-          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 --cov --cov-report= --durations=15 \
+          pytest "${shard_args[@]}" -n logical --dist loadfile --timeout=60 -o faulthandler_timeout=300 --cov --cov-report= --durations=15 \
             --junitxml="junit-$SHARD.xml"
+
+      # Every capacity knob blank, as compose and Helm deliver an unset one: each service's start-up import must
+      # succeed and log its capacity line. The image run of the same script is a live check (IMAGE=...).
+      - name: Capacity knobs blank
+        if: ${{ matrix.shard == 'services' }}
+        env:
+          CAPACITY_TEST_LOCAL: '1'
+        run: bash deployment/docker-compose/tests/capacity_blank_env_test.sh
 
       # The pgvector building blocks run again on their own, with a report of their own, so that a collection error or a skipped case
       # in them fails the build, whatever else the shard skips: every case must have run, and the counts must be the files' counts.
@@ -256,6 +310,29 @@ jobs:
           python3 ../../scripts/assert_no_skips.py junit-pgvector.xml --min-tests 1 \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_core=110' \
             --expect-suite 'tests.unit.services.vector_db.test_pgvector_placement=8'
+
+      # The key-value access map cites the app code that reads each key. db-migrations.yml runs it only for
+      # backend/db changes, so an app change that renamed or dropped a cited read broke main unseen. Its tests that
+      # need no PostgreSQL run here; the ones marked postgres run in db-migrations.yml.
+      - name: Key-value access map citations match the app
+        if: ${{ matrix.shard == 'core' }}
+        working-directory: backend/db
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend:${{ github.workspace }}/backend/db
+        run: |
+          uv pip install --system -r requirements.txt
+          pytest -p no:cacheprovider tests/test_kv_access_map.py -m "not postgres" --timeout=300 -q
+
+      # The real odt and rtf conversions run again with a report of their own, so a LibreOffice the
+      # runner lost fails the build instead of skipping them.
+      - name: LibreOffice conversion suite ran in full
+        if: ${{ matrix.shard == 'modules' }}
+        working-directory: backend/python
+        run: |
+          pytest -p no:cacheprovider tests/unit/modules/parsers/real_files/test_realfile_libreoffice_types.py \
+            --timeout=300 --junitxml=junit-libreoffice.xml
+          python3 ../../scripts/assert_no_skips.py junit-libreoffice.xml --min-tests 1 \
+            --expect-suite 'tests.unit.modules.parsers.real_files.test_realfile_libreoffice_types=15'
 
       # upload-artifact skips dotfiles unless told otherwise, and every coverage
       # data file is one. Not named python-coverage-report-*: weekly-coverage.yml
@@ -365,11 +442,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install uv
         run: pip install uv
 
@@ -416,11 +488,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install uv
         run: pip install uv
 
@@ -439,12 +506,151 @@ jobs:
             --ignore=tests/integration/db \
             --ignore=tests/integration/graph_db/postgres \
             --ignore=tests/integration/skills/test_npm_import_live.py \
+            --ignore=tests/integration/spend \
             -v --timeout=300 --session-timeout=900
+
+  # The `-m docker` tests (real containers from the sandbox image, the Docker
+  # proxy, out-of-memory kills, the in-container deadline, the reaper, cancel
+  # and Stop) skip everywhere else, because nothing else builds the image.
+  sandbox-live:
+    needs: changes
+    if: needs.changes.outputs.sandbox_live == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Docker daemon details
+        run: docker info --format 'cgroup v{{.CgroupVersion}} ({{.CgroupDriver}}), storage {{.Driver}}, {{.NCPU}} CPUs, {{.MemTotal}} bytes'
+
+      - name: Build the sandbox image
+        run: |
+          docker pull pipeshubai/pipeshub-sandbox:latest || true
+          docker build --cache-from pipeshubai/pipeshub-sandbox:latest \
+            -t pipeshubai/pipeshub-sandbox:local deployment/sandbox
+
+      # Where Docker's embedded DNS forwards from: host(...) entries from the
+      # host, bare addresses from the container, through the egress firewall.
+      - name: Container DNS forwarding
+        run: |
+          ps -o args= -C dockerd || true
+          sudo cat /etc/docker/daemon.json 2>/dev/null || echo "no daemon.json"
+          docker network create sandbox-dns-probe >/dev/null
+          docker run --rm --network sandbox-dns-probe pipeshubai/pipeshub-sandbox:local \
+            grep -E '^# (ExtServers|Overrides|Based on)' /etc/resolv.conf || true
+          docker network rm sandbox-dns-probe >/dev/null
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Run the live Docker tests
+        working-directory: backend/python
+        env:
+          SANDBOX_TEST_IMAGE: pipeshubai/pipeshub-sandbox:local
+        # The fixtures skip without a daemon or the image, and an all-skipped
+        # run passes, so check the same condition first and fail instead.
+        run: |
+          python -c 'import sys; from tests.unit.agent_loop_lib.sandbox.contract.conftest import docker_available; ok, why = docker_available(); sys.exit(0 if ok else f"live Docker tests would skip: {why}")'
+          pytest -m docker -rs \
+            tests/unit/agent_loop_lib/sandbox/test_docker_live.py \
+            tests/unit/sandbox/test_docker_proxy_live.py \
+            --timeout=600
+
+  # The spend-safety suites (the fleet breaker's Lua, the pause budget, the wire contract of every model wrapper)
+  # against a real Redis, the same tests the unit tier runs on fakeredis's Lua engine. They fail, never skip, when
+  # Redis is missing: SPEND_IT_REDIS_URL is set, so the fixtures connect to it. No external network: the model
+  # providers are local sockets and a black-holed address that is never routed.
+  # The suite is split in three shards by a hash of each test's id (tests/support/shard_plugin.py), each on its own runner
+  # and Redis: a new test lands in one shard on its own, and test_shard_partition.py proves the shards cover every test
+  # exactly once. On a runner the whole suite took about 14 min of test time; a shard takes about a third of that.
+  python-spend-redis:
+    name: python-spend-redis (shard ${{ matrix.shard }}/3)
+    needs: changes
+    if: needs.changes.outputs.python_unit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    services:
+      redis:
+        image: redis:7.4-bookworm
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout pytest-xdist
+          uv pip install --system -e ".[dev]"
+
+      - name: Run the spend-safety suites on a real Redis
+        working-directory: backend/python
+        env:
+          SPEND_IT_REDIS_URL: redis://127.0.0.1:6379/0
+          # A test that needs the real Redis fails here, never skips, if the variable goes missing.
+          SPEND_IT_REQUIRE_REDIS: "1"
+        # Four workers (the runner has four CPUs), each on its own Redis logical database (tests/support/spend_world.py
+        # moves the URL's database up by the worker index), so no two workers share a keyspace. worksteal hands the
+        # longest simulations out first-come, so one 1000-job case does not hold a worker while others sit idle.
+        run: |
+          python -m pytest -p tests.support.shard_plugin --shard="${{ matrix.shard }}/3" tests/integration/spend \
+            tests/unit/services/llm_gateway/test_fleet_breaker.py \
+            tests/unit/modules/pipeline/test_hold_ledger.py \
+            tests/unit/modules/pipeline/test_pause_budget_simulation.py \
+            tests/unit/services/messaging/test_fleet_state_startup.py \
+            -m "not live_smoke" \
+            -n 4 --dist worksteal --durations=15 \
+            -v --timeout=600 --session-timeout=900 --junitxml="$RUNNER_TEMP/spend.xml"
+
+      # A store that is down must fail these tests, never skip them.
+      - name: Fail on skipped tests
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/spend.xml" --min-tests 60
 
   # One check for everything the single python-unit-tests job used to run, so a
   # required status check keeps one name however the shards change.
   python-unit-tests:
-    needs: [changes, python-unit, python-coverage, python-agent-evals, python-integration-offline]
+    needs: [changes, python-unit, python-coverage, python-agent-evals, python-integration-offline, python-spend-redis]
     if: ${{ always() && needs.changes.outputs.python_unit == 'true' }}
     runs-on: ubuntu-latest
 
@@ -476,11 +682,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install uv
         run: pip install uv
 
@@ -499,7 +700,12 @@ jobs:
         env:
           REDIS_MODE: cluster
           REDIS_CLUSTER_ENDPOINTS: 127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002
-        run: pytest tests/integration/redis_cluster -v -m integration
+        run: pytest tests/integration/redis_cluster -v -m integration --junitxml="$RUNNER_TEMP/redis-cluster-junit.xml"
+
+      # A cluster that did not answer must not read as a pass: the conftest fails under CI, and this step fails on any
+      # skipped test in the report (or on a report with no tests).
+      - name: No skipped Redis Cluster tests
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/redis-cluster-junit.xml" --min-tests 1
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

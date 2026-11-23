@@ -1,6 +1,7 @@
 """Generic Event Service for handling connector-specific events"""
 
 import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -23,10 +24,15 @@ from app.connectors.core.base.connector.connector_service import (
     dispose_connector,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    unless_synced_since,
+)
+from app.connectors.core.base.data_processor.storage_cleanup import (
+    StorageCleanupHelper,
+)
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.sync_dispatcher import SyncSpec
 from app.connectors.core.sync.sync_coordinator import (
     Admission,
     SyncCoordinator,
@@ -35,17 +41,16 @@ from app.connectors.core.sync.sync_coordinator import (
     get_coordinator,
     stop_wait_sec,
 )
+from app.connectors.core.sync.sync_dispatcher import SyncSpec
 from app.connectors.core.sync.sync_runner import (
     drain_queued_syncs,
     resumes_interrupted_full_sync,
     run_sync_task,
 )
 from app.connectors.core.sync.task_manager import reindex_task_manager
-from app.connectors.core.base.data_processor.storage_cleanup import (
-    StorageCleanupHelper,
-)
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.late_write_sweep import record_pending_late_write_sweep
+from app.connectors.services.reindex_force import forced_by_user, user_forced_intent_id
 from app.connectors.services.storage_release import (
     record_pending_storage_release,
     release_connector_storage,
@@ -54,6 +59,8 @@ from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
     log_cleanup_publish_failure,
 )
+from app.connectors.sources.local_repo.cleanup import remove_mirror
+from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME
 from app.containers.connector import ConnectorAppContainer
 from app.core.org_context import spawn_detached
 from app.edition_services import (
@@ -61,7 +68,8 @@ from app.edition_services import (
     sync_executor_enabled,
 )
 from app.exceptions.non_retryable import NonRetryableError
-from app.models.entities import FileRecord
+from app.models.entities import FileRecord, Record
+from app.modules.indexing import refresh_intent
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -202,6 +210,10 @@ _storage_release_tasks: set[asyncio.Task] = set()
 # restart. The other writer is a single-document write; short waits clear it.
 _LOCK_RELEASE_RETRIES = 4
 _LOCK_RELEASE_RETRY_DELAY = 0.1
+
+
+# The most record ids one reindex event may name (the file-type re-queue sends a page of them).
+MAX_REQUEUE_IDS = 500
 
 
 class EventService:
@@ -463,65 +475,61 @@ class EventService:
     async def _auto_initialize_connector(
         self, connector_name: str, connector_id: str
     ) -> BaseConnector | None:
-        """Build and store a connector. Caller must hold ``connector_init_lock``."""
+        """Build and store a connector. Caller must hold ``connector_init_lock``.
+
+        None when the app doc is missing or inactive, or the factory builds nothing; a failure to build raises.
+        """
         cacheable = not sync_executor_enabled()
-        try:
-            connector_doc = await self.graph_provider.get_document(
-                document_key=connector_id,
-                collection=CollectionNames.APPS.value,
-            )
-            if not connector_doc:
-                self.logger.error(
-                    f"Connector {connector_id} not found in database — skipping initialization"
-                )
-                return None
-            if not connector_doc.get("isActive", False):
-                self.logger.warning(
-                    f"Connector {connector_id} is not active in database — skipping initialization"
-                )
-                return None
-
-            # Extract scope, createdBy and org from connector document
-            scope = connector_doc.get("scope", "personal")
-            created_by = connector_doc.get("createdBy", "")
-            last_synced_by = connector_doc.get("lastSyncedBy", "") or None
-            org_id = connector_doc.get("orgId") or self._resolve_org_id()
-            config_service = self._config_service_for(org_id)
-            data_store_provider = self._build_data_store(org_id)
-
-            connector = await ConnectorFactory.initialize_connector(
-                name=self._stored_connector_name(connector_doc, connector_name, connector_id),
-                logger=self.logger,
-                data_store_provider=data_store_provider,
-                config_service=config_service,
-                connector_id=connector_id,
-                scope=scope,
-                created_by=created_by,
-                org_id=org_id,
-                data_entities_processor_cls=get_data_entities_processor_cls(),
-                notification_service=self.app_container.connector_notification_service(),
-                connector_instance_name=connector_doc.get("name"),
-                last_synced_by=last_synced_by,
-            )
-
-            if not connector:
-                self.logger.error(
-                    f"Auto-initialization failed for {connector_name} connector {connector_id}"
-                )
-                return None
-
-            if cacheable:
-                await self._store_connector(connector_id, connector)
-            self.logger.info(
-                f"Auto-initialized {connector_name} connector {connector_id} successfully"
-            )
-            return connector
-        except Exception as e:
+        connector_doc = await self.graph_provider.get_document(
+            document_key=connector_id,
+            collection=CollectionNames.APPS.value,
+        )
+        if not connector_doc:
             self.logger.error(
-                f"Auto-initialization error for {connector_name} connector {connector_id}: {e}",
-                exc_info=True,
+                f"Connector {connector_id} not found in database — skipping initialization"
             )
             return None
+        if not connector_doc.get("isActive", False):
+            self.logger.warning(
+                f"Connector {connector_id} is not active in database — skipping initialization"
+            )
+            return None
+
+        # Extract scope, createdBy and org from connector document
+        scope = connector_doc.get("scope", "personal")
+        created_by = connector_doc.get("createdBy", "")
+        last_synced_by = connector_doc.get("lastSyncedBy", "") or None
+        org_id = connector_doc.get("orgId") or self._resolve_org_id()
+        config_service = self._config_service_for(org_id)
+        data_store_provider = self._build_data_store(org_id)
+
+        connector = await ConnectorFactory.initialize_connector(
+            name=self._stored_connector_name(connector_doc, connector_name, connector_id),
+            logger=self.logger,
+            data_store_provider=data_store_provider,
+            config_service=config_service,
+            connector_id=connector_id,
+            scope=scope,
+            created_by=created_by,
+            org_id=org_id,
+            data_entities_processor_cls=get_data_entities_processor_cls(),
+            notification_service=self.app_container.connector_notification_service(),
+            connector_instance_name=connector_doc.get("name"),
+            last_synced_by=last_synced_by,
+        )
+
+        if not connector:
+            self.logger.error(
+                f"Auto-initialization failed for {connector_name} connector {connector_id}"
+            )
+            return None
+
+        if cacheable:
+            await self._store_connector(connector_id, connector)
+        self.logger.info(
+            f"Auto-initialized {connector_name} connector {connector_id} successfully"
+        )
+        return connector
 
     async def process_event(self, event_type: str, payload: dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
@@ -625,11 +633,11 @@ class EventService:
             await self._store_connector(connector_id, connector)
 
             return True
-        except Exception as e:
-            self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
+        except Exception:
+            # A redelivered init builds another, and the factory handed this one an open processor.
             if connector is not None and not self._is_cached(connector_id, connector):
                 await self._dispose_unstored(connector_name, connector)
-            return False
+            raise
 
     def _is_cached(self, connector_id: str, connector: BaseConnector) -> bool:
         """Whether the cache holds this instance. When the cache cannot be read,
@@ -1306,90 +1314,132 @@ class EventService:
         3. Status-based: statusFilters - reindex records by indexing status (e.g., FAILED)
         """
         connector_id = payload.get("connectorId")
-        try:
+        org_id = payload.get("orgId")
+        record_id = payload.get("recordId")
+        record_group_id = payload.get("recordGroupId")
+        depth = payload.get("depth", 0)
+        raw_status_filters = payload.get("statusFilters")
+        user_key = payload.get("userKey")
+        # Only a literal true: a user's Force reindex (never a string, never a default).
+        force = payload.get("force") is True
+        # Parent-scoped modes: optional filter; connector-wide mode: default FAILED,
+        # except for KB connectors, where a KB-wide reindex means "reindex everything".
+        status_filters: list[str] | None = None
+        if record_id is not None or record_group_id is not None:
+            status_filters = raw_status_filters if raw_status_filters else None
+        elif connector_name == Connectors.KNOWLEDGE_BASE.value.lower():
+            status_filters = raw_status_filters if raw_status_filters else None
+        else:
+            status_filters = raw_status_filters if raw_status_filters else ["FAILED"]
 
-            org_id = payload.get("orgId")
-            record_id = payload.get("recordId")
-            record_group_id = payload.get("recordGroupId")
-            depth = payload.get("depth", 0)
-            raw_status_filters = payload.get("statusFilters")
-            user_key = payload.get("userKey")
-            # Parent-scoped modes: optional filter; connector-wide mode: default FAILED,
-            # except for KB connectors, where a KB-wide reindex means "reindex everything".
-            status_filters: list[str] | None = None
-            if record_id is not None or record_group_id is not None:
-                status_filters = raw_status_filters if raw_status_filters else None
-            elif connector_name == Connectors.KNOWLEDGE_BASE.value.lower():
-                status_filters = raw_status_filters if raw_status_filters else None
-            else:
-                status_filters = raw_status_filters if raw_status_filters else ["FAILED"]
-
-            raw_stages = payload.get("stages")
-            stages: list[str] | None = None
-            if raw_stages is not None:
-                stages = (
-                    [s for s in cast("list[object]", raw_stages) if isinstance(s, str) and s in RETRYABLE_STAGES]
-                    if isinstance(raw_stages, list)
-                    else []
-                )
-                if not stages:
-                    self.logger.error(f"Reindex event names no stage that can be re-run: {raw_stages!r}")
-                    return False
-                if record_id is not None or record_group_id is not None:
-                    self.logger.error("Re-running pipeline stages is connector-wide only; ignoring this event")
-                    return False
-                if len({RETRYABLE_STAGES[s] for s in stages}) > 1:
-                    self.logger.error(f"Stages re-run together must be selected the same way: {stages!r}")
-                    return False
-                # Records are selected by the stages' own status, and a retry is for what failed.
-                status_filters = raw_status_filters if raw_status_filters else [ProgressStatus.FAILED.value]
-
-            if not org_id:
-                raise ValueError("orgId is required")
-
-            if not connector_id:
-                self.logger.error("connectorId is required in payload for reindex event")
-                return False
-
-            connector = await self._ensure_connector(connector_name, connector_id)
-            if not connector:
-                self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
-                return False
-
-            # Reject a connector whose app name maps to no known Connectors member,
-            # while we can still report it synchronously.
-            enum_key = connector.app.get_app_name().name.upper().replace(" ", "_")
-            if not getattr(Connectors, enum_key, None):
-                self.logger.error(f"Unknown connector name: {connector_name}")
-                return False
-
-            task_key = self._reindex_task_key(
-                connector_id, record_id, record_group_id, depth, user_key, status_filters, stages
+        raw_stages = payload.get("stages")
+        stages: list[str] | None = None
+        if raw_stages is not None:
+            stages = (
+                [s for s in cast("list[object]", raw_stages) if isinstance(s, str) and s in RETRYABLE_STAGES]
+                if isinstance(raw_stages, list)
+                else []
             )
+            # Faults of the payload itself: a redelivery cannot fix them.
+            if not stages:
+                raise NonRetryableError(f"Reindex event names no stage that can be re-run: {raw_stages!r}")
+            if record_id is not None or record_group_id is not None:
+                raise NonRetryableError("Re-running pipeline stages is connector-wide only")
+            if len({RETRYABLE_STAGES[s] for s in stages}) > 1:
+                raise NonRetryableError(f"Stages re-run together must be selected the same way: {stages!r}")
+            # Records are selected by the stages' own status, and a retry is for what failed.
+            status_filters = raw_status_filters if raw_status_filters else [ProgressStatus.FAILED.value]
+
+        if not org_id:
+            raise NonRetryableError("reindex event has no orgId")
+
+        if not connector_id:
+            self.logger.error("connectorId is required in payload for reindex event")
+            return False
+
+        # Mode 4: the records the file-type re-queue moved out of FILE_TYPE_NOT_SUPPORTED.
+        raw_ids = payload.get("recordIds")
+        requeue_ids: list[str] | None = None
+        if raw_ids is not None:
+            if (
+                not isinstance(raw_ids, list)
+                or not 0 < len(raw_ids) <= MAX_REQUEUE_IDS
+                or not all(isinstance(i, str) and i for i in raw_ids)
+                or record_id is not None or record_group_id is not None or raw_stages is not None
+            ):
+                self.logger.error("Reindex event with recordIds must name 1 to %d record ids and nothing else to select by", MAX_REQUEUE_IDS)
+                return False
+            requeue_ids = list(dict.fromkeys(raw_ids))
+
+        connector = await self._ensure_connector(connector_name, connector_id)
+        if not connector:
+            self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
+            return False
+
+        # Reject a connector whose app name maps to no known Connectors member,
+        # while we can still report it synchronously.
+        enum_key = connector.app.get_app_name().name.upper().replace(" ", "_")
+        if not getattr(Connectors, enum_key, None):
+            self.logger.error(f"Unknown connector name: {connector_name}")
+            return False
+
+        if requeue_ids is not None:
+            ids_key = hashlib.sha256("\n".join(sorted(requeue_ids)).encode()).hexdigest()[:32]
             task = await reindex_task_manager.start_if_idle(
-                task_key,
-                self._run_reindex(
-                    connector=connector,
-                    connector_name=connector_name,
-                    connector_id=connector_id,
-                    org_id=org_id,
-                    record_id=record_id,
-                    record_group_id=record_group_id,
-                    depth=depth,
-                    user_key=user_key,
-                    status_filters=status_filters,
-                    stages=stages,
-                ),
+                # Under the reindex prefix, so cache eviction and connector deletion see and stop it.
+                f"reindex:{connector_id}:requeue:{ids_key}",
+                self._requeue_records(connector, connector_id, org_id, requeue_ids),
             )
             if task is None:
-                self.logger.info(
-                    f"Reindex already running for {connector_name} {connector_id} ({task_key}) - ignoring duplicate event"
-                )
+                self.logger.info(f"Re-queue of these records already running for {connector_id}")
             return True
 
-        except Exception as e:
-            self.logger.error(f"Failed to handle reindex for {connector_name.capitalize()} {connector_id}: {str(e)}", exc_info=True)
-            return False
+        task_key = self._reindex_task_key(
+            connector_id, record_id, record_group_id, depth, user_key, status_filters, stages
+        )
+        task = await reindex_task_manager.start_if_idle(
+            task_key,
+            self._run_reindex(
+                connector=connector,
+                connector_name=connector_name,
+                connector_id=connector_id,
+                org_id=org_id,
+                record_id=record_id,
+                record_group_id=record_group_id,
+                depth=depth,
+                user_key=user_key,
+                status_filters=status_filters,
+                stages=stages,
+                force=force,
+            ),
+        )
+        if task is None:
+            self.logger.info(
+                f"Reindex already running for {connector_name} {connector_id} ({task_key}) - ignoring duplicate event"
+            )
+        return True
+
+    async def _requeue_records(
+        self, connector: BaseConnector, connector_id: str, org_id: str, record_ids: list[str]
+    ) -> None:
+        """Hand the connector the named records that are still where the re-queue left them.
+
+        QUEUED for most connectors; AUTO_INDEX_OFF with no reason for one that parks them
+        (``REQUEUE_PARKED``). A record that moved on since, or belongs elsewhere, is left alone.
+        """
+        parked = type(connector).REQUEUE_PARKED
+        expected = ProgressStatus.AUTO_INDEX_OFF.value if parked else ProgressStatus.QUEUED.value
+        typed = await self.graph_provider.get_typed_records_batch(record_ids, raise_on_error=True)
+        records = [
+            r for r in (typed.get(i) for i in record_ids)
+            if r is not None
+            and r.org_id == org_id and r.connector_id == connector_id
+            and r.indexing_status == expected and not (parked and r.reason)
+            and not r.is_placeholder and not r.is_deleted
+        ]
+        if records:
+            await connector.requeue_records(records)
+        self.logger.info(f"Re-queued {len(records)} of {len(record_ids)} record(s) for {connector_id}")
 
     async def _run_reindex(
         self,
@@ -1403,6 +1453,8 @@ class EventService:
         user_key: str | None,
         status_filters: list[str] | None,
         stages: list[str] | None = None,
+        *,
+        force: bool = False,
     ) -> None:
         """Walk every matching record once and hand each batch to the connector.
 
@@ -1415,10 +1467,11 @@ class EventService:
         """
         scope_generation = await self._kh_scope_begin(connector_id)
         try:
-            await self._reindex_batches(
-                connector, connector_name, connector_id, org_id, record_id, record_group_id, depth,
-                user_key, status_filters, stages,
-            )
+            with forced_by_user(forced=force):
+                await self._reindex_batches(
+                    connector, connector_name, connector_id, org_id, record_id, record_group_id, depth,
+                    user_key, status_filters, stages,
+                )
         finally:
             await self._kh_scope_end(connector_id, scope_generation, stamp=True)
 
@@ -1450,6 +1503,11 @@ class EventService:
         # republished: that would run two pipelines against the same
         # virtualRecordId. Everything else, including AUTO_INDEX_OFF, is fair game.
         exclude_statuses = [ProgressStatus.IN_PROGRESS.value]
+        # A Force reindex that stores its request on the record (``REFRESH_INTENT_WRITE``) also meets the records
+        # that are running now: they are not published (that would start a second pipeline on one virtual record) but
+        # keep the request, which the run's own end serves (see ``refresh_intent``).
+        intent_id = user_forced_intent_id() if refresh_intent.write_enabled() and not stages else None
+        fetch_exclude = [] if intent_id else exclude_statuses
         if stages and RETRYABLE_STAGES[stages[0]] is None:
             await self._rerun_stage_by_state(
                 connector, connector_id, org_id, user_key, stages,
@@ -1471,7 +1529,7 @@ class EventService:
                     limit=batch_size,
                     status_filters=status_filters,
                     after_key=after_key,
-                    exclude_statuses=exclude_statuses,
+                    exclude_statuses=fetch_exclude,
                 )
             elif record_group_id is not None:
                 # Mode 2: Reindex records in a record group
@@ -1484,7 +1542,7 @@ class EventService:
                     limit=batch_size,
                     status_filters=status_filters,
                     after_key=after_key,
-                    exclude_statuses=exclude_statuses,
+                    exclude_statuses=fetch_exclude,
                 )
             else:
                 # Mode 3: Reindex by status
@@ -1494,7 +1552,7 @@ class EventService:
                     status_filters=status_filters,
                     limit=batch_size,
                     after_key=after_key,
-                    exclude_statuses=exclude_statuses,
+                    exclude_statuses=fetch_exclude,
                     is_placeholder=False,
                     status_field=status_field.value,
                 )
@@ -1565,17 +1623,29 @@ class EventService:
             # reindex is an explicit user action, so clear that in memory too.
             # A folder has nothing to index: indexing marks it COMPLETED, and some
             # connectors never publish it at all, so NOT_STARTED would stick forever.
-            for record in records:
-                record.indexing_status = (
-                    ProgressStatus.COMPLETED.value if _is_folder(record)
-                    else ProgressStatus.NOT_STARTED.value
-                )
-            for status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.COMPLETED.value):
-                ids = [r.id for r in records if r.id and r.indexing_status == status]
-                if ids:
-                    await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
+            if intent_id:
+                records, kept = await EventService._keep_request_of_running_records(self, records, intent_id)
+                total_processed += kept
+                if not records:
+                    if fetched_count < batch_size:
+                        break
+                    continue
+            await EventService._clear_status_before_publish(self, records, intent_id)
 
-            await connector.reindex_records(records)
+            async with unless_synced_since(self.graph_provider, connector_id) as stamp:
+                try:
+                    await connector.reindex_records(records)
+                except Exception:
+                    if not stamp.tripped:
+                        raise
+            if stamp.tripped:
+                self.logger.info(f"A sync of {connector_id} ran during this reindex batch; its newer writes stand over the batch's")
+                # A refused write can stop the connector before it publishes the rest of the batch: what is still
+                # NOT_STARTED is reindexed as stored, which is the sync's newer state.
+                stored = await self.graph_provider.get_typed_records_batch([r.id for r in records], raise_on_error=True)
+                left = [r for r in stored.values() if r is not None and r.indexing_status == ProgressStatus.NOT_STARTED.value]
+                if left:
+                    await connector.data_entities_processor.reindex_existing_records(left)
 
             total_processed += len(records)
 
@@ -1583,6 +1653,56 @@ class EventService:
                 break
 
         self.logger.info(f"Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
+
+    async def _clear_status_before_publish(self, records: list[Record], intent_id: str | None) -> None:
+        """Set the batch's records NOT_STARTED (a folder COMPLETED) before the connector publishes them.
+
+        With ``intent_id`` (a Force reindex that stores its request) the request is written in the same statement as the
+        NOT_STARTED status, before the publish: a publish that fails, or a message that is lost, leaves the record
+        NOT_STARTED with the request on it, and the sweeps re-send it as that refresh.
+        """
+        for record in records:
+            record.indexing_status = (
+                ProgressStatus.COMPLETED.value if _is_folder(record)
+                else ProgressStatus.NOT_STARTED.value
+            )
+        for status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.COMPLETED.value):
+            ids = [r.id for r in records if r.id and r.indexing_status == status]
+            if not ids:
+                continue
+            if intent_id and status == ProgressStatus.NOT_STARTED.value:
+                await self.graph_provider.update_indexing_status_for_record_ids(
+                    ids, status, fields=refresh_intent.intent_fields(intent_id, get_epoch_timestamp_in_ms()),
+                )
+            else:
+                await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
+
+    async def _keep_request_of_running_records(
+        self, records: list[Record], intent_id: str,
+    ) -> tuple[list[Record], int]:
+        """Store a Force reindex's request on each record that is IN_PROGRESS, and return the records still to publish.
+
+        A running record is not published (a second pipeline would start on its virtual record) and its status is not
+        written: the request is the two intent fields and nothing else, and the run's own end serves it with a refresh.
+        The status is read again after the write. A record whose run ended in between is handed back to the ordinary
+        path (the run's end reads the intent after its terminal write, this read follows the intent write, so at least
+        one side sees the other; both may, and a second event of one id is a no-op once the first has run).
+        """
+        running = {r.id for r in records if r.id and r.indexing_status == ProgressStatus.IN_PROGRESS.value}
+        if not running:
+            return records, 0
+        await self.graph_provider.update_record_fields_for_ids(
+            sorted(running), refresh_intent.intent_fields(intent_id, get_epoch_timestamp_in_ms()),
+        )
+        ended: set[str] = set()
+        for record_id in sorted(running):
+            doc = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value, raise_on_error=True)
+            if doc is not None and doc.get("indexingStatus") != ProgressStatus.IN_PROGRESS.value:
+                ended.add(record_id)
+        kept = running - ended
+        if kept:
+            self.logger.info("Kept the Force reindex request of %d record(s) that are running; each is refreshed when its run ends", len(kept))
+        return [r for r in records if r.id not in kept], len(kept)
 
     async def _rerun_stage_by_state(
         self,
@@ -1675,6 +1795,7 @@ class EventService:
         self.logger.info(f"Processing async deletion for {connector_name} connector {connector_id}")
 
         graph_deleted = False
+        owner_id: str | None = None
         try:
             # Stop any sync before deleting the data underneath it.
             #
@@ -1696,6 +1817,7 @@ class EventService:
                 current = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value
                 )
+                owner_id = (current or {}).get("createdBy")
                 if (current or {}).get(ConnectorStateKeys.PENDING_RESYNC):
                     await self.graph_provider.update_node(
                         connector_id,
@@ -1713,6 +1835,17 @@ class EventService:
                 await coordinator.cancel_and_wait(connector_id)
             await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
             await self._await_remote_sync_stop(connector_id)
+
+            # The pushed files are the connector's own data and go with it, BEFORE the graph rows: once those are gone nothing could say
+            # whose files they were. A removal that fails fails the delete here (logged), which puts the connector back from DELETING so the
+            # delete can be asked for again, instead of leaving files on the server that no connector owns.
+            if payload.get("connectorType") == LOCAL_REPO_CONNECTOR_NAME:
+                if owner_id is None:
+                    # The read above may have failed (it is only a convenience for other connectors): here a failed read aborts the delete, since
+                    # without the owner the files cannot be found. A record that really has no owner is answered by a search on the connector id.
+                    owner_id = ((await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)) or {}).get("createdBy")
+                if not await remove_mirror(self.app_container.config_service(), self.logger, org_id, owner_id, connector_id):
+                    raise RuntimeError(f"the pushed files of connector {connector_id} could not be removed")
 
             # Recorded before the graph rows go: a lost deleteConnectorEntities
             # is then still reconciled by the indexing service, and an unfinished

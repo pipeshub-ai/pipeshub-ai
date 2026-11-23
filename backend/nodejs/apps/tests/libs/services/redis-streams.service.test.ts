@@ -266,7 +266,10 @@ describe('Redis Streams Service', () => {
         await producer.publish('topic', msg);
         const args = mockRedis.xadd.firstCall.args;
         const valueIdx = args.indexOf('value');
-        expect(JSON.parse(args[valueIdx + 1])).to.deep.equal({ data: 42 });
+        // Every published event carries an event id (a UUID at publish), signed or not.
+        const { eventId, ...body } = JSON.parse(args[valueIdx + 1]);
+        expect(body).to.deep.equal({ data: 42 });
+        expect(eventId).to.match(/^[0-9a-f-]{36}$/);
       });
 
       it('should include headers when present', async () => {

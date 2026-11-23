@@ -31,7 +31,7 @@ from app.services.graph_db.postgres.kg.dependents import (
     held_keys,
     parents_of,
 )
-from app.services.graph_db.postgres.kg.locks import NeedLocks
+from app.services.graph_db.postgres.kg.locks import NeedLocks, bump
 from app.services.graph_db.postgres.kg.model import (
     CODE_COLL,
     COLL_CODE,
@@ -41,7 +41,11 @@ from app.services.graph_db.postgres.kg.model import (
     RECORD_COLLS,
     Key,
 )
-from app.services.graph_db.postgres.kg.reader import load_sks
+from app.services.graph_db.postgres.kg.reader import (
+    RECORDS_BYTE_ORDER,
+    load_sks,
+    records_after,
+)
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.services.permissions import classes
 
@@ -56,9 +60,14 @@ INLINE_MAX = 20000                  # records a change may reach before they are
 
 
 def inline_max() -> int:
-    """Records a change may reach beyond its seeds before they are hidden and restamped by the worker (``PG_KG_INLINE_MAX``)."""
-    v = os.environ.get("PG_KG_INLINE_MAX")
-    return int(v) if v and v.isdigit() else INLINE_MAX
+    """Records a change may reach beyond its seeds before they are hidden and restamped by the worker (``PG_KG_INLINE_MAX``): a whole number, unset or empty is the default,
+    anything else raises (``flush.check_env``)."""
+    v = os.environ.get("PG_KG_INLINE_MAX", "")
+    if not v:
+        return INLINE_MAX
+    if not (v.isascii() and v.isdigit()):
+        raise ValueError(f"PG_KG_INLINE_MAX={v!r} is not understood: set it to a whole number of records, or leave it unset")
+    return int(v)
 
 
 @dataclass
@@ -238,6 +247,7 @@ async def stamp(tx: Tx, org: str, seeds: set[Key], *, also: set[Key] | None = No
     lost a child, whose ``leaf`` flips); returns what it did. Runs in the projection's unit, under the connector's lock, after the structural rows. ``locked``: the connectors the
     unit holds (with ``org_wide``, any): a stamp that reaches another raises :class:`NeedLocks` before anything is written."""
     from app.services.graph_db.postgres.kg import restamp  # restamp imports this module
+    bump(org, set(locked or ()), wide=org_wide)
 
     recs = {k for k in seeds if k[0] in RECORD_COLLS}
     st = StampStats(seeds=len(recs))
@@ -397,26 +407,39 @@ def _scope(n: StampNode, f: StampApp, has_child: bool) -> tuple[bool, bool, bool
     return (n.deleted or bad or breaks, n.deleted or bad, n.deleted or (not special and (bad or not inherits_a_parent)), n.deleted)
 
 
+# The connector's record groups after a cursor in id order (no index by connector: the org's groups are few beside its records); its records come after them, by records_after.
+STAMP_GROUPS = """/* pipeshub:kg.stamp_app_page */ SELECT n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'recordGroups' AND n.doc->>'connectorId' = $2
+    AND ($3::text IS NULL OR n.id > $3) ORDER BY n.id LIMIT $4"""
+
+
 def _after(cursor: str | None) -> tuple[str | None, str | None]:
-    return (None, None) if cursor is None else stampgraph.split(cursor)
+    if cursor is None:
+        return None, None
+    c, i = stampgraph.split(cursor)
+    return (RECORDS_BYTE_ORDER, "") if c == "records" else (c, i)      # a cursor older code wrote in the records: see RECORDS_BYTE_ORDER
 
 
 async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int, st: StampStats | None = None, *, dry: bool = False,
                     locked: set[str] | None = None) -> str | None:
-    """One page of the whole-connector restamp (the backfill's last step): the next ``limit`` records and groups after the cursor ``after`` (ordered by collection and id); returns the new cursor or None when done.
+    """One page of the whole-connector restamp (the backfill's last step): the next ``limit`` record groups (in id order), then records (in byte order of id, at most 1,000 of
+    them a page) after the cursor ``after``; returns the new cursor or None when done.
     The first page also stores what the stamps are compiled with. ``locked``: the connectors the unit holds; a page whose stamps reach another raises :class:`locks.NeedLocks` before it writes
     (a ``dry`` page writes nothing and reads under the connector's lock in a unit that stays open, so it passes none)."""
+    if not dry:
+        bump(org, {app_id})
     w = KgWriter(tx)
     app_sks, facts = await _facts(tx, org, w, {app_id})
     if app_id not in facts:
         return None
     if after is None and not dry:
         await w.app_facts_set(app_sks[app_id], opens=facts[app_id].opens, group_level=facts[app_id].has_group_level)
-    rows = await tx.fetch("""/* pipeshub:kg.stamp_app_page */ SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[]) AND n.doc->>'connectorId' = $3
-        AND ($4::text IS NULL OR (n.coll, n.id) > ($4::text, $5::text)) ORDER BY n.coll, n.id LIMIT $6""", org, ["records", "recordGroups"], app_id, *_after(after), limit)
+    c0, i0 = _after(after)
+    rows = [] if c0 == RECORDS_BYTE_ORDER else [("recordGroups", r["id"]) for r in await tx.fetch(STAMP_GROUPS, org, app_id, i0, limit)]
+    if len(rows) < limit:
+        rows += [("records", i) for i in await records_after(tx, org, app_id, i0 if c0 == RECORDS_BYTE_ORDER else "", limit - len(rows))]
     if not rows:
         return None
-    keys = {(r["coll"], r["id"]) for r in rows}
+    keys = set(rows)
     if not dry:      # a record kg holds no row for is not given one of nothing but stamps: its own projection writes the row
         keys = await held_keys(tx, org, keys)
         # A parent in another connector gained this page's child, which kg may not have held when that connector was stamped: its ``leaf`` is restamped now, under its lock (NeedLocks asks for it).
@@ -428,8 +451,10 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
             frontier = set(await held_apps(tx, org, await children_of(tx, org, frontier))) - below - keys
             below |= frontier
         keys |= below
+    if not dry:      # every connector whose rows this page rewrites, not only its own
+        bump(org, {a for a in (await held_apps(tx, org, keys)).values() if a})
     await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry, locked=locked)
-    return stampgraph.nk(rows[-1]["coll"], rows[-1]["id"])
+    return stampgraph.nk(RECORDS_BYTE_ORDER if rows[-1][0] == "records" else rows[-1][0], rows[-1][1])
 
 
 KIND_COLL = {"app": "apps", "group": "recordGroups", "record": "records"}

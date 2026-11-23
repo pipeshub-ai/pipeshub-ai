@@ -193,7 +193,7 @@ class TestSharesThatGrantNothing:
             await processor._handle_record_permissions(record, shares, tx_store)
 
         after = await graph_provider.get_edges_to_node(record_node, CollectionNames.PERMISSION.value)
-        control = await graph_provider.get_user_by_email(people.control.email)
+        control = await graph_provider.get_user_by_email(people.control.email, org_id=pipeshub_client.org_id)
         assert control is not None, f"the control {people.control.email} has no user in the graph"
         added = Counter(map(_grantee, after)) - Counter(map(_grantee, before))
         assert added == Counter([control.id]), (

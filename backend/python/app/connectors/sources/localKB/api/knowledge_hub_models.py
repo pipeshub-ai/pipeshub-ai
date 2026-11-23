@@ -27,6 +27,7 @@ class SortField(str, Enum):
     UPDATED_AT = "updatedAt"
     SIZE = "size"
     TYPE = "type"
+    ORIGIN = "origin"
 
 class SortOrder(str, Enum):
     """Valid sort order values"""
@@ -130,7 +131,8 @@ class PaginationInfo(BaseModel):
     by number.
     """
     limit: int = Field(..., description="Items per page")
-    totalItems: int = Field(..., description="Total number of items")
+    totalItems: int = Field(..., description="Total number of items; may not be exact when `totalCapped` is true")
+    totalCapped: bool = Field(False, description="True when `totalItems` may not be exact (usually lower); page with `hasNext` and `nextCursor`, not the total")
     hasNext: bool = Field(..., description="Whether there is a next page")
     hasPrev: bool = Field(..., description="Whether there is a previous page")
     startIndex: Optional[int] = Field(None, description="1-based index of the first item on this page")
@@ -191,7 +193,8 @@ class CountItem(BaseModel):
 class CountsInfo(BaseModel):
     """Response model for counts information"""
     items: List[CountItem] = Field(..., description="Breakdown of counts by type")
-    total: int = Field(..., description="Total number of nodes")
+    total: int = Field(..., description="Total number of nodes; may not be exact when `capped` is true")
+    capped: bool = Field(False, description="True when `total` and the counts may not be exact (usually lower), as for `pagination.totalCapped`")
 
 class PermissionsInfo(BaseModel):
     """Response model for permissions information"""
@@ -223,6 +226,8 @@ class KnowledgeHubNodesResponse(BaseModel):
     breadcrumbs: Optional[List[BreadcrumbItem]] = Field(None, description="Breadcrumb trail")
     counts: Optional[CountsInfo] = Field(None, description="Counts summary")
     permissions: Optional[PermissionsInfo] = Field(None, description="User permissions")
+    notReady: Optional[list[str]] = Field(None, description="Sources left out of this listing because their copy is not made yet; the others are listed. Ask again in a moment")
+    preparing: Optional[bool] = Field(None, description="True when nothing could be listed because the source is still being prepared (its copy is not finished): the page is empty, with no cursor. Ask again in a moment")
     maxFolderDepth: int = Field(KB_MAX_FOLDER_DEPTH, description="Deepest a collection folder may be nested (a folder directly in the collection is depth 1)")
     typed_records: Optional[Dict[str, Any]] = Field(None, description="Typed Record instances keyed by record ID (only when include_typed_records is requested)")
 

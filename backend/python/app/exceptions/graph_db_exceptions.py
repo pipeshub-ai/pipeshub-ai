@@ -28,7 +28,18 @@ class PermissionVerificationUnavailableError(Exception):
     Raised rather than returning an empty map, because an empty map is also the
     honest answer when every candidate is denied — and the two need opposite
     responses: retry later versus "nothing you can read matched".
+
+    Raise it ``from`` the failure with the default message, never ``str(exc)``:
+    a driver's text (host, query, values) would travel in it to every log line
+    and tool result that prints this error. The cause keeps type and text, and
+    its chain is logged without messages (``log_failure`` and any ``exc_info``
+    record), whether or not the graph client stamped the cause.
     """
+
+    log_hide_text = True
+
+    def __init__(self, message: str = "The graph could not verify access.") -> None:
+        super().__init__(message)
 
 
 class GraphLockUnavailableError(GraphDBError):
@@ -88,12 +99,26 @@ class KnowledgeHubListingTooLarge(GraphDBError):
 
 
 class KnowledgeHubListingBusy(GraphDBError):
-    """The listing could not get what it needs right now: a walk waited too long for a turn, or the database ran
-    out of transaction memory because other requests held it. Nothing is wrong with the request; retry."""
+    """The listing could not get what it needs right now: a walk waited too long for a turn, the database ran
+    out of transaction memory because other requests held it, or the request's deadline passed (``timed_out``).
+    Nothing is wrong with the request; retry."""
 
-    def __init__(self, *, out_of_memory: bool = False) -> None:
+    def __init__(self, *, out_of_memory: bool = False, ran_s: float | None = None, timed_out: bool = False) -> None:
         self.out_of_memory = out_of_memory
-        super().__init__("The listing is busy right now. Please try again in a few seconds.")
+        # How long the statement itself ran before the database gave up, when that excludes a wait for its plan.
+        self.ran_s = ran_s
+        self.timed_out = timed_out
+        super().__init__(
+            "The listing took too long. Please try again in a moment." if timed_out
+            else "The listing is busy right now. Please try again in a few seconds.")
+
+
+class KnowledgeHubListingNotReady(GraphDBError):
+    """A source whose copy in the typed graph has not been made yet (just connected, or right after an upgrade): its structure would be missing or partial,
+    so it is not listed from. The knowledge hub answers it as an empty page marked ``preparing``; nothing is wrong with the request; ask again."""
+
+    def __init__(self) -> None:
+        super().__init__("This source is still being prepared. Try again in a moment.")
 
 
 def is_out_of_memory(error: BaseException) -> bool:
@@ -110,8 +135,41 @@ def is_out_of_memory(error: BaseException) -> bool:
     return False
 
 
+def listing_busy(error: BaseException) -> KnowledgeHubListingBusy | None:
+    """The listing's own busy refusal behind ``error``, however it was wrapped on the way up (``check_access`` wraps whatever stopped it,
+    a passed deadline too, in ``PermissionVerificationUnavailableError``), or None."""
+    seen: set[int] = set()
+
+    def find(error: BaseException | None) -> KnowledgeHubListingBusy | None:
+        # A group can sit anywhere along the chain (a check that ran several tasks), so its members are searched at every link.
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            if isinstance(error, KnowledgeHubListingBusy):
+                return error
+            if isinstance(error, BaseExceptionGroup):
+                for member in error.exceptions:
+                    if (busy := find(member)) is not None:
+                        return busy
+            error = getattr(error, "__cause__", None)
+        return None
+
+    return find(error)
+
+
 def is_graph_memory_refusal(exc: BaseException) -> bool:
     """The graph server's memory pool refused a write: a ``GraphMemoryLimitError``, or a driver
     error that carries one of the pool's status codes (a statement not marked as bulk keeps the
     driver's error)."""
     return isinstance(exc, GraphMemoryLimitError) or getattr(exc, "code", None) in MEMORY_LIMIT_CODES
+
+
+class RecordSchemaNarrowError(GraphDBError):
+    """A write to ``records`` was refused because the live collection schema is narrower than this process's.
+
+    Transient: the schema is widened outside any transaction, and the owner of the transaction that was aborted
+    runs it again. Nothing the transaction wrote was kept. A handler that logs a failure and goes on must let this
+    one through (``_must_propagate``).
+    """
+
+    # Retried like a lost write conflict: nothing the aborted transaction wrote was kept.
+    log_error_class = "conflict"

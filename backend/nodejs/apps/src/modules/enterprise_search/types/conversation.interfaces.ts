@@ -408,6 +408,13 @@ export interface IAIResponse {
   modelInfo?: IAIModel;
   /** Set when a search of the run was answered with less than the full search (see `searchDegradedMeta`). */
   searchDegraded?: boolean;
+  /** Codes for connectors the search reached that are syncing or updating permissions; the client words them. */
+  accessNotices?: {
+    code: string;
+    connectorId?: string;
+    connectorName?: string;
+    firstSync?: boolean;
+  }[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
   /** Present only when `PIPESHUB_PERSIST_REASONING=true` on the Python side. */

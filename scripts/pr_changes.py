@@ -67,6 +67,8 @@ PYTHON_APP = (
     f"{PYTHON}/pyproject.toml",
     f"{PYTHON}/pytest.ini",
     f"{PYTHON}/.coveragerc",
+    # Generated from app/config/file_types.py: the Python parity test is what catches a hand edit.
+    "backend/nodejs/apps/src/modules/storage/mimetypes/file-types.generated.ts",
 )
 
 PYTHON_PACKAGING = (f"{PYTHON}/pyproject.toml", f"{PYTHON}/pytest.ini")
@@ -78,8 +80,18 @@ CHECKS: dict[str, tuple[str, ...]] = {
     "node_unit": NODE_APP + (".github/workflows/unit-test.yml",),
     "python_unit": PYTHON_APP
     + (
+        # A frontend file a Python unit test checks against the API
+        # (test_knowledge_hub_sort_matches_spec.py): changed alone, it must still run.
+        "frontend/app/(main)/knowledge-base/sort-fields.json",
         "scripts/unit_shards.py",
         "scripts/unit_shard_durations.json",
+        # test_knob_passthrough.py reads these; capacity_blank_env_test.sh runs in the services shard.
+        f"{COMPOSE}/docker-compose.yml",
+        f"{COMPOSE}/env.template",
+        f"{COMPOSE}/tests/capacity_blank_env_test.sh",
+        "deployment/helm/pipeshub-ai/templates/deployment.yaml",
+        "deployment/helm/pipeshub-ai/values.yaml",
+        "deployment/process_monitor.sh",
         ".github/workflows/unit-test.yml",
     ),
     # main.yml
@@ -134,6 +146,7 @@ STORAGE_NODE = (
 INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/conftest.py",
     f"{PYTHON}/tests/support/**",
+    f"{PYTHON}/tests/unit/attempt_start.py",
     f"{PYTHON}/tests/unit/agents/adapter/conftest.py",
     f"{PYTHON}/tests/unit/agents/adapter/support/scripted_transport.py",
     f"{PYTHON}/tests/unit/connectors/sources/localKB/push/bodies.py",
@@ -142,6 +155,7 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/connectors/sources/test_connector_workflow_integration.py",
     f"{PYTHON}/tests/unit/modules/entity_resolution/conftest.py",
     f"{PYTHON}/tests/unit/modules/indexing/test_entity_index_rebuild.py",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/live_fakes.py",
     f"{PYTHON}/tests/unit/modules/pipeline/fakes.py",
     f"{PYTHON}/tests/unit/modules/transformers/test_entity_vectorstore_delete.py",
     f"{PYTHON}/tests/unit/services/artifact_registry/fakes.py",
@@ -155,10 +169,14 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/permissions/oracle.py",
     f"{PYTHON}/tests/permissions/scope_corpus.py",
     f"{PYTHON}/tests/permissions/serving_corpus.py",
+    f"{PYTHON}/tests/permissions/gen/**",
+    f"{PYTHON}/tests/permissions/test_scope_projector.py",
     f"{PYTHON}/tests/permissions/scope_layer.py",
     f"{PYTHON}/tests/permissions/stamp_world.py",
     f"{PYTHON}/tests/permissions/store_harness.py",
     f"{PYTHON}/tests/permissions/rewrite_kit.py",
+    f"{PYTHON}/tests/permissions/kh_layer.py",
+    f"{PYTHON}/tests/permissions/kh_worlds.py",
     f"{PYTHON}/tests/permissions/scenarios/**",
 )
 
@@ -176,6 +194,9 @@ MATRIX_PYTHON = (
     f"{COMPOSE}/docker-compose.integration.graph-db.yml",
     f"{COMPOSE}/docker-compose.integration.kv.yml",
     ".github/workflows/backend-matrix.yml",
+    # Which test files each suite runs.
+    "scripts/integration_discovery.py",
+    "scripts/graph_shards.py",
 ) + INTEGRATION_HELPERS + PYTHON_PACKAGING
 
 for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):
@@ -195,6 +216,17 @@ CHECKS["redis_cluster"] = (
         f"{COMPOSE}/docker-compose.integration.redis-cluster.yml",
         ".github/workflows/unit-test.yml",
     )
+)
+
+# unit-test.yml's sandbox-live job: builds the sandbox image and runs the
+# Docker-marked tests against a real daemon, which the unit shards skip.
+CHECKS["sandbox_live"] = (
+    f"{PYTHON}/app/agent_loop_lib/sandbox/**",
+    f"{PYTHON}/app/sandbox/**",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/test_docker_live.py",
+    f"{PYTHON}/tests/unit/sandbox/test_docker_proxy_live.py",
+    "deployment/sandbox/**",
+    ".github/workflows/unit-test.yml",
 )
 
 # integration-tests.yml's helper unit tests (mocks only). The shards run them

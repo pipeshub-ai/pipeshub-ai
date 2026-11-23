@@ -5,7 +5,7 @@ import pytest
 
 from .test_integration import connect
 
-TABLES = ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "scopes")
+TABLES = ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "scopes", "counts")
 READERS = ("pipeshub_connectors", "pipeshub_indexing", "pipeshub_query")
 
 
@@ -31,9 +31,12 @@ def test_the_graph_services_read_the_tables_and_nothing_can_write_them(rdb):
 def test_other_services_hold_nothing_on_kg(rdb, role):
     cluster, name = rdb
     with connect(cluster, name) as c:
-        assert not c.execute("SELECT has_schema_privilege(%s, 'kg', 'USAGE')", (role,)).fetchone()[0]
+        # the jobs role reads and deletes the analyze requests (kg_0016, the maintenance worker) and nothing else of kg
+        assert c.execute("SELECT has_schema_privilege(%s, 'kg', 'USAGE')", (role,)).fetchone()[0] == (role == "pipeshub_jobs")
         for t in TABLES:
             assert not c.execute("SELECT has_table_privilege(%s, %s, 'SELECT, INSERT, UPDATE, DELETE')", (role, f"kg.{t}")).fetchone()[0], t
+        held = [p for p in ("SELECT", "INSERT", "UPDATE", "DELETE") if c.execute("SELECT has_table_privilege(%s, 'kg.analyze_requests', %s)", (role, p)).fetchone()[0]]
+        assert held == (["SELECT", "DELETE"] if role == "pipeshub_jobs" else [])
 
 
 def test_every_table_has_a_row_policy_for_its_organisation(rdb):
@@ -72,3 +75,15 @@ def test_a_downgrade_takes_the_schema_away_and_an_upgrade_brings_it_back(db):
         assert c.execute("SELECT to_regnamespace('kg')").fetchone()[0] is None
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     assert run_migrate(url).returncode == 0
+
+
+def test_the_records_carry_the_three_counter_triggers(rdb):
+    """kg_0015: statement triggers on kg.records for the counter deltas; the function is a reviewed exemption pinned to its body."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        rows = {tuple(r) for r in c.execute("SELECT tgname, tgfoid::regprocedure::text FROM pg_trigger WHERE tgrelid = 'kg.records'::regclass AND NOT tgisinternal")}
+        assert rows == {(f"kg_records_count_{ev}", "kg.count_change()") for ev in ("insert", "update", "delete")}
+        assert c.execute("SELECT count(*) FROM kernel.trigger_exemptions WHERE proc = 'kg.count_change()'::regprocedure").fetchone()[0] == 1
+        # a restore keeps no counter row: the worker counts the restored connectors whole again
+        assert [tuple(r) for r in c.execute("SELECT tgname, tgfoid::regprocedure::text FROM pg_trigger WHERE tgrelid = 'kg.counts'::regclass AND NOT tgisinternal")] == \
+            [("kg_counts_restore", "kg.count_restored()")]

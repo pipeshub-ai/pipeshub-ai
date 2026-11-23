@@ -47,7 +47,10 @@ from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.error_classification import classify_exception
+from app.agents.agent_loop.error_classification import (
+    classify_exception,
+    run_error_text,
+)
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks import (
     CitationCollector,
@@ -107,6 +110,7 @@ from app.utils.stage_timer import RunTimer
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
 from app.utils.turn_memo import per_turn_lookups
+from app.utils.user_lookup import get_caller_user
 from app.web.config import resolve_web_search
 
 if TYPE_CHECKING:
@@ -203,7 +207,7 @@ async def _fetch_available_connectors(
     """
     try:
         if not user_key:
-            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await get_caller_user(graph_provider, user_id)
             user_key = (user.get("_key") or user.get("id")) if user else None
         if not user_key:
             return None
@@ -246,6 +250,7 @@ def _apply_policy_to_chat_state(
     chat_state["has_code_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_code_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
     chat_state["deep_research"] = policy.deep_research and chat_state["web_search_config"] is not None
+    chat_state["web_search_unset"] = policy.include_web_search and web_search_config is None
     chat_state["chat_mode"] = policy.name
 
 
@@ -354,7 +359,7 @@ async def _run_no_tools_degradation(
             yield create_sse_event(event["event"], event["data"])
     except Exception as exc:
         run_timing.end(log, "error", mode="no_tools", exc=exc)
-        yield create_sse_event("error", {"error": f"Stream error: {exc}"})
+        yield create_sse_event("error", {"error": classify_exception(exc)[1]})
         return
     run_timing.end(log, "done", mode="no_tools")
 
@@ -762,7 +767,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
                 finalizer = AnswerFinalizer(context, collector)
                 await finalizer.run(
-                    agent_success=result.success, agent_error=result.error,
+                    agent_success=result.success, agent_error=run_error_text(result),
                     agent_output=result.output, event_sink=context.event_sink,
                     streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,
                     # Stop Generation (Phase 3b) — see the matching call in

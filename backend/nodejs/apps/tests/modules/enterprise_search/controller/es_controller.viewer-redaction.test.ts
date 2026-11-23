@@ -166,6 +166,7 @@ const stubConversation = (messages: unknown[]) => {
   sinon.stub(ChatSession, 'findOne').returns(
     chain({ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
   )
+  sinon.stub(ChatSession, 'find').returns(chain([]))
   sinon.stub(ChatSessionMessage, 'countDocuments').resolves(messages.length)
   sinon.stub(ChatSessionMessage, 'find').returns(chain(messages))
 }
@@ -321,6 +322,7 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
     sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', initiator: OWNER, isShared: true, sharedWith: [], status: 'complete' }))
+    sinon.stub(ChatSession, 'find').returns(chain([]))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([{ ...richAnswer(), messageType: 'user_query' }]))
     const r = res()
@@ -647,6 +649,7 @@ describe('lost access hides the whole answer, for the owner too', () => {
     sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
     sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', userId: OWNER, initiator: OWNER, status: 'complete' }))
+    sinon.stub(ChatSession, 'find').returns(chain([]))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
     sinon.stub(ChatSessionMessage, 'find').returns(chain([answer()]))
     const r = res()
@@ -866,6 +869,41 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     expect(JSON.stringify(oldest)).to.not.contain(SECRET)
   })
 
+  describe('an answer naming no record, when the access check cannot answer', () => {
+    const unconfirmed = { redacted: true, reason: 'access_check_unavailable' }
+    const rows = () => [
+      { messageType: 'user_query', content: QUESTION },
+      answer(),
+      { messageType: 'user_query', content: 'And in plain words?' },
+      { messageType: 'bot_response', content: SECRET, citations: [] },
+    ]
+
+    it('is withheld from a shared viewer', async () => {
+      stubAccess(null)
+      const out: any[] = await redactMessagesFor(appConfig, viewerOf(VIEWER, ORG), rows() as any, () => OWNER)
+      expect(out[1].answerHidden).to.deep.equal(unconfirmed)
+      expect(out[3].answerHidden).to.deep.equal(unconfirmed)
+      expect(out[2].content, 'the question stays').to.equal('And in plain words?')
+      expect(JSON.stringify(out)).to.not.contain(SECRET)
+    })
+
+    it('stays for the owner', async () => {
+      stubAccess(null)
+      const out: any[] = await redactMessagesFor(appConfig, viewerOf(OWNER, ORG), rows() as any, () => OWNER)
+      expect(out[1].answerHidden).to.deep.equal(unconfirmed)
+      expect(out[3].answerHidden).to.equal(undefined)
+      expect(out[3].content).to.equal(SECRET)
+    })
+
+    it('stays for a shared viewer when the check answers', async () => {
+      stubAccess(['rec-ok', 'rec-no', 'att-ok', 'att-no'])
+      const out: any[] = await redactMessagesFor(appConfig, viewerOf(VIEWER, ORG), rows() as any, () => OWNER)
+      expect(out[1].answerHidden).to.equal(undefined)
+      expect(out[3].answerHidden).to.equal(undefined)
+      expect(out[3].content).to.equal(SECRET)
+    })
+  })
+
   it('a record already known to be denied hides a fresh answer even when a new record could not be checked', async () => {
     stubAccess(null)
     const memo = newReadable()
@@ -910,6 +948,41 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     const rows = await fetchRows(OWNER)
     expect(rows[2].answerHidden).to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
     expect(JSON.stringify(rows[2])).to.not.contain(SECRET)
+  })
+
+  // As web search stores them: the page address is also the citation's recordId.
+  const PAGE = 'https://news.example.com/markets'
+  const LINK = `${PAGE}#:~:text=stocks`
+  const webSearchCitation = () => ({
+    citationId: { _id: 'cw', content: 'page text', metadata: { recordId: PAGE, webUrl: LINK, origin: 'WEB_SEARCH', connector: 'WEB', recordType: 'WEBPAGE' } },
+  })
+
+  it('a web search citation is checked by its address, not as a record, and keeps the answer', async () => {
+    const asked = stubAccess([], [PAGE])
+    stubConversation([{ messageType: 'bot_response', content: 'Market week', citations: [webSearchCitation()] }])
+    const [m] = await fetchRows(OWNER)
+    expect(m.content).to.equal('Market week')
+    expect(m.answerHidden).to.equal(undefined)
+    expect(asked.flat()).to.not.include(PAGE)
+    // The page address is checked; the link with its text fragment is only shown.
+    expect(askedUrls).to.include(PAGE)
+    expect(askedUrls).to.not.include(LINK)
+  })
+
+  it('a shared viewer sees a web search citation of a public page, not a placeholder', async () => {
+    stubAccess([], [PAGE])
+    stubPeerConversation([{ messageType: 'bot_response', content: 'Market week', citations: [webSearchCitation()] }])
+    const m = await fetchConversation(VIEWER)
+    expect(m.citations[0].citationData.metadata.webUrl).to.equal(LINK)
+  })
+
+  it('a web search citation at the address of a record the reader cannot read still hides the answer', async () => {
+    // Only the fragment link is unmatched: the page address is where an unreadable record is stored.
+    stubAccess([], [LINK])
+    stubConversation([{ messageType: 'bot_response', content: SECRET, citations: [webSearchCitation()] }])
+    const [m] = await fetchRows(OWNER)
+    expect(m.answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(m)).to.not.contain(SECRET)
   })
 
   it('a web-search answer whose link matches no record stays visible', async () => {

@@ -3,7 +3,7 @@
 import { useTranslation } from 'react-i18next';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Box, Flex, Text, Heading, Button, IconButton } from '@radix-ui/themes';
+import { Box, Callout, Flex, Text, Heading, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { SettingsSaveBar } from '../components/settings-save-bar';
@@ -12,7 +12,7 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useToastStore } from '@/lib/store/toast-store';
 import { WebSearchApi } from './api';
-import { WebSearchProviderRow, ConfigurePanel } from './components';
+import { WebSearchProviderRow, ConfigurePanel, SendImagesRow } from './components';
 import {
   DUCKDUCKGO_PROVIDER_ID,
   WEB_SEARCH_PROVIDER_META,
@@ -22,15 +22,20 @@ import {
   type WebSearchProviderAgentUsage,
   type WebSearchProviderType,
 } from './types';
+import { useImageSettings } from './use-image-settings';
 import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
+import { SWR_NS, revalidateSwrNamespace } from '@/lib/api/swr-cache';
 
 /** After the default is deleted the server promotes the next search provider; name whichever it chose. */
 async function newDefaultNotice(): Promise<string> {
   try {
-    return `${defaultProviderLabel(await WebSearchApi.getProviders())} is now the default web search provider.`;
+    const label = defaultProviderLabel(await WebSearchApi.getProviders());
+    return label
+      ? `${label} is now the default web search provider.`
+      : 'No search provider is left, so web search is off until you choose one.';
   } catch {
-    // Unknown is better than wrong: an unread setting must not be reported as DuckDuckGo.
-    return 'The next search provider you added is now the default, or DuckDuckGo if there is none.';
+    // Unknown is better than wrong: an unread setting must not be reported as a provider.
+    return 'The next search provider you added is now the default. With none left, web search is off.';
   }
 }
 
@@ -54,6 +59,7 @@ export default function WebSearchPage() {
   // ── State ─────────────────────────────────────────────────
   const [configuredProviders, setConfiguredProviders] = useState<ConfiguredWebSearchProvider[]>([]);
   const [inherited, setInherited] = useState(false);
+  const [isSetUp, setIsSetUp] = useState<boolean | undefined>(undefined);
 
   const [isLoading, setIsLoading] = useState(true);
   const [settingDefaultType, setSettingDefaultType] = useState<WebSearchProviderType | null>(null);
@@ -68,6 +74,28 @@ export default function WebSearchPage() {
   const [deleteUsageAgents, setDeleteUsageAgents] = useState<WebSearchProviderAgentUsage[]>([]);
   const [isCheckingUsage, setIsCheckingUsage] = useState(false);
 
+  // Images on fetched pages ("Send images to LLM"); off until an admin turns them on.
+  const onImageSettingsSaved = useCallback(
+    (title: string) => addToast({ variant: 'success', title, duration: 3000 }),
+    [addToast],
+  );
+  const onImageSettingsFailed = useCallback(
+    (error: unknown) =>
+      addToast({
+        variant: 'error',
+        title: t('workspace.webSearch.toasts.updateError'),
+        description: (error instanceof Error && error.message) || t('message.tryAgain'),
+        duration: 5000,
+      }),
+    [addToast, t],
+  );
+  const imageSettings = useImageSettings({
+    save: WebSearchApi.updateSettings,
+    onSaved: onImageSettingsSaved,
+    onFailed: onImageSettingsFailed,
+  });
+  const { settings, beginLoad, applyLoaded, update: updateImageSettings } = imageSettings;
+
   const anyActionInProgress = isLoading || settingDefaultType !== null || isDeleting;
 
   // ── Derived ───────────────────────────────────────────────
@@ -77,20 +105,24 @@ export default function WebSearchPage() {
     return map;
   }, [configuredProviders]);
 
-  const defaultProviderType: WebSearchProviderType = useMemo(() => {
-    const explicit = configuredProviders.find((p) => p.isDefault);
-    if (explicit) return explicit.provider as WebSearchProviderType;
-    return DUCKDUCKGO_PROVIDER_ID;
-  }, [configuredProviders]);
+  const defaultProviderType = useMemo(
+    () => (configuredProviders.find((p) => p.isDefault)?.provider ?? null) as WebSearchProviderType | null,
+    [configuredProviders],
+  );
 
   // ── Data loading ──────────────────────────────────────────
   const loadData = useCallback(
     async (showLoading = true) => {
       if (showLoading) setIsLoading(true);
+      const loadStartedAt = beginLoad();
       try {
         const config = await WebSearchApi.getConfig();
         setConfiguredProviders(config.providers);
         setInherited(config?.inherited ?? false);
+        setIsSetUp(config.configured);
+        applyLoaded(config.settings, loadStartedAt);
+        // Chat reads the same setting to decide whether its web search switch can be turned on.
+        revalidateSwrNamespace(SWR_NS.webSearchConfig);
 
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Please try again.';
@@ -104,7 +136,23 @@ export default function WebSearchPage() {
         if (showLoading) setIsLoading(false);
       }
     },
-    [addToast],
+    [addToast, beginLoad, applyLoaded],
+  );
+
+  // ── Handlers: images on fetched pages ─────────────────────
+  const handleSendImagesToggle = useCallback(
+    (includeImages: boolean) =>
+      updateImageSettings(
+        { ...settings, includeImages },
+        t(includeImages ? 'workspace.webSearch.toasts.imagesEnabled' : 'workspace.webSearch.toasts.imagesDisabled'),
+      ),
+    [settings, updateImageSettings, t],
+  );
+
+  const handleMaxImagesCommit = useCallback(
+    (maxImages: number) =>
+      updateImageSettings({ ...settings, maxImages }, t('workspace.webSearch.toasts.maxImagesUpdated', { count: maxImages })),
+    [settings, updateImageSettings, t],
   );
 
   useEffect(() => {
@@ -126,17 +174,25 @@ export default function WebSearchPage() {
     ({ provider, isEdit }: { provider: ConfigurableProvider; isEdit: boolean }) => {
       const meta = WEB_SEARCH_PROVIDER_META.find((m) => m.type === provider);
       const label = meta?.label ?? provider;
+      // The server makes the first search provider the default; a later one waits for "Set as default".
+      const becomesDefault = !!meta?.searches && !configuredProviders.some((p) => p.isDefault);
       addToast({
         variant: 'success',
         title: isEdit ? `${label} updated` : `${label} added`,
         description: isEdit
           ? 'Configuration saved successfully.'
-          : `${label} is now configured. Click "Set as default" to start using it.`,
+          : becomesDefault
+            ? `${label} is now the default web search provider. Web search is on for everyone.`
+            : meta?.searches
+              ? `${label} is now configured. Click "Set as default" to start using it.`
+              : `${label} is now configured. It reads pages for web search${
+                  configuredProviders.some((p) => p.isDefault) ? '.' : '; add a search provider to turn web search on.'
+                }`,
         duration: 5000,
       });
       loadData(false);
     },
-    [addToast, loadData],
+    [addToast, loadData, configuredProviders],
   );
 
   const handleConfigureDeleteSuccess = useCallback(
@@ -162,10 +218,11 @@ export default function WebSearchPage() {
         const label = meta?.label ?? type;
 
         const configured = providerMap.get(type);
+        let warning: string | undefined;
         if (configured) {
-          await WebSearchApi.setDefaultProvider(configured.providerKey);
+          ({ warning } = await WebSearchApi.setDefaultProvider(configured.providerKey));
         } else if (type === DUCKDUCKGO_PROVIDER_ID) {
-          await WebSearchApi.setDefaultProvider(DUCKDUCKGO_PROVIDER_ID);
+          ({ warning } = await WebSearchApi.setDefaultProvider(DUCKDUCKGO_PROVIDER_ID));
         } else {
           addToast({
             variant: 'error',
@@ -175,11 +232,16 @@ export default function WebSearchPage() {
           return;
         }
 
-        addToast({
-          variant: 'success',
-          title: `${label} is now the default`,
-          duration: 3000,
-        });
+        addToast(
+          warning
+            ? {
+                variant: 'warning',
+                title: `${label} is now the default, but it may not work`,
+                description: warning,
+                duration: 10000,
+              }
+            : { variant: 'success', title: `${label} is now the default`, duration: 3000 },
+        );
         await loadData(false);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Please try again.';
@@ -292,6 +354,18 @@ export default function WebSearchPage() {
           </Button>
         </Flex>
 
+        {isSetUp === false && (
+          <Callout.Root color="amber" size="1" role="status" style={{ marginBottom: 'var(--space-4)' }}>
+            <Callout.Icon>
+              <MaterialIcon name="info" size={16} color="var(--amber-11)" />
+            </Callout.Icon>
+            <Callout.Text>
+              <Text weight="medium">{t('workspace.webSearch.notSetUp.title')}</Text>{' '}
+              {t('workspace.webSearch.notSetUp.description')}
+            </Callout.Text>
+          </Callout.Root>
+        )}
+
         {/* ── Providers section ── */}
         <Flex
           direction="column"
@@ -351,6 +425,51 @@ export default function WebSearchPage() {
               })}
             </Flex>
           )}
+        </Flex>
+
+        {/* ── Images section ── */}
+        <Flex
+          direction="column"
+          style={{
+            border: '1px solid var(--olive-3)',
+            borderRadius: 'var(--radius-1)',
+            background: 'var(--olive-2)',
+            marginBottom: 'var(--space-5)',
+          }}
+        >
+          <Box style={{ padding: '14px 16px' }}>
+            <Text size="3" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
+              {t('workspace.webSearch.imageSettingsTitle')}
+            </Text>
+            <Text size="1" style={{ color: 'var(--slate-10)', display: 'block', marginTop: 2, fontWeight: 300 }}>
+              {t('workspace.webSearch.imageSettingsDescription')}
+            </Text>
+          </Box>
+          <Box px="4">
+            <Box style={{ height: 1, background: 'var(--olive-3)' }} />
+          </Box>
+          <Box style={{ padding: '12px 14px' }}>
+            {!isLoading && !imageSettings.hasLoaded && (
+              <Callout.Root color="amber" size="1" role="status" style={{ marginBottom: 'var(--space-3)' }}>
+                <Callout.Icon>
+                  <MaterialIcon name="info" size={16} color="var(--amber-11)" />
+                </Callout.Icon>
+                <Callout.Text>
+                  {t('workspace.webSearch.imageSettingsUnavailable')}{' '}
+                  <Button variant="ghost" size="1" onClick={() => loadData(false)} style={{ cursor: 'pointer' }}>
+                    {t('action.tryAgain')}
+                  </Button>
+                </Callout.Text>
+              </Callout.Root>
+            )}
+            <SendImagesRow
+              enabled={settings.includeImages}
+              maxImages={settings.maxImages}
+              onToggle={handleSendImagesToggle}
+              onMaxImagesCommit={handleMaxImagesCommit}
+              disabled={isLoading || imageSettings.isSaving || inherited || !imageSettings.hasLoaded}
+            />
+          </Box>
         </Flex>
 
       </SettingsPageContainer>
@@ -431,7 +550,7 @@ export default function WebSearchPage() {
             {!isCheckingUsage && deleteUsageAgents.length === 0 && (
               <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
                 {deleteTarget?.isDefault
-                  ? 'This provider is currently the default. Deleting it makes the next search provider you added the default, or DuckDuckGo if there is none.'
+                  ? 'This provider is currently the default. Deleting it makes the next search provider you added the default. With none left, web search is turned off for everyone.'
                   : 'This will permanently remove the provider configuration. You can reconfigure it later.'}
               </Text>
             )}

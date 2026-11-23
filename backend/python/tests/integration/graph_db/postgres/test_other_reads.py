@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from app.core.org_context import OrgMismatch
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 
 from .test_access import APP, World, _org, rec
 from .test_access import w as w
@@ -290,7 +291,7 @@ async def test_updating_a_grant_is_logged_for_the_projection_like_any_other_gran
 
     async def wipe() -> None:
         async def go(tx) -> None:
-            await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1))", w.org)
+            await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1), $2)", w.org, CODE_EPOCH)
         await p._q(go, None, write=True)
     await wipe()
     await p.update_edge("users/m", "records/r", {"role": "READER"}, "permission")             # nothing the projection reads changed

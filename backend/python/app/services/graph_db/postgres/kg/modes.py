@@ -1,6 +1,6 @@
 """The modes of a connector in kg and the moves between them.
 
-``legacy``: readers take today's walk. ``shadow``: kg has been copied and verified against the graph (``code_epoch`` and ``verified_at`` say when and by which code), readers still take
+``legacy``: readers take today's walk (the knowledge hub listing reads the structure of a finished copy of this code's epoch, never its access: ``kh_listing.head``). ``shadow``: kg has been copied and verified against the graph (``code_epoch`` and ``verified_at`` say when and by which code), readers still take
 the walk and compare. ``enforce``: readers of a connector that is *current* (:func:`drainer.is_current`) take kg. The only way up is a backfill that ends in a verify without a difference
 and without a change waiting in the log (``backfill.backfill``), then a promotion that verifies again. The way down is always allowed and writes nothing else: :func:`demote` for one
 connector, :func:`demote_org` for all of an org. A demoted connector has no copy cursor, so the next backfill starts from the beginning.

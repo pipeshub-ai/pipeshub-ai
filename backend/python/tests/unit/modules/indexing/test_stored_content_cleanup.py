@@ -238,6 +238,7 @@ class TestPipelineUsesTheStorageStep:
             stored_content=stored_content,
         )
         pipeline.vector_db_service.scroll = AsyncMock(return_value=MagicMock(points=[]))  # no other org holds points
+        pipeline.vector_db_service.other_orgs_hold_virtual_record = AsyncMock(return_value=None)  # answered by the scroll
         pipeline.collection_locator = MagicMock()
         pipeline.collection_locator.all_collections = AsyncMock(return_value=["records"])
         return pipeline

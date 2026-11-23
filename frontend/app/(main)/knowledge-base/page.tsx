@@ -3,7 +3,7 @@
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Box, Flex } from '@radix-ui/themes';
+import { Box, Flex, Text } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
@@ -26,7 +26,7 @@ import {
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionStatsPanel } from './components/collection-stats-panel';
 import type { UploadFileItem } from './components';
-import { SelectionActionBar } from '@/config';
+import { SelectionActionBar, useKbUploadExtras } from '@/config';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
 import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
@@ -34,6 +34,7 @@ import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/f
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
+import { preparingKey, usePreparingRetry } from './hooks/use-preparing-retry';
 import type {
   KnowledgeBaseItem,
   FolderTreeNode,
@@ -85,6 +86,7 @@ import {
 import { openFolderChildren, seedChildrenFromListing, storeChildrenList } from './utils/folder-children';
 import { kbSessionToken } from './utils/kb-session';
 import { onSessionEnd } from '@/lib/api/session-cache';
+import { openRecordContent, type Pending, type RecordLease, type Variant, type Grant } from '@/lib/record-content';
 // Registers the sign-out reset for the knowledge base's cached state.
 import './utils/sidebar-session';
 import {
@@ -123,6 +125,9 @@ import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
 import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
 import { canOpenRecentlyDeleted } from './recently-deleted/utils';
+
+/** Empty pages in a row that All Records goes on from before it shows the empty state (a page the server stopped scanning early has no rows and a cursor to go on with). */
+const MAX_EMPTY_ALL_RECORDS_PAGES = 20;
 
 // Outlives a remount. The abort ref does not, so an older request's finally
 // would otherwise clear the loading flag a newer fetch just set.
@@ -297,6 +302,8 @@ function KnowledgeBasePageContent() {
       ? Infinity
       : Math.max(maxFolderDepth - folderDepthOf(tableData?.breadcrumbs, selectedKbId), 0);
   const canAddFolderHere = remainingFolderLevels > 0;
+  // At the root this creates a collection; inside one it creates a folder, which is an edit of that collection.
+  const canCreateHere = tableData?.currentNode ? canEditCollection : canCreateCollection;
 
   // Get table items directly from API response (no client-side filtering)
   const tableItems = useMemo(() => {
@@ -603,7 +610,14 @@ function KnowledgeBasePageContent() {
   // A busy answer (503) is retried by itself, a few times, after the seconds the server asked for.
   const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const allRecordsBusyTries = useRef(0);
-  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
+  const allRecordsEmptyHops = useRef(0);
+  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean, retryOf?: number | null) => Promise<void>) | null>(null);
+  // A source still being prepared answers an empty page that says so: it is asked again by itself until its rows can be listed.
+  // One timer, for the listing on screen: leaving it (another node, the other view) cancels the retry.
+  const { settle: settlePreparing, isCurrent: isPreparingCurrent } = usePreparingRetry(
+    preparingKey(isAllRecordsMode, searchParams.get('nodeType'), searchParams.get('nodeId'))
+  );
+  const fetchTableDataRef = useRef<((nodeType: string, nodeId: string, retryOf?: number | null) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -615,7 +629,10 @@ function KnowledgeBasePageContent() {
   }, []);
 
   // All Records mode: Fetch table data (reusable callback)
-  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false) => {
+  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false, retryOf: number | null = null) => {
+    // A retry of a source being prepared carries the generation of the answer that scheduled it: once a newer All Records request has started (a search,
+    // a filter, a page, a refresh), that one stands, and the retry is not sent.
+    if (retryOf !== null && retryOf !== allRecordsFetchGeneration) return;
     allRecordsFetchRef.current?.abort();
     // Each request the user makes gets its own retries; only the timer's retries share them.
     if (!busyRetry) allRecordsBusyTries.current = 0;
@@ -663,8 +680,24 @@ function KnowledgeBasePageContent() {
         // Root level - fetch all records
         data = await KnowledgeHubApi.getAllRootItems(params, { signal: controller.signal });
       }
-      if (controller.signal.aborted || !stillSignedIn()) return;
+      // A retry whose listing the user has left by now (another node, the Collections view) shows nothing.
+      if (controller.signal.aborted || !stillSignedIn() || (busyRetry && !isPreparingCurrent(preparingKey(true, nodeType, nodeId)))) return;
+      // A page with no rows that says more follows is the server having stopped looking for the moment, not the end: go on from where it got to. A cursor that did not move, or
+      // too many such pages in a row, is the end (the empty state shows), never a silent stall. The cursors this page carries are kept, so the way back is not lost.
+      // It goes on the way it was asked: a page asked for with the previous page's cursor (Previous, or an empty page going back) goes on backwards.
+      const backwards = !!currentPagination.cursor && currentPagination.cursor === currentPagination.prevCursor;
+      const onward = backwards
+        ? data.pagination?.hasPrev && data.pagination.prevCursor
+        : data.pagination?.hasNext && data.pagination.nextCursor;
+      if (data.items?.length === 0 && onward && onward !== currentPagination.cursor && allRecordsEmptyHops.current < MAX_EMPTY_ALL_RECORDS_PAGES) {
+        allRecordsEmptyHops.current += 1;
+        syncAllRecordsPaginationMeta(toTablePagination(data.pagination!, currentPagination.cursor));
+        useKnowledgeBaseStore.getState().setAllRecordsCursor(onward);
+        return;
+      }
+      allRecordsEmptyHops.current = 0;
       setAllRecordsTableData(data);
+      settlePreparing(preparingKey(true, nodeType, nodeId), data.preparing, () => void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true, fetchGeneration));
       // An app's tree lives in the app children cache, which this does not fill.
       if (nodeType && nodeId && nodeType !== 'app') {
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
@@ -729,6 +762,8 @@ function KnowledgeBasePageContent() {
     setAllRecordsTableError,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
+    settlePreparing,
+    isPreparingCurrent,
     t,
   ]);
   fetchAllRecordsTableDataRef.current = fetchAllRecordsTableData;
@@ -816,14 +851,25 @@ function KnowledgeBasePageContent() {
 
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
-    async (nodeType: string, nodeId: string) => {
-      collectionsFetchRef.current?.abort();
+    async (nodeType: string, nodeId: string, retryOf: number | null = null) => {
+      // A retry of a source being prepared asks quietly with its own request: it never cancels a request the user made. It carries the
+      // generation of the request it was scheduled from (``retryOf``), so it is dropped, sent or answered, once the user has asked for
+      // anything else since, or left this node (``stale``).
+      const retry = retryOf !== null;
+      const key = preparingKey(false, nodeType, nodeId);
       const controller = new AbortController();
-      collectionsFetchRef.current = controller;
-      const fetchGeneration = ++collectionsFetchGeneration;
+      if (!retry) {
+        collectionsFetchRef.current?.abort();
+        collectionsFetchRef.current = controller;
+      }
+      const fetchGeneration = retry ? retryOf : ++collectionsFetchGeneration;
+      const stale = () => retry && (fetchGeneration !== collectionsFetchGeneration || !key || !isPreparingCurrent(key));
+      if (stale()) return;
       const stillSignedIn = kbSessionToken();
-      setIsLoadingTableData(true);
-      setTableDataError(null);
+      if (!retry) {
+        setIsLoadingTableData(true);
+        setTableDataError(null);
+      }
 
       try {
         // Get the latest state from store to avoid stale closure
@@ -857,11 +903,12 @@ function KnowledgeBasePageContent() {
           params,
           { suppressErrorToast: suppressNotFoundToast, signal: controller.signal }
         );
-        if (controller.signal.aborted || !stillSignedIn()) return;
+        if (controller.signal.aborted || !stillSignedIn() || stale()) return;
 
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
+        if (key) settlePreparing(key, data.preparing, () => void fetchTableDataRef.current?.(nodeType, nodeId, fetchGeneration));
         seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
         // The rows are ready: the sidebar path opened below is separate work and
         // must not hold the table's loader.
@@ -906,7 +953,8 @@ function KnowledgeBasePageContent() {
             ];
 
             for (let i = 0; i < path.length; i += 1) {
-              if (controller.signal.aborted || !stillSignedIn()) return;
+              // A retry has its own request, which the user's next request does not abort: it stops here once it is stale too.
+              if (controller.signal.aborted || !stillSignedIn() || stale()) return;
               const { id, nodeType: pathNodeType } = path[i];
               const nextId = path[i + 1]?.id ?? (nodeId !== id ? nodeId : undefined);
               expandFolderExclusive(id);
@@ -923,10 +971,10 @@ function KnowledgeBasePageContent() {
           }
         }
 
-        if (!controller.signal.aborted && stillSignedIn()) restoreOpenFoldersInSidebar();
+        if (!controller.signal.aborted && stillSignedIn() && !stale()) restoreOpenFoldersInSidebar();
 
       } catch (error) {
-        if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
+        if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn() || stale()) return;
         // A refused cursor goes back to the first page instead of erroring;
         // clearing it rewrites the URL, which re-runs this fetch without one.
         const rejectedCursor = useKnowledgeBaseStore.getState().collectionsPagination.cursor;
@@ -1004,8 +1052,13 @@ function KnowledgeBasePageContent() {
       isAllRecordsMode,
       debouncedSearchQuery,
       debouncedAllRecordsSearchQuery,
+      settlePreparing,
+      isPreparingCurrent,
     ]
   );
+  useEffect(() => {
+    fetchTableDataRef.current = fetchTableData;
+  }, [fetchTableData]);
 
   // Helper to build navigation URLs that preserve view mode
   const buildNavUrl = useCallback(
@@ -1317,7 +1370,8 @@ function KnowledgeBasePageContent() {
         sortBy: 'name',
         sortOrder: 'asc',
       });
-      if (!stillSignedIn()) return;
+      // A source still being prepared lists no children yet, not none: cache nothing, so a later open asks again.
+      if (!stillSignedIn() || response.preparing) return;
 
       const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
       const state = useKnowledgeBaseStore.getState();
@@ -1509,7 +1563,7 @@ function KnowledgeBasePageContent() {
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
-    if (!canCreateCollection) return;
+    if (!canCreateHere) return;
     const currentNode = tableData?.currentNode;
 
     if (currentNode?.nodeType === 'app') {
@@ -1544,7 +1598,7 @@ function KnowledgeBasePageContent() {
         description: `A folder cannot be created inside "${currentNode.name}" (${currentNode.nodeType}).`,
       });
     }
-  }, [tableData, canCreateCollection]);
+  }, [tableData, canCreateHere]);
 
   const validateCreateName = useCallback(
     (name: string) =>
@@ -1652,8 +1706,11 @@ function KnowledgeBasePageContent() {
     setIsUploadSidebarOpen(true);
   }, [canEditCollection]);
 
-  // Handle upload save - add items to upload store and start uploading
-  const handleUploadSave = useCallback(
+  const uploadExtras = useKbUploadExtras(selectedKbId);
+  const { onUploadStart, onFileSucceeded, onUploadEnd } = uploadExtras;
+
+  // Add items to the upload store and upload them
+  const uploadFiles = useCallback(
     async (items: UploadFileItem[]) => {
       if (!selectedKbId) return;
 
@@ -1818,6 +1875,7 @@ function KnowledgeBasePageContent() {
                 const id = findStoreId(data);
                 if (id) completeUpload(id);
                 anySuccess = true;
+                if (typeof data?.recordId === 'string') onFileSucceeded?.(data.recordId);
               } else if (evt.event === 'file:failed') {
                 const id = findStoreId(data);
                 if (id) {
@@ -2002,7 +2060,21 @@ function KnowledgeBasePageContent() {
         await refreshData();
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t, onFileSucceeded]
+  );
+
+  // Handle upload save. The hook's start and end callbacks bracket every exit, early returns and errors included.
+  const handleUploadSave = useCallback(
+    async (items: UploadFileItem[]) => {
+      if (!selectedKbId) return;
+      onUploadStart?.();
+      try {
+        await uploadFiles(items);
+      } finally {
+        onUploadEnd?.();
+      }
+    },
+    [selectedKbId, uploadFiles, onUploadStart, onUploadEnd]
   );
 
   // Returns false so the upload panel keeps the picked files when there is
@@ -2122,8 +2194,34 @@ function KnowledgeBasePageContent() {
     [],
   );
 
+  // The preview's hold on the cached content. Replacing or closing the preview releases it.
+  const previewLeaseRef = useRef<RecordLease | null>(null);
+  const previewPendingRef = useRef<Pending | null>(null);
+  const previewTokenRef = useRef(0);
+  const releasePreviewLease = useCallback(() => {
+    previewPendingRef.current?.leave();
+    previewPendingRef.current = null;
+    previewLeaseRef.current?.release();
+    previewLeaseRef.current = null;
+  }, []);
+  useEffect(() => releasePreviewLease, [releasePreviewLease]);
+
   // Handle file preview
   const handlePreviewFile = useCallback(async (item: KnowledgeBaseItem | KnowledgeHubNode) => {
+    const token = ++previewTokenRef.current;
+    releasePreviewLease();
+    const acquirePreviewLease = async (id: string, variant: Variant, grant: Grant | null) => {
+      const pending = openRecordContent(id, variant, grant ?? undefined);
+      previewPendingRef.current = pending;
+      const lease = await pending.promise;
+      if (token !== previewTokenRef.current) {
+        lease.release();
+        return null;
+      }
+      previewPendingRef.current = null;
+      previewLeaseRef.current = lease;
+      return lease;
+    };
 
     // Check if item is a KnowledgeHubNode
     const isKnowledgeHubNode = 'nodeType' in item && 'origin' in item;
@@ -2150,7 +2248,8 @@ function KnowledgeBasePageContent() {
         setPreviewMode('sidebar');
 
         // 2. Fetch details first so non-previewable records skip the stream.
-        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        const { details: recordDetails, grant } = await KnowledgeBaseApi.getRecordDetailsForOpen(item.id);
+        if (token !== previewTokenRef.current) return;
         const record = recordDetails?.record;
         if (!record) {
           throw new Error('Record details unavailable');
@@ -2181,7 +2280,9 @@ function KnowledgeBasePageContent() {
           isPresentationFile(previewMime, previewName) ||
           isLegacyWordDocFile(previewMime, previewName);
         const streamOptions = streamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const blob = await KnowledgeBaseApi.streamRecord(item.id, streamOptions);
+        const lease = await acquirePreviewLease(item.id, streamAsPdf ? 'pdf' : 'original', grant);
+        if (!lease) return;
+        const blob = lease.blob;
 
         // 3. For DOCX we hand the Blob straight through to DocxRenderer.
         //    All other renderers still expect a URL.
@@ -2200,7 +2301,7 @@ function KnowledgeBasePageContent() {
           item.extension ?? undefined,
           fr?.extension,
         );
-        const url = isDocx ? '' : URL.createObjectURL(blob);
+        const url = isDocx ? '' : lease.url;
 
         // 4. Update state with actual file URL and/or Blob
         setPreviewFile({
@@ -2221,6 +2322,7 @@ function KnowledgeBasePageContent() {
         });
 
       } catch (error) {
+        if (token !== previewTokenRef.current) return;
         const errorMessage = getPreviewErrorMessage(error);
         console.error('Failed to load file preview:', { error, message: errorMessage });
         setPreviewFile(prev => prev ? {
@@ -2247,7 +2349,8 @@ function KnowledgeBasePageContent() {
         });
         setPreviewMode('sidebar');
 
-        const recordDetails = await KnowledgeBaseApi.getRecordDetails(item.id);
+        const { details: recordDetails, grant } = await KnowledgeBaseApi.getRecordDetailsForOpen(item.id);
+        if (token !== previewTokenRef.current) return;
         const record = recordDetails?.record;
         if (!record) {
           throw new Error('Record details unavailable');
@@ -2276,7 +2379,9 @@ function KnowledgeBasePageContent() {
           isPresentationFile(previewMime, previewName) ||
           isLegacyWordDocFile(previewMime, previewName);
         const legacyStreamOptions = legacyStreamAsPdf ? { convertTo: 'application/pdf' } : undefined;
-        const blob = await KnowledgeBaseApi.streamRecord(item.id, legacyStreamOptions);
+        const lease = await acquirePreviewLease(item.id, legacyStreamAsPdf ? 'pdf' : 'original', grant);
+        if (!lease) return;
+        const blob = lease.blob;
 
         // DOCX uses the Blob directly; other types stay on URLs.
         const legacyRecordMime = record.mimeType || item.fileType || '';
@@ -2294,7 +2399,7 @@ function KnowledgeBasePageContent() {
           undefined,
           frLegacy?.extension,
         );
-        const url = isDocx ? '' : URL.createObjectURL(blob);
+        const url = isDocx ? '' : lease.url;
 
         setPreviewFile({
           id: item.id,
@@ -2314,6 +2419,7 @@ function KnowledgeBasePageContent() {
         });
 
       } catch (error) {
+        if (token !== previewTokenRef.current) return;
         const errorMessage = getPreviewErrorMessage(error);
         console.error('Failed to load file preview:', { error, message: errorMessage });
         setPreviewFile(prev => prev ? {
@@ -2323,7 +2429,7 @@ function KnowledgeBasePageContent() {
         } : null);
       }
     }
-  }, [getPreviewErrorMessage]);
+  }, [getPreviewErrorMessage, releasePreviewLease]);
 
   // The preview dialog covers the selection bar, so Chat for this record lives on the preview.
   const handlePreviewChat = useCallback(() => {
@@ -2548,7 +2654,12 @@ function KnowledgeBasePageContent() {
         } else if (hubItem.nodeType === 'app') {
           await KnowledgeBaseApi.reindexRecordGroup(item.id, depth, statusFilters);
         } else {
-          await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters);
+          // The Force reindex action of an indexed file re-parses and re-indexes it: nothing stored is reused.
+          if (requiresForceReindexConfirmation(reindexNode, statusFilters)) {
+            await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters, true);
+          } else {
+            await KnowledgeBaseApi.reindexItem(item.id, depth, statusFilters);
+          }
         }
 
         toast.update(toastId, {
@@ -2556,7 +2667,13 @@ function KnowledgeBasePageContent() {
           title: getReindexSuccessTitle(reindexNode, depth, statusFilters),
         });
 
-        await refreshData();
+        // The request succeeded: a failed refresh of the list is not a failed reindex, and must not offer a retry
+        // that would send the same (possibly Force) request again.
+        try {
+          await refreshData();
+        } catch {
+          // the list refreshes on its next load
+        }
       } catch (error: unknown) {
         const errorMessage = getUserFacingErrorMessage(
           error,
@@ -3129,8 +3246,9 @@ function KnowledgeBasePageContent() {
               onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
               onUpload={isAllRecordsMode || !selectedKbId ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
-              createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
-              folderPermissionDenied={!isAllRecordsMode && !canCreateCollection}
+              // Locked only when nothing it offers is allowed: no create here, and no upload (which needs an open collection).
+              createPermissionDenied={!isAllRecordsMode && !canCreateHere && (!selectedKbId || !canEditCollection)}
+              folderPermissionDenied={!isAllRecordsMode && !canCreateHere}
               uploadPermissionDenied={!isAllRecordsMode && !canEditCollection}
               sharePermissionDenied={Boolean(shareAdapter && isSelectedKbOwner && !canShareCollection)}
               sharedMembers={sharedMembers}
@@ -3159,6 +3277,20 @@ function KnowledgeBasePageContent() {
           </>
         )}
 
+        {/* Sources still being prepared are left off All Records and named on every page: say so, so the list does not look complete. */}
+        {isAllRecordsMode && (allRecordsTableData?.notReady?.length ?? 0) > 0 && (
+          <Flex role="status" px="4" py="2">
+            <Text size="2" color="gray">{t('kb.sourcesNotReady', { count: allRecordsTableData?.notReady?.length ?? 0 })}</Text>
+          </Flex>
+        )}
+
+        {/* A source still being prepared has nothing to list yet: say so instead of an empty list; the page asks again by itself. */}
+        {(isAllRecordsMode ? allRecordsTableData : tableData)?.preparing && (
+          <Flex role="status" px="4" py="2">
+            <Text size="2" color="gray">{t('kb.sourcePreparing')}</Text>
+          </Flex>
+        )}
+
         {/* Data Table - shows appropriate items based on mode */}
         <KbDataTable
           items={isAllRecordsMode ? allRecordsItems : tableItems}
@@ -3166,6 +3298,7 @@ function KnowledgeBasePageContent() {
           isRefreshing={isRefreshing}
           error={isAllRecordsMode ? allRecordsTableError : tableDataError}
           errorRetryable={!(isAllRecordsMode && allRecordsRefused)}
+          preparing={!!(isAllRecordsMode ? allRecordsTableData : tableData)?.preparing}
           pagination={isAllRecordsMode ? allRecordsTableData?.pagination : tableData?.pagination}
           permissions={isAllRecordsMode ? allRecordsTableData?.permissions : tableData?.permissions}
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
@@ -3221,7 +3354,7 @@ function KnowledgeBasePageContent() {
           onMove={!isAllRecordsMode ? handleMoveClick : undefined}
           onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
-          onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
+          onCreateFolder={!isAllRecordsMode && canCreateHere && canAddFolderHere ? handleCreateFolder : undefined}
           onUpload={!isAllRecordsMode && canEditCollection && selectedKbId ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
@@ -3243,6 +3376,8 @@ function KnowledgeBasePageContent() {
           onDelete={!isAllRecordsMode && !bulkDeleteNeedsCollection ? handleBulkDeleteClick : undefined}
           deletePermissionDenied={bulkDeleteDenied}
           pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+          selectedItems={tickedRows}
+          onChanged={refreshData}
         />
 
         {selectedCount === 0 && (
@@ -3363,6 +3498,7 @@ function KnowledgeBasePageContent() {
             isSaving={isUploading}
             remainingFolderLevels={remainingFolderLevels}
             maxFolderDepth={maxFolderDepth}
+            extras={uploadExtras.panel}
           />
 
           {/* Replace File Dialog */}
@@ -3398,10 +3534,7 @@ function KnowledgeBasePageContent() {
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
             if (!open) {
-              // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
-              if (previewFile.url && previewFile.url.startsWith('blob:')) {
-                URL.revokeObjectURL(previewFile.url);
-              }
+              releasePreviewLease();
               setPreviewFile(null);
             }
           }}
@@ -3428,10 +3561,7 @@ function KnowledgeBasePageContent() {
           onChat={handlePreviewChat}
           onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => {
-            // Clean up blob URL (only PDF/image/html/etc. paths allocate one)
-            if (previewFile.url && previewFile.url.startsWith('blob:')) {
-              URL.revokeObjectURL(previewFile.url);
-            }
+            releasePreviewLease();
             setPreviewFile(null);
           }}
         />

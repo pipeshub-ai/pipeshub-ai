@@ -34,7 +34,7 @@ BEGIN
   IF cardinality(p_parent_sks) > 5000 THEN RAISE EXCEPTION 'w_records_upsert: p_parent_sks takes at most 5000 items' USING ERRCODE = '22023'; END IF;
   IF p_rules IS NULL THEN RAISE EXCEPTION 'w_records_upsert: p_rules is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_rules) > 5000 THEN RAISE EXCEPTION 'w_records_upsert: p_rules takes at most 5000 items' USING ERRCODE = '22023'; END IF;
-  IF EXISTS (SELECT 1 FROM unnest(p_rules) e WHERE e IS NOT NULL AND e NOT IN ('OPEN', 'STRICT', 'RESTRICTED')) THEN RAISE EXCEPTION 'w_records_upsert: p_rules has an item that is not one of the allowed values' USING ERRCODE = '22023'; END IF;
+  IF EXISTS (SELECT 1 FROM unnest(p_rules) e WHERE e IS NOT NULL AND e NOT IN ('OPEN', 'STRICT', 'RESTRICTED', 'PARENT_AND_GRANT')) THEN RAISE EXCEPTION 'w_records_upsert: p_rules has an item that is not one of the allowed values' USING ERRCODE = '22023'; END IF;
   IF p_models IS NULL THEN RAISE EXCEPTION 'w_records_upsert: p_models is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_models) > 5000 THEN RAISE EXCEPTION 'w_records_upsert: p_models takes at most 5000 items' USING ERRCODE = '22023'; END IF;
   IF EXISTS (SELECT 1 FROM unnest(p_models) e WHERE e IS NOT NULL AND e NOT IN ('APP_LEVEL', 'RECORD_LEVEL', 'RECORD_GROUP_LEVEL')) THEN RAISE EXCEPTION 'w_records_upsert: p_models has an item that is not one of the allowed values' USING ERRCODE = '22023'; END IF;
@@ -43,10 +43,8 @@ BEGIN
   IF EXISTS (SELECT 1 FROM unnest(p_vrids) e WHERE e IS NOT NULL AND length(e) NOT BETWEEN 0 AND 256) THEN RAISE EXCEPTION 'w_records_upsert: p_vrids has an item of the wrong length' USING ERRCODE = '22023'; END IF;
   IF p_names IS NULL THEN RAISE EXCEPTION 'w_records_upsert: p_names is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_names) > 5000 THEN RAISE EXCEPTION 'w_records_upsert: p_names takes at most 5000 items' USING ERRCODE = '22023'; END IF;
-  IF EXISTS (SELECT 1 FROM unnest(p_names) e WHERE e IS NOT NULL AND length(e) NOT BETWEEN 0 AND 4000) THEN RAISE EXCEPTION 'w_records_upsert: p_names has an item of the wrong length' USING ERRCODE = '22023'; END IF;
   IF p_name_keys IS NULL THEN RAISE EXCEPTION 'w_records_upsert: p_name_keys is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_name_keys) > 5000 THEN RAISE EXCEPTION 'w_records_upsert: p_name_keys takes at most 5000 items' USING ERRCODE = '22023'; END IF;
-  IF EXISTS (SELECT 1 FROM unnest(p_name_keys) e WHERE e IS NOT NULL AND length(e) NOT BETWEEN 0 AND 4000) THEN RAISE EXCEPTION 'w_records_upsert: p_name_keys has an item of the wrong length' USING ERRCODE = '22023'; END IF;
   IF p_updated IS NULL THEN RAISE EXCEPTION 'w_records_upsert: p_updated is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_updated) > 5000 THEN RAISE EXCEPTION 'w_records_upsert: p_updated takes at most 5000 items' USING ERRCODE = '22023'; END IF;
   IF p_created IS NULL THEN RAISE EXCEPTION 'w_records_upsert: p_created is required' USING ERRCODE = '22023'; END IF;

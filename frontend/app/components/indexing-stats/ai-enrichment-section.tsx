@@ -31,6 +31,8 @@ export interface AiEnrichmentSectionProps {
   isRetryEntitiesBusy?: boolean;
   /** Another reindex or retry is in flight, or a sync is being started. */
   retryDisabled?: boolean;
+  /** Retrying needs the connector sync permission; shown locked without it. */
+  retryLocked?: boolean;
 }
 
 /**
@@ -48,6 +50,7 @@ export function AiEnrichmentSection({
   isRetryClassificationBusy = false,
   isRetryEntitiesBusy = false,
   retryDisabled = false,
+  retryLocked = false,
 }: AiEnrichmentSectionProps) {
   const { t } = useTranslation();
   const bodyId = useId();
@@ -121,6 +124,7 @@ export function AiEnrichmentSection({
             onRetry={onRetryFailedClassification}
             retryBusy={isRetryClassificationBusy}
             retryDisabled={retryDisabled}
+            retryLocked={retryLocked}
           />
           {showEntities && entities ? (
             <StageRow
@@ -131,6 +135,7 @@ export function AiEnrichmentSection({
               onRetry={onRetryFailedEntities}
               retryBusy={isRetryEntitiesBusy}
               retryDisabled={retryDisabled}
+              retryLocked={retryLocked}
             />
           ) : null}
         </Flex>
@@ -186,6 +191,7 @@ function StageRow({
   onRetry,
   retryBusy,
   retryDisabled,
+  retryLocked,
 }: {
   label: string;
   hint: string;
@@ -194,6 +200,7 @@ function StageRow({
   onRetry?: () => void;
   retryBusy: boolean;
   retryDisabled: boolean;
+  retryLocked: boolean;
 }) {
   const { t } = useTranslation();
   const applicable = stageApplicableCount(progress);
@@ -281,6 +288,7 @@ function StageRow({
                 onClick={onRetry}
                 disabled={retryDisabled}
                 loading={retryBusy}
+                locked={retryLocked}
               />
             </span>
           ) : null}

@@ -160,6 +160,54 @@ async def test_group_clock_skew_reports_the_group_rows_ahead_of_the_database_clo
     assert (await store.group_clock_skew(B, min_ahead_seconds=30))[0] == 1
 
 
+async def db_now(store: PgVectorService) -> datetime:
+    with org_context.for_org(A, job="test"):
+        return await store.fence_time()
+
+
+async def test_a_group_row_ahead_of_the_database_clock_does_not_refuse_a_later_writer(store) -> None:
+    """A row a host with a clock hours ahead wrote: a rewrite fenced by the database's clock replaces it, and so does a write that names no time."""
+    await store.upsert_points("records", [point(A, "p1", conn=["c1"])], computed_at=datetime.now(UTC) + timedelta(hours=2))
+    members = "SELECT kind, member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1' ORDER BY 1, 2"
+    await store.update_payloads_by_ids("records", {pid(f"{A}/p1"): {"connectorIds": ["c2"]}}, org_id=A, computed_at=await db_now(store))
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c2")]
+    assert await store.group_clock_skew(A, min_ahead_seconds=1) == (0, 0.0)
+    await store.set_payload("records", {"connectorIds": ["c3"]}, flt(A, virtualRecordId="r1"))
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c3")]
+
+
+async def test_a_host_clock_ahead_of_the_database_writes_no_group_row_ahead_of_it(store, monkeypatch) -> None:
+    from app.services.vector_db.pgvector import pgvector as module
+
+    class Ahead(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return datetime.now(tz) + timedelta(hours=2)
+    monkeypatch.setattr(module, "datetime", Ahead, raising=False)
+    await store.upsert_points("records", [point(A, "p1", conn=["c1"])])
+    await store.set_payload("records", {"connectorIds": ["c2"]}, flt(A, virtualRecordId="r1"))
+    assert await store.group_clock_skew(A, min_ahead_seconds=1) == (0, 0.0)
+    await store.update_payloads_by_ids("records", {pid(f"{A}/p1"): {"connectorIds": ["c3"]}}, org_id=A, computed_at=await db_now(store))
+    assert [tuple(r) for r in await sql(store, "SELECT member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1'", A)] == [("c3",)]
+
+
+async def test_a_sync_that_commits_between_two_batches_of_one_upsert_keeps_its_newer_membership(store, monkeypatch) -> None:
+    """The arrays an upsert carries were read before the call: every batch writes at the time the call started, so a membership sync committed
+    after the first batch is not replaced by the second."""
+    monkeypatch.setattr(writes, "UPSERT_BATCH", 1)
+    real, batches = store._space_for_write, []
+
+    async def between(*a, **k) -> object:
+        batches.append(1)
+        if len(batches) == 2:          # after the first batch committed, before the second
+            await store.set_payload("records", {"connectorIds": ["synced"]}, flt(A, virtualRecordId="r1"))
+        return await real(*a, **k)
+    monkeypatch.setattr(store, "_space_for_write", between)
+    await store.upsert_points("records", [point(A, "p1", conn=["stale"]), point(A, "p2", conn=["stale"])])
+    assert len(batches) == 2
+    assert [tuple(r) for r in await sql(store, "SELECT kind, member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1'", A)] == [(1, "synced")]
+
+
 async def test_a_shared_vrid_is_deleted_for_one_org_only(store) -> None:
     await store.upsert_points("records", [point(A, "p1", "shared"), point(A, "p2", "shared", terms=(5,))])
     await store.upsert_points("records", [point(B, "p1", "shared")])
@@ -170,6 +218,95 @@ async def test_a_shared_vrid_is_deleted_for_one_org_only(store) -> None:
     tombstones = (await sql(store, "SELECT count(*) FROM retrieval.point_tombstones WHERE org_id = $1", A))[0][0]
     assert tombstones == (2 if store._safe_mode else 0)
     assert (await sql(store, "SELECT count(*) FROM retrieval.points WHERE org_id = $1", A))[0][0] == (2 if store._safe_mode else 0)
+
+
+async def test_the_stray_sweep_removes_only_unreferenced_blocks_of_one_org(store) -> None:
+    from app.modules.indexing.stray_sweep import sweep_stray_points
+
+    await store.upsert_points("records", [point(A, "keep"), point(A, "stray-1", i=1), point(A, "stray-2", i=2, terms=(5,))])
+    await store.upsert_points("records", [point(B, "stray-1")])
+    result = await sweep_stray_points(store, "records", org_id=A, virtual_record_id="r1", keep_block_ids={"keep"})
+    assert result.stray_blocks == 2
+    assert (await live(store, A), await live(store, B)) == (1, 1)
+    assert (await sweep_stray_points(store, "records", org_id=A, virtual_record_id="r1", keep_block_ids={"keep"})).stray_blocks == 0
+
+
+async def test_scroll_with_vectors_returns_the_vector_the_terms_and_the_payload_of_one_org(store) -> None:
+    big = 3_000_000_000                  # above 2^31 - 1: stored wrapped, given back as written
+    await store.upsert_points("records", [point(A, "p1", i=1, terms=(3, big), text="alpha"), point(A, "p2", i=2, terms=(), text="beta")])
+    await store.upsert_points("records", [point(B, "p1", text="other org")])
+    seen: dict[str, VectorPoint] = {}
+    offset = None
+    while True:
+        page = await store.scroll_with_vectors("records", flt(A, virtualRecordId="r1"), 1, offset)
+        seen.update({p.id: p for p in page.points})
+        if not page.next_offset:
+            break
+        offset = page.next_offset
+    p1 = seen[pid(f"{A}/p1")]
+    assert set(seen) == {pid(f"{A}/p1"), pid(f"{A}/p2")}
+    assert p1.payload["page_content"] == "alpha" and p1.payload["metadata"]["blockId"] == "p1"
+    assert p1.dense_vector == [0.0, 1.0] + [0.0] * (DIM - 2)
+    assert dict(zip(p1.sparse_vector.indices, p1.sparse_vector.values, strict=True)) == {3: 0.5, big: 0.5}
+    again = await store.scroll_with_vectors("records", flt(A), 10)
+    assert {p.payload["metadata"]["blockId"] for p in again.points} == {"p1", "p2"}
+    assert next(p for p in again.points if p.payload["metadata"]["blockId"] == "p2").sparse_vector is None
+    # and the point can be written under another id, vector and terms intact: the move a re-key makes
+    moved = [VectorPoint(id=pid(f"{A}/moved-{p.id}"), dense_vector=p.dense_vector, sparse_vector=p.sparse_vector, payload=p.payload)
+             for p in again.points]
+    await store.upsert_points("records", moved)
+    assert await live(store, A) == 4 and await postings(store, A) == 4
+
+
+async def test_a_points_sparse_vector_is_its_own_postings_not_those_of_other_points_with_the_same_terms(store) -> None:
+    first = dataclasses.replace(point(A, "p1", i=1, text="alpha"), sparse_vector=SparseVector([3, 7], [0.25, 0.75]))
+    second = dataclasses.replace(point(A, "p2", i=2, text="beta"), sparse_vector=SparseVector([3, 7], [0.5, 0.125]))
+    await store.upsert_points("records", [first, second])
+    page = await store.scroll_with_vectors("records", flt(A, virtualRecordId="r1"), 10)
+    got = {p.payload["metadata"]["blockId"]: dict(zip(p.sparse_vector.indices, p.sparse_vector.values, strict=True)) for p in page.points}
+    assert got == {"p1": {3: 0.25, 7: 0.75}, "p2": {3: 0.5, 7: 0.125}}
+
+
+async def test_a_write_between_the_statements_of_the_vector_read_never_mixes_two_versions(store, monkeypatch) -> None:
+    """The read of a point's dense vector and its terms is one statement, so one snapshot: a write of the same point that commits
+    while the read is under way gives the old vector with the old terms or the new with the new, never a mix."""
+    import contextvars
+
+    from app.services.vector_db.pgvector import reads
+
+    old, new = point(A, "p1", i=1, terms=(3, 7)), point(A, "p1", i=2, terms=(11, 13))
+    await store.upsert_points("records", [old])
+    real = reads.scroll
+    state = {"fetches": 0, "written": False}
+
+    class _Tx:
+        def __init__(self, tx) -> None:
+            self._tx = tx
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._tx, name)
+
+        async def fetch(self, *args: object, **kwargs: object) -> list:
+            rows = await self._tx.fetch(*args, **kwargs)
+            state["fetches"] += 1
+            if state["fetches"] == 1 and not state["written"]:
+                state["written"] = True
+                # another connection, outside this unit of work; it commits before the read goes on
+                await asyncio.create_task(store.upsert_points("records", [new]), context=contextvars.Context())
+            return rows
+
+    async def scroll(tx: object, *args: object, **kwargs: object) -> tuple:
+        return await real(_Tx(tx), *args, **kwargs)
+
+    monkeypatch.setattr(reads, "scroll", scroll)
+    page = await store.scroll_with_vectors("records", flt(A, virtualRecordId="r1"), 10)
+    monkeypatch.setattr(reads, "scroll", real)
+    assert state["written"]
+    got = next((p for p in page.points if p.id == pid(f"{A}/p1")), None)
+    if got is not None:
+        terms = tuple(got.sparse_vector.indices) if got.sparse_vector else ()
+        assert (tuple(got.dense_vector), terms) in {(tuple(old.dense_vector), (3, 7)), (tuple(new.dense_vector), (11, 13))}, \
+            f"dense vector of one version with terms {terms} of the other"
 
 
 async def test_deletes_run_in_batches(store, monkeypatch) -> None:
@@ -324,6 +461,81 @@ async def test_a_writer_that_carries_no_membership_still_holds_its_groups_rows_u
         for c in (writer, collector):
             await c.close()
     assert [tuple(r) for r in await sql(store, MEMBERS, A, "r1")] == [(1, "c1")]            # the membership is still there
+
+
+async def test_a_point_batch_takes_its_groups_rows_in_key_order_before_any_point_so_a_membership_writer_cannot_deadlock_it(store) -> None:
+    """A membership writer locks group rows in key order. A batch that inserted a point of group rH first would hold rH (its point
+    trigger takes the group row) while waiting for rG, and the writer holding rG would wait for rH: a deadlock. The batch takes every group
+    row it touches first, in the same order, in the mode the membership update needs, so it waits at rG holding nothing of rH."""
+    import asyncio
+
+    await store.upsert_points("records", [point(A, "g", vrid="rG", conn=["c1"]), point(A, "h", vrid="rH", conn=["c1"])])
+    coll = (await sql(store, "SELECT collection_id FROM retrieval.collections WHERE name = 'records'"))[0][0]
+    space = (await sql(store, "SELECT space_id FROM retrieval.org_spaces WHERE org_id = $1", A))[0][0]
+    member, batch = await store.env.admin(), await store.env.admin()
+    try:
+        mtx = member.transaction()
+        await mtx.start()
+        await member.execute("UPDATE retrieval.point_groups SET computed_at = computed_at WHERE org_id = $1 AND group_key = 'rG'", A)
+        btx = batch.transaction()
+        await btx.start()
+        pid = await batch.fetchval("SELECT pg_backend_pid()")
+        task = asyncio.create_task(writes.upsert(batch, coll, space, writes.prepare([point(A, "h2", vrid="rH"), point(A, "g2", vrid="rG")]),
+                                                 None, safe_mode=False))
+        for _ in range(200):                                                                   # until the batch waits for a lock
+            if await member.fetchval("SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = $1", pid):
+                break
+            await asyncio.sleep(0.05)
+        await member.execute("SELECT 1 FROM retrieval.point_groups WHERE org_id = $1 AND group_key = 'rH' FOR NO KEY UPDATE NOWAIT", A)   # rH is free
+        await mtx.commit()
+        await task
+        await btx.commit()
+    finally:
+        for c in (member, batch):
+            await c.close()
+    assert await live(store, A) == 4
+
+
+async def test_a_batch_that_creates_a_group_row_and_a_membership_writer_of_the_same_groups_cannot_deadlock(store, monkeypatch) -> None:
+    """The batch holds rH (it exists) and is about to create rG; a membership writer of rG and rH creates rG first and then waits for rH.
+    If the batch went on to create rG it would wait for that writer: a deadlock. Every group writer takes the keys of its groups, rows or
+    not, in one order before any row, so the membership writer waits holding nothing and both complete."""
+    await store.upsert_points("records", [point(A, "h", vrid="rH", conn=["c1"])])
+    coll = (await sql(store, "SELECT collection_id FROM retrieval.collections WHERE name = 'records'"))[0][0]
+    space = (await sql(store, "SELECT space_id FROM retrieval.org_spaces WHERE org_id = $1", A))[0][0]
+    at_pause, go, original = asyncio.Event(), asyncio.Event(), writes.write_groups
+
+    async def paused(*args: object, **kwargs: object) -> int:          # the batch stops once it holds its groups, before it writes them
+        at_pause.set()
+        await go.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(writes, "write_groups", paused)
+    member, batch = await store.env.admin(), await store.env.admin()
+    try:
+        btx, mtx = batch.transaction(), member.transaction()
+        await btx.start()
+        await mtx.start()
+        mpid = await member.fetchval("SELECT pg_backend_pid()")
+        upsert = asyncio.create_task(writes.upsert(
+            batch, coll, space, writes.prepare([point(A, "g", vrid="rG", conn=["c2"]), point(A, "h2", vrid="rH", conn=["c2"])]), None,
+            safe_mode=False))
+        await asyncio.wait_for(at_pause.wait(), 30)
+        membership = asyncio.create_task(original(member, A, coll, {"rG": {"connectorIds": ["c3"]}, "rH": {"connectorIds": ["c3"]}}, None,
+                                                  allow_empty=True))
+        for _ in range(200):                                                  # until the membership writer waits for a lock
+            if (await sql(store, "SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = $1", mpid))[0][0]:
+                break
+            await asyncio.sleep(0.05)
+        go.set()
+        await upsert                                                          # a deadlock raises here or in the membership writer
+        await btx.commit()
+        await membership
+        await mtx.commit()
+    finally:
+        for c in (member, batch):
+            await c.close()
+    assert [r["group_key"] for r in await sql(store, "SELECT group_key FROM retrieval.point_groups WHERE org_id = $1 ORDER BY 1", A)] == ["rG", "rH"]
 
 
 async def test_a_point_written_again_after_a_safe_mode_delete_is_counted_once_whichever_way_its_terms_change(store) -> None:

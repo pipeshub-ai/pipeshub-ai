@@ -567,8 +567,8 @@ async def test_a_grant_on_a_record_group_moves_the_generation_when_it_flips_the_
     _, conn, space, _, page, *_ = await _writers_world(backend)
     group = await _group_id(backend, conn, space)
     first = await _grant(backend)
-    assert await _in_tx(backend, conn, lambda tx: tx.batch_upsert_record_group_permissions(group, [first], conn))
-    assert not await _in_tx(backend, conn, lambda tx: tx.batch_upsert_record_group_permissions(group, [first], conn))
+    assert await _in_tx(backend, conn, lambda tx: tx.batch_upsert_record_group_permissions(group, [first], conn, ORG))
+    assert not await _in_tx(backend, conn, lambda tx: tx.batch_upsert_record_group_permissions(group, [first], conn, ORG))
 
 
 # ---- a structural write made outside the transaction store: a full sync that misses a node ---------------------------------------

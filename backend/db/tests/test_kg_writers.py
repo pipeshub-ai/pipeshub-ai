@@ -1,6 +1,8 @@
 """The vetted writers of schema kg (kg_0002): another org cannot be targeted, no org does nothing, bad arguments are 22023, only the connectors
 service executes them, and the statements are the pinned shapes (the catalog is clean). The per-org row policy is in test_vetted_org_policy.py."""
 # ruff: noqa: F811
+import os
+
 import pytest
 from psycopg import errors as pg
 
@@ -42,13 +44,21 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_r13_set": (([11], [3], ["rec"], [3], [True]), "kg.records"),
     "kg.w_scopes_set": (([11], [3], [5], [True], [True], [False], [False]), "kg.scopes"),
     "kg.w_scopes_delete": (([11],), "kg.scopes"),
+    "kg.w_listing_set": (([11], [3], ["rec"], [3], [True], [False], [False], [b"\x00r"]), "kg.records"),
+    "kg.w_trash_set": (([11], [3], ["rec"], [3], [1790000000000], ["bt1"]), "kg.records"),
+    "kg.w_counts_add": (([5], [1], [7], [3], [False], [None], [None], [2]), "kg.counts"),
+    "kg.w_counts_delete": (([1],), "kg.counts"),
+    "kg.w_analyze_request": ((5,), "kg.analyze_requests"),
 }
 CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that are not what it sends
+    "kg.w_counts_add": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::smallint[]", "%s::boolean[]", "%s::text[]", "%s::text[]", "%s::bigint[]"],
+    "kg.w_listing_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::bytea[]"],
+    "kg.w_trash_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s::text[]"],
     "kg.w_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
     "kg.w_scopes_set": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]"],
-    "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]"],
+    "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s"],
     "kg.w_stamps_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bytea[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]",
-                        "%s::smallint[]", "%s::boolean[]"],
+                        "%s::smallint[]", "%s::boolean[]", "%s"],
     "kg.w_classes_set": ["%s::bigint[]", "%s::bigint[]", "%s::bigint[]", "%s::text[]::jsonb[]", "%s::bytea[]"],
     "kg.w_grants_set": ["%s::bigint[]", "%s::bigint[]", "%s::text[]", "%s::text[]", "%s::bigint[]", "%s::boolean[]"],
 }
@@ -58,7 +68,13 @@ def marks(args: tuple, name: str | None = None) -> str:
     return ", ".join(CASTS[name]) if name in CASTS and len(args) == len(CASTS[name]) else ", ".join("%s" for _ in args)
 
 
-def call(c, name: str, org: str | None, args: tuple):
+# The writers that take the caller's projection code epoch last (kg_0013); call() passes it.
+GUARDED = ("kg.w_stamps_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
+EPOCH = 8
+
+
+def call(c, name: str, org: str | None, args: tuple, *, epoch: int | None = EPOCH):
+    args = (*args, epoch) if name in GUARDED else args
     sql = f"SELECT * FROM {name}({marks(args, name)})" if name == "kg.w_nodes_upsert" else f"SELECT {name}({marks(args, name)})"
     with unit(c, "pipeshub_connectors", org):
         return c.execute(sql, args).fetchall()
@@ -69,7 +85,7 @@ def rows(c, table: str, org: str) -> list:
 
 
 def clean(c) -> None:
-    for t in sorted({v[1] for v in CALLS.values()}):
+    for t in sorted({v[1] for v in CALLS.values()}, key=lambda t: t != "kg.records"):      # the records first: their delete adds counter deltas (kg_0015)
         c.execute(f"DELETE FROM {t}")
 
 
@@ -87,7 +103,7 @@ def test_every_kg_table_requires_the_per_org_policy_and_is_plain_with_org_first_
     with conn(pdb) as c:
         tables = c.execute("SELECT c.oid::regclass::text, c.relkind::text, c.relispartition, COALESCE(r.vetted_org_policy, false), r.class FROM pg_class c "
                            "LEFT JOIN kernel.rls_registry r ON r.rel = c.oid WHERE c.relnamespace = 'kg'::regnamespace AND c.relkind IN ('r', 'p')").fetchall()
-        assert len(tables) == 11, tables
+        assert len(tables) == 13, tables         # kg_0016 added kg.analyze_requests
         assert [t[0] for t in tables if not t[3]] == [], "kg tables without kernel.require_vetted_org_policy"
         # rule 128 exempts a table the vetted role also reads unbound; no kg table is one (its vetted functions read through the per-org policy), and one that set the flag
         # would slip past 128 with the policy missing
@@ -143,9 +159,31 @@ def test_the_change_log_is_acknowledged_by_transaction_and_by_id_and_only_in_the
         c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:mine'])", (ORG_A,))              # as the capture trigger will: this transaction's id by default
         c.execute("SET LOCAL ROLE pipeshub_connectors")
         c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
-        assert c.execute("SELECT kg.w_changes_ack()").fetchone()[0] == 1
+        assert c.execute("SELECT kg.w_changes_ack(8)").fetchone()[0] == 1
         c.execute("COMMIT")
         assert [list(r[4]) for r in rows(c, "kg.graph_changes", ORG_A)] == [["3:other", "4:u"]]
+        clean(c)
+
+
+@pytest.mark.parametrize("name", GUARDED)
+def test_a_caller_below_the_current_projection_code_or_of_an_older_release_is_refused_and_writes_nothing(pdb, name):
+    """Code of an older release calls these writers without the epoch and finds no function; a caller that passes an epoch below 5 is refused with 22023. Either
+    way nothing is written: it would write stamps or fences, or take work off the change log or the restamp queue, without the access lists and r13."""
+    args, table = CALLS[name]
+    with conn(pdb) as c:
+        clean(c)
+        c.execute("INSERT INTO kg.graph_changes (org_id, txid, ends) VALUES (%s, '100'::xid8, ARRAY['3:needle'])", (ORG_A,))
+        if name == "kg.w_changes_delete":
+            args = ([c.execute("SELECT id FROM kg.graph_changes WHERE org_id = %s", (ORG_A,)).fetchone()[0]],)
+        before = rows(c, table, ORG_A)
+        for epoch in (EPOCH - 1, 0, None):
+            with pytest.raises(pg.InvalidParameterValue, match="p_projector_epoch"):
+                call(c, name, ORG_A, args, epoch=epoch)
+        old = ", ".join(CASTS[name][:-1]) if name in CASTS else ", ".join("%s" for _ in args)      # the signature of kg_0012
+        with pytest.raises(pg.UndefinedFunction), unit(c, "pipeshub_connectors", ORG_A):
+            c.execute(f"SELECT {name}({old})", args)
+        assert rows(c, table, ORG_A) == before
+        call(c, name, ORG_A, args, epoch=EPOCH + 1)                                               # a later code epoch passes
         clean(c)
 
 
@@ -165,9 +203,9 @@ BAD = {
     "kg.w_nodes_upsert": [([0], ["x"]), ([3], [""]), ([3, 3], ["x"]), ([None], ["x"]), ([3], [None]), (None, ["x"]), ([3] * 5001, ["x"] * 5001)],
     "kg.w_records_upsert": [([11, 12], *list(R[1:])), ([None], *list(R[1:])), (*list(R[:3]), [9], *list(R[4:])), (*list(R[:2]), [""], *list(R[3:])), (None, *list(R[1:]))],
     "kg.w_records_delete": [([None],), (None,), ([1] * 5001,)],
-    "kg.w_links_set": [([1], [3], [2]), ([1, 2], [1], [2]), ([None], [1], [2])],
-    "kg.w_links_delete": [([1], [3], [2]), ([1, 2], [1], [2])],
-    "kg.w_grants_set": [([1], [2], [""], [None], [None], [False]), ([1], [2], ["USER"], ["x" * 65], [None], [False]), ([1, 2], [2], ["USER"], [None], [None], [False]),
+    "kg.w_links_set": [([1], [4], [2]), ([1, 2], [1], [2]), ([None], [1], [2])],
+    "kg.w_links_delete": [([1], [4], [2]), ([1, 2], [1], [2])],
+    "kg.w_grants_set": [([1], [2], [""], [None], [None], [False]), ([1], [2], ["x" * 65], [None], [None], [False]), ([1, 2], [2], ["USER"], [None], [None], [False]),
                         ([1], [2], ["USER"], [None], [None], [None])],
     "kg.w_grants_delete": [([1], [2], [""]), ([1], [2, 3], ["USER"])],
     "kg.w_closure_set": [([1], [2], [0], [""]), ([1], [2], [None], ["self"])],
@@ -186,10 +224,20 @@ BAD = {
     "kg.w_scopes_set": [([11, 12], [3], [5], [True], [True], [False], [False]), ([11], [1], [5], [True], [True], [False], [False]), ([11], [3], [None], [True], [True], [False], [False]),
                         ([11], [3], [5], [None], [True], [False], [False]), ([11], [3], [5], [True], [True], [False], [None]), ([None], [3], [5], [True], [True], [False], [False])],
     "kg.w_scopes_delete": [(None,), ([None],)],
+    "kg.w_listing_set": [([11, 12], [3], ["s"], [3], [True], [False], [False], [None]), ([11], [4], ["s"], [3], [True], [False], [False], [None]), ([11], [3], [""], [3], [True], [False], [False], [None]),
+                         ([11], [3], ["s"], [3], [None], [False], [False], [None]), ([11], [3], ["s"], [3], [True], [None], [False], [None]), ([11], [3], ["s"], [3], [True], [False], [None], [None]),
+                         ([None], [3], ["s"], [3], [True], [False], [False], [None]), ([11], [3], ["s"], [3], [True], [False], [False], [None, None])],
+    "kg.w_trash_set": [([11, 12], [3], ["s"], [3], [1], ["b"]), ([11], [4], ["s"], [3], [1], ["b"]), ([11], [3], [""], [3], [1], ["b"]), ([None], [3], ["s"], [3], [1], ["b"]),
+                       ([11], [3], ["s"], [3], [1, 2], ["b"]), ([11], [3], ["s"], [3], [1], ["b", "c"]), (None, [3], ["s"], [3], [1], ["b"])],
     "kg.w_stamps_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([None], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
                         (None, [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True])],
+    "kg.w_counts_add": [([5, 6], [1], [7], [3], [False], [None], [None], [2]), ([None], [1], [7], [3], [False], [None], [None], [2]), ([5], [3], [7], [3], [False], [None], [None], [2]),
+                        ([5], [1], [7], [4], [False], [None], [None], [2]), ([5], [2], [None], [None], [None], ["x" * 65], [None], [2]), ([5], [2], [None], [None], [None], [None], ["bogus"], [2]),
+                        ([5], [1], [7], [3], [False], [None], [None], [None]), (None, [1], [7], [3], [False], [None], [None], [2])],
+    "kg.w_counts_delete": [([None],), (None,), ([1] * 5001,)],
+    "kg.w_analyze_request": [(-1,), (None,)],
     "kg.w_projection_set": [(-1, 1, "shadow", None, None, None), (5, 1, "bogus", None, None, None), (5, -1, "shadow", None, None, None), (5, 1, "shadow", "x" * 129, None, None), (None, 1, "shadow", None, None, None)],
 }
 
@@ -207,6 +255,7 @@ def test_bad_arguments_are_22023(pdb, name, bad):
 @pytest.mark.parametrize("role", ["pipeshub_node", "pipeshub_indexing", "pipeshub_query", "pipeshub_jobs", "pipeshub_backup", "pipeshub_restore", "pipeshub_ro"])
 def test_only_the_connectors_service_executes_a_writer(pdb, name, role):
     args, _ = CALLS[name]
+    args = (*args, EPOCH) if name in GUARDED else args
     with conn(pdb) as c, unit(c, role, ORG_A), pytest.raises(pg.InsufficientPrivilege):
         c.execute(f"SELECT {name}({marks(args, name)})", args)
 
@@ -315,6 +364,16 @@ def test_a_closed_set_refuses_a_value_outside_it_in_a_record(pdb, column, value)
         clean(c)
         with pytest.raises(pg.InvalidParameterValue):
             call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(**{column: value}))))
+        clean(c)
+
+
+@pytest.mark.parametrize("rule", ["OPEN", "STRICT", "RESTRICTED", "PARENT_AND_GRANT", None])
+def test_every_access_rule_a_connector_writes_is_stored(pdb, rule):
+    """PARENT_AND_GRANT is one of them (kg_0017): a record with it once refused its whole batch."""
+    with conn(pdb) as c:
+        clean(c)
+        assert call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(rule=rule)))) == [(1,)]
+        assert c.execute("SELECT rule FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] == rule
         clean(c)
 
 
@@ -486,6 +545,69 @@ def test_a_mark_is_set_and_lifted_on_a_row_of_the_session_org_only(pdb):
         clean(c)
 
 
+def test_the_listing_columns_are_written_to_the_row_of_the_session_org_and_the_other_columns_stay(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values())))
+        before = c.execute("SELECT name, parent_sk, deleted FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert call(c, "kg.w_listing_set", ORG_A, ([11], [3], ["rec-1"], [3], [True], [True], [True], [b"\x00n"])) == [(1,)]
+        got = c.execute("SELECT folder, hide_children, alien, name, parent_sk, deleted FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert tuple(got) == (True, True, True, *before)
+        assert bytes(c.execute("SELECT name_sort FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0]) == b"\x00n"
+        call(c, "kg.w_listing_set", ORG_B, ([11], [3], ["rec-1"], [3], [False], [False], [False], [None]))                                # another org's call makes a row of its own
+        assert tuple(c.execute("SELECT folder, hide_children, alien FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (True, True, True)
+        clean(c)
+
+
+def test_the_trash_columns_are_written_to_the_row_of_the_session_org_and_the_other_columns_stay(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values())))
+        before = c.execute("SELECT name, parent_sk, deleted FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert call(c, "kg.w_trash_set", ORG_A, ([11], [3], ["rec-1"], [3], [1790000000000], ["bt1"])) == [(1,)]
+        got = c.execute("SELECT deleted_ms, delete_batch, name, parent_sk, deleted FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert tuple(got) == (1790000000000, "bt1", *before)
+        assert call(c, "kg.w_trash_set", ORG_A, ([11], [3], ["rec-1"], [3], [None], [None])) == [(1,)]                                  # a restore clears them
+        assert tuple(c.execute("SELECT deleted_ms, delete_batch FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (None, None)
+        call(c, "kg.w_trash_set", ORG_B, ([11], [3], ["rec-1"], [3], [5], ["other"]))                                                    # another org's call makes a row of its own
+        assert tuple(c.execute("SELECT deleted_ms, delete_batch FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (None, None)
+        clean(c)
+
+
+def test_a_listed_row_with_a_long_name_that_does_not_compress_is_written(pdb):
+    """A name has no bound: the name indexes key on a prefix of it, so a 100 KB key of random bytes (no compression helps) is no index entry too large to write."""
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(deleted=False))))
+        key = os.urandom(100_000)
+        assert call(c, "kg.w_listing_set", ORG_A, ([11], [3], ["rec-1"], [3], [False], [False], [False], [key])) == [(1,)]
+        assert bytes(c.execute("SELECT name_sort FROM kg.records WHERE org_id = %s AND sk = 11 AND kind IN (2, 3) AND NOT deleted AND NOT placeholder AND NOT alien",
+                               (ORG_A,)).fetchone()[0]) == key
+        clean(c)
+
+
+@pytest.mark.parametrize("length", [4000, 4001, 100_000])
+def test_a_record_name_of_any_length_is_stored_whole(pdb, length):
+    """The graph stores a name whole and so does the copy (kg_0010): the 4,000 characters the writer once took, one more, and far more, all outside the BMP."""
+    name = "".join(chr(0x20000 + i % 0xA6DF) for i in range(length))
+    with conn(pdb) as c:
+        clean(c)
+        assert call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values(name=name, name_key=name.lower())))) == [(1,)]
+        assert tuple(c.execute("SELECT name, name_key FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (name, name.lower())
+        clean(c)
+
+
+@pytest.mark.parametrize("length", [64, 65, 100_000])
+def test_a_grant_role_of_any_length_is_stored_whole(pdb, length):
+    """The role is no key and is stored whole (kg_0012): the 64 characters the writer once took, one more, and far more, all outside the BMP. The type, a key, takes 64 such characters."""
+    role, gtype = "".join(chr(0x20000 + i % 0xA6DF) for i in range(length)), "\U00020000" * 64
+    with conn(pdb) as c:
+        clean(c)
+        assert call(c, "kg.w_grants_set", ORG_A, ([1], [2], [gtype], [role], [None], [False])) == [(1,)]
+        assert tuple(c.execute("SELECT gtype, role FROM kg.scope_members WHERE org_id = %s AND principal_sk = 1 AND node_sk = 2", (ORG_A,)).fetchone()) == (gtype, role)
+        clean(c)
+
+
 def test_r13_is_written_to_the_row_of_the_session_org_and_the_other_stamps_stay(pdb):
     with conn(pdb) as c:
         clean(c)
@@ -497,4 +619,28 @@ def test_r13_is_written_to_the_row_of_the_session_org_and_the_other_stamps_stay(
         assert tuple(got) == (True, b"\x00\x01", True, 4)
         call(c, "kg.w_r13_set", ORG_B, ([11], [3], ["rec-1"], [3], [False]))                                                    # another org's call makes a row of its own
         assert c.execute("SELECT r13 FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] is True
+        clean(c)
+
+
+def counters(c, org: str) -> list[tuple]:
+    return [tuple(r) for r in c.execute("SELECT facet, record_type, origin, n, folded FROM kg.counts WHERE org_id = %s ORDER BY id", (org,))]
+
+
+def test_a_write_of_the_records_adds_its_counter_deltas_in_the_writers_org_and_the_fold_writers_replace_them(pdb):
+    """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record of a connector adds a facet 2 delta, an
+    unchanged repeat adds none, its delete takes it back. The fold's writers delete the deltas by id in the session org only and insert folded rows."""
+    with conn(pdb) as c:
+        clean(c)
+        live = rec_args((11, rec_values(deleted=False)))
+        call(c, "kg.w_records_upsert", ORG_A, live)
+        call(c, "kg.w_records_upsert", ORG_A, live)
+        call(c, "kg.w_records_upsert", ORG_B, rec_args((11, rec_values(deleted=True))))          # not live: counts nowhere
+        assert counters(c, ORG_A) == [(2, "FILE", "CONNECTOR", 1, False)] and counters(c, ORG_B) == []
+        call(c, "kg.w_records_delete", ORG_A, ([11],))
+        assert counters(c, ORG_A) == [(2, "FILE", "CONNECTOR", 1, False), (2, "FILE", "CONNECTOR", -1, False)]
+        ids = [r[0] for r in c.execute("SELECT id FROM kg.counts WHERE org_id = %s", (ORG_A,))]
+        assert call(c, "kg.w_counts_delete", ORG_B, (ids,)) == [(0,)]                                # another org's ids are not theirs to delete
+        assert call(c, "kg.w_counts_delete", ORG_A, (ids,)) == [(2,)]
+        assert call(c, "kg.w_counts_add", ORG_A, ([5], [0], [None], [None], [None], [None], [None], [0])) == [(1,)]
+        assert counters(c, ORG_A) == [(0, None, None, 0, True)]
         clean(c)

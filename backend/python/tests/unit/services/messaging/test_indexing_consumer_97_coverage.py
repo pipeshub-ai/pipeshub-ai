@@ -31,6 +31,7 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.resource_governor.models import ParseTier
+from tests.support.eventually import until
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -447,14 +448,8 @@ class TestOnFutureDoneException:
             msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"k": "v"}}).encode("utf-8"))
             await consumer._IndexingKafkaConsumer__start_processing_task(msg)
 
-            # Wait for task completion
-            import time
-            time.sleep(2)
-
-            # Future should be cleaned up via callback even after exception
-            with consumer._futures_lock:
-                remaining = len(consumer._active_futures)
-            assert remaining == 0
+            # The done callback runs on the worker thread even after the exception, so wait for it without blocking this loop.
+            assert await until(lambda: consumer._get_active_task_count() == 0)
         finally:
             consumer.running = False
             consumer._IndexingKafkaConsumer__stop_worker_thread()
@@ -676,7 +671,7 @@ class TestBackpressureAlreadyLogged:
         assigned = {tp}
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = assigned  # Same set: all paused
-        consumer._backpressure_logged = True
+        consumer._backpressure_episode.engaged()
 
         # Simulate reaching capacity via gate waiters
         _fill_gate_waiters(consumer, messaging_env.max_pending_indexing_tasks + 1)
@@ -685,14 +680,14 @@ class TestBackpressureAlreadyLogged:
         # Pause not called because assigned - paused = empty set
         consumer.consumer.pause.assert_not_called()
         # Still logged
-        assert consumer._backpressure_logged is True
+        assert consumer._backpressure_episode.open is True
 
     def test_clear_when_nothing_paused_doesnt_relog(self, consumer):
         """When nothing is paused and backpressure wasn't logged, no logging."""
         consumer.consumer = MagicMock()
         consumer.consumer.paused.return_value = set()
-        consumer._backpressure_logged = False
+        consumer._backpressure_episode.reset()
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.resume.assert_not_called()
-        assert consumer._backpressure_logged is False
+        assert consumer._backpressure_episode.open is False

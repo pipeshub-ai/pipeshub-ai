@@ -104,7 +104,9 @@ class ProjectsSync:
             for step_name, step in (
                 ("members", lambda: self._sync_project_members_as_pseudo(project)),
                 ("issues", lambda: self.c.issues.fetch_issues_batched(project_id)),
-                ("merge_requests", lambda: self.c.merge_requests.fetch_prs_batched(project_id)),
+                # Before the MRs: indexing links an MR to the code files it changed (MODIFIES) through
+                # the code checkpoint, which a first walk writes only when it ends. An MR indexed before
+                # that is never linked, and it is not indexed again until it changes.
                 (
                     "code",
                     lambda: self.c.repos.run(
@@ -113,6 +115,7 @@ class ProjectsSync:
                         project.default_branch or "main",
                     ),
                 ),
+                ("merge_requests", lambda: self.c.merge_requests.fetch_prs_batched(project_id)),
             ):
                 try:
                     await step()

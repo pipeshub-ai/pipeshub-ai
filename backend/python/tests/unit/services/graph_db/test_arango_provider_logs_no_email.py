@@ -39,7 +39,7 @@ async def test_update_user_sync_state(provider, caplog, user_key, answer) -> Non
     provider.get_entity_id_by_email = AsyncMock(return_value=user_key)
     provider.http_client.execute_aql = AsyncMock(side_effect=answer if isinstance(answer, Exception) else None,
                                                  return_value=None if isinstance(answer, Exception) else answer)
-    await provider.update_user_sync_state(EMAIL, "RUNNING")
+    await provider.update_user_sync_state(EMAIL, "RUNNING", org_id="org-1")
     _assert_no_email(caplog)
 
 

@@ -302,11 +302,12 @@ class TestLiveConcurrency:
     async def test_governor_bounds_sandboxes_across_separate_managers(
         self, tmp_path, no_leaked_containers,
     ) -> None:
-        """Two per-request managers, one process ceiling — the multi-chat
-        case that per-manager limits cannot bound."""
+        """Separate per-request managers, one process ceiling — the multi-chat
+        case that per-manager limits cannot bound. Docker is not metered, so
+        a sandbox takes a slot only while a call runs on it."""
         _require_docker()
         provider = DockerClientProvider(max_workers=4)
-        governor = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=2))
+        governor = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=2))
         managers = []
 
         for i in range(3):
@@ -319,11 +320,15 @@ class TestLiveConcurrency:
             managers.append(mgr)
 
         try:
-            await managers[0].get_or_create(SandboxType.CODING)
-            await managers[1].get_or_create(SandboxType.CODING)
-            with pytest.raises(SandboxLimitExceeded):
-                await managers[2].get_or_create(SandboxType.CODING)
-            assert governor.snapshot()["total"] == 2
+            ids = [(await mgr.get_or_create(SandboxType.CODING))[0] for mgr in managers]
+            assert governor.snapshot()["total"] == 0  # idle sandboxes hold no slot
+            async with managers[0].slot(SandboxType.CODING, ids[0]), \
+                    managers[1].slot(SandboxType.CODING, ids[1]):
+                assert governor.snapshot()["total"] == 2
+                with pytest.raises(SandboxLimitExceeded):
+                    async with managers[2].slot(SandboxType.CODING, ids[2]):
+                        pass
+            assert governor.snapshot()["total"] == 0
         finally:
             for mgr in managers:
                 await mgr.destroy_all()
@@ -451,3 +456,150 @@ class TestLiveContextTagging:
             assert sb._context.conversation_id == "conv-live"
         finally:
             sb._provider.close()
+
+
+class TestLiveRunSafety:
+    """Out-of-memory detection, the in-container deadline, the run-time cap,
+    and cancel / Stop removing the container before the slot is released."""
+
+    async def test_the_stock_image_has_timeout(self, no_leaked_containers) -> None:
+        import docker
+
+        client = docker.from_env()
+        try:
+            out = client.containers.run(
+                DOCKER_TEST_IMAGE, ["sh", "-c", "command -v timeout"], network_mode="none", remove=True,
+            )
+            assert out.strip()
+        finally:
+            client.close()
+
+    async def test_the_deadline_kills_the_run_without_the_host(self, no_leaked_containers) -> None:
+        import time
+
+        import docker
+
+        from app.agent_loop_lib.sandbox.coding.egress_firewall import deadline_command
+
+        client = docker.from_env()
+        container = client.containers.create(
+            DOCKER_TEST_IMAGE,
+            deadline_command(["sh", "-c", "sleep 1000 & while true; do :; done"], 3),
+            network_mode="none", mem_limit=256 * 1024 * 1024,
+        )
+        try:
+            container.start()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                container.reload()
+                if container.attrs["State"]["Status"] == "exited":
+                    break
+                time.sleep(0.25)
+            state = container.attrs["State"]
+            assert state["Status"] == "exited"
+            # Logged to settle which status `timeout -s KILL` leaves (137 or 124).
+            print(f"exit code after the deadline: {state['ExitCode']}")
+            assert state["ExitCode"] in (124, 137)
+        finally:
+            container.remove(force=True)
+            client.close()
+
+    async def test_out_of_memory_is_reported_and_300mb_is_not(self, tmp_path, no_leaked_containers) -> None:
+        from app.agent_loop_lib.sandbox.coding.base import ErrorCategory
+
+        sb = _make_sandbox(tmp_path, "oom")
+        await sb.provision()
+        try:
+            oom = await sb.execute(CodeRequest(code="x = 'a' * (1024**3)\nprint(len(x))", language="python"))
+            assert oom.error_analysis is not None
+            assert oom.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+            ok = await sb.execute(CodeRequest(
+                code="x = bytearray(300 * 1024 * 1024)\nx[::4096] = b'1' * len(x[::4096])\nprint('ok')",
+                language="python",
+            ))
+            assert ok.exit_code == 0, ok.stderr
+            assert "[sandbox]" not in ok.stderr
+        finally:
+            await sb.destroy()
+
+    async def test_the_run_time_cap_bounds_a_long_run(self, tmp_path, no_leaked_containers) -> None:
+        import time
+
+        from app.agent_loop_lib.tools.builtin.sandbox.coding_sandbox import (
+            CodingSandboxTool,
+        )
+
+        manager = SandboxManager()
+        manager.register_backend_factory(
+            SandboxType.CODING, lambda: _make_sandbox(tmp_path, "cap"),
+            limits=SandboxLimits(max_run_timeout_s=10),
+        )
+        tool = CodingSandboxTool(manager)
+        started = time.monotonic()
+        try:
+            result = await tool.execute(code="import time; time.sleep(30)", language="python", timeout=60)
+        finally:
+            await manager.destroy_all()
+        assert time.monotonic() - started < 25
+        assert "timeout_note" in result.data
+        assert result.data["error_analysis"]["category"] == "timeout"
+        assert "maximum run time of 10s" in result.data["error_analysis"]["suggestion"]
+
+    async def test_cancel_removes_the_container_before_the_next_slot(self, tmp_path, no_leaked_containers) -> None:
+        import time
+
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
+        manager = SandboxManager(governor=gov, slot_wait_s=30)
+        manager.register_backend_factory(SandboxType.CODING, lambda: _make_sandbox(tmp_path, f"c{time.time_ns()}"))
+        sid1, sb1 = await manager.get_or_create(SandboxType.CODING)
+        sid2, sb2 = await manager.get_or_create(SandboxType.CODING)
+
+        async def busy() -> None:
+            async with manager.slot(SandboxType.CODING, sid1):
+                await sb1.execute(CodeRequest(code="while True: pass", language="python", timeout=120))
+
+        task = asyncio.ensure_future(busy())
+        await asyncio.sleep(3)
+        cancelled_at = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert time.monotonic() - cancelled_at < 10
+        async with manager.slot(SandboxType.CODING, sid2):
+            assert gov.snapshot()["total"] == 1
+        await manager.destroy_all()
+
+    async def test_stop_ends_a_running_call(self, tmp_path, no_leaked_containers) -> None:
+        from app.agent_loop_lib.core.context import CancellationToken
+        from app.agent_loop_lib.sandbox.manager import SandboxCallStopped
+
+        token = CancellationToken()
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
+        manager = SandboxManager(governor=gov, stop_token=token)
+        manager.register_backend_factory(SandboxType.CODING, lambda: _make_sandbox(tmp_path, "stop"))
+        sid, sb = await manager.get_or_create(SandboxType.CODING)
+
+        async def run() -> object:
+            async with manager.slot(SandboxType.CODING, sid):
+                return await sb.execute(CodeRequest(code="while True: pass", language="python", timeout=120))
+
+        asyncio.get_running_loop().call_later(2, token.cancel)
+        with pytest.raises(SandboxCallStopped):
+            await asyncio.wait_for(manager.unless_stopped(run, tool="run_code"), 15)
+        assert gov.snapshot()["total"] == 0
+        await manager.destroy_all()
+
+
+class TestLiveCapacity:
+    async def test_the_machine_is_read_from_the_daemon(self) -> None:
+        from app.agent_loop_lib.sandbox.capacity import (
+            CapacitySettings,
+            read_machine_size,
+        )
+
+        _require_docker()
+        machine, info = await read_machine_size("compose", CapacitySettings())
+        assert machine.source in ("docker_info", "proc_fallback")
+        assert machine.memory_bytes and machine.memory_bytes > 0
+        if machine.source == "docker_info":
+            assert info is not None and info.ncpus

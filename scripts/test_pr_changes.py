@@ -60,6 +60,10 @@ class TestDecisions(unittest.TestCase):
         self.assertTrue({"node_unit", "node_build", "codeql_javascript", "e2e_smoke"} <= checks)
         self.assertFalse(checks & (PYTHON_CHECKS | MATRIX | {"frontend"}))
 
+    def test_the_generated_node_file_type_table_runs_the_python_parity_test(self) -> None:
+        checks = runs("backend/nodejs/apps/src/modules/storage/mimetypes/file-types.generated.ts")
+        self.assertTrue({"node_unit", "python_unit"} <= checks)
+
     def test_a_python_only_change_runs_no_node_or_frontend(self) -> None:
         checks = runs("backend/python/app/connectors/sources/jira/connector.py")
         self.assertTrue(PYTHON_CHECKS <= checks)
@@ -123,6 +127,12 @@ class TestDecisions(unittest.TestCase):
         checks = runs("frontend/app/(main)/chat/page.tsx")
         self.assertEqual(checks, {"frontend", "codeql_javascript", "e2e_smoke"})
 
+    def test_the_sort_fields_the_api_checks_run_the_python_unit_tests(self) -> None:
+        # test_knowledge_hub_sort_matches_spec.py reads this file; a pull request
+        # that changes only it must not skip the check that rejects a bad value.
+        checks = runs("frontend/app/(main)/knowledge-base/sort-fields.json")
+        self.assertTrue({"frontend", "python_unit"} <= checks)
+
     def test_a_workflow_change_runs_its_own_checks_and_the_actions_scan(self) -> None:
         checks = runs(".github/workflows/unit-test.yml")
         self.assertTrue({"node_unit", "python_unit", "redis_cluster", "codeql_actions"} <= checks)
@@ -153,7 +163,19 @@ class TestNothingTheOldTriggersCoveredIsDropped(unittest.TestCase):
     def test_unit_test_triggers(self) -> None:
         for glob in self._paths("unit-test.yml"):
             with self.subTest(glob=glob):
-                self.assertTrue(runs(_example(glob)) & {"node_unit", "python_unit", "redis_cluster"})
+                self.assertTrue(
+                    runs(_example(glob)) & {"node_unit", "python_unit", "redis_cluster", "sandbox_live"}
+                )
+
+    def test_sandbox_live_runs_on_sandbox_changes_only(self) -> None:
+        for path in (
+            "deployment/sandbox/Dockerfile",
+            "backend/python/app/sandbox/docker_proxy.py",
+            "backend/python/app/agent_loop_lib/sandbox/coding/docker.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("sandbox_live", runs(path))
+        self.assertNotIn("sandbox_live", runs("backend/python/app/connectors/core/base.py"))
 
     def test_backend_matrix_triggers(self) -> None:
         # Every old trigger still starts the storage job; every one outside Node
@@ -218,6 +240,38 @@ class TestEveryImportedHelperIsCovered(unittest.TestCase):
         on = _workflow("backend-matrix.yml").get(True) or _workflow("backend-matrix.yml")["on"]
         trigger = on["pull_request"]["paths"]
         for path in sorted(helpers):
+            with self.subTest(path=path):
+                self.assertTrue(pc.matches(path, pc.MATRIX_PYTHON))
+                self.assertTrue(pc.matches(path, trigger))
+
+
+_APP_IMPORT = re.compile(r"^\s*(?:from|import)\s+(app(?:\.\w+)+)", re.M)
+
+
+def _app_files_the_record_diagnostics_integration_tests_import() -> set[str]:
+    python = ROOT / "backend" / "python"
+    tests = [
+        *python.joinpath("tests/integration/graph_db").rglob("*record_diagnostics*.py"),
+        python / "tests" / "unit" / "attempt_start.py",
+    ]
+    found: set[str] = set()
+    for path in tests:
+        for module in _APP_IMPORT.findall(path.read_text(encoding="utf-8", errors="ignore")):
+            file = _module_file(python, module)
+            if file is not None and file.name != "__init__.py":
+                found.add(file.relative_to(ROOT).as_posix())
+    return found
+
+
+class TestTheRecordDiagnosticsGraphTestsRunWhenTheirCodeChanges(unittest.TestCase):
+    """The real-graph record diagnostics tests drive these modules (the event processor among them), so a change to one starts the graph job."""
+
+    def test_every_app_module_they_import_is_a_trigger(self) -> None:
+        modules = _app_files_the_record_diagnostics_integration_tests_import()
+        self.assertIn("backend/python/app/events/events.py", modules, "the import walk missed the event processor")
+        on = _workflow("backend-matrix.yml").get(True) or _workflow("backend-matrix.yml")["on"]
+        trigger = on["pull_request"]["paths"]
+        for path in sorted(modules):
             with self.subTest(path=path):
                 self.assertTrue(pc.matches(path, pc.MATRIX_PYTHON))
                 self.assertTrue(pc.matches(path, trigger))

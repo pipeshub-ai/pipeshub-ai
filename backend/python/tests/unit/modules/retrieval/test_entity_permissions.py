@@ -791,11 +791,10 @@ class TestReadPathRoundTrips:
         assert sorted(r["id"] for r in refs) == ["t1", "t2"]
 
     @pytest.mark.asyncio
-    async def test_a_slow_probe_round_is_cut_at_the_deadline_and_reads_as_no_match(self, monkeypatch) -> None:
-        """Only hits not yet found readable keep a probe round running, so a timeout there
-        must not read differently from no hits at all."""
-        import asyncio
-
+    async def test_a_first_round_cut_at_the_deadline_is_a_timeout_not_no_matches(self, monkeypatch) -> None:
+        """Nothing was checked, so "no accessible entities" would be a guess: the
+        live failure of 2026-11-17, where a cold plan cache made the first round
+        miss the deadline and the agent was told nothing matched."""
         monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
         monkeypatch.setattr(ep, "PROBE_MIN_SECONDS", 0.2)
         store = _store([_hit("t1", "topic", 0.9)])
@@ -808,7 +807,8 @@ class TestReadPathRoundTrips:
         graph.get_permitted_entity_records = AsyncMock(side_effect=_slow)
         started = asyncio.get_running_loop().time()
 
-        assert await search_entities_for_user(store, graph, _context(), "q", top_k=5) == []
+        with pytest.raises(EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
         assert asyncio.get_running_loop().time() - started < 2
 
     @pytest.mark.asyncio
@@ -847,8 +847,12 @@ class TestReadPathRoundTrips:
         store = _store([_hit("t1", "topic", 0.9)])
         graph = _graph(candidates=_slow_round)
 
-        assert await search_entities_for_user(store, graph, _context(), "q", top_k=5) == []
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+        assert hits == []
         assert graph.get_permitted_entity_records.await_count == 1
+        # Its newest records were checked and refused: flagging the answer would
+        # tell the user that an entity they cannot read matched.
+        assert hits.incomplete is False
 
     @pytest.mark.asyncio
     async def test_a_vector_search_that_uses_the_deadline_still_leaves_time_to_probe(self, monkeypatch) -> None:
@@ -866,6 +870,106 @@ class TestReadPathRoundTrips:
         hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
 
         assert [h.entity_id for h in hits] == ["t1"]
+
+
+class TestDeadlineNeverAdmitsAnUncheckedEntity:
+    """Running out of time may cost results, never correctness: every entity
+    returned passed the access check, an undecided one is left out, and the
+    caller is told when the deadline left matches undecided."""
+
+    @pytest.mark.asyncio
+    async def test_a_finished_search_is_complete(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9)])
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r", "kb-1")]})
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert [h.entity_id for h in hits] == ["t1"]
+        assert hits.incomplete is False
+
+    @pytest.mark.asyncio
+    async def test_a_match_refused_before_the_deadline_reads_as_no_match(self, monkeypatch) -> None:
+        """t1 is confirmed in the first round; every row of t2's first window is
+        refused and the deadline passes before its next window. t2 is left out
+        and leaves no trace: not even the ``incomplete`` flag."""
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep.time, "monotonic", lambda: clock["t"])
+        refused = [_row(f"d{i}", "conf-1") for i in range(ep.PROBE_WINDOWS[0])]
+
+        def _round(refs: list, org: str, **kwargs: object) -> dict:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + 1
+            return {"t1": [_row("ok", "kb-1")], "t2": refused}
+
+        store = _store([_hit("t2", "topic", 0.95), _hit("t1", "topic", 0.9)])
+        graph = _graph(candidates=_round)
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert [h.entity_id for h in hits] == ["t1"]
+        assert hits.incomplete is False
+
+    @pytest.mark.asyncio
+    async def test_a_confirmed_match_beside_unchecked_ones_is_returned_not_failed(self, monkeypatch) -> None:
+        """The reachable record group is confirmed by its own access check; the
+        first probe round then misses the deadline. Partial results beat an error."""
+        monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "PROBE_MIN_SECONDS", 0.2)
+        store = _store([_hit("space-a", "record_group", 0.9), _hit("t1", "topic", 0.8)])
+
+        async def _slow(*args: object, **kwargs: object) -> dict:
+            await asyncio.sleep(5)
+            return {}
+
+        graph = _graph()
+        graph.get_permitted_entity_records = AsyncMock(side_effect=_slow)
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert [h.entity_id for h in hits] == ["space-a"]
+        assert hits.incomplete is True
+
+    @pytest.mark.asyncio
+    async def test_a_deadline_already_spent_by_the_vector_search_checks_before_it_answers(self, monkeypatch) -> None:
+        """The probes still get their minimum time, and a match they confirm is returned."""
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep.time, "monotonic", lambda: clock["t"])
+        store = _store([_hit("t1", "topic", 0.9)])
+
+        async def _slow_vectors(*args: object, **kwargs: object) -> list:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS * 2
+            return [[_hit("t1", "topic", 0.9)]]
+
+        store.search_entities_passes = AsyncMock(side_effect=_slow_vectors)
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r", "kb-1")]})
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert [h.entity_id for h in hits] == ["t1"] and hits.incomplete is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("admitted", [set(), {"t1"}, {"t2"}, {"t1", "t2"}, {"t1", "t2", "t3"}])
+    async def test_whatever_the_timing_only_admitted_entities_are_returned(self, monkeypatch, admitted) -> None:
+        """Every combination of admitted entities, with the deadline passing
+        after the first round: nothing outside ``admitted`` is returned, and
+        the answer does not show that refused ones matched."""
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep.time, "monotonic", lambda: clock["t"])
+        full_window = ep.PROBE_WINDOWS[0]
+
+        def _round(refs: list, org: str, **kwargs: object) -> dict:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + 1
+            return {
+                r["id"]: [_row(f"{r['id']}-{i}", "conf-1") for i in range(full_window)] for r in refs
+            }
+
+        store = _store([_hit(t, "topic", 0.9 - i / 10) for i, t in enumerate(("t1", "t2", "t3"))])
+        readable = {f"{t}-{i}" for t in admitted for i in range(full_window)}
+        graph = _graph(candidates=_round, permitted=readable)
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert {h.entity_id for h in hits} == admitted
+        assert hits.incomplete is False
 
 
 class TestListingDeadline:

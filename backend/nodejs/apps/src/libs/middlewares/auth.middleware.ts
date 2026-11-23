@@ -16,12 +16,19 @@ import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
 import { getOrgRepository } from '../repositories/org';
-import { getOAuthAppRepository } from '../repositories/oauth-app';
+import {
+  getOAuthAppRepository,
+  NO_APP_CREATOR,
+} from '../repositories/oauth-app';
 import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
-import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
+import {
+  isPatClientId,
+  stripTokenDisplayPrefix,
+} from '../../modules/oauth_provider/constants/constants';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextIdentity } from '../context/request-context';
+import { recordAgentCall } from './agent-call-recorder';
 import { MCP_PATH } from './rate-limit.middleware';
 import {
   auditAuthRefusal,
@@ -34,6 +41,9 @@ const AUDITED_SCOPES: Readonly<Record<string, AuthRefusalEvent>> = {
   [TokenScopes.TOKEN_REFRESH]: 'auth.session.refresh',
   [TokenScopes.PASSWORD_RESET]: 'auth.password_reset.complete',
   [TokenScopes.VALIDATE_EMAIL]: 'auth.email.change',
+  // EE mounts these (org email verification at signup); OSS has no route for them.
+  [TokenScopes.ORG_EMAIL_VERIFY]: 'auth.email.verify',
+  [TokenScopes.EMAIL_VERIFIED]: 'auth.email.verify',
 };
 
 const CLIENT_NAME_HEADER = 'client-name';
@@ -65,7 +75,7 @@ export class AuthMiddleware {
 
   async authenticate(
     req: AuthenticatedUserRequest,
-    _res: Response,
+    res: Response,
     next: NextFunction,
   ) {
     try {
@@ -87,6 +97,8 @@ export class AuthMiddleware {
         // authenticate oauth token
         await this.authenticateOAuthToken(token, req);
       }
+
+      recordAgentCall(req, res);
 
       // Bind the verified token's org for the rest of the request (never a client field).
       const orgId = req.user?.orgId as string | undefined;
@@ -202,6 +214,12 @@ export class AuthMiddleware {
           // Absent means the creator, which is how every app behaves until
           // someone points it at a service account.
           const resolved = app.tokenIdentityUserId ?? app.createdBy;
+          // An app no person created has nobody for its client_credentials tokens to act as.
+          if (resolved === NO_APP_CREATOR) {
+            throw new UnauthorizedError(
+              'This application does not act as a user',
+            );
+          }
 
           // The token carries the identity it was minted for. If the
           // application has been pointed somewhere else since, this token is
@@ -324,9 +342,17 @@ export class AuthMiddleware {
       accountType,
       role,
       isOAuth: true,
+      tokenId: payload.tokenRowId,
+      delegatedBy,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
       oauthAudience: payload.aud,
+      // The Python services take a personal access token's limit from here,
+      // via /api/v1/users/me/role, because its owner can change it after the
+      // token was signed. null: everything the owner can see.
+      ...(isPatClientId(payload.client_id)
+        ? { knowledgeLimit: payload.knowledgeLimit ?? null }
+        : {}),
     };
     setContextIdentity({ orgId, userId });
     // The web app's client name lets an agent run wait for a person to approve a tool call.

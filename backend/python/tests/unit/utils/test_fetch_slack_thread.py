@@ -1171,6 +1171,24 @@ class TestChannelRecordThreads:
         assert out["note"].startswith("No replies")
         graph.get_records_by_record_group.assert_not_awaited()
 
+    async def test_a_failed_access_check_keeps_the_graph_error_out_of_the_tool_result(self):
+        """The tool result goes to the model; the graph's text (host, query, values) must not."""
+        secret = "neo4j://graph-db.internal.example:7687 MATCH (u:User {id: 'gk-7f3a9c'})"
+        graph = _slack_graph({"burst": _slack_meta(external_record_id="burst_C1_cd34")})
+
+        async def get_user(user_id, *, raise_on_error=False):
+            if raise_on_error:  # the strict read behind the access check; the lenient one answers
+                raise ConnectionError(secret)
+            return {"id": "user-key"}
+
+        graph.get_user_by_user_id = AsyncMock(side_effect=get_user)
+        tool_fn = fst.create_fetch_slack_thread_tool({}, org_id=_ORG, graph_provider=graph, blob_store=MagicMock(), user_id="u1")
+        with patch.object(fst, "user_can_access_node", AsyncMock(return_value=True)):
+            result = await tool_fn.ainvoke({"record_id": "burst"})
+
+        assert result["ok"] is False and "Failed to fetch Slack thread" in result["error"]
+        assert "graph-db.internal" not in result["error"]
+
     async def test_a_single_message_without_replies_returns_itself(self):
         records = {"msg": _slack_meta(external_record_id="1700000000.000100")}
         hydrated = {"msg": _hydrated("msg", ("1700000000.000100", False))}

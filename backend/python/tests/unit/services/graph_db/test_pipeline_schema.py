@@ -1,5 +1,6 @@
 """ensure_pipeline_schema on both engines, against recorded client calls."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,6 +23,7 @@ def _arango(*, stages_exist: bool = True) -> tuple[ArangoHTTPProvider, AsyncMock
     client.create_collection = AsyncMock(return_value=True)
     client.update_collection_schema = AsyncMock(return_value=True)
     client.ensure_persistent_index = AsyncMock(return_value=True)
+    client.record_guard = None  # a client with no records-schema guard writes the schema itself
     provider.http_client = client
     return provider, client
 
@@ -134,7 +136,10 @@ class TestNeo4jPipelineSchema:
         queries = _queries(execute)
         assert sum(query.startswith("CREATE CONSTRAINT") for query in queries) == 2
         assert any("DETACH DELETE" in query for query in queries)
-        provider.logger.warning.assert_called_once()
+        provider.logger.warning.assert_not_called()  # not a failure: the event says what was removed
+        provider.logger.log.assert_called_once()
+        assert provider.logger.log.call_args.args == (logging.WARNING, "graph.provider.duplicates_removed")
+        assert provider.logger.log.call_args.kwargs["extra"]["op"] == "ensure_pipeline_schema"
 
     async def test_a_constraint_failure_with_no_duplicates_raises(self) -> None:
         execute = _engine(constraint_errors=1, duplicates=0)
@@ -164,3 +169,28 @@ class TestNeo4jPipelineSchema:
         assert any("stage_state_status_updated" in index for index in indexes)
         assert any("stage_state_revision" in index for index in indexes)
         assert any("stage_state_connector" in index for index in indexes)
+
+
+class TestRecordsSchemaUpdate:
+    def test_the_schema_indexing_waits_for_lists_the_indexing_note(self) -> None:
+        # ensure_pipeline_schema applies this before indexing starts, so no note is written against
+        # a records schema that does not allow it.
+        assert "indexingNote" in record_schema["rule"]["properties"]
+
+    async def test_a_schema_the_bootstrap_cannot_update_is_logged_as_an_error(self) -> None:
+        logger = MagicMock()
+        provider = ArangoHTTPProvider(logger, AsyncMock())
+        client = AsyncMock()
+        client.has_collection = AsyncMock(return_value=True)
+        client.update_collection_schema = AsyncMock(side_effect=lambda name, _schema: name != RECORDS)
+        client.has_graph = AsyncMock(return_value=True)
+        client.record_guard = None
+        provider.http_client = client
+        provider._ensure_edge_definitions_up_to_date = AsyncMock()  # type: ignore[method-assign]
+        provider._ensure_indexes = AsyncMock()  # type: ignore[method-assign]
+        provider._ensure_departments_seed = AsyncMock()  # type: ignore[method-assign]
+
+        await provider.ensure_schema()
+
+        errors = [call.args for call in logger.error.call_args_list]
+        assert any(RECORDS in args for args in errors), errors

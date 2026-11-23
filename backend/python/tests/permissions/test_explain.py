@@ -49,6 +49,7 @@ REASON_MAP: list[tuple[str, str]] = [
     ("R6:unknown-rule@*", ex.SCHEME_UNREADABLE),
     ("R6:*-no-*@*", ITEM_OR_CONTAINER),
     ("R6:RESTRICTED-*@*", ITEM_OR_CONTAINER),
+    ("R6:PARENT_AND_GRANT-*@*", ITEM_OR_CONTAINER),
     ("R7:depth-cap", ex.UNEXPLAINED),
     ("R7:rgl-parent-skipped*", ex.RESTRICTED_CONTAINER),
     ("no-arm", ex.NO_GRANT),

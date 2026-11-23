@@ -33,9 +33,10 @@ FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 # wrapper present but unable to load PPT/PPTX files.
 # Install CJK fallback fonts until they are available in the published runtime
 # base image. LibreOffice uses these when documents reference unavailable fonts.
+# ripgrep: storage search runs grep stages through it (same: until the base has it).
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-impress-nogui fonts-noto-cjk \
+    libreoffice-impress-nogui fonts-noto-cjk ripgrep \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # -----------------------------------------------------------------------------
@@ -111,6 +112,8 @@ RUN groupadd --gid 1000 pipeshub && \
     install -d -o 1000 -g 1000 /root/.cache /root/.local && \
     chown 1000:1000 /root
 ENV HOME=/root
+# Repositories pushed by `pipeshub index` are mirrored on the data volume, so they survive the container being replaced.
+ENV PIPESHUB_LOCAL_REPO_STORE=/data/pipeshub/local-repos
 # Pinned so the baked models are still found when HOME is overridden (the
 # Helm chart sets HOME=/home/user).
 ENV HF_HOME=/root/.cache/huggingface \
@@ -121,9 +124,9 @@ ENV HF_HOME=/root/.cache/huggingface \
 # FASTEMBED_CACHE_PATH used at build time in the python-deps stage.
 ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
 
-# Cap ML thread fan-out (PyTorch/OpenBLAS/MKL). runtime_threads.py propagates
-# this to all libraries. Override via OMP_NUM_THREADS in .env if needed.
-ENV OMP_NUM_THREADS=2
+# Cap ML thread fan-out (PyTorch/OpenBLAS/MKL). runtime_threads.py applies this
+# default to all libraries unless OMP_NUM_THREADS is set (in .env, say), which wins.
+ENV PIPESHUB_OMP_DEFAULT=2
 
 # Several third-party deps (talon, pysbd, ...) ship regex string literals with
 # unescaped backslashes and hit Python 3.12+'s SyntaxWarning at import time.

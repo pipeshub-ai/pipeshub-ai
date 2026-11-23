@@ -237,6 +237,7 @@ async def _main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
     from app.containers.indexing import IndexingAppContainer
+    from app.core.org_context import for_org
 
     container = IndexingAppContainer.init("kg_record_people")
     logger = container.logger()
@@ -247,9 +248,11 @@ async def _main(argv: list[str]) -> int:
             # schema until the current schema is applied; a dry run writes
             # nothing, schema included.
             await graph.ensure_schema()
-        return await backfill(
-            graph, GraphDataStore(logger, graph), args.org, apply=args.apply, logger=logger, out=sys.stdout,
-        )
+        # The org this run acts for: the graph runs every statement under one org (PostgreSQL refuses an unbound one).
+        with for_org(args.org, job="kg_record_people"):
+            return await backfill(
+                graph, GraphDataStore(logger, graph), args.org, apply=args.apply, logger=logger, out=sys.stdout,
+            )
     except ValueError as exc:
         sys.stderr.write(json.dumps({"error": str(exc)}) + "\n")
         return EXIT_INVALID

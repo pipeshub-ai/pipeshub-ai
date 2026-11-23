@@ -4,12 +4,17 @@ import http from 'http'
 import { AddressInfo } from 'net'
 import express, { NextFunction, Request, Response, Router } from 'express'
 import { Container } from 'inversify'
+import sinon from 'sinon'
 import {
   INVALID_PATH_SEGMENT_MESSAGE,
+  bindPathLogFields,
   guardPathParams,
   isSafePathSegment,
 } from '../../../src/libs/middlewares/safe-path-params.middleware'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
+import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context'
+import { accessLog } from '../../../src/libs/middlewares/access-log.middleware'
+import { LogRecord, captureLogRecords, newRequestId, recordsOf } from '../../helpers/log-capture'
 import { BadRequestError } from '../../../src/libs/errors/http.errors'
 import { createConnectorRouter } from '../../../src/modules/tokens_manager/routes/connectors.routes'
 import { createOAuthRouter } from '../../../src/modules/tokens_manager/routes/oauth.routes'
@@ -113,6 +118,80 @@ describe('safe path params', () => {
     it('leaves params it was not asked to guard alone', async () => {
       const r = await get('/api/open/a%2Fb')
       expect(r).to.deep.equal({ status: 200, body: { other: 'a/b' } })
+    })
+  })
+
+  describe('bindPathLogFields after guardPathParams', () => {
+    let server: http.Server
+    let port = 0
+    let records: LogRecord[]
+    let handled = 0
+
+    before(async () => {
+      const router = Router()
+      guardPathParams(router, 'id')
+      bindPathLogFields(router, { id: 'record_id' })
+      router.get('/items/:id/:other', (_req, res) => {
+        handled += 1
+        res.json({})
+      })
+      const app = express()
+      app.use(requestContextMiddleware)
+      app.use(accessLog())
+      app.use('/api', router)
+      app.use(ErrorMiddleware.handleError())
+      server = http.createServer((req, res) => void app(req, res))
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      port = (server.address() as AddressInfo).port
+    })
+
+    after(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    beforeEach(() => {
+      records = captureLogRecords()
+      handled = 0
+    })
+
+    afterEach(() => {
+      sinon.restore()
+    })
+
+    /** Sends a raw path (so `%2F` reaches Express as sent) and returns the request's lines once the access line is in. */
+    const lines = async (rawPath: string): Promise<{ status: number; lines: LogRecord[] }> => {
+      const requestId = newRequestId('bind-path-log-fields')
+      const status = await new Promise<number>((resolve, reject) => {
+        http
+          .get({ host: '127.0.0.1', port, path: rawPath, headers: { 'x-request-id': requestId } }, (res) => {
+            res.resume()
+            res.on('end', () => resolve(res.statusCode ?? 0))
+          })
+          .on('error', reject)
+      })
+      const deadline = Date.now() + 5000
+      while (Date.now() < deadline && !recordsOf(records, requestId).some((r) => r.message === 'http.request.end')) {
+        await new Promise((resolve) => setImmediate(resolve))
+      }
+      return { status, lines: recordsOf(records, requestId) }
+    }
+
+    it('binds a checked param under its key on the access line, and only the params it was given', async () => {
+      const r = await lines('/api/items/rec-7/unlisted-41')
+
+      expect(r.status).to.equal(200)
+      expect(r.lines.map((l) => [l.message, l.record_id])).to.deep.equal([['http.request.end', 'rec-7']])
+      expect(JSON.stringify(r.lines)).to.not.include('unlisted-41')
+    })
+
+    it('never binds a segment the guard refused: 400 before the handler, and the value is on no line', async () => {
+      const r = await lines('/api/items/..%2Fadmin/x')
+
+      expect(r.status).to.equal(400)
+      expect(handled).to.equal(0)
+      expect(r.lines.map((l) => l.message)).to.deep.equal(['http.request.error', 'http.request.end'])
+      expect(JSON.stringify(r.lines)).to.not.include('../admin')
+      expect(r.lines.filter((l) => l.record_id !== undefined)).to.deep.equal([])
     })
   })
 

@@ -55,6 +55,8 @@ from app.agents.actions.util.tool_summaries import (
 )
 from app.modules.agents.context.tool_result_extractor import ToolResultExtractor
 from app.utils.citations import extract_tiny_ref
+from app.utils.url_redaction import redact_sensitive_query_params
+from app.web.own_files import is_signed_storage_link
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult
@@ -175,7 +177,7 @@ _WEB_SEARCH_FAILURES = {
     "unreachable": "The search engines couldn't be reached",
     "auth_failed": "The search provider rejected its API key",
     "quota_exceeded": "The search provider's credits are used up",
-    "not_configured": "The search provider has no API key",
+    "not_configured": "Web search isn't set up: ask an admin to configure a search provider",
     "unknown_provider": "The configured search provider isn't available",
     "access_denied": "Web search isn't allowed here",
     "budget_exhausted": "The searches for this answer are used up",
@@ -191,6 +193,7 @@ _FETCH_FAILURES = {
     "invalid_url": "That isn't a web address that can be read",
     "access_denied": "Reading this site isn't allowed",
     "budget_exhausted": "The page reads for this answer are used up",
+    "own_file": "That's a file in PipesHub, so it's read from the knowledge base instead",
 }
 
 
@@ -249,8 +252,12 @@ def _fetch_url_args(args: dict[str, Any]) -> str | None:
     url = args.get("url")
     if not isinstance(url, str) or not url.strip():
         return None
+    url = url.strip()
     # A `refN.xyz` citation alias means nothing to a person; the result names the real page.
-    return "Reading a page from the results" if extract_tiny_ref(url.strip()) else f"Reading {url.strip()}"
+    if extract_tiny_ref(url):
+        return "Reading a page from the results"
+    # The step is shown to everyone who can open the chat; a signed link opens the file without a sign-in.
+    return f"Reading {redact_sensitive_query_params(url) if is_signed_storage_link(url) else url}"
 
 
 @register_result("dynamic__fetch_url", "fetch_url", "web_scrape")

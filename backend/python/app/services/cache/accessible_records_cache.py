@@ -810,6 +810,30 @@ class AccessibleRecordsInvalidator:
                 "Could not invalidate accessible-records cache for KB %s: %s", kb_id, str(e)
             )
 
+    async def on_record_vrid_moved(
+        self,
+        connector_name: "Connectors | str | None" = None,
+        connector_id: str | None = None,
+        external_record_group_id: str | None = None,
+        org_id: str | None = None,
+    ) -> None:
+        """Drop the entry the record is cached under at once, not coalesced: a record that moved to another virtual record
+        (the commit of a replacement copy) would otherwise map to the old one, which is about to go, until the entry turns over."""
+        try:
+            from app.config.constants.arangodb import Connectors
+
+            name = getattr(connector_name, "value", connector_name)
+            if name == Connectors.KNOWLEDGE_BASE.value:
+                kb_id = connector_id or external_record_group_id
+                if kb_id and org_id:
+                    await self.cache.invalidate_kb(org_id, kb_id)
+            elif connector_id:
+                org_id = org_id or await self._org_for_app(connector_id)
+                if org_id:
+                    await self.cache.invalidate_connector(org_id, connector_id)
+        except Exception as e:
+            self.logger.warning("Could not invalidate accessible-records cache after a record moved: %s", str(e))
+
     async def on_record_indexed(
         self,
         connector_name: "Connectors | str | None" = None,

@@ -23,9 +23,12 @@ from app.services.permissions.structure_generation import note_structure_change
 from app.connectors.core.base.connector.connector_service import (
     ConnectorSyncSkippedError,
     IncompleteSyncError,
+    action_items_json,
     connector_sync_lock,
     dispose_connector,
+    note_sync_started,
 )
+from app.connectors.core.base.data_store.graph_data_store import ensure_written
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.run_context import (
@@ -39,6 +42,7 @@ from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease
 from app.core.org_context import for_org, spawn_detached
 from app.core.org_jobs import for_each_org
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils import error_class
 from app.utils.logging_fields import bind_log_fields, log_event, reset_log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -52,6 +56,10 @@ if TYPE_CHECKING:
 
 # Strong refs to detached cleanup tasks; the loop holds only weak ones.
 _cleanup_tasks: set[asyncio.Task] = set()
+
+
+class SyncStartNotRecorded(RuntimeError):
+    """The start status and time of a run could not be written, so the run did not start (see ``run_sync_task``)."""
 
 
 async def join_cleanup_tasks(timeout: float = 30.0) -> int:
@@ -86,11 +94,13 @@ async def write_app_status(
     full_sync_owed: bool = False,
     full_sync_started: bool = False,
     run_started: bool = False,
+    raise_on_error: bool = False,
 ) -> bool:
-    """Best-effort status write; a DB blip must never fail the sync itself.
+    """Status write; a failure is logged and returned as False, or raised with ``raise_on_error``.
 
     Returns whether the write landed, so a caller that reports the status back
     to a user can tell the difference between repaired and merely attempted.
+    The start of a run is the one write a run requires (see ``run_sync_task``).
 
     ``full_sync_owed`` sets pendingFullSync in the same write, for a caller
     clearing a full sync that never finished (see ``_finalize``).
@@ -113,8 +123,11 @@ async def write_app_status(
     if run_started:
         payload[ConnectorStateKeys.LAST_SYNC_STARTED_AT] = payload["updatedAtTimestamp"]
     try:
-        await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value)
+        # The interface lets a store answer False instead of raising; that write did not land either.
+        ensure_written(await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value), f"the {status} status")
     except Exception as e:
+        if raise_on_error:
+            raise
         # connector_id passed too: the repair route calls this outside a run.
         error_class.log_failure(
             logger, "sync_step.failed", e, level=logging.ERROR,
@@ -127,6 +140,7 @@ async def write_app_status(
 async def _run_sync_alone(connector: "BaseConnector", connector_id: str) -> None:
     """run_sync, after any user-link pass on this connector has finished (see link_new_users)."""
     async with connector_sync_lock(connector_id):
+        note_sync_started(connector_id)
         await connector.run_sync()
 
 
@@ -265,10 +279,7 @@ async def _finalize(
         if outcome is not None else {}
     )
     if isinstance(action_items, list):
-        # Text, as the summary is; None when nothing is left to do, which clears the card's badge.
-        ended[ConnectorStateKeys.ACTION_ITEMS] = (
-            json.dumps([item.model_dump(by_alias=True) for item in action_items]) if action_items else None
-        )
+        ended[ConnectorStateKeys.ACTION_ITEMS] = action_items_json(action_items)
     if lease is None or not lease.lost.is_set():
         # Not over a delete: the status is an upsert, so writing it after the
         # delete removed the doc resurrected a ghost App node, and writing it
@@ -805,6 +816,7 @@ async def run_sync_task(
     full_sync = start_status == AppStatus.FULL_SYNCING.value
     processor, seen = None, None
     scope_generation: int | None = None
+    start_failed = False
     # One id per run, stamped on every record-event this sync publishes so
     # downstream processing can be correlated back to the run.
     run_sync_id = str(uuid4())
@@ -827,17 +839,33 @@ async def run_sync_task(
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
         # Until this lands the connector is still served from its stamps (`app_is_served`), and the grants this run writes are hidden from it.
-        # Retried, not required: a write that keeps failing (a schema that rejects it) must not stop every sync of the connector.
+        # Required: the start time is how a reindex in any process sees this run (`unless_synced_since`); a run it cannot see could have its
+        # newer access overwritten by that reindex, so a run whose start is not recorded does not read the source.
         for attempt in range(_START_STATUS_TRIES):
-            if await write_app_status(
-                graph_provider, logger, connector_id, start_status,
-                full_sync_started=full_sync, run_started=True,
-            ):
+            try:
+                await write_app_status(
+                    graph_provider, logger, connector_id, start_status,
+                    full_sync_started=full_sync, run_started=True, raise_on_error=True,
+                )
                 break
+            except Exception as e:
+                start_error = e
             if attempt + 1 < _START_STATUS_TRIES:
                 await asyncio.sleep(attempt + 1)
         else:
-            logger.error("the %s status of connector %s could not be written; it is read from its stamps until the run ends", start_status, connector_id)
+            not_recorded = SyncStartNotRecorded(f"the {start_status} status of connector {connector_id} could not be written; the run does not start")
+            not_recorded.__cause__ = start_error
+            # A store that refuses every write to this app document (an apps schema that no longer matches it) stops every run,
+            # and the finalizer's write may fail the same way: this line and the counter are what show it.
+            error_class.log_failure(
+                logger, "sync_step.failed", not_recorded, level=logging.ERROR, step="start_status_write",
+                hint="every write to this connector's app document fails: re-run the schema migration or fix the document",
+            )
+            name = getattr(getattr(connector, "connector_name", None), "value", None)
+            record_service_activity("connector_service", "sync_start_not_recorded", connector=name if isinstance(name, str) else "unknown", status="failed")
+            connector.last_sync_summary = {"stopReason": "start_not_recorded"}
+            start_failed = True
+            raise not_recorded
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
         # the connector synced twice back to back. Except a full sync owed to an
@@ -952,8 +980,10 @@ async def run_sync_task(
                 # Re-issued even after a stop: /sync/stop clears the flags before
                 # it stops anything, so a request still flagged now arrived after
                 # the stop -- a re-enable, say -- and dropping it left the
-                # connector enabled and never synced.
-                resync_spec,
+                # connector enabled and never synced. Not after a run that could not record its start: the store is refusing the
+                # app document's writes, so the re-issued run fails the same way, seconds later, for as long as it does; the
+                # flag stays set for the next scheduled run.
+                None if start_failed else resync_spec,
                 # Derived here, not in _finalize: that only receives the
                 # connector when it is also responsible for closing it.
                 getattr(

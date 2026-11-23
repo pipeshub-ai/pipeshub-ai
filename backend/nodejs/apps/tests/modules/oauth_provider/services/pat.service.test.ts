@@ -137,11 +137,11 @@ describe('PatService', () => {
       }
     })
 
-    const expiryCases: Array<[30 | 90 | 365 | 'never' | undefined, number]> = [
+    const expiryCases: Array<[7 | 30 | 90 | 365 | undefined, number]> = [
+      [7, 7 * SECONDS_PER_DAY],
       [30, 30 * SECONDS_PER_DAY],
       [90, 90 * SECONDS_PER_DAY],
       [365, 365 * SECONDS_PER_DAY],
-      ['never', 365 * 100 * SECONDS_PER_DAY],
       [undefined, 30 * SECONDS_PER_DAY],
     ]
     for (const [expiryDays, expectedSeconds] of expiryCases) {
@@ -237,6 +237,27 @@ describe('PatService', () => {
         patClientId,
         userId,
       ])
+    })
+
+    it('lists tokens issued with a 365-day or never-expiring lifetime with their stored expiry', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      const now = Date.now()
+      const year = new Date(now + 365 * SECONDS_PER_DAY * 1000)
+      const never = new Date(now + 365 * 100 * SECONDS_PER_DAY * 1000)
+      mockOAuthTokenService.listAccessTokensForUser.resolves(
+        [year, never].map((expiresAt, i) => ({
+          id: `old-${i}`,
+          tokenType: 'access',
+          scopes: ['kb:read'],
+          createdAt: new Date(now),
+          expiresAt,
+          isRevoked: false,
+        })),
+      )
+
+      const tokens = await service.listTokens(orgId, userId)
+
+      expect(tokens.map((t) => t.expiresAt)).to.deep.equal([year, never])
     })
   })
 
@@ -474,6 +495,84 @@ describe('PatService', () => {
 
       expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.deep.include({ knowledgeLimit })
       expect(created.knowledgeLimit).to.deep.equal(knowledgeLimit)
+    })
+  })
+
+  describe('updateKnowledgeLimit', () => {
+    const tokenId = new Types.ObjectId().toString()
+    const stored = {
+      id: tokenId,
+      tokenType: 'access',
+      userId,
+      scopes: ['kb:read'],
+      createdAt: new Date('2026-01-01'),
+      expiresAt: new Date('2026-02-01'),
+      isRevoked: false,
+      name: 'ci',
+      lastUsedAt: undefined,
+    }
+
+    it('throws NotFoundError when the org has no PAT app yet', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves(null)
+      mockOAuthTokenService.setAccessTokenKnowledgeLimit = sinon.stub()
+
+      let caught: unknown
+      try {
+        await service.updateKnowledgeLimit(orgId, userId, tokenId, null)
+      } catch (e) {
+        caught = e
+      }
+      expect(caught).to.be.instanceOf(NotFoundError)
+      expect(mockOAuthTokenService.setAccessTokenKnowledgeLimit.called).to.be.false
+    })
+
+    it('throws NotFoundError when the caller has no such live token', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      mockOAuthTokenService.setAccessTokenKnowledgeLimit = sinon.stub().resolves(null)
+
+      let caught: unknown
+      try {
+        await service.updateKnowledgeLimit(orgId, userId, tokenId, null)
+      } catch (e) {
+        caught = e
+      }
+      expect(caught).to.be.instanceOf(NotFoundError)
+    })
+
+    it("changes only the caller's own token under the org's PAT client and returns it", async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      const knowledgeLimit = { apps: [], recordGroups: ['rg-1'], records: [] }
+      mockOAuthTokenService.setAccessTokenKnowledgeLimit = sinon
+        .stub()
+        .resolves({ ...stored, knowledgeLimit })
+
+      const updated = await service.updateKnowledgeLimit(orgId, userId, tokenId, knowledgeLimit)
+
+      expect(mockOAuthTokenService.setAccessTokenKnowledgeLimit.firstCall.args).to.deep.equal([
+        tokenId,
+        patClientId,
+        userId,
+        knowledgeLimit,
+      ])
+      expect(updated).to.deep.equal({
+        id: tokenId,
+        name: 'ci',
+        scopes: ['kb:read'],
+        createdAt: stored.createdAt,
+        expiresAt: stored.expiresAt,
+        lastUsedAt: undefined,
+        knowledgeLimit,
+      })
+    })
+
+    it('removes the limit when given null, so the token sees everything its owner can', async () => {
+      sinon.stub(OAuthApp, 'findOne').resolves({ clientId: patClientId } as any)
+      mockOAuthTokenService.setAccessTokenKnowledgeLimit = sinon.stub().resolves({ ...stored })
+
+      const updated = await service.updateKnowledgeLimit(orgId, userId, tokenId, null)
+
+      expect(mockOAuthTokenService.setAccessTokenKnowledgeLimit.firstCall.args[3]).to.equal(null)
+      expect(updated.knowledgeLimit).to.equal(undefined)
     })
   })
 })

@@ -10,6 +10,7 @@ worker's headline.
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.modules.artifacts.sidecars import ArtifactSidecars, classification_envelope
@@ -94,6 +95,9 @@ class GraphClassifyIO(RecordStageIO):
 
     async def classify(self, blocks: BlocksContainer, org_id: str, departments: list[str]) -> SemanticMetadata | None:
         name, record_type = await self._record_header(self._job)
+        if not file_types.classifies(name):
+            # The classifier refuses it too; returning here also saves the call to the extraction service.
+            return None  # the stage records "nothing to classify"
         with stage("extract"):
             return await self._classifier(blocks, org_id, departments, name, record_type)
 
@@ -146,7 +150,7 @@ class GraphClassifyIO(RecordStageIO):
             payload = {k: v for k, v in semantic_metadata.items() if k != NAMED_ENTITIES_SECTION}
             return await sidecars.write_at(
                 job.org_id, job.virtual_record_id, job.rev, path,
-                classification_envelope(stored_run, path, payload),
+                classification_envelope(stored_run, path, payload), stored_run=stored_run,
             )
 
         return SidecarWrite(job.stage_version, write)

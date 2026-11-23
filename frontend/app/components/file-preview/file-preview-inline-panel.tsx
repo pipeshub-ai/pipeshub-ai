@@ -73,6 +73,7 @@ export function FilePreviewInlinePanel({
   highlightBox,
   citations,
   initialCitationId,
+  jumpSeq,
   hideFileDetails,
   showDownload,
   onDownload,
@@ -163,6 +164,7 @@ export function FilePreviewInlinePanel({
     initialHighlightBox: highlightBox,
     initialPage,
     initialCitationId,
+    jumpSeq,
   });
 
   const paginationControls: PaginationControls = {

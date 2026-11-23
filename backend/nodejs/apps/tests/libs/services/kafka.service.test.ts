@@ -265,7 +265,10 @@ describe('Kafka Service', () => {
         expect(sendArg.topic).to.equal('test-topic');
         expect(sendArg.messages).to.have.length(1);
         expect(sendArg.messages[0].key).to.equal('msg-key');
-        expect(JSON.parse(sendArg.messages[0].value)).to.deep.equal({ type: 'TEST' });
+        // Every published event carries an event id (a UUID at publish), signed or not.
+        const { eventId, ...body } = JSON.parse(sendArg.messages[0].value);
+        expect(body).to.deep.equal({ type: 'TEST' });
+        expect(eventId).to.match(/^[0-9a-f-]{36}$/);
       });
 
       it('should include headers in the formatted message', async () => {

@@ -112,6 +112,25 @@ class TestDeliveryIdentity:
         stamp_delivery_id(payload, "recovery:rec:3")
         assert payload[DELIVERY_ID_KEY] == "1700-0"
 
+    def test_a_verified_envelopes_event_id_goes_beside_the_delivery_id(self) -> None:
+        from app.core.org_context import OrgContext
+
+        payload: dict = {}
+        ctx = OrgContext("org-1", None, "service", "envelope", "req", event_id="evt-1")
+        stamp_delivery_id(payload, "1700-0", ctx)
+        assert payload["_event_id"] == "evt-1"
+        assert payload[DELIVERY_ID_KEY] == "1700-0"
+
+    def test_no_envelope_means_no_event_id_and_a_senders_own_key_is_dropped(self) -> None:
+        from app.core.org_context import OrgContext
+
+        forged: dict = {"_event_id": "forged"}
+        stamp_delivery_id(forged, "1700-0")
+        assert "_event_id" not in forged
+        legacy = {"_event_id": "forged"}
+        stamp_delivery_id(legacy, "1700-0", OrgContext("org-1", None, "service", "legacy-payload", "req"))
+        assert "_event_id" not in legacy
+
     def test_a_new_event_never_matches_an_old_marker(self) -> None:
         old = _marker()
         payload: dict = {}

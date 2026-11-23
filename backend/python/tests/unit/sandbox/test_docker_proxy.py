@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import urllib.parse
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
@@ -15,10 +16,12 @@ from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     firewalled_container_kwargs,
 )
 from app.sandbox.docker_proxy import (
+    INSTANCE_LABEL,
     MANAGED_LABEL,
     DockerApiPolicy,
     DockerSocketProxy,
     PolicyDenied,
+    Route,
     _parse_request_head,
     normalize_image,
 )
@@ -57,23 +60,26 @@ def _sdk_create_body(**kwargs: object) -> dict[str, Any]:
     return json.loads(json.dumps(captured["body"]))
 
 
-# The kwargs each sandbox code path passes to containers.create today.
+# The kwargs each sandbox code path passes to containers.create today
+# (every path also sends CONTAINER_HARDENING's pids_limit).
 _LEGACY_RUN: dict[str, Any] = {
     "image": IMAGE, "command": ["python3", "/src/main.py"], "environment": {"OUTPUT_DIR": "/output"},
-    "working_dir": "/src", "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000,
+    "working_dir": "/src", "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000, "pids_limit": 256,
     "network_mode": "none", "network_disabled": True, "read_only": False,
     "tmpfs": {"/tmp": "size=100M"}, "detach": True,
 }
 _INSTALL: dict[str, Any] = {
     "image": IMAGE, "command": ["sh", "-c", "pip install x"], "environment": {},
-    "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000,
+    "mem_limit": 512 * 1024 * 1024, "nano_cpus": 500_000_000, "pids_limit": 256,
     "network": EGRESS, "network_disabled": False, "detach": True,
 }
 _CODING_RUN_NETWORK: dict[str, Any] = {
     "image": IMAGE, "command": ["python3", "main.py"], "environment": {"OUTPUT_DIR": "/output"},
-    "working_dir": "/src", "mem_limit": 1, "nano_cpus": 1, "tmpfs": {"/tmp": "size=100M"},
+    "working_dir": "/src", "mem_limit": 1, "nano_cpus": 1, "pids_limit": 256, "tmpfs": {"/tmp": "size=100M"},
     "detach": True, "network": EGRESS, "network_disabled": False,
 }
+# The resource fields a raw create body needs to be admitted.
+_LIMITS: dict[str, int] = {"Memory": 512 * 1024 * 1024, "NanoCpus": 500_000_000, "PidsLimit": 256}
 # Built with the egress firewall's own helpers, so a change there that the
 # proxy would refuse fails here rather than in production.
 _FIREWALLED_INSTALL: dict[str, Any] = {
@@ -104,9 +110,7 @@ class TestNormalizeImage:
 class TestRouting:
     @pytest.mark.parametrize("method,target", [
         ("GET", "/_ping"), ("HEAD", "/_ping"), ("GET", "/v1.43/version"),
-        ("GET", "/v1.43/networks?filters=%7B%7D"),
         ("POST", "/v1.43/images/create?fromImage=pipeshubai%2Fpipeshub-sandbox&tag=latest"),
-        ("GET", "/v1.43/images/pipeshubai/pipeshub-sandbox:latest/json"),
     ])
     def test_plain_allow(self, policy: DockerApiPolicy, method: str, target: str) -> None:
         assert policy.route(method, target).kind == "allow"
@@ -137,7 +141,8 @@ class TestRouting:
         ("POST", "/v1.43/exec/abc/start"),
         ("POST", "/v1.43/build"),
         ("POST", "/v1.43/volumes/create"),
-        ("GET", "/v1.43/info"),
+        ("POST", "/v1.43/info"),
+        ("GET", "/v1.43/info/x"),
         ("POST", "/v1.43/swarm/init"),
         ("POST", "/v1.43/plugins/pull"),
         ("POST", "/v1.43/images/create?fromImage=alpine&tag=latest"),
@@ -149,6 +154,10 @@ class TestRouting:
     def test_denied(self, policy: DockerApiPolicy, method: str, target: str) -> None:
         with pytest.raises(PolicyDenied):
             policy.route(method, target)
+
+    @pytest.mark.parametrize("target", ["/info", "/v1.47/info"])
+    def test_info_has_its_own_route(self, policy: DockerApiPolicy, target: str) -> None:
+        assert policy.route("GET", target).kind == "info"
 
     def test_from_env_defaults_follow_sandbox_settings(self) -> None:
         p = DockerApiPolicy.from_env({"SANDBOX_DOCKER_IMAGE": "x/y:1", "SANDBOX_EGRESS_NETWORK": "n"})
@@ -172,7 +181,12 @@ class TestContainerCreate:
     def test_label_cannot_be_spoofed_off(self, policy: DockerApiPolicy) -> None:
         body = _sdk_create_body(**_LEGACY_RUN, labels={MANAGED_LABEL: "false", "keep": "1"})
         out = policy.check_container_create(body)
-        assert out["Labels"] == {MANAGED_LABEL: "true", "keep": "1"}
+        assert out["Labels"] == {MANAGED_LABEL: "true", INSTANCE_LABEL: "default", "keep": "1"}
+
+    def test_instance_label_is_stamped_over_a_client_value(self, policy: DockerApiPolicy) -> None:
+        body = _sdk_create_body(**_LEGACY_RUN, labels={INSTANCE_LABEL: "someone-else"})
+        out = policy.check_container_create(body, "stack-a")
+        assert out["Labels"][INSTANCE_LABEL] == "stack-a"
 
     @pytest.mark.parametrize("extra", [
         {"privileged": True},
@@ -281,29 +295,30 @@ class TestContainerCreate:
         with pytest.raises(PolicyDenied):
             policy.check_container_create(json.loads(json.dumps(body)))
 
-    @pytest.mark.parametrize("log_config,driver", [
-        ({"Type": "json-file", "Config": {}}, "json-file"),
-        ({"Type": "local"}, "local"),
-        ({"Type": "", "Config": None}, "local"),
-        ({}, "local"),
-        (None, "local"),
+    @pytest.mark.parametrize("log_config,expected", [
+        ({"Type": "json-file", "Config": {}}, {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}),
+        ({"Type": "local"}, {"Type": "local", "Config": {}}),
+        ({"Type": "", "Config": None}, {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}),
+        ({}, {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}),
+        (None, {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}),
     ])
-    def test_log_driver_is_local_or_pinned(
-        self, policy: DockerApiPolicy, log_config: dict[str, Any] | None, driver: str,
+    def test_log_driver_is_pinned_and_json_file_rotates(
+        self, policy: DockerApiPolicy, log_config: dict[str, Any] | None, expected: dict[str, Any],
     ) -> None:
-        host: dict[str, Any] = {"NetworkMode": "none"}
+        host: dict[str, Any] = {"NetworkMode": "none", **_LIMITS}
         if log_config is not None:
             host["LogConfig"] = log_config
         out = policy.check_container_create({"Image": IMAGE, "HostConfig": host})
-        # An unset driver would fall back to the daemon default, which may ship logs off-host.
-        assert out["HostConfig"]["LogConfig"] == {"Type": driver, "Config": {}}
+        # An unset driver would fall back to the daemon default, which may ship logs off-host;
+        # json-file (what docker-py's containers.run reads output from) never rotates unless capped.
+        assert out["HostConfig"]["LogConfig"] == expected
 
-    def test_sdk_create_is_pinned_to_local_logs(self, policy: DockerApiPolicy) -> None:
+    def test_sdk_create_is_pinned_to_rotated_json_file_logs(self, policy: DockerApiPolicy) -> None:
         out = policy.check_container_create(_sdk_create_body(**_FIREWALLED_INSTALL))
-        assert out["HostConfig"]["LogConfig"] == {"Type": "local", "Config": {}}
+        assert out["HostConfig"]["LogConfig"] == {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}
 
     def test_label_keys_are_a_map_and_keep_their_case(self, policy: DockerApiPolicy) -> None:
-        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}, "Labels": {"a": "1", "A": "2"}}
+        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}, "Labels": {"a": "1", "A": "2"}}
         assert policy.check_container_create(body)["Labels"]["A"] == "2"
 
 
@@ -331,7 +346,10 @@ class TestNetworkCreate:
             options={"com.docker.network.bridge.enable_icc": "false"},
             labels={"pipeshub.sandbox": "egress"}, check_duplicate=True,
         )
-        assert policy.check_network_create(body) == body
+        assert policy.check_network_create(body, "stack-a") == {
+            **body, "EnableIPv6": False,
+            "Labels": {**body["Labels"], MANAGED_LABEL: "true", INSTANCE_LABEL: "stack-a"},
+        }
 
     def test_refuses_ipv6(self, policy: DockerApiPolicy) -> None:
         with pytest.raises(PolicyDenied):
@@ -340,7 +358,9 @@ class TestNetworkCreate:
     def test_admits_egress_network(self, policy: DockerApiPolicy) -> None:
         body = {"Name": EGRESS, "Driver": "bridge", "Options": {"com.docker.network.bridge.enable_icc": "false"},
                 "IPAM": None, "CheckDuplicate": True, "Labels": {"pipeshub.sandbox": "egress"}}
-        assert policy.check_network_create(body) == body
+        assert policy.check_network_create(body)["Labels"] == {
+            "pipeshub.sandbox": "egress", MANAGED_LABEL: "true", INSTANCE_LABEL: "default",
+        }
 
     @pytest.mark.parametrize("body", [
         {"Name": "pipeshub-ai_pipeshub", "Driver": "bridge"},
@@ -372,6 +392,11 @@ class _FakeDaemon:
         self.networks = networks or {}
         self.requests: list[tuple[str, str, bytes]] = []
         self.before_inspect: Callable[[], Awaitable[None]] | None = None
+        self.info: tuple[str, bytes] = ("200 OK", json.dumps({
+            "NCPU": 4, "MemTotal": 16 * 2**30, "KernelVersion": "6.8.0", "Driver": "overlay2",
+            "HttpProxy": "http://user:secret@proxy:3128", "Labels": ["x=y"],
+            "RegistryConfig": {"Mirrors": ["m"]}, "Containers": 99,
+        }).encode())
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         head = (await reader.readuntil(b"\r\n\r\n")).decode()
@@ -384,7 +409,10 @@ class _FakeDaemon:
         self.requests.append((method, target, body))
 
         path = target.split("?", 1)[0]
-        if path.endswith("/json") and "/containers/" in path:
+        if path == "/info":
+            status, payload = self.info
+            writer.write(f"HTTP/1.1 {status}\r\nContent-Length: {len(payload)}\r\n\r\n".encode() + payload)
+        elif path.endswith("/json") and "/containers/" in path:
             if self.before_inspect is not None:
                 await self.before_inspect()
             ident = path.split("/containers/")[1].split("/")[0]
@@ -420,15 +448,21 @@ async def _request(port: int, raw: bytes) -> bytes:
 
 @pytest.fixture
 async def proxied(tmp_path, policy: DockerApiPolicy) -> AsyncIterator[tuple[_FakeDaemon, int]]:
-    owned = {"Id": "f" * 64, "Config": {"Labels": {MANAGED_LABEL: "true"}}}
+    owned = {"Id": "f" * 64, "Config": {"Labels": {MANAGED_LABEL: "true", INSTANCE_LABEL: "stack-a"}}}
     foreign = {"Id": "e" * 64, "Config": {"Labels": {}}}
+    other_stack = {"Id": "d" * 64, "Config": {"Labels": {MANAGED_LABEL: "true", INSTANCE_LABEL: "stack-b"}}}
+    older_proxy = {"Id": "c" * 64, "Config": {"Labels": {MANAGED_LABEL: "true"}}}
     daemon = _FakeDaemon(
-        {"owned": owned, "f" * 64: owned, "foreign": foreign},
-        networks={"egressid": {"Name": EGRESS}, "appnetid": {"Name": "pipeshub-ai_pipeshub"}},
+        {"owned": owned, "f" * 64: owned, "foreign": foreign,
+         "other-stack": other_stack, "older-proxy": older_proxy},
+        networks={
+            "egressid": {"Id": "egressid", "Name": EGRESS, "Labels": {INSTANCE_LABEL: "stack-a"}},
+            "appnetid": {"Id": "appnetid", "Name": "pipeshub-ai_pipeshub"},
+        },
     )
     sock = str(tmp_path / "d.sock")
     upstream = await asyncio.start_unix_server(daemon.handle, sock)
-    proxy = DockerSocketProxy(policy, sock)
+    proxy = DockerSocketProxy(policy, sock, instance="stack-a")
     server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     yield daemon, port
@@ -481,17 +515,24 @@ class TestProxyServer:
 
     async def test_create_is_rewritten_with_label(self, proxied) -> None:
         daemon, port = proxied
-        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}}).encode()
+        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}}).encode()
         resp = await _request(port, b"POST /v1.43/containers/create HTTP/1.1\r\nHost: x\r\n"
                               b"Content-Type: application/json\r\nContent-Length: "
                               + str(len(body)).encode() + b"\r\n\r\n" + body)
         assert resp.startswith(b"HTTP/1.1 200")
         sent = json.loads(daemon.requests[-1][2])
         assert sent["Labels"][MANAGED_LABEL] == "true"
+        assert sent["Labels"][INSTANCE_LABEL] == "stack-a"
+
+    async def test_another_stacks_container_is_refused_by_name(self, proxied) -> None:
+        _daemon, port = proxied
+        resp = await _request(port, b"GET /containers/other-stack/json HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert resp.startswith(b"HTTP/1.1 403")
+        assert b"not managed by this sandbox proxy" in resp
 
     async def test_chunked_create_body_is_read(self, proxied) -> None:
         daemon, port = proxied
-        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}}).encode()
+        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}}).encode()
         chunked = f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n"
         resp = await _request(port, b"POST /containers/create HTTP/1.1\r\nHost: x\r\n"
                               b"Transfer-Encoding: chunked\r\n\r\n" + chunked)
@@ -513,7 +554,7 @@ class TestProxyServer:
         assert resp.startswith(b"HTTP/1.1 200")
         assert daemon.requests[-1][:2] == ("POST", f"/v1.43/containers/{'f' * 64}/start")
 
-    @pytest.mark.parametrize("name", ["foreign", "missing"])
+    @pytest.mark.parametrize("name", ["foreign", "missing", "other-stack", "older-proxy"])
     async def test_unowned_container_is_refused(self, proxied, name: str) -> None:
         daemon, port = proxied
         resp = await _request(port, f"PUT /containers/{name}/archive?path=/ HTTP/1.1\r\nHost: x\r\n"
@@ -551,6 +592,27 @@ class TestProxyServer:
         assert b"Connection: close" in head and b"keep-alive" not in head
         assert body == b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
 
+    async def test_info_passes_only_the_sizing_fields(self, proxied) -> None:
+        daemon, port = proxied
+        resp = await _request(port, b"GET /v1.47/info HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert resp.startswith(b"HTTP/1.1 200")
+        body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+        assert body == {
+            "NCPU": 4, "MemTotal": 16 * 2**30, "KernelVersion": "6.8.0", "Driver": "overlay2", "DriverStatus": [],
+        }
+        assert daemon.requests[-1][:2] == ("GET", "/info")
+
+    @pytest.mark.parametrize("upstream", [
+        ("500 Internal Server Error", b'{"message":"boom"}'),
+        ("200 OK", b"not json"),
+        ("200 OK", b"[1, 2]"),
+    ])
+    async def test_a_bad_upstream_info_is_a_502(self, proxied, upstream: tuple[str, bytes]) -> None:
+        daemon, port = proxied
+        daemon.info = upstream
+        resp = await _request(port, b"GET /info HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert resp.startswith(b"HTTP/1.1 502")
+
     async def test_unlisted_endpoint_is_refused(self, proxied) -> None:
         daemon, port = proxied
         resp = await _request(port, b"POST /containers/foreign/exec HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -564,7 +626,7 @@ class TestProxyServer:
 
     async def test_expect_continue_on_create_does_not_stall(self, proxied) -> None:
         daemon, port = proxied
-        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none"}}).encode()
+        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}}).encode()
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(b"POST /containers/create HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
                      b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n")
@@ -609,3 +671,364 @@ class TestProxyServer:
         assert resp.startswith(b"HTTP/1.1 403")
         assert daemon.requests == []
 
+
+
+class TestResourceLimits:
+    @pytest.mark.parametrize("kwargs", [_LEGACY_RUN, _INSTALL, _CODING_RUN_NETWORK, _FIREWALLED_INSTALL, _HARDENED_RUN],
+                             ids=["legacy-run", "install", "coding-run-network", "firewalled-install", "hardened-run"])
+    def test_real_creates_get_no_swap(self, policy: DockerApiPolicy, kwargs: dict[str, Any]) -> None:
+        out = policy.check_container_create(_sdk_create_body(**kwargs))
+        assert out["HostConfig"]["MemorySwap"] == out["HostConfig"]["Memory"]
+
+    @pytest.mark.parametrize(("drop", "message"), [
+        ("mem_limit", "HostConfig.Memory is required"),
+        ("nano_cpus", "HostConfig.NanoCpus is required"),
+        ("pids_limit", "HostConfig.PidsLimit is required"),
+    ])
+    def test_each_limit_is_required(self, policy: DockerApiPolicy, drop: str, message: str) -> None:
+        kwargs = {k: v for k, v in _LEGACY_RUN.items() if k != drop}
+        with pytest.raises(PolicyDenied, match=message):
+            policy.check_container_create(_sdk_create_body(**kwargs))
+
+    @pytest.mark.parametrize(("override", "message"), [
+        ({"mem_limit": 1024 * 1024 * 1024 + 1}, "exceeds the maximum of 1024 MB"),
+        ({"nano_cpus": 1_500_000_000}, "exceeds the maximum of 1 CPUs"),
+        ({"pids_limit": 0}, "PidsLimit is required"),
+        ({"pids_limit": -1}, "PidsLimit is required"),
+        ({"pids_limit": 257}, "PidsLimit 257 exceeds the maximum of 256"),
+        ({"memswap_limit": -1}, "MemorySwap must equal Memory"),
+        ({"memswap_limit": 2 * 512 * 1024 * 1024}, "MemorySwap must equal Memory"),
+        ({"oom_score_adj": -1}, "OomScoreAdj may not be negative"),
+        ({"oom_score_adj": -1000}, "OomScoreAdj may not be negative"),
+        ({"oom_score_adj": 1001}, "OomScoreAdj may not be above 1000"),
+    ])
+    def test_limits_are_enforced(self, policy: DockerApiPolicy, override: dict[str, Any], message: str) -> None:
+        with pytest.raises(PolicyDenied, match=message):
+            policy.check_container_create(_sdk_create_body(**{**_LEGACY_RUN, **override}))
+
+    @pytest.mark.parametrize("value", [True, 5.12e8])
+    def test_memory_must_be_a_json_integer(self, policy: DockerApiPolicy, value: object) -> None:
+        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS, "Memory": value}}
+        with pytest.raises(PolicyDenied, match="HostConfig.Memory is required"):
+            policy.check_container_create(body)
+
+    def test_swap_equal_to_memory_is_kept(self, policy: DockerApiPolicy) -> None:
+        out = policy.check_container_create(_sdk_create_body(**_LEGACY_RUN, memswap_limit=512 * 1024 * 1024))
+        assert out["HostConfig"]["MemorySwap"] == 512 * 1024 * 1024
+
+    @pytest.mark.parametrize("value", [0, 1000])
+    def test_oom_score_adj_in_range_is_admitted(self, policy: DockerApiPolicy, value: int) -> None:
+        # Raw body: docker-py drops a falsy oom_score_adj, so 0 never reaches the proxy through it.
+        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS, "OomScoreAdj": value}}
+        assert policy.check_container_create(body)["HostConfig"]["OomScoreAdj"] == value
+
+    def test_the_proxy_never_adds_oom_score_adj(self, policy: DockerApiPolicy) -> None:
+        out = policy.check_container_create(_sdk_create_body(**_LEGACY_RUN))
+        assert "OomScoreAdj" not in out["HostConfig"]
+
+    def test_case_variant_memory_swap_is_refused(self, policy: DockerApiPolicy) -> None:
+        body = {"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS, "memoryswap": -1}}
+        with pytest.raises(PolicyDenied, match="must be spelled 'MemorySwap'"):
+            policy.check_container_create(body)
+
+    def test_from_env_defaults_and_overrides(self) -> None:
+        default = DockerApiPolicy.from_env({})
+        assert (default.max_memory_bytes, default.max_nano_cpus, default.max_pids) == (1024 * 1024 * 1024, 10**9, 256)
+        custom = DockerApiPolicy.from_env({
+            "DOCKER_PROXY_MAX_MEMORY_MB": "256", "DOCKER_PROXY_MAX_CPUS": "0.5", "DOCKER_PROXY_MAX_PIDS": "64",
+        })
+        assert (custom.max_memory_bytes, custom.max_nano_cpus, custom.max_pids) == (256 * 1024 * 1024, 5 * 10**8, 64)
+        assert custom.limits_text() == "memory<= 256 MB (no swap), cpus<= 0.5, pids<= 64, oom_score_adj 0..1000"
+
+    @pytest.mark.parametrize("raw", ["abc", "0", "-5"])
+    def test_invalid_env_warns_and_uses_the_default(self, raw: str, caplog) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            policy = DockerApiPolicy.from_env({"DOCKER_PROXY_MAX_MEMORY_MB": raw})
+        assert policy.max_memory_bytes == 1024 * 1024 * 1024
+        assert "DOCKER_PROXY_MAX_MEMORY_MB" in caplog.text
+
+    async def test_forwarded_body_has_swap_equal_to_memory(self, proxied) -> None:
+        daemon, port = proxied
+        body = json.dumps({"Image": IMAGE, "HostConfig": {"NetworkMode": "none", **_LIMITS}}).encode()
+        resp = await _request(port, b"POST /containers/create HTTP/1.1\r\nHost: x\r\nContent-Length: "
+                              + str(len(body)).encode() + b"\r\n\r\n" + body)
+        assert resp.startswith(b"HTTP/1.1 200")
+        sent = json.loads(daemon.requests[-1][2])
+        assert sent["HostConfig"]["MemorySwap"] == _LIMITS["Memory"]
+
+
+class TestLocalRoutes:
+    @pytest.mark.parametrize("target", ["/_pipeshub/host", "/v1.43/_pipeshub/host"])
+    def test_host_route_is_local(self, policy: DockerApiPolicy, target: str) -> None:
+        assert policy.route("GET", target).kind == "local_host_id"
+
+    @pytest.mark.parametrize(("method", "target"), [
+        ("POST", "/_pipeshub/host"), ("DELETE", "/_pipeshub/host"),
+        ("GET", "/_pipeshub/host?x=1"), ("GET", "/_pipeshub/other"),
+    ])
+    def test_other_local_requests_are_refused(self, policy: DockerApiPolicy, method: str, target: str) -> None:
+        with pytest.raises(PolicyDenied):
+            policy.route(method, target)
+
+    async def test_host_route_never_opens_the_upstream(self, tmp_path, policy: DockerApiPolicy) -> None:
+        boot = tmp_path / "boot_id"
+        boot.write_text("abc\n")
+        proxy = DockerSocketProxy(policy, str(tmp_path / "missing.sock"))
+        server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            with patch("app.sandbox.docker_proxy._BOOT_ID_PATH", str(boot)):
+                resp = await _request(port, b"GET /v1.43/_pipeshub/host HTTP/1.1\r\nHost: x\r\n\r\n")
+            assert resp.startswith(b"HTTP/1.1 200")
+            body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+            assert body["v"] == 1 and len(body["bootIdHash"]) == 32
+            int(body["bootIdHash"], 16)
+            resp = await _request(port, b"POST /_pipeshub/host HTTP/1.1\r\nHost: x\r\n\r\n")
+            assert resp.startswith(b"HTTP/1.1 403")
+        finally:
+            server.close()
+
+
+SIDECAR_EXPORT = """v 1
+seq {seq}
+memory.max {mem_max}
+memory.current 1000000000
+cpu.max 200000 100000
+memory.stat.anon 600000000
+memory.stat.file 300000000
+memory.stat.shmem 100000000
+memory.events.local.oom {oom}
+memory.events.local.max 3
+cpu.stat.usage_usec {usage}
+cpu.stat.nr_periods {periods}
+cpu.stat.nr_throttled {throttled}
+memory.pressure.full.avg10 1.50
+cpu.pressure.some.avg10 20.00
+dockerd.rss_kb 96000
+containerd.rss_kb 40000
+"""
+
+
+def _export(path, *, seq: int = 1, usage: int = 0, periods: int = 0, throttled: int = 0,
+            oom: int = 0, mem_max: str = "4294967296", mtime: float | None = None) -> None:
+    import os
+
+    path.write_text(SIDECAR_EXPORT.format(
+        seq=seq, usage=usage, periods=periods, throttled=throttled, oom=oom, mem_max=mem_max,
+    ))
+    if mtime is not None:
+        os.utime(path, (mtime, mtime))
+
+
+class TestSidecarStats:
+    def test_realistic_export(self, tmp_path) -> None:
+        import time
+
+        from app.sandbox.docker_proxy import SidecarStats
+
+        path = tmp_path / "stats"
+        _export(path)
+        block, error = SidecarStats(str(path)).read()
+        assert error is None and block is not None
+        assert block["memLimitBytes"] == 4294967296
+        # current - (file - shmem): tmpfs stays in the working set.
+        assert block["memWorkingSetBytes"] == 1000000000 - 200000000
+        assert block["memPsiFullAvg10"] == pytest.approx(0.015)
+        assert block["cpuPsiSomeAvg10"] == pytest.approx(0.2)
+        assert block["cpuLimitMillis"] == 2000
+        assert (block["dockerdRssBytes"], block["containerdRssBytes"]) == (96000 * 1024, 40000 * 1024)
+        assert block["cpuUtil"] is None and block["cpuThrottledRatio"] is None and block["oomEventsDelta"] is None
+        assert block["ageS"] < 5 and time.time() > 0
+
+    def test_rates_between_snapshots(self, tmp_path) -> None:
+        import time
+
+        from app.sandbox.docker_proxy import SidecarStats
+
+        path, now = tmp_path / "stats", time.time()
+        stats = SidecarStats(str(path), clock=lambda: now)
+        _export(path, seq=1, usage=0, periods=0, throttled=0, oom=0, mtime=now - 15)
+        stats.read()
+        _export(path, seq=4, usage=15_000_000, periods=150, throttled=50, oom=1, mtime=now)
+        block, _ = stats.read()
+        assert block is not None
+        assert block["windowS"] == pytest.approx(15.0)
+        assert block["cpuUtil"] == pytest.approx(0.5)
+        assert block["cpuThrottledRatio"] == pytest.approx(50 / 150)
+        assert block["oomEventsDelta"] == 1
+
+    def test_a_counter_going_back_resets_the_rates(self, tmp_path) -> None:
+        import time
+
+        from app.sandbox.docker_proxy import SidecarStats
+
+        path, now = tmp_path / "stats", time.time()
+        stats = SidecarStats(str(path), clock=lambda: now)
+        _export(path, seq=9, usage=50_000_000, mtime=now - 15)
+        stats.read()
+        _export(path, seq=1, usage=1_000, mtime=now)
+        block, _ = stats.read()
+        assert block is not None and block["cpuUtil"] is None and block["windowS"] is None
+
+    def test_unlimited_memory_is_null(self, tmp_path) -> None:
+        from app.sandbox.docker_proxy import SidecarStats
+
+        _export(tmp_path / "stats", mem_max="max")
+        block, _ = SidecarStats(str(tmp_path / "stats")).read()
+        assert block is not None and block["memLimitBytes"] is None
+
+    def test_errors(self, tmp_path) -> None:
+        import time
+
+        from app.sandbox.docker_proxy import SidecarStats
+
+        assert SidecarStats(None).read() == (None, "not_configured")
+        assert SidecarStats(str(tmp_path / "nope")).read() == (None, "missing")
+        old = tmp_path / "old"
+        _export(old, mtime=time.time() - 21)
+        assert SidecarStats(str(old)).read() == (None, "stale")
+        big = tmp_path / "big"
+        big.write_text("x" * (16 * 1024 + 1))
+        assert SidecarStats(str(big)).read() == (None, "unparsable")
+        link = tmp_path / "link"
+        _export(tmp_path / "target")
+        link.symlink_to(tmp_path / "target")
+        assert SidecarStats(str(link)).read() == (None, "unparsable")
+        bad = tmp_path / "bad"
+        bad.write_text("memory.current lots\n")
+        assert SidecarStats(str(bad)).read() == (None, "unparsable")
+        junk = tmp_path / "junk"
+        junk.write_text("hello world\n\n# comment\nmemory.current 5\n")
+        block, error = SidecarStats(str(junk)).read()
+        assert error is None and block is not None and block["memWorkingSetBytes"] == 5
+
+
+class _UsageDaemon:
+    """A daemon that lists containers and answers one-shot stats."""
+
+    def __init__(self, ids: list[str], *, slow: set[str] | None = None) -> None:
+        self.ids = ids
+        self.slow = slow or set()
+        self.usage: dict[str, int] = dict.fromkeys(ids, 0)
+        self.requests: list[str] = []
+
+    async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        head = (await reader.readuntil(b"\r\n\r\n")).decode()
+        target = head.split("\r\n")[0].split(" ")[1]
+        self.requests.append(target)
+        path = target.split("?", 1)[0]
+        if path == "/containers/json":
+            payload = json.dumps([{"Id": i, "Names": ["/x"], "Labels": {"a": "b"}} for i in self.ids]).encode()
+        else:
+            ident = path.split("/")[2]
+            if ident in self.slow:
+                await asyncio.sleep(3)
+            payload = json.dumps({
+                "memory_stats": {"usage": 150, "stats": {"file": 60, "shmem": 10}},
+                "cpu_stats": {"cpu_usage": {"total_usage": self.usage[ident]}},
+            }).encode()
+        writer.write(f"HTTP/1.1 200 OK\r\nContent-Length: {len(payload)}\r\n\r\n".encode() + payload)
+        await writer.drain()
+        writer.close()
+
+
+@pytest.fixture
+async def usage_proxy(tmp_path, policy: DockerApiPolicy) -> AsyncIterator[tuple[_UsageDaemon, DockerSocketProxy, int]]:
+    daemon = _UsageDaemon(["a" * 64, "b" * 64])
+    sock = str(tmp_path / "u.sock")
+    upstream = await asyncio.start_unix_server(daemon.handle, sock)
+    proxy = DockerSocketProxy(policy, sock, instance="stack-a")
+    server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+    yield daemon, proxy, server.sockets[0].getsockname()[1]
+    server.close()
+    upstream.close()
+
+
+async def _usage(port: int, query: str = "") -> tuple[bytes, dict[str, Any] | None]:
+    resp = await _request(port, f"GET /v1.43/_pipeshub/usage{query} HTTP/1.1\r\nHost: x\r\n\r\n".encode())
+    body = resp.split(b"\r\n\r\n", 1)[1]
+    return resp, json.loads(body) if resp.startswith(b"HTTP/1.1 200") else None
+
+
+class TestUsageRoute:
+    @pytest.mark.parametrize(("method", "target"), [
+        ("POST", "/_pipeshub/usage"), ("GET", "/_pipeshub/usage?foo=1"),
+        ("GET", "/_pipeshub/usage?scope=all"), ("GET", "/_pipeshub/usage?scope=containers&scope=containers"),
+        ("GET", "/containers/abc/stats"),
+    ])
+    def test_refused(self, policy: DockerApiPolicy, method: str, target: str) -> None:
+        with pytest.raises(PolicyDenied):
+            policy.route(method, target)
+
+    def test_scopes(self, policy: DockerApiPolicy) -> None:
+        assert policy.route("GET", "/v1.43/_pipeshub/usage") == Route("local_usage")
+        assert policy.route("GET", "/_pipeshub/usage?scope=containers") == Route("local_usage", scope="containers")
+
+    async def test_sidecar_scope_never_opens_the_upstream(self, tmp_path, policy: DockerApiPolicy) -> None:
+        _export(tmp_path / "stats")
+        proxy = DockerSocketProxy(policy, str(tmp_path / "missing.sock"), sidecar_stats_file=str(tmp_path / "stats"))
+        server = await asyncio.start_server(proxy.handle, "127.0.0.1", 0)
+        try:
+            _, body = await _usage(server.sockets[0].getsockname()[1])
+        finally:
+            server.close()
+        assert body is not None and body["v"] == 1 and body["sidecarError"] is None
+        assert body["sidecar"]["memLimitBytes"] == 4294967296
+
+    async def test_without_a_file_it_is_not_configured(self, usage_proxy) -> None:
+        _, _, port = usage_proxy
+        _, body = await _usage(port)
+        assert body == {"v": 1, "sidecar": None, "sidecarError": "not_configured"}
+
+    async def test_containers_are_listed_by_both_labels_and_summed(self, usage_proxy) -> None:
+        daemon, _, port = usage_proxy
+        _, body = await _usage(port, "?scope=containers")
+        assert body is not None and body["containersError"] is None
+        block = body["containers"]
+        assert block == {"running": 2, "memWorkingSetBytes": 200, "cpuCores": None, "partial": False, "truncated": False}
+        listed = urllib.parse.unquote(daemon.requests[0])
+        assert '"ai.pipeshub.docker-proxy.managed=true"' in listed
+        assert '"ai.pipeshub.docker-proxy.instance=stack-a"' in listed and '"running"' in listed
+        assert all("one-shot=true" in r and "stream=false" in r for r in daemon.requests[1:])
+
+    async def test_cpu_counts_only_containers_seen_twice_and_is_cached(self, usage_proxy) -> None:
+        daemon, proxy, port = usage_proxy
+        await _usage(port, "?scope=containers")
+        calls = len(daemon.requests)
+        await _usage(port, "?scope=containers")
+        assert len(daemon.requests) == calls
+        proxy._containers_cache = None
+        for ident in daemon.ids:
+            proxy._containers_cpu[ident] = (0.0, proxy._containers_cpu[ident][1] - 2.0)
+        daemon.usage = dict.fromkeys(daemon.ids, 2_000_000_000)
+        _, body = await _usage(port, "?scope=containers")
+        assert body is not None and body["containers"]["cpuCores"] == pytest.approx(2.0, rel=0.05)
+
+    async def test_slow_stats_give_partial_within_the_budget(self, tmp_path, policy: DockerApiPolicy) -> None:
+        import time
+
+        daemon = _UsageDaemon(["a" * 64, "b" * 64], slow={"b" * 64})
+        sock = str(tmp_path / "s.sock")
+        upstream = await asyncio.start_unix_server(daemon.handle, sock)
+        proxy = DockerSocketProxy(policy, sock)
+        try:
+            started = time.monotonic()
+            block, _ = await proxy.containers_usage()
+            assert time.monotonic() - started < 3.5
+        finally:
+            upstream.close()
+        assert block is not None and block["partial"] is True and block["memWorkingSetBytes"] == 100
+
+    async def test_many_containers_are_capped(self, tmp_path, policy: DockerApiPolicy) -> None:
+        daemon = _UsageDaemon([f"{i:064x}" for i in range(300)])
+        sock = str(tmp_path / "m.sock")
+        upstream = await asyncio.start_unix_server(daemon.handle, sock)
+        proxy = DockerSocketProxy(policy, sock)
+        try:
+            block, _ = await proxy.containers_usage()
+        finally:
+            upstream.close()
+        assert block is not None and block["running"] == 256 and block["truncated"] is True
+        assert set(block) == {"running", "memWorkingSetBytes", "cpuCores", "partial", "truncated"}

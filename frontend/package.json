@@ -103,6 +103,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitest/coverage-v8": "^4.1.12",
+    "axe-core": "^4.14.0",
     "dotenv": "^17.4.2",
     "electron": "^45.1.0",
     "electron-builder": "^26.18.0",
