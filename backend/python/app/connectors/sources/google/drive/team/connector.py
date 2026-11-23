@@ -689,6 +689,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._returning_emails: set[str] = set()
         # Whether this run's user listing was cut (an empty page before its end); see _sync_users.
         self._listing_cut = False
+        # Aliases of the listed users other than the admin the service account acts as: a creator who is listed is
+        # never linked to the admin. A cut listing never links.
+        self._listed_aliases: set[str] = set()
+        self._users_listing_complete = False
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
@@ -825,7 +829,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.debug("Could not read the Google Workspace admin %s: %s", admin_email, e)
             return
-        await self.register_authenticated_source_user(email, source_user_id)
+        await self.register_authenticated_source_user(
+            email, source_user_id,
+            listing_complete=self._users_listing_complete,
+            extra_present_emails=self._listed_aliases,
+        )
 
     async def run_sync(self) -> None:
         """
@@ -944,11 +952,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
                 )
 
-            await self._register_authenticated_identity()
+            await self.drop_authenticator_link_if_listed()
 
             # Step 1: Sync users
             self.logger.info("Syncing users...")
             await self._sync_users()
+            await self._register_authenticated_identity()
 
             # Step 2: Sync user groups and their members
             self.logger.info("Syncing user groups...")
@@ -1028,6 +1037,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
             alias_domains: dict[str, set[str]] = {}
+            listed_aliases: set[str] = set()
+            admin_address = (
+                (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail") or ""
+            ).strip().lower()
             page_token: Optional[str] = None
             listing_complete = True
             ambiguous_end = False
@@ -1109,6 +1122,15 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 _email_domain(a) for a in [*(user.get("aliases") or []), *(user.get("nonEditableAliases") or [])]
                             }
 
+                            row_addresses = {
+                                a.strip().lower()
+                                for a in [*(user.get("aliases") or []), *(user.get("nonEditableAliases") or [])]
+                                if a
+                            }
+                            # An alias of the source account itself means the creator is that account's owner.
+                            if admin_address not in {email.strip().lower(), *row_addresses}:
+                                listed_aliases |= row_addresses
+
                         except Exception as e:
                             self.logger.error(f"Error processing user {user.get('id', 'unknown')}: {e}", exc_info=True)
                             continue
@@ -1134,6 +1156,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             else:
                 await self._user_status.forget_fingerprint()
             self._listing_cut = not listing_complete
+            self._listed_aliases = listed_aliases
+            self._users_listing_complete = listing_complete
             if self._listing_cut:
                 self.logger.warning(
                     "The user listing may be cut (an empty page before its end); no account's status is changed on this run"

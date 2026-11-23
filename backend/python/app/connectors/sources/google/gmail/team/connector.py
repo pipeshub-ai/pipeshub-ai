@@ -314,6 +314,10 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
+        # Aliases of the listed users other than the admin the service account acts as, and whether the listing
+        # was read to its end: a creator who is listed is never linked to the admin, and a cut listing never links.
+        self._listed_aliases: set[str] = set()
+        self._users_listing_complete = False
         self.synced_user_emails: set[str] = set()  # confirmed workspace members, used to prioritize impersonation candidates
 
         # What the current run could not do; decides its outcome and what a full sync may remove.
@@ -1382,7 +1386,11 @@ class GoogleGmailTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.debug("Could not read the Google Workspace admin %s: %s", admin_email, e)
             return
-        await self.register_authenticated_source_user(email, source_user_id)
+        await self.register_authenticated_source_user(
+            email, source_user_id,
+            listing_complete=self._users_listing_complete,
+            extra_present_emails=self._listed_aliases,
+        )
 
     async def run_sync(self) -> None:
         """
@@ -1400,10 +1408,11 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.config_service, "gmail", self.connector_id, self.logger
             )
 
-            await self._register_authenticated_identity()
+            await self.drop_authenticator_link_if_listed()
 
             self.logger.info("Syncing users...")
             await self._sync_users()
+            await self._register_authenticated_identity()
 
             self.logger.info("Syncing user groups...")
             await self._sync_user_groups()
@@ -1440,6 +1449,11 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
             page_token: Optional[str] = None
+            listed_aliases: set[str] = set()
+            listing_complete = True
+            admin_address = (
+                (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail") or ""
+            ).strip().lower()
 
             while True:
                 try:
@@ -1454,6 +1468,8 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                     users_data = result.get("users", [])
                     if not users_data:
+                        # More follows an empty page: users may be missing.
+                        listing_complete = not result.get("nextPageToken")
                         break
 
                     # Transform Google user dictionaries to AppUser objects
@@ -1464,6 +1480,14 @@ class GoogleGmailTeamConnector(BaseConnector):
                             if not email:
                                 self.logger.warning(f"Skipping user without email: {user.get('id')}")
                                 continue
+                            row_addresses = {
+                                a.strip().lower()
+                                for a in [*(user.get("aliases") or []), *(user.get("nonEditableAliases") or [])]
+                                if a
+                            }
+                            # An alias of the source account itself means the creator is that account's owner.
+                            if admin_address not in {email.strip().lower(), *row_addresses}:
+                                listed_aliases |= row_addresses
 
                             # Get full name
                             name_info = user.get("name", {})
@@ -1519,6 +1543,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                 except Exception as e:
                     self.logger.error(f"Error fetching users page: {e}", exc_info=True)
                     raise
+
+            self._listed_aliases = listed_aliases
+            self._users_listing_complete = listing_complete
 
             if not all_users:
                 self.logger.warning("No users found in Google Workspace")

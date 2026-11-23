@@ -7,6 +7,7 @@ must never abort the sync. What the helper then does with the pair is covered in
 tests/unit/connectors/core/test_authenticated_as_linking.py.
 """
 
+import sys
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -257,6 +258,8 @@ class TestGoogleWorkspace:
             connector_cls,
             config={"credentials": {"auth": {"adminEmail": "admin@corp.com"}}},
             admin_data_source=admin_data_source,
+            _users_listing_complete=True,
+            _listed_aliases=set(),
         )
 
     async def test_registers_the_admin_the_service_account_acts_as(self, connector_cls: type) -> None:
@@ -275,8 +278,146 @@ class TestGoogleWorkspace:
 
         conn.register_authenticated_source_user.assert_not_awaited()
 
+    async def test_the_registration_passes_the_listing_state_and_the_listed_aliases(self, connector_cls: type) -> None:
+        conn = self._conn(connector_cls, admin={"id": "1", "primaryEmail": "admin@corp.com"})
+        conn._users_listing_complete = False
+        conn._listed_aliases = {"a@corp.com"}
 
-class TestSlackWorkspace:
+        await connector_cls._register_authenticated_identity(conn)
+
+        assert conn.register_authenticated_source_user.await_args.kwargs == {
+            "listing_complete": False,
+            "extra_present_emails": {"a@corp.com"},
+        }
+
+
+_ENTRY = {GoogleDriveTeamConnector: "_run_sync_steps", GoogleGmailTeamConnector: "run_sync"}
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
+class TestGoogleWorkspaceSyncOrder:
+    def _conn(self, connector_cls: type, order: list[str], users_error: Exception | None = None) -> MagicMock:
+        def step(name: str, error: Exception | None = None) -> AsyncMock:
+            async def _run(*_: object, **__: object) -> None:
+                order.append(name)
+                if error:
+                    raise error
+            return AsyncMock(side_effect=_run)
+
+        conn = _connector(connector_cls, config_service=MagicMock())
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn._register_authenticated_identity = step("register")
+        conn._sync_users = step("users", users_error)
+        conn._sync_user_groups = step("groups", _Stop())
+        return conn
+
+    async def _run(self, connector_cls: type, conn: MagicMock, expected: type[Exception] = _Stop) -> None:
+        module = sys.modules[connector_cls.__module__]
+        loaded = AsyncMock(return_value=(MagicMock(), MagicMock()))
+        with patch.object(module, "load_connector_filters", loaded), pytest.raises(expected):
+            await getattr(connector_cls, _ENTRY[connector_cls])(conn)
+
+    async def test_removal_pass_runs_before_the_user_sync(self, connector_cls: type) -> None:
+        order: list[str] = []
+        conn = self._conn(connector_cls, order)
+
+        await self._run(connector_cls, conn)
+
+        assert order.index("drop") < order.index("users")
+
+    async def test_full_pass_runs_after_the_user_sync(self, connector_cls: type) -> None:
+        order: list[str] = []
+        conn = self._conn(connector_cls, order)
+
+        await self._run(connector_cls, conn)
+
+        assert order == ["drop", "users", "register", "groups"]
+
+    async def test_no_full_pass_when_the_user_sync_raises(self, connector_cls: type) -> None:
+        order: list[str] = []
+        conn = self._conn(connector_cls, order, users_error=RuntimeError("directory down"))
+
+        await self._run(connector_cls, conn, RuntimeError)
+
+        assert order == ["drop", "users"]
+
+
+_APP_NAME = {GoogleDriveTeamConnector: "DRIVE WORKSPACE", GoogleGmailTeamConnector: "GMAIL WORKSPACE"}
+
+
+def _directory_conn(connector_cls: type, pages: list[dict]) -> MagicMock:
+    admin_data_source = MagicMock()
+    admin_data_source.users_list = AsyncMock(side_effect=pages)
+    return _connector(
+        connector_cls,
+        config={"credentials": {"auth": {"adminEmail": "admin@corp.com"}}},
+        admin_data_source=admin_data_source,
+        connector_name=_APP_NAME[connector_cls],
+        data_entities_processor=MagicMock(on_new_app_users=AsyncMock()),
+        _user_status=MagicMock(
+            forget_fingerprint=AsyncMock(), remember_fingerprint=AsyncMock(), fingerprint_is_remembered=AsyncMock()
+        ),
+        _sync_ledger=MagicMock(),
+        _hold_back_on_cut_listing=AsyncMock(),
+        _apply_user_status=AsyncMock(),
+        _write_audience_groups=AsyncMock(),
+        synced_users=[],
+        synced_user_emails=set(),
+    )
+
+
+def _row(email: str, uid: str, aliases: list[str] | None = None, hidden: list[str] | None = None) -> dict:
+    return {"id": uid, "primaryEmail": email, "aliases": aliases or [], "nonEditableAliases": hidden or []}
+
+
+class TestGoogleWorkspaceListing:
+    async def test_an_empty_page_with_a_next_token_is_an_incomplete_listing(self) -> None:
+        conn = _directory_conn(GoogleGmailTeamConnector, [{"users": [], "nextPageToken": "more"}])
+
+        await GoogleGmailTeamConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is False
+
+    async def test_a_complete_gmail_listing_is_complete(self) -> None:
+        conn = _directory_conn(GoogleGmailTeamConnector, [{"users": [_row("alice@corp.com", "1")]}])
+
+        await GoogleGmailTeamConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is True
+
+    async def test_a_cut_listing_is_incomplete(self) -> None:
+        conn = _directory_conn(
+            GoogleDriveTeamConnector,
+            [{"users": [], "nextPageToken": "more"}, {"users": [_row("alice@corp.com", "1")]}],
+        )
+        conn._listing_cut = False
+
+        await GoogleDriveTeamConnector._sync_users(conn)
+
+        assert conn._listing_cut is True
+        assert conn._users_listing_complete is False
+
+    @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
+    async def test_aliases_of_listed_users_are_passed_but_not_the_admins(self, connector_cls: type) -> None:
+        conn = _directory_conn(
+            connector_cls,
+            [{
+                "users": [
+                    _row("alice@corp.com", "1", ["Alice.A@corp.com "], ["alice@old.corp.com"]),
+                    _row("it-admin@corp.com", "2", ["admin@corp.com"], ["it@corp.com"]),
+                ]
+            }],
+        )
+        conn._listing_cut = False
+
+        await connector_cls._sync_users(conn)
+
+        assert conn._listed_aliases == {"alice.a@corp.com", "alice@old.corp.com"}
+
     def _conn(self, auth: dict | None = None, error: Exception | None = None, authenticator: str | None = None) -> MagicMock:
         datasource = MagicMock()
         datasource.auth_test = AsyncMock(return_value=SimpleNamespace(success=True, data=auth), side_effect=error)

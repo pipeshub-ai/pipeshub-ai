@@ -317,6 +317,9 @@ class FakeEntitiesProcessor:
         self.fail_permission_lookup = False
         self.fail_group_permission_lookup = False
         self.linked_authenticators: list[tuple[str, str, str, str]] = []
+        # The link now stored per connector: (created_by, source email, source user id); and who each creator is.
+        self.authenticator_links: dict[str, tuple[str, str, str]] = {}
+        self.authenticator_emails: dict[str, str] = {}
         self.deleted_groups: list[str] = []
         # The record ids the running full sync wrote or noted kept; None when no full sync runs.
         self.full_sync_seen: set[str] | None = None
@@ -459,11 +462,30 @@ class FakeEntitiesProcessor:
         return True
 
     async def link_authenticator_to_source_user(
-        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object,
+        self, connector_id: str, created_by: str, email: str | None, source_user_id: str | None, app_name: object,
         *, may_link: bool = True, check_listing: bool = True, extra_present_emails: Collection[str] = (),
     ) -> AuthenticatorLinkResult:
+        """The real processor's rule: a creator the connector lists (a stored source user with an id, or one of
+        ``extra_present_emails``, compared ignoring case and spaces) is never linked and loses an existing link."""
+        creator = (self.authenticator_emails.get(created_by) or "").strip().lower()
+        listed = {
+            (u.email or "").strip().lower() for u in self.app_users.values()
+            if getattr(u, "source_user_id", None) and getattr(u, "connector_id", connector_id) == connector_id
+        } | {e.strip().lower() for e in extra_present_emails}
+        if check_listing and creator and creator in listed:
+            had = self.authenticator_links.pop(connector_id, None)
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
+        if not may_link or not email or not source_user_id:
+            return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+        if creator == email.strip().lower():
+            had = self.authenticator_links.pop(connector_id, None)
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
         self.linked_authenticators.append((connector_id, created_by, email, source_user_id))
-        return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+        before = self.authenticator_links.get(connector_id)
+        self.authenticator_links[connector_id] = (created_by, email, source_user_id)
+        if before == self.authenticator_links[connector_id] or not creator:
+            return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+        return AuthenticatorLinkResult(AuthenticatorLink.LINKED, created_by, email)
 
     async def get_placeholder_records(self, connector_id: str, *_: object, **__: object) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
