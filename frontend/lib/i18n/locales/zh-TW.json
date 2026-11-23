@@ -1336,7 +1336,14 @@
         },
         "toolNeedsApproval": "需要核准",
         "toolNeedsApprovalHint": "此工具可能會刪除資料。在專案對話中，它只有在獲得核准後才會執行。",
-        "indexingStatusLabel": "索引：{{status}}"
+        "indexingStatusLabel": "索引：{{status}}",
+        "collectionsTitle": "Collections",
+        "collectionsSubtitle": "Chats in this project search only these collections.",
+        "noCollectionsAvailable": "No collections to add yet.",
+        "failedToLoadCollections": "Failed to load collections",
+        "updateCollectionsFailed": "Failed to update collections",
+        "collectionsStatusCount": "{{count}} connected",
+        "collectionsStatusNone": "None"
       },
       "moveDialog": {
         "title": "移至專案",

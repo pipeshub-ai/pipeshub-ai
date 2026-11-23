@@ -10,13 +10,14 @@ import type { AppliedFilters } from '@/chat/types';
 import type { ProjectDetail, ProjectKnowledgeScope } from '@/chat/project-types';
 import { CharCount, PROJECT_INSTRUCTIONS_MAX } from '@/chat/sidebar/dialogs/project-form-fields';
 import { ConnectorsCard } from './connectors-card';
+import { CollectionsCard } from './collections-card';
 import { FilesCard } from './files-card';
 import { ToolsMcpCard } from './tools-mcp-card';
 import { PanelCard, PanelHeader } from './panel-section';
 
-export type SetupSectionKey = 'instructions' | 'files' | 'connectors' | 'tools' | 'members';
+export type SetupSectionKey = 'instructions' | 'files' | 'connectors' | 'collections' | 'tools' | 'members';
 
-const SETUP_SECTION_ORDER: SetupSectionKey[] = ['instructions', 'files', 'connectors', 'tools', 'members'];
+const SETUP_SECTION_ORDER: SetupSectionKey[] = ['instructions', 'files', 'connectors', 'collections', 'tools', 'members'];
 
 interface SetupRowProps {
   icon: string;
@@ -164,6 +165,10 @@ export interface ProjectSettingsPanelProps {
     knowledgeScope: ProjectKnowledgeScope;
     appliedFilters: AppliedFilters;
   }) => void;
+  onCollectionsChange?: (patch: {
+    knowledgeScope: ProjectKnowledgeScope;
+    appliedFilters: AppliedFilters;
+  }) => void;
   onToolsChange: (update: (previous: string[]) => string[]) => void;
 
   onOpenShare: () => void;
@@ -193,6 +198,7 @@ export function ProjectSettingsPanel({
   onSaveInstructions,
   onKbCreated,
   onConnectorsChange,
+  onCollectionsChange,
   onToolsChange,
   onOpenShare,
 }: ProjectSettingsPanelProps) {
@@ -208,14 +214,15 @@ export function ProjectSettingsPanel({
     (project.knowledgeScope?.apps?.length ?? 0) +
     (project.knowledgeScope?.recordGroups?.length ?? 0) +
     (project.knowledgeScope?.records?.length ?? 0);
+  const collectionCount = project.knowledgeScope?.kb?.length ?? 0;
   const toolCount = project.tools?.length ?? 0;
   const memberCount = project.members.length; // additional members beyond the owner
 
   const setupProgress = useMemo(
     () =>
-      [hasInstructions, fileSummary.count > 0, connectorCount > 0, toolCount > 0, memberCount > 0].filter(Boolean)
+      [hasInstructions, fileSummary.count > 0, connectorCount > 0, collectionCount > 0, toolCount > 0, memberCount > 0].filter(Boolean)
         .length,
-    [hasInstructions, fileSummary.count, connectorCount, toolCount, memberCount],
+    [hasInstructions, fileSummary.count, connectorCount, collectionCount, toolCount, memberCount],
   );
 
   const toggleSection = (key: SetupSectionKey) => {
@@ -377,6 +384,31 @@ export function ProjectSettingsPanel({
             appliedFilters={project.appliedFilters}
             canEdit={canEdit}
             onChange={onConnectorsChange}
+          />
+        </SetupRow>
+
+        {/* Collections (knowledgeScope.kb — workspace collections) */}
+        <SetupRow
+          icon="folder"
+          label={t('chat.projects.workspace.collectionsTitle', { defaultValue: 'Collections' })}
+          statusText={
+            collectionCount > 0
+              ? t('chat.projects.workspace.collectionsStatusCount', {
+                  count: collectionCount,
+                  defaultValue: '{{count}} selected',
+                })
+              : t('chat.projects.workspace.collectionsStatusNone', { defaultValue: 'None' })
+          }
+          isFirst={false}
+          isExpanded={expandedSection === 'collections'}
+          onToggle={() => toggleSection('collections')}
+          lazy
+        >
+          <CollectionsCard
+            knowledgeScope={project.knowledgeScope}
+            appliedFilters={project.appliedFilters}
+            canEdit={canEdit}
+            onChange={onCollectionsChange ?? onConnectorsChange}
           />
         </SetupRow>
 

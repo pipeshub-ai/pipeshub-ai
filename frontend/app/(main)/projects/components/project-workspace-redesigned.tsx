@@ -230,6 +230,25 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     [project, projectId, applyServerProject, t],
   );
 
+  const handleCollectionsChange = useCallback(
+    async (patch: { knowledgeScope: ProjectKnowledgeScope; appliedFilters: AppliedFilters }) => {
+      if (!project) return;
+      const previousScope = project.knowledgeScope;
+      const previousFilters = project.appliedFilters;
+      setProject({ ...project, knowledgeScope: patch.knowledgeScope, appliedFilters: patch.appliedFilters });
+      try {
+        const updated = await ProjectApi.update(projectId, patch);
+        applyServerProject(updated);
+      } catch {
+        setProject((prev) =>
+          prev ? { ...prev, knowledgeScope: previousScope, appliedFilters: previousFilters } : prev,
+        );
+        toast.error(t('chat.projects.workspace.updateCollectionsFailed', { defaultValue: 'Failed to update collections' }));
+      }
+    },
+    [project, projectId, applyServerProject, t],
+  );
+
   const toolsSaver = useMemo(
     () =>
       createSerialSaver<string[], ProjectDetail>({
@@ -734,6 +753,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               onSaveInstructions={() => void handleSaveInstructions()}
               onKbCreated={handleKbCreated}
               onConnectorsChange={(patch) => void handleConnectorsChange(patch)}
+              onCollectionsChange={(patch) => void handleCollectionsChange(patch)}
               onToolsChange={handleToolsChange}
               onOpenShare={() => setShareOpen(true)}
             />

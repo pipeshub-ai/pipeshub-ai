@@ -1247,7 +1247,14 @@
         },
         "toolNeedsApproval": "स्वीकृति आवश्यक",
         "toolNeedsApprovalHint": "यह टूल डेटा हटा सकता है। प्रोजेक्ट चैट में यह किसी की स्वीकृति के बाद ही चलता है।",
-        "indexingStatusLabel": "इंडेक्सिंग: {{status}}"
+        "indexingStatusLabel": "इंडेक्सिंग: {{status}}",
+        "collectionsTitle": "Collections",
+        "collectionsSubtitle": "Chats in this project search only these collections.",
+        "noCollectionsAvailable": "No collections to add yet.",
+        "failedToLoadCollections": "Failed to load collections",
+        "updateCollectionsFailed": "Failed to update collections",
+        "collectionsStatusCount": "{{count}} connected",
+        "collectionsStatusNone": "None"
       },
       "moveDialog": {
         "title": "प्रोजेक्ट में ले जाएँ",

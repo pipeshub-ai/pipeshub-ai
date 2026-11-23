@@ -1433,7 +1433,14 @@
         },
         "toolNeedsApproval": "Vyžaduje schválení",
         "toolNeedsApprovalHint": "Tento nástroj může mazat data. V chatu projektu se spustí až po schválení.",
-        "indexingStatusLabel": "Indexování: {{status}}"
+        "indexingStatusLabel": "Indexování: {{status}}",
+        "collectionsTitle": "Collections",
+        "collectionsSubtitle": "Chats in this project search only these collections.",
+        "noCollectionsAvailable": "No collections to add yet.",
+        "failedToLoadCollections": "Failed to load collections",
+        "updateCollectionsFailed": "Failed to update collections",
+        "collectionsStatusCount": "{{count}} connected",
+        "collectionsStatusNone": "None"
       },
       "moveDialog": {
         "title": "Přesunout do projektu",
