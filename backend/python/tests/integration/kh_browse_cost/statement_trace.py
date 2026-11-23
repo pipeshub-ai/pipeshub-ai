@@ -33,15 +33,22 @@ _slow: list[str] = []
 _slowest: list[tuple[float, str]] = []
 
 
+def _bucket(size: int) -> int:
+    # Neo4j's SizeBucket.computeBucket: 0 and 1 exactly, then the next power of ten (2-10 -> 10, 11-100 -> 100, ...).
+    return size if size < 2 else 10 ** len(str(size - 1))
+
+
 def _type(value: Any) -> str:  # noqa: ANN401
+    # Neo4j keys a plan on each parameter's type and, for a string or a list, its size bucket (ParameterValueTypeHelper, with
+    # internal.cypher.use_parameter_size on by default); a list also keeps whether it holds strings. A map carries no more.
+    if isinstance(value, str):
+        return f"str/{_bucket(len(value))}"
     if isinstance(value, list):
-        # Neo4j plans a list parameter again when its size class changes: 0, 1, 2-10, 11-100, ...
-        return f"list/{len(value) if len(value) < 2 else len(str(len(value) - 1)) + 1}"
+        return f"list<{'str' if value and all(isinstance(v, str) for v in value) else 'any'}>/{_bucket(len(value))}"
     return type(value).__name__
 
 
 def _key(query: str, parameters: dict[str, Any] | None) -> str:
-    # The plan cache key: the text, and each parameter's type and a list's size class.
     types = sorted((k, _type(v)) for k, v in (parameters or {}).items())
     return hashlib.sha1(f"{query}\n{types}".encode()).hexdigest()
 
@@ -61,6 +68,11 @@ async def _timed(self: Neo4jClient, query: str, parameters: dict[str, Any] | Non
             _slowest[:] = sorted([*_slowest, (took, line)], reverse=True)[:5]
         if timed and took > BOUND_S:
             _slow.append(line)
+
+
+def forget_plans() -> None:
+    """Call after clearing Neo4j's plan cache (`db.clearQueryCaches`, `db.prepareForReplanning`): each statement's next run plans again."""
+    _planned.clear()
 
 
 def pytest_configure(config: pytest.Config) -> None:

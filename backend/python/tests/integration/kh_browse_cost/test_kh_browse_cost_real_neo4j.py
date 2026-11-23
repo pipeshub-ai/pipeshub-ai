@@ -25,6 +25,7 @@ from tests.integration.graph_db.test_kh_split_numbered_pages_real_neo4j import (
     LIMIT,
     _Hub,
 )
+from tests.integration.kh_browse_cost.statement_trace import forget_plans
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -123,8 +124,10 @@ async def _fresh_plans(hub: _Hub) -> AsyncIterator[None]:
     # Plans made on statistics that include the whole world (index samples are otherwise refreshed in the background, whenever), whatever
     # ran before; and none of its plans left to the tests after it.
     await hub.graph.client.execute_query("CALL db.prepareForReplanning()")
+    forget_plans()
     yield
     await hub.graph.client.execute_query("CALL db.clearQueryCaches()")
+    forget_plans()
 
 
 @pytest.mark.parametrize("user", ["u0", "u2"], ids=["reached_by_the_walk", "reached_by_a_seed"])
