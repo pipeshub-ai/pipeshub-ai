@@ -256,8 +256,6 @@ export const createStorageConfig =
               missingFields: { [resolvedCredentials.missingField]: true },
             });
           }
-          const usingIamRole = resolvedCredentials.kind === 'iamRole';
-
           const s3Config: {
             accessKeyId?: string;
             secretAccessKey?: string;
@@ -300,10 +298,6 @@ export const createStorageConfig =
               s3: encryptedS3Config,
             }),
           );
-
-          logger.info('S3 storage configuration saved successfully', {
-            authMode: usingIamRole ? 'iamRole' : 'explicitCredentials',
-          });
           break;
         }
 
@@ -343,7 +337,6 @@ export const createStorageConfig =
               }),
             );
           }
-          logger.info('Azure Blob storage configuration saved successfully');
           break;
         }
 
@@ -363,8 +356,6 @@ export const createStorageConfig =
               local: JSON.stringify(localConfig),
             }),
           );
-
-          logger.info('Local storage configuration saved successfully');
           break;
         }
 

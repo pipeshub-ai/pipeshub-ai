@@ -956,6 +956,44 @@ service's 400s: no name, the last owner, people who are gone), and system failur
 `update_team` is not atomic. It saves a rename and member removals before checks that can still answer 400 or 500, and those
 saved changes get no line here; the team service's own log has them.
 
+## Configuration audit events (Node)
+
+Every settings change an admin saves through the configuration manager (`/api/v1/configurationManager`) is one INFO line on
+the `audit` logger, written right after the key-value store accepted the write: `config.<section>.update`, or
+`config.<section>.delete` when a whole setting is removed (today only the SMTP settings; removing one model, provider or Slack
+bot rewrites its list, so it is an update). The admin routes write through an audited store
+(`modules/configuration_manager/utils/config-audit.ts`), so an admin route that saves a setting gets its line without code
+of its own, as long as it is given that store (`adminStore` in `cm_routes.ts`, not the unaudited `serviceStore`). Fields as
+the other audit events: `org_id`, `actor` (the admin), `outcome=success`; `target` and `reason` are null. Never the stored
+key, a field name or a value: the event names the settings, nothing else.
+
+| Section | Settings |
+| --- | --- |
+| `storage` | file storage (local, S3, Azure Blob) |
+| `smtp` | mail server settings, turning mail on or off, removing them |
+| `auth_microsoft`, `auth_google` | sign-in with Microsoft and Google |
+| `platform` | platform settings and feature flags |
+| `slack_bot` | Slack bots (add, change, remove) |
+| `system_prompt` | the custom system prompts |
+| `ai_models` | AI models, their providers, defaults, roles, connection credentials and identity forwarding |
+| `ai_identity_policy` | the identity policy for an AI gateway |
+| `mcp_access` | what the org's `/mcp` endpoint allows |
+| `web_search` | web search providers and settings |
+| `public_urls` | the frontend and connector public URLs |
+| `metrics` | metrics collection |
+| `connector_google_workspace`, `connector_atlassian`, `connector_onedrive`, `connector_sharepoint` | connector OAuth apps and credentials saved from the admin settings |
+
+`auth_azure_ad`, `auth_sso`, `auth_oauth`, `auth_github` and `inheritance` name settings that only the enterprise
+edition's admin routes save; a path no section names is `other`.
+One action that saves several settings writes one line per saved setting. A compare-and-set retry writes a line only for the
+write that took. A save whose later step fails (the mail service did not reload the new SMTP settings) still has its line:
+the setting was stored.
+
+Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
+validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
+migrations, and settings saved through other routers (connector instances and their credentials, connector OAuth apps,
+OAuth clients, toolsets, MCP servers).
+
 ## Upstream calls (Node)
 
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
