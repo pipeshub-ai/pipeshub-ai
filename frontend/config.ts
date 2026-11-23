@@ -53,10 +53,13 @@ export { BrandWordmark } from '@/app/components/ui/brand-wordmark';
 // App-shell extras and the invite-users sidebar (OSS: nothing / the OSS sidebar)
 export { AppLayoutExtras } from '@/app/(main)/components/app-layout-extras';
 export { InviteUsersSidebar } from '@/app/(main)/workspace/users/components/invite-users-sidebar';
-// Extra details editions can show in chat, search, knowledge-base and connector views (OSS: nothing)
+// Extra details editions can show in chat, search, knowledge-base and connector views (OSS: a short notice at most)
 export { ChatMessageExtras } from '@/app/(main)/chat/components/message-area/message-extras';
 export { ConversationHeaderOverlay } from '@/app/(main)/chat/components/conversation-header-overlay';
 export { SearchResultsExtras } from '@/app/(main)/chat/components/search-results/search-results-extras';
+// Extra actions in the knowledge-base selection bar, and extras for uploading into a collection (OSS: none)
+export { KbSelectionActions } from '@/app/(main)/knowledge-base/components/kb-selection-actions';
+export { useKbUploadExtras } from '@/app/(main)/knowledge-base/hooks/use-kb-upload-extras';
 export { useKbListExtraColumns } from '@/app/(main)/knowledge-base/hooks/use-kb-list-extra-columns';
 export { ConnectorOverviewExtras } from '@/app/(main)/workspace/connectors/components/instance-panel/connector-overview-extras';
 export { ConnectorConfigureExtras } from '@/app/(main)/workspace/connectors/components/configure-tab/connector-configure-extras';

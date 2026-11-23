@@ -1331,6 +1331,29 @@ class TestEnsureSchema:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_ensure_schema_creates_the_extra_node_collections_and_their_indexes(self, connected_provider, monkeypatch) -> None:
+        """A build may add document collections through ``app.edition.extra_node_collections``; they are created with
+        the shared ones, as document collections, and get their persistent indexes."""
+        import app.services.graph_db.arango.arango_http_provider as module
+
+        monkeypatch.setattr(module, "extra_node_collections", lambda: {"extraDocs": (("orgId", "kind"), ("orgId",))})
+        client = connected_provider.http_client
+        client.has_collection = AsyncMock(side_effect=lambda name: name != "extraDocs")
+        client.create_collection = AsyncMock(return_value=True)
+        client.has_graph = AsyncMock(return_value=True)
+        client.ensure_persistent_index = AsyncMock(return_value=True)
+        connected_provider._apply_schema = AsyncMock(return_value=True)
+        connected_provider._ensure_edge_definitions_up_to_date = AsyncMock()
+        connected_provider._ensure_departments_seed = AsyncMock()
+        connected_provider.start_record_schema_poll = MagicMock()
+
+        await connected_provider.ensure_schema()
+
+        client.create_collection.assert_any_call("extraDocs", edge=False, schema=None)
+        client.ensure_persistent_index.assert_any_call("extraDocs", ["orgId", "kind"])
+        client.ensure_persistent_index.assert_any_call("extraDocs", ["orgId"])
+
+    @pytest.mark.asyncio
     async def test_an_apps_schema_not_applied_fails_the_ensure(self, connected_provider) -> None:
         """Every write to an app document is checked against the live schema; a sync whose start is refused does not run."""
         from app.config.constants.arangodb import CollectionNames
@@ -3521,6 +3544,8 @@ class TestUpdateQueuedDuplicatesStatus:
         with patch.object(
             connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
+        ), patch.object(
+            connected_provider, "_promote_queued_copies", new=AsyncMock(side_effect=lambda updates, txn=None: len(updates)),
         ):
             result = await connected_provider.update_queued_duplicates_status(
                 "r1", "COMPLETED", virtual_record_id="vr1"
@@ -3536,16 +3561,19 @@ class TestUpdateQueuedDuplicatesStatus:
         with patch.object(
             connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
-        ) as mock_update:
+        ) as mock_update, patch.object(
+            connected_provider, "_promote_queued_copies", new=AsyncMock(side_effect=lambda updates, txn=None: len(updates)),
+        ) as promote:
             await connected_provider.update_queued_duplicates_status("r1", "EMPTY")
             # Verify extraction status is EMPTY
-            call_args = mock_update.call_args[0][0]
-            assert call_args[0]["extractionStatus"] == "EMPTY"
-            # The primary's reconcile flag rides in the same write as the promotion.
-            assert call_args[-1]["id"] == "r1"
-            assert call_args[-1]["duplicateReconcilePending"] is True
-            assert call_args[-1]["duplicateReconcileAttempts"] == 0
-            assert call_args[-1]["duplicateReconcileDueAt"] > 0
+            assert promote.call_args[0][0][0]["extractionStatus"] == "EMPTY"
+            # The primary's reconcile flag is written first, in a batch of its own: a crash between the two writes leaves a marker
+            # that finds no copies, never copies promoted with nothing to trigger their taxonomy.
+            flag = mock_update.call_args[0][0][0]
+            assert flag["id"] == "r1"
+            assert flag["duplicateReconcilePending"] is True
+            assert flag["duplicateReconcileAttempts"] == 0
+            assert flag["duplicateReconcileDueAt"] > 0
 
     @pytest.mark.asyncio
     async def test_failed_promotion_sets_no_reconcile_flag(self, connected_provider) -> None:
@@ -3558,9 +3586,12 @@ class TestUpdateQueuedDuplicatesStatus:
         with patch.object(
             connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
-        ) as mock_update:
+        ) as mock_update, patch.object(
+            connected_provider, "_promote_queued_copies", new=AsyncMock(side_effect=lambda updates, txn=None: len(updates)),
+        ) as promote:
             await connected_provider.update_queued_duplicates_status("r1", "FAILED")
-            payload = mock_update.call_args[0][0]
+            mock_update.assert_not_awaited()
+            payload = promote.call_args[0][0]
             assert all("duplicateReconcilePending" not in row for row in payload)
             assert [row["id"] for row in payload] == ["r2"]
 
@@ -3573,13 +3604,15 @@ class TestUpdateQueuedDuplicatesStatus:
         with patch.object(
             connected_provider, "batch_update_nodes",
             new_callable=AsyncMock, return_value=True
-        ) as mock_update:
+        ), patch.object(
+            connected_provider, "_promote_queued_copies", new=AsyncMock(side_effect=lambda updates, txn=None: len(updates)),
+        ) as promote:
             await connected_provider.update_queued_duplicates_status(
                 "r1",
                 "FAILED",
                 reason="Primary duplicate indexing failed: timeout",
             )
-            call_args = mock_update.call_args[0][0]
+            call_args = promote.call_args[0][0]
             assert call_args[0]["reason"] == "Primary duplicate indexing failed: timeout"
 
     @pytest.mark.asyncio

@@ -710,7 +710,11 @@
       "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
     },
     "sourcesNotReady": "Einige Quellen werden noch vorbereitet und sind noch nicht aufgeführt ({{count}}). Versuchen Sie es gleich noch einmal.",
-    "sourcePreparing": "Diese Quelle wird vorbereitet… Ihre Einträge erscheinen hier gleich."
+    "sourcePreparing": "Diese Quelle wird vorbereitet… Ihre Einträge erscheinen hier gleich.",
+    "selectionActionsNotice": "Zuerst indexieren",
+    "selectionActionsNoticeEnterprise": "Auszuwählen, welche markierten Elemente zuerst indexiert werden, ist Teil der Enterprise Edition.",
+    "uploadExtrasNotice": "Diese Dateien zuerst indexieren",
+    "uploadExtrasNoticeEnterprise": "Auszuwählen, welche Uploads zuerst indexiert werden, ist Teil der Enterprise Edition."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -3758,7 +3762,9 @@
           "cancelled": "Sie haben die Anmeldung abgebrochen.",
           "signInFailed": "Die Anmeldung wurde nicht abgeschlossen. Versuchen Sie es erneut."
         }
-      }
+      },
+      "indexPriorityNotice": "Indexierung für diesen Connector priorisieren",
+      "indexPriorityNoticeEnterprise": "Die Indexierungspriorität ist Teil der Enterprise Edition."
     },
     "mcpServers": {
       "searchPlaceholder": "MCP-Server durchsuchen...",
@@ -4783,10 +4789,31 @@
         "pasteBlockLabel": "Zum Einfügen in Ihre MCP-Konfiguration bereit",
         "copyPasteBlockAria": "Konfigurationsblock kopieren",
         "copySuccessTitle": "Kopiert",
-        "copyErrorTitle": "Kopieren fehlgeschlagen"
+        "copyErrorTitle": "Kopieren fehlgeschlagen",
+        "knowledgeLimitLaterHint": "Du kannst das später ändern, ohne das Token zu ersetzen."
       },
       "scopeCount_one": "{{count}} Berechtigungsbereich",
-      "scopeCount_other": "{{count}} Berechtigungsbereiche"
+      "scopeCount_other": "{{count}} Berechtigungsbereiche",
+      "access": {
+        "panelTitle": "Zugriff ändern",
+        "intro": "Lege fest, was {{name}} sehen kann. Das Token funktioniert weiter, und die Änderung gilt ab seiner nächsten Anfrage, sodass du nichts anpassen musst, was es verwendet.",
+        "save": "Speichern",
+        "savedTitle": "Zugriff geändert",
+        "savedEverything": "{{name}} sieht jetzt alles, was du sehen kannst.",
+        "savedSome_one": "{{name}} sieht jetzt {{count}} ausgewähltes Element.",
+        "savedSome_other": "{{name}} sieht jetzt {{count}} ausgewählte Elemente.",
+        "undo": "Rückgängig",
+        "undoneTitle": "Änderung rückgängig gemacht",
+        "undoErrorTitle": "Die Änderung konnte nicht rückgängig gemacht werden. Öffne „Zugriff ändern“, um sie erneut festzulegen.",
+        "errorTitle": "Zugriff konnte nicht geändert werden",
+        "errorDescription": "Es wurde nichts geändert. Versuche es erneut.",
+        "unknownTitle": "Änderung konnte nicht bestätigt werden",
+        "unknownDescription": "Sie wurde möglicherweise gespeichert. Prüfen Sie den hier angezeigten Zugriff, bevor Sie es erneut versuchen.",
+        "unknownReloadFailedDescription": "Sie wurde möglicherweise gespeichert, und der aktuelle Zugriff konnte nicht geladen werden. Laden Sie die Seite neu, bevor Sie sich auf die Anzeige verlassen.",
+        "rowAction": "Zugriff ändern",
+        "rowActionAria": "Ändern, was {{name}} sehen kann",
+        "rowActionTooltip": "Zugriff ändern: festlegen, was dieses Token sehen kann"
+      }
     },
     "agentSignIns": {
       "title": "Agent-Anmeldungen",

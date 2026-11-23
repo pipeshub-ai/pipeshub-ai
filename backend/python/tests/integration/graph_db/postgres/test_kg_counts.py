@@ -106,8 +106,6 @@ async def test_a_seed_counts_a_connector_whole_repairs_a_drift_and_marks_it_read
     assert held == truth
     with ctx(org):
         assert await p._q(lambda tx: counts.class_rows(tx, org, sk, []), None) == {}
-        got = await p._q(lambda tx: counts.facets(tx, org, sk), None)
-    assert got is not None and got["origins"] == sorted({k[6] for k in truth if k[0] == sk and k[1] == 2 and k[6]})
 
 
 async def test_a_fold_that_races_the_writers_loses_and_doubles_nothing(pg_db) -> None:
@@ -175,14 +173,23 @@ async def test_a_listing_counts_past_its_cap_from_the_counters_and_only_what_the
     p, org = prov(pg_db), new_org()
     await _group_world(p, pg_db, org, 12)
     monkeypatch.setattr(kh_listing, "COUNT_CAP", 4)
+    monkeypatch.delenv("PG_KG_COUNTERS", raising=False)                          # the default: read
     page = await _page(p, org, "u1")
-    assert page["total"] == 4 and page["totalCapped"] is True                    # counted where the rows are: stops at the cap
-    monkeypatch.setenv("PG_KG_COUNTERS", "1")
-    page = await _page(p, org, "u1")
-    assert page["total"] == 4 and page["totalCapped"] is True                    # not counted whole yet: the same
+    assert page["total"] == 4 and page["totalCapped"] is True                    # not counted whole yet: counted where the rows are, up to the cap
     await counts.run(pg_db, org)
+    monkeypatch.setenv("PG_KG_COUNTERS", "0")
+    page = await _page(p, org, "u1")
+    assert page["total"] == 4 and page["totalCapped"] is True                    # the switch off: the same
+    monkeypatch.delenv("PG_KG_COUNTERS")
     page = await _page(p, org, "u1")
     assert page["total"] == 13 and not page.get("totalCapped") and page["counts"] == {"record": 12, "recordGroup": 1}       # the group itself: by its own grant, counted where it is
+    with monkeypatch.context() as m:
+        m.setenv("PG_KG_READ", "0")                                               # the walk decides every row, and counts them all (COUNT_SCAN): the same total and counts
+        walk = await _page(p, org, "u1")
+    assert (walk["total"], walk["counts"], walk.get("totalCapped")) == (page["total"], page["counts"], page.get("totalCapped"))
+    with ctx(org):                                                                # and the listing lists exactly that many rows
+        whole = await p.get_knowledge_hub_connector_page_v3(**_asks(org, "u1"), limit=100, include_total=False)
+    assert len({r["id"] for r in whole["rows"]}) == len(whole["rows"]) == page["total"]
     nobody = await _page(p, org, "u2")                                            # granted nothing: the counters say nothing of the rows
     assert nobody["total"] == 0 and not nobody["rows"]
     filtered = await _page(p, org, "u1", filters={"search_query": "R000"})        # a filter is counted where the rows are

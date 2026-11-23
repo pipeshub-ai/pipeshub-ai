@@ -1074,7 +1074,7 @@ Each mail job the mail consumer takes from the broker writes exactly one `mail.s
 | Field | Value |
 | --- | --- |
 | `outcome` | `success`, `failure`, or `skipped` (not attempted) |
-| `reason` | failure: `permanent` (the server refused the message), `indeterminate` (the send deadline passed while the server may still deliver it, so it is not retried), `unavailable` (sending is paused after repeated connection failures), `attempts_exhausted`, `budget_exhausted` (no time left for another attempt), `link_failed`, `exception`; skipped: `smtp_not_configured`, `invalid_payload` |
+| `reason` | failure: `permanent` (the server refused the message), `indeterminate` (the send deadline passed while the server may still deliver it, so it is not retried), `unavailable` (sending is paused after repeated connection failures), `attempts_exhausted`, `budget_exhausted` (no time left for another attempt), `link_failed`, `exception`; skipped: `smtp_not_configured`, `invalid_payload`, `smtp_optional` (a mail sent only if SMTP is set, at INFO) |
 | `error_class` | from `mailErrorClass` (`modules/mail/types/mail-event.types.ts`), below |
 | `attempt` | turns of the retry loop (0 when none ran). A turn that could not read the SMTP settings counts, though nothing was sent: a job whose settings were unreadable and then missing ends `smtp_not_configured` with `attempt=1` |
 | `smtp_code` | the server's reply code (`550`), when it answered |

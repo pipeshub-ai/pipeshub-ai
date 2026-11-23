@@ -710,7 +710,11 @@
       "collectionExists": "You already have a collection named \"{{name}}\". Choose a different name."
     },
     "sourcesNotReady": "Some sources are still being prepared and are not listed yet ({{count}}). Try again in a moment.",
-    "sourcePreparing": "Preparing this source… Its items will show here in a moment."
+    "sourcePreparing": "Preparing this source… Its items will show here in a moment.",
+    "selectionActionsNotice": "Index first",
+    "selectionActionsNoticeEnterprise": "Choosing which selected items are indexed first is part of the Enterprise Edition.",
+    "uploadExtrasNotice": "Index these files first",
+    "uploadExtrasNoticeEnterprise": "Choosing which uploads are indexed first is part of the Enterprise Edition."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -3749,7 +3753,9 @@
           "cancelled": "You cancelled the sign-in.",
           "signInFailed": "The sign-in did not finish. Try again."
         }
-      }
+      },
+      "indexPriorityNotice": "Prioritize indexing for this connector",
+      "indexPriorityNoticeEnterprise": "Indexing priority is part of the Enterprise Edition."
     },
     "mcpServers": {
       "searchPlaceholder": "Search MCP servers...",
@@ -4774,10 +4780,31 @@
         "pasteBlockLabel": "Ready to paste into your MCP config",
         "copyPasteBlockAria": "Copy paste block",
         "copySuccessTitle": "Copied",
-        "copyErrorTitle": "Could not copy"
+        "copyErrorTitle": "Could not copy",
+        "knowledgeLimitLaterHint": "You can change this later without replacing the token."
       },
       "scopeCount_one": "{{count}} scope",
-      "scopeCount_other": "{{count}} scopes"
+      "scopeCount_other": "{{count}} scopes",
+      "access": {
+        "panelTitle": "Change access",
+        "intro": "Pick what {{name}} can see. The token keeps working, and the change applies from its next request, so you don't need to update anything that uses it.",
+        "save": "Save",
+        "savedTitle": "Access changed",
+        "savedEverything": "{{name}} can now see everything you can.",
+        "savedSome_one": "{{name}} can now see {{count}} picked item.",
+        "savedSome_other": "{{name}} can now see {{count}} picked items.",
+        "undo": "Undo",
+        "undoneTitle": "Change undone",
+        "undoErrorTitle": "Couldn't undo the change. Open Change access to set it again.",
+        "errorTitle": "Couldn't change access",
+        "errorDescription": "Nothing changed. Try again.",
+        "unknownTitle": "Couldn't confirm the change",
+        "unknownDescription": "It may have been saved. Check the access shown here before you try again.",
+        "unknownReloadFailedDescription": "It may have been saved, and the latest access couldn't be loaded. Reload the page before you rely on what's shown.",
+        "rowAction": "Change access",
+        "rowActionAria": "Change what {{name}} can see",
+        "rowActionTooltip": "Change access: pick what this token can see"
+      }
     },
     "agentSignIns": {
       "title": "Agent sign-ins",

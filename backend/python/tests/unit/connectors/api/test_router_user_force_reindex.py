@@ -58,3 +58,42 @@ def test_marking_ignores_an_event_without_a_payload() -> None:
     event = {"topic": "record-events"}
     mark_user_forced_reindex(event)
     assert event == {"topic": "record-events"}
+
+
+async def _forced_route(body: dict | None, monkeypatch: pytest.MonkeyPatch, *, write: bool) -> tuple[AsyncMock, dict, list[str]]:
+    if write:
+        monkeypatch.setenv("REFRESH_INTENT_WRITE", "true")
+    else:
+        monkeypatch.delenv("REFRESH_INTENT_WRITE", raising=False)
+    order: list[str] = []
+    gp = AsyncMock()
+    gp.get_document.return_value = None
+    gp.reindex_single_record = AsyncMock(return_value={
+        "success": True,
+        "eventData": {"eventType": "newRecord", "topic": "record-events", "payload": {"recordId": "rec-1"}},
+        "recordId": "rec-1", "recordName": "doc.pdf", "connector": "c1", "userRole": "admin",
+    })
+    gp.update_record_fields_for_ids = AsyncMock(side_effect=lambda *_a, **_k: order.append("write") or 1)
+    kafka = AsyncMock()
+    kafka.publish_event = AsyncMock(side_effect=lambda *_a, **_k: order.append("publish"))
+    await reindex_single_record("rec-1", _request(body), graph_provider=gp, kafka_service=kafka)
+    return gp, kafka.publish_event.await_args.args[1]["payload"], order
+
+
+async def test_a_forced_knowledge_base_file_stores_its_request_before_the_publish(monkeypatch: pytest.MonkeyPatch) -> None:
+    gp, payload, order = await _forced_route({"depth": 0, "force": True}, monkeypatch, write=True)
+    ids, fields = gp.update_record_fields_for_ids.await_args.args
+    assert ids == ["rec-1"] and fields["refreshIntentId"] == payload["refreshIntentId"] and fields["refreshIntentAtMs"] > 0
+    assert order == ["write", "publish"]
+
+
+async def test_a_forced_knowledge_base_file_stores_nothing_while_the_flag_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    gp, payload, order = await _forced_route({"depth": 0, "force": True}, monkeypatch, write=False)
+    gp.update_record_fields_for_ids.assert_not_awaited()
+    assert "refreshIntentId" not in payload and order == ["publish"]       # no id while the writes are off: an older worker keys the purge on the delivery id
+
+
+async def test_a_plain_knowledge_base_reindex_stores_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    gp, payload, _ = await _forced_route({"depth": 0}, monkeypatch, write=True)
+    gp.update_record_fields_for_ids.assert_not_awaited()
+    assert "refreshIntentId" not in payload
