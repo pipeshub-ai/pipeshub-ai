@@ -26,6 +26,47 @@ def test_bootstrap_is_idempotent_and_creates_no_privileged_role(bare_db):
         assert c.execute("SELECT NOT has_database_privilege('pipeshub_query', current_database(), 'TEMP')").fetchone()[0]
 
 
+def _scram_matches(verifier: str, password: str) -> bool:
+    """RFC 5802 / 7677 as PostgreSQL stores it: SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>."""
+    import base64
+    import hmac
+
+    head, keys = verifier.removeprefix("SCRAM-SHA-256$").split("$")
+    iterations, salt = head.split(":")
+    stored, server = (base64.b64decode(k) for k in keys.split(":"))
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode(), base64.b64decode(salt), int(iterations))
+    client_key = hmac.new(salted, b"Client Key", "sha256").digest()
+    return hashlib.sha256(client_key).digest() == stored and hmac.new(salted, b"Server Key", "sha256").digest() == server
+
+
+class _Recording:
+    """The bootstrap's connection, keeping the text of every statement it sends: what pg_stat_activity, statement statistics and the
+    statement log could show."""
+
+    def __init__(self, conn) -> None:
+        self._conn, self.sent = conn, []
+
+    def execute(self, query, *args, **kwargs):
+        self.sent.append(query if isinstance(query, str) else query.as_string(self._conn))
+        return self._conn.execute(query, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
+def test_bootstrap_sends_a_scram_verifier_never_a_password(bare_db):
+    cluster, name = bare_db
+    passwords = {"pipeshub_node_login": "node-Secret.1", "pipeshub_jobs": "jobs-Secret.2", "pipeshub_monitor": "mon-Secret.3"}
+    with cluster.admin(name) as c:
+        rec = _Recording(c)
+        bootstrap_roles.bootstrap(rec, [], passwords)
+        assert not [s for s in rec.sent for pw in passwords.values() if pw in s]
+        for role, pw in passwords.items():
+            stored = c.execute("SELECT rolpassword FROM pg_authid WHERE rolname = %s", (role,)).fetchone()[0]
+            assert stored.startswith("SCRAM-SHA-256$") and _scram_matches(stored, pw), role
+            assert stored in "\n".join(rec.sent)            # what was sent is the verifier itself, not something the server derived
+
+
 def test_bootstrap_refuses_a_login_without_password_unless_waived(bare_db):
     cluster, name = bare_db
     with cluster.admin(name) as c:

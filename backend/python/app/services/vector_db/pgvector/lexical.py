@@ -88,9 +88,10 @@ async def search(
     if not 1 <= leg <= MAX_LEG:
         raise ValueError(f"a lexical leg is 1..{MAX_LEG} rows")
     terms_of(sparse)             # validated before any statement
-    if scope.matches_nothing:    # every row fails the filter: an empty, complete answer, not a search that is repeated up to MAX_LEG and reported partial
-        return [], None
     started = time.monotonic()
+    if scope.matches_nothing:    # every row fails the filter: an empty, complete answer, not a search that is repeated up to MAX_LEG and reported partial
+        telemetry.observe_leg("lexical", leg, started)
+        return [], None
     try:
         rows, partial = await db.run(
             lambda tx: _run(tx, org, collection_id, sparse, scope, leg, t), timeout_ms=t.h_timeout_ms(leg), custom_plan=True)

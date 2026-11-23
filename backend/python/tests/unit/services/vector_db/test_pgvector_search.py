@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -821,4 +822,7 @@ async def test_a_lexical_leg_is_timed_whether_it_answers_or_runs_out_of_time(leg
 
     await lexical.search(_LexDb(_LexTx(5, lambda i: True)), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
     await lexical.search(_LexDb(raises=DbTimeout("busy")), ORG, 7, SparseVector([4], [1.0]), Scope(), 20, T)
-    assert leg_seconds("lexical") == 2
+    nothing = dataclasses.replace(Scope(), scope_filter=SimpleNamespace(matches_nothing=True))
+    db = _LexDb(raises=AssertionError("a scope that matches nothing asks the database nothing"))
+    assert await lexical.search(db, ORG, 7, SparseVector([4], [1.0]), nothing, 20, T) == ([], None)
+    assert leg_seconds("lexical") == 3 and db.opts == []

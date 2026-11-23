@@ -43,4 +43,7 @@ check "a failing verifier for the optional PG_MONITOR_PASSWORD stops the script"
 check "and nothing reached the server" "$(wc -c <"$work/psql.log" | tr -d ' ')" 0
 run env PG_MONITOR_PASSWORD=m
 check "with PG_MONITOR_PASSWORD the monitoring login's verifier is sent too" "$code $(grep -c -- '-v mon=SCRAM' "$work/psql.log")" "0 1"
+# the postgres service, where pg-roles.sh runs, receives the optional password (Compose passes a container only what its environment lists)
+pg_env="$(awk '/^  postgres:$/{g=1; next} g && /^  [a-z]/{exit} g' docker-compose.yml)"
+check "the postgres service gets PG_MONITOR_PASSWORD" "$(grep -c -- '- PG_MONITOR_PASSWORD=${PG_MONITOR_PASSWORD:-}' <<<"$pg_env")" 1
 exit $fail

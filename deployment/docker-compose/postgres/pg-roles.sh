@@ -5,7 +5,7 @@
 # Tables, policies and grants on them come with the migrations; this creates no privileges beyond the role layout.
 #
 # The server never sees a clear-text password: the SCRAM verifiers are computed here (scram-verifier.pl, password read from the
-# environment, not argv) and sent in their place, and this session turns off statement tracking and statement logging.
+# environment, not argv) and sent in their place, and this session turns off statement tracking, activity reporting and statement logging.
 set -euo pipefail
 user="${POSTGRES_USER:-postgres}"; db="${POSTGRES_DB:-pipeshub}"
 auth_dir="${PG_AUTH_DIR:-/pgbouncer-auth}"
@@ -31,6 +31,7 @@ psql -v ON_ERROR_STOP=1 --username "$user" --dbname "$db" "${args[@]}" <<'SQL'
 SET log_statement = 'none';
 SET log_min_error_statement = 'panic';
 SET pg_stat_statements.track = 'none';
+SET track_activities = off;   -- the verifiers below are not shown in pg_stat_activity, which the monitoring login reads
 -- no role below has SUPERUSER, CREATEROLE or BYPASSRLS
 DO $$ DECLARE r text; BEGIN
   FOREACH r IN ARRAY ARRAY[

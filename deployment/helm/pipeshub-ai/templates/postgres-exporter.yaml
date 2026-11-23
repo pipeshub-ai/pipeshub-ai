@@ -5,14 +5,20 @@ Its own application name, so nothing that selects the main pods selects these.
 */ -}}
 {{- $v := .Values.postgresExporter }}
 {{- $name := printf "%s-postgres-exporter" (include "pipeshub-ai.fullname" . | trunc 45 | trimSuffix "-") }}
-{{- $selector := dict "app.kubernetes.io/name" (printf "%s-postgres-exporter" (include "pipeshub-ai.name" . | trunc 45 | trimSuffix "-")) "app.kubernetes.io/instance" .Release.Name }}
+{{- if eq $name (include "pipeshub-ai.fullname" .) }}
+{{- fail (printf "the postgres exporter name %q equals the main application's name; change nameOverride or fullnameOverride" $name) }}
+{{- end }}
+{{- $appName := printf "%s-postgres-exporter" (include "pipeshub-ai.name" . | trunc 45 | trimSuffix "-") }}
+{{- if eq $appName (include "pipeshub-ai.name" .) }}
+{{- fail (printf "the postgres exporter pods' application name %q equals the main application's name; change nameOverride" $appName) }}
+{{- end }}
+{{- $selector := dict "app.kubernetes.io/name" $appName "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/component" "postgres-exporter" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ $name }}
   labels:
     {{- toYaml $selector | nindent 4 }}
-    app.kubernetes.io/component: postgres-exporter
     helm.sh/chart: {{ include "pipeshub-ai.chart" . }}
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
@@ -24,7 +30,6 @@ spec:
     metadata:
       labels:
         {{- toYaml $selector | nindent 8 }}
-        app.kubernetes.io/component: postgres-exporter
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -79,7 +84,6 @@ metadata:
   name: {{ $name }}
   labels:
     {{- toYaml $selector | nindent 4 }}
-    app.kubernetes.io/component: postgres-exporter
 spec:
   type: ClusterIP
   selector:

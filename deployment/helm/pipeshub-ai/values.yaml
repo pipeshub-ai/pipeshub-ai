@@ -1104,7 +1104,7 @@ parsing:
 # <fullname>-postgres-exporter, unauthenticated over plain HTTP: let only your Prometheus reach it. The args add the collectors for
 # long transactions, transaction-id wraparound and running autovacuums to the exporter's defaults (connections, locks, replication,
 # WAL, table statistics such as dead rows and the last vacuum). Statement statistics (--collector.stat_statements) also need the
-# pg_stat_statements extension in the database.
+# pg_stat_statements extension in the database, whose surface lines the migrate job must then be given (PG_MIGRATE_SURFACE_FILES).
 postgresExporter:
   enabled: false
   image:
