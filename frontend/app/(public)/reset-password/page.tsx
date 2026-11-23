@@ -11,6 +11,8 @@ import ChangePassword from '../forms/change-password';
 import { decodeJwtUser } from '@/lib/utils/auth-helpers';
 import type { JwtUser } from '@/lib/utils/auth-helpers';
 import { useAuthStore } from '@/config';
+import { discardAllChatDrafts } from '@/lib/storage/chat-drafts';
+import { discardAllChatUnread } from '@/lib/storage/chat-unread';
 import {
   PASSWORD_RESET_FAILURE_VARIANT,
   INVITE_VS_RESET_LIFETIME_CUTOFF_SECONDS,
@@ -64,7 +66,12 @@ function ResetPasswordContent() {
   // finishes: another tab may have signed in while it was pending.
   const handleSuccess = () => {
     const { isAuthenticated, logout } = useAuthStore.getState();
-    if (isAuthenticated) logout();
+    if (isAuthenticated) {
+      // A deliberate end of the session, like the workspace-menu sign-out.
+      discardAllChatUnread();
+      discardAllChatDrafts();
+      logout();
+    }
     setSuccess(true);
   };
 
