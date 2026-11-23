@@ -4460,6 +4460,35 @@ describe('UserController', () => {
       expect(mockUser.hasLoggedIn).to.be.false;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
     });
+
+    // An account created from Slack has no permission-graph user, so the
+    // connector service has nobody to remove and would log an error and
+    // dead-letter the event after its retries.
+    it('removes a Slack-only account without announcing it: it has no graph user to remove', async () => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+      const mockUser = {
+        _id: '507f1f77bcf86cd799439013',
+        orgId: new mongoose.Types.ObjectId('507f1f77bcf86cd799439012'),
+        email: 'sam@test.com',
+        isDeleted: false,
+        hasLoggedIn: false,
+        kind: 'slack',
+        role: 'member',
+        save: sinon.stub().resolves(),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      mockEventService.publishEvent.resetHistory();
+
+      await controller.deleteUser(req, res, next);
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false;
+      expect(res.json.firstCall.args[0].message).to.equal('User deleted successfully');
+      expect(mockUser.isDeleted).to.be.true;
+      expect(mockEventService.publishEvent.called, 'no userDeleted event').to.be.false;
+    });
   });
 
   // -----------------------------------------------------------------------

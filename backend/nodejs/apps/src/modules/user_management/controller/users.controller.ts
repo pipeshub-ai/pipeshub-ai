@@ -1886,18 +1886,23 @@ export class UserController {
       });
       auditUserChange('user.delete', userId);
 
-      await this.eventService.start();
-      const event: Event = {
-        eventType: EventType.DeleteUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: user.orgId,
-          userId: user._id,
-          email: user.email,
-        } as UserDeletedEvent,
-      };
-      await this.eventService.publishEvent(event);
-      await this.eventService.stop();
+      // An account created from Slack never got a permission-graph user, so
+      // there is nothing for the connector service to remove: announcing it
+      // only makes that service log an error and dead-letter the event.
+      if (!isSlackOnlyAccount(user)) {
+        await this.eventService.start();
+        const event: Event = {
+          eventType: EventType.DeleteUserEvent,
+          timestamp: Date.now(),
+          payload: {
+            orgId: user.orgId,
+            userId: user._id,
+            email: user.email,
+          } as UserDeletedEvent,
+        };
+        await this.eventService.publishEvent(event);
+        await this.eventService.stop();
+      }
 
       res.json({ message: 'User deleted successfully' });
     } catch (error) {
