@@ -2976,7 +2976,7 @@ class TestHandleOAuthConfigCreation:
             oauth_config_id=None, auth_type="API_TOKEN",
             base_url="", logger=logging.getLogger("test"),
         )
-        assert result is None
+        assert result.app_id is None
 
     @pytest.mark.asyncio
     async def test_no_credentials_with_oauth_app_id_returns_id(self):
@@ -2992,7 +2992,7 @@ class TestHandleOAuthConfigCreation:
                 oauth_config_id="oid-1", auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result == "oid-1"
+        assert result.app_id == "oid-1"
 
     @pytest.mark.asyncio
     async def test_no_credentials_no_oauth_id_returns_none(self):
@@ -3008,7 +3008,7 @@ class TestHandleOAuthConfigCreation:
                 oauth_config_id=None, auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result is None
+        assert result.app_id is None
 
 
 # ============================================================================
@@ -6198,7 +6198,7 @@ class TestHandleOAuthConfigCreationCoverage:
             oauth_config_id=None, auth_type="API_TOKEN",
             base_url="", logger=logging.getLogger("test"),
         )
-        assert result is None
+        assert result.app_id is None
 
     @pytest.mark.asyncio
     async def test_no_credentials_with_oauth_app_id_returns_id(self):
@@ -6214,7 +6214,7 @@ class TestHandleOAuthConfigCreationCoverage:
                 oauth_config_id="oid-1", auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result == "oid-1"
+        assert result.app_id == "oid-1"
 
     @pytest.mark.asyncio
     async def test_no_credentials_no_oauth_id_returns_none(self):
@@ -6230,7 +6230,7 @@ class TestHandleOAuthConfigCreationCoverage:
                 oauth_config_id=None, auth_type="OAUTH",
                 base_url="", logger=logging.getLogger("test"),
             )
-        assert result is None
+        assert result.app_id is None
 
 
 # ============================================================================

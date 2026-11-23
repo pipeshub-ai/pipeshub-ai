@@ -21,7 +21,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.api.router import create_connector_instance
+from app.connectors.api.router import _OAuthAppSave, create_connector_instance
 
 _ROUTER = "app.connectors.api.router"
 
@@ -263,7 +263,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-123",
+            return_value=_OAuthAppSave("oauth-123", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -316,7 +316,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="existing-id",
+            return_value=_OAuthAppSave("existing-id", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -366,7 +366,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="new-id",
+            return_value=_OAuthAppSave("new-id", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -408,7 +408,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-new",
+            return_value=_OAuthAppSave("oauth-new", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -446,7 +446,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=_OAuthAppSave(None, written=False),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -493,7 +493,7 @@ class TestPreValidateOAuthConfig:
         ) as mock_conflict, patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-new",
+            return_value=_OAuthAppSave("oauth-new", written=True),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -628,7 +628,7 @@ class TestStoreInitialConfig:
         ), patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-999",
+            return_value=_OAuthAppSave("oauth-999", written=True),
         ) as mock_handle, patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -671,7 +671,7 @@ class TestStoreInitialConfig:
         ), patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value=None,
+            return_value=_OAuthAppSave(None, written=False),
         ), patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,
@@ -826,7 +826,7 @@ class TestStoreInitialConfig:
         ), patch(
             f"{_ROUTER}._handle_oauth_config_creation",
             new_callable=AsyncMock,
-            return_value="oauth-new",
+            return_value=_OAuthAppSave("oauth-new", written=True),
         ) as mock_handle, patch(
             f"{_ROUTER}._prepare_connector_config",
             new_callable=AsyncMock,

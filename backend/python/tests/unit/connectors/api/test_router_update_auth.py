@@ -22,6 +22,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.redaction import REDACTED_PLACEHOLDER
 from app.connectors.api.router import (
     _ensure_connector_initialized,
+    _OAuthAppSave,
     _require_auth_is_object,
     update_connector_instance_auth_config,
 )
@@ -1120,7 +1121,7 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
             patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
             patch(f"{_ROUTER}.resolve_oauth_config", AsyncMock(return_value=linked_app)),
-            patch(f"{_ROUTER}._handle_oauth_config_creation", AsyncMock(return_value="oauth-1")),
+            patch(f"{_ROUTER}._handle_oauth_config_creation", AsyncMock(return_value=_OAuthAppSave("oauth-1", written=True))),
         ):
             result = await update_connector_instance_auth_config(
                 "conn1", request, graph_provider

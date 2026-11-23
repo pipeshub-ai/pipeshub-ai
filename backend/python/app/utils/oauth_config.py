@@ -634,7 +634,8 @@ async def remove_personal_oauth_apps(config_service: ConfigurationService, org_i
     """Remove a deleted user's personal OAuth apps of every connector type. Returns how many went."""
     removed = 0
     for key in await config_service.list_keys_in_directory(OAUTH_APPS_PREFIX):
-        apps = await config_service.get_config(key, default=[], use_cache=False)
+        # A failed read must fail the cleanup, not read as a type with no apps.
+        apps = await config_service.get_config(key, default=[], use_cache=False, raise_on_error=True)
         if not isinstance(apps, list):
             continue
         kept = [

@@ -195,5 +195,5 @@ async def test_oauth_app_write_lines_do_not_log_id_or_name(personal, caplog) -> 
             logger=log,
             connector_scope="personal" if personal else "team",
         )
-    assert result == OAUTH_ID
+    assert result == (OAUTH_ID, False)
     _assert_clean(caplog, expect="nothing to write")

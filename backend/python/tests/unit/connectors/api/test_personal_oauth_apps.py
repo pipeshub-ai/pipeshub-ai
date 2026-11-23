@@ -817,3 +817,71 @@ class TestAConnectorWhoseSettingsAreNotStoredGoes:
         assert result["success"] is True
         graph.delete_nodes_and_edges.assert_not_awaited()
         assert _linked_app_id(store) == store.apps()[0]["_id"]
+
+
+class _OAuthAppsCanNotBeRead(InMemoryConfigService):
+    """Reads of the OAuth app lists fail. Like ConfigurationService, a read that does not ask for
+    the error gets the default back."""
+
+    async def get_config(self, path: str, default: object = None, use_cache: bool = True, *, raise_on_error: bool = False, **_: object) -> object:
+        if path.startswith("/services/oauth/"):
+            if raise_on_error:
+                raise ConnectionError("store down")
+            return copy.deepcopy(default)
+        return await super().get_config(path, default, use_cache)
+
+
+class _OrgAppChangesWhileTheConnectorFails(_ConnectorConfigWriteFails):
+    """An admin rotates the org app's secret while this save runs; then the connector's config is
+    refused."""
+
+    async def set_config(self, path: str, value: object) -> bool:
+        if path == CONFIG_PATH:
+            self.values[APPS_PATH] = [_rotated_org_app()]
+        return await super().set_config(path, value)
+
+
+def _rotated_org_app() -> dict[str, Any]:
+    return {**_org_app(), "config": {"clientId": "org-client", "clientSecret": "rotated-by-admin"}}
+
+
+@pytest.mark.asyncio
+class TestAnUndoTakesBackOnlyThisSavesWrite:
+    async def test_an_app_list_that_can_not_be_read_stops_the_save_before_it_writes(self) -> None:
+        store = _OAuthAppsCanNotBeRead({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
+
+        with pytest.raises(HTTPException):
+            await _save_auth(store, ALICE, {"clientId": "alice-client", "clientSecret": ALICE_SECRET})
+
+        assert APPS_PATH not in store.values
+
+    async def test_an_auth_save_that_only_kept_its_link_leaves_someone_else_s_change(self) -> None:
+        store = _OrgAppChangesWhileTheConnectorFails({
+            APPS_PATH: [_org_app()],
+            CONFIG_PATH: {"auth": {"oauthConfigId": "org-app", "connectorScope": "personal"}},
+        })
+
+        with pytest.raises(HTTPException):
+            await _save_auth(store, ALICE, {"oauthConfigId": "org-app", "clientId": "org-client"})
+
+        assert store.apps() == [_rotated_org_app()]
+
+    async def test_a_create_that_only_linked_an_app_leaves_someone_else_s_change(self) -> None:
+        store = _OrgAppChangesWhileTheConnectorFails({APPS_PATH: [_org_app()]})
+        request = _request(ALICE, store=store, body={
+            "connectorType": "Drive", "instanceName": "My Drive", "scope": "personal", "authType": "OAUTH",
+            "config": {"auth": {"oauthConfigId": "org-app"}},
+        })
+
+        with pytest.raises(HTTPException):
+            await _create_with(request, store, _graph())
+
+        assert store.apps() == [_rotated_org_app()]
+
+    async def test_a_deleted_user_s_apps_that_can_not_be_read_fail_the_cleanup(self) -> None:
+        store = _OAuthAppsCanNotBeRead({APPS_PATH: [_personal_app(ALICE, "alice-app")]})
+
+        with pytest.raises(ConnectionError):
+            await remove_personal_oauth_apps(store, ORG_ID, ALICE)
+
+        assert store.apps() == [_personal_app(ALICE, "alice-app")]
