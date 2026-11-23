@@ -204,7 +204,7 @@ class TestEvictionPolicy:
         ([None, "allkeys-lru"], True),
         (["noeviction", None], False),
     ])
-    async def test_one_unreadable_primary_does_not_hide_another(self, answers: list[str | None], refused: bool) -> None:  # noqa: FBT001
+    async def test_one_unreadable_primary_does_not_hide_another(self, answers: list[str | None], refused: bool) -> None:
         # A primary that fails INFO must not discard what the others answered (None: this primary errors).
         nodes = [MagicMock(name=f"primary-{i}") for i in range(len(answers))]
 
