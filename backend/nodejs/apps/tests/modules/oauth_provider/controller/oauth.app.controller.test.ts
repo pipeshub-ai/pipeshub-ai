@@ -3,10 +3,10 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { OAuthAppController } from '../../../../src/modules/oauth_provider/controller/oauth.app.controller'
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service'
+import { captureLogRecords, inRequestContext, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 describe('OAuthAppController', () => {
   let controller: OAuthAppController
-  let mockLogger: any
   let mockOAuthAppService: any
   let mockOAuthTokenService: any
   let mockScopeValidatorService: any
@@ -16,7 +16,6 @@ describe('OAuthAppController', () => {
 
   beforeEach(() => {
     sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true)
-    mockLogger = { info: sinon.stub(), warn: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
     mockOAuthAppService = {
       listApps: sinon.stub(),
       createApp: sinon.stub(),
@@ -37,7 +36,6 @@ describe('OAuthAppController', () => {
       getScopesGroupedByCategoryForRole: sinon.stub().returns({}),
     }
     controller = new OAuthAppController(
-      mockLogger,
       mockOAuthAppService,
       mockOAuthTokenService,
       mockScopeValidatorService,
@@ -278,5 +276,36 @@ describe('OAuthAppController', () => {
       expect(mockOAuthTokenService.revokeAllTokensForApp.calledWith('cid')).to.be.true
       expect(mockRes.json.calledOnce).to.be.true
     })
+  })
+
+  // The service that makes the write logs the event (OAuthAppService, OAuthTokenService); the controller adds no twin.
+  describe('a change that succeeds', () => {
+    const changes: Array<[string, (c: OAuthAppController) => Promise<void>]> = [
+      ['createApp', (c) => c.createApp(mockReq, mockRes, mockNext)],
+      ['setTokenIdentity', (c) => c.setTokenIdentity(mockReq, mockRes, mockNext)],
+      ['updateApp', (c) => c.updateApp(mockReq, mockRes, mockNext)],
+      ['deleteApp', (c) => c.deleteApp(mockReq, mockRes, mockNext)],
+      ['regenerateSecret', (c) => c.regenerateSecret(mockReq, mockRes, mockNext)],
+      ['suspendApp', (c) => c.suspendApp(mockReq, mockRes, mockNext)],
+      ['activateApp', (c) => c.activateApp(mockReq, mockRes, mockNext)],
+      ['revokeAllTokens', (c) => c.revokeAllTokens(mockReq, mockRes, mockNext)],
+    ]
+    for (const [name, run] of changes) {
+      it(`${name} writes no log line of its own`, async () => {
+        for (const stub of Object.values(mockOAuthAppService) as sinon.SinonStub[]) {
+          stub.resolves({ id: 'app-1', clientId: 'cid', clientSecret: 's' })
+        }
+        mockReq.params = { appId: 'app-1' }
+        mockReq.body = { name: 'n5a7-app-label', serviceAccountId: 'svc-1' }
+        const records = captureLogRecords()
+        const id = newRequestId('oauth-app')
+
+        await inRequestContext(id, () => run(controller))
+
+        expect(mockNext.called).to.be.false
+        expect(mockRes.json.calledOnce).to.be.true
+        expect(recordsOf(records, id)).to.deep.equal([])
+      })
+    }
   })
 })
