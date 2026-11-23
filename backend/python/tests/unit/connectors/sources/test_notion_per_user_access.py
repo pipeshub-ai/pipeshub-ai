@@ -513,6 +513,18 @@ class TestDeleteRecordsNobodySees:
         await connector._delete_records_nobody_sees([SimpleNamespace(id="n1")])
         connector._delete_records.assert_awaited_once_with([unheld])
 
+    async def test_unlicensed_deletes_nothing(self) -> None:
+        # Without a licence no grant is written, so every newly synced page would look unheld.
+        connector = _connector()
+        connector.data_entities_processor.skips_permission_writes = AsyncMock(return_value=True)
+        connector.data_entities_processor.get_records_by_record_type.side_effect = (
+            lambda _c, rt: [_record("p2", "r2")] if rt == RecordType.WEBPAGE else []
+        )
+        connector.data_entities_processor.get_user_granted_records.return_value = []
+        connector._delete_records = AsyncMock(return_value=True)
+        await connector._delete_records_nobody_sees([SimpleNamespace(id="n1")])
+        connector._delete_records.assert_not_awaited()
+
 
 class TestWorkspaceGroup:
     def _connector(self, existing) -> tuple[NotionConnector, MagicMock]:

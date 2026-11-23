@@ -1333,7 +1333,11 @@ class NotionConnector(NotionPerUserPermissionsMixin, BaseConnector):
     async def _delete_records_nobody_sees(self, users: list[User]) -> None:
         """After every connected user's listing completed: delete pages and data sources none of them
         holds a grant on. Their content is no longer anyone's to read; whoever connects later and
-        can open one has it synced again."""
+        can open one has it synced again. Not while unlicensed: no grant is written then, so a page first synced
+        without a licence would look unheld and be deleted, and a lapse never deletes anything."""
+        if await self.data_entities_processor.skips_permission_writes(self.connector_id):
+            self.logger.info("Notion per-user sync: unlicensed, so no record is deleted for lacking a grant")
+            return
         held: set[str] = set()
         for user in users:
             held.update(
