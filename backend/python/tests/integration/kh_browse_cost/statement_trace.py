@@ -7,7 +7,7 @@ milliseconds. Run the Knowledge Hub tests in one process against a Neo4j configu
 as a slow statement here.
 
 The first run of each statement text is not timed: it includes planning, which takes seconds for the legacy browse's large
-statements on any plan. Every later run reuses that plan, and a healthy one takes about a second at most on these worlds.
+statements on any plan. Every later run reuses that plan.
 """
 
 from __future__ import annotations
@@ -23,16 +23,26 @@ from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-BOUND_S = 30.0
+# A healthy run takes about a second; the slowest on main was a 105 KB legacy statement at 12.7 s. The plan kept from a small App took
+# 60-100 s per run.
+BOUND_S = 45.0
 
 _execute = Neo4jClient.execute_query
 _planned: set[str] = set()
 _slow: list[str] = []
+_slowest: list[tuple[float, str]] = []
+
+
+def _type(value: Any) -> str:  # noqa: ANN401
+    if isinstance(value, list):
+        # Neo4j plans a list parameter again when its size class changes: 0, 1, 2-10, 11-100, ...
+        return f"list/{len(value) if len(value) < 2 else len(str(len(value) - 1)) + 1}"
+    return type(value).__name__
 
 
 def _key(query: str, parameters: dict[str, Any] | None) -> str:
-    # The plan cache key: the text and each parameter's type (as `Neo4jProvider._kh_run` keys its planner).
-    types = sorted((k, type(v).__name__) for k, v in (parameters or {}).items())
+    # The plan cache key: the text, and each parameter's type and a list's size class.
+    types = sorted((k, _type(v)) for k, v in (parameters or {}).items())
     return hashlib.sha1(f"{query}\n{types}".encode()).hexdigest()
 
 
@@ -46,8 +56,11 @@ async def _timed(self: Neo4jClient, query: str, parameters: dict[str, Any] | Non
     finally:
         took = time.monotonic() - start
         _planned.add(key)
+        line = f"{took:.2f} s, {len(query)} bytes, {key[:12]}: {' '.join(query.split())[:200]}"
+        if timed:
+            _slowest[:] = sorted([*_slowest, (took, line)], reverse=True)[:5]
         if timed and took > BOUND_S:
-            _slow.append(f"{took:.1f} s, {len(query)} bytes, {key[:12]}: {' '.join(query.split())[:200]}")
+            _slow.append(line)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -72,6 +85,9 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, None, None]:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    # The headroom under the bound, in every run's log.
+    session.config.get_terminal_writer().line(f"slowest statement runs on a cached plan (bound {BOUND_S:.0f} s):\n" +
+                                              "\n".join(line for _, line in _slowest))
     # Statements run by the last module's teardown, after every test's own check.
     if _slow:
         session.config.get_terminal_writer().line(_report(), red=True)

@@ -278,7 +278,7 @@ jobs:
   kh-browse-cost:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    # The tests take about 10 minutes on a 4-CPU machine; most of it is the real-graph files, whose legacy statements take seconds to plan.
+    # The tests take about 12 minutes on a 4-CPU machine; most of it is the real-graph files, whose legacy statements take seconds to plan.
     timeout-minutes: 30
     services:
       neo4j:
@@ -298,9 +298,23 @@ jobs:
         options: >-
           --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"
           --health-interval 5s --health-timeout 5s --health-retries 30 --health-start-period 20s
+      # The files run on both stores, as backend-matrix runs them: the plan kept from a small App was reproduced with their ArangoDB
+      # cases between the Neo4j ones, and not with the Neo4j cases alone.
+      arango:
+        image: arangodb:3.12.4
+        ports:
+          - 8530:8529
+        env:
+          ARANGO_ROOT_PASSWORD: khpermpass
+          ARANGODB_OVERRIDE_DETECTED_TOTAL_MEMORY: 768M
+        options: >-
+          --health-cmd "arangosh --server.endpoint tcp://localhost:8529 --server.password khpermpass --javascript.execute-string 'db._version()' || exit 1"
+          --health-interval 5s --health-timeout 10s --health-retries 30
     env:
       NEO4J_IT_URI: bolt://localhost:7688
       NEO4J_IT_PASSWORD: khpermpass
+      ARANGO_IT_URL: http://localhost:8530
+      ARANGO_IT_PASSWORD: khpermpass
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -320,7 +334,7 @@ jobs:
           uv pip install --system -e ".[dev]"
 
       # The budgets run first, on plans of their own, and clear them when done. The Knowledge Hub files then run in one process in the
-      # order that once kept a small App's plan for a large one (a batch check of 140 ids took 60-75 s on it); statement_trace fails a
+      # order that once kept a small App's plan for a large one (a batch check of 140 ids took 60-100 s on it); statement_trace fails a
       # test during which any statement ran over its bound on a plan already made.
       - name: Run the cost budgets and the Knowledge Hub files on one Neo4j
         run: |
@@ -334,7 +348,7 @@ jobs:
             tests/integration/graph_db/test_record_diagnostics_conformance.py
             tests/integration/test_tool_bounds_neo4j_e2e.py
             tests/integration/graph_db/test_kh_split_numbered_pages_real_neo4j.py
-            -m "integration and not redis_restart" -k neo4j
+            -m "integration and not redis_restart"
           )
           python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/kh-cost.collected" "${sel[@]}"
           pytest -p tests.integration.kh_browse_cost.statement_trace "${sel[@]}" -v -s --timeout=900 --junitxml="$RUNNER_TEMP/kh-cost-junit.xml"
