@@ -36,6 +36,8 @@ export function AgentBuilderMcpSection(props: {
   /** Admins add org servers from the catalog; everyone else adds their own. */
   isAdmin?: boolean;
   onNotify: (message: string) => void;
+  /** A server was added from the catalog: the palette should show it. */
+  onServerAdded?: () => void;
   /** Viewer without edit: block MCP drags onto the canvas. */
   structureLocked?: boolean;
   onPaletteStructureDragBlocked?: () => void;
@@ -51,6 +53,7 @@ export function AgentBuilderMcpSection(props: {
     agentShared = false,
     isAdmin = false,
     onNotify,
+    onServerAdded,
     structureLocked = false,
     onPaletteStructureDragBlocked,
   } = props;
@@ -117,6 +120,7 @@ export function AgentBuilderMcpSection(props: {
       agentShared={agentShared}
       refreshMcpServers={refreshMcpServers}
       onNotify={onNotify}
+      onServerAdded={onServerAdded}
     />
   );
 

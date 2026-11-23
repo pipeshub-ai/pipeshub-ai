@@ -48,7 +48,6 @@ from app.agents.mcp.models import (
             "Get action items from calls",
             "Summarize a meeting",
         ],
-        read_only=True,
     )
 )
 class FirefliesMCPServer:

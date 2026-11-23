@@ -4257,6 +4257,7 @@
         "resultsFor_one": "{{count}} server for “{{query}}”",
         "resultsFor_other": "{{count}} servers for “{{query}}”",
         "searching": "Searching…",
+        "catalogLoadFailed": "Couldn't load the catalog.",
         "noMatch": "No ready-made server matches “{{query}}”. You can still add any server by its URL.",
         "whatItDoes": "What it can do",
         "beforeYouAdd": "Before you add it",

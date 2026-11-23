@@ -1,6 +1,7 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { SWRConfig } from 'swr';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import type { McpMyServerEntry, McpServerTemplate } from '../types';
@@ -79,6 +80,8 @@ function renderLayout({ instances = [] as McpMyServerEntry[], catalog = CATALOG,
   const onAdd = vi.fn();
   const onSearchChange = vi.fn();
   renderInTheme(
+    // A cache per test, so one test's popular servers don't answer the next.
+    <SWRConfig value={{ provider: () => new Map() }}>
     <McpServersLayout
       title="MCP servers"
       subtitle="Servers"
@@ -99,6 +102,7 @@ function renderLayout({ instances = [] as McpMyServerEntry[], catalog = CATALOG,
       onReconnect={vi.fn()}
       onAdd={onAdd}
     />
+    </SWRConfig>
   );
   return { onAdd, onSearchChange };
 }
@@ -173,6 +177,24 @@ describe('Discover servers', () => {
     expect(cardNames()).toEqual(['GitHub']);
   });
 
+  it('shows no servers from the last search while a new one is answered', async () => {
+    let answerSecond: (value: unknown) => void = () => {};
+    mcpApi.getCatalog
+      .mockResolvedValueOnce({ templates: [CALENDAR], total: 1 })
+      .mockImplementationOnce(() => new Promise((resolve) => (answerSecond = resolve)));
+    renderLayout();
+
+    fireEvent.change(search(), { target: { value: 'calendar' } });
+    await waitFor(() => expect(cardNames()).toEqual(['Google Calendar']));
+    fireEvent.change(search(), { target: { value: 'github' } });
+
+    expect(cardNames()).toEqual([]);
+    expect(discover().getByText('Searching…')).toBeTruthy();
+    await waitFor(() => expect(mcpApi.getCatalog).toHaveBeenCalledTimes(2));
+    answerSecond({ templates: [GITHUB], total: 1 });
+    await waitFor(() => expect(cardNames()).toEqual(['GitHub']));
+  });
+
   it('falls back to names and descriptions when the search fails', async () => {
     mcpApi.getCatalog.mockRejectedValue(new Error('down'));
     renderLayout();
@@ -242,6 +264,11 @@ describe('Popular in your organization', () => {
     fireEvent.click(screen.getByRole('button', { name: /^All/ }));
     fireEvent.change(search(), { target: { value: 'zoom' } });
     expect(screen.queryByTestId('mcp-popular')).toBeNull();
+
+    fireEvent.change(search(), { target: { value: '' } });
+    expect(await screen.findByTestId('mcp-popular')).toBeTruthy();
+    // Coming back reuses the answer instead of asking again.
+    expect(mcpApi.getPopular).toHaveBeenCalledTimes(1);
   });
 
   it('shows nothing when nobody has signed in yet, or it can’t load', async () => {

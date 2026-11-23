@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 import { Flex, Grid, Text } from '@radix-ui/themes';
+import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
 import { McpServersApi } from '../api';
 import type { McpPopularServer, McpServerTemplate } from '../types';
 import { McpServerIcon } from './mcp-server-icon';
@@ -13,21 +14,18 @@ interface McpPopularRowProps {
   onOpen: (template: McpServerTemplate) => void;
 }
 
+const NO_SERVERS: McpPopularServer[] = [];
+
 /** The organization's servers most people signed in to. Shows nothing until there are some. */
 export function McpPopularRow({ catalog, onOpen }: McpPopularRowProps) {
   const { t } = useTranslation();
-  const [servers, setServers] = useState<McpPopularServer[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    // Only a hint: when it can't load, the catalog below still works.
-    McpServersApi.getPopular()
-      .then((rows) => !cancelled && setServers(rows))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Shared by key, so the row coming back after a search or a category doesn't ask again.
+  // Only a hint: when it can't load, the row stays hidden and the catalog below still works.
+  const { data: servers = NO_SERVERS } = useSWR(
+    [SWR_NS.mcpPopular] as const,
+    () => McpServersApi.getPopular(),
+    SWR_POLICY.list60s
+  );
 
   const byType = new Map(catalog.map((tpl) => [tpl.typeId, tpl]));
   const shown = servers.filter((s) => s.typeId && byType.has(s.typeId));

@@ -4224,7 +4224,7 @@
       },
       "discover": {
         "title": "探索伺服器",
-        "searchPlaceholder": "依名稱或想做的事搜尋，例如「安排會議」",
+        "searchPlaceholder": "依名稱或想做的事（英文）搜尋，例如「schedule meetings」",
         "searchLabel": "搜尋現成的伺服器",
         "clearSearch": "清除搜尋",
         "categoriesLabel": "類別",
@@ -4233,6 +4233,7 @@
         "resultsFor_one": "「{{query}}」的結果：{{count}} 個伺服器",
         "resultsFor_other": "「{{query}}」的結果：{{count}} 個伺服器",
         "searching": "搜尋中…",
+        "catalogLoadFailed": "無法載入目錄。",
         "noMatch": "沒有現成的伺服器符合「{{query}}」。你仍可透過 URL 新增任何伺服器。",
         "whatItDoes": "能做什麼",
         "beforeYouAdd": "新增之前",

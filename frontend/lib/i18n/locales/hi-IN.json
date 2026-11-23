@@ -4082,7 +4082,7 @@
       },
       "discover": {
         "title": "सर्वर खोजें",
-        "searchPlaceholder": "नाम से या जो करना है उससे खोजें, जैसे “मीटिंग शेड्यूल करें”",
+        "searchPlaceholder": "नाम से, या अंग्रेज़ी में जो करना है उससे खोजें, जैसे “schedule meetings”",
         "searchLabel": "तैयार सर्वर खोजें",
         "clearSearch": "खोज साफ़ करें",
         "categoriesLabel": "श्रेणियाँ",
@@ -4091,6 +4091,7 @@
         "resultsFor_one": "“{{query}}” के लिए {{count}} सर्वर",
         "resultsFor_other": "“{{query}}” के लिए {{count}} सर्वर",
         "searching": "खोजा जा रहा है…",
+        "catalogLoadFailed": "कैटलॉग लोड नहीं हो सका।",
         "noMatch": "“{{query}}” से कोई तैयार सर्वर मेल नहीं खाता। आप किसी भी सर्वर को उसके URL से जोड़ सकते हैं।",
         "whatItDoes": "यह क्या कर सकता है",
         "beforeYouAdd": "जोड़ने से पहले",

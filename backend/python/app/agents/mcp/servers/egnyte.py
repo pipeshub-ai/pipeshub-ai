@@ -47,7 +47,6 @@ from app.agents.mcp.models import (
             "Ask questions about a file",
             "Read a document",
         ],
-        read_only=True,
     )
 )
 class EgnyteMCPServer:

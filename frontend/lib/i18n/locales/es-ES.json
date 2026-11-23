@@ -4131,7 +4131,7 @@
       },
       "discover": {
         "title": "Descubrir servidores",
-        "searchPlaceholder": "Busca por nombre o por lo que quieres hacer, como «programar reuniones»",
+        "searchPlaceholder": "Busca por nombre o, en inglés, por lo que quieres hacer, como «schedule meetings»",
         "searchLabel": "Buscar servidores listos para usar",
         "clearSearch": "Borrar búsqueda",
         "categoriesLabel": "Categorías",
@@ -4141,6 +4141,7 @@
         "resultsFor_many": "{{count}} de servidores para «{{query}}»",
         "resultsFor_other": "{{count}} servidores para «{{query}}»",
         "searching": "Buscando…",
+        "catalogLoadFailed": "No se pudo cargar el catálogo.",
         "noMatch": "Ningún servidor listo para usar coincide con «{{query}}». Aun así puedes añadir cualquier servidor por su URL.",
         "whatItDoes": "Qué puede hacer",
         "beforeYouAdd": "Antes de añadirlo",

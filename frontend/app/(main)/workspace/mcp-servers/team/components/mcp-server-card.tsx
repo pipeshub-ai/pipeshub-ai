@@ -82,6 +82,7 @@ export function McpServerCard({
                 e.stopPropagation();
                 onOpen();
               }}
+              className="mcp-card-title"
               style={{ all: 'unset', cursor: 'pointer', minWidth: 0 }}
             >
               <Text size="2" weight="medium" truncate as="div" style={{ color: 'var(--gray-12)' }}>

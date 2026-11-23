@@ -9,7 +9,7 @@ export const DISCOVER_SEARCH_DELAY_MS = 250;
 
 /**
  * The catalog entries in `offered` that match `query`, in the backend's ranking (names, then what
- * servers do), each with the capability it matched. `null` while there is no query.
+ * servers do), each with the capability it matched. `null` while there is no query; empty until the query's answer arrives.
  */
 export function useCatalogSearch(query: string, offered: McpServerTemplate[]) {
   const q = query.trim();
@@ -43,7 +43,9 @@ export function useCatalogSearch(query: string, offered: McpServerTemplate[]) {
   }, [q, offered]);
 
   const results = useMemo(() => {
-    if (!q || !found) return null;
+    if (!q) return null;
+    // Until this query's answer arrives, show nothing rather than another query's servers.
+    if (found?.query !== q) return [];
     // Only entries this person may add, keeping the server's order and the matched capability.
     const byType = new Map(offered.map((tpl) => [tpl.typeId, tpl]));
     return found.templates

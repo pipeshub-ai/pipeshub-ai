@@ -4370,7 +4370,7 @@
       },
       "discover": {
         "title": "Objevit servery",
-        "searchPlaceholder": "Hledejte podle názvu nebo podle toho, co chcete udělat, např. „naplánovat schůzku“",
+        "searchPlaceholder": "Hledejte podle názvu nebo anglicky podle toho, co chcete udělat, např. „schedule meetings“",
         "searchLabel": "Hledat připravené servery",
         "clearSearch": "Vymazat hledání",
         "categoriesLabel": "Kategorie",
@@ -4381,6 +4381,7 @@
         "resultsFor_many": "{{count}} serverů pro „{{query}}“",
         "resultsFor_other": "{{count}} serverů pro „{{query}}“",
         "searching": "Hledá se…",
+        "catalogLoadFailed": "Katalog se nepodařilo načíst.",
         "noMatch": "Žádný připravený server neodpovídá „{{query}}“. Libovolný server můžete přidat i podle jeho URL.",
         "whatItDoes": "Co umí",
         "beforeYouAdd": "Než ho přidáte",

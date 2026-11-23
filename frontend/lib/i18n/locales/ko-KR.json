@@ -4224,7 +4224,7 @@
       },
       "discover": {
         "title": "서버 찾기",
-        "searchPlaceholder": "이름이나 하려는 일로 검색하세요. 예: “회의 일정 잡기”",
+        "searchPlaceholder": "이름이나 하려는 일(영어)로 검색하세요. 예: “schedule meetings”",
         "searchLabel": "준비된 서버 검색",
         "clearSearch": "검색 지우기",
         "categoriesLabel": "카테고리",
@@ -4233,6 +4233,7 @@
         "resultsFor_one": "“{{query}}” 검색 결과 서버 {{count}}개",
         "resultsFor_other": "“{{query}}” 검색 결과 서버 {{count}}개",
         "searching": "검색 중…",
+        "catalogLoadFailed": "카탈로그를 불러오지 못했습니다.",
         "noMatch": "“{{query}}”에 맞는 준비된 서버가 없습니다. 어떤 서버든 URL로 추가할 수 있습니다.",
         "whatItDoes": "할 수 있는 일",
         "beforeYouAdd": "추가하기 전에",

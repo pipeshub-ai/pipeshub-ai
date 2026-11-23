@@ -61,9 +61,9 @@ from app.agents.mcp.models import (
         tags=["meetings", "collaboration"],
         category=MCPCategory.MEETINGS,
         capabilities=[
-            "Schedule a Zoom meeting",
+            "Search past meetings",
             "Find meeting recordings",
-            "Manage meetings",
+            "Get a meeting's summary or transcript",
         ],
     )
 )

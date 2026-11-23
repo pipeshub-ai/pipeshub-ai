@@ -80,6 +80,7 @@ function renderSection({
 }: { servers?: McpMyServerEntry[]; search?: string; isAdmin?: boolean; agentShared?: boolean } = {}) {
   const refreshMcpServers = vi.fn(async () => {});
   const onNotify = vi.fn();
+  const onServerAdded = vi.fn();
   renderInTheme(
     <AgentBuilderMcpSection
       mcpServers={servers}
@@ -90,9 +91,10 @@ function renderSection({
       isAdmin={isAdmin}
       agentShared={agentShared}
       onNotify={onNotify}
+      onServerAdded={onServerAdded}
     />
   );
-  return { refreshMcpServers, onNotify };
+  return { refreshMcpServers, onNotify, onServerAdded };
 }
 
 beforeEach(() => {
@@ -132,7 +134,7 @@ describe('Finding an MCP server from the agent builder', () => {
   });
 
   it('adds a catalog server from its details, then refreshes the list and says to sign in', async () => {
-    const { refreshMcpServers, onNotify } = renderSection({ search: 'track issues' });
+    const { refreshMcpServers, onNotify, onServerAdded } = renderSection({ search: 'track issues' });
 
     fireEvent.click(within(await screen.findByTestId('mcp-builder-from-catalog')).getByRole('button', { name: 'Add' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Add to your organization' }));
@@ -142,6 +144,7 @@ describe('Finding an MCP server from the agent builder', () => {
 
     await waitFor(() => expect(refreshMcpServers).toHaveBeenCalled());
     expect(onNotify).toHaveBeenCalledWith('Linear is added. Sign in to it from the list to use its tools.');
+    expect(onServerAdded).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('setup-form')).toBeNull();
   });
 
@@ -181,5 +184,36 @@ describe('Finding an MCP server from the agent builder', () => {
     fireEvent.click(within(linear).getByRole('button', { name: /Set up/ }));
     expect((await screen.findByTestId('setup-form')).textContent).toContain('Linear / personal');
     expect(screen.queryByRole('dialog', { name: 'Browse MCP servers' })).toBeNull();
+  });
+
+  it('steps out of Browse to show a server’s details, and goes back when they close', async () => {
+    renderSection();
+    fireEvent.click(screen.getByRole('button', { name: 'Browse MCP servers' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    await waitFor(() => expect(dialog.getAllByTestId('mcp-catalog-card')).toHaveLength(3));
+
+    const linear = dialog.getAllByTestId('mcp-catalog-card').find((card) => within(card).queryByText('Linear'))!;
+    fireEvent.click(within(linear).getByRole('link', { name: 'Linear' }));
+
+    await screen.findByTestId('mcp-catalog-details');
+    // Browse is modal; left open it would keep the keyboard out of the details.
+    expect(screen.queryByRole('dialog', { name: 'Browse MCP servers' })).toBeNull();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Close' }).at(-1)!);
+
+    expect(await screen.findByRole('dialog', { name: 'Browse MCP servers' })).toBeTruthy();
+    expect(screen.queryByTestId('mcp-catalog-details')).toBeNull();
+  });
+
+  it('says when the catalog can’t load and asks again', async () => {
+    mcpApi.getCatalog.mockRejectedValueOnce(new Error('down'));
+    renderSection();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse MCP servers' }));
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(await dialog.findByText("Couldn't load the catalog.")).toBeTruthy();
+
+    fireEvent.click(dialog.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(dialog.getAllByTestId('mcp-catalog-card')).toHaveLength(3));
+    expect(mcpApi.getCatalog).toHaveBeenCalledTimes(2);
   });
 });

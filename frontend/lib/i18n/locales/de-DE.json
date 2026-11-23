@@ -4087,7 +4087,7 @@
       },
       "discover": {
         "title": "Server entdecken",
-        "searchPlaceholder": "Nach Name oder Aufgabe suchen, etwa „Meetings planen“",
+        "searchPlaceholder": "Nach Name oder auf Englisch nach Aufgabe suchen, etwa „schedule meetings“",
         "searchLabel": "Fertige Server durchsuchen",
         "clearSearch": "Suche löschen",
         "categoriesLabel": "Kategorien",
@@ -4096,6 +4096,7 @@
         "resultsFor_one": "{{count}} Server für „{{query}}“",
         "resultsFor_other": "{{count}} Server für „{{query}}“",
         "searching": "Suche läuft…",
+        "catalogLoadFailed": "Der Katalog konnte nicht geladen werden.",
         "noMatch": "Kein fertiger Server passt zu „{{query}}“. Sie können jeden Server auch über seine URL hinzufügen.",
         "whatItDoes": "Was er kann",
         "beforeYouAdd": "Bevor Sie ihn hinzufügen",

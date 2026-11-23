@@ -49,7 +49,6 @@ from app.agents.mcp.models import (
             "Get meeting summaries",
             "Search past meetings",
         ],
-        read_only=True,
     )
 )
 class GranolaMCPServer:

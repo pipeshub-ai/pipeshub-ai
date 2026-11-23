@@ -27,6 +27,8 @@ interface AgentBuilderMcpDiscoveryProps {
   agentShared: boolean;
   refreshMcpServers: () => Promise<void>;
   onNotify: (message: string) => void;
+  /** A server was added: show the full list, so the new server and its sign-in are in view. */
+  onServerAdded?: () => void;
 }
 
 /**
@@ -40,19 +42,25 @@ export function AgentBuilderMcpDiscovery({
   agentShared,
   refreshMcpServers,
   onNotify,
+  onServerAdded,
 }: AgentBuilderMcpDiscoveryProps) {
   const { t } = useTranslation();
   const [catalog, setCatalog] = useState<McpServerTemplate[] | null>(null);
+  // Kept apart from an empty catalog, so a failed load can be asked again.
+  const [catalogFailed, setCatalogFailed] = useState(false);
   const [customStdioAllowed, setCustomStdioAllowed] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
   const [details, setDetails] = useState<McpServerTemplate | null>(null);
+  // Browse is a modal that would keep focus away from the details panel, so it closes while
+  // the details are open and comes back when they close.
+  const [detailsFromBrowse, setDetailsFromBrowse] = useState(false);
   const [setup, setSetup] = useState<McpServerTemplate | null>(null);
   // A member's servers are personal, which an agent shared with the org can't use.
   const canAdd = isAdmin || !agentShared;
   const needCatalog = browseOpen || search.trim() !== '';
 
   useEffect(() => {
-    if (!needCatalog || catalog) return;
+    if (!needCatalog || catalog || catalogFailed) return;
     let cancelled = false;
     McpServersApi.getCatalog({ limit: 200 })
       .then((res) => {
@@ -61,12 +69,12 @@ export function AgentBuilderMcpDiscovery({
         setCustomStdioAllowed(Boolean(res.customStdioAllowed));
       })
       .catch(() => {
-        if (!cancelled) setCatalog([]);
+        if (!cancelled) setCatalogFailed(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [needCatalog, catalog, isAdmin]);
+  }, [needCatalog, catalog, catalogFailed, isAdmin]);
 
   const { results } = useCatalogSearch(search, catalog ?? NO_TEMPLATES);
   const fromCatalog = useMemo(() => {
@@ -74,9 +82,27 @@ export function AgentBuilderMcpDiscovery({
     return (results ?? []).filter((tpl) => !added.has(tpl.typeId)).slice(0, FALLBACK_LIMIT);
   }, [results, mcpServers]);
 
+  const openBrowse = () => {
+    setCatalogFailed(false);
+    setBrowseOpen(true);
+  };
+
+  const openDetails = (tpl: McpServerTemplate, fromBrowse: boolean) => {
+    setBrowseOpen(false);
+    setDetailsFromBrowse(fromBrowse);
+    setDetails(tpl);
+  };
+
+  const closeDetails = () => {
+    setDetails(null);
+    if (detailsFromBrowse) openBrowse();
+    setDetailsFromBrowse(false);
+  };
+
   const startSetup = (tpl: McpServerTemplate) => {
     setBrowseOpen(false);
     setDetails(null);
+    setDetailsFromBrowse(false);
     setSetup(tpl);
   };
 
@@ -113,7 +139,7 @@ export function AgentBuilderMcpDiscovery({
                 size="1"
                 variant="soft"
                 color="gray"
-                onClick={() => setDetails(tpl)}
+                onClick={() => openDetails(tpl, false)}
                 style={{ cursor: 'pointer' }}
               >
                 {canAdd ? t('workspace.mcpServers.discover.add') : t('workspace.mcpServers.discover.view')}
@@ -132,7 +158,7 @@ export function AgentBuilderMcpDiscovery({
         size="1"
         variant="outline"
         color="gray"
-        onClick={() => setBrowseOpen(true)}
+        onClick={openBrowse}
         style={{ cursor: 'pointer', margin: '6px 8px 0' }}
       >
         <MaterialIcon name="explore" size={15} color="currentColor" />
@@ -163,7 +189,16 @@ export function AgentBuilderMcpDiscovery({
             {canAdd ? t('workspace.mcpServers.discover.browseHint') : t('workspace.mcpServers.discover.askAdmin')}
           </Dialog.Description>
           <Flex direction="column" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-            {catalog === null ? (
+            {catalogFailed ? (
+              <Flex direction="column" align="start" gap="2">
+                <Text size="2" style={{ color: 'var(--gray-11)' }}>
+                  {t('workspace.mcpServers.discover.catalogLoadFailed')}
+                </Text>
+                <Button size="1" variant="soft" color="gray" onClick={() => setCatalogFailed(false)}>
+                  {t('action.tryAgain')}
+                </Button>
+              </Flex>
+            ) : catalog === null ? (
               <Text size="2" style={{ color: 'var(--gray-10)' }}>
                 {t('workspace.mcpServers.loading')}
               </Text>
@@ -171,8 +206,8 @@ export function AgentBuilderMcpDiscovery({
               <McpDiscover
                 catalog={catalog}
                 instances={mcpServers}
-                onOpen={setDetails}
-                onAdd={canAdd ? startSetup : setDetails}
+                onOpen={(tpl) => openDetails(tpl, true)}
+                onAdd={canAdd ? startSetup : (tpl) => openDetails(tpl, true)}
               />
             )}
           </Flex>
@@ -188,7 +223,7 @@ export function AgentBuilderMcpDiscovery({
             ? undefined
             : t('workspace.mcpServers.discover.sharedAgentNote', { name: details.displayName })
         }
-        onClose={() => setDetails(null)}
+        onClose={closeDetails}
         onAdd={startSetup}
       />
 
@@ -207,7 +242,10 @@ export function AgentBuilderMcpDiscovery({
             const name = setup?.displayName ?? '';
             setSetup(null);
             void refreshMcpServers();
-            if (created) onNotify(t('workspace.mcpServers.discover.addedSignIn', { name }));
+            if (created) {
+              onServerAdded?.();
+              onNotify(t('workspace.mcpServers.discover.addedSignIn', { name }));
+            }
           }}
         />
       )}

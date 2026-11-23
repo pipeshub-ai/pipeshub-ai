@@ -45,7 +45,6 @@ from app.agents.mcp.models import (
             "Summarize a document",
             "Pull facts out of contracts",
         ],
-        read_only=True,
     )
 )
 class BoxMCPServer:

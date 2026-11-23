@@ -4224,7 +4224,7 @@
       },
       "discover": {
         "title": "发现服务器",
-        "searchPlaceholder": "按名称或想做的事搜索，例如“安排会议”",
+        "searchPlaceholder": "按名称或想做的事（英文）搜索，例如“schedule meetings”",
         "searchLabel": "搜索现成的服务器",
         "clearSearch": "清除搜索",
         "categoriesLabel": "类别",
@@ -4233,6 +4233,7 @@
         "resultsFor_one": "“{{query}}”的结果：{{count}} 个服务器",
         "resultsFor_other": "“{{query}}”的结果：{{count}} 个服务器",
         "searching": "正在搜索…",
+        "catalogLoadFailed": "无法加载目录。",
         "noMatch": "没有现成的服务器匹配“{{query}}”。你仍可以通过 URL 添加任何服务器。",
         "whatItDoes": "能做什么",
         "beforeYouAdd": "添加之前",

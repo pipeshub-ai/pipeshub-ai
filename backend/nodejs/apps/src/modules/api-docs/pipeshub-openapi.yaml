@@ -65567,8 +65567,9 @@ paths:
           description: |
             Ranked: a name match first, then servers whose capabilities match (common synonyms
             count, for less than the word itself), then the category, then servers whose description
-            or tags contain every word. Words match where a word starts. Without it, templates keep
-            the catalog's order.
+            or tags contain every word. In capabilities, the category, descriptions and tags, words
+            match only where a word starts ("sign" doesn't find "assign"); a name also matches
+            inside a word ("hub" finds GitHub). Without it, templates keep the catalog's order.
           schema:
             type: string
             maxLength: 200
