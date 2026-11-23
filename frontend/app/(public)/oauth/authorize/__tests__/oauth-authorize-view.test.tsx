@@ -306,6 +306,30 @@ describe('OAuthAuthorizeView scope choice', () => {
     expect((post.mock.calls[0][1] as { scope: string }).scope).toBe('offline_access kb:read kb:write team:read');
   });
 
+  it('posts back the resource the client named, and none when it named none', async () => {
+    get.mockResolvedValue(consentResponse([], false, scopes));
+    params.append('resource', 'https://pipeshub.example.com/mcp');
+    try {
+      render(h(Theme, null, h(OAuthAuthorizeView, null)));
+      await expand();
+      fireEvent.click(allow());
+      await waitFor(() => expect(post).toHaveBeenCalled());
+      expect((post.mock.calls[0][1] as { resource?: string[] }).resource).toEqual([
+        'https://pipeshub.example.com/mcp',
+      ]);
+    } finally {
+      params.delete('resource');
+    }
+    cleanup();
+    post.mockClear();
+
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+    await expand();
+    fireEvent.click(allow());
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect((post.mock.calls[0][1] as { resource?: string[] }).resource).toBeUndefined();
+  });
+
   it('keeps openid ticked, so an OIDC sign-in always gets it', async () => {
     const withOpenid: Scope[] = [
       { name: 'openid', description: 'OpenID Connect authentication', category: 'Identity' },

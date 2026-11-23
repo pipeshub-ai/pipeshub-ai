@@ -152,7 +152,7 @@ export class OAuthProviderController {
 
     try {
       const user = req.user;
-      this.oauthTokenService.audienceFor(query.resource);
+      const audience = this.oauthTokenService.audienceFor(query.resource);
 
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(
@@ -162,13 +162,19 @@ export class OAuthProviderController {
         requestedScopes,
         app.allowedScopes,
       );
-      const isAdmin = await isUserOrgAdmin(user.userId, user.orgId);
+      const includeAdminOnly = await this.asksForAdminOnlyConsentScopes(
+        user,
+        audience,
+      );
       const granted = this.scopeValidatorService.consentScopesForRole(
         resolved.granted,
-        isAdmin,
+        includeAdminOnly,
       );
       // Not listed as refused either: the person is simply not asked.
-      const notGranted = consentScopesForRole(resolved.notGranted, isAdmin);
+      const notGranted = consentScopesForRole(
+        resolved.notGranted,
+        includeAdminOnly,
+      );
 
       // RFC 9700: PKCE is REQUIRED for public clients
       if (!app.isConfidential && !query.code_challenge) {
@@ -268,6 +274,19 @@ export class OAuthProviderController {
   }
 
   /**
+   * Whether the person is asked for AdminOnlyConsentScopes. Only a token for
+   * /mcp leaves them out, and only for a non-admin: there `usergroup:read`
+   * serves just the admin-only `GET /userGroups`. A token without an audience
+   * keeps them, since group reads open to members check `usergroup:read`.
+   */
+  private async asksForAdminOnlyConsentScopes(
+    user: { userId: string; orgId: string },
+    audience: string | undefined,
+  ): Promise<boolean> {
+    return audience === undefined || isUserOrgAdmin(user.userId, user.orgId);
+  }
+
+  /**
    * Authorization consent submission - POST /oauth/authorize
    */
   async authorizeConsent(
@@ -284,6 +303,7 @@ export class OAuthProviderController {
         code_challenge,
         code_challenge_method,
         consent, // 'granted' or 'denied'
+        resource,
       } = req.body;
 
       // Validate client
@@ -337,11 +357,18 @@ export class OAuthProviderController {
         requestedScopes,
         app.allowedScopes,
       ).granted;
+      const includeAdminOnly = await this.asksForAdminOnlyConsentScopes(
+        user,
+        // Shape checked by authorizeConsentSchema.
+        this.oauthTokenService.audienceFor(
+          resource as string | string[] | undefined,
+        ),
+      );
       let granted: string[];
       try {
         granted = this.scopeValidatorService.consentScopesForRole(
           registered,
-          await isUserOrgAdmin(user.userId, user.orgId),
+          includeAdminOnly,
         );
       } catch (error) {
         if (!(error instanceof InvalidScopeError)) {

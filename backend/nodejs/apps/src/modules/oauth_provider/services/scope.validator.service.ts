@@ -151,12 +151,12 @@ export class ScopeValidatorService {
   }
 
   /**
-   * The granted scopes a person of this role is asked for on the consent
-   * page and gets on the code. Throws when nothing is left, as
-   * resolveGrantedScopes does when nothing is granted.
+   * The granted scopes the person is asked for on the consent page and gets
+   * on the code. Throws when nothing is left, as resolveGrantedScopes does
+   * when nothing is granted.
    */
-  consentScopesForRole(granted: string[], isAdmin: boolean): string[] {
-    const scopes = consentScopesForRole(granted, isAdmin);
+  consentScopesForRole(granted: string[], includeAdminOnly: boolean): string[] {
+    const scopes = consentScopesForRole(granted, includeAdminOnly);
     if (granted.length > 0 && scopes.length === 0) {
       throw new InvalidScopeError(
         'None of the requested scopes are available to this user',

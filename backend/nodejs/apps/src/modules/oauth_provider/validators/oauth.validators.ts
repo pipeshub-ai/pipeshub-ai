@@ -103,6 +103,9 @@ export const authorizeConsentSchema = z.object({
     scope: z.string().min(1),
     state: z.string().min(1),
     consent: z.enum(['granted', 'denied']),
+    // RFC 8707: the resource named on the authorize request, so the scopes
+    // asked for match the token the client will get.
+    resource: resourceParam,
     // RFC 7636: code_challenge must be base64url encoded (no padding)
     code_challenge: z
       .string()

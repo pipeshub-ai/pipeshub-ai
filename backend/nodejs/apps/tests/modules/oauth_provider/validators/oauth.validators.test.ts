@@ -146,6 +146,14 @@ describe('oauth_provider/validators/oauth.validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('authorizeConsentSchema accepts the resource, one or several', () => {
+      for (const resource of ['https://pipeshub.example.com/mcp', ['https://pipeshub.example.com/mcp']]) {
+        const result = authorizeConsentSchema.safeParse({ body: { ...baseConsent, resource } })
+        expect(result.success).to.be.true
+        expect((result as any).data.body.resource).to.deep.equal(resource)
+      }
+    })
+
     it('authorizeConsentSchema rejects a malformed code_challenge', () => {
       const result = authorizeConsentSchema.safeParse({
         body: { ...baseConsent, code_challenge: 'too-short', code_challenge_method: 'S256' },

@@ -305,9 +305,11 @@ describe('OAuthProviderController', () => {
     })
   })
 
-  // GET /userGroups, the only route an OAuth client uses usergroup:read for, is
-  // admin-only, so a non-admin is not asked for it.
+  // A token for /mcp uses usergroup:read only for GET /userGroups, which is
+  // admin-only, so a non-admin is not asked for it there. Other tokens keep it:
+  // group reads open to members check it.
   describe('usergroup:read for non-admins', () => {
+    const mcp = 'https://pipeshub.example.com/mcp'
     const app = { orgId: 'o1', name: 'App', allowedScopes: ['user:read', 'usergroup:read'],
       isConfidential: true, createdBy: { toString: () => 'u1' } }
     const scope = 'user:read usergroup:read'
@@ -319,14 +321,16 @@ describe('OAuthProviderController', () => {
       mockScopeValidatorService.getScopeDefinitions.callsFake((names: string[]) =>
         new ScopeValidatorService().getScopeDefinitions(names))
       mockAuthCodeService.generateCode.resolves('code-1')
+      mockOAuthTokenService.audienceFor.callsFake((r: unknown) => (r === undefined ? undefined : mcp))
     })
 
-    const authorizeReq = () => ({
-      query: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope, state: 's' },
+    // null: the client named no resource.
+    const authorizeReq = (resource: string | null = mcp) => ({
+      query: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope, state: 's', resource: resource ?? undefined },
       user: { userId: 'u1', orgId: 'o1', email: 'u@e.com', fullName: 'U' },
     }) as any
-    const consentReq = () => ({
-      body: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope, state: 's', consent: 'granted' },
+    const consentReq = (resource: string | null = mcp) => ({
+      body: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope, state: 's', consent: 'granted', resource: resource ?? undefined },
       user: { userId: 'u1', orgId: 'o1' },
     }) as any
 
@@ -366,6 +370,23 @@ describe('OAuthProviderController', () => {
       expect(url.searchParams.get('state')).to.equal('s')
       expect(mockAuthCodeService.generateCode.called).to.be.false
       expect(mockNext.called).to.be.false
+    })
+
+    it('is still asked for and granted when the token is not for /mcp', async () => {
+      stubOrgLookup(null)
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      await controller.authorize(authorizeReq(null), mockRes, mockNext)
+      expect(mockRes.json.firstCall.args[0].consentData.scopes.map((s: any) => s.name))
+        .to.deep.equal(['user:read', 'usergroup:read'])
+      await controller.authorizeConsent(consentReq(null), mockRes, mockNext)
+      expect(mockAuthCodeService.generateCode.firstCall.args[4]).to.deep.equal(['user:read', 'usergroup:read'])
+      expect((userAdminService.isUserOrgAdmin as sinon.SinonStub).called).to.be.false
+    })
+
+    it('reads the resource the consent page posts back', async () => {
+      ;(userAdminService.isUserOrgAdmin as sinon.SinonStub).resolves(false)
+      await controller.authorizeConsent(consentReq(), mockRes, mockNext)
+      expect(mockOAuthTokenService.audienceFor.calledWith(mcp)).to.be.true
     })
 
     it('is still shown to and granted to an admin', async () => {
