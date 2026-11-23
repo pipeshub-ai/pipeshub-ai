@@ -296,18 +296,29 @@ def eviction_policy_warning() -> str | None:
     return _eviction_warning
 
 
-async def _maxmemory_policies(redis: Redis) -> list[str]:
-    """``maxmemory-policy`` of every primary. A cluster client sends an untargeted ``INFO`` to one node only."""
+async def _maxmemory_policies(redis: Redis) -> tuple[list[str], list[Exception]]:
+    """``maxmemory-policy`` of every primary that answered, and the errors of those that did not. A cluster client sends
+    an untargeted ``INFO`` to one node only, so each primary is asked on its own; one that fails must not hide another's
+    answer."""
     if callable(getattr(type(redis), "get_primaries", None)):  # a cluster client (no client import outside the providers)
         # The node list is empty until the client has loaded the slot map, and an empty list must not read as safe.
         await redis.initialize()  # type: ignore[attr-defined]
         primaries = redis.get_primaries()  # type: ignore[attr-defined]
         if not primaries:
             raise RuntimeError("Redis Cluster reported no primaries")
-        infos = [await redis.info("memory", target_nodes=node) for node in primaries]  # type: ignore[misc]
+        reads = [redis.info("memory", target_nodes=node) for node in primaries]  # type: ignore[misc]
     else:
-        infos = [await redis.info("memory")]  # type: ignore[misc]
-    return [str(info.get("maxmemory_policy") or "").strip().lower() for info in infos]
+        reads = [redis.info("memory")]  # type: ignore[misc]
+    policies: list[str] = []
+    errors: list[Exception] = []
+    for read in reads:
+        try:
+            info = await read
+        except Exception as exc:
+            errors.append(exc)
+            continue
+        policies.append(str(info.get("maxmemory_policy") or "").strip().lower())
+    return policies, errors
 
 
 async def check_eviction_policy(redis: Redis, logger: Logger | None = None, service: str = "indexing") -> str | None:
@@ -316,12 +327,14 @@ async def check_eviction_policy(redis: Redis, logger: Logger | None = None, serv
     ``UnsafeEvictionPolicyError`` instead. A Redis that cannot be read is not a reason to stop."""
     global _eviction_warning  # noqa: PLW0603 - module state read by /health
     try:
-        policies = await _maxmemory_policies(redis)
+        policies, errors = await _maxmemory_policies(redis)
     except Exception as exc:
-        if logger is not None:
-            logger.warning("Redis eviction policy not read: %s", type(exc).__name__)
+        errors, policies = [exc], []
+    if errors and logger is not None:
+        logger.warning("Redis eviction policy not read on %d node(s): %s", len(errors), type(errors[0]).__name__)
+    if not policies:
         return _eviction_warning
-    # The worst one decides: any primary can hold any key.
+    # The worst readable one decides, whatever the unreadable ones are: any primary can hold any key.
     unsafe_policies = [p for p in policies if p and p not in SAFE_EVICTION_POLICIES]
     policy = next((p for p in unsafe_policies if p.startswith("allkeys-")), unsafe_policies[0] if unsafe_policies else "")
     if policy.startswith("allkeys-"):

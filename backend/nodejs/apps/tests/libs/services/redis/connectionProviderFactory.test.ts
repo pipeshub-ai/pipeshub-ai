@@ -420,6 +420,41 @@ describe('checkRedisEvictionPolicy', () => {
     });
   }
 
+  for (const [answers, refused] of [
+    [['allkeys-lru', null], true],
+    [[null, 'allkeys-lru'], true],
+    [['noeviction', null], false],
+  ] as const) {
+    it(`one unreadable primary does not hide another: ${answers.map((a) => a ?? 'error').join(' + ')}`, async () => {
+      // null: this primary fails INFO.
+      const provider = new FakeProvider(config());
+      (provider as { isCluster: boolean }).isCluster = true;
+      provider.getClient = () =>
+        ({
+          status: 'ready',
+          ping: async () => 'PONG',
+          nodes: () =>
+            answers.map((answer) => ({
+              info: async () => {
+                if (answer === null) throw new Error('primary down');
+                return `maxmemory_policy:${answer}\r\n`;
+              },
+            })),
+        }) as unknown as RedisClient;
+      const warn = sinon.spy(Logger.prototype, 'warn');
+      let thrown: Error | undefined;
+      try {
+        await checkRedisEvictionPolicy(provider);
+      } catch (error) {
+        thrown = error as Error;
+      } finally {
+        warn.restore();
+      }
+      expect(Boolean(thrown)).to.equal(refused);
+      expect(warn.calledWith('Redis eviction policy not read')).to.equal(true);
+    });
+  }
+
   it('treats a cluster that reports no primaries as unreadable, not safe', async () => {
     const provider = new FakeProvider(config());
     (provider as { isCluster: boolean }).isCluster = true;

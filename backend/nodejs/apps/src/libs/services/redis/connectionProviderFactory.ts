@@ -255,7 +255,7 @@ export async function checkRedisEvictionPolicy(
   if (provider instanceof NoRedisProvider) {
     return;
   }
-  let policies: string[];
+  const policies: string[] = [];
   try {
     const client = provider.getClient();
     let nodes: RedisClient[] = [client];
@@ -268,12 +268,21 @@ export async function checkRedisEvictionPolicy(
       if (nodes.length === 0)
         throw new Error('Redis Cluster reported no primaries');
     }
-    const infos: string[] = await Promise.all(
+    // Each primary on its own: one that fails must not hide another's answer.
+    const reads = await Promise.allSettled(
       nodes.map((node) => node.info('memory')),
     );
-    policies = infos.map(
-      (info) => /^maxmemory_policy:(\S+)/m.exec(info)?.[1]?.toLowerCase() ?? '',
-    );
+    const failed = reads.filter((r) => r.status === 'rejected').length;
+    if (failed > 0) {
+      logger.warn('Redis eviction policy not read', { nodes: failed });
+    }
+    for (const read of reads) {
+      if (read.status === 'fulfilled') {
+        policies.push(
+          /^maxmemory_policy:(\S+)/m.exec(read.value)?.[1]?.toLowerCase() ?? '',
+        );
+      }
+    }
   } catch (error) {
     logger.warn('Redis eviction policy not read', {
       error: (error as Error).name,

@@ -199,6 +199,39 @@ class TestEvictionPolicy:
             assert ("volatile-lru" in (warning or "")) == ("volatile-lru" in policies)
         assert cluster.info.await_count == len(policies)
 
+    @pytest.mark.parametrize(("answers", "refused"), [
+        (["allkeys-lru", None], True),
+        ([None, "allkeys-lru"], True),
+        (["noeviction", None], False),
+    ])
+    async def test_one_unreadable_primary_does_not_hide_another(self, answers: list[str | None], refused: bool) -> None:  # noqa: FBT001
+        # A primary that fails INFO must not discard what the others answered (None: this primary errors).
+        nodes = [MagicMock(name=f"primary-{i}") for i in range(len(answers))]
+
+        async def info(_section: str, target_nodes: MagicMock) -> dict[str, str]:
+            answer = answers[nodes.index(target_nodes)]
+            if answer is None:
+                raise ConnectionError("primary down")
+            return {"maxmemory_policy": answer}
+
+        class Cluster:
+            async def initialize(self) -> None:
+                return None
+
+            def get_primaries(self) -> list[MagicMock]:
+                return nodes
+
+        cluster = Cluster()
+        cluster.info = info  # type: ignore[attr-defined]
+        logger = MagicMock()
+
+        if refused:
+            with pytest.raises(replay_set.UnsafeEvictionPolicyError):
+                await replay_set.check_eviction_policy(cluster, logger)
+        else:
+            assert await replay_set.check_eviction_policy(cluster, logger) is None
+        logger.warning.assert_any_call("Redis eviction policy not read on %d node(s): %s", 1, "ConnectionError")
+
     async def test_a_cluster_that_reports_no_primaries_is_unreadable_not_safe(self) -> None:
         logger = MagicMock()
 
