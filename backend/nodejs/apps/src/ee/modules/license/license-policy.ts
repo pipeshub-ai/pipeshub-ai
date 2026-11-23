@@ -19,6 +19,8 @@ export const ISSUED_AT_LEEWAY_MS = DAY_MS;
 export const CLOCK_ROLLBACK_TOLERANCE_MS = 60 * 60 * 1000;
 
 export const MAX_LICENSE_SEATS = 100_000;
+/** The most seats a `development` license may hold. */
+export const DEVELOPMENT_SEATS = 10;
 /** The `seats` value of a license with no seat cap. */
 export const UNLIMITED_SEATS = 'unlimited' as const;
 /** A real license file is well under 1 KB. */

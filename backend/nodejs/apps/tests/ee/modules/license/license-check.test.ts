@@ -18,6 +18,7 @@ import {
 import { useLicenseKeysForTesting } from '../../../../src/ee/modules/license/license-keys';
 import {
   DEFAULT_GRACE_DAYS,
+  DEVELOPMENT_SEATS,
   LICENSE_ENFORCED,
   licenseGrants,
   PERMISSION_SYNC_FEATURE,
@@ -527,6 +528,53 @@ describe('license check: features, install and the permission sync answer', () =
         allowed: true,
         status: 'active',
       });
+    });
+  });
+
+  describe('the development key', () => {
+    const development = (
+      overrides: Partial<LicensePayload> = {},
+    ): LicensePayload => {
+      const license = payload({
+        licenseId: 'lic_dev',
+        type: 'development',
+        seats: DEVELOPMENT_SEATS,
+        endDate: at(NOW, 100 * 365 * DAY_MS).toISOString(),
+        ...overrides,
+      });
+      delete license.url;
+      return license;
+    };
+
+    it('installs without a web address, allows permission sync and says it is not for production', async () => {
+      await installLicense(store, signed(development()), NOW);
+      expect(store.answer()).to.deep.include({
+        allowed: true,
+        status: 'active',
+      });
+      const status = await licenseStatus(store, NOW);
+      expect(status.license).to.deep.include({
+        type: 'development',
+        seats: DEVELOPMENT_SEATS,
+        url: null,
+        notForProduction: true,
+        features: ['permissionSync'],
+      });
+    });
+
+    it('holds at most the development seat count', () => {
+      for (const seats of [DEVELOPMENT_SEATS + 1, 'unlimited' as const]) {
+        expect(() =>
+          checkLicense(signed(development({ seats })), NOW),
+        ).to.throw(LicenseError, /development license holds at most/);
+      }
+    });
+
+    it('leaves pro and trial licenses marked for production', async () => {
+      await installLicense(store, signed(payload()), NOW);
+      expect(
+        (await licenseStatus(store, NOW)).license?.notForProduction,
+      ).to.equal(false);
     });
   });
 

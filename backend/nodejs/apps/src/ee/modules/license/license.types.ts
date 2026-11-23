@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  DEVELOPMENT_SEATS,
   MAX_GRACE_DAYS,
   MAX_LICENSE_SEATS,
   UNLIMITED_SEATS,
@@ -8,7 +9,12 @@ import {
 export const LICENSE_FORMAT = 'pipeshub-license';
 export const LICENSE_VERSION = 1;
 
-export const licenseTypes = ['trial', 'pro'] as const;
+/**
+ * `development`: the free key for development, testing and prototypes. It
+ * grants the features, holds at most DEVELOPMENT_SEATS users and shows a
+ * not-for-production notice. A checker that predates a type refuses it.
+ */
+export const licenseTypes = ['trial', 'pro', 'development'] as const;
 export type LicenseType = (typeof licenseTypes)[number];
 
 export const licenseStatuses = [
@@ -119,7 +125,16 @@ export const licensePayloadSchema = z
       .optional(),
   })
   // A field a newer issuer adds is kept, so the signature still covers it, and otherwise ignored.
-  .loose();
+  .loose()
+  .refine(
+    (license) =>
+      license.type !== 'development' ||
+      (typeof license.seats === 'number' && license.seats <= DEVELOPMENT_SEATS),
+    {
+      message: `a development license holds at most ${String(DEVELOPMENT_SEATS)} seats`,
+      path: ['seats'],
+    },
+  );
 
 export type LicensePayload = z.infer<typeof licensePayloadSchema>;
 

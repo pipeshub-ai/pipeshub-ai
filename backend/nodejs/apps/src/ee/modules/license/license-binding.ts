@@ -7,14 +7,14 @@ export const PUBLIC_URL_ENV = 'FRONTEND_PUBLIC_URL';
 /**
  * Why this license may not run on this server, or null. A pro license names
  * the web address users open and runs only where FRONTEND_PUBLIC_URL is that
- * address (scheme, host and port); a trial may leave the address out.
+ * address (scheme, host and port); a trial or development license may leave the address out.
  */
 export function licenseAddressProblem(
   payload: Pick<LicensePayload, 'type' | 'url'>,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): LicenseError | null {
   if (payload.url === undefined) {
-    return payload.type === 'trial'
+    return payload.type === 'trial' || payload.type === 'development'
       ? null
       : new LicenseError('ADDRESS_REQUIRED');
   }
