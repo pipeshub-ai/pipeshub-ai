@@ -54,8 +54,8 @@ export function raceController(rsAvailable: boolean): UserController {
   );
 }
 
-/** `invite(orgId, emails)` runs an admin invite of `emails` the way `POST /users/bulk/invite` does. */
-export function adminInviter(rsAvailable: boolean): Invite {
+/** `invite(orgId, emails)` runs an invite of `emails` (admin unless `role` says member) the way `POST /users/bulk/invite` does. */
+export function adminInviter(rsAvailable: boolean, role: 'admin' | 'member' = 'admin'): Invite {
   const controller = raceController(rsAvailable) as unknown as {
     processInvites(...args: unknown[]): Promise<unknown>;
   };
@@ -66,6 +66,6 @@ export function adminInviter(rsAvailable: boolean): Invite {
       orgId,
       'Inviter',
       { registeredName: 'Race Org' },
-      'admin',
+      role,
     );
 }

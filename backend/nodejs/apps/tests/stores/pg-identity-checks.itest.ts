@@ -379,6 +379,17 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           }
         });
 
+        it(`a member invite brings a removed admin back as a member, with the org at ${MAX_ORG_ADMINS} admins`, async () => {
+          const org = await world.newOrg();
+          const actor = await world.adminOf(org);
+          for (let i = 1; i < MAX_ORG_ADMINS; i += 1) await account(org, { role: 'admin' });
+          const gone = await account(org, { role: 'admin', isDeleted: true });
+          await inOrg(org, () => adminInviter(false, 'member')(org, [gone.email]), actor);
+          const back = await inOrg(org, () => users.getAny(org, gone._id));
+          expect([back?.isDeleted, back?.role]).to.deep.equal([false, 'member']);
+          expect(await inOrg(org, () => users.countActiveAdmins(org))).to.equal(MAX_ORG_ADMINS);
+        });
+
         it('a taken address inside the locked unit is still a unique-key error on email', async () => {
           const { org, actor } = await orgWithOneSeat();
           const taken = (await account(org)).email;

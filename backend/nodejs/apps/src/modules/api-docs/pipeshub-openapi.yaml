@@ -34586,8 +34586,9 @@ paths:
 
         1. **New emails** — creates a `Users` document, publishes `NewUserEvent`, and sends an
            invitation email.
-        2. **Previously deleted accounts** — restores the account (`isDeleted: false`) and sends a
-           re-invite email.
+        2. **Previously deleted accounts** — restores the account (`isDeleted: false`) as a
+           `member`, whatever role it had before, and sends a re-invite email. An `admin` invite
+           then promotes it within the 5-admin limit.
         3. **Active accounts with `hasLoggedIn: false`** (pending, not blocked) — resends the
            invitation email.
         4. **Active accounts already logged in** — skipped and counted in `alreadyActive`.
