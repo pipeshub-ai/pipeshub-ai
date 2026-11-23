@@ -476,6 +476,42 @@ describe('license check: features, install and the permission sync answer', () =
       });
     });
 
+    it('installs a file whose text body sanitizing would rewrite, and reads back only what was signed', async () => {
+      // `/`, `&`, quotes and `>` are what the XSS middleware encodes; the signature covers the exact text.
+      const now = new Date();
+      const licensee = `Smith & O'Brien "Labs" > R&D`;
+      const file = signed(
+        payload({
+          licensee,
+          startDate: now.toISOString(),
+          issuedAt: now.toISOString(),
+          endDate: at(now, 365 * DAY_MS).toISOString(),
+        }),
+      );
+      await serve(async (url) => {
+        const installed = await post(url, { license: file });
+        expect(installed.status).to.equal(200);
+        const status = (await (await fetch(url)).json()) as {
+          license: Record<string, unknown>;
+        };
+        expect(status.license).to.deep.include({ licensee, url: ADDRESS });
+        // Exactly the view's fields, all from the verified file: nothing else from the request is echoed.
+        expect(Object.keys(status.license).sort()).to.deep.equal(
+          [
+            'endDate',
+            'features',
+            'graceEndsAt',
+            'licenseId',
+            'licensee',
+            'seats',
+            'startDate',
+            'type',
+            'url',
+          ].sort(),
+        );
+      });
+    });
+
     it('answers a refused file with its reason', async () => {
       await serve(async (url) => {
         const response = await post(url, { license: { nope: 1 } });
