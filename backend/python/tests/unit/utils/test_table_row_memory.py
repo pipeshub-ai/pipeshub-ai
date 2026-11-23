@@ -74,14 +74,15 @@ def _model(style: str, **kw: Any) -> FakeTableModel:  # noqa: ANN401
     return FakeTableModel(describe=lambda rid: f"{style}: {rid}", **kw)
 
 
-def _stored(result: TableEnrichmentResult) -> BlocksContainer:
-    """The row blocks a parser stores from *result*, as the stored version of the record."""
+def _stored(*results: TableEnrichmentResult) -> BlocksContainer:
+    """The row blocks a parser stores from *results* (one table each), as the stored version of the record."""
+    rows = [(table, i, text, result) for table, result in enumerate(results) for i, text in enumerate(result.descriptions)]
     blocks = [
         Block(
-            index=i, type=BlockType.TABLE_ROW, format=DataFormat.JSON,
+            index=n, parent_index=table, type=BlockType.TABLE_ROW, format=DataFormat.JSON,
             data=with_row_digest({"row_natural_language_text": text, "row_number": i + 1}, result.row_digests, i),
         )
-        for i, text in enumerate(result.descriptions)
+        for n, (table, i, text, result) in enumerate(rows)
     ]
     return BlocksContainer(blocks=blocks, block_groups=[])
 
@@ -112,6 +113,12 @@ class TestTheDigest:
     def test_cells_are_not_run_together(self) -> None:
         assert row_digest(None, ["ab", "c"]) != row_digest(None, ["a", "bc"])
 
+    def test_no_cell_text_can_move_a_boundary(self) -> None:
+        # Kills: separator-joined cells, where a cell holding the separator makes two different rows one digest.
+        assert row_digest(None, ["a\x1fb", "c"]) != row_digest(None, ["a", "b\x1fc"])
+        assert row_digest(["h", "x"], ["y"]) != row_digest(["h"], ["x", "y"])
+        assert row_digest(["h\x1e"], ["y"]) != row_digest(["h"], ["\x1ey"])
+
 
 class TestStoredRows:
     def test_only_table_rows_with_a_digest_and_a_text_are_read(self) -> None:
@@ -121,8 +128,15 @@ class TestStoredRows:
             Block(index=2, type=BlockType.TABLE_ROW, format=DataFormat.JSON, data={"row_natural_language_text": " ", ROW_DIGEST_KEY: "d2"}),
             Block(index=3, type=BlockType.TEXT, format=DataFormat.TXT, data="text"),
         ], block_groups=[])
-        assert row_texts_of(container) == {"d0": "kept"}
-        assert row_texts_of(None) == {}
+        assert row_texts_of(container) == [{"d0": ["kept"]}]
+        assert row_texts_of(None) == []
+
+    def test_each_table_and_each_repeat_of_a_row_keeps_its_own_text(self) -> None:
+        def row(i: int, table: int, text: str) -> Block:
+            return Block(index=i, parent_index=table, type=BlockType.TABLE_ROW, format=DataFormat.JSON,
+                         data={"row_natural_language_text": text, ROW_DIGEST_KEY: "total"})
+        container = BlocksContainer(blocks=[row(0, 0, "q1 first"), row(1, 0, "q1 second"), row(2, 1, "q2")], block_groups=[])
+        assert row_texts_of(container) == [{"total": ["q1 first", "q1 second"]}, {"total": ["q2"]}]
 
     def test_a_row_without_a_digest_loses_a_stale_one(self) -> None:
         assert with_row_digest({"x": 1}, ["d"], 0) == {"x": 1, ROW_DIGEST_KEY: "d"}
@@ -138,15 +152,15 @@ class TestStoredRows:
         load = _offer(_stored(await _enrich(_model("A"), GRID, known=1)))
         load.assert_not_awaited()
         first, second = await asyncio.gather(previous_row_texts(), previous_row_texts())
-        assert first is second and len(first) == 30
+        assert first is second and [len(table) for table in first] == [30]
         load.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_read_that_fails_gives_no_rows_and_one_warning_without_any_text(self) -> None:
         logger = MagicMock()
         offer_previous_rows(PreviousRows(AsyncMock(side_effect=OSError("blob store down: secret-path")), logger, "rec-1"))
-        assert await previous_row_texts() == {}
-        assert await previous_row_texts() == {}
+        assert await previous_row_texts() == []
+        assert await previous_row_texts() == []
         logger.warning.assert_called_once()
         assert "secret-path" not in str(logger.warning.call_args)
 
@@ -182,6 +196,33 @@ class TestAnUpdateOfAnEditedTable:
         result = await _enrich(model, GRID, known=1)
         assert model.row_calls == []
         assert result.descriptions == first.descriptions
+
+    @pytest.mark.asyncio
+    async def test_a_row_equal_to_one_of_another_table_keeps_its_own_tables_text(self) -> None:
+        # Kills: one record-wide digest map, where the first table's wording of an equal row replaces the second table's.
+        other = [HEAD, GRID[1], *[[f"OTHER{i}", "0x1", "0"] for i in range(10)]]
+        first = await _enrich(_model("A"), GRID, known=1)
+        second = await _enrich(_model("C"), other, known=1)
+        assert first.row_digests[0] == second.row_digests[0] and first.descriptions[0] != second.descriptions[0]
+        _offer(_stored(first, second))
+        edited = [list(r) for r in other]
+        edited[5][1] = "0xFFF"
+        model = _model("B")
+        result = await _enrich(model, edited, known=1)
+        assert model.row_calls == [1]
+        assert [result.descriptions[i] for i in range(11) if i != 4] == [second.descriptions[i] for i in range(11) if i != 4]
+
+    @pytest.mark.asyncio
+    async def test_each_repeat_of_a_row_keeps_its_own_text(self) -> None:
+        # Kills: every repeat of a row taking the first repeat's stored text.
+        grid = [HEAD, GRID[1], GRID[1], GRID[2]]
+        stored = await _enrich(_model("A"), grid, known=1)
+        stored.descriptions[:2] = ["the first", "the second"]
+        _offer(_stored(stored))
+        model = _model("B")
+        result = await _enrich(model, [*grid, GRID[1]], known=1)
+        assert result.descriptions[:3] == ["the first", "the second", stored.descriptions[2]]
+        assert model.row_calls == [1] and result.descriptions[3] == "B: REG0"
 
     @pytest.mark.asyncio
     async def test_the_kept_rows_still_get_the_new_summary(self) -> None:

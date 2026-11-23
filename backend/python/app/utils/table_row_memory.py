@@ -3,7 +3,8 @@
 The LLM words the same table row differently from one call to the next (a 30-row table described twice kept the text of none of
 its rows), and a row's block id follows its text. So an edit that sent a table to the model again gave every one of its rows a new
 id, and the diff re-embedded all of them. On an update the stored version's rows are offered here by a digest of the table's header
-row and the row's cells: a row whose digest is found keeps its text, and only the others are described.
+row and the row's cells: a row whose digest is found keeps its text, and only the others are described. A table takes text only
+from the stored table that shares the most rows with it, so two tables with an equal row each keep their own wording.
 
 A delivery offers the rows (``offer_previous_rows``); they are read from the stored record only when a table first asks
 (``previous_row_texts``), once; the delivery withdraws them when it ends (``end_previous_rows``).
@@ -27,20 +28,20 @@ if TYPE_CHECKING:
 #: Where a table row block keeps its digest. Left out of the block's content hashes (``without_row_digest``).
 ROW_DIGEST_KEY = "row_digest"
 # Changing it makes every stored digest a miss: the next update of each table describes its rows again.
-_DIGEST_VERSION = b"table-row-v1"
+_DIGEST_VERSION = b"table-row-v2"
 
 
 def row_digest(header: Optional[Sequence[str]], cells: Sequence[str]) -> str:
     """The digest of one data row: the table's header row (``None`` for a table without one) and the row's cells, in order."""
     sha = hashlib.sha256(_DIGEST_VERSION)
     sha.update(b"\x00" if header is None else b"\x01")
-    for cell in header or ():
-        sha.update(cell.encode("utf-8", "surrogatepass"))
-        sha.update(b"\x1f")
-    sha.update(b"\x1e")
-    for cell in cells:
-        sha.update(cell.encode("utf-8", "surrogatepass"))
-        sha.update(b"\x1f")
+    for part in (header or (), cells):
+        # Counted and length-prefixed, so no cell's text (a separator character included) can move a boundary.
+        sha.update(len(part).to_bytes(8, "big"))
+        for cell in part:
+            raw = cell.encode("utf-8", "surrogatepass")
+            sha.update(len(raw).to_bytes(8, "big"))
+            sha.update(raw)
     return sha.hexdigest()[:32]
 
 
@@ -63,17 +64,21 @@ def without_row_digest(data: object) -> object:
     return data
 
 
-def row_texts_of(container: Optional[BlocksContainer]) -> dict[str, str]:
-    """Digest to text, for every table row of *container* that carries a digest and a text."""
-    texts: dict[str, str] = {}
+#: One stored table's rows: digest to the texts of its rows with that digest, in row order (a repeated row has one each).
+StoredTable = dict[str, list[str]]
+
+
+def row_texts_of(container: Optional[BlocksContainer]) -> list[StoredTable]:
+    """The table rows of *container* that carry a digest and a text, one entry per table."""
+    tables: dict[Optional[int], StoredTable] = {}
     for block in container.blocks if container is not None else ():
         data = block.data
         if block.type != BlockType.TABLE_ROW or not isinstance(data, dict):
             continue
         digest, text = data.get(ROW_DIGEST_KEY), data.get("row_natural_language_text")
         if isinstance(digest, str) and isinstance(text, str) and text.strip():
-            texts.setdefault(digest, text)
-    return texts
+            tables.setdefault(block.parent_index, {}).setdefault(digest, []).append(text)
+    return list(tables.values())
 
 
 class PreviousRows:
@@ -84,10 +89,10 @@ class PreviousRows:
         self._load = load
         self._logger = logger
         self._record_id = record_id
-        self._texts: Optional[dict[str, str]] = None
+        self._texts: Optional[list[StoredTable]] = None
         self._lock = asyncio.Lock()
 
-    async def texts(self) -> dict[str, str]:
+    async def texts(self) -> list[StoredTable]:
         async with self._lock:
             if self._texts is None:
                 try:
@@ -97,7 +102,7 @@ class PreviousRows:
                         "Record %s: the stored version's table rows could not be read (%s); its tables are described again",
                         self._record_id, type(exc).__name__,
                     )
-                    self._texts = {}
+                    self._texts = []
             return self._texts
 
 
@@ -113,7 +118,7 @@ def end_previous_rows() -> None:
     _offered.set(None)
 
 
-async def previous_row_texts() -> Optional[dict[str, str]]:
+async def previous_row_texts() -> Optional[list[StoredTable]]:
     """The row texts the delivery offered (read now if not yet), or ``None`` when it offered none."""
     rows = _offered.get()
     return None if rows is None else await rows.texts()

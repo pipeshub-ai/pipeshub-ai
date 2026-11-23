@@ -73,7 +73,12 @@ from app.utils.indexing_metrics import (
 )
 from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
-from app.utils.table_row_memory import previous_row_texts, row_digest, with_row_digest
+from app.utils.table_row_memory import (
+    StoredTable,
+    previous_row_texts,
+    row_digest,
+    with_row_digest,
+)
 
 # Flow tags in the paid-cache params. The keyed answer shape is a different flow from the
 # positional ("count_validated" / "structured") and the numbered ("numbered_v2") shapes that
@@ -682,18 +687,23 @@ async def _summary_and_headers_call(
     )
 
 
-async def _stored_texts_for(rows: Sequence[Sequence[str]], known_header_row_count: Optional[int]) -> Optional[dict[str, str]]:
-    """The stored version's row texts, when this delivery offered them and they hold a row of this table; ``None`` otherwise (no
-    update, or a table the stored version did not have). Where the model decides the header, a row is looked for both ways."""
-    texts = await previous_row_texts()
-    if not texts:
+async def _stored_texts_for(rows: Sequence[Sequence[str]], known_header_row_count: Optional[int]) -> Optional[StoredTable]:
+    """The rows of the stored table that shares the most rows with this one, when this delivery offered any; ``None`` otherwise (no
+    update, or a table the stored version did not have). Only one stored table is used, so a row equal to one of another table
+    never takes that table's wording. Where the model decides the header, a row is looked for both ways."""
+    tables = await previous_row_texts()
+    if not tables:
         return None
     hypotheses = (1 if known_header_row_count else 0,) if known_header_row_count is not None else (0, 1)
+    best, best_shared = None, 0
     for header_rows in hypotheses:
         header = rows[0] if header_rows else None
-        if any(row_digest(header, row) in texts for row in rows[header_rows:]):
-            return texts
-    return None
+        digests = [row_digest(header, row) for row in rows[header_rows:]]
+        for table in tables:
+            shared = sum(digest in table for digest in digests)
+            if shared > best_shared:
+                best, best_shared = table, shared
+    return best
 
 
 async def enrich_table_grid(
@@ -899,11 +909,13 @@ async def _describe_unmatched(
     logger: Logger,
     data_dicts: list[dict[str, str]],
     digests: list[str],
-    stored: dict[str, str],
+    stored: StoredTable,
     batch_size: int,
 ) -> tuple[list[Optional[str]], _Run]:
     """Every data row's description: a row the stored version had keeps its text, the others are described in batches."""
-    texts: list[Optional[str]] = [stored.get(digest) for digest in digests]
+    left = {digest: iter(texts) for digest, texts in stored.items()}
+    # A repeated row takes the stored texts of its repeats in order, one each; a repeat more than were stored is described.
+    texts: list[Optional[str]] = [next(left.get(digest, iter(())), None) for digest in digests]
     pending = [i for i, text in enumerate(texts) if text is None]
     batches = [pending[i : i + batch_size] for i in range(0, len(pending), batch_size)]
     run = _Run(llm, summary, logger, RetryBudget.for_batches(len(batches)))
