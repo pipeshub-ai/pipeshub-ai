@@ -301,4 +301,52 @@ describe('CollectionsCard', () => {
       }),
     );
   });
+
+  it('preserves scoped IDs that have no matching node in appliedFilters', async () => {
+    api.listCollectionsForChat.mockResolvedValue({
+      knowledgeBases: [root('col-1', 'Engineering Wiki')],
+      nextCursor: null,
+    });
+
+    const onChange = vi.fn();
+    const initialScope: ProjectKnowledgeScope = {
+      apps: [],
+      kb: [],
+      recordGroups: ['rg-orphan-no-node'],
+      records: ['rec-orphan-no-node'],
+    };
+    const initialFilters: AppliedFilters = {
+      apps: [],
+      kb: [],
+      recordGroups: [],
+      records: [],
+    };
+
+    render(
+      <Theme>
+        <CollectionsCard
+          knowledgeScope={initialScope}
+          appliedFilters={initialFilters}
+          canEdit={true}
+          onChange={onChange}
+        />
+      </Theme>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Engineering Wiki')).toBeTruthy();
+    });
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    fireEvent.click(checkboxes[0]);
+
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        knowledgeScope: expect.objectContaining({
+          recordGroups: expect.arrayContaining(['rg-orphan-no-node']),
+          records: expect.arrayContaining(['rec-orphan-no-node']),
+        }),
+      }),
+    );
+  });
 });

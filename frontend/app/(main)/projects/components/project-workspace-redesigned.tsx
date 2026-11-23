@@ -127,12 +127,12 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const toolsRef = useRef<string[]>([]);
   const confirmedToolsRef = useRef<string[]>([]);
 
-  interface CollectionsScopePatch {
+  interface ScopePatch {
     knowledgeScope: ProjectKnowledgeScope;
     appliedFilters: AppliedFilters;
   }
-  const collectionsScopeRef = useRef<CollectionsScopePatch | null>(null);
-  const confirmedCollectionsScopeRef = useRef<CollectionsScopePatch | null>(null);
+  const scopeRef = useRef<ScopePatch | null>(null);
+  const confirmedScopeRef = useRef<ScopePatch | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -147,12 +147,12 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       ]);
       toolsRef.current = detail.tools ?? [];
       confirmedToolsRef.current = detail.tools ?? [];
-      const initialScope: CollectionsScopePatch = {
+      const initialScope: ScopePatch = {
         knowledgeScope: detail.knowledgeScope ?? { apps: [], kb: [] },
         appliedFilters: detail.appliedFilters ?? { apps: [], kb: [] },
       };
-      collectionsScopeRef.current = initialScope;
-      confirmedCollectionsScopeRef.current = initialScope;
+      scopeRef.current = initialScope;
+      confirmedScopeRef.current = initialScope;
       setProject(detail);
       setInstructionsDraft(detail.instructions ?? '');
       setConversationTotal(conv.pagination.totalCount);
@@ -191,10 +191,10 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     hasDirectMembership(project?.members, profile?.userId);
   const isArchived = Boolean(project?.isArchived);
 
-  /** A PATCH response, minus tool or collection scope lists that newer local changes have already moved past. */
+  /** A PATCH response, minus tool or knowledge scope lists that newer local changes have already moved past. */
   const applyServerProject = useCallback(
     (updated: ProjectDetail) => {
-      const pendingScope = collectionsScopeRef.current;
+      const pendingScope = scopeRef.current;
       setProject({
         ...updated,
         tools: toolsRef.current,
@@ -234,36 +234,17 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     setProject((prev) => (prev ? { ...prev, linkedKnowledgeBaseId: kbId } : prev));
   }, []);
 
-  const handleConnectorsChange = useCallback(
-    async (patch: { knowledgeScope: ProjectKnowledgeScope; appliedFilters: AppliedFilters }) => {
-      if (!project) return;
-      const previousScope = project.knowledgeScope;
-      const previousFilters = project.appliedFilters;
-      setProject({ ...project, knowledgeScope: patch.knowledgeScope, appliedFilters: patch.appliedFilters });
-      try {
-        const updated = await ProjectApi.update(projectId, patch);
-        applyServerProject(updated);
-      } catch {
-        setProject((prev) =>
-          prev ? { ...prev, knowledgeScope: previousScope, appliedFilters: previousFilters } : prev,
-        );
-        toast.error(t('chat.projects.workspace.updateConnectorsFailed'));
-      }
-    },
-    [project, projectId, applyServerProject, t],
-  );
-
-  const collectionsSaver = useMemo(
+  const scopeSaver = useMemo(
     () =>
-      createSerialSaver<CollectionsScopePatch, ProjectDetail>({
+      createSerialSaver<ScopePatch, ProjectDetail>({
         save: (patch) => ProjectApi.update(projectId, patch),
         onSaved: (updated) => {
-          const savedScope: CollectionsScopePatch = {
+          const savedScope: ScopePatch = {
             knowledgeScope: updated.knowledgeScope ?? { apps: [], kb: [] },
             appliedFilters: updated.appliedFilters ?? { apps: [], kb: [] },
           };
-          confirmedCollectionsScopeRef.current = savedScope;
-          collectionsScopeRef.current = savedScope;
+          confirmedScopeRef.current = savedScope;
+          scopeRef.current = savedScope;
           setProject((prev) =>
             prev
               ? {
@@ -274,9 +255,9 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               : prev,
           );
         },
-        onError: () => {
-          const fallback = confirmedCollectionsScopeRef.current;
-          collectionsScopeRef.current = fallback;
+        onError: (_error, value) => {
+          const fallback = confirmedScopeRef.current;
+          scopeRef.current = fallback;
           setProject((prev) =>
             prev && fallback
               ? {
@@ -286,19 +267,24 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
                 }
               : prev,
           );
+          const hadConnectorChange =
+            JSON.stringify(value.knowledgeScope.apps) !==
+            JSON.stringify(fallback?.knowledgeScope.apps);
           toast.error(
-            t('chat.projects.workspace.updateCollectionsFailed', {
-              defaultValue: 'Failed to update collections',
-            }),
+            hadConnectorChange
+              ? t('chat.projects.workspace.updateConnectorsFailed')
+              : t('chat.projects.workspace.updateCollectionsFailed', {
+                  defaultValue: 'Failed to update collections',
+                }),
           );
         },
       }),
     [projectId, setProject, t],
   );
 
-  const handleCollectionsChange = useCallback(
-    (patch: CollectionsScopePatch) => {
-      collectionsScopeRef.current = patch;
+  const handleScopeChange = useCallback(
+    (patch: ScopePatch) => {
+      scopeRef.current = patch;
       setProject((prev) =>
         prev
           ? {
@@ -308,10 +294,13 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
             }
           : prev,
       );
-      void collectionsSaver.push(patch);
+      void scopeSaver.push(patch);
     },
-    [setProject, collectionsSaver],
+    [setProject, scopeSaver],
   );
+
+  const handleConnectorsChange = handleScopeChange;
+  const handleCollectionsChange = handleScopeChange;
 
   const toolsSaver = useMemo(
     () =>

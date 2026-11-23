@@ -151,26 +151,30 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
         return saved.get(id) ?? { id, name: id, nodeType: fallbackType, connector: 'KB' };
       };
 
-      // Leave connector-owned IDs in the emitted knowledgeScope so that the Connectors card keeps managing them.
-      const isConnectorNode = (node: AppliedFilterNode | undefined) => Boolean(node && node.connector !== 'KB');
+      // Preserve every ID that is not explicitly collection-owned (including scoped IDs with no node in appliedFilters).
+      const isCollectionNode = (node: AppliedFilterNode | undefined) => node?.connector === 'KB';
 
-      const connectorRecordGroups = (knowledgeScope?.recordGroups ?? []).filter((id) => {
+      const preservedRecordGroups = (knowledgeScope?.recordGroups ?? []).filter((id) => {
         const node = appliedFilters?.recordGroups?.find((n) => n.id === id);
-        return isConnectorNode(node);
+        return !isCollectionNode(node);
       });
-      const connectorRecords = (knowledgeScope?.records ?? []).filter((id) => {
+      const preservedRecords = (knowledgeScope?.records ?? []).filter((id) => {
         const node = appliedFilters?.records?.find((n) => n.id === id);
-        return isConnectorNode(node);
+        return !isCollectionNode(node);
       });
 
-      const connectorFilterRecordGroups = (appliedFilters?.recordGroups ?? []).filter(isConnectorNode);
-      const connectorFilterRecords = (appliedFilters?.records ?? []).filter(isConnectorNode);
+      const preservedFilterRecordGroups = (appliedFilters?.recordGroups ?? []).filter(
+        (node) => !isCollectionNode(node),
+      );
+      const preservedFilterRecords = (appliedFilters?.records ?? []).filter(
+        (node) => !isCollectionNode(node),
+      );
 
       const collectionRecordGroups = next.recordGroups ?? [];
       const collectionRecords = next.records ?? [];
 
-      const mergedRecordGroups = Array.from(new Set([...connectorRecordGroups, ...collectionRecordGroups]));
-      const mergedRecords = Array.from(new Set([...connectorRecords, ...collectionRecords]));
+      const mergedRecordGroups = Array.from(new Set([...preservedRecordGroups, ...collectionRecordGroups]));
+      const mergedRecords = Array.from(new Set([...preservedRecords, ...collectionRecords]));
 
       const collectionFilterRecordGroups = collectionRecordGroups.map((id) => nodeOf(id, BELOW_APPS.recordGroups));
       const collectionFilterRecords = collectionRecords.map((id) => nodeOf(id, BELOW_APPS.records));
@@ -185,8 +189,8 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
         appliedFilters: {
           apps: appliedFilters?.apps ?? [],
           kb: (next.kb ?? []).map((id) => nodeOf(id, 'app')),
-          recordGroups: [...connectorFilterRecordGroups, ...collectionFilterRecordGroups],
-          records: [...connectorFilterRecords, ...collectionFilterRecords],
+          recordGroups: [...preservedFilterRecordGroups, ...collectionFilterRecordGroups],
+          records: [...preservedFilterRecords, ...collectionFilterRecords],
         },
       });
     },
