@@ -10,10 +10,8 @@ from servicenow_fakes import block_groups, file_response
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.sources.servicenow.servicenow.constants import ServiceNowDefaults
-from app.connectors.sources.servicenow.servicenow.connector import (
-    ORGANIZATIONAL_ENTITIES,
-    ServiceNowConnector,
-)
+from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
+from app.connectors.sources.servicenow.servicenow.constants import ORGANIZATIONAL_ENTITIES
 from app.sources.external.servicenow.models import (
     AttachmentMetadata,
     KBKnowledge,
@@ -113,6 +111,7 @@ def mock_data_entities_processor():
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.full_sync_running = MagicMock(return_value=False)
     proc.reindex_existing_records = AsyncMock()
+    proc.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     return proc
 
 

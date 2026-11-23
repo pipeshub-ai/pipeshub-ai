@@ -218,6 +218,7 @@ def connector():
 
         logger = _make_logger()
         dep = AsyncMock()
+        dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed
         dep.org_id = "org-cov"
         dep.on_new_records = AsyncMock()
         dep.on_new_app_users = AsyncMock()

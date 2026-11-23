@@ -42,6 +42,7 @@ def _make_mock_deps():
     logger = logging.getLogger("test.outlook.full")
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-outlook-1"
+    data_entities_processor.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()

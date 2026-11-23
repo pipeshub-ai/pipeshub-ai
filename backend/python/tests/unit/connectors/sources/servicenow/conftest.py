@@ -57,6 +57,7 @@ def mock_data_entities_processor() -> object:
     proc.get_records_by_parent = AsyncMock(return_value=[])
     proc.get_records_by_record_type = AsyncMock(return_value=[])
     proc.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())  # stored
+    proc.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     return proc
 
 

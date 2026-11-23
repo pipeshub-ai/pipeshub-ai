@@ -39,6 +39,7 @@ def _make_connector():
 
     logger = MagicMock()
     dep = MagicMock()
+    dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed
     dep.org_id = "org-test"
     data_store = MagicMock()
     config_svc = MagicMock()
@@ -1541,6 +1542,7 @@ class TestSlackConnectorCreateConnector:
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         processor = MagicMock()
+        processor.skips_permission_writes = AsyncMock(return_value=False)  # licensed
         processor.org_id = "org-1"
         with patch.object(SlackConnector, "__init__", lambda self, *a, **kw: None):
             obj = await SlackConnector.create_connector(
@@ -2515,6 +2517,7 @@ class TestSlackConnectorRealInit:
 
         logger = MagicMock()
         dep = MagicMock()
+        dep.skips_permission_writes = AsyncMock(return_value=False)  # licensed
         dep.org_id = "org-x"
         dsp = MagicMock()
         cfg = MagicMock()
@@ -4851,6 +4854,7 @@ class TestCreateConnector:
         dsp = MagicMock()
         cfg = MagicMock()
         processor = MagicMock()
+        processor.skips_permission_writes = AsyncMock(return_value=False)  # licensed
         processor.org_id = "org-1"
         with patch.object(SlackConnector, "__init__", lambda self, *a, **k: None):
             conn = await SlackConnector.create_connector(
@@ -5498,7 +5502,7 @@ class TestSlackTeamConnectorCoverageBoost:
         c.logger.debug.assert_called()
 
     def test_to_user_group_app_user_group_raises(self):
-        import app.connectors.sources.slack.team.connector as mod
+        import app.ee.permission_sync.slack_team as mod
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
