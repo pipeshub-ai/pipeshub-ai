@@ -55,7 +55,7 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
 from app.core.org_context import MissingOrgContext
-from app.edition import extra_node_collections
+from app.edition import extra_edge_schemas, extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphQueryError,
@@ -151,7 +151,6 @@ from app.schema.arango.documents import (
     value_mention_schema,
     webpage_record_schema,
 )
-from app.edition import extra_edge_schemas
 from app.schema.arango.edges import (
     agent_has_knowledge_schema,
     agent_has_mcp_server_schema,
