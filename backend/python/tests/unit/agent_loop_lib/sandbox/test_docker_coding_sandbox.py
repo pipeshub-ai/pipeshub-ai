@@ -623,7 +623,7 @@ class TestInstallPackagesIdempotency:
 
         with patch("docker.from_env", return_value=fake_client):
             await sandbox.install_packages(["lodash@4.17.21"], "typescript")
-        command = fake_client.containers.create.call_args.kwargs["command"][6]
+        command = fake_client.containers.create.call_args.kwargs["command"][11]
         assert "npm install --ignore-scripts " in command
         assert command.endswith(" lodash@4.17.21")
 

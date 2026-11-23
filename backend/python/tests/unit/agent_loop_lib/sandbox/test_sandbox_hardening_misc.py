@@ -42,9 +42,12 @@ def fake_e2b_module(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestInstallCommandsQuoteSpecs:
-    async def test_e2b_quotes_each_spec(self, fake_e2b_module) -> None:
+    async def test_e2b_quotes_each_spec(self, fake_e2b_module, monkeypatch) -> None:
+        import app.agent_loop_lib.sandbox.coding.e2b as e2b_mod
         from app.agent_loop_lib.sandbox.coding.e2b import E2BCodingSandbox
 
+        # The spec validator refuses these ranges first; quoting is the layer behind it.
+        monkeypatch.setattr(e2b_mod, "validate_package_spec", lambda *_a, **_k: True)
         sandbox = E2BCodingSandbox()
         sandbox._sandbox_id = "e2b-1"
         sbx = MagicMock()
@@ -55,7 +58,7 @@ class TestInstallCommandsQuoteSpecs:
 
         assert result.success
         cmd = sbx.commands.run.call_args.args[0]
-        assert cmd == "pip install --no-cache-dir 'mpmath<1.0' 'numpy>=1.26'"
+        assert cmd == "pip install --no-cache-dir --only-binary=:all: 'mpmath<1.0' 'numpy>=1.26'"
 
     async def test_e2b_output_is_capped(self, fake_e2b_module) -> None:
         from app.agent_loop_lib.sandbox.coding.e2b import E2BCodingSandbox
