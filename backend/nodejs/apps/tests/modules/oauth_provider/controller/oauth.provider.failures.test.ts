@@ -99,6 +99,7 @@ describe('OAuthProviderController failures', function () {
       {
         parseScopes: sinon.stub().returns([]),
         resolveGrantedScopes: sinon.stub().returns({ granted: [], notGranted: [] }),
+        consentScopesForRole: sinon.stub().callsFake((granted: string[]) => granted),
       } as never,
       dcr as never,
       device as never,
