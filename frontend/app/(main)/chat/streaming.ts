@@ -891,6 +891,10 @@ export async function streamMessageForSlot(
     resumeAskUserQuestion?: boolean;
     /** An answer to a tool approval card: it carries on this assistant row, with no user bubble. */
     reuseRowId?: string;
+    /** Gets a failed approval answer's reason, which the caller shows instead of a toast. */
+    onApprovalFailed?: (reason: string) => void;
+    /** The caller already told the person (an approval answered from another chat): no "Answer ready" toast. */
+    quietFinish?: boolean;
   }
 ): Promise<void> {
   const store = useChatStore.getState();
@@ -1635,7 +1639,7 @@ export async function streamMessageForSlot(
           }
         }
 
-        notifyAnswerFinishedInBackground(slotId, wasStopped);
+        notifyAnswerFinishedInBackground(slotId, wasStopped, { toast: !options?.quietFinish });
         debugLog.flush('stream-completed', { slotId, convId: newConvId || slot.convId });
       },
 
@@ -1674,7 +1678,7 @@ export async function streamMessageForSlot(
         if (resumeAskUserQuestion) {
           notifyAskUserQuestionResumeFailed(err);
         } else if (reuseRowId) {
-          notifyToolApprovalFailed(err);
+          (options?.onApprovalFailed ?? notifyToolApprovalFailed)(err);
         }
         if (isNewConversation) {
           useChatStore.getState().clearPendingConversation(slotId);
@@ -1748,7 +1752,7 @@ export async function streamMessageForSlot(
     if (resumeAskUserQuestion) {
       notifyAskUserQuestionResumeFailed(errorMessage);
     } else if (reuseRowId) {
-      notifyToolApprovalFailed(errorMessage);
+      (options?.onApprovalFailed ?? notifyToolApprovalFailed)(errorMessage);
     }
     if (isNewConversation) {
       useChatStore.getState().clearPendingConversation(slotId);

@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Flex, Box, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { Box, Flex, IconButton, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
 // ========================================
@@ -33,10 +34,12 @@ interface TagInputProps {
   compact?: boolean;
   /**
    * Values are free text that may contain spaces and commas (e.g. folder paths):
-   * only Enter or Tab ends a tag, a paste splits on newlines, and duplicates are
+   * only Enter ends a tag, a paste splits on newlines, and duplicates are
    * compared case-sensitively.
    */
   freeText?: boolean;
+  /** Id of the text input, so a `<label htmlFor>` names it. */
+  id?: string;
 }
 
 // ========================================
@@ -52,12 +55,16 @@ export function TagInput({
   disabled = false,
   compact = false,
   freeText = false,
+  id,
 }: TagInputProps) {
   // No-op fallback when disabled or no handler provided
   const handleTagsChange = onTagsChange ?? (() => {});
   const [inputValue, setInputValue] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const [_editingTagId, setEditingTagId] = useState<string | null>(null);
+  // Kept here, not on the tags: a parent that rebuilds its tags from plain values drops the flag,
+  // and the second Backspace would never remove the chip.
+  const [lastHighlighted, setLastHighlighted] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -99,20 +106,31 @@ export function TagInput({
   );
 
   const removeTag = useCallback(
-    (id: string) => {
-      handleTagsChange(tags.filter((t) => t.id !== id));
+    (tagId: string) => {
+      setLastHighlighted(false);
+      handleTagsChange(tags.filter((t) => t.id !== tagId));
     },
     [tags, handleTagsChange]
   );
+
+  // The × that was clicked leaves the DOM: focus the next chip's ×, else the input.
+  const removeTagFromButton = (index: number) => {
+    removeTag(tags[index].id);
+    setTimeout(() => {
+      const next = containerRef.current?.querySelectorAll<HTMLElement>('[data-tag-remove]')[index];
+      (next ?? inputRef.current)?.focus();
+    }, 0);
+  };
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       // Keys that confirm an IME candidate (CJK input) belong to the IME; Safari
       // reports the confirming Enter with isComposing false but keyCode 229.
       if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+      // Tab is not here: it moves focus on, and leaving the field turns its text into a tag (onBlur).
       const endsTag = freeText
-        ? e.key === 'Enter' || e.key === 'Tab'
-        : e.key === 'Enter' || e.key === ',' || e.key === 'Tab' || e.key === ' ';
+        ? e.key === 'Enter'
+        : e.key === 'Enter' || e.key === ',' || e.key === ' ';
       if (endsTag) {
         e.preventDefault();
         addTag(inputValue);
@@ -121,26 +139,14 @@ export function TagInput({
         inputValue === '' &&
         tags.length > 0
       ) {
-        const lastTag = tags[tags.length - 1];
-        if (e.key === 'Backspace' && lastTag.isHighlighted) {
-          // Second backspace removes it
-          removeTag(lastTag.id);
-        } else if (!lastTag.isHighlighted) {
-          // First backspace or left arrow highlights
-          handleTagsChange(
-            tags.map((t, i) =>
-              i === tags.length - 1 ? { ...t, isHighlighted: true } : t
-            )
-          );
-        }
-      } else {
-        // Clear highlight on any other key
-        if (tags.some((t) => t.isHighlighted)) {
-          handleTagsChange(tags.map((t) => ({ ...t, isHighlighted: false })));
-        }
+        // The first Backspace (or left arrow) highlights the last tag, the second Backspace removes it.
+        if (e.key === 'Backspace' && lastHighlighted) removeTag(tags[tags.length - 1].id);
+        else setLastHighlighted(true);
+      } else if (lastHighlighted && e.key !== 'Tab' && e.key !== 'Shift') {
+        setLastHighlighted(false);
       }
     },
-    [inputValue, tags, addTag, removeTag, onTagsChange, freeText]
+    [inputValue, tags, addTag, removeTag, freeText, lastHighlighted]
   );
 
   const handlePaste = useCallback(
@@ -231,17 +237,18 @@ export function TagInput({
         }}
       >
         <Flex
+          className="tag-input-chips"
           wrap="wrap"
           gap="1"
           align="start"
           style={{ minHeight: disabled ? undefined : '100%' }}
         >
           {/* Tags */}
-          {tags.map((tag) => (
+          {tags.map((tag, i) => (
             <TagPill
               key={tag.id}
-              tag={tag}
-              onRemove={() => removeTag(tag.id)}
+              tag={lastHighlighted && i === tags.length - 1 ? { ...tag, isHighlighted: true } : tag}
+              onRemove={() => removeTagFromButton(i)}
               onEdit={handleEditTag}
               disabled={disabled}
             />
@@ -251,6 +258,7 @@ export function TagInput({
           {!disabled && (
             <input
             ref={inputRef}
+            id={id}
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
@@ -259,6 +267,7 @@ export function TagInput({
             onFocus={() => setIsFocused(true)}
             onBlur={() => {
               setIsFocused(false);
+              setLastHighlighted(false);
               // Convert remaining text to tag on blur
               if (inputValue.trim()) {
                 addTag(inputValue);
@@ -306,6 +315,7 @@ function TagPill({
   onEdit: (id: string) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const isError = tag.isValid === false;
   const isHighlighted = tag.isHighlighted === true;
   const isEditing = tag.isEditing === true;
@@ -348,7 +358,8 @@ function TagPill({
         padding: 'var(--space-1) var(--space-2)',
         flexShrink: 0,
         whiteSpace: 'nowrap',
-        maxWidth: 280,
+        // Never wider than the field, so the × stays on screen in a narrow one.
+        maxWidth: '100%',
         cursor: disabled ? 'default' : 'pointer',
       }}
     >
@@ -357,6 +368,7 @@ function TagPill({
         weight="medium"
         style={{
           color: textColor,
+          minWidth: 0,
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
@@ -366,36 +378,25 @@ function TagPill({
         {tag.value}
       </Text>
 
-      {!disabled && (isError ? (
-        <Box
+      {!disabled && (
+        <IconButton
+          type="button"
+          size="1"
+          variant="ghost"
+          color="gray"
+          data-tag-remove=""
+          // A 44px tap area on touch screens; the 16px button and its icon stay as drawn.
+          className="touch-hit"
+          aria-label={t('workspace.connectors.schemaForm.removeTagAriaLabel', { tag: tag.value })}
           onClick={(e) => {
             e.stopPropagation();
             onRemove();
           }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            flexShrink: 0,
-          }}
+          style={{ margin: 0, width: 'var(--space-4)', height: 'var(--space-4)', flexShrink: 0 }}
         >
           <MaterialIcon name="close" size={14} color={iconColor} />
-        </Box>
-      ) : (
-        <Box
-          onClick={(e) => {
-            e.stopPropagation();
-            onRemove();
-          }}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
-        >
-          <MaterialIcon name="close" size={14} color={iconColor} />
-        </Box>
-      ))}
+        </IconButton>
+      )}
     </Flex>
   );
 }
