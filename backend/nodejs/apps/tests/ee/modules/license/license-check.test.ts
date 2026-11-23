@@ -442,7 +442,6 @@ describe('license check: features, install and the permission sync answer', () =
       expect(await upgrade()).to.deep.equal({
         upgradedAt: NOW.toISOString(),
         affected: null,
-        extendedUntil: null,
       });
       // A later start keeps the first upgrade time.
       expect(await enforcedAt(at(GRACE_END, -1))).to.deep.include({
@@ -486,16 +485,16 @@ describe('license check: features, install and the permission sync answer', () =
       expect((await upgrade()).affected).to.equal(false);
     });
 
-    it('when on, lets a key decide once one has started, and gives no new grace after it lapses', async () => {
+    it('when on, lets a key running past the grace end carry access to its own end, then gives no new grace', async () => {
       await reportAffected(true);
       await enforcedAt(NOW);
       await installLicense(store, signed(payload()), NOW);
-      expect(await enforcedAt(NOW)).to.deep.include({
+      // The key's grace ends after the upgrade grace: the later date wins.
+      expect(await enforcedAt(NOW)).to.deep.equal({
         allowed: true,
+        until: at(END, DEFAULT_GRACE_DAYS * DAY_MS).toISOString(),
         status: 'active',
       });
-      // Still inside the upgrade grace, but the lapsed key decides.
-      expect(GRACE_END.getTime()).to.be.greaterThan(NOW.getTime());
       const lapsed = await enforcedAt(
         at(END, (DEFAULT_GRACE_DAYS + 1) * DAY_MS),
       );
@@ -504,6 +503,71 @@ describe('license check: features, install and the permission sync answer', () =
         until: null,
         status: 'expired',
       });
+    });
+
+    const trial = (startOffsetMs: number) =>
+      signed(
+        payload({
+          licenseId: `lic_trial_${String(startOffsetMs)}`,
+          type: 'trial',
+          startDate: at(NOW, startOffsetMs).toISOString(),
+          issuedAt: at(NOW, startOffsetMs).toISOString(),
+          endDate: at(NOW, startOffsetMs + 14 * DAY_MS).toISOString(),
+        }),
+      );
+
+    it('when on, keeps the upgrade grace when a trial installed early in it ends first', async () => {
+      await reportAffected(true);
+      await enforcedAt(NOW);
+      await installLicense(store, trial(DAY_MS), at(NOW, DAY_MS));
+      // The trial (14 days and its grace) ends before the 21-day upgrade grace: the grace end wins.
+      expect(await enforcedAt(at(NOW, DAY_MS))).to.deep.equal({
+        allowed: true,
+        until: GRACE_END.toISOString(),
+        status: 'active',
+      });
+      // The trial has lapsed inside the upgrade grace: still allowed until the grace end.
+      const afterTrial = at(NOW, (1 + 14 + DEFAULT_GRACE_DAYS + 1) * DAY_MS);
+      expect(afterTrial.getTime()).to.be.lessThan(GRACE_END.getTime());
+      expect(await enforcedAt(afterTrial)).to.deep.equal({
+        allowed: true,
+        until: GRACE_END.toISOString(),
+        status: 'expired',
+      });
+      expect(await enforcedAt(GRACE_END)).to.deep.equal({
+        allowed: false,
+        until: null,
+        status: 'expired',
+      });
+    });
+
+    it('when on, lets a trial that runs past the grace end carry access to its own end', async () => {
+      await reportAffected(true);
+      await enforcedAt(NOW);
+      const start = 15 * DAY_MS;
+      await installLicense(store, trial(start), at(NOW, start));
+      const trialGraceEnd = at(
+        NOW,
+        start + (14 + DEFAULT_GRACE_DAYS) * DAY_MS,
+      ).toISOString();
+      expect(await enforcedAt(at(NOW, start))).to.deep.include({
+        allowed: true,
+        until: trialGraceEnd,
+      });
+      // Past the upgrade grace, the running trial decides.
+      expect(await enforcedAt(at(GRACE_END, DAY_MS))).to.deep.include({
+        allowed: true,
+        until: trialGraceEnd,
+      });
+    });
+
+    it('when off, a lapsed trial is not allowed: there is no upgrade grace', async () => {
+      await reportAffected(true);
+      await installLicense(store, trial(0), NOW);
+      expect(
+        await publishAt(at(NOW, (14 + DEFAULT_GRACE_DAYS) * DAY_MS)),
+      ).to.deep.equal({ allowed: false, until: null, status: 'expired' });
+      expect(await store.read(UPGRADE_KEY)).to.equal(null);
     });
 
     it('when on, treats a key that has not started yet like no key', async () => {

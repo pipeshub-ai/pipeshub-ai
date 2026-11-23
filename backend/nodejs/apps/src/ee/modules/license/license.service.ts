@@ -34,8 +34,6 @@ export interface UpgradeRecord {
   upgradedAt: string;
   /** Null until the connectors have reported; an install not known to be unaffected gets the grace. */
   affected: boolean | null;
-  /** shortcut: the one 14-day extension an install may ask for (K3); stored, not read until K3 writes it. */
-  extendedUntil: string | null;
 }
 
 /** The configuration store as this module uses it: one JSON value per key. */
@@ -117,31 +115,12 @@ export function upgradeGraceEnd(upgrade: UpgradeRecord): Date | null {
   return new Date(Date.parse(upgrade.upgradedAt) + UPGRADE_GRACE_MS);
 }
 
-/**
- * The answer for the connectors, or null to write nothing. An install where no
- * license has ever started (none installed, or only one dated ahead):
- * - enforcement off (`upgrade` null): its key stays missing, which the
- *   connectors read as licensed, as before licenses existed;
- * - enforcement on: allowed through the upgrade grace, then not.
- * Once a license has started, the license decides.
- */
-export function permissionSyncAnswer(
+/** What the licenses alone decide, or null while none has ever started here (none installed, or only one dated ahead). */
+function licenseAnswer(
   evaluation: LicenseEvaluation,
   installed: number,
-  upgrade: UpgradeRecord | null = null,
-  now: Date = new Date(),
 ): PermissionSyncAnswer | null {
-  if (installed === 0 || evaluation.status === 'pending') {
-    if (!upgrade) return null;
-    const graceEnd = upgradeGraceEnd(upgrade);
-    return graceEnd && now.getTime() < graceEnd.getTime()
-      ? {
-          allowed: true,
-          until: graceEnd.toISOString(),
-          status: evaluation.status,
-        }
-      : { allowed: false, until: null, status: evaluation.status };
-  }
+  if (installed === 0 || evaluation.status === 'pending') return null;
   const license = evaluation.effective;
   if (!license || !licenseGrants(license.payload, PERMISSION_SYNC_FEATURE)) {
     return { allowed: false, until: null, status: evaluation.status };
@@ -151,6 +130,38 @@ export function permissionSyncAnswer(
     until: license.graceEndsAt.toISOString(),
     status: evaluation.status,
   };
+}
+
+/**
+ * The answer for the connectors, or null to write nothing.
+ * - Enforcement off (`upgrade` null): the licenses decide once one has
+ *   started; before that the key stays missing, which the connectors read as
+ *   licensed, as before licenses existed.
+ * - Enforcement on: through the upgrade grace, allowed whatever the licenses
+ *   say, until the later of the grace end and the licenses' own `until`: a
+ *   license (a trial, say) only ever extends access, never shortens the grace.
+ *   After the grace, the licenses decide, and no license means not allowed.
+ */
+export function permissionSyncAnswer(
+  evaluation: LicenseEvaluation,
+  installed: number,
+  upgrade: UpgradeRecord | null = null,
+  now: Date = new Date(),
+): PermissionSyncAnswer | null {
+  const byLicense = licenseAnswer(evaluation, installed);
+  if (!upgrade) return byLicense;
+  const graceEnd = upgradeGraceEnd(upgrade);
+  if (!graceEnd || now.getTime() >= graceEnd.getTime()) {
+    return (
+      byLicense ?? { allowed: false, until: null, status: evaluation.status }
+    );
+  }
+  const licenseUntil = byLicense?.allowed ? byLicense.until : null;
+  const until =
+    licenseUntil !== null && Date.parse(licenseUntil) > graceEnd.getTime()
+      ? licenseUntil
+      : graceEnd.toISOString();
+  return { allowed: true, until, status: evaluation.status };
 }
 
 const viewOf = (license: VerifiedLicense | null): LicenseView | null =>
@@ -185,7 +196,6 @@ async function upgradeRecord(
   const record: UpgradeRecord = stored ?? {
     upgradedAt: now.toISOString(),
     affected: null,
-    extendedUntil: null,
   };
   let changed = stored === null;
   if (record.affected === null) {
