@@ -46,6 +46,9 @@ fields:
   permission_model:
     required: false
     type: string
+  access_limit:
+    required: false
+    type: string
   scope:
     required: true
     type: string
