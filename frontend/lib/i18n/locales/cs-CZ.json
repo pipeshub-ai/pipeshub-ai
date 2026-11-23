@@ -2628,7 +2628,8 @@
         "tenants": "Tenanti",
         "superOrgs": "Organizace",
         "oauthApps": "OAuth aplikace konektorů",
-        "serviceAccounts": "Servisní účty"
+        "serviceAccounts": "Servisní účty",
+        "license": "Licence"
       }
     },
     "actions": {
@@ -5351,6 +5352,60 @@
         "read": "spustí se hned",
         "write": "nejprve se zeptá uživatele",
         "destructive": "blokováno, pokud to pravidla akcí agenta nepovolí"
+      }
+    },
+    "license": {
+      "title": "Licence",
+      "subtitle": "Nainstalujte licenční klíč pro tuto instalaci a podívejte se, co pokrývá.",
+      "loadFailed": "Stav licence se nepodařilo načíst. Obnovte stránku a zkuste to znovu.",
+      "upgradeGrace": "Tato instalace přebírá přístupová práva ze svých zdrojů, k čemuž je potřeba licenční klíč. Synchronizace oprávnění zůstane zapnutá do {{date}}. Aby zůstala zapnutá i potom, nainstalujte do té doby klíč.",
+      "permissionSyncOff": "Synchronizace oprávnění je vypnutá. Celofiremní konektory, které přebírají přístupová práva ze svého zdroje, jsou omezené na osobu, která je vytvořila. Nic nebylo smazáno: nainstalujte klíč a přístup ke každému konektoru se obnoví, jakmile skončí jeho příští úplná synchronizace.",
+      "statusTitle": "Stav",
+      "status": {
+        "active": "Aktivní",
+        "expiring": "Brzy končí",
+        "grace": "V ochranné lhůtě",
+        "expired": "Vypršela",
+        "pending": "Začne později",
+        "none": "Žádný licenční klíč"
+      },
+      "type": {
+        "trial": "Zkušební",
+        "pro": "Pro",
+        "development": "Vývojová"
+      },
+      "notForProduction": "Není pro produkční provoz",
+      "unlimitedSeats": "Neomezeně",
+      "fields": {
+        "type": "Typ",
+        "licensee": "Držitel licence",
+        "seats": "Uživatelé",
+        "endDate": "Končí",
+        "graceEndsAt": "Ochranná lhůta končí",
+        "upcoming": "Další klíč začíná",
+        "permissionSync": "Synchronizace oprávnění"
+      },
+      "on": "Zapnuto",
+      "off": "Vypnuto",
+      "notEnforced": "Tato verze zatím licenční klíč nevyžaduje, takže všechny funkce zůstávají zapnuté.",
+      "installTitle": "Nainstalovat licenční klíč",
+      "installDescription": "Vložte obsah souboru s licenčním klíčem, nebo soubor nahrajte. Novější klíč nahradí ten používaný.",
+      "keyLabel": "Licenční klíč",
+      "keyPlaceholder": "Sem vložte soubor s licenčním klíčem",
+      "upload": "Nahrát soubor",
+      "install": "Nainstalovat klíč",
+      "getTrial": "Získat zkušební klíč",
+      "requestExtension": "Požádat o prodloužení o 14 dní",
+      "toasts": {
+        "installed": "Licenční klíč byl nainstalován",
+        "alreadyInstalled": "Tento licenční klíč už je nainstalovaný"
+      },
+      "errors": {
+        "badSignature": "Podpis tohoto klíče nesouhlasí. Soubor mohl být po vydání změněn, nebo ho nevydal PipesHub. Vložte soubor přesně tak, jak jste ho obdrželi.",
+        "wrongAddress": "Tento klíč je pro jinou webovou adresu. Klíč funguje jen na adrese, kterou otevírají vaši uživatelé (nastavené jako FRONTEND_PUBLIC_URL). Požádejte o klíč vydaný pro adresu této instalace.",
+        "expired": "Platnost tohoto klíče už skončila. Získejte nový klíč a nainstalujte ho.",
+        "malformed": "Toto není soubor s licenčním klíčem. Vložte celý soubor včetně úvodní a koncové složené závorky.",
+        "generic": "Licenční klíč se nepodařilo nainstalovat. Zkuste to znovu."
       }
     }
   },

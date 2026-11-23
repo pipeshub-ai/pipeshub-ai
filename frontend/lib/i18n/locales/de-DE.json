@@ -2369,7 +2369,8 @@
         "oauthApps": "OAuth-Apps für Connectoren",
         "personalAccessTokens": "Persönliche Zugriffstoken",
         "apiDocumentation": "API-Dokumentation",
-        "serviceAccounts": "Dienstkonten"
+        "serviceAccounts": "Dienstkonten",
+        "license": "Lizenz"
       }
     },
     "actions": {
@@ -5119,6 +5120,60 @@
         "read": "wird sofort ausgeführt",
         "write": "fragt zuerst den Benutzer",
         "destructive": "blockiert, sofern die Aktionsregeln des Agenten es nicht erlauben"
+      }
+    },
+    "license": {
+      "title": "Lizenz",
+      "subtitle": "Installieren Sie den Lizenzschlüssel für diese Installation und sehen Sie, was er abdeckt.",
+      "loadFailed": "Der Lizenzstatus konnte nicht geladen werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+      "upgradeGrace": "Diese Installation übernimmt Zugriffsrechte aus ihren Quellen, wofür ein Lizenzschlüssel nötig ist. Die Berechtigungssynchronisierung bleibt bis {{date}} aktiv. Installieren Sie vorher einen Schlüssel, damit sie aktiv bleibt.",
+      "permissionSyncOff": "Die Berechtigungssynchronisierung ist aus. Unternehmensweite Connectors, die Zugriffsrechte aus ihrer Quelle übernehmen, sind auf die Person beschränkt, die sie erstellt hat. Es wurde nichts gelöscht: Installieren Sie einen Schlüssel, und der Zugriff jedes Connectors kehrt zurück, sobald seine nächste vollständige Synchronisierung abgeschlossen ist.",
+      "statusTitle": "Status",
+      "status": {
+        "active": "Aktiv",
+        "expiring": "Endet bald",
+        "grace": "In der Kulanzzeit",
+        "expired": "Abgelaufen",
+        "pending": "Beginnt später",
+        "none": "Kein Lizenzschlüssel"
+      },
+      "type": {
+        "trial": "Testversion",
+        "pro": "Pro",
+        "development": "Entwicklung"
+      },
+      "notForProduction": "Nicht für den Produktivbetrieb",
+      "unlimitedSeats": "Unbegrenzt",
+      "fields": {
+        "type": "Typ",
+        "licensee": "Lizenziert für",
+        "seats": "Benutzer",
+        "endDate": "Endet am",
+        "graceEndsAt": "Kulanzzeit endet",
+        "upcoming": "Nächster Schlüssel beginnt",
+        "permissionSync": "Berechtigungssynchronisierung"
+      },
+      "on": "Ein",
+      "off": "Aus",
+      "notEnforced": "Diese Version verlangt noch keinen Lizenzschlüssel, daher bleiben alle Funktionen aktiv.",
+      "installTitle": "Lizenzschlüssel installieren",
+      "installDescription": "Fügen Sie den Inhalt Ihrer Lizenzschlüsseldatei ein oder laden Sie die Datei hoch. Ein neuerer Schlüssel ersetzt den verwendeten.",
+      "keyLabel": "Lizenzschlüssel",
+      "keyPlaceholder": "Lizenzschlüsseldatei hier einfügen",
+      "upload": "Datei hochladen",
+      "install": "Schlüssel installieren",
+      "getTrial": "Testschlüssel anfordern",
+      "requestExtension": "Verlängerung um 14 Tage anfragen",
+      "toasts": {
+        "installed": "Lizenzschlüssel installiert",
+        "alreadyInstalled": "Dieser Lizenzschlüssel ist bereits installiert"
+      },
+      "errors": {
+        "badSignature": "Die Signatur dieses Schlüssels stimmt nicht. Die Datei wurde nach der Ausstellung womöglich geändert oder nicht von PipesHub ausgestellt. Fügen Sie die Datei genau so ein, wie Sie sie erhalten haben.",
+        "wrongAddress": "Dieser Schlüssel gilt für eine andere Webadresse. Ein Schlüssel funktioniert nur unter der Adresse, die Ihre Benutzer öffnen (festgelegt als FRONTEND_PUBLIC_URL). Fordern Sie einen Schlüssel für die Adresse dieser Installation an.",
+        "expired": "Dieser Schlüssel ist bereits abgelaufen. Fordern Sie einen neuen Schlüssel an und installieren Sie ihn.",
+        "malformed": "Das ist keine Lizenzschlüsseldatei. Fügen Sie die ganze Datei ein, einschließlich der öffnenden und schließenden geschweiften Klammern.",
+        "generic": "Der Lizenzschlüssel konnte nicht installiert werden. Versuchen Sie es erneut."
       }
     }
   },

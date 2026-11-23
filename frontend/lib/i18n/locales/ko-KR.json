@@ -2512,7 +2512,8 @@
         "tenants": "테넌트",
         "superOrgs": "조직",
         "oauthApps": "커넥터 OAuth 앱",
-        "serviceAccounts": "서비스 계정"
+        "serviceAccounts": "서비스 계정",
+        "license": "라이선스"
       }
     },
     "actions": {
@@ -5176,6 +5177,60 @@
         "read": "즉시 실행",
         "write": "먼저 사용자에게 확인",
         "destructive": "에이전트의 액션 규칙에서 허용하지 않으면 차단"
+      }
+    },
+    "license": {
+      "title": "라이선스",
+      "subtitle": "이 설치의 라이선스 키를 설치하고 적용 범위를 확인하세요.",
+      "loadFailed": "라이선스 상태를 불러오지 못했습니다. 페이지를 새로고침해 다시 시도하세요.",
+      "upgradeGrace": "이 설치는 소스의 접근 권한을 복사하며, 여기에는 라이선스 키가 필요합니다. 권한 동기화는 {{date}}까지 계속 켜져 있습니다. 계속 사용하려면 그 전에 키를 설치하세요.",
+      "permissionSyncOff": "권한 동기화가 꺼져 있습니다. 소스의 접근 권한을 복사하는 회사 전체 커넥터는 만든 사람만 사용할 수 있도록 제한됩니다. 삭제된 것은 없습니다. 키를 설치하면 각 커넥터의 다음 전체 동기화가 끝날 때 접근 권한이 돌아옵니다.",
+      "statusTitle": "상태",
+      "status": {
+        "active": "활성",
+        "expiring": "곧 종료",
+        "grace": "유예 기간",
+        "expired": "만료됨",
+        "pending": "나중에 시작",
+        "none": "라이선스 키 없음"
+      },
+      "type": {
+        "trial": "체험판",
+        "pro": "Pro",
+        "development": "개발용"
+      },
+      "notForProduction": "프로덕션용 아님",
+      "unlimitedSeats": "무제한",
+      "fields": {
+        "type": "유형",
+        "licensee": "라이선스 대상",
+        "seats": "사용자",
+        "endDate": "종료일",
+        "graceEndsAt": "유예 기간 종료",
+        "upcoming": "다음 키 시작",
+        "permissionSync": "권한 동기화"
+      },
+      "on": "켜짐",
+      "off": "꺼짐",
+      "notEnforced": "이 버전은 아직 라이선스 키가 필요하지 않으므로 모든 기능이 계속 켜져 있습니다.",
+      "installTitle": "라이선스 키 설치",
+      "installDescription": "라이선스 키 파일의 내용을 붙여넣거나 파일을 업로드하세요. 더 새로운 키가 사용 중인 키를 대체합니다.",
+      "keyLabel": "라이선스 키",
+      "keyPlaceholder": "여기에 라이선스 키 파일을 붙여넣으세요",
+      "upload": "파일 업로드",
+      "install": "키 설치",
+      "getTrial": "체험판 키 받기",
+      "requestExtension": "14일 연장 요청",
+      "toasts": {
+        "installed": "라이선스 키를 설치했습니다",
+        "alreadyInstalled": "이 라이선스 키는 이미 설치되어 있습니다"
+      },
+      "errors": {
+        "badSignature": "이 키의 서명이 일치하지 않습니다. 발급 후 파일이 변경되었거나 PipesHub에서 발급한 키가 아닐 수 있습니다. 받은 그대로 파일을 붙여넣으세요.",
+        "wrongAddress": "이 키는 다른 웹 주소용입니다. 키는 사용자가 여는 주소(FRONTEND_PUBLIC_URL로 설정)에서만 작동합니다. 이 설치의 주소로 발급된 키를 요청하세요.",
+        "expired": "이 키는 이미 종료되었습니다. 새 키를 받아 설치하세요.",
+        "malformed": "라이선스 키 파일이 아닙니다. 여는 중괄호와 닫는 중괄호를 포함해 파일 전체를 붙여넣으세요.",
+        "generic": "라이선스 키를 설치하지 못했습니다. 다시 시도하세요."
       }
     }
   },

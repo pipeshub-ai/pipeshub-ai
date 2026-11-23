@@ -2364,7 +2364,8 @@
         "tenants": "Tenants",
         "superOrgs": "Organisations",
         "oauthApps": "Connector OAuth apps",
-        "serviceAccounts": "Service accounts"
+        "serviceAccounts": "Service accounts",
+        "license": "License"
       }
     },
     "actions": {
@@ -5119,6 +5120,60 @@
         "read": "runs right away",
         "write": "asks the user first",
         "destructive": "blocked unless the agent's action rules allow it"
+      }
+    },
+    "license": {
+      "title": "License",
+      "subtitle": "Install the license key for this installation and see what it covers.",
+      "loadFailed": "Couldn't load the license status. Refresh the page to try again.",
+      "upgradeGrace": "This installation copies access from its sources, which needs a license key. Permission sync stays on until {{date}}. Install a key before then to keep it on.",
+      "permissionSyncOff": "Permission sync is off. Company-wide connectors that copy access from their source are limited to the person who created them. Nothing was deleted: install a key, and each connector's access comes back when its next full sync finishes.",
+      "statusTitle": "Status",
+      "status": {
+        "active": "Active",
+        "expiring": "Ending soon",
+        "grace": "In grace period",
+        "expired": "Expired",
+        "pending": "Starts later",
+        "none": "No license key"
+      },
+      "type": {
+        "trial": "Trial",
+        "pro": "Pro",
+        "development": "Development"
+      },
+      "notForProduction": "Not for production",
+      "unlimitedSeats": "Unlimited",
+      "fields": {
+        "type": "Type",
+        "licensee": "Licensed to",
+        "seats": "Users",
+        "endDate": "Ends on",
+        "graceEndsAt": "Grace period ends",
+        "upcoming": "Next key starts",
+        "permissionSync": "Permission sync"
+      },
+      "on": "On",
+      "off": "Off",
+      "notEnforced": "This version doesn't require a license key yet, so every feature stays on.",
+      "installTitle": "Install a license key",
+      "installDescription": "Paste the contents of your license key file, or upload the file. A newer key replaces the one in use.",
+      "keyLabel": "License key",
+      "keyPlaceholder": "Paste the license key file here",
+      "upload": "Upload file",
+      "install": "Install key",
+      "getTrial": "Get a trial key",
+      "requestExtension": "Request a 14-day extension",
+      "toasts": {
+        "installed": "License key installed",
+        "alreadyInstalled": "This license key is already installed"
+      },
+      "errors": {
+        "badSignature": "This key's signature doesn't match. The file may have been changed after it was issued, or it wasn't issued by PipesHub. Paste the file exactly as you received it.",
+        "wrongAddress": "This key is for a different web address. A key works only on the address your users open, set as FRONTEND_PUBLIC_URL. Ask for a key issued for this installation's address.",
+        "expired": "This key has already ended. Get a new key and install it.",
+        "malformed": "This isn't a license key file. Paste the whole file, including the opening and closing braces.",
+        "generic": "The license key couldn't be installed. Try again."
       }
     }
   },
