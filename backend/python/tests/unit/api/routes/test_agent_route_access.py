@@ -90,13 +90,22 @@ class TestAuthentication:
         assert response.status_code == 401
         assert "Authentication required" in response.json()["detail"]
 
-    def test_oauth_token_without_agent_read_scope_is_rejected(self, graph) -> None:
+    def test_oauth_token_without_an_agent_scope_is_rejected(self, graph) -> None:
         c, _ = make_client(graph, extra_users={"app": {
-            "userId": "u-alice", "orgId": "org-1", "isOAuth": True, "oauthScopes": ["agent:write"],
+            "userId": "u-alice", "orgId": "org-1", "isOAuth": True, "oauthScopes": ["conversation:chat"],
         }})
         response = c.get("/api/v1/agent/private", headers=as_user("app"))
         assert response.status_code == 403
         assert "Insufficient scope" in response.json()["detail"]
+
+    def test_oauth_token_with_agent_write_may_read_the_agent(self, graph) -> None:
+        # A token allowed to change an agent may read it: updates and deletes read it first.
+        c, _ = make_client(graph, extra_users={"app": {
+            "userId": "u-alice", "orgId": "org-1", "isOAuth": True, "oauthScopes": ["agent:write"],
+        }})
+        response = c.get("/api/v1/agent/private", headers=as_user("app"))
+        assert response.status_code == 200
+        assert response.json()["agent"]["createdBy"] == "u-alice"
 
 
 class TestReadAgent:
