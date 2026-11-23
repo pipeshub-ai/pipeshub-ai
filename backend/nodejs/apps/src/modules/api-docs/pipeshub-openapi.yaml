@@ -868,6 +868,9 @@ components:
           type: string
           enum: [token, oauth]
           description: '`token` when the user pasted a token, `oauth` when they signed in with the source.'
+        viaConnector:
+          type: boolean
+          description: 'True when the user is connected through the connector''s own OAuth sign-in, which they completed, rather than one of their own.'
     ConnectorUserConnectionStatus:
       type: object
       required: [connected, connection, signInAvailable]
@@ -59180,9 +59183,10 @@ paths:
       summary: Connect your own account to a per-user connector
       description: |
         Stores the caller's own credential for the connector's source (for Notion, a personal
-        access token). It is accepted only when it belongs to the same workspace as the connector
-        and to an account whose email is the caller's PipesHub email, and when no other user has
-        connected that account. A sync is requested so the caller's content appears soon.
+        access token). It is accepted only when it belongs to the same workspace as the connector,
+        no other user has connected that account, and the account's email is not another PipesHub
+        user's. The account's email may differ from the caller's own. A sync is requested so the
+        caller's content appears soon.
       operationId: connectMyConnectorAccount
       security:
         - bearerAuth: []
@@ -59208,7 +59212,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConnectorUserConnectionStatus'
         '400':
-          description: The credential cannot be connected (another workspace or person, not a personal credential, or refused by the source)
+          description: The credential cannot be connected (another workspace, not a personal credential, no email shared by the source, or refused by the source)
           content:
             application/json:
               schema:
@@ -59220,7 +59224,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Another user has already connected this source account
+          description: Another user has already connected this source account, or its email is another PipesHub user's
           content:
             application/json:
               schema:
