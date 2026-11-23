@@ -752,10 +752,13 @@ export class MongoUserRepository implements UserRepository {
     const user = await Users.findOne({ orgId, _id: id, isDeleted: false });
     if (!user) return null;
     Object.assign(user, fields);
+    // The account can be removed between the read and the save; the write must not land on it then.
+    user.$where = { isDeleted: false };
     try {
       if (session) await user.save({ session });
       else await user.save();
     } catch (error) {
+      if (error instanceof mongoose.Error.DocumentNotFoundError) return null;
       throw mapMongoError(error);
     }
     return dto(user);
