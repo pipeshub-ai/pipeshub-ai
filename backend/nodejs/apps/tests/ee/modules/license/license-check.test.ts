@@ -18,16 +18,21 @@ import {
 import { useLicenseKeysForTesting } from '../../../../src/ee/modules/license/license-keys';
 import {
   DEFAULT_GRACE_DAYS,
+  LICENSE_ENFORCED,
   licenseGrants,
   PERMISSION_SYNC_FEATURE,
+  UPGRADE_GRACE_DAYS,
 } from '../../../../src/ee/modules/license/license-policy';
 import {
+  INSTALL_AFFECTED_KEY,
   installLicense,
   LICENSE_FILES_KEY,
   licenseStatus,
   PERMISSION_SYNC_LICENCE_KEY,
   publishPermissionSync,
+  UPGRADE_KEY,
   type LicenseStore,
+  type UpgradeRecord,
 } from '../../../../src/ee/modules/license/license.service';
 import {
   LICENSE_FORMAT,
@@ -407,6 +412,121 @@ describe('license check: features, install and the permission sync answer', () =
         allowed: true,
       });
       expect(await encrypted.read('/services/licence/missing')).to.equal(null);
+    });
+  });
+
+  describe('the upgrade grace (N1, N2)', () => {
+    const GRACE_END = at(NOW, UPGRADE_GRACE_DAYS * DAY_MS);
+    const enforcedAt = (when: Date) =>
+      publishPermissionSync(store, () => when, true);
+    const upgrade = () => store.read(UPGRADE_KEY) as Promise<UpgradeRecord>;
+    const reportAffected = (affected: boolean) =>
+      store.write(INSTALL_AFFECTED_KEY, { affected, teamConnectors: 1 });
+
+    it('is off in this build: an install without a key writes nothing, not even the upgrade time', async () => {
+      expect(LICENSE_ENFORCED).to.equal(false);
+      await reportAffected(true);
+      expect(await publishAt(NOW)).to.equal(null);
+      expect(store.answer()).to.equal(undefined);
+      expect(await store.read(UPGRADE_KEY)).to.equal(null);
+      expect((await licenseStatus(store, NOW)).upgradeGrace).to.equal(null);
+    });
+
+    it('when on, keeps an install not known to be unaffected licensed for 21 days from its first start', async () => {
+      expect(await enforcedAt(NOW)).to.deep.equal({
+        allowed: true,
+        until: GRACE_END.toISOString(),
+        status: 'none',
+      });
+      expect(await upgrade()).to.deep.equal({
+        upgradedAt: NOW.toISOString(),
+        affected: null,
+        extendedUntil: null,
+      });
+      // A later start keeps the first upgrade time.
+      expect(await enforcedAt(at(GRACE_END, -1))).to.deep.include({
+        allowed: true,
+      });
+      expect((await upgrade()).upgradedAt).to.equal(NOW.toISOString());
+      const status = await licenseStatus(store, at(NOW, DAY_MS));
+      expect(status.upgradeGrace).to.deep.equal({
+        endsAt: GRACE_END.toISOString(),
+        affected: null,
+      });
+      expect(await enforcedAt(GRACE_END)).to.deep.equal({
+        allowed: false,
+        until: null,
+        status: 'none',
+      });
+    });
+
+    it('when on, gives no grace to an install the connectors report as unaffected', async () => {
+      await reportAffected(false);
+      expect(await enforcedAt(NOW)).to.deep.equal({
+        allowed: false,
+        until: null,
+        status: 'none',
+      });
+      expect((await licenseStatus(store, NOW)).upgradeGrace).to.deep.equal({
+        endsAt: null,
+        affected: false,
+      });
+    });
+
+    it('when on, keeps the first report: paid features added after the upgrade earn no grace', async () => {
+      await enforcedAt(NOW);
+      await reportAffected(false);
+      await enforcedAt(at(NOW, 1000));
+      expect((await upgrade()).affected).to.equal(false);
+      await reportAffected(true);
+      expect(await enforcedAt(at(NOW, 2000))).to.deep.include({
+        allowed: false,
+      });
+      expect((await upgrade()).affected).to.equal(false);
+    });
+
+    it('when on, lets a key decide once one has started, and gives no new grace after it lapses', async () => {
+      await reportAffected(true);
+      await enforcedAt(NOW);
+      await installLicense(store, signed(payload()), NOW);
+      expect(await enforcedAt(NOW)).to.deep.include({
+        allowed: true,
+        status: 'active',
+      });
+      // Still inside the upgrade grace, but the lapsed key decides.
+      expect(GRACE_END.getTime()).to.be.greaterThan(NOW.getTime());
+      const lapsed = await enforcedAt(
+        at(END, (DEFAULT_GRACE_DAYS + 1) * DAY_MS),
+      );
+      expect(lapsed).to.deep.equal({
+        allowed: false,
+        until: null,
+        status: 'expired',
+      });
+    });
+
+    it('when on, treats a key that has not started yet like no key', async () => {
+      await reportAffected(true);
+      await installLicense(
+        store,
+        signed(
+          payload({
+            startDate: at(NOW, 40 * DAY_MS).toISOString(),
+            endDate: at(NOW, 80 * DAY_MS).toISOString(),
+          }),
+        ),
+        NOW,
+      );
+      expect(await enforcedAt(NOW)).to.deep.equal({
+        allowed: true,
+        until: GRACE_END.toISOString(),
+        status: 'pending',
+      });
+      expect(await enforcedAt(GRACE_END)).to.deep.include({ allowed: false });
+      expect(await enforcedAt(at(NOW, 40 * DAY_MS))).to.deep.include({
+        allowed: true,
+        status: 'active',
+      });
     });
   });
 
