@@ -252,7 +252,7 @@ class TestReviewFixes:
         abort the record's sync. Long-standing types still raise."""
         store = _store()
 
-        async def _replace(_record_id: str, _collections: list, _origin: str, edges: list) -> None:
+        async def _replace(_record_id: str, _collections: list, _origin: str, edges: list, **_: object) -> None:
             if any(e["edgeType"] == "ADDRESSED_TO" for e in edges):
                 raise RuntimeError("Document does not match the entity relations schema")
 
@@ -601,12 +601,16 @@ class _LinkStore:
             side_effect=lambda emails, **_: {e: SimpleNamespace(id=MEMBERS[e]) for e in emails if e in MEMBERS},
         )
 
-    async def replace_record_entity_relations(self, record_id, collections, origin, edges) -> None:
+    async def replace_record_entity_relations(
+        self, record_id, collections, origin, edges, *, keep_edge_types=(),
+    ) -> None:
         if self.fail:
             raise RuntimeError("write failed")
+        self.kept_types = list(keep_edge_types)
         self.edges = [
             e for e in self.edges
-            if not (e["_to"].split("/")[0] in collections and e.get("origin", "INFERRED") == origin)
+            if e["edgeType"] in keep_edge_types
+            or not (e["_to"].split("/")[0] in collections and e.get("origin", "INFERRED") == origin)
         ] + edges
 
 
@@ -628,3 +632,80 @@ class TestAtomicReplace:
         with pytest.raises(RuntimeError, match="write failed"):
             await link_record_people(ticket, store, logging.getLogger("t"))
         assert store.edges == [self.OLD, self.KEPT]
+
+
+def _kept(store: MagicMock) -> list:
+    return list(store.replace_record_entity_relations.await_args.kwargs["keep_edge_types"])
+
+
+class TestSharedWith:
+    async def test_each_direct_share_gets_a_shared_with_edge(self) -> None:
+        store = _person_store()
+        record = _file(shared_with=[
+            SourcePerson(email="bob@acme.com"), SourcePerson(source_id="p9", email="out@ext.test"),
+        ])
+        await link_record_people(record, store, logging.getLogger("t"))
+        assert _edges(store) == {("users/u-bob", "SHARED_WITH"), ("person/p-out@ext.test", "SHARED_WITH")}
+
+    async def test_unsharing_drops_the_edge(self) -> None:
+        store = _person_store()
+        await link_record_people(_file(shared_with=[]), store, logging.getLogger("t"))
+        assert not any(e["edgeType"] == "SHARED_WITH" for e in _written(store))
+        assert _kept(store) == []
+
+    async def test_unknown_shared_with_keeps_stored_edges(self) -> None:
+        store = _person_store()
+        record = _file(owners=[SourcePerson(email="ann@acme.com")])
+        assert record.shared_with is None
+        await link_record_people(record, store, logging.getLogger("t"))
+        assert _kept(store) == ["SHARED_WITH"]
+        assert _edges(store) == {("users/u-ann", "OWNED_BY")}
+
+    async def test_the_fallback_replace_keeps_them_too(self) -> None:
+        store = _person_store()
+        store.replace_record_entity_relations = AsyncMock(side_effect=[RuntimeError("schema violation"), None])
+        ticket = TicketRecord(
+            record_type=RecordType.TICKET, assignee_email="ann@acme.com",
+            owners=[SourcePerson(email="bob@acme.com")], **BASE,
+        )
+        await link_record_people(ticket, store, logging.getLogger("t"))
+        calls = store.replace_record_entity_relations.await_args_list
+        assert [c.kwargs["keep_edge_types"] for c in calls] == [["SHARED_WITH"], ["SHARED_WITH"]]
+        assert {e["edgeType"] for e in calls[1].args[-1]} == {"ASSIGNED_TO"}
+
+    def test_shared_with_is_a_new_edge_type(self) -> None:
+        assert "SHARED_WITH" in _NEW_EDGE_TYPES
+
+    async def test_an_owner_is_not_also_shared_with(self) -> None:
+        store = _person_store()
+        alice = SourcePerson(email="ann@acme.com")
+        record = _file(owners=[alice], authored_by=alice, shared_with=[alice])
+        await link_record_people(record, store, logging.getLogger("t"))
+        assert _edges(store) == {("users/u-ann", "OWNED_BY"), ("users/u-ann", "AUTHORED_BY")}
+
+    async def test_an_author_shared_directly_still_gets_shared_with(self) -> None:
+        store = _person_store()
+        bob = SourcePerson(email="bob@acme.com")
+        record = _file(authored_by=bob, shared_with=[bob])
+        await link_record_people(record, store, logging.getLogger("t"))
+        assert _edges(store) == {("users/u-bob", "AUTHORED_BY"), ("users/u-bob", "SHARED_WITH")}
+
+    async def test_shared_with_links_come_after_authorship_under_the_cap(self, monkeypatch) -> None:
+        monkeypatch.setattr(record_people, "MAX_LINKED_PEOPLE", 2)
+        store = _person_store()
+        record = _file(
+            owners=[SourcePerson(email="ann@acme.com")], last_modified_by=SourcePerson(email="bob@acme.com"),
+            shared_with=[SourcePerson(email=f"x{i}@ext.test") for i in range(3)],
+        )
+        await link_record_people(record, store, logging.getLogger("t"))
+        assert _edges(store) == {("users/u-ann", "OWNED_BY"), ("users/u-bob", "LAST_MODIFIED_BY")}
+
+
+class TestOutsiderIdentity:
+    async def test_an_outsider_known_by_email_is_matched_before_their_drive_id(self) -> None:
+        store = _person_store()
+        store.get_person_by_source_key = AsyncMock(return_value=SimpleNamespace(id="p-by-key"))
+        store.get_person_by_email = AsyncMock(return_value=SimpleNamespace(id="p-by-email"))
+        record = _file(shared_with=[SourcePerson(source_id="test", email="test@ext.test")])
+        await link_record_people(record, store, logging.getLogger("t"))
+        assert _edges(store) == {("person/p-by-email", "SHARED_WITH")}

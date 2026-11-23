@@ -402,6 +402,9 @@ class Record(BaseModel):
     created_by: SourcePerson | None = Field(default=None)
     last_modified_by: SourcePerson | None = Field(default=None)
     owners: list[SourcePerson] = Field(default_factory=list)
+    # People the file is shared with directly. None: the connector did not read
+    # the shares, so the stored SHARED_WITH edges stay; []: shared with nobody.
+    shared_with: list[SourcePerson] | None = Field(default=None)
 
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
