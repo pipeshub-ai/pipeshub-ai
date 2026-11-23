@@ -23,9 +23,20 @@ import { getUserRepository } from '../../../libs/repositories/user';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { loadConfigurationManagerConfig } from '../../../modules/configuration_manager/config/config';
+import { MailServiceContainer } from '../../../modules/mail/container/mailService.container';
+import { EmailTemplateType } from '../../../modules/mail/middlewares/types';
+import { MailSenderService } from '../../../modules/mail/services/mail.sender.service';
+import type { AppConfig } from '../../../modules/tokens_manager/config/config';
 import { userAdminCheck } from '../../../modules/user_management/middlewares/userAdminCheck';
-import { isUserOrgAdmin } from '../../../modules/user_management/services/user-admin.service';
+import {
+  findOrgAdminUserIds,
+  isUserOrgAdmin,
+} from '../../../modules/user_management/services/user-admin.service';
 import type { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import {
+  sendGraceReminder,
+  type GraceReminderDeps,
+} from './license-grace-reminders';
 import {
   licenseNotice,
   startupWarnings,
@@ -93,6 +104,122 @@ const defaultStore: LicenseStore = {
 };
 
 const logger = Logger.getInstance({ service: 'License' });
+
+/** A grace reminder's once-only claim: the key is created only if absent, encrypted like the store's values. */
+export function encryptedClaims(
+  kv: Pick<KeyValueStoreService, 'compareAndSet' | 'delete'>,
+  encryption: Pick<EncryptionService, 'encrypt'>,
+): Pick<GraceReminderDeps, 'claim' | 'release'> {
+  return {
+    claim: (key, value) =>
+      kv.compareAndSet<string>(
+        key,
+        null,
+        encryption.encrypt(JSON.stringify(value)),
+      ),
+    release: (key) => kv.delete(key),
+  };
+}
+
+let claims: Pick<GraceReminderDeps, 'claim' | 'release'> | null = null;
+const configuredClaims = (): Pick<GraceReminderDeps, 'claim' | 'release'> => {
+  if (!claims) {
+    const config = loadConfigurationManagerConfig();
+    claims = encryptedClaims(
+      KeyValueStoreService.getInstance(config),
+      EncryptionService.getInstance(config.algorithm, config.secretKey),
+    );
+  }
+  return claims;
+};
+
+const mailSender = (): MailSenderService =>
+  MailServiceContainer.getInstance().get(MailSenderService);
+
+/** The install's organization and its admins' addresses. */
+async function installAdmins(): Promise<{
+  orgId: string;
+  emails: string[];
+} | null> {
+  const orgId = await getIdentityPort().oldestOrgId();
+  if (orgId === null) return null;
+  const emails = await inInstallOrg(
+    'licence-grace-reminder',
+    async () =>
+      (
+        await getUserRepository().listLiveByIds(
+          orgId,
+          await findOrgAdminUserIds(orgId),
+        )
+      )
+        .map((user) => user.email)
+        .filter((email) => typeof email === 'string' && email !== ''),
+    [] as string[],
+  );
+  return { orgId, emails };
+}
+
+/** The reminders' mail, through the platform's SMTP settings; nothing when they are not set up. */
+function graceReminderDeps(licenseStore: LicenseStore): GraceReminderDeps {
+  return {
+    store: licenseStore,
+    claim: (key, value) => configuredClaims().claim(key, value),
+    release: (key) => configuredClaims().release(key),
+    admins: installAdmins,
+    mailConfigured: async () => (await mailSender().getSmtpConfig()) !== null,
+    async send({ orgId, to, daysLeft, endsAt }) {
+      const sender = mailSender();
+      const smtp = await sender.getSmtpConfig(orgId);
+      if (smtp === null) return 'retry';
+      const frontendUrl = MailServiceContainer.getInstance()
+        .get<AppConfig>('AppConfig')
+        .frontendUrl.replace(/\/+$/, '');
+      const days = `${String(daysLeft)} ${daysLeft === 1 ? 'day' : 'days'}`;
+      const result = await sender.send(
+        {
+          orgId,
+          emailTemplateType: EmailTemplateType.LicenseGraceReminder,
+          isAutoEmail: true,
+          sendEmailTo: to,
+          subject: `The upgrade grace ends in ${days}: install a license key`,
+          templateData: {
+            daysLeft,
+            oneDay: daysLeft === 1,
+            endsOn: new Date(endsAt).toLocaleDateString('en-US', {
+              dateStyle: 'long',
+              timeZone: 'UTC',
+            }),
+            link: `${frontendUrl}/workspace/license/`,
+          },
+        },
+        smtp,
+        undefined,
+        { 'Auto-Submitted': 'auto-generated' },
+      );
+      // `indeterminate` may have gone out: never risk a second copy.
+      return result.status === 'sent'
+        ? 'sent'
+        : result.status === 'indeterminate'
+          ? 'failed'
+          : 'retry';
+    },
+    log: logger,
+  };
+}
+
+/** Mails the admins the upgrade grace reminder due now, if any; a failure is logged, never thrown. */
+async function remindAdmins(licenseStore: LicenseStore): Promise<void> {
+  try {
+    const sent = await sendGraceReminder(graceReminderDeps(licenseStore));
+    if (sent !== null) {
+      logger.info('Mailed admins the upgrade grace reminder', { days: sent });
+    }
+  } catch (error) {
+    logger.warn('Could not send the upgrade grace reminder', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 /** The people holding seats, counted in the oldest organization: an install has one, and a second cannot be created. */
 async function countInstallPeople(): Promise<number> {
@@ -310,6 +437,7 @@ async function checkLicense(licenseStore: LicenseStore): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+  await remindAdmins(licenseStore);
 }
 
 /** Checks at start-up and then every LICENSE_CHECK_INTERVAL_MS. */

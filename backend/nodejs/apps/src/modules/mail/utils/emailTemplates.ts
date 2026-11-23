@@ -18,6 +18,9 @@ const joinRequestDecisionTemplate = loadTemplate('src/modules/mail/views/layouts
 const connectorAccountConnectTemplate = loadTemplate(
   'src/modules/mail/views/layouts/connectors/connectAccount.hbs',
 );
+const licenseGraceReminderTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/org/licenseGraceReminder.hbs',
+);
 const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layouts/org/orgEmailVerification.hbs');
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
 const footerTemplate = loadTemplate('src/modules/mail/views/partials/footer.hbs');
@@ -106,3 +109,6 @@ export const joinRequestDecision = (templateData: Record<string,any>): string =>
 export const connectorAccountConnect = (
   templateData: Record<string, unknown>,
 ): string => compileTemplate(connectorAccountConnectTemplate, templateData);
+export const licenseGraceReminder = (
+  templateData: Record<string, unknown>,
+): string => compileTemplate(licenseGraceReminderTemplate, templateData);

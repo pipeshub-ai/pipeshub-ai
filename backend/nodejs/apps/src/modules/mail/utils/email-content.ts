@@ -9,6 +9,7 @@ import {
   isEmailChangeNoticeData,
   joinRequestDecision,
   joinRequestNotify,
+  licenseGraceReminder,
   loginWithOTPRequest,
   orgEmailVerification,
   resetEmail,
@@ -64,6 +65,9 @@ export function getEmailContent(
 
     case EmailTemplateType.ConnectorAccountConnect as string:
       return connectorAccountConnect(templateData);
+
+    case EmailTemplateType.LicenseGraceReminder as string:
+      return licenseGraceReminder(templateData);
 
     default:
       throw 'Unknown Template';

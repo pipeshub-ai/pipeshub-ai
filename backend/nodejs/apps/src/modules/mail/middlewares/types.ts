@@ -33,4 +33,5 @@ export enum EmailTemplateType {
   JoinRequestNotify = 'joinRequestNotify',
   JoinRequestDecision = 'joinRequestDecision',
   ConnectorAccountConnect = 'connectorAccountConnect',
+  LicenseGraceReminder = 'licenseGraceReminder',
 }
