@@ -2150,31 +2150,30 @@ class ZendeskConnector(BaseConnector):
     async def _has_stored_org_grant(self, record_id: str, organization_id: Any) -> bool:
         """Whether the stored ticket already carries its organization's org_ grant.
 
-        A failed read answers False: the ticket then loses the grant until the
-        organization is read again, rather than gaining one it may not have.
+        Every stored copy of the group is checked: older syncs could leave several
+        with the same external id, and the grant may sit on any of them. A read that
+        fails raises, so the ticket is set aside with its stored grant untouched
+        rather than rewritten without it.
         """
-        try:
-            async with self.data_store_provider.transaction() as tx_store:
-                group = await tx_store.get_user_group_by_external_id(
-                    self.connector_id, f"org_{organization_id}", raise_on_error=True
-                )
-                if group is None:
-                    return False
+        groups = CollectionNames.GROUPS.value
+        async with self.data_store_provider.transaction() as tx_store:
+            copies = await tx_store.get_nodes_by_filters(
+                groups,
+                {"connectorId": self.connector_id, "externalGroupId": f"org_{organization_id}"},
+                raise_on_error=True,
+            )
+            for doc in copies or []:
                 edge = await tx_store.get_edge(
-                    group.id,
-                    CollectionNames.GROUPS.value,
+                    doc.get("_key") or doc.get("id"),
+                    groups,
                     record_id,
                     CollectionNames.RECORDS.value,
                     CollectionNames.PERMISSION.value,
                     raise_on_error=True,
                 )
-        except Exception as e:
-            self.logger.warning(
-                f"Zendesk: could not read whether record {record_id} has the grant of "
-                f"organization {organization_id}; it is written without it: {e}"
-            )
-            return False
-        return edge is not None
+                if edge is not None:
+                    return True
+        return False
 
     def _parse_ticket_links(self, ticket_data: dict[str, Any]) -> list[RelatedExternalRecord]:
         """Map Zendesk's ticket-to-ticket links onto RecordRelations.

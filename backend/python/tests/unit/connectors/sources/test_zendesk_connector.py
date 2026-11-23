@@ -6200,8 +6200,10 @@ class _ZendeskGraph:
         async def get_record_group_by_external_id(connector_id, external_id):
             return MagicMock(id=external_id) if external_id in self.record_groups else None
 
-        async def get_user_group_by_external_id(_connector_id, external_id, **_):
-            return MagicMock(id=external_id) if external_id in self.user_groups else None
+        async def get_nodes_by_filters(collection, filters, **_):
+            assert collection == CollectionNames.GROUPS.value
+            external_id = filters["externalGroupId"]
+            return [{"_key": external_id}] if external_id in self.user_groups else []
 
         async def get_edge(from_id, _from_collection, to_id, _to_collection, collection, **_):
             assert collection == CollectionNames.PERMISSION.value
@@ -6241,7 +6243,7 @@ class _ZendeskGraph:
         tx_store.get_record_group_by_external_id = AsyncMock(
             side_effect=get_record_group_by_external_id
         )
-        tx_store.get_user_group_by_external_id = AsyncMock(side_effect=get_user_group_by_external_id)
+        tx_store.get_nodes_by_filters = AsyncMock(side_effect=get_nodes_by_filters)
         tx_store.get_edge = AsyncMock(side_effect=get_edge)
 
     def _stored(self) -> dict[str, dict[str, str]]:
@@ -6497,20 +6499,62 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         assert "org_9" in self._grants(graph, "101")
         assert not {"org_9", "org_10"} & self._grants(graph, "103")
 
-    async def test_a_failed_stored_grant_read_writes_the_ticket_without_the_org_grant(
+    @pytest.mark.parametrize("failing_read", ["get_nodes_by_filters", "get_edge"])
+    async def test_a_failed_stored_grant_read_keeps_the_stored_ticket_as_it_is(
+        self, graph, mock_tx_store, failing_read
+    ) -> None:
+        """A store error neither grants nor revokes: the ticket is set aside and retried."""
+        await self._seed(graph)
+        stored_record = graph.records["101"]
+        stored_grants = set(graph.stored_grants[stored_record.id])
+        assert "org_9" in stored_grants
+        graph.tenant.exported_orgs.discard(9)
+        graph.tenant.fail.add("show_organization")
+        working = getattr(mock_tx_store, failing_read)
+
+        async def store_down(*args: object, raise_on_error: bool = False, **kwargs: object) -> object:
+            # As the real stores: a failed read raises only when asked to, and otherwise reads as absent.
+            if raise_on_error:
+                raise RuntimeError("store down")
+            return [] if failing_read == "get_nodes_by_filters" else None
+
+        setattr(mock_tx_store, failing_read, AsyncMock(side_effect=store_down))
+
+        done, unlinked = await graph.full_sync()
+
+        assert graph.records["101"] is stored_record
+        assert graph.stored_grants[stored_record.id] == stored_grants
+        assert "101" not in graph.permissions
+        assert graph.states[SYNC_POINT_KEY]["pendingTicketIds"] == ["101"]
+        assert graph.connector.full_sync_coverage().complete is False
+        assert (done, sorted(unlinked)) == (False, [])
+
+        # Once the store answers again the ticket is written with its grant kept.
+        setattr(mock_tx_store, failing_read, working)
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert (sorted(unlinked - self.GONE), sorted(unlinked & self.GONE)) == ([], ["record:102"])
+        assert "org_9" in self._grants(graph, "101")
+
+    async def test_the_grant_on_any_stored_copy_of_the_org_group_is_kept(
         self, graph, mock_tx_store
     ) -> None:
-        """Fail closed: a store error never grants an unanswered organization."""
+        """Older syncs left several copies of org_9; only the second has the grant."""
         await self._seed(graph)
         graph.tenant.exported_orgs.discard(9)
         graph.tenant.fail.add("show_organization")
-        mock_tx_store.get_edge = AsyncMock(side_effect=RuntimeError("store down"))
+        mock_tx_store.get_nodes_by_filters = AsyncMock(
+            return_value=[{"_key": "org_9_stale"}, {"_key": "org_9"}]
+        )
 
         done, _ = await graph.full_sync()
 
         assert done is True
-        assert "101" in graph.records
-        assert "org_9" not in self._grants(graph, "101")
+        assert "org_9" in self._grants(graph, "101")
+        assert [call.args[0] for call in mock_tx_store.get_edge.await_args_list] == [
+            "org_9_stale", "org_9"
+        ]
 
     async def test_a_new_ticket_of_a_readable_organization_gets_its_org_grant(
         self, graph
