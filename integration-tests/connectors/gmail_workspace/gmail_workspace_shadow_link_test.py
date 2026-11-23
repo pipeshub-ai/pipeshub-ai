@@ -20,8 +20,12 @@ from typing import Any
 
 import pytest
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    LISTED_AUTHENTICATORS_KEY,
+)
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
+from connectors.gmail.gmail_users import ensure_active_user
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # type: ignore[import-not-found]
     sync_and_wait,
 )
@@ -32,6 +36,7 @@ from helper.record_access import wait_for_record_access  # type: ignore[import-n
 from helper.second_user import SecondUser, second_user  # noqa: F401 - fixture
 from helper.shadow_access_e2e import (  # type: ignore[import-not-found]
     SEARCH_SETTLE_TIMEOUT_SEC,
+    _connector_links,
     authenticator_session,
     verify_listed_authenticator_has_no_link,
     verify_shadow_access,
@@ -67,6 +72,30 @@ async def _mailbox_record_ids(
     return ids
 
 
+async def _admin_mailbox_ids(
+    sim: Any, env: Any, graph_provider: GraphProviderProtocol, connector_id: str,
+) -> set[str]:
+    """The admin's own message copies, which must not be the owner's or the second user's."""
+    admin = await _mailbox_record_ids(sim, graph_provider, connector_id, env.admin_email)
+    for mailbox in (env.test_user, env.second_user):
+        shared = admin & await _mailbox_record_ids(sim, graph_provider, connector_id, mailbox)
+        assert not shared, f"the admin's records are also {mailbox}'s: {sorted(shared)[:5]}"
+    return admin
+
+
+async def _activate_admin(users_client: Any, graph_provider: GraphProviderProtocol, env: Any) -> None:
+    """The service account reads only the mailboxes of active users, and the admin is one of them only once active."""
+    await ensure_active_user(users_client, graph_provider, env.admin_email)
+
+
+async def _wait_no_links(graph_provider: GraphProviderProtocol, connector_id: str) -> None:
+    async def none() -> bool | None:
+        return await _connector_links(graph_provider, connector_id) == 0 or None
+
+    await async_poll_until(none, timeout=SEARCH_SETTLE_TIMEOUT_SEC, interval=5,
+                           description="no authenticatedAs link on the connector")
+
+
 async def _links_from(graph_provider: GraphProviderProtocol, user_id: str, connector_id: str) -> list[str]:
     user = await graph_provider.get_user_by_user_id(user_id)
     assert user, f"user {user_id} is not in the graph"
@@ -77,16 +106,18 @@ class TestGmailWorkspaceShadowLink:
     @pytest.mark.order(0)
     async def test_listed_authenticator_is_not_linked(
         self, gmail_ws: dict[str, Any], graph_provider: GraphProviderProtocol,
-        pipeshub_client: PipeshubClient, config_service: Any,
+        pipeshub_client: PipeshubClient, config_service: Any, users_client: Any,
     ) -> None:
         sim, env, cid = gmail_ws["sim"], gmail_ws["env"], gmail_ws["connector_id"]
         owner_id = gmail_ws["user_ids"][env.test_user]
+        await _activate_admin(users_client, graph_provider, env)
         await _set_authenticator(graph_provider, cid, owner_id)
         await sync_and_wait(pipeshub_client, graph_provider, cid, timeout=_SYNC_TIMEOUT_SEC)
+        await _wait_no_links(graph_provider, cid)
         await verify_listed_authenticator_has_no_link(
             connector_id=cid, pipeshub_client=pipeshub_client, graph_provider=graph_provider,
             config_service=config_service, authenticator_user_id=owner_id,
-            admin_mailbox_record_ids=await _mailbox_record_ids(sim, graph_provider, cid, env.admin_email),
+            admin_mailbox_record_ids=await _admin_mailbox_ids(sim, env, graph_provider, cid),
             sync_timeout=_SYNC_TIMEOUT_SEC,
         )
 
@@ -95,17 +126,24 @@ class TestGmailWorkspaceShadowLink:
         self, gmail_ws: dict[str, Any], graph_provider: GraphProviderProtocol,
         pipeshub_client: PipeshubClient, config_service: Any, vector_store: Any,
         second_user: SecondUser,  # noqa: F811
+        users_client: Any,
     ) -> None:
+        """A control: the unlisted authenticator is linked, so this passes on the old code too."""
         sim, env, cid = gmail_ws["sim"], gmail_ws["env"], gmail_ws["connector_id"]
         # The suite's PipesHub admin is not a user of the simulated domain
         assert pipeshub_client.user_id, "the harness user has no id"
+        await _activate_admin(users_client, graph_provider, env)
+        await _admin_mailbox_ids(sim, env, graph_provider, cid)
         await _set_authenticator(graph_provider, cid, pipeshub_client.user_id)
         await sync_and_wait(pipeshub_client, graph_provider, cid, timeout=_SYNC_TIMEOUT_SEC)
-        report = await verify_shadow_access(
-            connector_id=cid, pipeshub_client=pipeshub_client, graph_provider=graph_provider,
-            config_service=config_service, vector_store=vector_store, second_user=second_user,
-            sync_timeout=_SYNC_TIMEOUT_SEC,
-        )
+        try:
+            report = await verify_shadow_access(
+                connector_id=cid, pipeshub_client=pipeshub_client, graph_provider=graph_provider,
+                config_service=config_service, vector_store=vector_store, second_user=second_user,
+                sync_timeout=_SYNC_TIMEOUT_SEC,
+            )
+        except pytest.skip.Exception as skipped:
+            pytest.fail(f"the admin owns records, so the shadow check must run, not skip: {skipped}")
         assert report.shadow_only, "the authenticator reached none of the admin's mail through the link"
         authenticator = await authenticator_session(pipeshub_client, graph_provider, cid)
         for mailbox in (env.test_user, env.second_user):
@@ -143,7 +181,7 @@ class TestGmailWorkspaceShadowLink:
         await verify_listed_authenticator_has_no_link(
             connector_id=cid, pipeshub_client=pipeshub_client, graph_provider=graph_provider,
             config_service=config_service, authenticator_user_id=owner_id,
-            admin_mailbox_record_ids=await _mailbox_record_ids(sim, graph_provider, cid, env.admin_email),
+            admin_mailbox_record_ids=await _admin_mailbox_ids(sim, env, graph_provider, cid),
             sync_timeout=_SYNC_TIMEOUT_SEC,
         )
 
@@ -155,10 +193,13 @@ class TestGmailWorkspaceShadowLink:
         sim, env, cid = gmail_ws["sim"], gmail_ws["env"], gmail_ws["connector_id"]
         owner_id = gmail_ws["user_ids"][env.test_user]
         await _set_authenticator(graph_provider, cid, owner_id)
-        admin_ids = await _mailbox_record_ids(sim, graph_provider, cid, env.admin_email)
+        admin_ids = await _admin_mailbox_ids(sim, env, graph_provider, cid)
+        # Earlier runs left the owner in the marker; without it only the listing itself can keep them unlinked
+        await config_service.set_config(LISTED_AUTHENTICATORS_KEY.format(connector_id=cid), [])
         sim.ops({"op": "suspend_user", "user": "owner"})
         try:
             await sync_and_wait(pipeshub_client, graph_provider, cid, timeout=_SYNC_TIMEOUT_SEC)
+            await _wait_no_links(graph_provider, cid)
             await verify_listed_authenticator_has_no_link(
                 connector_id=cid, pipeshub_client=pipeshub_client, graph_provider=graph_provider,
                 config_service=config_service, authenticator_user_id=owner_id,
