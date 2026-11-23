@@ -81,6 +81,16 @@ COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 _saved_env_val() { [[ -f "$ENV_FILE" ]] && grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true; }
 PIPESHUB_IMAGE="${PIPESHUB_IMAGE:-$(_saved_env_val PIPESHUB_IMAGE)}"
 PIPESHUB_COMPOSE_OVERRIDES="${PIPESHUB_COMPOSE_OVERRIDES:-$(_saved_env_val PIPESHUB_COMPOSE_OVERRIDES)}"
+# PIPESHUB_EXTRA_PROFILES: compose profiles to switch on besides the ones the
+# selections bring (comma-separated), for services an override file adds. Saved
+# in .env as well; set but empty clears the saved value. Kept in EXTRA_PROFILES,
+# a name .env does not hold, so sourcing .env later cannot put the old value back.
+EXTRA_PROFILES="${PIPESHUB_EXTRA_PROFILES-$(_saved_env_val PIPESHUB_EXTRA_PROFILES)}"
+EXTRA_PROFILES="${EXTRA_PROFILES//[[:space:]]/}"
+# The value goes into .env, which this script sources: profile names and nothing else.
+_profile_list='^([A-Za-z0-9][A-Za-z0-9_.-]*(,[A-Za-z0-9][A-Za-z0-9_.-]*)*)?$'
+[[ "$EXTRA_PROFILES" =~ $_profile_list ]] \
+  || die "PIPESHUB_EXTRA_PROFILES: expected compose profile names separated by commas, got '${EXTRA_PROFILES}'"
 
 # Every compose call reads docker-compose.yml plus the files listed in
 # PIPESHUB_COMPOSE_OVERRIDES (colon-separated; relative paths start here).
@@ -159,6 +169,8 @@ Environment overrides (bypass prompts in CI):
   PIPESHUB_IMAGE         app image repository (default: pipeshubai/pipeshub-ai)
   PIPESHUB_COMPOSE_OVERRIDES  extra compose files, colon-separated, layered over docker-compose.yml
                          (relative paths start in this directory; saved in .env with PIPESHUB_IMAGE)
+  PIPESHUB_EXTRA_PROFILES  extra compose profiles, comma-separated, for services those files add
+                         (saved in .env; set it empty to clear the saved value)
   PIPESHUB_ENV_EXTRA     file whose lines are appended to a newly written .env (no keys the
                          installer writes itself; relative paths start in this directory)
   PIPESHUB_PUBLIC_URL    public HTTPS URL (e.g. https://pipeshub.yourdomain.com)
@@ -271,10 +283,17 @@ optional_env_line() {
 
 # The opt-in PostgreSQL profiles are not derived from a selector: keep the ones already set (in the shell or in the saved .env), and
 # both of them whenever the document-store override is in use, since it depends on services of both.
+# PIPESHUB_EXTRA_PROFILES come last. A profile the selections decide (graph, broker, key-value store, sandbox) is not taken from
+# there: the selections stay the one place that turns those on.
 opt_in_profiles() {
-  local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)"
+  local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)" seen=",graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,"
   for o in postgres postgres-migrate; do
-    if [[ ",${have}," == *",${o},"* || "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ]]; then echo "$o"; fi
+    if [[ ",${have}," == *",${o},"* || "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ]]; then echo "$o"; seen+="${o},"; fi
+  done
+  local IFS=','
+  for o in ${EXTRA_PROFILES:-}; do
+    [[ -z "$o" || "$seen" == *",${o},"* ]] && continue
+    echo "$o"; seen+="${o},"
   done
 }
 
@@ -678,8 +697,10 @@ if $FLAG_STOP; then
   # .env currently selects. Otherwise a container started under a different
   # profile stays attached to the network and blocks its removal
   # ("Resource is still in use"). --remove-orphans clears containers left by a
-  # previously-active profile too.
+  # previously-active profile too. PIPESHUB_EXTRA_PROFILES are named as well:
+  # a service of an inactive profile is not an orphan, so `down` would leave it.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  if [[ -n "$EXTRA_PROFILES" ]]; then COMPOSE_PROFILES+=",${EXTRA_PROFILES}"; fi
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
@@ -701,8 +722,9 @@ if $FLAG_UNINSTALL; then
   # volume (ArangoDB, Neo4j, etcd, Kafka/Zookeeper) regardless of which
   # profile was active for this deployment.  Without this, volumes from a
   # previously-used profile (e.g. arango_data after switching to neo4j) would
-  # be silently left behind.
+  # be silently left behind. The same goes for PIPESHUB_EXTRA_PROFILES.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  if [[ -n "$EXTRA_PROFILES" ]]; then COMPOSE_PROFILES+=",${EXTRA_PROFILES}"; fi
   # `down -v` with the postgres profile would delete the database with everything else: keep it unless asked.
   _keep_pg=false
   _pg_vol=""
@@ -1523,6 +1545,9 @@ ENVFILE
   if [[ -n "${PIPESHUB_COMPOSE_OVERRIDES:-}" ]]; then
     printf 'PIPESHUB_COMPOSE_OVERRIDES=%s\n' "$PIPESHUB_COMPOSE_OVERRIDES" >> "$ENV_FILE"
   fi
+  if [[ -n "$EXTRA_PROFILES" ]]; then
+    printf 'PIPESHUB_EXTRA_PROFILES=%s\n' "$EXTRA_PROFILES" >> "$ENV_FILE"
+  fi
   if [[ -n "${PIPESHUB_ENV_EXTRA:-}" ]]; then
     [[ -f "$PIPESHUB_ENV_EXTRA" ]] || die "PIPESHUB_ENV_EXTRA: $PIPESHUB_ENV_EXTRA not found"
     # A key the installer already wrote would appear twice and be read back wrong.
@@ -1676,11 +1701,22 @@ fi
 # this, reusing an .env written by an older installer (or hand-edited) can start
 # the app while leaving its graph DB / broker container down, so the health
 # check can never pass. Derive the correct set, fix it in memory, and persist it.
+#
+# A PIPESHUB_EXTRA_PROFILES given for this run replaces the saved one first. The
+# list then follows it without the warning, which is for a list that went stale.
+_extra_profiles_changed=false
+if [[ "$EXTRA_PROFILES" != "$(_saved_env_val PIPESHUB_EXTRA_PROFILES)" ]]; then
+  persist_env_var "PIPESHUB_EXTRA_PROFILES" "$EXTRA_PROFILES"
+  info "Extra compose profiles: ${EXTRA_PROFILES:-(none)}"
+  _extra_profiles_changed=true
+fi
 _EXPECTED_PROFILES="$(derive_compose_profiles)"
 if [[ "${COMPOSE_PROFILES:-}" != "$_EXPECTED_PROFILES" ]]; then
-  warn "COMPOSE_PROFILES in .env ('${COMPOSE_PROFILES:-}') does not match the configured services"
-  warn "  (DATA_STORE=${DATA_STORE:-unset}, MESSAGE_BROKER=${MESSAGE_BROKER:-unset}, KV_STORE_TYPE=${KV_STORE_TYPE:-unset})."
-  warn "Repairing to '${_EXPECTED_PROFILES:-(none)}' so the required containers start."
+  if ! $_extra_profiles_changed; then
+    warn "COMPOSE_PROFILES in .env ('${COMPOSE_PROFILES:-}') does not match the configured services"
+    warn "  (DATA_STORE=${DATA_STORE:-unset}, MESSAGE_BROKER=${MESSAGE_BROKER:-unset}, KV_STORE_TYPE=${KV_STORE_TYPE:-unset})."
+    warn "Repairing to '${_EXPECTED_PROFILES:-(none)}' so the required containers start."
+  fi
   COMPOSE_PROFILES="$_EXPECTED_PROFILES"
   persist_env_var "COMPOSE_PROFILES" "$COMPOSE_PROFILES"
 fi

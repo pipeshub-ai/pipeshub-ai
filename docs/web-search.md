@@ -189,7 +189,9 @@ instructions still apply.
 - Only admins see a provider's server address. The provider list members read (the agent
   builder uses it) masks `baseUrl` along with the API key.
 - Docker Compose ships both as opt-in profiles in `deployment/docker-compose/docker-compose.yml`.
-  Add `search-searxng` and/or `fetch-crawl4ai` to `COMPOSE_PROFILES` in `.env`, set
+  Add `search-searxng` and/or `fetch-crawl4ai` to `COMPOSE_PROFILES` in `.env` (and to
+  `PIPESHUB_EXTRA_PROFILES` there if you run `install.sh`, which rewrites `COMPOSE_PROFILES`
+  on every run and keeps only its own profiles and those), set
   `SEARXNG_SECRET` and `CRAWL4AI_API_TOKEN` there, then add the provider under Workspace → Web
   search at `http://searxng:8080` or `http://crawl4ai:11235`. Both sit on their own
   `web-readers` network, which reaches the internet but neither the app nor the databases.

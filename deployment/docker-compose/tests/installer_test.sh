@@ -972,6 +972,90 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   check "the ArangoDB install was chosen" "$(cat "$work/.env")" $'\nDATA_STORE=arangodb\n'
 )
 
+echo
+echo "== In-tree installer: PIPESHUB_EXTRA_PROFILES =="
+# Profiles of the operator's own, for services an override file adds, ride on top of the derived ones.
+check_exact "an extra profile follows the derived ones" "$(EXTRA_PROFILES=my-proxy dp neo4j redis redis)" "graph-neo4j,sandbox,my-proxy"
+check_exact "several extras keep their order" "$(EXTRA_PROFILES=my-proxy,my-cron dp neo4j redis redis)" "graph-neo4j,sandbox,my-proxy,my-cron"
+check_exact "a repeated extra is on once" "$(EXTRA_PROFILES=my-proxy,my-proxy dp neo4j redis redis)" "graph-neo4j,sandbox,my-proxy"
+check_exact "an extra does not turn on what the selections turn off" "$(DEPLOY_TYPE=eval EXTRA_PROFILES=sandbox,broker-kafka,graph-arango,my-proxy dp neo4j redis redis)" "graph-neo4j,my-proxy"
+check_exact "postgres named in both places is on once" "$(COMPOSE_PROFILES=postgres EXTRA_PROFILES=postgres dp neo4j redis redis)" "graph-neo4j,sandbox,postgres"
+check_exact "no extras leaves the derived list alone" "$(EXTRA_PROFILES= dp neo4j redis redis)" "graph-neo4j,sandbox"
+(
+  work="$TMP_ROOT/extra-profiles"; mkdir -p "$work/bin"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
+  # seed <COMPOSE_PROFILES> [more .env lines]
+  seed() { printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nMONGO_PASSWORD=m\nAPP_PORT=3000\nPROJECT_NAME=testproj\nCOMPOSE_PROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=%s\n%b' "$1" "${2:-}" >"$work/.env"; }
+  saved() { grep "^$1=" "$work/.env" | tail -1 | cut -d= -f2-; }
+  # run [VAR=val ...]: an existing install, resolved and saved without starting anything
+  run() { out="$(cd "$work" && env "$@" bash ./install.sh --upgrade --print-env-only 2>&1)"; }
+
+  seed "graph-neo4j,sandbox"
+  run PIPESHUB_EXTRA_PROFILES=my-proxy && pass "an extra profile on an existing install exits 0" || fail "an extra profile on an existing install exits 0"
+  check_exact "the extra profile joins COMPOSE_PROFILES" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox,my-proxy"
+  check_exact "the setting is saved" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy"
+  check "the change is reported" "$out" "Extra compose profiles: my-proxy"
+  [[ "$out" != *"does not match the configured services"* ]] && pass "a chosen extra profile is not reported as a stale list" || fail "a chosen extra profile is not reported as a stale list"
+
+  run PIPESHUB_UNRELATED=1
+  check_exact "a later run without the variable keeps the profile" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox,my-proxy"
+  check_exact "a later run without the variable keeps the setting" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy"
+  [[ "$out" != *"does not match the configured services"* && "$out" != *"Extra compose profiles:"* ]] && pass "an unchanged setting says nothing" || fail "an unchanged setting says nothing"
+
+  # A profile typed into COMPOSE_PROFILES alone is still repaired away: the setting is the way to keep one.
+  seed "graph-neo4j,sandbox,stray" 'PIPESHUB_EXTRA_PROFILES=my-proxy\n'
+  run PIPESHUB_UNRELATED=1
+  check_exact "a profile outside the setting is still removed" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox,my-proxy"
+  check "the stale list is still reported" "$out" "does not match the configured services"
+
+  run PIPESHUB_EXTRA_PROFILES=
+  check_exact "an empty value removes the profile" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox"
+  check_exact "an empty value clears the saved setting" "$(saved PIPESHUB_EXTRA_PROFILES)" ""
+  [[ "$(grep -c '^PIPESHUB_EXTRA_PROFILES=' "$work/.env")" == "1" ]] && pass "the setting is saved on one line" || fail "the setting is saved on one line"
+
+  seed "graph-neo4j,sandbox"
+  run "PIPESHUB_EXTRA_PROFILES= my-proxy , my-cron " && pass "spaces around the names are accepted" || fail "spaces around the names are accepted"
+  check_exact "spaces around the names are dropped" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy,my-cron"
+
+  # The value is written to .env, which the installer sources: anything but profile names is refused before that.
+  seed "graph-neo4j,sandbox"
+  before="$(cat "$work/.env")"
+  status=0; run 'PIPESHUB_EXTRA_PROFILES=my-proxy;touch${IFS}pwned' || status=$?
+  [[ $status -ne 0 ]] && pass "a value that is not a profile list is refused" || fail "a value that is not a profile list is refused"
+  check "the refusal names the setting" "$out" "PIPESHUB_EXTRA_PROFILES: expected compose profile names"
+  check_exact "a refused value leaves .env alone" "$(cat "$work/.env")" "$before"
+  [[ ! -e "$work/pwned" ]] && pass "a refused value runs nothing" || fail "a refused value runs nothing"
+
+  # The wizard's .env carries the setting too.
+  rm -f "$work/.env"
+  (cd "$work" && PIPESHUB_EXTRA_PROFILES=my-proxy bash ./install.sh --yes --print-env-only >/dev/null 2>&1) && pass "a new install with an extra profile exits 0" || fail "a new install with an extra profile exits 0"
+  check "a new .env lists the extra profile" ",$(saved COMPOSE_PROFILES)," ",my-proxy,"
+  check_exact "a new .env saves the setting" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy"
+  (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  check "--reconfigure keeps the extra profile" ",$(saved COMPOSE_PROFILES)," ",my-proxy,"
+  check_exact "--reconfigure keeps the setting" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy"
+
+  # --stop and --uninstall name the extra profiles, or `down` leaves their containers (checked with a recording docker).
+  cat >"$work/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "docker $* [profiles=${COMPOSE_PROFILES:-}]" >>"$DOCKER_LOG"
+exit 0
+STUB
+  chmod +x "$work/bin/docker"
+  seed "graph-neo4j,sandbox,my-proxy" 'PIPESHUB_EXTRA_PROFILES=my-proxy\n'
+  : >"$work/docker.log"
+  (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --stop >/dev/null 2>&1)
+  check "--stop takes the extra profile's containers down" "$(grep ' down ' "$work/docker.log")" "down --remove-orphans [profiles=graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,my-proxy]"
+  : >"$work/docker.log"
+  (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --uninstall --yes >/dev/null 2>&1)
+  check "--uninstall takes the extra profile's containers and volumes down" "$(grep ' down ' "$work/docker.log")" "down -v --remove-orphans [profiles=graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,my-proxy]"
+  seed "graph-neo4j,sandbox"
+  : >"$work/docker.log"
+  (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --stop >/dev/null 2>&1)
+  check "--stop without extras names the installer's own profiles only" "$(grep ' down ' "$work/docker.log")" "sandbox,postgres,postgres-migrate]"
+)
+
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"
 FAIL="$(wc -l <"$FAIL_FILE" | tr -d ' ')"
 printf "Results: %s passed, %s failed\n" "$PASS" "$FAIL"
