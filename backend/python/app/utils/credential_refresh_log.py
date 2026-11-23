@@ -34,7 +34,7 @@ from app.core import org_context
 from app.services.messaging.error_classifier import extract_status_code
 from app.utils.error_class import OUR_BUGS, classify_error, level_for, log_failure
 from app.utils.logging_fields import current_log_fields, log_event, log_fields, log_once
-from app.utils.oauth_errors import transient_error_class
+from app.utils.oauth_errors import CODE_REFUSED_ERROR_CODES, transient_error_class
 from app.utils.request_context import (
     get_context,
     new_system_root,
@@ -291,6 +291,16 @@ def refresh_error_class(exc: BaseException) -> str | None:
     None otherwise, so a sign-in or route failure that never went through a refresh keeps its own class."""
     cls = _classified(exc)[0]
     return cls if _reason(exc) or (_logged_level(exc) is not None and cls != classify_error(exc)) else None
+
+
+def token_endpoint_error_class(exc: BaseException) -> str:
+    """The error_class of a failure that may have come from an OAuth token endpoint: the rule a refresh ``end`` uses
+    (``classify_error`` refined by our tags and the endpoint rule), shared with a sign-in's code exchange, which calls the
+    same endpoint. Only a code exchange can be refused for its code: that answer is the client's, ``bad_request``."""
+    cls = _classified(exc)[0]
+    if cls == "misconfigured" and (_first(exc, _oauth_error) or "").lower() in CODE_REFUSED_ERROR_CODES:
+        return "bad_request"
+    return cls
 
 
 def _classified(exc: BaseException) -> tuple[str, str | None]:

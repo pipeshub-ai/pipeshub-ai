@@ -230,6 +230,7 @@ from app.utils.oauth_config import (
     pin_oauth_urls,
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
+from app.utils.credential_refresh_log import token_endpoint_error_class
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
@@ -3565,11 +3566,14 @@ def _decode_state_with_instance(encoded_state: str) -> dict[str, str]:
         Dictionary with 'state' and 'connector_id'
 
     Raises:
-        ValueError: If state cannot be decoded
+        ValueError: If state cannot be decoded, or is not a string state and connector_id
     """
     try:
         decoded = base64.urlsafe_b64decode(encoded_state.encode()).decode()
-        return json.loads(decoded)
+        state_data = json.loads(decoded)
+        if not (isinstance(state_data, dict) and all(isinstance(state_data.get(k), str) for k in ("state", "connector_id"))):
+            raise ValueError("not a state and a connector_id")
+        return state_data
     except Exception as e:
         raise ValueError(f"Invalid state format: {e}") from e
 
@@ -7513,7 +7517,7 @@ async def handle_oauth_callback(
     except Exception as e:
         reason = "temporarily_unavailable" if isinstance(e, OAuthStoreUnavailableError) else "server_error"
         # Text-free: the exchange's errors quote the token URL with its query and the provider's answer.
-        mark_request_failure(request, e, reason=reason, include_error_text=False)
+        mark_request_failure(request, e, error_class=token_endpoint_error_class(e), reason=reason, include_error_text=False)
 
         # A refused caller, a callback for another sign-in, or our own store failing leaves the connector as it was.
         if authorized_connector_id and not isinstance(e, (OAuthStateError, OAuthStoreUnavailableError)):
