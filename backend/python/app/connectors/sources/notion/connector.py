@@ -1010,26 +1010,25 @@ class NotionConnector(BaseConnector):
 
     async def _run_per_user_sync(self) -> None:
         """One pass per connected user, in turn, each with that user's own credential."""
+        now = get_epoch_timestamp_in_ms()
         try:
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
             await self._ensure_workspace_from_bot(refresh=True)
             if not self.workspace_id:
                 raise ConnectorInitError("Could not read the Notion workspace of this connector's integration.")
+            await self._prepare_per_user_workspace()
+            await self._load_bot_user_ids()
+            await self._save_member_list()
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "notion", self.connector_id, self.logger
+            )
+            # Unverified: whom the connector's token acts as is unknown, so no pass reads with it for anyone.
+            sign_in_verified = await self._connect_through_connector_sign_in(now)
         except Exception:
             # No pass runs this time (a refused connector token, say): stale views still lose access.
             await self._withdraw_stale_connections()
             raise
-        await self._prepare_per_user_workspace()
-        await self._load_bot_user_ids()
-        await self._save_member_list()
-        self.sync_filters, self.indexing_filters = await load_connector_filters(
-            self.config_service, "notion", self.connector_id, self.logger
-        )
-
-        now = get_epoch_timestamp_in_ms()
-        # Unverified: whom the connector's token acts as is unknown, so no pass reads with it for anyone.
-        sign_in_verified = await self._connect_through_connector_sign_in(now)
         connected: list[tuple[UserConnection, User]] = []
         for connection in await list_connections(self.config_service, self.connector_id):
             user = await self.data_entities_processor.get_user_by_user_id(connection.user_id, raise_on_error=True)
@@ -1091,13 +1090,19 @@ class NotionConnector(BaseConnector):
         stops before any pass. Best effort: the sync is failing already."""
         now = get_epoch_timestamp_in_ms()
         try:
-            for connection in await list_connections(self.config_service, self.connector_id):
-                if connection.active and connection.stale(now):
-                    user = await self.data_entities_processor.get_user_by_user_id(connection.user_id, raise_on_error=True)
-                    if user is not None and user.id:
-                        await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+            connections = await list_connections(self.config_service, self.connector_id)
         except Exception as e:
-            self.logger.error("Notion per-user sync: could not withdraw stale connections: %s", e, exc_info=True)
+            self.logger.error("Notion per-user sync: could not list connections to withdraw stale ones: %s", e, exc_info=True)
+            return
+        for connection in connections:
+            if not (connection.active and connection.stale(now)):
+                continue
+            try:
+                user = await self.data_entities_processor.get_user_by_user_id(connection.user_id, raise_on_error=True)
+                if user is not None and user.id:
+                    await self.data_entities_processor.withdraw_user_from_connector(self.connector_id, user.id)
+            except Exception as e:
+                self.logger.error("Notion per-user sync: could not withdraw user %s: %s", connection.user_id, e, exc_info=True)
 
     async def _connect_through_connector_sign_in(self, now: int) -> bool:
         """Whoever signed the connector in to Notion (OAuth) is connected through that sign-in, so they need
@@ -1114,15 +1119,28 @@ class NotionConnector(BaseConnector):
             if not me.success or not me.data:
                 self.logger.warning("Notion per-user sync: could not read who signed the connector in: %s", me.error)
                 return False
+            body = me.data.json()
             try:
-                owner = parse_identity(me.data.json())
+                owner = parse_identity(body)
             except NotionAccessError:
+                if (((body or {}).get("bot") or {}).get("owner") or {}).get("type") != "workspace":
+                    self.logger.warning("Notion per-user sync: Notion did not say who signed the connector in")
+                    return False
                 owner = None  # a workspace-owned integration: nobody's own sign-in
+            if owner is not None and owner.workspace_id and owner.workspace_id != self.workspace_id:
+                self.logger.warning("Notion per-user sync: the connector's sign-in reports another workspace")
+                return False
         authenticator = (
             await self.data_entities_processor.get_app_authenticator_user(self.connector_id, self.created_by)
             if owner else {}
         )
         user_id, email = str(authenticator.get("userId") or ""), str(authenticator.get("email") or "")
+        if owner is not None and owner.email and email and owner.email.casefold() != email.casefold():
+            # As when connecting: an account under another PipesHub user's email is that user's, so it
+            # names nobody here; a connection already made through it is dropped below.
+            other = await self.data_entities_processor.get_user_by_email(owner.email, raise_on_error=True)
+            if other is not None and other.id and other.is_active is not False:
+                user_id = ""
 
         def names_them(c: UserConnection) -> bool:
             return bool(owner) and (c.user_id, c.source_user_id, c.workspace_id) == (
@@ -1144,11 +1162,6 @@ class NotionConnector(BaseConnector):
 
         if owner is None or not user_id or not email:
             return True
-        if owner.email and owner.email.casefold() != email.casefold():
-            # As when connecting: an account under another PipesHub user's email is that user's.
-            other = await self.data_entities_processor.get_user_by_email(owner.email, raise_on_error=True)
-            if other is not None and other.id and other.is_active is not False:
-                return True
         async with refresh_lock(self.connector_id, user_id):
             if await get_connection(self.config_service, self.connector_id, user_id) is not None:
                 return True  # connected already, through it or with their own

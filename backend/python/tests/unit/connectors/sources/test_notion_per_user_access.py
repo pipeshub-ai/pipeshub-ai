@@ -727,9 +727,15 @@ class TestConnectRoute:
         graph.get_users_by_emails.return_value = {}
         with patch.object(routes, "current_org_id", return_value="org-1"):
             await routes._refuse_another_users_account(graph, "ann@acme.com", "ann@gmail.com")
-            await routes._refuse_another_users_account(graph, None, "ann@gmail.com")
             await routes._refuse_another_users_account(graph, "ANN@gmail.com", "ann@gmail.com")
         graph.get_users_by_emails.assert_awaited_once_with(["ann@acme.com"], raise_on_error=True, org_id="org-1")
+
+    async def test_an_account_whose_email_notion_does_not_share_is_a_400(self) -> None:
+        from app.connectors.api import user_access_router as routes
+
+        with pytest.raises(HTTPException) as e:
+            await routes._refuse_another_users_account(AsyncMock(), None, "ann@gmail.com")
+        assert e.value.status_code == 400
 
     async def test_a_good_credential_is_saved_and_a_sync_requested_without_echoing_it(self) -> None:
         result, save, sync = await self._connect(AsyncMock(return_value=NotionIdentity("p1", "ann@acme.com", "ws-1")))
@@ -1359,6 +1365,40 @@ class TestConnectorSignIn:
         _, save, _ = await self._run(email_owner=SimpleNamespace(id="k-ann", is_active=True))
         save.assert_not_awaited()
 
+    async def test_one_made_before_the_email_became_another_users_is_dropped(self) -> None:
+        old = _connection("admin", token="", method="connector")
+        old.source_user_id = "n-admin"
+        connector, save, delete = await self._run([old], email_owner=SimpleNamespace(id="k-ann", is_active=True))
+        delete.assert_awaited_once_with(connector.config_service, "notion-1", "admin")
+        connector.data_entities_processor.withdraw_user_from_connector.assert_awaited_once_with("notion-1", "k-old")
+        save.assert_not_awaited()
+
+    async def test_a_bot_that_names_nobody_clearly_changes_nothing(self) -> None:
+        old = _connection("admin", token="", method="connector")
+        old.source_user_id = "n-admin"
+        for me in ({"type": "bot", "bot": {"owner": {"type": "user", "user": {}}}}, {"object": "error"}):
+            connector, save, delete = await self._run([old], me=me)
+            delete.assert_not_awaited()
+            save.assert_not_awaited()
+
+    async def test_a_workspace_owned_bot_drops_it(self) -> None:
+        old = _connection("admin", token="", method="connector")
+        old.source_user_id = "n-admin"
+        _, save, delete = await self._run([old], me={"type": "bot", "bot": {"owner": {"type": "workspace"}}})
+        delete.assert_awaited_once()
+        save.assert_not_awaited()
+
+    async def test_a_sign_in_for_another_workspace_is_unverified(self) -> None:
+        connector = _connector()
+        connector.config_service.get_config.return_value = {"auth": {"authType": "OAUTH"}}
+        me = {"type": "bot", "bot": {"workspace_id": "ws-2", "owner": {"type": "user", "user": {"id": "n-admin"}}}}
+        datasource = MagicMock()
+        datasource.retrieve_bot_user = AsyncMock(return_value=SimpleNamespace(success=True, data=SimpleNamespace(json=lambda: me)))
+        with patch.object(connector, "_get_fresh_datasource", new=AsyncMock(return_value=datasource)), \
+                patch(f"{_MOD}.delete_connection", new=AsyncMock()) as delete:
+            assert await connector._connect_through_connector_sign_in(now=5) is False
+        delete.assert_not_awaited()
+
     async def test_a_connection_of_their_own_made_meanwhile_is_not_dropped(self) -> None:
         old = _connection("admin", token="", method="connector")
         old.source_user_id = "n-admin"
@@ -1442,6 +1482,29 @@ class TestUnverifiedSignInAndStaleness:
         with pytest.raises(RuntimeError):
             await connector._run_per_user_sync()
         connector._withdraw_stale_connections.assert_awaited_once()
+
+    async def test_a_late_pre_pass_failure_still_withdraws_stale_views(self) -> None:
+        connector, p1, p2, p3 = _run_setup([], {}, {})
+        connector._connect_through_connector_sign_in = AsyncMock(side_effect=RuntimeError("config store down"))
+        connector._withdraw_stale_connections = AsyncMock()
+        with p1, p2, p3, pytest.raises(RuntimeError):
+            await connector._run_per_user_sync()
+        connector._withdraw_stale_connections.assert_awaited_once()
+
+    async def test_one_failed_withdrawal_does_not_stop_the_rest(self) -> None:
+        connector = _connector()
+        connections = [_connection("u1", connected_at=1), _connection("u2", connected_at=1)]
+
+        async def withdraw(_cid: str, uid: str) -> None:
+            if uid == "k-u1":
+                raise RuntimeError("graph down")
+
+        connector.data_entities_processor.get_user_by_user_id.side_effect = lambda uid, **kw: SimpleNamespace(id=f"k-{uid}")
+        connector.data_entities_processor.withdraw_user_from_connector.side_effect = withdraw
+        with patch(f"{_MOD}.list_connections", new=AsyncMock(return_value=connections)), \
+                patch(f"{_MOD}.get_epoch_timestamp_in_ms", return_value=10**13):
+            await connector._withdraw_stale_connections()
+        assert connector.data_entities_processor.withdraw_user_from_connector.await_count == 2
 
     async def test_only_active_stale_connections_are_withdrawn(self) -> None:
         connector = _connector()

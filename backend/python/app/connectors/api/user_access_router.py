@@ -317,8 +317,14 @@ async def _connect(
 
 async def _refuse_another_users_account(graph_provider: IGraphDBProvider, source_email: str | None, email: str) -> None:
     """An account under another address is fine (people try PipesHub with one email and use Notion
-    with another), unless that address is another PipesHub user's: then it is their account."""
-    if not source_email or source_email.casefold() == email.strip().casefold():
+    with another), unless that address is another PipesHub user's: then it is their account. An account
+    whose email Notion does not share cannot be checked, so it is refused."""
+    if not source_email:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail="Notion did not share this account's email, so it cannot be matched to you.",
+        )
+    if source_email.casefold() == email.strip().casefold():
         return
     try:
         found = await graph_provider.get_users_by_emails([source_email], raise_on_error=True, org_id=current_org_id())
