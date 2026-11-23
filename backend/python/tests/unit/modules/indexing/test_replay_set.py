@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -231,6 +232,21 @@ class TestEvictionPolicy:
         else:
             assert await replay_set.check_eviction_policy(cluster, logger) is None
         logger.warning.assert_any_call("Redis eviction policy not read on %d node(s): %s", 1, "ConnectionError")
+
+    async def test_a_cluster_that_never_becomes_ready_does_not_hold_up_the_start(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(replay_set, "EVICTION_CHECK_TIMEOUT_SECONDS", 0.05)
+        logger = MagicMock()
+
+        class Cluster:
+            async def initialize(self) -> None:
+                await asyncio.Event().wait()  # every node down: never settles
+
+            def get_primaries(self) -> list[MagicMock]:
+                return []
+
+        replay_set._eviction_warning = "earlier warning"
+        assert await asyncio.wait_for(replay_set.check_eviction_policy(Cluster(), logger), 5) == "earlier warning"
+        logger.warning.assert_called_once()
 
     async def test_a_cluster_that_reports_no_primaries_is_unreadable_not_safe(self) -> None:
         logger = MagicMock()

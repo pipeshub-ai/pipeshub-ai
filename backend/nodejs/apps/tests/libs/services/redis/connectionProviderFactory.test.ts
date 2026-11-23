@@ -455,6 +455,24 @@ describe('checkRedisEvictionPolicy', () => {
     });
   }
 
+  it('does not wait out a cluster that never becomes ready', async () => {
+    const provider = new FakeProvider(config());
+    (provider as { isCluster: boolean }).isCluster = true;
+    provider.getClient = () =>
+      ({
+        status: 'connecting',
+        ping: () => new Promise(() => {}), // every endpoint down
+        nodes: () => [],
+      }) as unknown as RedisClient;
+    const warn = sinon.spy(Logger.prototype, 'warn');
+    try {
+      await checkRedisEvictionPolicy(provider, 20);
+      expect(warn.calledWith('Redis eviction policy not read')).to.equal(true);
+    } finally {
+      warn.restore();
+    }
+  });
+
   it('treats a cluster that reports no primaries as unreadable, not safe', async () => {
     const provider = new FakeProvider(config());
     (provider as { isCluster: boolean }).isCluster = true;

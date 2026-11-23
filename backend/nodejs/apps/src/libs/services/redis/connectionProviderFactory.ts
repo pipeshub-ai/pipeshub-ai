@@ -251,6 +251,7 @@ export async function closeAllRedisProviders(): Promise<void> {
  */
 export async function checkRedisEvictionPolicy(
   provider: IRedisConnectionProvider,
+  readyDeadlineMs = 10_000,
 ): Promise<void> {
   if (provider instanceof NoRedisProvider) {
     return;
@@ -263,7 +264,23 @@ export async function checkRedisEvictionPolicy(
       // An untargeted INFO reaches one node, and any primary can hold any key. `nodes()` is the cached
       // topology, empty until the cluster has connected; an empty list is unreadable, never safe.
       const cluster = client as Cluster;
-      if (cluster.status !== 'ready') await cluster.ping();
+      // With every endpoint down the ping never settles; start-up must not wait out the outage.
+      if (cluster.status !== 'ready') {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            cluster.ping(),
+            new Promise((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error('Redis Cluster not ready')),
+                readyDeadlineMs,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       nodes = cluster.nodes('master');
       if (nodes.length === 0)
         throw new Error('Redis Cluster reported no primaries');

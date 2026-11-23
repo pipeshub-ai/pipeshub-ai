@@ -38,6 +38,7 @@ a replay that asks for more (a forced run after a non-forced completion, another
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import os
@@ -274,6 +275,9 @@ async def note_record_completed(record_id: str, completed_at_ms: int, logger: Lo
             logger.warning("Replay set not written for record %s: %s", record_id, type(exc).__name__)
 
 
+#: Longest the start-up eviction check waits for Redis (as the Node API's check).
+EVICTION_CHECK_TIMEOUT_SECONDS = 10.0
+
 #: Eviction policies that cannot silently drop a ``messaging:`` or ``sg:`` key.
 SAFE_EVICTION_POLICIES = frozenset({"noeviction"})
 
@@ -327,7 +331,8 @@ async def check_eviction_policy(redis: Redis, logger: Logger | None = None, serv
     ``UnsafeEvictionPolicyError`` instead. A Redis that cannot be read is not a reason to stop."""
     global _eviction_warning  # noqa: PLW0603 - module state read by /health
     try:
-        policies, errors = await _maxmemory_policies(redis)
+        # With every node down a cluster client can keep retrying; start-up must not wait out the outage.
+        policies, errors = await asyncio.wait_for(_maxmemory_policies(redis), EVICTION_CHECK_TIMEOUT_SECONDS)
     except Exception as exc:
         errors, policies = [exc], []
     if errors and logger is not None:
