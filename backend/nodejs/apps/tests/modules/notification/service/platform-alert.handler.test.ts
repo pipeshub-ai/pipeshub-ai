@@ -11,6 +11,8 @@ import { DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors'
 import { getEmailContent } from '../../../../src/modules/mail/utils/email-content';
 import { configureInbox, runWithEnvelope } from '../../../../src/libs/context/envelope';
 import { MemInbox } from '../../../helpers/memory-inbox';
+import { NotificationConsumer } from '../../../../src/modules/notification/service/notification.consumer';
+import { isRetryableStoreError } from '../../../../src/libs/repositories/errors';
 
 const id = () => new mongoose.Types.ObjectId().toString();
 
@@ -237,10 +239,16 @@ describe('notification/service/platform-alert.handler', () => {
   describe('with the durable consumer inbox', () => {
     const G = 'notification-consumer-group';
     let inbox: MemInbox;
+    /** Mail jobs the broker accepted (the publish resolved), and ones it may have accepted (a publish that never returned). */
+    let accepted: any[];
+    let maybeAccepted: any[];
     beforeEach(() => {
       inbox = new MemInbox();
       configureInbox(inbox);
       resolveRecipients.resolves([{ orgId: orgA, userIds: [admin1] }, { orgId: orgB, userIds: [admin2] }]);
+      accepted = [];
+      maybeAccepted = [];
+      mailProducer.publishEvent.callsFake(async (e: any) => { accepted.push(e.payload); });
     });
     afterEach(() => configureInbox(null));
     const deliver = (h: PlatformAlertHandler, msg: unknown) =>
@@ -267,11 +275,10 @@ describe('notification/service/platform-alert.handler', () => {
       expect(mailProducer.publishEvent.callCount).to.equal(2);
     });
 
-    /** Runs every published mail job through the mail consumer's wrapper and inbox; returns the addresses actually sent to. */
+    /** Runs every accepted, and possibly accepted, mail job through the mail consumer's wrapper and inbox; returns the addresses sent to. */
     const sendAll = async () => {
       const sent: string[] = [];
-      for (const call of mailProducer.publishEvent.getCalls()) {
-        const job = call.args[0].payload;
+      for (const job of [...maybeAccepted, ...accepted]) {
         await runWithEnvelope('mail', JSON.parse(JSON.stringify(job)), async (v: any) => { sent.push(v.mail.sendEmailTo[0]); }, 'mail-consumer-group');
       }
       return sent.sort();
@@ -279,8 +286,10 @@ describe('notification/service/platform-alert.handler', () => {
 
     it('a stop after the last org was stored and before its mail was queued: the redelivery queues it, and each admin gets one email', async () => {
       const msg = { ...event(), eventId: 'evt-p3' };
-      const hang = new Promise<void>(() => {});
-      mailProducer.publishEvent.onFirstCall().returns(hang);
+      mailProducer.publishEvent.onFirstCall().callsFake((e: any) => {
+        maybeAccepted.push(e.payload);
+        return new Promise<void>(() => {});
+      });
       // the first delivery stops inside its first mail publish: never acknowledged, so the broker delivers it again
       void deliver(handler, msg);
       for (let i = 0; i < 100 && !mailProducer.publishEvent.called; i++) await new Promise((r) => setTimeout(r, 5));
@@ -289,20 +298,45 @@ describe('notification/service/platform-alert.handler', () => {
       await deliver(fresh(), msg);
       expect(insertOrgs).to.deep.equal([orgA, orgB]);
       // the hung publish may still have reached the broker: it carries the same event id as the redelivery's
-      const ids = mailProducer.publishEvent.getCalls().map((c) => c.args[0].payload.eventId);
-      expect(ids[0]).to.equal(ids[1]);
+      expect(accepted.map((j) => j.eventId)).to.include(maybeAccepted[0].eventId);
       expect(await sendAll()).to.deep.equal([`${admin1}@example.com`, `${admin2}@example.com`]);
     });
 
-    it('a publish that failed partway is published again with the same ids, and each admin gets one email', async () => {
-      resolveRecipients.resolves([{ orgId: orgA, userIds: [admin1, admin2] }]);
+    it('a failed publish is not acknowledged: the broker delivers it again to the same consumer, which sends the missing mail once', async () => {
+      // A broker like Kafka or Redis Streams: the message is acknowledged when the consumer's callback resolves, else delivered again.
+      let cb: ((m: { value: unknown }) => Promise<void>) | undefined;
+      const broker = {
+        isConnected: () => true,
+        consume: async (h: typeof cb) => { cb = h; },
+      };
+      const consumer = new NotificationConsumer(broker as never, logger, notificationService as unknown as NotificationService, handler);
+      await consumer.consume(async () => {});
       const msg = { ...event(), eventId: 'evt-p4' };
-      mailProducer.publishEvent.onSecondCall().rejects(new Error('broker away'));
-      await deliver(handler, msg);
-      await deliver(fresh(), msg);
-      await deliver(fresh(), msg);
-      expect(mailProducer.publishEvent.callCount).to.equal(4);
+      mailProducer.publishEvent.onFirstCall().rejects(new Error('broker away'));
+      const deliveries: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        try {
+          await runWithEnvelope('notification', JSON.parse(JSON.stringify(msg)), (v) => cb!({ value: v }), G);
+          deliveries.push('acked');
+          break;
+        } catch (e) {
+          expect(isRetryableStoreError(e), String(e)).to.equal(true);
+          deliveries.push('redelivered');
+        }
+      }
+      expect(deliveries).to.deep.equal(['redelivered', 'acked']);
+      expect(insertOrgs).to.deep.equal([orgA, orgB]);
       expect(await sendAll()).to.deep.equal([`${admin1}@example.com`, `${admin2}@example.com`]);
+      // acknowledged and remembered: a later copy queues nothing
+      await runWithEnvelope('notification', JSON.parse(JSON.stringify(msg)), (v) => cb!({ value: v }), G);
+      expect(accepted).to.have.length(2);
+    });
+
+    it('without the inbox a failed publish is only logged: a redelivery would notify and mail every org again', async () => {
+      configureInbox(null);
+      mailProducer.publishEvent.onFirstCall().rejects(new Error('broker away'));
+      await handler.handle(event());
+      expect(logger.error.calledWithMatch('Platform alert email not queued')).to.be.true;
     });
 
     it('an org stored by an earlier delivery still gets its email when the other org has no recipients left', async () => {

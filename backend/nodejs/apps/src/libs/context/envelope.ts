@@ -665,6 +665,11 @@ export async function runWithEnvelope<V, R>(
   return runWithOrgContext(opened.ctx, run);
 }
 
+/** True while handling a delivery the durable inbox tracks: a step that fails can then be retried by delivering the message again. */
+export function inDurableDelivery(): boolean {
+  return deliveryStorage.getStore() !== undefined;
+}
+
 /** The inbox id of `step` of the current delivery's event (event ids are UUIDs, so no event id ends in `#<step>`). */
 const stepId = (d: Delivery, step: string): string => `${d.eventId}#${step}`;
 

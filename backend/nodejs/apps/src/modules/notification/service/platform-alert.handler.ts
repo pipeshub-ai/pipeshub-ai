@@ -2,10 +2,12 @@ import { inject, injectable } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { enforcing, forOrg } from '../../../libs/context/orgContext';
 import { createHash } from 'node:crypto';
+import { ServiceUnavailableError } from '../../../libs/errors/http.errors';
 import {
   DuplicateEnvelope,
   ctxRequired,
   deliveryStepDone,
+  inDurableDelivery,
   recordDeliveryStep,
   signEnabled,
 } from '../../../libs/context/envelope';
@@ -255,12 +257,14 @@ export class PlatformAlertHandler {
   /**
    * Store errors from the in-app part are thrown, so the broker can deliver
    * the event again. Mail is queued only after every org's in-app part
-   * succeeded, and its errors are logged, never thrown.
+   * succeeded, and its errors are logged.
    *
    * With the durable consumer inbox: an org's notifications commit with its
    * inbox record, so a redelivery stores only the orgs still missing. An org's
    * mail is skipped only when a record written after its last publish says it
-   * was queued; otherwise it is published again. Each mail job carries a stable
+   * was queued; otherwise it is published again. A mail that could not be
+   * queued fails the delivery with a retryable error, so the broker delivers
+   * it again, and the alert id is remembered only once the mail is queued. Each mail job carries a stable
    * event id (`alertMailEventId`), so the mail consumer sends a job published
    * twice once, unless both copies are being sent at the same moment. Without
    * the inbox, a redelivery after a stop can notify and mail again.
@@ -347,14 +351,20 @@ export class PlatformAlertHandler {
         return;
       }
     }
-    this.remember(alertId, now);
 
     let emailQueued = 0;
     if (alert.email) {
       const emailToken = this.emails.take(alert.kind, scope, now);
       if (emailToken) {
-        for (const org of orgs) {
-          emailQueued += await this.queueEmail(alert, org);
+        try {
+          for (const org of orgs) {
+            emailQueued += await this.queueEmail(alert, org);
+          }
+        } catch (error) {
+          // The redelivery takes both budgets again; its stored orgs and queued mail are skipped.
+          this.emails.refund(emailToken);
+          if (recipients > 0) this.deliveries.refund(token);
+          throw error;
         }
         if (emailQueued === 0) this.emails.refund(emailToken);
       } else {
@@ -371,6 +381,8 @@ export class PlatformAlertHandler {
       }
     }
 
+    // Only now: an alert remembered before its mail was queued would drop the redelivery that queues it.
+    this.remember(alertId, now);
     this.logger.info('Platform alert delivered', {
       type,
       alertId,
@@ -412,6 +424,8 @@ export class PlatformAlertHandler {
     };
     // An earlier delivery of this event queued this org's mail (recorded after its last publish).
     if (await deliveryStepDone(MAIL_STEP, org.orgId)) return 0;
+    let queued = 0;
+    let failed = false;
     try {
       const mail = buildSandboxCapacityMail(alert);
       if (!mail) return 0;
@@ -434,8 +448,6 @@ export class PlatformAlertHandler {
             );
         },
       );
-      let queued = 0;
-      let failed = false;
       for (const email of new Set(emails)) {
         try {
           await this.mailProducer.publishEvent({
@@ -460,11 +472,20 @@ export class PlatformAlertHandler {
           logFailure(error);
         }
       }
-      if (!failed) await recordDeliveryStep(MAIL_STEP, org.orgId);
-      return queued;
     } catch (error) {
+      failed = true;
       logFailure(error);
-      return 0;
     }
+    if (!failed) {
+      await recordDeliveryStep(MAIL_STEP, org.orgId);
+      return queued;
+    }
+    // With the inbox, a redelivery skips the orgs stored and the mail queued, and finishes the rest; without one it would
+    // notify and mail every org again, so the failure is only logged.
+    if (inDurableDelivery())
+      throw new ServiceUnavailableError(
+        'Platform alert email not queued; the event will be delivered again',
+      );
+    return queued;
   }
 }
