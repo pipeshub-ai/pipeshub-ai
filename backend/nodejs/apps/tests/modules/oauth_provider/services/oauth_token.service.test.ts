@@ -181,6 +181,25 @@ describe('OAuthTokenService', () => {
       }
     })
 
+    it('marks only a token that acts as the app\'s service account', async () => {
+      sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+      const org = new Types.ObjectId().toString()
+      const serviceAccount = new Types.ObjectId()
+      const marker = async (app: any, userId: string | null) =>
+        (jwt.decode((await service.generateTokens(app, userId, org, ['org:read'], false)).accessToken) as any)
+          .actsAsServiceAccount
+
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount }, null)).to.equal(true)
+      // An app that still acts as its creator speaks as a person.
+      expect(await marker(mockApp, null)).to.equal(undefined)
+      // A user grant on the same app speaks as the user who granted it.
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount }, new Types.ObjectId().toString()))
+        .to.equal(undefined)
+      // An instance app names no identity at all.
+      expect(await marker({ ...mockApp, tokenIdentityUserId: serviceAccount, isDynamic: true }, null))
+        .to.equal(undefined)
+    })
+
     it('stamps the agent registration on the access token only when asked', async () => {
       sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
       const org = new Types.ObjectId().toString()
@@ -449,11 +468,13 @@ describe('OAuthTokenService', () => {
       }
       const token = jwt.sign(payload, testSecret, { algorithm: 'HS256' })
 
-      sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+      sinon.stub(OAuthAccessToken, 'findOne').resolves({ _id: 'row-1', isRevoked: false } as any)
 
       const result = await service.verifyAccessToken(token)
       expect(result.userId).to.equal('user-1')
       expect(result.client_id).to.equal('client-1')
+      // The stored row's id, which token lists and revocation use, not the jti claim.
+      expect(result.tokenRowId).to.equal('row-1')
     })
 
     it('rejects a signed token whose scope claim is empty or missing', async () => {

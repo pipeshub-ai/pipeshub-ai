@@ -31,6 +31,13 @@ export const org: CollectionMapping = {
     { col: 'updated_at', path: 'updatedAt', type: 'date' },
   ],
   derived: [],
+  dropped: [
+    {
+      path: 'adminRoleLease',
+      reason:
+        'standalone-Mongo lease for admin-role changes; PostgreSQL serialises them with the org row lock',
+    },
+  ],
 };
 
 export const orgLogos: CollectionMapping = {

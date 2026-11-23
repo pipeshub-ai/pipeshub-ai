@@ -1301,3 +1301,39 @@ class TestKnowledgeLimitClaim:
     def test_a_service_token_drops_the_claim(self) -> None:
         payload = auth_module._normalize_scoped_payload({"knowledgeLimit": {"apps": ["a"]}}, "tok")
         assert auth_module.connection_limit(payload) is None
+
+
+class TestServiceIdentityClaim:
+    """Node marks a client_credentials token that acts as a service account."""
+
+    @staticmethod
+    def _client_credentials(**claims: object) -> dict:
+        return auth_module._normalize_regular_payload({
+            "userId": "c", "client_id": "c", "createdBy": "svc", "tokenType": "oauth",
+            "scope": "kb:read", **claims,
+        }, "tok")
+
+    def test_a_client_credentials_token_keeps_the_marker(self) -> None:
+        payload = self._client_credentials(actsAsServiceAccount=True)
+        assert payload["userId"] == "svc"
+        assert payload[auth_module.SERVICE_IDENTITY_CLAIM] is True
+
+    def test_only_a_literal_true_counts(self) -> None:
+        assert self._client_credentials(actsAsServiceAccount="true")[auth_module.SERVICE_IDENTITY_CLAIM] is False
+        assert self._client_credentials()[auth_module.SERVICE_IDENTITY_CLAIM] is False
+
+    def test_a_user_grant_cannot_carry_it(self) -> None:
+        """The token speaks as the person in userId, whatever its app acts as."""
+        payload = auth_module._normalize_regular_payload({
+            "userId": "u", "client_id": "c", "createdBy": "svc", "tokenType": "oauth",
+            "scope": "kb:read", "actsAsServiceAccount": True,
+        }, "tok")
+        assert auth_module.SERVICE_IDENTITY_CLAIM not in payload
+
+    def test_a_session_token_cannot_carry_it(self) -> None:
+        payload = auth_module._normalize_regular_payload({"userId": "u", "actsAsServiceAccount": True}, "tok")
+        assert auth_module.SERVICE_IDENTITY_CLAIM not in payload
+
+    def test_a_service_token_drops_it(self) -> None:
+        payload = auth_module._normalize_scoped_payload({"actsAsServiceAccount": True}, "tok")
+        assert auth_module.SERVICE_IDENTITY_CLAIM not in payload

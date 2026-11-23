@@ -11,6 +11,8 @@ import { EncryptionService } from '../../../../src/libs/encryptor/encryptor'
 import { loadConfigurationManagerConfig } from '../../../../src/modules/configuration_manager/config/config'
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const appConfig = {
   aiBackend: 'http://ai.test',
@@ -57,6 +59,9 @@ function fresh(): { store: InMemoryChatStore; ai: FakeAIBackend } {
 }
 
 describe('es_controller listing and paging', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })
@@ -233,23 +238,43 @@ describe('es_controller listing and paging', () => {
   })
 
   describe('agent usage lookups', () => {
-    it('getWebSearchProviderUsage: passes the AI service answer through, and an empty list when it has none', async () => {
+    it('getWebSearchProviderUsage: passes the AI service answer through, and a failed check on as an error, never as no agents', async () => {
       const { ai } = fresh()
       ai.reply(/web-search-usage\/tavily/, 200, { success: true, agents: [{ name: 'Research bot' }] })
       ai.reply(/web-search-usage\/serper/, 500, { detail: 'boom' })
       const handler = controller.getWebSearchProviderUsage(appConfig) as JsonHandler
 
       const used = await call(handler, { params: { provider: 'tavily' } })
-      const unknown = await call(handler, { params: { provider: 'serper' } })
+      const failed = await call(handler, { params: { provider: 'serper' } })
       const missing = await call(handler, { params: {} })
 
       expect(used.body).to.deep.equal({ success: true, agents: [{ name: 'Research bot' }] })
-      expect(unknown.body).to.deep.equal({ success: true, agents: [] })
+      expect(failed.body).to.be.undefined
+      expect(failed.error?.statusCode).to.equal(500)
+      expect(failed.error?.message).to.not.include('boom')
       expect(missing.error?.statusCode).to.equal(400)
       expect(ai.calls.map((c) => c.url)).to.deep.equal([
         'http://ai.test/api/v1/agent/web-search-usage/tavily',
         'http://ai.test/api/v1/agent/web-search-usage/serper',
       ])
+    })
+
+    it('getModelUsage: passes the AI service answer through, and a failed check on as an error, never as no agents', async () => {
+      const { ai } = fresh()
+      ai.reply(/model-usage\/used/, 200, { success: true, agents: [{ name: 'Research bot' }] })
+      ai.reply(/model-usage\/down/, 503, { detail: 'graph down' })
+      ai.reply(/model-usage\/refused/, 400, { detail: "We couldn't check where this model is used." })
+      const handler = controller.getModelUsage(appConfig) as JsonHandler
+
+      const used = await call(handler, { params: { model_key: 'used' } })
+      const down = await call(handler, { params: { model_key: 'down' } })
+      const refused = await call(handler, { params: { model_key: 'refused' } })
+
+      expect(used.body).to.deep.equal({ success: true, agents: [{ name: 'Research bot' }] })
+      expect(down.body).to.be.undefined
+      expect(down.error?.statusCode).to.equal(503)
+      expect(refused.error?.statusCode).to.equal(400)
+      expect(refused.error?.message).to.equal("We couldn't check where this model is used.")
     })
   })
 

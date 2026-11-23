@@ -1,8 +1,8 @@
 """The projection worker: projects the change log and publishes the gauges. Woken by NOTIFY, with a safety poll.
 
 ``pipeshub_kg_changes`` is sent at commit by a write unit that changed the graph (flush.wake, coalesced); it only wakes
-the worker, which reads the log itself, so a lost notification costs at most ``poll_s``. The projection default is on (``PG_KG_PROJECT=0`` is the off switch): the connectors service starts the worker
-(:func:`enabled`), which also takes each connector to ``enforce`` (:mod:`bootstrap`).
+the worker, which reads the log itself, so a lost notification costs at most ``poll_s``. The projection is on: the connectors service starts the worker, which also takes each connector
+to ``enforce`` (:mod:`bootstrap`), and refuses to start with ``PG_KG_PROJECT=0`` on a PostgreSQL graph (:func:`start_for`).
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -156,6 +157,7 @@ class KgWorker:
     async def _verify_loop(self) -> None:
         """The periodic verify of the enforced connectors (``net.verify_due``), in a task of its own."""
         while not self._stop.is_set():
+            t0 = time.monotonic()
             try:
                 for org in await self._orgs():
                     await net.verify_due(self._db, org, self._verify_states, self._stop)
@@ -163,7 +165,7 @@ class KgWorker:
                 LOOP_FAILED.inc("verify")
                 logger.exception("kg verify iteration failed; continuing")
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self._stop.wait(), net.VERIFY_TICK_S)
+                await asyncio.wait_for(self._stop.wait(), net.verify_rest(time.monotonic() - t0))
 
     def _died(self, task: asyncio.Task) -> None:
         if not task.cancelled() and task.exception() is not None:
@@ -199,14 +201,18 @@ class KgWorker:
 
 
 def start_for(graph_provider: object, logger: logging.Logger) -> KgWorker | None:
-    """The worker of the connectors service: started when the graph is PostgreSQL and the projection is on, else None (Neo4j and ArangoDB never reach this). It serves every org of the
-    graph. Two processes (replicas) may each start one: a page of an org's log is taken under an advisory lock (``drainer.drain``), restamp jobs are claimed, and a promotion verifies under the
-    connector's lock, so they never apply a change twice; the second only waits its turn."""
+    """The worker of the connectors service: started when the graph is PostgreSQL, else None (Neo4j and ArangoDB never reach this). It serves every org of the graph. Two processes
+    (replicas) may each start one: a page of an org's log is taken under an advisory lock (``drainer.drain``), restamp jobs are claimed, and a promotion verifies under the connector's
+    lock, so they never apply a change twice; the second only waits its turn. With the projection off (``PG_KG_PROJECT=0``) it raises ``ValueError``, and the service does not start:
+    the knowledge hub lists a PostgreSQL graph's sources from kg, so no copy would ever be made and every source that holds data would stay "preparing"."""
     from app.core.org_context import system
     from app.services.graph_db.postgres.provider import PostgresGraphProvider
     from app.services.pg_runtime import listen_dsn
-    if not isinstance(graph_provider, PostgresGraphProvider) or not enabled():
+    if not isinstance(graph_provider, PostgresGraphProvider):
         return None
+    if not enabled():
+        raise ValueError("PG_KG_PROJECT=0 is not supported with a PostgreSQL graph (DATA_STORE=postgres): the knowledge hub lists sources from the typed graph, so every source "
+                         "would show as preparing. Unset PG_KG_PROJECT; to answer access checks from the graph walk instead of the typed graph, set PG_KG_READ=0")
 
     async def orgs() -> list[str]:
         with system("kg_worker"):

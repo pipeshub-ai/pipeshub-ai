@@ -286,6 +286,52 @@ def test_a_refused_sign_in_while_listing_is_an_auth_error() -> None:
             client.list_directory("dept", "")
 
 
+@pytest.mark.parametrize(
+    ("status", "raised_as"),
+    [
+        # A folder the account may list can hold a file it may not read.
+        (0xC0000022, AccessDeniedError),
+        # smbclient reconnects a dropped session on open; a changed password is refused there.
+        (0xC000006D, NetworkShareAuthError),
+        # Deleted between the stat and the open.
+        (0xC0000034, FileNotFoundError),
+    ],
+)
+def test_a_file_that_cannot_be_opened_says_why(status: int, raised_as: type[Exception]) -> None:
+    from smbprotocol.exceptions import SMBOSError
+
+    client = SmbClient(server="files.example", username="u", password="p", share="dept")
+    fake = MagicMock()
+    fake.open_file.side_effect = SMBOSError(status, r"\\10.0.0.5\dept\no-access\secret.txt")
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(raised_as):
+            client.open_file("dept", "no-access/secret.txt")
+
+
+def test_another_open_failure_is_left_alone() -> None:
+    from smbprotocol.exceptions import SMBOSError
+    from smbprotocol.header import NtStatus
+
+    client = SmbClient(server="files.example", username="u", password="p")
+    fake = MagicMock()
+    fake.open_file.side_effect = SMBOSError(NtStatus.STATUS_SHARING_VIOLATION, r"\\10.0.0.5\share\not found.docx")
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(SMBOSError):
+            client.open_file("share", "not found.docx")
+
+
+def test_a_file_whose_attributes_the_account_may_not_read_raises_access_denied() -> None:
+    from smbprotocol.exceptions import SMBOSError
+    from smbprotocol.header import NtStatus
+
+    client = SmbClient(server="files.example", username="u", password="p")
+    fake = MagicMock()
+    fake.stat.side_effect = SMBOSError(NtStatus.STATUS_ACCESS_DENIED, r"\\10.0.0.5\share\locked.txt")
+    with _resolving_to("10.0.0.5"), patch.object(client, "_smbclient", return_value=fake):
+        with pytest.raises(AccessDeniedError):
+            client.stat("share", "locked.txt")
+
+
 def test_other_registration_errors_are_left_alone() -> None:
     client = SmbClient(server="files.example", username="u", password="p")
     fake = MagicMock()

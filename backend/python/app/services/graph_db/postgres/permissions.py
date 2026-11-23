@@ -25,8 +25,11 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.identity import _AGENT_CAN, _soft
+from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
+from app.services.graph_db.postgres.kh_listing import UNDECIDED_MAX, class_sets
 from app.services.graph_db.taxonomy import own_record_labels
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -35,6 +38,21 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connector": {}}
+# Every grant of a viewer in one statement, so a writable transaction (read committed, a snapshot per statement) never joins two states of them: the live
+# records and groups that the grantees ($2) hold a permission edge to (an organisation's only of a sharing type, $4), and, inside its own connector only,
+# what a source account the user authenticated as ($5, connector $6) and its groups, roles and teams hold (never an organisation's). Edges by the key,
+# nodes by primary key (LATERAL ... OFFSET 0: a lookup per row whatever the statistics say).
+_GRANTS_SQL = """/* pipeshub:graph.access_grants_all */ WITH acct AS (SELECT * FROM unnest($5::text[], $6::text[]) AS a(id, cid)),
+  holder AS (SELECT a.id, a.cid FROM acct a
+    UNION SELECT b.to_id, a.cid FROM acct a CROSS JOIN LATERAL (SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'permission' AND b.from_coll = 'users'
+      AND b.from_id = a.id AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER' OFFSET 0) b),
+  hit AS (SELECT e.to_coll, e.to_id, NULL::text AS only_cid FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_id = ANY($2::text[])
+      AND e.from_coll = ANY($3::text[]) AND e.to_coll IN ('records', 'recordGroups') AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))
+    UNION ALL SELECT e.to_coll, e.to_id, h.cid FROM holder h CROSS JOIN LATERAL (SELECT e.to_coll, e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission'
+      AND e.from_id = h.id AND e.from_coll = ANY($3::text[]) AND e.from_coll <> 'organizations' AND e.to_coll IN ('records', 'recordGroups') OFFSET 0) e)
+SELECT n.cid, h.to_id AS id FROM hit h CROSS JOIN LATERAL (SELECT n.doc->>'connectorId' AS cid FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = h.to_coll
+    AND n.id = h.to_id AND NOT coalesce((n.doc->>'isDeleted')::boolean, false) OFFSET 0) n
+WHERE n.cid IS NOT NULL AND (h.only_cid IS NULL OR n.cid = h.only_cid)"""
 
 
 _ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
@@ -122,6 +140,8 @@ class PermissionsMixin(PgBase):
         """Who the user is (``grantees``), the apps they pass the connector gate for, and the source accounts they authenticated as; None when the
         user is no node of the graph. The part of ``get_knowledge_hub_access_v3`` that does not read the grants."""
         # single-table lookups (edges by the key, nodes by primary key): no plan depends on table statistics
+        await tx.fetchval(access_sql.NO_JIT)
+
         async def exist(coll: str, ids: list[str]) -> set[str]:
             if not ids:
                 return set()
@@ -168,44 +188,67 @@ class PermissionsMixin(PgBase):
                 return dict(_NO_ACCESS)
             grantees, gated, links = gate
             by_conn: dict[str, list[str]] = {a: [] for a in gated}
-            for cid, ids in (await access_sql.granted_targets(tx, org, grantees, list(ORG_SHARE_PERMISSION_TYPES))).items():
-                if cid in by_conn:
-                    by_conn[cid].extend(ids)
-            for lk in links:  # a source account the user authenticated as adds its own grants, and its badges', inside that connector
-                if not lk["cid"] or lk["cid"] not in by_conn:
-                    continue
-                badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
-                    AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"])]
-                # not from an organization here: the edges are read for the account and its groups only
-                by_conn[lk["cid"]].extend((await access_sql.granted_targets(tx, org, [lk["to_id"], *badges], []))
-                                          .get(lk["cid"], []))
+            linked = [lk for lk in links if lk["cid"] and lk["cid"] in by_conn]
+            for r in await tx.fetch(_GRANTS_SQL, org, grantees, access_sql.PRINCIPALS, list(ORG_SHARE_PERMISSION_TYPES),
+                                    [lk["to_id"] for lk in linked], [lk["cid"] for lk in linked]):
+                if r["cid"] in by_conn:
+                    by_conn[r["cid"]].append(r["id"])
             return {"grantee_ids": grantees, "gated_app_ids": gated, "by_connector": {k: list(dict.fromkeys(v)) for k, v in by_conn.items()}}
-        return await self._q(go, transaction)
+        # one snapshot outside a transaction: the gate and the grants are one state of the graph
+        return await self._q(go, transaction, isolation="repeatable_read")
+
+    async def _linked_holders(self, tx: Tx, org: str, links: list[Any], gated: list[str]) -> dict[str, list[str]]:
+        """Per gated connector, the source accounts the user authenticated it as and their groups, roles and teams: their grants count inside that connector only."""
+        out: dict[str, list[str]] = {}
+        for lk in links:
+            if not lk["cid"] or lk["cid"] not in gated:
+                continue
+            badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
+                AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"])]
+            out.setdefault(lk["cid"], []).extend([lk["to_id"], *badges])
+        return out
+
+    async def _check_gate(self, tx: Tx, org: str, user_key: str) -> dict[str, Any]:
+        """The access a check reads when the caller holds none: the gate of ``get_knowledge_hub_access_v3`` without its grants (``linked`` instead), so the check reads the grants
+        of the nodes it decides (``access.Grants``), not every grant the user holds. Read in the check's own snapshot (``_kh_v3_accessible_rows``)."""
+        gate = await self._gate(tx, org, user_key)
+        if gate is None:
+            return dict(_NO_ACCESS)
+        grantees, gated, links = gate
+        return {"grantee_ids": grantees, "gated_app_ids": gated, "linked": await self._linked_holders(tx, org, links, gated)}
 
     async def _kh_v3_accessible_rows(self, user_key: str, org_id: str, node_ids: list[str], virtual_record_ids: list[str], *,
                                      access: dict[str, Any] | None, transaction: str | None) -> list[dict[str, Any]]:
-        """The asked nodes and virtual record ids the user may access, as the rows ``check_access`` reads. An org other than the ambient one admits nothing."""
+        """The asked nodes and virtual record ids the user may access, as the rows ``check_access`` reads. An org other than the ambient one admits nothing.
+
+        One check reads one state of the graph: outside a transaction (and in a read-only snapshot) the gate, kg's classes, the walk and every grant it reads per node
+        share one repeatable-read snapshot. A writable transaction reads at read committed, statement by statement, so there the grants are read whole first, in one
+        statement (``get_knowledge_hub_access_v3``, as before), and no answer joins grants of two states."""
         org = current_org_id()
         ids = list(dict.fromkeys(i for i in node_ids if i))
         vrids = list(dict.fromkeys(v for v in virtual_record_ids if v))
         if (not ids and not vrids) or org_id != org:
             return []
-        if access is None:
-            access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
-
-        async def walk(i: list[str], v: list[str], acc: dict[str, Any]) -> list[dict[str, Any]]:
-            return await self._q(lambda tx: access_sql.accessible_rows(tx, org, i, v, acc), transaction)
         # an explicit transaction sees its own writes before kg has been given them (a read-only snapshot has none: kg answers in it); the system role has no read on kg
         snapshot = getattr(self._txns.get(transaction), "snapshot", False) if transaction else False
-        if (transaction is None or snapshot) and kg_read.enabled() and current_or_system().kind != "system":
-            def unit(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
-                return self._db.run(fn, isolation="repeatable_read", custom_plan=True)
+        if access is None and transaction and not snapshot:
+            access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+        use_kg = (transaction is None or snapshot) and kg_read.enabled() and current_or_system().kind != "system"
 
-            def in_snapshot(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
-                return self._q(lambda tx: kg_read.in_savepoint(tx, fn), transaction)
-            # in a snapshot, on its connection: a read that holds a pooled connection never waits for a second one. The samples run after the call, in units of their own.
-            return await kg_read.accessible_rows(in_snapshot if snapshot else unit, org, ids, vrids, access, walk, self._db, sample_run=unit)
-        return await walk(ids, vrids, access)
+        def unit(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
+            return self._db.run(fn, isolation="repeatable_read", jobs=current_or_system().kind == "system")
+
+        async def check(tx: Tx) -> list[dict[str, Any]]:
+            acc = access if access is not None else await self._check_gate(tx, org, user_key)
+
+            async def walk(i: list[str], v: list[str], a: dict[str, Any]) -> list[dict[str, Any]]:
+                return await access_sql.accessible_rows(tx, org, i, v, a)
+            if not use_kg:
+                return await walk(ids, vrids, acc)
+            # on the check's connection, in a savepoint: kg's settings end with its read. The samples run after the call, in units of their own.
+            return await kg_read.accessible_rows(lambda fn: kg_read.in_savepoint(tx, fn), org, ids, vrids, acc, walk, self._db, sample_run=unit)
+        # through _q, the provider's one way to the database, as every other read: a store that cannot answer fails the check (check_access raises)
+        return await self._q(check, transaction, isolation="repeatable_read")
 
     async def get_selection_nodes(self, org_id: str, *, group_ids: list[str], record_ids: list[str],
                                   exact_record_ids: list[str], limit: int) -> dict[str, list[dict[str, Any]]]:
@@ -320,6 +363,14 @@ class PermissionsMixin(PgBase):
                               AND l.from_coll = 'users' AND l.from_id = p.from_id AND l.to_coll = 'apps' AND l.to_id = $2)
             RETURNING 1) SELECT count(*) FROM gone""", current_org_id(), connector_id), transaction, write=True) or 0
 
+    async def get_user_granted_records(self, connector_id: str, user_id: str, transaction: str | None = None) -> list[dict[str, Any]]:
+        """The connector's records the user holds a direct USER grant on; grants held by a group, a team or the organization are not included."""
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_user_granted_records */ SELECT DISTINCT n.id, n.doc->>'externalRecordId' AS ext,
+            n.doc->>'recordType' AS rtype FROM graph.edges e JOIN graph.nodes n ON n.org_id = e.org_id AND n.coll = 'records' AND n.id = e.to_id
+            WHERE e.org_id = $1 AND e.coll = 'permission' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'records'
+              AND n.doc->>'connectorId' = $3""", current_org_id(), user_id, connector_id), transaction)
+        return [{"id": r["id"], "externalRecordId": r["ext"], "recordType": r["rtype"]} for r in rows]
+
     # ---- teams ---------------------------------------------------------------------------------------------------
     async def batch_update_team_member_roles(self, team_id: str, user_roles: list[dict[str, str]], timestamp: int, transaction: str | None = None) -> list[dict]:
         """Sets the role on each listed user's edge to the team (a user with no edge is skipped); the updated edges come back. A user named twice gets the last role."""
@@ -369,7 +420,8 @@ class PermissionsMixin(PgBase):
                 WHERE a.org_id = $1 AND a.coll = 'agentInstances' AND a.id = $2 AND a.doc->>'isDeleted' IS DISTINCT FROM 'true'
                 ORDER BY (p.doc->>'type' = 'USER') DESC LIMIT 1""", org_id, agent_id, user_id), transaction)
         except Exception as e:
-            self.logger.error("Failed to check agent permission: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="check_agent_permission")
             return None
         if not r:
             return None
@@ -446,7 +498,8 @@ class PermissionsMixin(PgBase):
                   AND ($3::text[] IS NULL OR a.id = ANY($3::text[])) AND (NOT coalesce((a.doc->>'isHidden')::boolean, false) OR $3::text[] IS NOT NULL)""",
                                                      org, list(access["gated_app_ids"]), sorted(scope_set) if scope_set is not None else None), None)
         except Exception as exc:
-            self.logger.error("get_accessible_containers: failed — %s", exc)
+            error_class.log_failure(self.logger, "graph.provider.failed", exc, include_error_text=False,
+                                    op="get_accessible_containers")
             return AccessibleContainers(fallback_reason="query_failed")
         # points of an App whose membership arrays were never written carry no connectorIds, so a container filter cannot see them at all
         unready = sorted(r["id"] for r in rows if not r["ready"])
@@ -461,7 +514,8 @@ class PermissionsMixin(PgBase):
             user_key = (user or {}).get("id") or (user or {}).get("_key")
             return _distinct_connector_types(await self.get_gated_apps(user_key, org_id)) if user_key else []
         except Exception as e:
-            self.logger.warning("Could not resolve accessible connector types: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_accessible_connector_types")
             return []
 
     async def get_knowledge_hub_node_access(self, node_id: str, user_key: str, org_id: str, folder_mime_types: list[str],
@@ -497,7 +551,8 @@ class PermissionsMixin(PgBase):
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
-            self.logger.error("get_knowledge_hub_node_access failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_node_access")
             return None
 
     # ---- the context role, the record access details, and the accessible search scope ----------------------------
@@ -676,7 +731,8 @@ class PermissionsMixin(PgBase):
                 return _ctx_perms(got[0] if got else "READER")
             return await self._q(go, transaction)
         except Exception as e:
-            self.logger.error("Get knowledge hub context permissions failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_context_permissions")
             return _ctx_perms("READER")
 
     async def check_record_access_with_details(self, user_id: str, org_id: str, record_id: str, transaction: str | None = None) -> dict | None:
@@ -705,7 +761,7 @@ class PermissionsMixin(PgBase):
                   AND m.coll IN ('departments', 'categories', 'subcategories1', 'subcategories2', 'subcategories3', 'topics', 'languages')""", org, record_id)
             return best, meta
         best, meta = await self._q(go, transaction)
-        extra = await self.get_document(record_id, type_coll, transaction) if type_coll else None
+        extra = await self.get_document(record_id, type_coll, transaction, raise_on_error=True) if type_coll else None
         email, connector_name = (user or {}).get("email"), record.get("connectorName")
         if extra and extra.get("webUrl"):
             extra["webUrl"] = substitute_user_email(extra["webUrl"], email, connector_name)
@@ -718,7 +774,7 @@ class PermissionsMixin(PgBase):
                          "migrated": ed.get("migratedFrom") is not None}
             labels[m["mcoll"]].append(item)
         kb_info = None
-        app = await self.get_document(record.get("connectorId"), "apps", transaction) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
+        app = await self.get_document(record.get("connectorId"), "apps", transaction, raise_on_error=True) if record.get("connectorId") and connector_name == Connectors.KNOWLEDGE_BASE.value else None
         if app and app.get("type") == _KB_TYPE and await self.get_user_kb_permission(app["id"], user_key, transaction=transaction):
             kb_info = {"id": app["id"], "name": app.get("name"), "orgId": org}
         role, source = best if best else ("READER", "CONNECTOR")      # a connector item carries no role; what the check admitted is read access
@@ -773,6 +829,7 @@ class PermissionsMixin(PgBase):
             async def candidates(tx: Tx) -> list[Any]:
                 """The scope filters are applied where the records are read: every record of a collection or app-level connector in one statement, and the
                 records the walk reached, by key, in another."""
+                await tx.fetchval(access_sql.NO_JIT)      # the walks down below plan as large reads: compiling each costs more than it reads
                 rows = list(await tx.fetch("""/* pipeshub:graph.accessible_candidates_app_wide */ SELECT r.id, {cols} FROM graph.nodes r
                     WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
                       AND ((r.doc->>'connectorId' = ANY($2::text[])) OR (r.doc->>'connectorId' = ANY($3::text[]) AND r.doc->>'origin' = 'UPLOAD'))
@@ -789,7 +846,11 @@ class PermissionsMixin(PgBase):
                       AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
                     ORDER BY r.id""".replace("{cols}", _CANDIDATE_COLUMNS), org, wide, kbs, *scope)) if wide or kbs else []
                 have = {r["id"] for r in rows}
-                reached, below = await access_sql.reachable_records(tx, org, access, sorted(level)) if level else (set(), {})
+                by_class, walked_apps = await _kg_admitted(tx, org, sorted(level), access)
+                reached, below = await access_sql.reachable_records(tx, org, access, walked_apps) if walked_apps else (set(), {})
+                for a, (sure, undecided) in by_class.items():
+                    below[a] = sure      # admitted by its class in this snapshot: what the access check answers for it
+                    reached |= sure | undecided
                 # shortcut: the set path reads a whole app (every child, every membership), so it runs only for an app that more than a chunk of the
                 # candidates come from and that is at most twice the size of them; a narrow search of a big app keeps the per-record check. Upgrade: a count
                 # per app that does not scan its index.
@@ -824,7 +885,8 @@ class PermissionsMixin(PgBase):
                     "/* pipeshub:graph.accessible_members */ SELECT from_id, to_id FROM graph.edges WHERE org_id = $1 AND coll = 'belongsTo' AND from_coll = 'records'"
                     " AND to_coll = 'apps' AND to_id = ANY($2::text[])", org, whole)} if whole else set()
                 return sorted(rows, key=lambda r: r["id"]), below, members
-            kept, below, members = await self._q(candidates, None)
+            # one snapshot: what kg admits by class is read with the currency check that lets it answer
+            kept, below, members = await self._db.run(candidates, isolation="repeatable_read", custom_plan=True, jobs=current_or_system().kind == "system")
             # What the arms of the access check admit in a set (a member of a collection or of an app that opens everything; a record the walk down from
             # its own app takes) is admitted here; the rest, which only a grant, a declared group or a seed can open, is checked one chunk at a time.
             ok = {c["id"] for c in kept if c["plain"] and ((c["id"], c["app"]) in members or c["id"] in below.get(c["app"], ()))}
@@ -838,7 +900,37 @@ class PermissionsMixin(PgBase):
                     out.setdefault(c["vrid"], c["id"])
             return out
         except Exception as e:
-            self.logger.error("Get accessible virtual record IDs failed: %s", e)
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_accessible_virtual_record_ids")
             return {}
+
+
+# The records of a connector kg serves that a viewer's classes admit (as kg.listing.count_sql reads them): stamped, not hidden, of no class kg cannot vouch for ($3), and of
+# a class the viewer's grants meet with no grant of the record's own ($4) or one that needs the record's own grant ($5, $6).
+_KG_ADMITTED = f"""/* pipeshub:kg.accessible_records */ SELECT r.id FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND r.kind = 3 AND {kgl.LIVE} AND {kgl.DECIDED}
+    AND NOT r.class_id = ANY($3::bigint[]) AND (r.class_id = ANY($4::bigint[]) OR (r.class_id = ANY($5::bigint[]) AND r.id = ANY($6::text[])))"""
+
+
+async def _kg_admitted(tx: Tx, org: str, apps: list[str], access: dict[str, Any]) -> tuple[dict[str, tuple[set[str], set[str]]], list[str]]:
+    """For each record-level connector kg serves in this snapshot: the records its classes admit, and the few rows no class decides (the access check's). Every other
+    connector, and one with more undecided rows or classes than a listing evaluates, is left to the walk (the second value)."""
+    if not kg_read.enabled() or current_or_system().kind == "system":
+        return {}, apps
+    held = {g for ids in access["by_connector"].values() for g in ids}
+    out: dict[str, tuple[set[str], set[str]]] = {}
+    rest: list[str] = []
+    for a in apps:
+        sk = await tx.fetchval(kgl.APP_KEY, org, a) if await kg_read.serves(tx, org, a) else None
+        sets = await class_sets(tx, org, sk, held) if sk is not None else None
+        unvouched = sorted(sets["unvouched"]) if sets is not None else []
+        q = kgl.Params([org, sk, UNDECIDED_MAX + 1])
+        undecided = [r["id"] for r in await tx.fetch(kgl.undecided_sql("", q.add(unvouched)), *q.values)] if sets is not None else None
+        if undecided is None or len(undecided) > UNDECIDED_MAX:
+            rest.append(a)
+            continue
+        own = sorted(access["by_connector"].get(a) or [])
+        admitted = await tx.fetch(_KG_ADMITTED, org, sk, unvouched, sorted(sets["plain"]), sorted(sets["own"]), own)
+        out[a] = ({r["id"] for r in admitted}, set(undecided))
+    return out, rest

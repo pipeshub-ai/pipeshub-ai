@@ -56,6 +56,7 @@ import * as artifactsRoutes from '../src/modules/artifacts/routes/artifacts.rout
 import * as notificationRoutes from '../src/modules/notification/routes/notification.routes';
 import * as cmRoutes from '../src/modules/configuration_manager/routes/cm_routes';
 import * as openaiModelsRoutes from '../src/modules/configuration_manager/routes/openai_models.routes';
+import * as openaiCompatRoutes from '../src/modules/openai_compat/routes/openai_compat.routes';
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
@@ -63,6 +64,7 @@ import * as agentRegistrationRoutes from '../src/modules/oauth_provider/routes/a
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
 import * as patRoutes from '../src/modules/oauth_provider/routes/pat.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
+import * as agentActivityRoutes from '../src/modules/agent_activity/agent-activity.routes';
 import {
   MCP_BODY_TOO_LARGE_MESSAGE,
   MCP_JSON_BODY_LIMIT_BYTES,
@@ -190,6 +192,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(notificationRoutes, 'createNotificationRouter').returns(dummyRouter);
   sandbox.stub(cmRoutes, 'createConfigurationManagerRouter').returns(dummyRouter);
   sandbox.stub(openaiModelsRoutes, 'createOpenAIModelsRouter').returns(dummyRouter);
+  sandbox.stub(openaiCompatRoutes, 'createOpenAICompatRouter').returns(dummyRouter);
   sandbox.stub(mailRoutes, 'createMailServiceRouter').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);
@@ -198,6 +201,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(oauthClientsRoutes, 'createOAuthClientsRouter').returns(dummyRouter);
   sandbox.stub(patRoutes, 'createPatRouter').returns(dummyRouter);
   sandbox.stub(mcpRoutes, 'createMCPRouter').returns(dummyRouter);
+  sandbox.stub(agentActivityRoutes, 'createAgentActivityRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createOIDCDiscoveryRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createAuthMdRouter').returns(dummyRouter);
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);

@@ -149,7 +149,7 @@ class Harness:
         ) > 0
 
     def log_lines(self) -> str:
-        return "\n".join(str(call.args[0]) for call in self.logger.info.call_args_list)
+        return "\n".join(str(call.args[0]) for call in self.logger.debug.call_args_list)
 
 
 @pytest.fixture
@@ -315,8 +315,8 @@ async def test_an_oversized_text_file_is_marked_too_large_and_never_reaches_mark
     assert "up to 1 MB" in write["reason"]
     assert "CODE_FILE_MAX_SIZE_MB" in write["reason"]
     assert write["reason"].endswith("and then choose Index all on the repository.")
-    # The log names the file and its size, so an operator can find it.
-    assert "dump.sql" in harness.log_lines()
+    # The log names the record (never the file name) and its size, so an operator can find it.
+    assert "rec-1" in harness.log_lines() and "dump.sql" not in harness.log_lines()
     assert str(size) in harness.log_lines()
 
 
@@ -535,3 +535,30 @@ async def test_a_minified_bundle_without_a_telling_name_is_skipped_unparsed(
     (write,) = harness.status_writes()
     assert write["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
     assert "generated file" in write["reason"]
+
+
+@pytest.mark.parametrize("written", [True, False], ids=["written", "matched_nothing"])
+async def test_a_skipped_code_file_is_noted_as_skipped_after_its_status_write(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, written: bool
+) -> None:
+    from app.utils import indexing_timing as timing
+
+    monkeypatch.setattr(engine, "MAX_FILE_SIZE_BYTES", 1024 * 1024)
+    timeline, token = timing.begin_record("rec-1")
+    at_write: list[tuple[object, object]] = []
+
+    async def update_node(_key, _collection, updates) -> bool:
+        if "indexingStatus" not in updates:
+            return True  # the detach of the skipped file's virtual record
+        at_write.append((updates["indexingStatus"], timeline.facts.get("reason")))
+        return written  # False: the status write matched no record; the file is still not indexed
+
+    harness.graph.update_node.side_effect = update_node
+    try:
+        await harness.run("dump.sql", b"INSERT INTO t VALUES (1);\n" * 60_000)
+        noted = dict(timeline.facts)
+    finally:
+        timing.end_record(timeline, token, outcome="ok")
+    assert at_write == [(ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, None)]  # not yet noted when the status is written
+    assert (noted.get("outcome"), noted.get("reason")) == ("skipped", "code_file_skipped")
+    assert harness.status_writes()

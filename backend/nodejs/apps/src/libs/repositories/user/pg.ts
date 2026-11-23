@@ -824,15 +824,19 @@ export class PgUserRepository implements UserRepository, Importable {
   }
 
   // ---- writes
-  async create(orgId: string, fields: UserFields): Promise<UserDto> {
-    return inUnit(undefined, { write: true }, (k) => {
+  async create(orgId: string, fields: UserFields, tx?: Tx): Promise<UserDto> {
+    return inUnit(tx, { write: true }, (k) => {
       assertOrg(k, orgId);
       return insertUser(k, fields, new Date());
     });
   }
 
-  async createMany(orgId: string, rows: UserFields[]): Promise<UserDto[]> {
-    return inUnit(undefined, { write: true }, async (k) => {
+  async createMany(
+    orgId: string,
+    rows: UserFields[],
+    tx?: Tx,
+  ): Promise<UserDto[]> {
+    return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       const now = new Date();
       const out: UserDto[] = [];
@@ -918,10 +922,14 @@ export class PgUserRepository implements UserRepository, Importable {
     });
   }
 
-  async restoreByEmails(orgId: string, emails: string[]): Promise<UserDto[]> {
+  async restoreByEmails(
+    orgId: string,
+    emails: string[],
+    tx?: Tx,
+  ): Promise<UserDto[]> {
     if (emails.length === 0) return [];
     const list = emails.map((e) => stripNul(e, 'user', 'email').toLowerCase());
-    return inUnit(undefined, { write: true }, async (k) => {
+    return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       await k.query(
         '/* pipeshub:identity.user_restore */ UPDATE identity.users u SET is_deleted = false, updated_at = $3 WHERE u.org_id = $1 AND u.email = ANY($2::text[]) AND u.is_deleted',
@@ -935,10 +943,10 @@ export class PgUserRepository implements UserRepository, Importable {
     });
   }
 
-  async promoteToAdmin(orgId: string, ids: string[]): Promise<void> {
+  async promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void> {
     const list = oidsOf(ids);
     if (list.length === 0) return;
-    await inUnit(undefined, { write: true }, async (k) => {
+    await inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       const barred = await k.query<{ kind: UserKind }>(
         "/* pipeshub:identity.user_promote_check */ SELECT u.kind FROM identity.users u WHERE u.org_id = $1 AND u.id = ANY($2::text[]) AND u.kind IN ('service', 'slack') ORDER BY u.kind LIMIT 1",
@@ -981,6 +989,16 @@ export class PgUserRepository implements UserRepository, Importable {
         [k.orgId],
       );
     });
+  }
+
+  // PostgreSQL units are always transactions, so admin changes take lockOrgAdminChanges
+  // and never reach this; passing `fn` through would look like a lease and be none.
+  withAdminLease<T>(): Promise<T> {
+    return Promise.reject(
+      new Error(
+        'withAdminLease is for a standalone MongoDB; PostgreSQL serialises admin changes with lockOrgAdminChanges',
+      ),
+    );
   }
 
   async deleteById(id: string): Promise<void> {

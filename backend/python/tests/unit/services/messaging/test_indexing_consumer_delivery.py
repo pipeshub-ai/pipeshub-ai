@@ -449,7 +449,7 @@ class TestFailedRepublishOfATransientFailure:
     async def test_it_is_attempted_again_before_anything_commits_past_it(
         self, broker, harness, clock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        caplog.set_level(logging.INFO, logger="test")
+        caplog.set_level(logging.DEBUG, logger="test")  # "Committed offset" is DEBUG: index.end says the settlement
         harness.producer = RefusingProducer(broker, refusals=1)
         broker.produce(TOPIC, _record_event("flaky"))
         broker.produce(TOPIC, _record_event("next"))
@@ -468,7 +468,7 @@ class TestFailedRepublishOfATransientFailure:
         assert harness.producer.sent == []
         assert harness.sink.abandoned == []
         messages = [r.getMessage() for r in caplog.records]
-        assert sum(m.startswith("Failed to re-queue record-events-0-0") for m in messages) == 1
+        assert messages.count("index.requeue_failed") == 1
         assert messages.count("Committed offset for record-events-0-0") == 1  # the retry's, not the failed publish's
         if harness.fair is not None:
             for line in ("Task completed with unhandled exception", "finished without resolving its commit claim",

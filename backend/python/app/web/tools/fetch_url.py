@@ -14,6 +14,7 @@ from app.utils.text_fragments import strip_fragment_directive
 from app.utils.url_redaction import redact_url
 from app.web.errors import InvalidUrl, WebError
 from app.web.models import CallerContext
+from app.web.own_files import IssuedFile, issued_file, signature_removed
 from app.web.services import WebFetchService
 
 logger = logging.getLogger(__name__)
@@ -67,10 +68,27 @@ def checked_url(url: str) -> str:
     return url
 
 
+def _own_file_payload(own: IssuedFile) -> str:
+    return json.dumps({
+        "ok": False,
+        "error_type": "own_file",
+        "error": f"{own.file_name or 'This file'} is a file in PipesHub, not a web page",
+        "retryable": False,
+        "hint": (
+            f"This is the download link for record {own.record_id}. Read that record with the knowledge "
+            "base tools instead, so the answer cites the file itself; don't fetch its download link."
+        ),
+    })
+
+
 def create_fetch_url_tool(
-    service: WebFetchService, caller: CallerContext, ref_mapper: CitationRefMapper | None = None,
+    service: WebFetchService,
+    caller: CallerContext,
+    ref_mapper: CitationRefMapper | None = None,
+    issued_links: dict[str, IssuedFile] | None = None,
 ) -> BaseTool:
-    """``ref_mapper`` resolves a tiny web ref the model passes as ``url`` back to the real URL."""
+    """``ref_mapper`` resolves a tiny web ref the model passes as ``url`` back to the real URL.
+    ``issued_links`` holds the download links this request handed out for PipesHub's own files."""
 
     @tool("fetch_url", args_schema=FetchUrlArgs)
     async def fetch_url_tool(url: str) -> str:
@@ -102,7 +120,18 @@ def create_fetch_url_tool(
         """
         started = time.monotonic()
         try:
-            url = checked_url(resolve_tiny_ref_url(url, ref_mapper))
+            url = resolve_tiny_ref_url(url, ref_mapper)
+            if own := issued_file(issued_links, url):
+                record_fetch("own_file", time.monotonic() - started)
+                return _own_file_payload(own)
+            if signature_removed(url):
+                # From an earlier turn's saved step: it opens nothing, and would only hand the
+                # storage path to an outside page reader.
+                raise InvalidUrl(
+                    "This download link's signature was removed when the conversation was saved, so it no "
+                    "longer opens. Read the file from the knowledge base instead."
+                )
+            url = checked_url(url)
             outcome = await service.fetch(url, caller)
         except WebError as e:
             record_fetch(e.error_type, time.monotonic() - started)

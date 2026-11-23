@@ -47,6 +47,9 @@ SCOPE_MAX = 100_000
 COUNT_CAP = 10_000          # a count of what kg decides is exact up to this many rows; a listing with more reports the cap
 UNDECIDED_MAX = 200         # rows kg does not decide that a count may hand to the walk
 CLASS_MAX = 50_000          # classes of a connector a count evaluates
+# The children of a page's rows whose classes a browse reads to decide their arrows by those classes only: up to about this many, one read of their class ids costs less than
+# deciding every class of the connector (each literal of each class a seek); past it the browse decides every class.
+CLASS_COVER = 2_000
 COUNT_SCAN = 500            # candidates the total asks the access check about when kg does not serve the connector (the check is the expensive part during a sync); more than that is reported as "at least"
 WINDOW_MAX = 2_000
 ADMIT_CHUNK = 2_000
@@ -85,15 +88,34 @@ def _node_type(coll: str, doc: dict) -> str:
     return "folder" if doc.get("mimeType") in FOLDER_MIME_TYPES or str(doc.get("recordType") or "").upper() == "FOLDER" else "record"
 
 
-async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str]) -> dict[str, Any] | None:
+async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str], only: list[int] | None = None) -> dict[str, Any] | None:
     """What the viewer's grants open of a connector kg serves, per class: met with no grant of the row's own (``plain``), met with the row's own grant (``own``), and the classes kg cannot vouch
-    for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate."""
-    rows = await tx.fetch(kgl.CLASSES, org, app_sk, CLASS_MAX + 1)
-    if len(rows) > CLASS_MAX:
+    for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate. With ``only``, just those of the connector's classes
+    are decided (``known``; one that is not the connector's opens nothing, as when every class is read): a row of any other class is the access check's (``_kh_class_split``), a
+    statement handed the sets reads only rows of known classes, and :func:`cover_children` decides more of them."""
+    got = await (tx.fetchrow(kgl.CLASSES, org, app_sk, CLASS_MAX + 1) if only is None else tx.fetchrow(kgl.CLASSES_OF, org, app_sk, only))
+    if got["n"] > CLASS_MAX:
         return None
-    found = {r["id"]: (json.loads(r["clauses"]) if isinstance(r["clauses"], str) else list(r["clauses"])) for r in rows}
+    found = {int(c): cl for c, cl in json.loads(got["doc"]).items()}
     verdicts = await kg_read.class_verdicts(tx, org, found, held)
-    return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None}}
+    return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None},
+            "known": None if only is None else set(only), "held": held}
+
+
+async def cover_children(tx: Tx, org: str, sets: dict[str, Any], parents: list[int], hidden: list[int]) -> dict[str, Any] | None:
+    """Sets read for some classes (``class_sets`` with ``only``) extended, in place, by the classes of the live children of ``parents`` (what their arrows decide by class), or by every
+    class of the connector when they have more than CLASS_COVER children. None when those cannot be decided by class (too many classes): the check decides the children then."""
+    kids = await tx.fetch(kgl.CHILD_CLASSES, org, parents, CLASS_COVER + 1, hidden)
+    new = None if len(kids) > CLASS_COVER else sorted({k["class_id"] for k in kids if k["class_id"] is not None} - sets["known"])
+    if new == []:
+        return sets
+    got = await class_sets(tx, org, sets["app_sk"], sets["held"], new)
+    if got is None:
+        return None
+    for k in ("plain", "own", "unvouched"):
+        sets[k] |= got[k]
+    sets["known"] = None if new is None else sets["known"] | got["known"]
+    return sets
 
 
 async def head(tx: Tx, org: str, app_id: str, held: set[str], *, by_class: bool) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
@@ -245,20 +267,33 @@ class KhListingMixin(PgBase):
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, admit)
         viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction)
-        admit_sql, pbase = None, kgl.Params(list(base.values))
-        if viewer is not None:      # a connector kg serves: the classes admit in the statement, so a window needs no question to the access check
+        admit_sql, pbase, page_where = None, kgl.Params(list(base.values)), where
+        if viewer is not None and scope is not None:
+            # The rows of a scope are read by their keys whatever the window, so each window read them all again: the classes admit inside the read, and one window is the page.
+            page_where += f" AND {kgl.class_admit('r', pbase, viewer, raw=True)}"
+            admit_sql = "true"
+        elif viewer is not None:      # a connector kg serves: the classes admit in the statement, so a window needs no question to the access check
             admit_sql = kgl.class_admit("w", pbase, viewer)
         need, kept, boundary, scanned, resume = limit + 1, [], after, 0, None
         window, t0 = min(WINDOW_MAX, max(need * 4, 100)), time.monotonic()
+        # A first page whose windows reach the end of the listing has read every row its total counts, each with what the classes say of it (``ok``): counted from the windows,
+        # the total needs no second read of the connector (a search for a rare word reads the whole connector to find its few rows, and the count read it again).
+        found = {"record": 0, "folder": 0, "recordGroup": 0} if include_total and viewer is not None and after is None else None
+        whole = False
         while len(kept) < need:
             p = kgl.Params(list(pbase.values))
             p.values[2] = window
             branches = kgl.after(sort_field, order, direction, boundary, p) if boundary is not None else None
-            sql = kgl.page_sql(sort_field, order, direction, where, branches, admit_sql)
+            sql = kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql)
             got = await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)
             allowed = None if viewer is not None else await admit([r["id"] for r in got]) if got else set()
             kept += [r for r in got if (r["ok"] if allowed is None else r["id"] in allowed)][:need - len(kept)]
+            if found is not None:
+                for r in got:
+                    if r["ok"]:
+                        found["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += 1
             if len(got) < window:
+                whole = True
                 break
             if len(kept) >= need:
                 break
@@ -272,7 +307,9 @@ class KhListingMixin(PgBase):
             window = min(WINDOW_MAX, window * 8)
         total = counts = None
         capped = False
-        if include_total:
+        if whole and found is not None and sum(found.values()) <= COUNT_CAP:
+            total, counts = sum(found.values()), {k: v for k, v in found.items() if v}
+        elif include_total:
             total, counts, capped = await self._kh_flat_exact(org, app_sk, where, base, viewer, transaction) if viewer is not None else await self._kh_flat_count(org, app_sk, where, base, admit, transaction)
         # the arrow of a group or a folder: on exactly when a browse of it lists something
         containers = [c for c in kept[:need] if c["kind"] == 2 or c["folder"]]
@@ -301,7 +338,7 @@ class KhListingMixin(PgBase):
         """What a flatten below a start lists before its filters: the rows of the connector that browsing down from the start reaches in ``depth`` hops, each one a hierarchy child
         the viewer may open (the walk of Neo4j's and ArangoDB's flatten from a start, by the browse's rule: ``_kh_browse``). Not hidden by a group that hides its children."""
         seen, frontier, out = {start_sk}, [start_sk], []
-        for _ in range(depth):
+        for level in range(depth):
             if not frontier:
                 break
             rows = await self._kq(lambda tx, f=frontier: tx.fetch(kgl.children_of_sql("", total=True), org, f, SCOPE_MAX + 1, hidden, SCOPE_MAX + 1), transaction)      # at most SCOPE_MAX + 1 rows in all, whatever the frontier
@@ -309,6 +346,9 @@ class KhListingMixin(PgBase):
             seen |= set(fresh)
             if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:
                 raise KnowledgeHubListingTooLarge
+            if level == depth - 1:      # the last level leads nowhere further, and the page and its count admit each row they keep
+                out += list(fresh)
+                break
             opened = await admit(list(fresh.values())) if fresh else set()
             frontier = [sk for sk, i in fresh.items() if i in opened]      # whether the viewer may open a row does not depend on the way to it: a row it may not is passed once
             out += frontier
@@ -322,7 +362,13 @@ class KhListingMixin(PgBase):
         seen = {app_sk}
         groups: list[int] = []
         for k in range(depth):
-            rows = await self._kq(lambda tx, f=levels[-1]: tx.fetch(kgl.HIER_CHILDREN, org, f, SCOPE_MAX + 1), transaction)
+            # Read only as many rows as could still fit: a level that fills them is too wide already, unless rows met before took some (then it is read again whole).
+            room = SCOPE_MAX + 1 - len(seen)
+            rows = await self._kq(lambda tx, f=levels[-1], n=room: tx.fetch(kgl.HIER_CHILDREN, org, f, n), transaction)
+            if len(rows) == room:
+                if len(seen | {r["sk"] for r in rows}) > SCOPE_MAX:
+                    raise KnowledgeHubListingTooLarge
+                rows = await self._kq(lambda tx, f=levels[-1]: tx.fetch(kgl.HIER_CHILDREN, org, f, SCOPE_MAX + 1), transaction)
             fresh = [r for r in rows if r["sk"] not in seen]
             seen |= {r["sk"] for r in fresh}
             if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:
@@ -332,7 +378,10 @@ class KhListingMixin(PgBase):
             levels.append(list(dict.fromkeys(r["sk"] for r in fresh)))
             if not levels[-1]:
                 break
-        unplaced = await self._kq(lambda tx: tx.fetch(kgl.UNPLACED, org, groups, app_id, SCOPE_MAX + 1), transaction)
+        async def read_unplaced(tx: Tx) -> list[Any]:
+            await tx.fetchval(kgl.NO_JIT)
+            return await tx.fetch(kgl.UNPLACED, org, groups, app_id, SCOPE_MAX + 1)
+        unplaced = await self._kq(lambda tx: kg_read.in_savepoint(tx, read_unplaced), transaction)
         if len(seen) + len(unplaced) > SCOPE_MAX:
             raise KnowledgeHubListingTooLarge
         return sorted((seen - {app_sk}) | {r["sk"] for r in unplaced})
@@ -376,7 +425,7 @@ class KhListingMixin(PgBase):
         for r in rows:
             # a row of another connector has its connector's classes, not these: the check decides it, as it does a deleted or a foreign one
             if (r["r13"] is False and r["has_path"] and r["class_id"] is not None and not r["fenced"] and not r["placeholder"] and r["class_id"] not in sets["unvouched"]
-                    and r["app_sk"] == sets["app_sk"] and not r["deleted"] and not r["alien"]):
+                    and r["app_sk"] == sets["app_sk"] and not r["deleted"] and not r["alien"] and (sets["known"] is None or r["class_id"] in sets["known"])):
                 if r["class_id"] in sets["plain"] or (r["class_id"] in sets["own"] and r["id"] in granted):
                     ok.add(r["id"])
             else:
@@ -514,6 +563,8 @@ class KhListingMixin(PgBase):
         groups = [c["sk"] for c in page if c["kind"] == 2 and not c["hide_children"]]
         held = {r["sk"] for r in await tx.fetch(kgl.HELD, org, groups, sorted(gset))} if tops and groups and gset else set()
         rest = asked
+        if sets is not None and sets["known"] is not None:      # a browse decides by the classes it has read: those of these rows' children too
+            sets = await cover_children(tx, org, sets, asked, hidden)
         if sets is not None:
             q = kgl.Params([org, asked, hidden])
             admit_c = kgl.class_admit("c", q, {"plain": sorted(sets["plain"]), "own": sorted(sets["own"]), "unvouched": sorted(sets["unvouched"]), "granted": sorted(gset), "walked": set()})

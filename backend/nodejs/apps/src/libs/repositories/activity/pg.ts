@@ -106,6 +106,40 @@ export async function recordBeforeOrg(entry: NewActivity): Promise<void> {
   );
 }
 
+/**
+ * One page (in id order, after `after`) of the organisation's activity rows: deletes those created before `cutoff` that no read can
+ * return. Every read takes a person's newest live row of a type, so that row is kept however old it is (a sign-out from a year ago
+ * still ends a token issued before it); older rows of the same person and type, removed rows, and attempts with no person are
+ * deleted. `last` is the page's highest id, null once the organisation has no rows past `after`. The time-based sweep calls it.
+ */
+export async function trimActivitiesPage(
+  orgId: string,
+  after: string,
+  cutoff: Date,
+  limit: number,
+): Promise<{ last: string | null; removed: number }> {
+  return asOrg(orgId, () =>
+    inUnit(undefined, { write: true, fresh: true }, async (k) => {
+      const { rows } = await k.query<{ last: string | null; removed: number }>(
+        `/* pipeshub:identity.activity_trim */ WITH page AS (
+            SELECT o.id, o.user_id, o.activity_type, o.is_deleted, o.created_at FROM identity.user_activities o
+             WHERE o.org_id = $1 AND o.id > $2::text ORDER BY o.id LIMIT $3),
+          gone AS (
+            DELETE FROM identity.user_activities a USING page p
+             WHERE a.org_id = $1 AND a.id = p.id AND p.created_at < $4
+               AND (p.is_deleted OR p.user_id IS NULL OR EXISTS (
+                 SELECT 1 FROM identity.user_activities n
+                  WHERE n.org_id = $1 AND n.user_id = p.user_id AND n.activity_type = p.activity_type AND NOT n.is_deleted
+                    AND (n.created_at, n.id) > (p.created_at, p.id)))
+             RETURNING 1)
+          SELECT (SELECT max(id) FROM page) AS last, (SELECT count(*) FROM gone)::int AS removed`,
+        [k.orgId, after, limit, cutoff],
+      );
+      return rows[0] ?? { last: null, removed: 0 };
+    }),
+  );
+}
+
 export class PgActivityRepository implements ActivityRepository, Importable {
   /** The migration copy: see ./pg-import. */
   importBatch(

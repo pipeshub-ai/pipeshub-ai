@@ -83,6 +83,59 @@ spec:
               protocol: TCP
             {{- end }}
           env:{{ include "pipeshub-ai.appEnv" . }}
+            # Code sandbox capacity (sandbox.capacity in values.yaml).
+            {{- if and .Values.sandbox.dind.enabled (eq (include "pipeshub-ai.sandboxPath" .) "dind") }}
+            - name: SANDBOX_HOST_MEMORY_BYTES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: dind
+                  resource: limits.memory
+                  divisor: "1"
+            - name: SANDBOX_HOST_CPU_MILLIS
+              valueFrom:
+                resourceFieldRef:
+                  containerName: dind
+                  resource: limits.cpu
+                  divisor: "1m"
+            - name: SANDBOX_MEMORY_SHARE
+              value: {{ .Values.sandbox.capacity.memoryShare | default "0.9" | quote }}
+            # The daemon is this pod's sidecar: the live limit reads the
+            # sidecar (sandbox.dind.liveLimit), never the node.
+            - name: SANDBOX_DOCKER_TOPOLOGY
+              value: "dind-sidecar"
+            {{- if not .Values.sandbox.dind.liveLimit.enabled }}
+            - name: SANDBOX_LIVE_LIMIT
+              value: "off"
+            {{- end }}
+            {{- range $name, $key := dict "SANDBOX_SIDECAR_MEM_HIGH" "memHigh" "SANDBOX_SIDECAR_MEM_HARD" "memHard" "SANDBOX_SIDECAR_CPU_BRAKE" "cpuBrake" "SANDBOX_SIDECAR_CPU_THROTTLE" "cpuThrottle" }}
+            {{- with (index $.Values.sandbox.dind.liveLimit $key) }}
+            - name: {{ $name }}
+              value: {{ . | toString | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- with (include "pipeshub-ai.sandboxCapacityDivisor" .) }}
+            - name: SANDBOX_CAPACITY_DIVISOR
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with (include "pipeshub-ai.sandboxMaxTotal" .) }}
+            - name: SANDBOX_MAX_TOTAL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $name, $key := dict "SANDBOX_MAX_PER_ORG" "maxPerOrg" "SANDBOX_MAX_PER_REQUEST" "maxPerRequest" "SANDBOX_MIN_TOTAL" "minTotal" "SANDBOX_CPU_FACTOR" "cpuFactor" "SANDBOX_SLOT_WAIT_S" "slotWaitSeconds" "SANDBOX_HOST_PID_LIMIT" "pidLimit" "SANDBOX_MEMORY_OVERCOMMIT" "memoryOvercommit" }}
+            {{- /* Not `with`: a numeric 0 is a setting, not an empty value. */}}
+            {{- $value := index $.Values.sandbox.capacity $key }}
+            {{- if and (not (kindIs "invalid" $value)) (ne (toString $value) "") }}
+            - name: {{ $name }}
+              value: {{ $value | toString | quote }}
+            {{- end }}
+            {{- end }}
+            # Each pod has its own sandboxes and load alert evaluator, so each
+            # gets its own alert cooldown.
+            - name: SANDBOX_ALERT_SCOPE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             {{- if .Values.metrics.enabled }}
             # The ops exporter of the indexing process (not the parsing Deployment's own /metrics).
             - name: PIPESHUB_METRICS_ENABLED
@@ -187,12 +240,22 @@ spec:
             privileged: true
             runAsNonRoot: false
             runAsUser: 0
+          {{- if .Values.sandbox.dind.liveLimit.enabled }}
+          # Starts the loop that writes this container's cgroup counters for
+          # docker-proxy (pipeshub-ai.dindExporterScript), then the image's
+          # entrypoint with the args below unchanged.
+          command: ["/bin/sh", "-c", {{ include "pipeshub-ai.dindExporterScript" . | quote }}, "pipeshub-dind"]
+          {{- end }}
           env:
             - name: DOCKER_TLS_CERTDIR
               value: ""
             # For the `docker info` probes below.
             - name: DOCKER_HOST
               value: "unix:///var/run/dind/docker.sock"
+            {{- if .Values.sandbox.dind.liveLimit.enabled }}
+            - name: PIPESHUB_EXPORT_INTERVAL
+              value: {{ .Values.sandbox.dind.liveLimit.exportIntervalSeconds | default 5 | toString | quote }}
+            {{- end }}
           # No TCP listener: every container in a pod shares one network
           # namespace, so a loopback port would hand the raw API to the
           # application container too. The socket's volume is mounted only
@@ -241,7 +304,8 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
-            # Loopback only: the default 0.0.0.0 would also serve the pod IP.
+            # Loopback only (also the proxy's default): the pod IP must not
+            # serve it, since the proxy has no client authentication.
             - name: DOCKER_PROXY_HOST
               value: "127.0.0.1"
             - name: DOCKER_PROXY_PORT
@@ -258,6 +322,21 @@ spec:
               value: {{ .Values.config.sandboxDockerImage | quote }}
             - name: SANDBOX_EGRESS_NETWORK
               value: {{ .Values.config.sandboxEgressNetwork | quote }}
+            # The same value the app gets: the reaper removes sandbox
+            # containers older than this cap plus a margin.
+            - name: SANDBOX_MAX_RUN_TIMEOUT_S
+              value: {{ .Values.config.sandboxMaxRunTimeoutS | quote }}
+            # Labels this release's sandbox containers, so releases sharing a
+            # daemon never see or reap each other's.
+            - name: DOCKER_PROXY_INSTANCE
+              value: {{ printf "%s/%s" .Release.Namespace (include "pipeshub-ai.fullname" .) | quote }}
+            - name: DOCKER_PROXY_REAP_UNLABELED
+              value: {{ .Values.sandbox.proxy.reapUnlabeled | default false | toString | quote }}
+            {{- if .Values.sandbox.dind.liveLimit.enabled }}
+            # Written by the loop in the dind container; served as GET /_pipeshub/usage.
+            - name: DOCKER_PROXY_SIDECAR_STATS_FILE
+              value: "/var/run/dind/pipeshub-sidecar-stats"
+            {{- end }}
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
           resources:

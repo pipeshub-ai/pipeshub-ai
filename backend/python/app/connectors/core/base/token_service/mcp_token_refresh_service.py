@@ -48,7 +48,8 @@ MIN_IMMEDIATE_RECHECK_DELAY_SECONDS = 1
 PROACTIVE_REFRESH_WINDOW_SECONDS = 600  # refresh 10 minutes before expiry
 MIN_SHORT_LIVED_REFRESH_WINDOW_SECONDS = 60
 SHORT_LIVED_TOKEN_BUFFER_RATIO = 0.2
-MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
+# shortcut: EE imports this name (ee/.../mcp_token_refresh_service.py:23); drop it with the EE port of F22.
+MAX_REFRESH_TOKEN_INVALID_FAILURES = mcp_token_refresh.MAX_REFRESH_REJECTIONS
 PERIODIC_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
 STATE_SWEEP_INTERVAL_SECONDS = 300
 
@@ -82,6 +83,8 @@ class MCPTokenRefreshService:
         self._credential_locks: Dict[str, asyncio.Lock] = {}
         self._schedule_locks: Dict[str, asyncio.Lock] = {}
         self._last_refresh_time: Dict[str, float] = {}
+        # shortcut: in-process strikes for the request-shape refusals only (F22), and read by EE's override of
+        # _perform_token_refresh / _handle_refresh_token_invalid; remove with the EE port of F22.
         self._invalid_refresh_failures: Dict[str, int] = {}
 
     def _get_credential_lock(self, config_path: str) -> asyncio.Lock:
@@ -161,7 +164,8 @@ class MCPTokenRefreshService:
                     await self.configuration_service.delete_config(config_path)
                     continue
 
-                record, has_oauth, org_id = await self._load_token_from_config(config_path)
+                with _scope(config_path, trigger=Trigger.SCAN):
+                    record, has_oauth, org_id = await self._load_token_from_config(config_path)
                 if not has_oauth or record is None:
                     continue
 
@@ -175,7 +179,7 @@ class MCPTokenRefreshService:
                     log_check_failed(self.logger, e, once_key=_once_key(config_path))
 
     async def _load_token_from_config(self, config_path: str) -> tuple[Optional[OAuthTokens], bool, Optional[str]]:
-        """(tokens, whether they can be refreshed, the record's org)."""
+        """(tokens, whether they can be refreshed, the record's org). Called inside a refresh scope, which names the trigger."""
         record = await self.configuration_service.get_config(config_path, default=None, use_cache=False)
         if not isinstance(record, dict):
             return None, False, None
@@ -186,9 +190,11 @@ class MCPTokenRefreshService:
         if not isinstance(tokens_dict, dict) or not tokens_dict.get("refreshToken"):
             return None, False, org_id
         try:
-            token = OAuthTokens(**tokens_dict)
-        except Exception as e:
-            self.logger.debug("Could not parse the stored OAuth tokens", extra={"error_type": type(e).__name__})
+            token = oauth_client_module.parse_tokens(tokens_dict)
+        except oauth_client_module.MCPMalformedTokenError as e:
+            # Never refreshed ahead of expiry until someone signs in again: say so, once an hour per credential.
+            with _scope(config_path, org_id=org_id):
+                log_check_failed(self.logger, e, once_key=_once_key(config_path))
             return None, False, org_id
         return token, True, org_id
 
@@ -218,6 +224,10 @@ class MCPTokenRefreshService:
         return new_tokens
 
     async def _handle_refresh_token_invalid(self, config_path: str, error: Exception) -> None:
+        # shortcut: token_refresh's shared rule counts the grant and client refusals; this in-process count is left
+        # for the request-shape codes (F22) and for EE, which overrides it. Remove with the EE port of F22.
+        if getattr(error, "deauth_reason", None):
+            return
         failures = self._invalid_refresh_failures.get(config_path, 0) + 1
         self._invalid_refresh_failures[config_path] = failures
         # The full cause is on the attempt's credential_refresh.end line; the strike carries only its class and OAuth code.
@@ -235,7 +245,7 @@ class MCPTokenRefreshService:
             record["deauthReason"] = "refresh_token_invalid"
             record["updatedAt"] = get_epoch_timestamp_in_ms()
             if await self.configuration_service.set_config(config_path, record):
-                log_deauthenticated(self.logger, reason="refresh_token_invalid", strikes=failures, path="background")
+                log_deauthenticated(self.logger, reason="refresh_token_invalid", strikes=failures)
             else:
                 log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated")
         except Exception as e:

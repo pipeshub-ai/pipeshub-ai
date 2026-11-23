@@ -9,6 +9,7 @@ import {
   updateSlackBotConfig,
   SLACK_BOT_SETTINGS_UNREADABLE,
   addWebSearchProvider,
+  deleteAIModelProvider,
   deleteWebSearchProvider,
   getWebSearchProviders,
   updateDefaultWebSearchProvider,
@@ -20,11 +21,13 @@ import { configPaths } from '../../../../src/modules/configuration_manager/paths
 import { EncryptionService } from '../../../../src/libs/encryptor/encryptor';
 import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets';
 import { InternalServerError } from '../../../../src/libs/errors/http.errors';
+import { Logger } from '../../../../src/libs/services/logger.service';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import type { NextFunction, Response } from 'express';
 import type { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types';
 import type { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service';
-import type { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
+import { registerAppUpstreams, type AppConfig } from '../../../../src/modules/tokens_manager/config/config';
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call';
 
 // Drives the real configuration-manager handlers against an in-memory key-value
 // store, with real encryption. Only the store and the AI service's HTTP health
@@ -317,6 +320,8 @@ describe('Configuration manager stored settings', () => {
   describe('web search providers', () => {
     const aiBackend = 'http://ai.test';
     const appConfig = { aiBackend } as unknown as AppConfig;
+    beforeEach(() => registerAppUpstreams(appConfig));
+    afterEach(() => registerUpstreams({}));
     let fetchStub: sinon.SinonStub;
     let healthChecks: Array<{ provider: string; configuration: Record<string, unknown> }>;
     let healthAnswer: { status: number; body: unknown };
@@ -513,14 +518,28 @@ describe('Configuration manager stored settings', () => {
       expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([['crawl4ai', false]]);
     });
 
-    it('still deletes when the agent-usage check cannot be reached', async () => {
+    it('keeps the provider when the agent-usage check cannot be reached', async () => {
       kv.values.set(configPaths.webSearch, seal({ providers: [serper, tavily] }));
       agentsUsing = new Error('ai service down');
 
-      const { res } = await run(deleteWebSearchProvider(store(), appConfig), {
+      const { error } = await run(deleteWebSearchProvider(store(), appConfig), {
         params: { providerKey: 'key-tavily' },
       });
 
+      expect(error, 'deleted although the check failed').to.exist;
+      expect((error as { statusCode?: number }).statusCode).to.equal(503);
+      expect(stored().providers.map((p) => p.provider)).to.deep.equal(['serper', 'tavily']);
+    });
+
+    it('deletes a provider no agent uses', async () => {
+      kv.values.set(configPaths.webSearch, seal({ providers: [serper, tavily] }));
+      agentsUsing = [];
+
+      const { res, error } = await run(deleteWebSearchProvider(store(), appConfig), {
+        params: { providerKey: 'key-tavily' },
+      });
+
+      expect(error).to.be.undefined;
       expect(res.statusCode).to.equal(200);
       expect(stored().providers.map((p) => p.provider)).to.deep.equal(['serper']);
     });
@@ -731,5 +750,136 @@ describe('Configuration manager stored settings', () => {
       expect(error).to.be.instanceOf(Error);
       expect(res.body).to.be.undefined;
     });
+  });
+
+  describe('agent usage checks before a delete', () => {
+    const aiBackend = 'http://ai.test';
+    const appConfig = { aiBackend, cmBackend: 'http://cm.test' } as unknown as AppConfig;
+    // At most 10 characters: JSON.parse quotes about that much of a body it cannot read, so the raw error would carry it.
+    const BODY = '<f69-sent>';
+    const DETAIL = 'f69-detail-sentinel';
+    const MODEL_REFUSAL =
+      "We couldn't check which agents use this model, so it wasn't deleted. Please try again in a few seconds.";
+    const PROVIDER_REFUSAL =
+      "We couldn't check which agents use this web search provider, so it wasn't deleted. Please try again in a few seconds.";
+    let usage: () => globalThis.Response;
+    let usageCalls: number;
+    let logged: () => string;
+    const eventService = { start: sinon.stub(), publishEvent: sinon.stub().resolves(), stop: sinon.stub() };
+
+    beforeEach(() => registerAppUpstreams(appConfig));
+    afterEach(() => registerUpstreams({}));
+    beforeEach(() => {
+      usageCalls = 0;
+      eventService.publishEvent.resetHistory();
+      const levels = (['error', 'warn', 'info', 'debug'] as const).map((level) => sinon.stub(Logger.prototype, level));
+      logged = () => JSON.stringify(levels.flatMap((stub) => stub.args));
+      kv.values.set(configPaths.aiModels, seal({ llm: [{ modelKey: 'model-1', provider: 'openai', isDefault: true, configuration: { model: 'gpt-4o' } }] }));
+      kv.values.set(configPaths.webSearch, seal({ providers: [{ provider: 'serper', providerKey: 'key-serper', configuration: {}, isDefault: true }] }));
+      sinon.stub(globalThis, 'fetch').callsFake((async (url: string) => {
+        if (url.startsWith(`${aiBackend}/api/v1/agent/model-usage/`) || url.startsWith(`${aiBackend}/api/v1/agent/web-search-usage/`)) {
+          usageCalls++;
+          return usage();
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      }) as unknown as typeof fetch);
+    });
+
+    const json = (status: number, body: unknown) => () => new Response(JSON.stringify(body), { status });
+    const fails = (error: Error) => () => {
+      throw error;
+    };
+    const models = () => open<{ llm: unknown[] }>(configPaths.aiModels).llm;
+    const providers = () => open<{ providers: unknown[] }>(configPaths.webSearch).providers;
+    const deletes = [
+      {
+        name: 'AI model',
+        run: () => run(deleteAIModelProvider(store(), eventService as never, appConfig), { params: { modelType: 'llm', modelKey: 'model-1' } }),
+        left: () => models().length,
+        refusal: MODEL_REFUSAL,
+      },
+      {
+        name: 'web search provider',
+        run: () => run(deleteWebSearchProvider(store(), appConfig), { params: { providerKey: 'key-serper' } }),
+        left: () => providers().length,
+        refusal: PROVIDER_REFUSAL,
+      },
+    ];
+    const unverifiable: Array<[string, () => globalThis.Response]> = [
+      ['the AI service cannot be reached', fails(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))],
+      ['the check times out', fails(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))],
+      ['the check answers a 5xx', json(500, { detail: DETAIL })],
+      ['the check answers a 4xx', json(400, { detail: DETAIL })],
+      ['the check answers a 4xx that claims success', json(400, { success: true, agents: [] })],
+      ['the check answers a page that is not JSON', () => new Response(BODY, { status: 502 })],
+      ['the check answers 200 without success', json(200, { success: false, agents: [] })],
+      ['the check answers 200 with no agent list', json(200, { success: true, agents: 'none' })],
+    ];
+
+    for (const target of deletes) {
+      for (const [when, answer] of unverifiable) {
+        it(`keeps the ${target.name} and answers 503 when ${when}`, async () => {
+          usage = answer;
+
+          const { error } = await target.run();
+
+          expect(error, 'deleted although the check failed').to.exist;
+          expect(usageCalls, 'the refusal must come from the usage answer, not from a call that never left').to.be.greaterThan(0);
+          const refused = error as Error & { statusCode?: number; cause?: unknown };
+          expect(refused.statusCode).to.equal(503);
+          expect(refused.message).to.equal(target.refusal);
+          expect(refused.cause, 'the log line needs a cause to class the refusal').to.not.be.undefined;
+          // The cause is logged with the refusal: it must carry nothing the AI service sent.
+          const cause = `${JSON.stringify(refused.cause)} ${(refused.cause as { message?: string }).message ?? ''}`;
+          expect(cause).to.not.include('f69-sent').and.to.not.include(DETAIL);
+          // The error middleware logs the refusal once; the handler writes nothing of its own, and no line quotes the body.
+          expect(logged()).to.not.include('f69-sent').and.to.not.include(DETAIL);
+          expect(target.left()).to.equal(1);
+          expect(eventService.publishEvent.called).to.be.false;
+        });
+      }
+
+      it(`keeps the ${target.name} and attaches a cause that says only that the answer was not JSON`, async () => {
+        usage = () => new Response(BODY, { status: 200 });
+
+        const { error } = await target.run();
+
+        expect(usageCalls).to.equal(1);
+        const cause = (error as { cause?: unknown } | undefined)?.cause;
+        expect(cause).to.be.instanceOf(SyntaxError);
+        expect((cause as SyntaxError).message).to.equal('response was not valid JSON');
+        expect(target.left()).to.equal(1);
+      });
+
+      it(`gives the ${target.name} check a 30 s budget, not the AI service's default`, async () => {
+        const budget = sinon.spy(AbortSignal, 'timeout');
+        usage = json(200, { success: true, agents: [] });
+
+        const { error } = await target.run();
+
+        expect(error).to.be.undefined;
+        expect(usageCalls).to.equal(1);
+        expect(budget.calledWith(30_000)).to.equal(true);
+      });
+
+      it(`deletes the ${target.name} when the check answers that no agent uses it`, async () => {
+        usage = json(200, { success: true, agents: [] });
+
+        const { res, error } = await target.run();
+
+        expect(error).to.be.undefined;
+        expect(res.statusCode).to.equal(200);
+        expect(target.left()).to.equal(0);
+      });
+
+      it(`refuses the ${target.name} with 409 while an agent uses it`, async () => {
+        usage = json(200, { success: true, agents: [{ name: 'Researcher', _key: 'a1' }] });
+
+        const { res, error } = await target.run();
+
+        expect((error as { statusCode?: number } | undefined)?.statusCode ?? res.statusCode).to.equal(409);
+        expect(target.left()).to.equal(1);
+      });
+    }
   });
 });

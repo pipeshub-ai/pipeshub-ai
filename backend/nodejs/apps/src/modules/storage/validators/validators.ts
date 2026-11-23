@@ -7,12 +7,15 @@ import {
   ARTIFACT_MAX_FILES_PER_CALL,
   PAID_RESULT_LIST_PAGE,
   PAID_RESULT_MAX_FILES_PER_CALL,
+  PAID_RESULT_PURGE_BATCH_MAX,
 } from '../constants/constants';
 import {
   isPaidResultListPrefix,
   isPaidResultPath,
   isPaidResultManifestPath,
   isPaidResultObjectPath,
+  isPaidResultMarkerPath,
+  ETAG_VALUE,
   RECORD_ID,
 } from '../utils/paid-results';
 import { messageWhenPresent } from '../../../libs/utils/validation.utils';
@@ -408,6 +411,16 @@ const paidResultPathSchema = z
   .string()
   .refine(isPaidResultPath, 'Not a file the paid-result cache can hold');
 
+// Readable like a result; the signed-URL modes that write refuse it (see the mode check below).
+const paidResultReadablePathSchema = z
+  .string()
+  .refine(
+    (p) => isPaidResultPath(p) || isPaidResultMarkerPath(p),
+    'Not a file the paid-result cache can hold',
+  );
+
+const etagSchema = z.string().regex(ETAG_VALUE, 'Not an ETag');
+
 const uniqueItems = (items: string[]): boolean =>
   new Set(items).size === items.length;
 
@@ -420,18 +433,24 @@ export const PresignPaidResultsSchema = z.object({
       .array(
         z
           .object({
-            path: paidResultPathSchema,
+            path: paidResultReadablePathSchema,
             // `replace` is for a writer's own manifest, which it rewrites as it goes; `refresh` overwrites one
-            // result object (a refresh run's, or one found unreadable). `put` never overwrites.
-            mode: z.enum(['put', 'get', 'replace', 'refresh']),
+            // result object (a refresh run's, or one found unreadable); `bump` replaces one result object only
+            // while its ETag is `etag` (a reuse refreshing the version). `put` never overwrites.
+            mode: z.enum(['put', 'get', 'replace', 'refresh', 'bump']),
+            etag: etagSchema.optional(),
           })
           .refine(
             (f) =>
               f.mode === 'replace'
-                ? isPaidResultManifestPath(f.path)
+                ? isPaidResultManifestPath(f.path) && f.etag === undefined
                 : f.mode === 'refresh'
-                  ? isPaidResultObjectPath(f.path)
-                  : true,
+                  ? isPaidResultObjectPath(f.path) && f.etag === undefined
+                  : f.mode === 'bump'
+                    ? isPaidResultObjectPath(f.path) && f.etag !== undefined
+                    : f.mode === 'get'
+                      ? f.etag === undefined
+                      : isPaidResultPath(f.path) && f.etag === undefined,
             { message: 'This mode does not apply to this path' },
           ),
       )
@@ -448,7 +467,7 @@ export const PaidResultFileParams = z.object({
   headers: Headers,
   params: z.object({
     recordId: paidResultRecordIdSchema,
-    0: paidResultPathSchema,
+    0: paidResultReadablePathSchema,
   }),
 });
 
@@ -480,9 +499,42 @@ export const DeletePaidResultsSchema = z.object({
   }),
 });
 
+// A delete by version has a route of its own: a storage replica that does not know it answers 404, where one that
+// merely ignored an `etags` field of the plain route would delete without the guard.
+export const DeleteIfMatchPaidResultsSchema = z.object({
+  headers: Headers,
+  params: z.object({ recordId: paidResultRecordIdSchema }),
+  body: z.object({
+    orgId: z.string().optional(),
+    items: z
+      .array(z.object({ path: paidResultPathSchema, etag: etagSchema }))
+      .min(1)
+      .max(PAID_RESULT_LIST_PAGE)
+      .refine((items) => uniqueItems(items.map((i) => i.path)), {
+        message: 'Each path may appear only once',
+      }),
+  }),
+});
+
 export const PurgeCutoffPaidResultsSchema = z.object({
   headers: Headers,
   params: z.object({ recordId: paidResultRecordIdSchema }),
+});
+
+// The org is the token's: a body that names one (or any other field) is refused, not ignored.
+export const PurgeBatchPaidResultsSchema = z.object({
+  headers: Headers,
+  body: z
+    .object({
+      recordIds: z
+        .array(paidResultRecordIdSchema)
+        .min(1)
+        .max(PAID_RESULT_PURGE_BATCH_MAX)
+        .refine(uniqueItems, {
+          message: 'Each record id may appear only once',
+        }),
+    })
+    .strict(),
 });
 
 export const PurgePaidResultsSchema = z.object({

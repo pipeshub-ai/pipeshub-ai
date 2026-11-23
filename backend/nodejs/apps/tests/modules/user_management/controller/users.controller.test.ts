@@ -12,6 +12,7 @@ import { UserDisplayPicture } from '../../../../src/modules/user_management/sche
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { MongoUserRepository } from '../../../../src/libs/repositories/user/mongo';
 import { DEFAULT_BRAND, setBrandResolver } from '../../../../src/libs/branding';
 import { NotificationContainer } from '../../../../src/modules/notification/container/notification.container';
 import { userActivitiesType } from '../../../../src/libs/utils/userActivities.utils';
@@ -86,6 +87,8 @@ describe('UserController', () => {
   };
 
   beforeEach(() => {
+    // The standalone admin-role lease has its own tests; here it only runs the change.
+    sinon.stub(MongoUserRepository.prototype, 'withAdminLease').callsFake((_orgId, fn) => fn({ confirm: async () => true }));
     // deleteUser revokes the person's tokens; no test here reaches a real store.
     tokenRepo = {
       revokeAllForUser: sinon.stub().resolves(),

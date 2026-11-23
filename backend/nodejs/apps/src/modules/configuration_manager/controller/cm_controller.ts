@@ -16,7 +16,9 @@ import {
   ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
-import { handleBackendError } from '../../../libs/errors/backend-error';
+import { handleBackendError, safeCause } from '../../../libs/errors/backend-error';
+import { withCause } from '../../../libs/errors/base.error';
+import { markClientSafe } from '../../../libs/errors/reader-friendly';
 import {
   googleWorkspaceBusinessCredentialsSchema,
   googleWorkspaceIndividualCredentialsSchema,
@@ -3829,6 +3831,53 @@ export const updateAIModelProvider =
     }
   };
 
+const MODEL_USAGE_UNVERIFIABLE =
+  "We couldn't check which agents use this model, so it wasn't deleted. Please try again in a few seconds.";
+const WEB_SEARCH_USAGE_UNVERIFIABLE =
+  "We couldn't check which agents use this web search provider, so it wasn't deleted. Please try again in a few seconds.";
+// No usage check in this module sets a budget to match; AIServiceCommand's default (620s) is sized for model downloads.
+// shortcut: a usage read slower than 30s refuses the delete; raise it if large orgs hit that.
+const AGENT_USAGE_TIMEOUT_MS = 30_000;
+
+type AgentUsage = { name?: string; _key?: string; creatorName?: string | null };
+
+/**
+ * The agents the AI service says use a model or web search provider (`path` under /api/v1/agent/).
+ * Anything but a well-formed 200 refuses the delete with a 503 in `refusal`'s words: a check that
+ * cannot be made must never read as "no agents".
+ */
+async function readAgentUsage(
+  path: string,
+  req: AuthenticatedUserRequest,
+  appConfig: AppConfig,
+  refusal: string,
+): Promise<AgentUsage[]> {
+  const unverifiable = (cause: unknown): ServiceUnavailableError =>
+    withCause(markClientSafe(new ServiceUnavailableError(refusal)), cause);
+  const answer = await new AIServiceCommand<{ success?: boolean; agents?: AgentUsage[] }>({
+    uri: `${appConfig.aiBackend}/api/v1/agent/${path}`,
+    method: HttpMethod.GET,
+    headers: {
+      ...(req.headers as Record<string, string>),
+      'Content-Type': 'application/json',
+    },
+    timeoutMs: AGENT_USAGE_TIMEOUT_MS,
+  })
+    .execute()
+    // safeCause: a non-JSON body's SyntaxError quotes the body, which must not reach the log
+    .catch((error: unknown) => {
+      throw unverifiable(safeCause(error));
+    });
+  if (
+    answer.statusCode !== 200 ||
+    answer.data?.success !== true ||
+    !Array.isArray(answer.data.agents)
+  ) {
+    throw unverifiable({ status: answer.statusCode });
+  }
+  return answer.data.agents;
+}
+
 export const deleteAIModelProvider =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -3877,40 +3926,13 @@ export const deleteAIModelProvider =
         return;
       }
 
-      // Check if any agents are using this model before allowing deletion.
-      // Fail-closed: if the usage check itself errors, block deletion rather than risk
-      // deleting a model that active agents depend on.
-      const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
-        method: HttpMethod.GET,
-        headers: {
-          ...(req.headers as Record<string, string>),
-          'Content-Type': 'application/json',
-        },
-      };
-      const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
-
-      let aiResponse;
-      try {
-        aiResponse = await aiCommand.execute();
-      } catch (usageError: any) {
-        logger.error('Agent usage check failed; blocking AI model deletion (fail-closed)', { error: usageError.message });
-        throw new InternalServerError(
-          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
-        );
-      }
-
-      if (aiResponse?.statusCode !== 200 || !aiResponse?.data?.success) {
-        logger.error('Agent usage check returned non-success response; blocking AI model deletion', {
-          statusCode: aiResponse?.statusCode,
-          data: aiResponse?.data,
-        });
-        throw new InternalServerError(
-          'Cannot delete this model: unable to verify if it is in use by agents. Please try again or contact support.',
-        );
-      }
-
-      const agentsUsing = Array.isArray(aiResponse.data.agents) ? aiResponse.data.agents : [];
+      // Before the delete: a model agents still name leaves them unable to chat.
+      const agentsUsing = await readAgentUsage(
+        `model-usage/${encodeURIComponent(deletedModel.modelKey)}`,
+        req,
+        appConfig,
+        MODEL_USAGE_UNVERIFIABLE,
+      );
 
       if (agentsUsing.length > 0) {
         // Bake agent names into the message string itself. The error middleware
@@ -4052,7 +4074,6 @@ export const deleteAIModelProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error deleting AI model provider', { error });
       next(error);
     }
   };
@@ -4920,34 +4941,19 @@ export const deleteWebSearchProvider =
 
       const deletedProvider = webSearchConfig.providers[providerIndex];
 
-      // Check if any agents are using this provider before allowing deletion
-      try {
-        const aiCommandOptions: AICommandOptions = {
-          uri: `${appConfig.aiBackend}/api/v1/agent/web-search-usage/${encodeURIComponent(deletedProvider.provider)}`,
-          method: HttpMethod.GET,
-          headers: {
-            ...(req.headers as Record<string, string>),
-            'Content-Type': 'application/json',
-          },
-        };
-        const aiCommand = new AIServiceCommand<{ success?: boolean; agents?: any[] }>(aiCommandOptions);
-        const aiResponse = await aiCommand.execute();
-
-        const agents =
-          aiResponse?.data?.success && Array.isArray(aiResponse.data.agents)
-            ? aiResponse.data.agents
-            : [];
-
-        if (agents.length > 0) {
-          res.status(409).json({
-            status: 'error',
-            message: `Cannot delete this provider because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove the web search configuration from these agents first.`,
-            agents,
-          });
-          return;
-        }
-      } catch (usageError: any) {
-        logger.warn('Failed to check agent usage before deleting web search provider; proceeding with deletion', { error: usageError.message });
+      const agents = await readAgentUsage(
+        `web-search-usage/${encodeURIComponent(deletedProvider.provider)}`,
+        req,
+        appConfig,
+        WEB_SEARCH_USAGE_UNVERIFIABLE,
+      );
+      if (agents.length > 0) {
+        res.status(409).json({
+          status: 'error',
+          message: `Cannot delete this provider because it is currently used by ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}. Please remove the web search configuration from these agents first.`,
+          agents,
+        });
+        return;
       }
 
       const wasDefault = deletedProvider.isDefault || false;
@@ -4987,7 +4993,6 @@ export const deleteWebSearchProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error deleting web search provider', { error });
       next(error);
     }
   };

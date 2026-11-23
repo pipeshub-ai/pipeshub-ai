@@ -139,10 +139,8 @@ const feed = (res: FakeResponse, call: StreamCall): string => {
     call.conversation ? asDoc(call.conversation) : null,
     call.messageId ?? null,
     null,
-    'req-regen',
     asRes(res),
     call.onComplete ?? ((): void => undefined),
-    AGUI_PROTOCOL,
     call.accumulator,
     call.onUpstreamError,
     call.onAskUserQuestion,
@@ -247,18 +245,38 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(onUpstreamError.calledOnceWithExactly('llm_config')).to.equal(true)
     })
 
-    it('still reports a RUN_ERROR whose data is null, so no second error frame or save follows', async () => {
+    it('neither reports nor passes on a RUN_ERROR whose data is null, so the run ends on the awaited no-answer path', async () => {
       const res = makeRes()
       const conversation = makeConversation()
       const messageId = new mongoose.Types.ObjectId()
+      const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId } as never)
       const onUpstreamError = sinon.spy()
-      const chunk = 'event: RUN_ERROR\ndata: null\n\n'
 
-      expect(() => feed(res, { chunk, conversation, messageId, onUpstreamError })).to.not.throw()
+      expect(() =>
+        feed(res, { chunk: 'event: RUN_ERROR\ndata: null\n\n', conversation, messageId, onUpstreamError }),
+      ).to.not.throw()
       await settle()
 
-      expect(onUpstreamError.calledOnceWithExactly(undefined)).to.equal(true)
-      expect(written(res), 'forwarded once').to.equal(chunk)
+      expect(onUpstreamError.called).to.equal(false)
+      expect(replace.called, 'no detached write').to.equal(false)
+      expect(written(res), 'not forwarded').to.equal('')
+    })
+
+    it("forwards a sub-agent's RUN_ERROR without reporting it or touching the message", async () => {
+      const res = makeRes()
+      const conversation = makeConversation()
+      const messageId = new mongoose.Types.ObjectId()
+      const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId } as never)
+      const onUpstreamError = sinon.spy()
+      const frame = frameAGUI('RUN_ERROR', { runId: 'child', parentRunId: 'root', message: 'tool timeout', code: 'agent_error' })
+
+      feed(res, { chunk: frame, conversation, messageId, onUpstreamError })
+      await settle()
+
+      expect(onUpstreamError.called).to.equal(false)
+      expect(replace.called).to.equal(false)
+      expect(conversation.failReason).to.equal(undefined)
+      expect(written(res), 'forwarded once').to.equal(frame)
     })
 
     it('saves the standard failure text when RUN_ERROR carries no message', async () => {

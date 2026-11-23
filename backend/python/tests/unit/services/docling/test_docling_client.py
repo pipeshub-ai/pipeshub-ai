@@ -212,9 +212,10 @@ class TestParsePdfBatched:
             ),
             pytest.raises(DoclingUnavailableError) as raised,
         ):
-            await client.parse_pdf_batched("doc.pdf", small_pdf)
+            await client.parse_pdf_batched("Quarterly-Secret-Plan.pdf", small_pdf)
 
         assert isinstance(raised.value, IndexingError)
+        assert "Quarterly-Secret-Plan" not in str(raised.value)  # its text can reach index.end
         assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
 
 
@@ -281,19 +282,26 @@ class TestParsePdf:
         ), pytest.raises(DoclingUnavailableError):
             await client.parse_pdf("doc.pdf", small_pdf)
 
-    @pytest.mark.parametrize("status", [502, 503, 504])
     @pytest.mark.asyncio
-    async def test_a_gateway_or_unavailable_status_is_raised(self, client, small_pdf, status: int) -> None:
+    async def test_the_operation_does_not_name_the_record(self, client, small_pdf) -> None:
+        post = AsyncMock(side_effect=ServiceCallError("failed", status_code=503))
+        with patch.object(client, "_post_multipart", new=post), pytest.raises(DoclingUnavailableError):
+            await client.parse_pdf("Quarterly-Secret-Plan.pdf", small_pdf)
+        assert "Quarterly-Secret-Plan" not in post.await_args.kwargs["operation"]
+
+    @pytest.mark.parametrize("status", [429, 500, 502, 503, 504, 599])
+    @pytest.mark.asyncio
+    async def test_a_status_the_retries_gave_up_on_is_raised_as_unavailable(self, client, small_pdf, status: int) -> None:
         with patch.object(
             client, "_post_multipart",
             new=AsyncMock(side_effect=ServiceCallError("failed", status_code=status)),
         ), pytest.raises(DoclingUnavailableError):
             await client.parse_pdf("doc.pdf", small_pdf)
 
-    @pytest.mark.parametrize("status", [400, 413, 422, 500])
+    @pytest.mark.parametrize("status", [400, 413, 422, 501])
     @pytest.mark.asyncio
     async def test_a_failure_on_this_file_is_a_parse_error_not_an_outage(self, client, small_pdf, status: int) -> None:
-        """Docling answered and could not parse it: the caller reads it another way, it is not retried."""
+        """A status the base client does not retry is never an outage (501 included: not every 5xx is)."""
         with patch.object(
             client, "_post_multipart",
             new=AsyncMock(side_effect=ServiceCallError("failed", status_code=status)),

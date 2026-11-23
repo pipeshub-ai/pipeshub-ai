@@ -32,4 +32,6 @@ export enum EmailTemplateType {
   DomainLimitReached = 'domainLimitReached',
   JoinRequestNotify = 'joinRequestNotify',
   JoinRequestDecision = 'joinRequestDecision',
+  SandboxCapacityAlert = 'sandboxCapacityAlert',
+  ConnectorAccountConnect = 'connectorAccountConnect',
 }

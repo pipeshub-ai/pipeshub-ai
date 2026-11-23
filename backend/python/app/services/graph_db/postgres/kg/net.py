@@ -3,7 +3,7 @@
 The reader trusts every row kg holds for a served connector. Verifying the connector when it is promoted proves the rows were right then; two checks keep watching afterwards:
 
 - a share of the checks the reader answers (``PG_KG_SHADOW_SAMPLE``, 1 % unless set) is repeated by the walk, off the caller's path, in one snapshot (:func:`sample`, called by ``read``);
-- the worker verifies each enforced connector now and then (``PG_KG_VERIFY_EVERY_S``, an hour unless set, 0 = never), a few connectors per pass (:func:`verify_due`).
+- the worker verifies each enforced connector now and then (``PG_KG_VERIFY_EVERY_S``, an hour unless set, 0 = never), a few connectors per pass (:func:`verify_due`), working at most ``VERIFY_SHARE`` of the time.
 
 Any difference takes the connector back to the walk at once (``backfill.demote``: mode legacy, no cursor), logs an error and is counted: kg admitting what the walk denies is a leak, and kg
 denying what the walk admits is a gap the reader must not have either. The connector is taken to enforce again only by the bootstrap (copy, verify, promote), and not before ``HOLD_S``
@@ -51,8 +51,11 @@ SAMPLE_IDS = 500                 # nodes kg decided that a sample repeats (a cal
 MAX_SAMPLES = 2
 VERIFY_PER_PASS = 2              # connectors one verify pass works on; the rest wait for the next pass
 VERIFY_TICK_S = 5.0              # how often the verify task looks for a connector whose turn has come
+# The share of the time the verify task works: after a pass that worked t seconds it rests t * (1 / share - 1). An organisation whose connectors take longer than the interval to
+# verify otherwise kept a database connection busy without a break (about 0.8 s of database time a second at 10M records); each page still checks what it checked, the cycle is longer.
+VERIFY_SHARE = 0.2
 SKIP_RETRY_S = 30.0              # a verify that found a change waiting in the log starts again this much later, from the beginning
-VERIFY_BUDGET_S = 20.0           # seconds one connector's chunks run per pass; the next pass goes on from the cursor
+VERIFY_BUDGET_S = 4.0            # seconds one connector's chunks run per pass (at least one page); the next pass goes on from the cursor. Short, so that the turns go round the connectors often
 VERIFY_TIMEOUT = "30s"           # one chunk of a verify (a page of a connector), in a snapshot of its own
 OVERDUE_INTERVALS = 24           # a full verify not completed within this many intervals is logged as an error and raised on the gauge
 MARKER = "3:@demote"             # the one key of a demotion request in the change log, a record that is not there. The drain never takes a row that holds it (drainer.py), so it stays until the worker has acted
@@ -351,6 +354,11 @@ OLDER_EPOCH = """/* pipeshub:kg.net_older_epoch */ SELECT count(*) FROM kg.proje
 CHUNK_PROFILE = "/* pipeshub:kg.net_verify_limit */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), set_config('statement_timeout', $1, true)"
 
 
+def verify_rest(worked: float) -> float:
+    """Seconds the verify task rests after a pass that worked ``worked`` seconds: at least VERIFY_TICK_S, and enough that it works VERIFY_SHARE of the time."""
+    return max(VERIFY_TICK_S, worked * (1 / VERIFY_SHARE - 1))
+
+
 def _jitter() -> float:
     return random.random()
 
@@ -363,14 +371,15 @@ class VerifyState:
     since: float | None = None
     flagged: bool = False
     mark: int = 0                  # the connector's write count when the scan began (read under its lock, see _begin)
+    turn: float = 0.0              # when it last had a pass: the passes go round the connectors whose turn has come, so a large scan in progress does not hold the others back
 
 
 async def _chunk(db: KernelDB, org: str, app: str, cur: Cursor) -> str:
-    """One page of the verify in a snapshot of its own: ``skipped`` when the connector is not served in it (a change waits in the log, so kg is behind the graph by design), else ``done`` or
-    ``more``."""
+    """One page of the verify in a snapshot of its own: ``skipped`` when the connector is not served in it (a change waits in the log, so kg is behind the graph by design) or a restamp
+    job hides rows of it (their stamps are outdated by design until the job is over them), else ``done`` or ``more``."""
     async def go(tx: Tx) -> str:
         await tx.fetchval(CHUNK_PROFILE, VERIFY_TIMEOUT)
-        if not await drainer.serves(tx, org, app):
+        if not await drainer.serves(tx, org, app) or await drainer.fenced(tx, org, app):
             return "skipped"
         return "done" if await verify_chunk(tx, org, app, cur) else "more"
     with bind(drainer._ctx(org)):
@@ -426,10 +435,12 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 logger.error("kg connector %s of org %s has not completed a verify in %d intervals", app, org, OVERDUE_INTERVALS)
     OVERDUE.set(org, value=overdue)
     OLDER.set(org, value=older)
-    turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now), key=lambda a: states[(org, a)].due)[:VERIFY_PER_PASS]
+    turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now),
+                  key=lambda a: (states[(org, a)].turn, states[(org, a)].due))[:VERIFY_PER_PASS]
     completed = 0
     for app in turn:
         st = states[(org, app)]
+        st.turn = time.monotonic()
         deadline = time.monotonic() + VERIFY_BUDGET_S
         while True:
             if st.cursor is not None and locks.written(org, app) != st.mark:

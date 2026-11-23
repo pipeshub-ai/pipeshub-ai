@@ -67,6 +67,15 @@ def move(coll: str, nid: str, app: str) -> Callable:
     return lambda p, o: update_node(p, o, coll, nid, connectorId=app)
 
 
+def drop_only(coll: str, nid: str) -> Callable:
+    """The node goes and its edges stay: what depends on the node's existence learns of it from the node alone."""
+    async def go(p, o) -> set:
+        with ctx(o):
+            await p._q(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3", o, coll, nid), None, write=True)
+        return {(coll, nid)}
+    return go
+
+
 async def test_a_unit_that_reaches_into_another_connector_locks_it_and_waits_for_the_unit_holding_it(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await world2(p, org)
@@ -200,6 +209,18 @@ OPS = (
     lambda p, o: add_edge(p, o, ("users", "u1"), ("users", "acct"), "authenticatedAs", connectorId="app1"),
     lambda p, o: delete_node(p, o, "recordGroups", "g1"),
     lambda p, o: update_node(p, o, "recordGroups", "g1", groupName="Shared", connectorId="app1", orgId=o),
+    # memberships, and principals that come and go under their grants and their links to the connector
+    lambda p, o: add_edge(p, o, ("users", "u1"), ("groups", "grp"), "permission", type="USER"),
+    lambda p, o: delete_edge(p, o, ("users", "u1"), ("groups", "grp"), "permission", type="USER"),
+    lambda p, o: delete_edge(p, o, ("users", "u1"), ("teams", "team1"), "permission", type="USER"),
+    lambda p, o: add_edge(p, o, ("users", "u1"), ("teams", "team1"), "permission", type="USER"),
+    lambda p, o: add_edge(p, o, ("teams", "t9"), ("records", "fold"), "permission", type="TEAM", role="READER"),
+    lambda p, o: update_node(p, o, "teams", "t9", orgId=o),
+    drop_only("teams", "t9"),
+    drop_only("teams", "team1"),
+    lambda p, o: update_node(p, o, "teams", "team1", orgId=o),
+    drop_only("users", "u1"),
+    lambda p, o: update_node(p, o, "users", "u1", orgId=o, email="u@example.com"),
 )
 
 

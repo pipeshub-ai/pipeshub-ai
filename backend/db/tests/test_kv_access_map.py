@@ -65,7 +65,7 @@ READS = {
         "/services/vectordb/*": ("app/services/vector_db/strategy_resolver.py::resolve_persisted_strategy_name", "get_config(STRATEGY_CONFIG_KEY"),
         "/services/platform/artifactRollout/membership/*": ("app/services/messaging/membership.py::read_entries_from_config", "list_keys_in_directory(MEMBERSHIP_DIRECTORY)"),
         "/services/entityCleanup/*": ("app/connectors/services/entity_cleanup_intents.py::_STORE", "ConnectorIntentStore(PENDING_DIRECTORY"),  # entity_index_rebuild.py::EntityIndexRebuilder._reconcile_entity_cleanup
-        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py::backfill_class_units", "get_config(flag_key"),
+        "/migrations/class_units_backfill/*": ("app/modules/indexing/class_units_backfill.py::_backfill_pass", "get_config(flag_key"),
         "/services/secretKeys": ("app/core/envelope.py::configure_from_config.load", "config_node_constants.SECRET_KEYS.value"),
         "/services/endpoints": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.ENDPOINTS.value"),
         "/services/storage": ("app/modules/transformers/blob_storage.py::BlobStorage._get_auth_and_config", "config_node_constants.STORAGE.value"),
@@ -102,7 +102,8 @@ _DEAD = "named in config_node_constants, read by no code"
 _LIST = "listed in encrypted_store.py as stored unencrypted, not read there"
 # Reachable from a service's entry module but never read by it at run time, with why.
 _COMMON_NOT_READ = {
-    "/services/connectors/*": _CONN, "/services/oauth/*": _CONN, "/services/oauths/*": _TOOLS, "/services/toolset*": _TOOLS,
+    "/services/connectors/*": _CONN, "/services/oauth/*": _CONN, "/services/oauth-code-claims/*": _CONN,
+    "/services/oauths/*": _TOOLS, "/services/toolset*": _TOOLS,
     "/services/api-toolsets*": _TOOLS, "/services/mcp*": _TOOLS, "/services/agents/*": _QUERY, "/services/webSearch": _QUERY,
     "/services/aiModelApiModes": "read only by query, which creates the store at start (query_main.py::initialize_container); elsewhere get_llm_api_mode_store() is None",
     "/services/systemPrompts": _QUERY, "/services/demoData/*": "demo data markers: the connectors service and query's retrieval",
@@ -111,6 +112,8 @@ _COMMON_NOT_READ = {
     "/services/deployment": "read by the connectors container at start (containers/connector.py::initialize_container); " + _LIST,
     "/services/migrations": _DEAD, "/services/inheritance": _DEAD, "/services/neo4j": _DEAD, "/services/message-broker": _DEAD,
     "/services/redis-streams": _DEAD, "/services/aiModels/*": _DEAD + " (/services/aiModels/embedding)",
+    "/services/sandbox/alerts*": "the code sandbox load alerts' cooldown claims (sandbox_alerts/cooldown.py::AlertCooldown.key): query only, "
+                                 "which starts the alert loop (query_main.py::lifespan) and writes them (platform_0011)",
     "/services/mongodb": _ADMIN, "/services/smtp": _ADMIN, "/services/slackBot": _ADMIN, "/services/auth/*": _ADMIN, "crawl:*": _ADMIN,
 }
 NOT_READ = {
