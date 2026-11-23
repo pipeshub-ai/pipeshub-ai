@@ -1,10 +1,11 @@
 """Greenhouse MCP server template — official remote server (Streamable HTTP), OAuth + DCR.
 
 `mcp.us.greenhouse.io` is the US-hosted default; Greenhouse also runs an EU region
-(`mcp.eu.greenhouse.io`) for EU-hosted accounts — an admin on that region should override
-`default_url` accordingly, everything else here still applies since the authorize flow
-always re-discovers live (see dcr.py). Open beta, available on Greenhouse Recruiting's
-Core/Plus/Pro tiers only; a Site Admin must enable MCP scopes in Dev Center first.
+(`mcp.eu.greenhouse.io`) for EU-hosted accounts — catalog URLs are locked, so an admin on
+that region adds it as a custom server instead. The same settings apply there since the
+authorize flow always re-discovers live (see dcr.py). Open beta, available on Greenhouse
+Recruiting's Core/Plus/Pro tiers only; a Site Admin must enable MCP scopes in Dev Center
+first.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
 from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
