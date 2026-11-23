@@ -10,6 +10,7 @@ import { licenseSigningInput } from '../../../../src/ee/modules/license/license-
 import {
   dueReminder,
   GRACE_REMINDERS_KEY,
+  reminderOutcome,
   resetGraceReminderLog,
   sendGraceReminder,
   type GraceReminderDeps,
@@ -231,6 +232,32 @@ describe('license grace reminders: admins mailed at 14, 7, 3 and 1 days', () => 
     expect(await sendGraceReminder(outcome('failed'), left(3))).to.equal(null);
     expect(await sendGraceReminder(replica(), left(3))).to.equal(null);
     expect(sent.map((mail) => mail.daysLeft)).to.deep.equal([7, 7, 3]);
+  });
+
+  it('a mail result that fails every time keeps the claim; only one that may pass gives it back', () => {
+    expect(reminderOutcome('sent')).to.equal('sent');
+    expect(reminderOutcome('transient')).to.equal('retry');
+    expect(reminderOutcome('unavailable')).to.equal('retry');
+    // A refused login retried every check could lock the SMTP account.
+    expect(reminderOutcome('permanent')).to.equal('failed');
+    expect(reminderOutcome('indeterminate')).to.equal('failed');
+  });
+
+  it('a send that throws gives the claim back, so the next check sends it', async () => {
+    const throwing = replica({
+      send: async () => {
+        throw new Error('stored mail settings could not be read');
+      },
+    });
+    let error: unknown;
+    try {
+      await sendGraceReminder(throwing, left(7));
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).to.be.instanceOf(Error);
+    expect(await sendGraceReminder(replica(), left(7))).to.equal(7);
+    expect(sent.map((mail) => mail.daysLeft)).to.deep.equal([7]);
   });
 
   it('a store that cannot be read fails the reminder, not the caller of the check', async () => {

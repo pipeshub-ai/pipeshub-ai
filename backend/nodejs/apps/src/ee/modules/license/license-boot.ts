@@ -34,6 +34,7 @@ import {
 } from '../../../modules/user_management/services/user-admin.service';
 import type { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
+  reminderOutcome,
   sendGraceReminder,
   type GraceReminderDeps,
 } from './license-grace-reminders';
@@ -196,12 +197,7 @@ function graceReminderDeps(licenseStore: LicenseStore): GraceReminderDeps {
         undefined,
         { 'Auto-Submitted': 'auto-generated' },
       );
-      // `indeterminate` may have gone out: never risk a second copy.
-      return result.status === 'sent'
-        ? 'sent'
-        : result.status === 'indeterminate'
-          ? 'failed'
-          : 'retry';
+      return reminderOutcome(result.status);
     },
     log: logger,
   };

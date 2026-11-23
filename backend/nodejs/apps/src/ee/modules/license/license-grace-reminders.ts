@@ -12,6 +12,19 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** How a reminder send ended: `retry` gives the claim back, so a later check sends it. */
 export type ReminderOutcome = 'sent' | 'retry' | 'failed';
 
+/**
+ * What a mail send's result means for the reminder's claim. Only a failure that may pass (`transient`,
+ * `unavailable`) gives the claim back for the next check. `indeterminate` may have gone out, and `permanent`
+ * (refused login, rejected address, bad template) fails the same way every time: retrying it every check could
+ * lock the SMTP account. Both keep the claim.
+ */
+export const reminderOutcome = (status: string): ReminderOutcome =>
+  status === 'sent'
+    ? 'sent'
+    : status === 'transient' || status === 'unavailable'
+      ? 'retry'
+      : 'failed';
+
 export interface GraceReminderDeps {
   store: LicenseStore;
   /** Creates `key` with `value` only if it does not exist yet; false when it does. Atomic across replicas. */
@@ -84,12 +97,19 @@ export async function sendGraceReminder(
   if (!(await deps.claim(key, { endsAt, sentAt: now.toISOString() }))) {
     return null;
   }
-  const outcome = await deps.send({
-    orgId: admins.orgId,
-    to: admins.emails,
-    daysLeft,
-    endsAt,
-  });
+  let outcome: Awaited<ReturnType<GraceReminderDeps['send']>>;
+  try {
+    outcome = await deps.send({
+      orgId: admins.orgId,
+      to: admins.emails,
+      daysLeft,
+      endsAt,
+    });
+  } catch (error) {
+    // Nothing was sent (e.g. the stored mail settings could not be read): give the claim back.
+    await deps.release(key);
+    throw error;
+  }
   if (outcome === 'sent') return days;
   if (outcome === 'retry') await deps.release(key);
   deps.log.warn('Could not mail the upgrade grace reminder', {
