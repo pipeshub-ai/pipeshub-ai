@@ -2409,8 +2409,13 @@ export class UserController {
         ? await getCredentialRepository().blockedUserIds(orgId, pendingUserIds)
         : [],
     );
+    // A blocked pending account is left alone, and so is a switched-off account
+    // created from Slack (a switched-off person keeps being re-invited as before).
     const pendingUsersToReinvite = pendingUsers.filter(
-      (user) => user._id && !blockedPendingUserIds.has(user._id),
+      (user) =>
+        user._id &&
+        !blockedPendingUserIds.has(user._id) &&
+        !(isSlackOnlyAccount(user) && user.isDisabled === true),
     );
 
     const emailsForNewAccounts = emails.filter(

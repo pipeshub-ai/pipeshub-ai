@@ -6740,6 +6740,29 @@ describe('UserController', () => {
       expect(mockEventService.publishEvent.called).to.be.false;
     });
 
+    it('an invite leaves a switched-off Slack-only account alone, as it does a blocked one', async () => {
+      const sam = slackRow({ isDisabled: true });
+      const { upgrade, everyone } = inviteStubs(sam);
+
+      const result = await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+
+      expect(upgrade.called, 'not upgraded').to.be.false;
+      expect(everyone.called, 'not in everyone').to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(mockMailService.sendMail.called).to.be.false;
+      expect(result.reinvited).to.equal(0);
+    });
+
+    it('an invite still re-sends to a switched-off pending person who is not a Slack-only account', async () => {
+      const person = slackRow({ kind: 'human', isDisabled: true });
+      const { upgrade } = inviteStubs(person);
+
+      const result = await (controller as any).processInvites(['sam@acme.test'], [], orgId, 'Admin', { registeredName: 'Acme' });
+
+      expect(upgrade.called).to.be.false;
+      expect(result.reinvited).to.equal(1);
+    });
+
     describe('an invite that makes administrators', () => {
       const invite = (emails: string[]) =>
         (controller as any).processInvites(emails, [], orgId, 'Admin', { registeredName: 'Acme' }, 'admin');
