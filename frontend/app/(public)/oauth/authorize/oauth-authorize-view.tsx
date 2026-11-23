@@ -349,8 +349,6 @@ export function OAuthAuthorizeView() {
         codeChallengeMethod ||
         searchParams.get('code_challenge_method') ||
         undefined;
-      // RFC 8707: the server picks the scopes to ask for by the token's resource.
-      const resource = searchParams.getAll('resource');
 
       const { data } = await apiClient.post<{ redirectUrl?: string }>(
         AUTHORIZE_API,
@@ -361,7 +359,8 @@ export function OAuthAuthorizeView() {
           state: state ?? '',
           code_challenge: cc,
           code_challenge_method: ccm,
-          resource: resource.length > 0 ? resource : undefined,
+          // RFC 8707: the resource the GET sent, so both pick the same scopes.
+          resource: queryParams.resource,
           consent,
         },
         { suppressErrorToast: true }
