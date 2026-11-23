@@ -454,10 +454,13 @@ class TestTeamListing:
         team._owed.load = AsyncMock(return_value=[])
         team._owed.save = AsyncMock()
         team._process_users_in_batches = AsyncMock(side_effect=RuntimeError("graph down"))
-        steps = ("_register_authenticated_identity", "_sync_members", "_initialize_event_cursor",
+        steps = ("_read_authenticated_admin", "_sync_members", "_initialize_event_cursor",
                  "_sync_user_groups", "sync_personal_record_groups")
         for name in steps:
             setattr(team, name, AsyncMock(return_value=[]))
+        team._read_authenticated_admin = AsyncMock(return_value=(None, None))
+        team.drop_authenticator_link_if_listed = AsyncMock()
+        team.register_authenticated_source_user = AsyncMock()
 
         with patch("app.connectors.sources.dropbox.connector.load_connector_filters",
                    AsyncMock(return_value=(FilterCollection(), FilterCollection()))), pytest.raises(RuntimeError):

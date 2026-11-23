@@ -294,6 +294,8 @@ class ZoomConnector(BaseConnector):
         )
         self.sync_filters: Optional[FilterCollection] = None
         self.indexing_filters: Optional[FilterCollection] = None
+        # Whether this run's user listing was read to its last page; a partial listing never links the authenticator.
+        self._users_listing_complete = False
 
     # ============================================================================
     # Initialization
@@ -338,6 +340,7 @@ class ZoomConnector(BaseConnector):
         await self.register_authenticated_source_user(
             email.strip().lower() if isinstance(email, str) else None,
             source_user_id.strip() if isinstance(source_user_id, str) else None,
+            listing_complete=self._users_listing_complete,
         )
 
     async def run_sync(self) -> None:
@@ -346,7 +349,8 @@ class ZoomConnector(BaseConnector):
             if not self.data_source:
                 await self.init()
 
-            await self._register_authenticated_identity()
+            self._users_listing_complete = False
+            await self.drop_authenticator_link_if_listed()
 
             await self._load_filters()
 
@@ -363,6 +367,7 @@ class ZoomConnector(BaseConnector):
             if app_users:
                 await self.data_entities_processor.on_new_app_users(app_users)
                 self.logger.info("👥 Zoom: synced %d app users", len(app_users))
+            await self._register_authenticated_identity()
 
             for zoom_user in users:
                 try:
@@ -578,6 +583,7 @@ class ZoomConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         all_users: list[ZoomUser] = []
         next_page_token: Optional[str] = None
+        self._users_listing_complete = False
         while True:
             resp = await datasource.users(
                 status="active",
@@ -593,6 +599,7 @@ class ZoomConnector(BaseConnector):
             )
             next_page_token = resp.data.get("next_page_token")  # type: ignore[union-attr]
             if not next_page_token:
+                self._users_listing_complete = True
                 break
         return all_users
 

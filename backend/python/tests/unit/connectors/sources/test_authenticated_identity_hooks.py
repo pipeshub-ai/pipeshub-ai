@@ -79,27 +79,129 @@ class TestDropbox:
         conn.data_source.team_token_get_authenticated_admin = AsyncMock(return_value=response, side_effect=error)
         return conn
 
-    async def test_registers_the_admin_who_generated_the_team_token(self) -> None:
+    async def test_reads_the_admin_who_generated_the_team_token(self) -> None:
         profile = SimpleNamespace(email="admin@corp.com", team_member_id="dbmid:AAH4f99")
         conn = self._conn(SimpleNamespace(success=True, data=SimpleNamespace(admin_profile=profile)))
 
-        await DropboxConnector._register_authenticated_identity(conn)
+        assert await DropboxConnector._read_authenticated_admin(conn) == ("admin@corp.com", "dbmid:AAH4f99")
 
-        assert _registered(conn) == ("admin@corp.com", "dbmid:AAH4f99")
-
-    async def test_a_token_not_tied_to_an_admin_hands_over_nothing(self) -> None:
+    async def test_a_token_not_tied_to_an_admin_reads_nothing(self) -> None:
         conn = self._conn(SimpleNamespace(success=False, data=None, error="mapping_not_found"))
 
-        await DropboxConnector._register_authenticated_identity(conn)
+        assert await DropboxConnector._read_authenticated_admin(conn) == (None, None)
 
-        assert _registered(conn) == (None, None)
-
-    async def test_a_failed_read_never_reaches_the_link(self) -> None:
+    async def test_a_failed_read_reads_nothing_and_never_raises(self) -> None:
         conn = self._conn(error=RuntimeError("connection reset"))
 
-        await DropboxConnector._register_authenticated_identity(conn)
+        assert await DropboxConnector._read_authenticated_admin(conn) == (None, None)
 
-        conn.register_authenticated_source_user.assert_not_awaited()
+
+class _DropboxStop(Exception):
+    pass
+
+
+class TestDropboxSyncOrder:
+    def _conn(self, order: list[str], complete: bool = True, auth_error: bool = False) -> MagicMock:
+        conn = _connector(
+            DropboxConnector, config_service=MagicMock(), _health=MagicMock(auth_error=None),
+            _members_complete=False,
+        )
+
+        def step(name: str, effect: object = None) -> AsyncMock:
+            async def _run(*_: object, **__: object) -> object:
+                order.append(name)
+                if name == "members":
+                    conn._members_complete = complete
+                if name == "register":
+                    raise _DropboxStop()
+                return effect
+            return AsyncMock(side_effect=_run)
+
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn._read_authenticated_admin = step("read", ("admin@corp.com", "dbmid:1"))
+        conn._sync_members = step("members", [])
+        conn.register_authenticated_source_user = step("register")
+        return conn
+
+    async def _run(self, conn: MagicMock) -> None:
+        loaded = AsyncMock(return_value=(MagicMock(), MagicMock()))
+        with patch("app.connectors.sources.dropbox.connector.load_connector_filters", loaded), \
+                pytest.raises(_DropboxStop):
+            await DropboxConnector._sync_steps(conn)
+
+    async def test_removal_pass_runs_first_and_full_pass_after_the_member_sync(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order)
+
+        await self._run(conn)
+
+        assert order == ["drop", "read", "members", "register"]
+
+    async def test_an_incomplete_member_listing_is_an_incomplete_listing(self) -> None:
+        conn = self._conn([], complete=False)
+
+        await self._run(conn)
+
+        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is False
+
+    async def test_a_complete_member_listing_is_passed_on(self) -> None:
+        conn = self._conn([])
+
+        await self._run(conn)
+
+        assert conn.register_authenticated_source_user.await_args.args == ("admin@corp.com", "dbmid:1")
+        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is True
+
+    async def test_a_stale_complete_flag_never_survives_into_a_sync_whose_listing_did_not_run(self) -> None:
+        conn = self._conn([])
+        conn._members_complete = True
+        conn._sync_members = AsyncMock(return_value=[])
+
+        await self._run(conn)
+
+        assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is False
+
+    async def test_auth_error_listing_never_links(self) -> None:
+        members = SimpleNamespace(raw=[], complete=False, error="expired_access_token", auth_error=True)
+        conn = _connector(
+            DropboxConnector, data_source=MagicMock(), _health=MagicMock(), _members_complete=True,
+        )
+        with patch("app.connectors.sources.dropbox.connector.read_team_members", AsyncMock(return_value=members)):
+            assert await DropboxConnector._sync_members(conn) == []
+
+        assert conn._members_complete is False
+        conn._health.auth_failed.assert_called_once()
+
+    async def test_a_suspended_listed_creator_stays_unlinked(self) -> None:
+        from app.models.entities import AppUser
+
+        creator = SimpleNamespace(
+            team_member_id="dbmid:C", email="creator@corp.com",
+            status=SimpleNamespace(_tag="suspended", is_active=lambda: False),
+            name=SimpleNamespace(display_name="C"),
+        )
+        member = SimpleNamespace(profile=creator, role=SimpleNamespace(_tag="member_only"))
+        members = SimpleNamespace(raw=[member], complete=True, error=None, auth_error=False,
+                                  active_ids=lambda: set())
+        processor = MagicMock()
+        processor.on_new_app_users = AsyncMock()
+        processor.get_all_app_users = AsyncMock(return_value=[AppUser(
+            app_name="DROPBOX", connector_id="connector-1", source_user_id="dbmid:C",
+            email="creator@corp.com", full_name="C",
+        )])
+        processor.withdraw_app_user_access = AsyncMock()
+        conn = _connector(
+            DropboxConnector, data_source=MagicMock(), _health=MagicMock(), _members_complete=False,
+            data_entities_processor=processor, connector_name="DROPBOX",
+        )
+        conn.get_app_users = partial(DropboxConnector.get_app_users, conn)
+        with patch("app.connectors.sources.dropbox.connector.read_team_members", AsyncMock(return_value=members)):
+            await DropboxConnector._sync_members(conn)
+
+        processor.withdraw_app_user_access.assert_awaited_once()
+        assert conn._members_complete is True
+        # The listing is complete and lists the creator; the processor then sees the marker and the
+        # listed row and links nobody (covered in test_authenticated_as_linking.py).
 
 
 class TestNotion:
@@ -217,7 +319,10 @@ class TestZoom:
     def _conn(self, response: object = None, error: Exception | None = None) -> MagicMock:
         datasource = MagicMock()
         datasource.user = AsyncMock(return_value=response)
-        return _connector(ZoomConnector, _get_fresh_datasource=AsyncMock(return_value=datasource, side_effect=error))
+        return _connector(
+            ZoomConnector, _users_listing_complete=True,
+            _get_fresh_datasource=AsyncMock(return_value=datasource, side_effect=error),
+        )
 
     async def test_registers_the_user_who_authorized_the_app_as_the_user_sync_stores_it(self) -> None:
         conn = self._conn(SimpleNamespace(success=True, data={"id": " KDcuGIm1QgePTO8WbOqwIQ ", "email": " Admin@Corp.com "}))
@@ -244,9 +349,112 @@ class TestZoom:
 
         conn.register_authenticated_source_user.assert_not_awaited()
 
+    async def test_the_full_pass_is_told_whether_the_user_listing_was_complete(self) -> None:
+        conn = self._conn(SimpleNamespace(success=True, data={"id": "z1", "email": "admin@corp.com"}))
+        conn._users_listing_complete = False
+
+        await ZoomConnector._register_authenticated_identity(conn)
+
+        conn.register_authenticated_source_user.assert_awaited_once()
+        assert conn.register_authenticated_source_user.await_args.kwargs == {"listing_complete": False}
+
     def test_the_oauth_app_asks_for_the_scope_users_me_needs(self) -> None:
         oauth = ZoomConnector._connector_metadata["config"]["auth"]["oauthConfigs"]["OAUTH"]
         assert "user:read:user:admin" in oauth["scopes"]
+
+
+class _ZoomStop(Exception):
+    pass
+
+
+class TestZoomSyncOrder:
+    def _conn(self, order: list[str], users_error: Exception | None = None) -> MagicMock:
+        def step(name: str, result: object = None, error: Exception | None = None) -> AsyncMock:
+            async def _run(*_: object, **__: object) -> object:
+                order.append(name)
+                if error:
+                    raise error
+                return result
+            return AsyncMock(side_effect=_run)
+
+        conn = _connector(ZoomConnector, data_source=MagicMock(), _users_listing_complete=True)
+        conn.drop_authenticator_link_if_listed = step("drop")
+        conn._load_filters = step("filters")
+        conn._today = MagicMock(return_value=MagicMock())
+        conn._date_str = MagicMock(return_value="2026-01-01")
+        conn._list_users = step("users", [MagicMock()], users_error)
+        conn._build_app_users = MagicMock(return_value=[MagicMock()])
+        conn.data_entities_processor = MagicMock(on_new_app_users=step("write"))
+        conn._register_authenticated_identity = step("register", error=_ZoomStop())
+        return conn
+
+    async def test_removal_pass_runs_before_the_user_listing_and_full_pass_after_the_users_are_written(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order)
+
+        with pytest.raises(_ZoomStop):
+            await ZoomConnector.run_sync(conn)
+
+        assert order == ["drop", "filters", "users", "write", "register"]
+
+    async def test_no_full_pass_when_the_user_listing_raises(self) -> None:
+        order: list[str] = []
+        conn = self._conn(order, users_error=RuntimeError("zoom down"))
+
+        with pytest.raises(RuntimeError):
+            await ZoomConnector.run_sync(conn)
+
+        assert "register" not in order
+
+    async def test_a_stale_complete_flag_is_reset_before_the_listing_runs(self) -> None:
+        conn = self._conn([])
+        conn._users_listing_complete = True
+        conn._list_users = AsyncMock(side_effect=RuntimeError("zoom down"))
+
+        with pytest.raises(RuntimeError):
+            await ZoomConnector.run_sync(conn)
+
+        assert conn._users_listing_complete is False
+
+    async def test_a_failed_page_is_an_incomplete_listing(self) -> None:
+        ok = MagicMock(success=True, data={"users": [], "next_page_token": "t"})
+        failed = MagicMock(success=False, data=None, message="429")
+        conn = _connector(ZoomConnector, _users_listing_complete=True)
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(users=AsyncMock(side_effect=[ok, failed])))
+
+        await ZoomConnector._list_users(conn)
+
+        assert conn._users_listing_complete is False
+
+    async def test_a_page_with_no_data_is_an_incomplete_listing(self) -> None:
+        conn = _connector(ZoomConnector, _users_listing_complete=True)
+        datasource = MagicMock(users=AsyncMock(return_value=MagicMock(success=True, data={})))
+        conn._get_fresh_datasource = AsyncMock(return_value=datasource)
+
+        await ZoomConnector._list_users(conn)
+
+        assert conn._users_listing_complete is False
+
+    async def test_a_listing_read_to_its_last_page_is_complete(self) -> None:
+        pages = [
+            MagicMock(success=True, data={"users": [], "next_page_token": "t"}),
+            MagicMock(success=True, data={"users": [], "next_page_token": ""}),
+        ]
+        conn = _connector(ZoomConnector, _users_listing_complete=False)
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(users=AsyncMock(side_effect=pages)))
+
+        await ZoomConnector._list_users(conn)
+
+        assert conn._users_listing_complete is True
+
+    async def test_a_listing_that_raises_is_an_incomplete_listing(self) -> None:
+        conn = _connector(ZoomConnector, _users_listing_complete=True)
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(users=AsyncMock(side_effect=OSError("reset"))))
+
+        with pytest.raises(OSError):
+            await ZoomConnector._list_users(conn)
+
+        assert conn._users_listing_complete is False
 
 
 @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])

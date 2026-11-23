@@ -1607,11 +1607,11 @@ class DropboxConnector(BaseConnector):
             )
         return app_users
 
-    async def _register_authenticated_identity(self) -> None:
-        """Record which source account this connector is authenticated as, so a creator whose
-        PipesHub email differs still resolves that account's permissions for this connector."""
+    async def _read_authenticated_admin(self) -> tuple[str | None, str | None]:
+        """The email and team member id of the admin who generated the team token, so a creator whose
+        PipesHub email differs still resolves that account's permissions. (None, None) when it cannot be read."""
         if not self.data_source:
-            return
+            return None, None
         profile = None
         try:
             response = await self.data_source.team_token_get_authenticated_admin()
@@ -1623,10 +1623,8 @@ class DropboxConnector(BaseConnector):
                     self._health.auth_failed(response.error)
         except Exception as e:
             self.logger.debug("Could not read the authenticated Dropbox admin: %s", e)
-            return
-        await self.register_authenticated_source_user(
-            getattr(profile, "email", None), getattr(profile, "team_member_id", None)
-        )
+            return None, None
+        return getattr(profile, "email", None), getattr(profile, "team_member_id", None)
 
     async def _sync_members(self) -> List[AppUser]:
         """Every member of the team, saved as the connector's users, and the access of those who can no longer
@@ -1634,7 +1632,9 @@ class DropboxConnector(BaseConnector):
         members = await read_team_members(self.data_source)
         if members.auth_error:
             self._health.auth_failed(members.error)
+            self._members_complete = False
             return []
+        self._members_complete = members.complete
         if not members.raw:
             raise RuntimeError(f"Could not list the Dropbox team's members: {members.error}")
         if not members.complete:
@@ -1695,7 +1695,10 @@ class DropboxConnector(BaseConnector):
         activity_log_missing: str | None = None
         self.logger.info("Starting Dropbox full sync.")
 
-        await self._register_authenticated_identity()
+        # Whether this run read every member; reset so a flag left by an earlier run never counts.
+        self._members_complete = False
+        await self.drop_authenticator_link_if_listed()
+        admin_email, admin_id = await self._read_authenticated_admin()
         if self._health.auth_error is not None:
             return
 
@@ -1708,6 +1711,9 @@ class DropboxConnector(BaseConnector):
         app_users = await self._sync_members()
         if self._health.auth_error is not None:
             return
+        await self.register_authenticated_source_user(
+            admin_email, admin_id, listing_complete=self._members_complete
+        )
 
         # Step 2: fetch and sync all user groups
         group_sync_key = generate_record_sync_point_key("user_group_events", "team_events", "global")
