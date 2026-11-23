@@ -671,6 +671,7 @@ describe('license check: features, install and the permission sync answer', () =
             'graceEndsAt',
             'licenseId',
             'licensee',
+            'notForProduction',
             'seats',
             'startDate',
             'type',
