@@ -1697,6 +1697,7 @@ class DropboxConnector(BaseConnector):
 
         # Whether this run read every member; reset so a flag left by an earlier run never counts.
         self._members_complete = False
+        self._team_emails = set()
         await self.drop_authenticator_link_if_listed()
         admin_email, admin_id = await self._read_authenticated_admin()
         if self._health.auth_error is not None:
@@ -1712,7 +1713,9 @@ class DropboxConnector(BaseConnector):
         if self._health.auth_error is not None:
             return
         await self.register_authenticated_source_user(
-            admin_email, admin_id, listing_complete=self._members_complete
+            admin_email, admin_id, listing_complete=self._members_complete,
+            # Every listed member, suspended or invited too: withdrawn() removes their edge, so it cannot show them as listed.
+            extra_present_emails=self._team_emails,
         )
 
         # Step 2: fetch and sync all user groups

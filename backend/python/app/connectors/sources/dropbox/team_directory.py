@@ -48,8 +48,11 @@ async def read_team_members(data_source: DropboxDataSource) -> TeamMembers:
             result.auth_error = is_auth_error(response.error)
             return result
         result.raw.extend(response.data.members)
-        if response.data.has_more is not True or not response.data.cursor:
+        if response.data.has_more is not True:
             result.complete = True
+            return result
+        if not response.data.cursor:
+            result.error = "the member list says more follows but gave no cursor"
             return result
         try:
             response = await data_source.team_members_list_continue(response.data.cursor)

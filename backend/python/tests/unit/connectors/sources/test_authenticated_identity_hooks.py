@@ -172,12 +172,13 @@ class TestDropboxSyncOrder:
         assert conn._members_complete is False
         conn._health.auth_failed.assert_called_once()
 
-    async def test_a_suspended_listed_creator_stays_unlinked(self) -> None:
+    @pytest.mark.parametrize("tag", ["suspended", "invited"])
+    async def test_a_suspended_listed_creator_stays_unlinked(self, tag: str) -> None:
         from app.models.entities import AppUser
 
         creator = SimpleNamespace(
-            team_member_id="dbmid:C", email="creator@corp.com",
-            status=SimpleNamespace(_tag="suspended", is_active=lambda: False),
+            team_member_id="dbmid:C", email="Creator@Corp.com",
+            status=SimpleNamespace(_tag=tag, is_active=lambda: False),
             name=SimpleNamespace(display_name="C"),
         )
         member = SimpleNamespace(profile=creator, role=SimpleNamespace(_tag="member_only"))
@@ -191,17 +192,25 @@ class TestDropboxSyncOrder:
         )])
         processor.withdraw_app_user_access = AsyncMock()
         conn = _connector(
-            DropboxConnector, data_source=MagicMock(), _health=MagicMock(), _members_complete=False,
+            DropboxConnector, config_service=MagicMock(), data_source=MagicMock(),
+            _health=MagicMock(auth_error=None), _members_complete=False, _team_emails=set(),
             data_entities_processor=processor, connector_name="DROPBOX",
         )
         conn.get_app_users = partial(DropboxConnector.get_app_users, conn)
-        with patch("app.connectors.sources.dropbox.connector.read_team_members", AsyncMock(return_value=members)):
-            await DropboxConnector._sync_members(conn)
+        conn._sync_members = partial(DropboxConnector._sync_members, conn)
+        conn.drop_authenticator_link_if_listed = AsyncMock()
+        conn._read_authenticated_admin = AsyncMock(return_value=("admin@corp.com", "dbmid:A"))
+        conn.register_authenticated_source_user = AsyncMock(side_effect=_DropboxStop())
+        loaded = AsyncMock(return_value=(MagicMock(), MagicMock()))
+        with patch("app.connectors.sources.dropbox.connector.read_team_members", AsyncMock(return_value=members)), \
+                patch("app.connectors.sources.dropbox.connector.load_connector_filters", loaded), \
+                pytest.raises(_DropboxStop):
+            await DropboxConnector._sync_steps(conn)
 
         processor.withdraw_app_user_access.assert_awaited_once()
-        assert conn._members_complete is True
-        # The listing is complete and lists the creator; the processor then sees the marker and the
-        # listed row and links nobody (covered in test_authenticated_as_linking.py).
+        kwargs = conn.register_authenticated_source_user.await_args.kwargs
+        assert kwargs["listing_complete"] is True
+        assert "creator@corp.com" in kwargs["extra_present_emails"]
 
 
 class TestNotion:
