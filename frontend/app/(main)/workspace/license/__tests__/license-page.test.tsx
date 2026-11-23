@@ -134,6 +134,21 @@ describe('License page: status', () => {
     expect(link.searchParams.get('graceEndsAt')).toBe(endsAt);
   });
 
+  it('a key that ended inside the grace leaves the grace and its extension link up', async () => {
+    const endsAt = iso(6);
+    api.getStatus.mockResolvedValue(
+      view({
+        status: 'expired',
+        license: license({ type: 'trial', startDate: iso(-20), endDate: iso(-6), graceEndsAt: iso(-3) }),
+        permissionSync: { allowed: true, until: endsAt },
+        upgradeGrace: { endsAt, affected: true },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText(/Permission sync stays on until/)).toBeTruthy();
+    expect(screen.getByText('Request a 14-day extension')).toBeTruthy();
+  });
+
   it('after the grace with no key: permission sync off and what that means', async () => {
     api.getStatus.mockResolvedValue(
       view({ permissionSync: { allowed: false, until: null }, upgradeGrace: { endsAt: iso(-1), affected: true } }),
