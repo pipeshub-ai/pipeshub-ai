@@ -195,6 +195,18 @@ class TestListedAuthenticator:
         assert result.outcome is AuthenticatorLink.UNCHANGED
         proc.logger.warning.assert_called()
 
+    @pytest.mark.parametrize("stored", ["creator-key", {"creator-key": 1}, 7])
+    async def test_a_marker_that_is_not_a_list_is_a_failed_read(self, stored) -> None:
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        proc = _processor(tx)
+        proc.config_service.get_config = AsyncMock(return_value=stored)
+        result = await _link(proc)
+
+        tx.remove_authenticated_as.assert_not_called()
+        tx.upsert_authenticated_as.assert_not_called()
+        assert result.outcome is AuthenticatorLink.UNCHANGED
+        proc.logger.warning.assert_called()
+
     async def test_a_failed_marker_write_still_removes_the_link(self) -> None:
         tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
         proc = _processor(tx)
@@ -298,6 +310,17 @@ class TestCacheInvalidation:
 
         await proc.link_authenticator_to_source_user(CONNECTOR, CREATED_BY, "darshan@pipeshub.com", "acct-123", Connectors.JIRA)
 
+        notify.assert_awaited_once_with(CONNECTOR, "org-1")
+
+    async def test_unlinking_a_listed_authenticator_drops_the_cached_maps(self, monkeypatch) -> None:
+        notify = self._patch_notify(monkeypatch)
+        tx = _tx_store(source_user=SOURCE, edges=[LISTED_EDGE])
+        tx.remove_authenticated_as = AsyncMock(return_value=True)
+        proc = _processor(tx)
+
+        result = await _link(proc)
+
+        assert result.outcome is AuthenticatorLink.UNLINKED
         notify.assert_awaited_once_with(CONNECTOR, "org-1")
 
     async def test_a_removed_link_drops_them_too(self, monkeypatch) -> None:

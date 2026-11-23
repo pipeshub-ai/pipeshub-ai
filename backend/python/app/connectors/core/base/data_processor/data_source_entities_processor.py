@@ -5906,7 +5906,9 @@ class DataSourceEntitiesProcessor:
         if check_listing:
             try:
                 stored = await self.config_service.get_config(marker_key, use_cache=False, raise_on_error=True)
-                marker = [str(k) for k in stored] if isinstance(stored, list) else []
+                if stored is not None and not isinstance(stored, list):
+                    raise TypeError(f"expected a list, got {type(stored).__name__}")
+                marker = [str(k) for k in stored or []]
             except Exception as e:
                 self.logger.warning(
                     f"Connector {connector_id}: could not read the listed-authenticators marker; "
