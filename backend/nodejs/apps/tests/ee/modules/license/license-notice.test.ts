@@ -28,6 +28,8 @@ import {
   type SignedLicense,
 } from '../../../../src/ee/modules/license/license.types';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
+import { operatorKeyGuardMiddleware } from '../../../../src/libs/middlewares/operator-key-guard.middleware';
+import { xssSanitizationMiddleware } from '../../../../src/libs/middlewares/xss-sanitization.middleware';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = new Date('2026-11-20T12:00:00.000Z');
@@ -362,6 +364,70 @@ describe('license notice: what every signed-in user may read', () => {
         const body = await (await fetch(`${url}/notice`)).json();
         expect(body.connectors.items[0].name).to.equal('Drive a');
       });
+    });
+  });
+
+  describe('GET /api/v1/license/grace (public, for the procurement site)', () => {
+    let clock: sinon.SinonFakeTimers;
+    /** Mounted as app.ts mounts it, behind the body sanitizer and the query guard, with no AuthMiddleware bound. */
+    const graceOf = async (): Promise<{ status: number; body: unknown }> => {
+      const app = express();
+      app.use(express.json());
+      app.use(xssSanitizationMiddleware);
+      app.use(operatorKeyGuardMiddleware);
+      app.use('/api/v1/license', createLicenseRouter(new Container(), store));
+      const server = app.listen(0);
+      try {
+        const { port } = server.address() as AddressInfo;
+        const response = await fetch(
+          `http://127.0.0.1:${port}/api/v1/license/grace`,
+        );
+        return { status: response.status, body: await response.json() };
+      } finally {
+        server.close();
+      }
+    };
+
+    // Only Date: the server and fetch keep real timers.
+    beforeEach(() => {
+      clock = sinon.useFakeTimers({ now: NOW, toFake: ['Date'] });
+    });
+    afterEach(() => clock.restore());
+
+    it('in the grace with no key: its end, and nothing else, with no sign-in', async () => {
+      upgradedDaysAgo(UPGRADE_GRACE_DAYS - 5);
+      expect(await graceOf()).to.deep.equal({
+        status: 200,
+        body: { graceEndsAt: at(5) },
+      });
+    });
+
+    it('a trial that ended inside the grace keeps it running', async () => {
+      upgradedDaysAgo(5);
+      install({ startDate: at(-30), issuedAt: at(-30), endDate: at(-10) });
+      expect((await graceOf()).body).to.deep.equal({
+        graceEndsAt: at(UPGRADE_GRACE_DAYS - 5),
+      });
+    });
+
+    it('licensed: null, and no licence detail', async () => {
+      upgradedDaysAgo(UPGRADE_GRACE_DAYS - 5);
+      install({ type: 'trial' });
+      expect(await graceOf()).to.deep.equal({
+        status: 200,
+        body: { graceEndsAt: null },
+      });
+    });
+
+    it('before the grace (enforcement not started, or not needed): null', async () => {
+      expect((await graceOf()).body).to.deep.equal({ graceEndsAt: null });
+      upgradedDaysAgo(1, false);
+      expect((await graceOf()).body).to.deep.equal({ graceEndsAt: null });
+    });
+
+    it('after the grace: null', async () => {
+      upgradedDaysAgo(UPGRADE_GRACE_DAYS + 1);
+      expect((await graceOf()).body).to.deep.equal({ graceEndsAt: null });
     });
   });
 });

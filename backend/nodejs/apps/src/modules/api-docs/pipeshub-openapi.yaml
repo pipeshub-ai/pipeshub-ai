@@ -37555,6 +37555,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /license/grace:
+    get:
+      tags:
+        - Organizations
+      summary: Read when the upgrade grace ends
+      description: |
+        When this install's upgrade grace ends, while it runs with no licence key in force. `graceEndsAt` is null
+        otherwise: a key is in force, the grace has not started (or the install does not need one), or it has ended.
+        Nothing else is returned: no licence details, no organization name, no counts.
+
+        **Note:** This endpoint requires no authentication and is publicly accessible, so a site can check it
+        server to server. It is rate limited per address, like the other public routes.
+      operationId: getLicenseGrace
+      security: []
+      responses:
+        '200':
+          description: When the upgrade grace ends, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [graceEndsAt]
+                additionalProperties: false
+                properties:
+                  graceEndsAt:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    description: The end of the upgrade grace (ISO 8601, UTC), or null when it is not running.
+              examples:
+                inGrace:
+                  value:
+                    graceEndsAt: '2026-12-14T09:30:00.000Z'
+                notInGrace:
+                  value:
+                    graceEndsAt: null
+        '429':
+          description: Rate limit exceeded — global rate limiter (MAX_REQUESTS_PER_MINUTE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
   /org:
     post:
       tags:
