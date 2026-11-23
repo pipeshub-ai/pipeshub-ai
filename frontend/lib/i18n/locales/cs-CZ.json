@@ -4216,7 +4216,8 @@
           "shared": "Jeden sdílený přihlašovací údaj pro všechny",
           "sharedHint": "Přidáte ho jednou níže. Všichni pak jednají s jeho přístupem."
         },
-        "advanced": "Pokročilé"
+        "advanced": "Pokročilé",
+        "nameTaken": "Tento název už má jiný server. Zvolte jiný."
       },
       "configPanel": {
         "editTitle": "Upravit MCP server",

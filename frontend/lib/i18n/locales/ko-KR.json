@@ -4075,7 +4075,8 @@
           "shared": "모두가 쓰는 공유 자격 증명 하나",
           "sharedHint": "아래에서 한 번만 추가합니다. 모두가 이 자격 증명의 권한으로 작업합니다."
         },
-        "advanced": "고급"
+        "advanced": "고급",
+        "nameTaken": "이 이름을 이미 다른 서버가 쓰고 있습니다. 다른 이름을 고르세요."
       },
       "configPanel": {
         "editTitle": "MCP 서버 편집",
