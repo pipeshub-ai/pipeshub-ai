@@ -34,6 +34,7 @@ import { setGroupRepository } from '../../../../src/libs/repositories/group';
 import { getOrgRepository } from '../../../../src/libs/repositories/org';
 import { setActivityRepository } from '../../../../src/libs/repositories/activity';
 import {
+  getUserRepository,
   setUserRepository,
   type UserRepository,
 } from '../../../../src/libs/repositories/user';
@@ -494,6 +495,75 @@ describe('licence seat limit', () => {
       );
       expect(next.firstCall.args[0]).to.be.instanceOf(ForbiddenError);
       expect(created).to.deep.equal([]);
+    });
+
+    describe('recreating a removed sample account', () => {
+      const SAMPLE = 'alice@acme-demo.example';
+      let credentialsDeleted: string[];
+      const removedIds = (): string[] =>
+        rows.filter((u) => u.email === SAMPLE && u.isDeleted).map((u) => u._id);
+
+      beforeEach(() => {
+        credentialsDeleted = [];
+        rows.push(row(SAMPLE, { isDeleted: true }));
+        const users = getUserRepository();
+        Object.assign(users, {
+          listRemovedIdsByEmail: async (_org: string, email: string) =>
+            rows.filter((u) => u.email === email && u.isDeleted).map((u) => u._id),
+          deleteRemoved: async (_org: string, id: string) => {
+            const before = rows.length;
+            rows = rows.filter((u) => !(u._id === id && u.isDeleted));
+            return rows.length < before;
+          },
+        });
+        setIdentityPort({
+          oldestOrgId: async () => ORG,
+          blockedUserIds: async () => [],
+          deleteForUser: async (id: string) => {
+            credentialsDeleted.push(id);
+          },
+        } as never);
+      });
+
+      const createSample = async (): Promise<unknown> => {
+        const next = sinon.stub();
+        await controller().createUser(
+          {
+            user: { userId: 'u1', orgId: ORG },
+            body: { email: SAMPLE, fullName: 'Alice' },
+          } as never,
+          { status: sinon.stub().returnsThis(), json: sinon.stub() } as never,
+          next,
+        );
+        return next.firstCall?.args[0];
+      };
+
+      it('once refused, keeps the removed row and its credentials', async () => {
+        await seatsFull(15);
+        const before = await getUserRepository().listRemovedIdsByEmail(
+          ORG,
+          SAMPLE,
+        );
+        expect(before).to.have.length(1);
+        expect(await createSample()).to.be.instanceOf(ForbiddenError);
+        expect(
+          await getUserRepository().listRemovedIdsByEmail(ORG, SAMPLE),
+        ).to.deep.equal(before);
+        expect(credentialsDeleted).to.deep.equal([]);
+        expect(created).to.deep.equal([]);
+      });
+
+      it('when the seat check throws, keeps the removed row and its credentials', async () => {
+        await seatsFull(null);
+        sinon.stub(store, 'read').rejects(new Error('store down'));
+        const before = removedIds();
+        expect(await createSample()).to.be.instanceOf(Error);
+        expect(
+          await getUserRepository().listRemovedIdsByEmail(ORG, SAMPLE),
+        ).to.deep.equal(before);
+        expect(credentialsDeleted).to.deep.equal([]);
+        expect(created).to.deep.equal([]);
+      });
     });
 
     it('JIT sign-in is refused once over for 14 days, with words for the person signing in', async () => {

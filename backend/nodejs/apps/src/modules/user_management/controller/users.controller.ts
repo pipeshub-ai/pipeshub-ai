@@ -695,18 +695,17 @@ export class UserController {
         typeof fields.email === 'string'
           ? fields.email.toLowerCase().trim()
           : '';
-      if (email !== '') {
-        if (await users.existsLiveEmail(email)) {
-          throw userRefusal(
-            new BadRequestError('A user with this email already exists'),
-            'email_taken',
-          );
-        }
-        if (isDemoAccountEmail(email)) {
-          await clearRemovedSampleAccount(email, orgId);
-        }
+      if (email !== '' && (await users.existsLiveEmail(email))) {
+        throw userRefusal(
+          new BadRequestError('A user with this email already exists'),
+          'email_taken',
+        );
       }
+      // Before the removed sample account is cleared: a refused or failed check must leave it for a later invite to restore.
       await assertSeatFor();
+      if (isDemoAccountEmail(email)) {
+        await clearRemovedSampleAccount(email, orgId);
+      }
 
       // Persist the account and its credential before anything that is hard
       // to take back (the group membership, and the event the graph side
