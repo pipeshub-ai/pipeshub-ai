@@ -990,8 +990,7 @@ their own HTTP clients.
   call, not the error report: the request's `http.request.error` still logs the failure once. `handleBackendError` logs
   nothing; a 5xx it maps carries `{ status }` as its cause, so an upstream 500 is `upstream_5xx` (WARNING) on the request's
   lines too, and a 4xx it passes on keeps the service's words in its message. A 5xx's own detail stays in the service's log.
-  A controller that passes a failure to `next` does not log it itself (see "Connector proxy (Node)"). A few catch blocks in
-  the knowledge base controllers still log `error.response?.data`; they are being removed module by module.
+  A controller that passes a failure to `next` does not log it itself (see "Connector proxy (Node)").
 - **Request id.** A call to a PipesHub service always carries the request's sanitised root id, replacing an `x-request-id`
   copied from the client (`injectRequestHeaders`, and the axios adapter). The gateway never adds one for a third party.
 - **Streams.** The chat stream's line is written when the body ends (DEBUG), fails midway (`unavailable`, with the 200), or
@@ -1055,6 +1054,23 @@ The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, an
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and
 `argument_names` (never the values), with the caller's `org_id` and `user_id` from the request. `MCP request completed` is DEBUG,
 with `jsonrpc_method`.
+
+## Knowledge base (Node)
+
+The knowledge base routes (`/api/v1/knowledgeBase`) pass each request on to the connector service and write no line of their
+own for a failure they pass on: the error middleware's `http.request.error` is the one failure line, at its class's level, each
+call has its `upstream.call.end`, and a read or a change is told by the access line. `kb_id` and `record_id` are bound from the
+path (`bindPathLogFields`, after `guardPathParams`). The record stream answers its own errors: a status the connector service
+answered is relayed with no line of its own; no answer is 504 (timeout) or 503 (unreachable), and a stream that breaks
+midway is one WARNING. A refused signed-URL upload is one WARNING with `status`; the storage vendor's body is never read.
+
+An upload batch writes one `kb.upload.batch.end` line when it ends, with `outcome` (`success`, `partial` or `failure`),
+`duration_ms`, and `files`, `succeeded` and `failed` (counts, the same as the stream's `done` summary: a file the processor
+rejected or storage refused counts as failed). It is INFO, unless the indexing step failed: then it is at
+the level of its `error_class`, with `status` when the service answered and `error` when it threw (our own failure is ERROR,
+with the stack). A batch that stops on our own error before its `done` summary (for example, the upload token cannot be
+made) writes ERROR `Streaming upload failed` with the stack in its place, so every batch still ends in one line. Each file's
+outcome is its own event on the upload's stream, not a line; a file's failure is DEBUG with `error_class`.
 
 ## Chat streams (Node)
 
@@ -1284,7 +1300,8 @@ with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest 
   audit lines also have `actor`, `target`, `group_id` and `auth_method`. Python also has `ctx_kind`, `ctx_source`, `target_org_id` (the org a cross-org job acted on, outside its bound context), `error_message`
   and `cause_type`; Node's `error` is an object (`error.message`). Node also has `smtp_code` and `email_template_type` (on `mail.send.end`), `upstream` and `network_code` (on
   `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on `chat_stream.*`). A Node name that is not a
-  typed field (`target_user_id` and `admitted` on the connector explain line) is kept in the JSON `metadata`, not the ` | k=v`
+  typed field (`target_user_id` and `admitted` on the connector explain line; `files`, `succeeded` and `failed` on
+  `kb.upload.batch.end`) is kept in the JSON `metadata`, not the ` | k=v`
   suffix; `outcome` is a field only as `success`, `failure`, `partial` or `skipped`.
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
