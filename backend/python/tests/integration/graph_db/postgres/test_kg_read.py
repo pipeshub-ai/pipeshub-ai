@@ -153,6 +153,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
     over: list[str] = []
     under: list[str] = []
     rows: list[str] = []
+    per_node: list[str] = []
     pairs = 0
     for i, w in enumerate(worlds):
         ns = await layer._ns(w)
@@ -162,8 +163,12 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
             uid = ns.id(viewer)
             with _bound(org):
                 access = await prov.get_knowledge_hub_access_v3(uid, org)
+                gate = await prov._q(lambda tx, u=uid, o=org: prov._check_gate(tx, o, u), None)      # the access a check reads when given none: grants read per node
             walk = await _ask(prov, org, uid, ids, access, "0")
             got = await _ask(prov, org, uid, ids, access, None)
+            for switch in ("0", None):
+                probed = await _ask(prov, org, uid, ids, gate, switch)
+                per_node += [f"{tag}{i} {viewer} {switch} {x}" for x in sorted({*probed, *walk}) if probed.get(x) != walk.get(x)]
             pairs += len(ids)
             over += [f"{tag}{i} {viewer} {x}" for x in sorted(set(got) - set(walk))]
             under += [f"{tag}{i} {viewer} {x}" for x in sorted(set(walk) - set(got))]
@@ -177,6 +182,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
     assert over == [], over[:10]
     assert under == [], under[:10]
     assert rows == [], rows[:10]
+    assert per_node == [], per_node[:10]
     assert pairs > 0
     assert not need_kg or (decided["admit"] > 0 and decided["denied"] > 0), f"kg decided too little to prove anything: {dict(decided)}"
 
@@ -535,7 +541,7 @@ async def test_a_chunk_of_asked_ids_is_read_without_compiling_the_statement(laye
     assert ("JIT" in bare) == available, bare.get("JIT")      # the forcing works: the profile is what keeps it off
 
 
-async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monkeypatch) -> None:
+async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(pg_required: None, monkeypatch) -> None:
     """PROFILE (sorts and bitmap scans off, short lock and statement limits) is the read's own: after a read that succeeds and one that fails, run as a unit of its own or in a
     savepoint of a longer transaction, the settings are back in that transaction and in the next one on the same pooled connection."""
     monkeypatch.setenv("PG_POOL_MAX", "1")                       # one connection: every unit below runs on it
@@ -546,7 +552,7 @@ async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monk
     async def settings(tx) -> dict[str, Any]:
         return dict(await tx.fetchrow("/* pipeshub:test.read_settings */ SELECT pg_backend_pid() AS pid, current_setting('enable_sort') AS sort, "
                                       "current_setting('enable_bitmapscan') AS bitmap, current_setting('statement_timeout') AS statement, current_setting('lock_timeout') AS lock, "
-                                      "current_setting('jit') AS jit"))
+                                      "current_setting('jit') AS jit, current_setting('plan_cache_mode') AS plans"))
 
     async def walk(ids, vrids, acc) -> list:
         return []
@@ -565,6 +571,7 @@ async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monk
         with _bound(org):
             before = await db.run(settings)
             assert (await db.run(profiled))["sort"] == "off" and (await db.run(profiled))["jit"] == "off"           # in force while the read runs
+            assert (await db.run(profiled))["plans"] == "force_custom_plan" and before["plans"] != "force_custom_plan"
             for broken in (False, True):
                 with monkeypatch.context() as m:
                     if broken:

@@ -59,7 +59,7 @@ class Proxy:
         self.conns += 1
         ur, uw = await asyncio.open_connection("127.0.0.1", self.target)
         self.writers += [w, uw]
-        st = {"drop": False}
+        st = {"drop": False, "replied": asyncio.Event()}
 
         async def c2s() -> None:
             try:
@@ -74,7 +74,10 @@ class Proxy:
                             uw.write(data)
                             await uw.drain()
                             st["drop"] = True
-                            await asyncio.sleep(0.2)
+                            # Close only once the server has answered the COMMIT (``s2c`` swallows that answer and sets the event):
+                            # the answer is the proof that it committed, so the test reads the row without racing a slow commit.
+                            # A fixed 0.2 s sleep closed the connection before a slow commit finished and the row was not there yet.
+                            await asyncio.wait_for(st["replied"].wait(), timeout=60)
                             break
                         if self.mode == "hold_reply":
                             st["hold"] = True
@@ -90,6 +93,7 @@ class Proxy:
             try:
                 while data := await ur.read(65536):
                     if st["drop"]:
+                        st["replied"].set()
                         continue
                     if st.get("hold"):
                         await asyncio.sleep(self.delay)
@@ -214,6 +218,29 @@ async def test_commit_reply_dropped_is_never_retried(env, make, mode, applied, t
                 assert await tx.fetchval("SELECT 1") == 1
     finally:
         await px.stop()
+
+
+async def test_a_dropped_reply_to_a_slow_commit_is_unknown_and_the_row_is_there_when_it_is_raised(env, make) -> None:
+    """The proxy closes only after the server answered COMMIT. The commit takes 0.6 s here (a deferred trigger sleeps),
+    longer than the 0.2 s the proxy once waited, so a close on a timer is seen as the row missing: ``applied`` read 0."""
+    admin = await env.admin()
+    await admin.execute("CREATE OR REPLACE FUNCTION kx.slow() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(0.6); RETURN NULL; END $$")
+    await admin.execute("CREATE CONSTRAINT TRIGGER slow_c AFTER INSERT ON kx.log DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION kx.slow()")
+    px = Proxy(env.cluster.port)
+    await px.start()
+    try:
+        db = await make("indexing", px.port, pool_max=2)
+
+        async def fn(tx) -> None:
+            await tx.execute("INSERT INTO kx.log VALUES ('aaaaaaaaaaaaaaaaaaaaaaaa', 'slow-reply')")
+
+        px.mode, px.commits_seen = "drop_reply", 0
+        with as_org("aaaaaaaaaaaaaaaaaaaaaaaa"), pytest.raises(CommitOutcomeUnknown):
+            await db.run(fn, write=True, idempotent=False)
+        assert await admin.fetchval("SELECT count(*) FROM kx.log WHERE note='slow-reply'") == 1
+    finally:
+        await px.stop()
+        await admin.close()
 
 
 async def test_connection_terminated_during_slow_commit_is_unknown(env, make) -> None:

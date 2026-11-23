@@ -185,11 +185,13 @@ class PooledDriver:
     """A driver whose sessions wait ``acquire`` seconds for a pooled connection before sending RUN, then end as scripted.
 
     ``sent`` records the server-side limit of each RUN that reached the server: what a real pool wait or a retry after a lost
-    connection would send through ``Neo4jClient.execute_query``."""
+    connection would send through ``Neo4jClient.execute_query``. ``cancelled`` is set when a wait for a connection is cancelled,
+    the proof that no RUN can follow it."""
 
     def __init__(self, steps: list[tuple[float, Exception | None]]) -> None:
         self.steps = steps
         self.sent: list[float | None] = []
+        self.cancelled = asyncio.Event()
 
     def session(self, **_kw: Any) -> "PooledDriver._Session":  # noqa: ANN401
         return PooledDriver._Session(self)
@@ -209,7 +211,11 @@ class PooledDriver:
 
         async def run(self, statement: Any, parameters: dict | None = None) -> Any:  # noqa: ANN401
             acquire, outcome = self.driver.steps.pop(0)
-            await asyncio.sleep(acquire)
+            try:
+                await asyncio.sleep(acquire)
+            except asyncio.CancelledError:
+                self.driver.cancelled.set()
+                raise
             self.driver.sent.append(getattr(statement, "timeout", None))
             if outcome is not None:
                 raise outcome
@@ -236,7 +242,7 @@ async def test_a_statement_waiting_for_a_pooled_connection_at_the_deadline_is_ne
     with deadline_after(0.05), pytest.raises(KnowledgeHubListingBusy) as busy:
         await p._kh_query(TEXT)
     assert busy.value.timed_out
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(driver.cancelled.wait(), 5)      # the wait for a connection was given up, not left to send later
     assert len(driver.sent) == 1, "a RUN was sent after the request was answered"
 
 
@@ -251,6 +257,6 @@ async def test_a_retry_after_a_lost_connection_is_not_sent_past_the_deadline() -
     with deadline_after(0.2), pytest.raises(KnowledgeHubListingBusy) as busy:
         await p._kh_query(TEXT)
     assert busy.value.timed_out
-    await asyncio.sleep(0.1)
+    await asyncio.wait_for(driver.cancelled.wait(), 5)
     assert len(driver.sent) == 2, "the retry was sent after the request was answered"
     assert 0 < driver.sent[1] <= 0.2      # the attempt that was sent carried no more than the time left

@@ -233,11 +233,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
-
       - name: Install uv
         run: pip install uv
 
@@ -297,6 +292,10 @@ jobs:
       - name: Validate datastore memory sizing variables
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/compose_sizing_test.sh
+
+      - name: Validate code-sandbox variables
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/compose_sandbox_env_test.sh
 
       # installer_test.sh has existed with ~184 assertions and was not run by
       # any workflow. It needs neither Docker nor network, so there is no

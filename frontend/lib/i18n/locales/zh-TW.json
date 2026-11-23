@@ -799,7 +799,11 @@
       "collectionExists": "你已有名為「{{name}}」的集合。請換一個名稱。"
     },
     "sourcesNotReady": "部分來源仍在準備中，尚未列出（{{count}}）。請稍後再試。",
-    "sourcePreparing": "正在準備此來源… 其中的項目稍後將顯示在這裡。"
+    "sourcePreparing": "正在準備此來源… 其中的項目稍後將顯示在這裡。",
+    "selectionActionsNotice": "優先索引",
+    "selectionActionsNoticeEnterprise": "選擇先為哪些已選項目建立索引屬於企業版。",
+    "uploadExtrasNotice": "優先索引這些檔案",
+    "uploadExtrasNoticeEnterprise": "選擇先為哪些上傳檔案建立索引屬於企業版。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2201,9 +2205,29 @@
         "pasteBlockLabel": "可直接貼入您的 MCP 設定",
         "copyPasteBlockAria": "複製貼上區塊",
         "copySuccessTitle": "已複製",
-        "copyErrorTitle": "無法複製"
+        "copyErrorTitle": "無法複製",
+        "knowledgeLimitLaterHint": "你之後可以變更此項，不需要更換權杖。"
       },
-      "scopeCount_other": "{{count}} 個權限範圍"
+      "scopeCount_other": "{{count}} 個權限範圍",
+      "access": {
+        "panelTitle": "變更存取權",
+        "intro": "選擇 {{name}} 可以檢視的內容。權杖會繼續有效，變更從它的下一個要求起生效，因此不需要更新任何使用它的地方。",
+        "save": "儲存",
+        "savedTitle": "存取權已變更",
+        "savedEverything": "{{name}} 現在可以檢視你能檢視的所有內容。",
+        "savedSome_other": "{{name}} 現在可以檢視所選的 {{count}} 項。",
+        "undo": "復原",
+        "undoneTitle": "已復原變更",
+        "undoErrorTitle": "無法復原變更。請開啟「變更存取權」重新設定。",
+        "errorTitle": "無法變更存取權",
+        "errorDescription": "沒有任何變更。請再試一次。",
+        "unknownTitle": "無法確認變更",
+        "unknownDescription": "變更可能已儲存。請先檢查此處顯示的存取範圍，再重試。",
+        "unknownReloadFailedDescription": "變更可能已儲存，但無法載入最新的存取範圍。請先重新載入頁面，再以顯示內容為準。",
+        "rowAction": "變更存取權",
+        "rowActionAria": "變更 {{name}} 可以檢視的內容",
+        "rowActionTooltip": "變更存取權：選擇此權杖可以檢視的內容"
+      }
     },
     "agentSignIns": {
       "title": "代理登入",
@@ -2793,7 +2817,123 @@
       "tools": {
         "title": "工具",
         "subtitle": "關閉個別工具。關閉的工具不會提供給 MCP 用戶端，對它的呼叫會被拒絕。",
-        "writes": "寫入"
+        "writes": "寫入",
+        "descriptions": {
+          "pipeshub_sources": "列出使用者可讀取的連接器和集合，以及工作區已設定的 AI 模型。用戶端據此選擇在哪裡搜尋以及使用哪個模型聊天。",
+          "pipeshub_search": "在使用者可讀取的連接器和集合中依語意搜尋已索引的文件，並傳回相符的段落及其所屬記錄。",
+          "pipeshub_get_record_content": "讀取一筆記錄的全文。也可以透過 URL、議題編號或外部 ID 尋找記錄，瀏覽資料夾、空間或 Epic 底下的內容，以及讀取整個 Slack 討論串。",
+          "pipeshub_download_record": "下載記錄所儲存的原始檔案，可選擇轉換為 PDF。",
+          "pipeshub_directory": "查詢目前登入的使用者、工作區的使用者和群組，以及該使用者所屬的團隊。不會變更任何內容。",
+          "pipeshub_create_collection": "建立一個由使用者擁有的全新空集合，可將檔案上傳到其中。",
+          "pipeshub_upload": "將文件上傳到集合，以便建立索引並可供搜尋。每次呼叫最多 20 份文件、約 3 MB。",
+          "pipeshub_indexing_status": "回報集合的索引進度，以及哪些文件失敗及其原因。",
+          "pipeshub_connect_source": "傳回一個連結，使用者在瀏覽器中開啟它來連接 Slack、Google Drive 或 Jira 等來源。此工具本身不會連接任何內容。",
+          "pipeshub_add_web_source": "將網站新增為使用者自己的 Web 連接器。它從起始頁面開始爬取，跟隨頁面中的連結，並且每天重新爬取。預設保留 100 個頁面，用戶端可要求更多，最多 10,000 個。OAuth 應用程式或存取權杖還需要 connector:write 和 connector:sync 範圍。",
+          "pipeshub_chat": "向 PipesHub 內建的助理或工作區的某個代理提問，並傳回附引用的回答。寫入工具關閉時，它不會執行已連線的動作。關閉它也會同時關閉代理清單。",
+          "pipeshub_agents": "列出工作區的代理及其工具和知識，讓用戶端可以與其中一個聊天。僅在「與 PipesHub 聊天」開啟時提供。",
+          "pipeshub_show_citations": "向使用者顯示回答所依據的來源，以 [1]、[2] 等編號，並附上每份文件的預覽。每次呼叫最多 30 個段落。僅提供給能夠顯示引用檢視器的用戶端，例如 Claude。",
+          "pipeshub_preview_record": "僅供引用檢視器使用，AI 模型不會呼叫。它分段載入記錄所儲存的檔案，讓檢視器可以顯示文件。關閉期間，檢視器無法載入文件預覽。",
+          "pipeshub_code_repos": "列出使用者可讀取的已索引程式碼儲存庫。程式碼工具僅提供給擁有已索引程式碼的使用者；OAuth 應用程式或存取權杖還需要 code:read 範圍。",
+          "pipeshub_code_symbols": "顯示已索引儲存庫中某個目錄或檔案包含的內容：子目錄和檔案，或檔案定義的符號。",
+          "pipeshub_code_neighbours": "顯示程式碼圖中某個檔案或符號周圍的內容：它的呼叫端、它呼叫的程式碼、匯入和繼承關係。",
+          "pipeshub_code_read": "讀取已索引的原始碼：一個符號、一段行範圍或整個檔案。讀取的是索引副本，可能落後於儲存庫。",
+          "pipeshub_code_path": "逐步顯示儲存庫中一個符號如何到達另一個符號。",
+          "pipeshub_code_search": "依確切名稱、字串或規則運算式尋找程式碼。",
+          "pipeshub_code_semantic_search": "在不知道名稱時，根據自然語言描述尋找某個功能或行為背後的程式碼。",
+          "pipeshub_code_outline": "列出檔案中的類別、函式和方法及其簽章和行範圍，不含函式主體。",
+          "pipeshub_code_impact": "顯示相依於某個符號的內容：所有呼叫、匯入或以它為基礎的程式碼，以及涵蓋到它的測試。可回答誰呼叫了它、修改後會影響什麼。",
+          "pipeshub_code_impact_of_diff": "接收一個統一格式的 diff，例如 git diff 的輸出或拉取請求的 diff，顯示它變更的符號、涉及這些符號的檔案和測試，以及沒有測試涵蓋的呼叫端。",
+          "pipeshub_code_history": "列出修改過某個檔案的已索引拉取請求，包括作者、審閱者、合併者及其提到的工單。",
+          "pipeshub_code_entry_points": "列出執行進入儲存庫的位置，例如路由、命令列工具、工作和掛鉤。是閱讀陌生程式碼的起點。",
+          "pipeshub_entities": "在工作區的知識圖譜中尋找人員、團隊、主題、專案、資料夾、客戶和文件標題，列出與其中某一項相關聯的記錄，以及與其一同被提及的人員、公司或產品。尋找和列出會在實體完成索引後提供；一同提及的清單還需要具名實體擷取。OAuth 應用程式或存取權杖還需要 semantic:read 或 semantic:write 範圍。",
+          "pipeshub_find_records": "依記錄屬於誰或提及什麼來列出記錄，而不是依其文字：指派給某人或由其建立、撰寫或擁有的記錄，提及金額、日期、數量或百分比的記錄，以及記錄中提到指定人員、公司或產品的段落。金額和日期需要具名實體擷取，段落僅在部署同時開啟實體搜尋時提供。OAuth 應用程式或存取權杖還需要 semantic:read 或 semantic:write 範圍。"
+        },
+        "count": "提供 {{offered}}/{{total}} 個",
+        "searchPlaceholder": "搜尋工具、引數或範圍",
+        "searchLabel": "搜尋工具",
+        "filterLabel": "顯示",
+        "filters": {
+          "all": "全部",
+          "read": "唯讀",
+          "writes": "寫入或變更資料",
+          "off": "已關閉"
+        },
+        "expandAll": "全部展開",
+        "collapseAll": "全部收合",
+        "noMatch": "沒有符合此搜尋的工具。",
+        "groupCount": "已開啟 {{offered}}/{{total}}",
+        "groupSwitch": "{{group}}中的所有工具",
+        "showDetails": "顯示 {{tool}} 的詳細資料",
+        "hideDetails": "隱藏 {{tool}} 的詳細資料",
+        "groups": {
+          "read": {
+            "label": "尋找與閱讀",
+            "description": "搜尋、閱讀和下載使用者可存取的內容。"
+          },
+          "people": {
+            "label": "人員與實體",
+            "description": "工作區的使用者和群組，以及其知識圖譜中的人員、專案、主題和數值。"
+          },
+          "chat": {
+            "label": "聊天與代理",
+            "description": "向 PipesHub 的助理或工作區的某個代理提問。"
+          },
+          "add": {
+            "label": "新增內容",
+            "description": "建立集合、上傳文件、新增網站和連線來源。"
+          },
+          "viewer": {
+            "label": "引用檢視器",
+            "description": "在能顯示它的用戶端中呈現回答背後的來源。"
+          },
+          "code": {
+            "label": "程式碼",
+            "description": "瀏覽已索引的程式碼儲存庫。",
+            "availability": "僅提供給可讀取已索引程式碼儲存庫的使用者。"
+          },
+          "other": {
+            "label": "其他",
+            "description": "此版本頁面尚不認識的工具。"
+          }
+        },
+        "kinds": {
+          "readOnly": "唯讀",
+          "changes": "可變更資料",
+          "openWorld": "會存取 PipesHub 之外"
+        },
+        "blocked": {
+          "writesOff": "在不允許寫入工具期間關閉。",
+          "chatOff": "在與 PipesHub 聊天關閉期間關閉。"
+        },
+        "details": {
+          "scopes": "所需的 OAuth 範圍",
+          "noScopes": "無：它不呼叫 PipesHub 中的任何內容。",
+          "availability": "何時提供",
+          "arguments": "引數 · {{n}}",
+          "noArguments": "不接受引數。",
+          "columns": {
+            "name": "名稱",
+            "type": "類型",
+            "description": "說明"
+          },
+          "required": "必填",
+          "oneOf": "取值之一：{{values}}",
+          "modelText": "AI 看到的內容",
+          "hideModelText": "隱藏 AI 看到的內容",
+          "modelTextHint": "AI 模型在選擇此工具前讀取的說明。"
+        },
+        "availability": {
+          "default": "開啟時一律提供。",
+          "pipeshub_chat": "開啟時一律提供。僅在允許寫入工具時執行已連線的動作。",
+          "pipeshub_agents": "僅在與 PipesHub 聊天開啟時提供。",
+          "pipeshub_create_collection": "僅在允許寫入工具時提供。",
+          "pipeshub_upload": "僅在允許寫入工具時提供。",
+          "pipeshub_add_web_source": "僅在允許寫入工具時提供。",
+          "pipeshub_show_citations": "僅提供給能顯示引用檢視器的用戶端，例如 Claude。",
+          "pipeshub_preview_record": "僅提供給引用檢視器，從不提供給 AI 模型。",
+          "pipeshub_entities": "實體完成索引後，提供尋找實體和列出其記錄。一同提及的清單還需要具名實體擷取。",
+          "pipeshub_find_records": "某人的記錄一律提供。金額和日期需要具名實體擷取，提到人員或公司的段落還需要部署開啟實體搜尋。"
+        }
       },
       "appliesNote": "變更會在幾秒內套用到新的 MCP 請求。",
       "loadError": "無法載入 MCP 存取設定。請重新載入頁面後再試一次。",
@@ -2801,6 +2941,45 @@
         "saveSuccess": "MCP 存取設定已儲存",
         "saveError": "無法儲存 MCP 存取設定",
         "saveErrorDescription": "請檢查網路連線後再試一次。"
+      },
+      "status": {
+        "on": "已開啟 · 提供 {{offered}}/{{total}} 個工具",
+        "off": "已關閉 · AI 用戶端無法連線"
+      },
+      "connect": {
+        "title": "連線 AI 用戶端",
+        "description": "用戶端連線到此端點，每位使用者以自己的 PipesHub 帳號登入。也可以使用個人存取權杖。",
+        "endpointLabel": "MCP 端點",
+        "copy": "複製",
+        "copied": "已複製",
+        "copyEndpoint": "複製 MCP 端點",
+        "copySnippet": "複製設定",
+        "clientsLabel": "AI 用戶端",
+        "clients": {
+          "claude": {
+            "label": "Claude",
+            "steps": "在 Claude 中開啟「自訂 › 連接器」，選擇 +，然後選擇「新增自訂連接器」。貼上上方的端點，然後選擇「連線」並登入 PipesHub。若為 Team 或 Enterprise 方案，需先由擁有者在組織設定中新增該連接器。",
+            "tip": "Claude 是從 Anthropic 的雲端連線，而不是從你的電腦連線，因此端點必須能從網際網路存取。localhost 或私人網路位址將無法使用。"
+          },
+          "chatgpt": {
+            "label": "ChatGPT",
+            "steps": "在 chatgpt.com 上開啟「外掛程式」，選擇 +，然後選擇「新增自訂 MCP 伺服器」。將上方的端點貼上為伺服器 URL，選擇 OAuth，接受警告並選擇「建立為外掛程式」，然後登入 PipesHub。在 Business、Enterprise 或 Edu 工作區中，需要管理員允許自訂 MCP 伺服器。",
+            "tip": "ChatGPT 是從 OpenAI 的伺服器連線，而不是從你的電腦連線，因此端點必須能從網際網路存取。localhost 或私人網路位址將無法使用。"
+          },
+          "cursor": {
+            "label": "Cursor",
+            "steps": "將伺服器加入 ~/.cursor/mcp.json，或專案中的 .cursor/mcp.json。Cursor 第一次使用工具時會要求你登入。"
+          },
+          "vscode": {
+            "label": "VS Code",
+            "steps": "將伺服器加入 .vscode/mcp.json，然後從 MCP 伺服器清單中啟動它並登入。"
+          },
+          "claudeCode": {
+            "label": "Claude Code",
+            "steps": "在終端機中執行以下指令，然後在 Claude Code 中執行 /mcp 登入。",
+            "tip": "如果只問程式碼相關的問題，請在端點後加上 ?tools=code：用戶端將只取得程式碼工具。"
+          }
+        }
       }
     },
     "labs": {
@@ -2907,8 +3086,7 @@
       },
       "enterpriseSso": {
         "title": "SAML 單一登入與 OpenID Connect",
-        "description": "讓成員透過 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身分提供者登入。",
-        "contactSales": "如需購買，請寄信至 {{email}}"
+        "description": "讓成員透過 Okta、OneLogin 或其他 SAML 2.0 或 OpenID Connect 身分提供者登入。"
       }
     },
     "connectors": {
@@ -3199,7 +3377,8 @@
             "max_pages": "已達到最大頁數限制",
             "time_limit": "已達到時間限制；下次同步將繼續",
             "stalled": "網站停止回應；下次同步將繼續",
-            "rate_limited": "網站一再要求減少請求；下次同步將繼續"
+            "rate_limited": "網站一再要求減少請求；下次同步將繼續",
+            "start_not_recorded": "同步無法儲存其開始記錄，因此未執行；下次同步將重試"
           },
           "pagesSaved": "已儲存 {{count}} 個頁面",
           "failed": "{{count}} 個頁面失敗",
@@ -3655,7 +3834,94 @@
           "other": "此連接器的權限需要有人查看。",
           "unreadable": "無法讀取等待更新的資料夾清單。請讓執行 PipesHub 的人員重建此連接器的權限索引。在此期間，搜尋會逐筆檢查結果。"
         }
-      }
+      },
+      "userAccess": {
+        "connect": "連接",
+        "reconnect": "重新連接",
+        "connected": "已連接",
+        "connectedAs": "已以 {{account}} 連接",
+        "connectDialog": {
+          "title": "將你的帳戶連接到 {{name}}",
+          "description": "貼上你自己的 {{source}} 帳戶中的個人存取權杖。PipesHub 只會向你顯示你的帳戶可以開啟的頁面。",
+          "howTo": "如何建立個人存取權杖",
+          "tokenLabel": "個人存取權杖",
+          "submitting": "正在連接…",
+          "errorFallback": "無法連接你的帳戶，請重試。",
+          "signInHint": "{{source}} 只列出你擁有完整存取權限的頁面。所選頁面的子頁面（包括新建立的）都會包含在內。之後如需新增更多頁面，請重新登入。",
+          "signingIn": "正在等待 {{source}}…",
+          "signInFailed": "登入未完成。請重試。",
+          "popupBlocked": "瀏覽器封鎖了登入視窗。請允許此網站的彈出視窗後重試。"
+        },
+        "admin": {
+          "title": "已連接的使用者",
+          "description": "此連接器只向每個人顯示其自己帳戶可以開啟的內容。未連接的人看不到任何內容。",
+          "remove": "移除",
+          "removeTitle": "移除 {{email}} 的連接？",
+          "removeMessage": "在重新連接之前，對方將看不到此連接器的結果。",
+          "removing": "正在移除…",
+          "removed": "連接已移除",
+          "status": {
+            "connected": "已連接",
+            "needs_reconnect": "需要重新連接",
+            "invited": "已邀請",
+            "not_invited": "未邀請",
+            "opted_out": "不希望收到提醒",
+            "no_account": "沒有 PipesHub 帳戶"
+          },
+          "noAccountHint": "請先邀請他們加入 PipesHub",
+          "invite": "邀請",
+          "remind": "提醒",
+          "sent_other": "已傳送給 {{count}} 人",
+          "notEmailed_other": "有 {{count}} 人的郵件未能傳送；他們仍收到了應用程式內通知。",
+          "lastSent": "上次傳送於 {{time}}",
+          "connectedAt": "連接於 {{time}}",
+          "membersUpdated": "成員清單上次讀取於 {{time}}",
+          "membersPending": "成員清單將在下次同步後顯示",
+          "queued_other": "正在傳送給 {{count}} 人。他們會收到一則通知和一封郵件。",
+          "nothingSent": "未傳送任何內容",
+          "skipReason": {
+            "connected": "已連接。",
+            "not_found": "已不是成員。",
+            "opted_out": "不希望收到提醒。",
+            "recently_sent": "過去一天內已傳送過。",
+            "not_sent": "無法傳送。請稍後重試。"
+          },
+          "inviteWho": "邀請 {{name}}",
+          "remindWho": "提醒 {{name}}",
+          "removeWho": "移除 {{name}} 的連接",
+          "yourAccount": "你的帳號",
+          "connectedOf": "{{total}} 人中已有 {{connected}} 人連線",
+          "needReconnect_other": "{{count}} 人需要重新連線",
+          "search": "依姓名或電子郵件搜尋",
+          "inviteEveryoneHint": "所有尚未連線的人",
+          "inviteEveryone": "全部邀請（{{count}}）",
+          "noMatches": "沒有符合「{{q}}」的人",
+          "nobody": "目前沒有人。下次同步後會顯示。"
+        },
+        "link": {
+          "title": "連接你的 {{source}} 帳戶",
+          "forEmail": "適用於 {{email}}",
+          "continue": "繼續前往 {{source}}",
+          "loading": "正在檢查連結…",
+          "alreadyConnected": "你的 {{source}} 帳戶已連接。",
+          "openApp": "開啟 PipesHub",
+          "expired": "此連結已過期或已被使用。請向管理員索取新連結，或在 PipesHub 的「您的個人連接器」中連接。",
+          "optedOut": "你將不會再收到此連接器的提醒。",
+          "error": "發生問題。請一分鐘後重試。",
+          "noSignIn": "此連接器使用個人存取權杖。開啟 PipesHub，在通知中選擇「連線」來貼上你的權杖。",
+          "done": "{{name}} 已連接。幾分鐘後，你的頁面將出現在 PipesHub 搜尋中。",
+          "doneUnnamed": "你的帳戶已連接。幾分鐘後，你的頁面將出現在 PipesHub 搜尋中。",
+          "failedTitle": "無法連接",
+          "failedRetry": "請使用郵件中的連結重試。",
+          "confirmOptOut": "停止 {{name}} 的提醒？",
+          "stopReminders": "停止提醒",
+          "rateLimited": "嘗試次數過多，請一分鐘後重試。",
+          "cancelled": "你取消了登入。",
+          "signInFailed": "登入未完成。請重試。"
+        }
+      },
+      "indexPriorityNotice": "為此連接器優先建立索引",
+      "indexPriorityNoticeEnterprise": "索引優先順序屬於企業版。"
     },
     "mcpServers": {
       "searchPlaceholder": "搜尋 MCP 伺服器...",
@@ -3679,7 +3945,6 @@
         "confirm": "儲存並移除登入"
       },
       "cta": {
-        "manage": "管理",
         "delete": "刪除",
         "reauthenticate": "重新驗證",
         "reconnect": "重新連線",
@@ -3701,6 +3966,18 @@
         "needsAuth": "需要驗證",
         "disabled": "已停用"
       },
+      "filters": {
+        "label": "依狀態篩選",
+        "needsAction": "需要處理",
+        "unavailable": "無法使用"
+      },
+      "catalog": {
+        "title": "新增更多伺服器",
+        "description": "現成的伺服器。新增後登入即可使用。",
+        "personalDescription": "你在這裡新增的伺服器只有你看得到。",
+        "added": "已新增",
+        "addAnother": "再新增一個"
+      },
       "team": {
         "title": "MCP 伺服器",
         "subtitle": "連接 Model Context Protocol 伺服器，擴充團隊代理程式的能力。",
@@ -3712,36 +3989,16 @@
         "subtitle": "連接管理員提供的 MCP 伺服器，或新增您自己的伺服器。",
         "emptyTitle": "沒有可用的 MCP 伺服器",
         "emptyDescription": "新增您自己的伺服器，或請管理員為所有人新增一個。",
-        "yourServersDescription": "您新增的伺服器。只有您可以檢視和使用，且無法新增到與組織共用的代理程式中。",
         "tabs": {
           "all": "全部",
-          "connected": "已連線",
-          "notConnected": "未連線"
+          "connected": "已連線"
         },
         "yours": "我的",
         "noneInTab": "這裡沒有 MCP 伺服器。"
       },
       "details": {
         "breadcrumbLabel": "MCP 伺服器",
-        "refreshAll": "全部重新整理",
-        "addInstance": "新增另一個執行個體",
-        "configuration": "設定",
-        "transport": "傳輸方式",
-        "tools": "工具",
-        "discoverTools": "探索工具",
-        "discoveredTools_one": "{{count}} 個可用工具",
-        "discoveredTools_other": "{{count}} 個可用工具",
-        "discovering": "正在探索工具…",
-        "discoveryError": "工具探索失敗",
-        "discoveryNeedsAuth": "請驗證以探索工具",
-        "retry": "重試",
-        "noInstances": "尚未設定任何執行個體",
-        "authBannerTitle": "需要驗證",
-        "authBannerDescription": "請驗證此 MCP 伺服器，讓您團隊的代理程式可以使用它。",
-        "authBannerAuthenticatedTitle": "已連線",
-        "reconnectBannerDescription": "此伺服器的登入已過期或遭拒。請重新連線以繼續使用。",
-        "authBannerAuthenticatedDescription": "您可以重新驗證或中斷此 MCP 伺服器的連線。",
-        "createdBy": "建立者"
+        "tools": "工具"
       },
       "deleteDialog": {
         "title": "要刪除 MCP 伺服器嗎？",
@@ -3801,27 +4058,28 @@
         "tokenUrl": "Token URL",
         "scopes": "範圍",
         "scopesPlaceholder": "新增範圍",
-        "useAdminAuth": "對所有使用者使用共用的管理員驗證",
         "headerValue": "{{headerName}}",
         "apiToken": "API token",
         "credentialsHeading": "憑證（選填）",
-        "credentialsHint": "立即新增憑證，或先跳過並稍後從「連線與工具」分頁進行連線。",
+        "credentialsHint": "現在新增，或稍後在伺服器頁面登入。",
         "multiEnvIncomplete": "請填寫所有必要的環境變數，或全部留白以便稍後連線。",
         "oauthPairRequired": "請同時輸入用戶端 ID 和用戶端密鑰，或兩者皆留白。",
-        "connectAfterCreateHint": "請先儲存此伺服器，然後重新開啟「管理」進行連線。",
         "timeoutsHeading": "逾時",
         "connectTimeout": "連線逾時（秒）",
         "callTimeout": "工具呼叫逾時（秒）",
-        "timeoutRange": "請輸入 {{min}} 到 {{max}} 之間的數字，或留空以使用預設值。"
+        "timeoutRange": "請輸入 {{min}} 到 {{max}} 之間的數字，或留空以使用預設值。",
+        "whoSignsIn": "成員如何登入",
+        "signIn": {
+          "personal": "每人使用自己的憑證",
+          "personalHint": "每個人用自己的憑證登入，只取得這些憑證擁有的權限。",
+          "shared": "所有人共用一個憑證",
+          "sharedHint": "你在下方新增一次。所有人都以它的權限操作。"
+        },
+        "advanced": "進階"
       },
       "configPanel": {
         "editTitle": "編輯 MCP 伺服器",
         "createTitle": "新增 MCP 伺服器",
-        "tabs": {
-          "configuration": "設定",
-          "tools": "工具與核准",
-          "toolList": "工具"
-        },
         "synced": "{{time}}同步",
         "refreshTools": "重新整理工具清單",
         "signInForTools": "登入以查看此伺服器的工具。",
@@ -3861,7 +4119,8 @@
           "remove": "刪除伺服器",
           "removeHint": "為所有人刪除它。",
           "removeHintPersonal": "刪除它及您的登入資訊。"
-        }
+        },
+        "addTemplateTitle": "新增 {{name}}"
       },
       "oauthConfig": {
         "saved": "已儲存 OAuth 應用程式",
@@ -3896,7 +4155,6 @@
         "noState": "未傳回 state 參數。",
         "backendRejected": "伺服器拒絕了此授權要求。"
       },
-      "deleteDisabledTooltip": "此伺服器無法刪除",
       "stdioPolicy": {
         "disabledTitle": "此部署已停用",
         "disabledDescription": "自訂 STDIO 伺服器會在 PipesHub 伺服器上執行指令，因此在維運人員於部署環境中設定 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前會保持關閉。在此之前，代理程式無法使用此伺服器的工具。你可以刪除它，或改為遠端（HTTP）伺服器。",
@@ -3910,8 +4168,6 @@
         "customDescription": "透過 URL 連接任何遠端 MCP 伺服器。"
       },
       "toolRules": {
-        "open": "工具核准",
-        "title": "工具核准：{{name}}",
         "description": {
           "personal": "選擇當助理或代理程式想在您的聊天中使用這些工具時會發生什麼。"
         },
@@ -3964,6 +4220,12 @@
         "orgRulesDescription": "為組織中的所有人決定哪些工具直接執行、先詢問或永不執行。在這裡，每個人在自己的 MCP 伺服器頁面設定自己的規則。",
         "userServersTitle": "成員自己的 MCP 伺服器",
         "userServersDescription": "檢視並移除組織成員為自己新增的 MCP 伺服器。"
+      },
+      "added": {
+        "ready": "{{name}} 已新增，可以使用了。",
+        "signIn": "{{name}} 已新增。請在下方登入，以便執行它的工具。",
+        "other": "{{name}} 已新增，但還無法使用。原因見下方。",
+        "dismiss": "完成"
       }
     },
     "bots": {
@@ -4588,6 +4850,9 @@
           "label": "Extraction 服務",
           "description": "基於 LLM 的文件分類與中繼資料擷取"
         }
+      },
+      "healthWarnings": {
+        "title": "需要注意"
       },
       "vectorDbMemory": {
         "title": "搜尋索引超出了向量資料庫的記憶體",

@@ -166,15 +166,6 @@ export class StreamedContentAccumulator {
     }
   }
 
-  /**
-   * Legacy protocol's `answer_chunk` carries `accumulated` — the running
-   * full text, not a delta (see `LegacyFormatter.answer_delta`) — so this
-   * replaces rather than appends.
-   */
-  setAccumulatedText(text: string): void {
-    this.text = text;
-  }
-
   getText(): string {
     return this.text;
   }

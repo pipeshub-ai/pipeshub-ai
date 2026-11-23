@@ -20,6 +20,8 @@ export interface OAuthTokenPayload {
   client_id: string;
   tokenType: 'oauth';
   isRefreshToken?: true;
+  /** Not a claim: the stored token's id, which token lists and revocation use. Set by verifyAccessToken. */
+  tokenRowId?: string;
   fullName?: string;
   accountType?: string;
   createdBy?: string;
@@ -33,6 +35,15 @@ export interface OAuthTokenPayload {
    * calling.
    */
   act?: { sub: string };
+  /**
+   * The identity in `createdBy` is a service account, not a person.
+   *
+   * Present only on a client_credentials token whose application names the
+   * service account it acts as. Nothing authorises on it: it is there so that
+   * code which has to treat a machine identity differently from a colleague
+   * can tell them apart without a second lookup.
+   */
+  actsAsServiceAccount?: true;
   /** Absent when the app may see everything its user can. */
   knowledgeLimit?: KnowledgeLimit;
   /** Access tokens: the resource (RFC 8707) the token is for, when its client named one. */
@@ -403,6 +414,11 @@ export interface TokenListItem {
 }
 
 // Personal Access Tokens
+/** Body of PATCH /personal-access-tokens/:tokenId; null lifts the limit. */
+export interface UpdatePatKnowledgeLimitBody {
+  knowledgeLimit: KnowledgeLimit | null;
+}
+
 export interface CreatePatRequest {
   name: string;
   scopes?: string[];

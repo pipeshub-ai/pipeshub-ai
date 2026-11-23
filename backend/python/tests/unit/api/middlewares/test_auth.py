@@ -11,6 +11,7 @@ from app.api.middlewares import auth as auth_module
 from app.api.middlewares.auth import (
     AUTH_POLICY_ATTR,
     authMiddleware,
+    connection_limit,
     deny_service_tokens,
     extract_bearer_token,
     get_config_service,
@@ -1301,3 +1302,110 @@ class TestKnowledgeLimitClaim:
     def test_a_service_token_drops_the_claim(self) -> None:
         payload = auth_module._normalize_scoped_payload({"knowledgeLimit": {"apps": ["a"]}}, "tok")
         assert auth_module.connection_limit(payload) is None
+
+
+class TestServiceIdentityClaim:
+    """Node marks a client_credentials token that acts as a service account."""
+
+    @staticmethod
+    def _client_credentials(**claims: object) -> dict:
+        return auth_module._normalize_regular_payload({
+            "userId": "c", "client_id": "c", "createdBy": "svc", "tokenType": "oauth",
+            "scope": "kb:read", **claims,
+        }, "tok")
+
+    def test_a_client_credentials_token_keeps_the_marker(self) -> None:
+        payload = self._client_credentials(actsAsServiceAccount=True)
+        assert payload["userId"] == "svc"
+        assert payload[auth_module.SERVICE_IDENTITY_CLAIM] is True
+
+    def test_only_a_literal_true_counts(self) -> None:
+        assert self._client_credentials(actsAsServiceAccount="true")[auth_module.SERVICE_IDENTITY_CLAIM] is False
+        assert self._client_credentials()[auth_module.SERVICE_IDENTITY_CLAIM] is False
+
+    def test_a_user_grant_cannot_carry_it(self) -> None:
+        """The token speaks as the person in userId, whatever its app acts as."""
+        payload = auth_module._normalize_regular_payload({
+            "userId": "u", "client_id": "c", "createdBy": "svc", "tokenType": "oauth",
+            "scope": "kb:read", "actsAsServiceAccount": True,
+        }, "tok")
+        assert auth_module.SERVICE_IDENTITY_CLAIM not in payload
+
+    def test_a_session_token_cannot_carry_it(self) -> None:
+        payload = auth_module._normalize_regular_payload({"userId": "u", "actsAsServiceAccount": True}, "tok")
+        assert auth_module.SERVICE_IDENTITY_CLAIM not in payload
+
+    def test_a_service_token_drops_it(self) -> None:
+        payload = auth_module._normalize_scoped_payload({"actsAsServiceAccount": True}, "tok")
+        assert auth_module.SERVICE_IDENTITY_CLAIM not in payload
+
+
+class TestPersonalAccessTokenLimitFromNode:
+    """A PAT reaches what its owner set last, as Node reports it; an OAuth app token keeps its signed limit."""
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_personal_access_token_takes_the_limit_its_owner_set_last(
+        self, mock_validate, mock_role
+    ) -> None:
+        """A PAT's signed claim is the limit it was issued with; its owner may have changed it since."""
+        mock_validate.return_value = {
+            "userId": "user-1",
+            "isOAuth": True,
+            "token_type": "regular",
+            "knowledgeLimit": {"apps": ["old-app"], "recordGroups": [], "records": []},
+        }
+        mock_role.return_value = CallerRole(
+            CallerRoleStatus.VALID,
+            "member",
+            knowledge_limit={"apps": ["new-app", "", 3], "recordGroups": "rg", "records": ["r-1"]},
+            knowledge_limit_given=True,
+        )
+
+        request = _make_fake_request(authorization="Bearer phpat_token")
+        await authMiddleware(request)
+
+        assert connection_limit(request.state.user) == {
+            "apps": ["new-app"],
+            "recordGroups": [],
+            "records": ["r-1"],
+        }
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_personal_access_token_widened_to_everything(self, mock_validate, mock_role) -> None:
+        mock_validate.return_value = {
+            "userId": "user-1",
+            "isOAuth": True,
+            "token_type": "regular",
+            "knowledgeLimit": {"apps": ["old-app"], "recordGroups": [], "records": []},
+        }
+        mock_role.return_value = CallerRole(
+            CallerRoleStatus.VALID, "member", knowledge_limit=None, knowledge_limit_given=True
+        )
+
+        request = _make_fake_request(authorization="Bearer phpat_token")
+        await authMiddleware(request)
+
+        assert connection_limit(request.state.user) is None
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
+    @patch("app.api.middlewares.auth.isJwtTokenValid")
+    async def test_oauth_app_token_keeps_its_signed_limit(self, mock_validate, mock_role) -> None:
+        """Node sends no limit for an OAuth app's token: the one its user agreed to stays."""
+        claim = {"apps": ["app-1"], "recordGroups": [], "records": []}
+        mock_validate.return_value = {
+            "userId": "user-1",
+            "isOAuth": True,
+            "token_type": "regular",
+            "knowledgeLimit": dict(claim),
+        }
+        mock_role.return_value = CallerRole(CallerRoleStatus.VALID, "member")
+
+        request = _make_fake_request(authorization="Bearer oauth.token")
+        await authMiddleware(request)
+
+        assert connection_limit(request.state.user) == claim

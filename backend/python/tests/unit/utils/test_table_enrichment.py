@@ -4,6 +4,7 @@ These patch the LLM call, not ``enrich_table_grid``, so the real header-slicing 
 description-alignment logic runs — patching the latter would bypass the code under test.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -230,3 +231,93 @@ class TestCaptionsSurviveEnrichment:
         await _enrich(group, container, _Harness())
 
         assert group.data["table_summary"] == "s"
+
+
+# --- repeated or empty column headers must not drop a cell ---------------------------------
+
+
+def test_row_dict_keeps_every_cell_when_a_header_repeats() -> None:
+    from app.utils.table_enrichment import _row_dict
+
+    row = ["Total assets", "", "", "$ 372,168", "$ 377,325"]
+    got = _row_dict(row, ["", "", "", "At", "At"])
+    assert len(got) == 5
+    assert list(got.values()) == row
+    assert list(got)[3:] == ["At", "At (2)"]
+
+
+def test_simple_texts_keeps_both_values_of_a_repeated_header() -> None:
+    from app.utils.table_enrichment import _simple_texts
+
+    text = _simple_texts([["Total assets", "", "", "$ 372,168", "$ 377,325"]], ["", "", "", "At", "At"])[0]
+    assert "372,168" in text and "377,325" in text
+
+
+def test_row_dict_unique_headers_output_unchanged() -> None:
+    from app.utils.table_enrichment import _row_dict
+
+    assert _row_dict(["a", "b", "c"], ["Name", "", "Qty"]) == {"Name": "a", "Column_2": "b", "Qty": "c"}
+    # a row longer than the headers still gets Column_N keys for the extra cells
+    assert _row_dict(["a", "b", "c"], ["Name"]) == {"Name": "a", "Column_2": "b", "Column_3": "c"}
+
+
+def test_row_dict_generated_key_never_collides_with_a_real_header() -> None:
+    from app.utils.table_enrichment import _row_dict
+
+    got = _row_dict(["x", "y"], ["", "Column_1"])
+    assert len(got) == 2 and list(got.values()) == ["x", "y"]
+
+
+def test_unique_column_keys_is_idempotent() -> None:
+    from app.utils.indexing_helpers import unique_column_keys
+
+    once = unique_column_keys(["At", "At", "At (2)", ""])
+    assert len(set(once)) == 4
+    assert unique_column_keys(once) == once
+
+
+@pytest.mark.asyncio
+async def test_enrich_table_grid_stores_unique_headers() -> None:
+    from app.utils.table_enrichment import enrich_table_grid
+
+    grid = [["Item", "At", "At"], ["Total assets", "$ 372,168", "$ 377,325"]]
+    result = await enrich_table_grid(None, grid, logger=logging.getLogger("t"), known_header_row_count=1)
+    assert result.headers == ["Item", "At", "At (2)"]
+    assert "372,168" in result.descriptions[0] and "377,325" in result.descriptions[0]
+
+
+def test_a_literal_suffix_header_keeps_its_name() -> None:
+    from app.utils.indexing_helpers import unique_column_keys
+
+    keys = unique_column_keys(["X", "X", "X (2)"])
+    assert keys[0] == "X" and keys[2] == "X (2)"
+    assert len(set(keys)) == 3
+    assert unique_column_keys(keys) == keys
+
+
+def test_a_generated_name_never_takes_a_literal_header() -> None:
+    from app.utils.indexing_helpers import unique_column_keys
+
+    keys = unique_column_keys(["", "Column_1", "Column_1", "Column_1 (2)"])
+    assert len(set(keys)) == 4
+    assert keys[1] == "Column_1" and keys[3] == "Column_1 (2)"
+    assert unique_column_keys(keys) == keys
+
+
+def test_unique_column_keys_property() -> None:
+    import random
+
+    from app.utils.indexing_helpers import unique_column_keys
+
+    rnd = random.Random(7351)
+    pool = ["", "A", "A (2)", "A (3)", "Column_2", "B", " "]
+    for _ in range(500):
+        hs = [rnd.choice(pool) for _ in range(rnd.randint(0, 8))]
+        width = len(hs) + rnd.randint(0, 3)
+        keys = unique_column_keys(hs, width)
+        assert len(keys) == width and len(set(keys)) == width
+        # a header that is unique and non-empty keeps its own name
+        for i, h in enumerate(hs):
+            if h and hs.count(h) == 1:
+                assert keys[i] == h
+        assert unique_column_keys(keys) == keys

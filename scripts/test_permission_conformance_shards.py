@@ -36,9 +36,15 @@ def _shards() -> tuple[list[int], dict[int, dict]]:
     return matrix["shard"], {entry["shard"]: entry for entry in matrix["include"]}
 
 
+def _once(shards: dict[int, dict]) -> dict[int, dict]:
+    """The shards of the once-each split. A shard with a `browse_mode` runs its tests a second time under that mode."""
+    return {shard: entry for shard, entry in shards.items() if not entry.get("browse_mode")}
+
+
 def collected_problems() -> list[str]:
     """Collect each suite's folder and each shard as the workflow runs them; every case must run in exactly one shard of its suite."""
     _, shards = _shards()
+    shards = _once(shards)
     problems = []
     for suite in SUITES:
         folder, problem = collect([suite.replace(".", "/"), *SELECT], cwd=PYTHON)
@@ -82,9 +88,10 @@ class PermissionConformanceShardsTest(unittest.TestCase):
             self.assertTrue(self.args[shard], shard)
 
     def test_each_test_runs_in_exactly_one_shard(self) -> None:
+        once = _once(self.shards)
         for suite in SUITES:
             folder = suite.replace(".", "/")
-            mine = {shard: self.args[shard] for shard, e in self.shards.items() if e["suite"] == suite}
+            mine = {shard: self.args[shard] for shard, e in once.items() if e["suite"] == suite}
             rest = [shard for shard, args in mine.items() if folder in args]
             self.assertEqual(len(rest), 1, f"{suite}: exactly one shard runs the folder minus the others' files")
             self.assertNotIn("k", self.shards[rest[0]], "-k would drop tests of new files from the rest shard")
@@ -113,6 +120,22 @@ class PermissionConformanceShardsTest(unittest.TestCase):
             self.assertEqual(len(ignored), len(set(ignored)))
             # An ignore no other shard names would drop that file; a named file not ignored would run twice.
             self.assertEqual(set(ignored), set(named), suite)
+
+    def test_each_browse_mode_pass_runs_its_file_once(self) -> None:
+        """A second pass names a mode the listing has, runs one file, and its shards' -k expressions hold each of that file's tests once."""
+        passes: dict[tuple[str, str], list[int]] = {}
+        for shard, entry in self.shards.items():
+            if entry.get("browse_mode"):
+                self.assertEqual(entry["browse_mode"], "legacy", shard)
+                self.assertEqual(len(self.args[shard]), 1, f"shard {shard}: a second pass runs one file")
+                passes.setdefault((entry["browse_mode"], self.args[shard][0]), []).append(shard)
+        for (mode, path), shards in passes.items():
+            self.assertTrue((PYTHON / path).is_file(), path)
+            ks = [self.shards[shard].get("k") for shard in shards]
+            if len(shards) == 1:
+                self.assertIsNone(ks[0], f"{mode} {path}: one shard with -k drops tests")
+            else:
+                self.assertTrue(all(ks) and _partition(ks), f"{mode} {path}: the -k expressions {ks} do not hold each test exactly once")
 
     def test_each_allowed_skip_is_in_a_file_its_shard_runs(self) -> None:
         for shard, entry in self.shards.items():

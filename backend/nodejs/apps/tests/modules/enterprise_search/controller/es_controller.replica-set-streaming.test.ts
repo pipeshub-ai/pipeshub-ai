@@ -5,11 +5,16 @@ import mongoose from 'mongoose'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { InMemoryChatStore, fakeReplicaSetSession, oid, settle } from './chat-test-harness'
-import { Controller, delta, finalAnswer, flows, startStream } from './streaming-flows'
+import { Controller, delta, finalAnswer, flows, startStream, appConfig } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const CONTROLLER = '../../../../src/modules/enterprise_search/controller/es_controller'
 
 describe('es_controller on a replica set: streamed answers are saved after the request’s session ends', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   // The controller reads REPLICA_SET_AVAILABLE when it loads, so load a copy with it set.
   let controller: Controller
   const previous = process.env.REPLICA_SET_AVAILABLE

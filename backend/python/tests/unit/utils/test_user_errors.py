@@ -207,6 +207,15 @@ class TestAIProviders:
         )
         assert ue.to_user_reason(exc) == ue._ai_messages("embedding model")["timeout"]
 
+    def test_embedding_account_out_of_credit(self) -> None:
+        response = httpx.Response(429, request=_REQUEST)
+        body = {"error": {"message": "no credit", "type": "insufficient_quota", "code": "insufficient_quota"}}
+        cause = openai.RateLimitError("Error code: 429", response=response, body=body)
+        exc = _wrapped(EmbeddingError("Dense embedding failed"), cause)
+        assert ue.provider_error_code(cause) == "quota_exceeded"
+        assert ue.to_user_reason(exc) == ue._ai_messages("embedding model")["quota_exceeded"]
+        assert "out of credit" in ue.to_user_reason(exc)
+
     def test_embedding_rate_limited(self) -> None:
         exc = _wrapped(EmbeddingError("Dense embedding failed"), _status_error(openai.RateLimitError, 429))
         assert ue.to_user_reason(exc) == ue._ai_messages("embedding model")["rate_limit"]

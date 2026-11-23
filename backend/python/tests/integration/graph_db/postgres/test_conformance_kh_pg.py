@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import zlib
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -28,6 +29,7 @@ from tests.permissions.kh_layer import (
     browse_pages,
     check_world,
     children_of,
+    counts_from_the_second_page,
     cursor_in_the_clear,
     listing,
 )
@@ -37,6 +39,7 @@ from tests.permissions.kh_worlds import (
     CHAIN,
     CHAINLINK,
     DECLPAG,
+    FOLDERSTUB,
     KH_WORLDS,
     LEVELS,
     OPENGRANT,
@@ -347,6 +350,17 @@ async def test_a_page_that_ends_at_a_scan_bound_names_no_child_the_viewer_may_no
     assert sorted(listed) == readable, kh_layer.name      # the order is the store's (these names sort by their stored keys), each row once
     assert cursors, kh_layer.name
     assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], kh_layer.name
+
+
+async def test_counts_asked_for_from_the_second_page_on_describe_the_whole_folder(kh_layer) -> None:
+    """A first page asked without counts issues a cursor carrying the total alone; every later page that asks for counts gets counts by type that add
+    up to its total, as the rows of the whole folder do."""
+    await kh_layer.preload([FOLDERSTUB])
+    with bind(OrgContext((await kh_layer._ns(FOLDERSTUB)).org, None, "job", "job:test", "t")):
+        items, pages = await counts_from_the_second_page(kh_layer, FOLDERSTUB, "u", "f", "folder", 4)
+    by_type = dict(Counter(i.nodeType for i in items))
+    assert len(items) == 9 and len(pages) == 2, (kh_layer.name, len(items), pages)
+    assert all(p == (9, 9, 9, by_type) for p in pages), (kh_layer.name, pages, by_type)
 
 
 async def test_a_browse_lists_the_chain_tops_the_stores_place_under_it_and_their_arrows(kh_layer) -> None:

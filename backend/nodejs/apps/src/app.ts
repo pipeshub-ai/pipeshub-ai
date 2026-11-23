@@ -85,6 +85,7 @@ import { MailSenderService } from './modules/mail/services/mail.sender.service';
 import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import { createOpenAIModelsRouter } from './modules/configuration_manager/routes/openai_models.routes';
+import { createOpenAICompatRouter } from './modules/openai_compat/routes/openai_compat.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -144,8 +145,10 @@ import {
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
+import { createAgentActivityRouter } from './modules/agent_activity/agent-activity.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 import { mcpJsonBodyParser } from './modules/mcp/middlewares/mcp-body.middleware';
+import { releaseOnClientClose } from './libs/utils/release-on-close';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
 import {
@@ -764,6 +767,11 @@ export class Application {
       '/v1',
       createOpenAIModelsRouter(this.configurationManagerContainer),
     );
+    // OpenAI-compatible chat (models = configured chat LLMs); base URL `{origin}/api/v1/openai`.
+    this.app.use(
+      '/api/v1/openai',
+      createOpenAICompatRouter(this.esAgentContainer),
+    );
     this.app.use(
       '/api/v1',
       createOpenAIModelsRouter(this.configurationManagerContainer),
@@ -875,6 +883,11 @@ export class Application {
     this.app.use(
       '/api/v1/service-account-delegations',
       createDelegationRouter(this.oauthProviderContainer),
+    );
+
+    this.app.use(
+      '/api/v1/agent-activity',
+      createAgentActivityRouter(this.oauthProviderContainer),
     );
 
     this.app.use(
@@ -1270,9 +1283,15 @@ export class Application {
             // pipe() leaves `res` open when the bot's answer is cut midway.
             proxyRes.on('error', fail);
             proxyRes.pipe(res);
+            // A client that leaves mid-answer must not leave the upstream read open.
+            releaseOnClientClose(res, proxyRes);
           },
         );
         proxyReq.on('error', fail);
+        // A client that leaves before the bot answers must not leave the upstream request open.
+        res.on('close', () => {
+          if (!res.writableFinished && !proxyReq.destroyed) proxyReq.destroy();
+        });
 
         req.pipe(proxyReq);
       },

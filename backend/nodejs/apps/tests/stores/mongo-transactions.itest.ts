@@ -20,10 +20,16 @@ import { Org } from '../../src/modules/user_management/schema/org.schema';
 import { Users, type User } from '../../src/modules/user_management/schema/users.schema';
 import {
   MAX_ORG_ADMINS,
+  createUserEnsuringAdminCap,
   saveUserEnsuringAdminCap,
   saveUserEnsuringOrgRetainsAdmin,
 } from '../../src/modules/user_management/services/user-admin.service';
-import { BadRequestError } from '../../src/libs/errors/http.errors';
+import sinon from 'sinon';
+import { BadRequestError, ServiceUnavailableError } from '../../src/libs/errors/http.errors';
+import { setUserRepository } from '../../src/libs/repositories/user';
+import { MongoUserRepository, adminLeaseTiming } from '../../src/libs/repositories/user/mongo';
+import { MongoOrgRepository } from '../../src/libs/repositories/org/mongo';
+import { adminInviter, withoutSideStores } from './admin-invite-race';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -166,11 +172,9 @@ describe('MongoDB code paths against a real MongoDB', function () {
     ]);
 
     expect(await adminCount(orgId)).to.be.at.least(1);
-    if (rsAvailable) {
-      // The transaction serializes the two checks: exactly one demotion wins.
-      expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
-      expect(await adminCount(orgId)).to.equal(1);
-    }
+    // The transaction (replica set) or the admin-role lease (standalone) serialises the two checks: exactly one wins.
+    expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
+    expect(await adminCount(orgId)).to.equal(1);
   });
 
   it(`refuses to promote a member past ${MAX_ORG_ADMINS} admins`, async () => {
@@ -204,9 +208,355 @@ describe('MongoDB code paths against a real MongoDB', function () {
     ]);
 
     expect(await adminCount(orgId)).to.be.at.most(MAX_ORG_ADMINS);
-    if (rsAvailable) {
-      expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
-      expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+    expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+  });
+
+  const newAdminFields = () => ({
+    email: `new-admin-${randomUUID().slice(0, 8)}@example.com`,
+    fullName: 'New Admin',
+    role: 'admin' as const,
+  });
+
+  it(`refuses to create an admin past ${MAX_ORG_ADMINS} admins, and leaves no account`, async () => {
+    const orgId = await newOrg();
+    for (let i = 0; i < MAX_ORG_ADMINS; i += 1) {
+      await newUser(orgId, 'admin');
     }
+    const fields = newAdminFields();
+    let caught: unknown;
+    try {
+      await createUserEnsuringAdminCap(orgId, fields, rsAvailable);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).to.be.instanceOf(BadRequestError);
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+    expect(await Users.countDocuments({ email: fields.email })).to.equal(0);
+  });
+
+  it(`never exceeds ${MAX_ORG_ADMINS} admins when two admins are created at once, and a refused create leaves no account`, async () => {
+    const orgId = await newOrg();
+    for (let i = 0; i < MAX_ORG_ADMINS - 1; i += 1) {
+      await newUser(orgId, 'admin');
+    }
+    const a = newAdminFields();
+    const b = newAdminFields();
+
+    const { ok, refused } = await raceSaves([
+      async () => { await createUserEnsuringAdminCap(orgId, a, rsAvailable); },
+      async () => { await createUserEnsuringAdminCap(orgId, b, rsAvailable); },
+    ]);
+
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS - 1 + ok);
+    expect(await Users.countDocuments({ email: { $in: [a.email, b.email] } })).to.equal(ok);
+    expect(ok).to.be.at.most(1);
+    expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
+  });
+
+  it(`never exceeds ${MAX_ORG_ADMINS} admins when an admin create races a promotion`, async () => {
+    const orgId = await newOrg();
+    for (let i = 0; i < MAX_ORG_ADMINS - 1; i += 1) {
+      await newUser(orgId, 'admin');
+    }
+    const member = await newUser(orgId, 'member');
+
+    const { ok, refused } = await raceSaves([
+      async () => { await createUserEnsuringAdminCap(orgId, newAdminFields(), rsAvailable); },
+      async () => { await saveUserEnsuringAdminCap(orgId, String(member._id), { role: 'admin' }, rsAvailable); },
+    ]);
+
+    expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS - 1 + ok);
+    expect(ok).to.be.at.most(1);
+    expect({ ok, refused }).to.deep.equal({ ok: 1, refused: 1 });
+  });
+
+  describe('bulk admin invites racing for the last seats', () => {
+    let restoreSideStores: () => void;
+    before(() => { restoreSideStores = withoutSideStores(); });
+    after(() => restoreSideStores());
+
+    /** One invite batch: a removed member, a pending member and a new address — three new admins. */
+    async function batch(orgId: string) {
+      const tag = randomUUID().slice(0, 8);
+      const removed = await Users.create({ orgId, email: `removed-${tag}@example.com`, fullName: 'Removed', role: 'member', isDeleted: true });
+      const pending = await Users.create({ orgId, email: `pending-${tag}@example.com`, fullName: 'Pending', role: 'member', hasLoggedIn: false });
+      return { removed, pending, fresh: `fresh-${tag}@example.com` };
+    }
+
+    it(`never passes ${MAX_ORG_ADMINS} admins, and a refused batch leaves no trace`, async () => {
+      const orgId = await newOrg();
+      await newUser(orgId, 'admin');
+      await newUser(orgId, 'admin');
+      const a = await batch(orgId);
+      const b = await batch(orgId);
+      const invite = adminInviter(rsAvailable);
+
+      const done = await Promise.allSettled([a, b].map((x) => invite(orgId, [x.removed.email, x.pending.email, x.fresh])));
+      for (const d of done) if (d.status === 'rejected') expect(d.reason).to.be.instanceOf(BadRequestError);
+      const ok = done.filter((d) => d.status === 'fulfilled').length;
+
+      expect(await adminCount(orgId)).to.equal(2 + 3 * ok);
+      for (const [x, d] of [[a, done[0]], [b, done[1]]] as const) {
+        const removed = await Users.findById(x.removed._id).lean();
+        const pending = await Users.findById(x.pending._id).lean();
+        const fresh = await Users.find({ email: x.fresh }).lean();
+        if (d.status === 'fulfilled') {
+          expect([removed?.isDeleted, removed?.role, pending?.role, fresh.map((u) => u.role)]).to.deep.equal([false, 'admin', 'admin', ['admin']]);
+        } else {
+          // Removed again and a member, as it was; the pending account is still a member; no row for the new address.
+          expect([removed?.isDeleted, removed?.role, pending?.role, fresh.length]).to.deep.equal([true, 'member', 'member', 0]);
+        }
+      }
+      expect(ok).to.equal(1);
+    });
+  });
+
+  // Without a replica set, admin-role writes take turns on the org's lease. Each race below parks the first writer
+  // between its write and its re-count, starts the second, and lets the first go on once the second has either
+  // finished (no lease: the race happens) or been turned away by the lease (it waits). No sleeps.
+  if (!rsAvailable) describe('admin-role writes take turns on a standalone MongoDB (no admin left behind)', () => {
+    const real = new MongoUserRepository();
+    let restoreSideStores: () => void;
+    let leaseRefused: () => void;
+    let refusedOnce: Promise<void>;
+    before(() => { restoreSideStores = withoutSideStores(); });
+    after(() => restoreSideStores());
+    beforeEach(() => {
+      refusedOnce = new Promise<void>((resolve) => { leaseRefused = resolve; });
+      const take = Org.findOneAndUpdate.bind(Org);
+      sinon.stub(Org, 'findOneAndUpdate').callsFake(((...args: Parameters<typeof Org.findOneAndUpdate>) =>
+        Promise.resolve(take(...args)).then((taken) => {
+          if (!taken) leaseRefused();
+          return taken;
+        })) as never);
+    });
+    afterEach(() => {
+      sinon.restore();
+      setUserRepository();
+    });
+
+    const gate = () => {
+      let open!: () => void;
+      const opened = new Promise<void>((resolve) => { open = resolve; });
+      return { opened, open };
+    };
+    /** The real repository with some methods replaced. */
+    const install = (over: Record<string, (...args: any[]) => Promise<any>>) =>
+      setUserRepository(new Proxy(real, { get: (t, k: string) => (k in over ? over[k] : (t as any)[k]?.bind(t)) }) as never);
+    const settled = (p: Promise<unknown>) => p.then(() => undefined, () => undefined);
+
+    it('R1: two promotions over the limit and the demotion of every original admin still leave an admin', async () => {
+      const orgId = await newOrg();
+      const originals = [];
+      for (let i = 0; i < MAX_ORG_ADMINS - 1; i += 1) originals.push(String((await newUser(orgId, 'admin'))._id));
+      const [x, y] = [String((await newUser(orgId, 'member'))._id), String((await newUser(orgId, 'member'))._id)];
+      const bothChecked = gate();
+      const bothParked = gate();
+      const reverts = gate();
+      let writes = 0;
+      let parked = 0;
+      install({
+        // Both promotions pass the pre-check before either writes (unless the lease turns the second away).
+        updateProfile: async (o: string, id: string, f: any, tx?: any) => {
+          if ([x, y].includes(id)) {
+            if (++writes === 2) bothChecked.open();
+            await Promise.race([bothChecked.opened, refusedOnce]);
+          }
+          return real.updateProfile(o, id, f, tx);
+        },
+        // An over-limit revert waits until the original admins are demoted.
+        setRole: async (o: string, id: string, role: any) => {
+          if ([x, y].includes(id) && role === 'member') {
+            if (++parked === 2) bothParked.open();
+            await reverts.opened;
+          }
+          return real.setRole(o, id, role);
+        },
+      });
+      const promotions = [x, y].map((id) => saveUserEnsuringAdminCap(orgId, id, { role: 'admin' }, false));
+      await Promise.race([bothParked.opened, Promise.all(promotions.map(settled))]);
+      for (const id of originals) await settled(saveUserEnsuringOrgRetainsAdmin(orgId, id, { role: 'member' }, false));
+      reverts.open();
+      await Promise.all(promotions.map(settled));
+      expect(await adminCount(orgId)).to.be.greaterThan(0);
+    });
+
+    it('R2: an admin create taken back after its re-count fails, while the only other admin is demoted, leaves an admin', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const atRecount = gate();
+      const recount = gate();
+      let counts = 0;
+      install({
+        countActiveAdmins: async (o: string, tx?: any) => {
+          // 1: the create's pre-check; 2: its re-count, parked, then failing as a store error would.
+          if (++counts === 2) {
+            atRecount.open();
+            await recount.opened;
+            throw new Error('store down');
+          }
+          return real.countActiveAdmins(o, tx);
+        },
+      });
+      const create = createUserEnsuringAdminCap(orgId, { email: `b-${randomUUID().slice(0, 8)}@example.com`, fullName: 'B', role: 'admin' }, false);
+      await atRecount.opened;
+      const demotion = saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, false);
+      await Promise.race([settled(demotion), refusedOnce]);
+      recount.open();
+      const [created, demoted] = await Promise.allSettled([create, demotion]);
+      expect(created.status).to.equal('rejected');
+      expect(await adminCount(orgId)).to.equal(1);
+      // The demotion waited for the create's undo, then found A the last admin.
+      expect(demoted.status === 'rejected' && demoted.reason).to.be.instanceOf(BadRequestError);
+    });
+
+    it('R3: a bulk admin invite taken back after its re-count fails, while the only other admin is demoted, leaves an admin', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const removed = await Users.create({ orgId, email: `removed-${randomUUID().slice(0, 8)}@example.com`, fullName: 'Removed', role: 'member', isDeleted: true });
+      const atRecount = gate();
+      const recount = gate();
+      let counts = 0;
+      install({
+        countActiveAdmins: async (o: string, tx?: any) => {
+          // 1: the invite's early refusal check; 2: the helper's pre-check; 3: the re-count after the grant.
+          if (++counts === 3) {
+            atRecount.open();
+            await recount.opened;
+            throw new Error('store down');
+          }
+          return real.countActiveAdmins(o, tx);
+        },
+      });
+      const invite = adminInviter(false)(orgId, [removed.email]);
+      await atRecount.opened;
+      const demotion = saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, false);
+      await Promise.race([settled(demotion), refusedOnce]);
+      recount.open();
+      await Promise.allSettled([invite, demotion]);
+      expect(await adminCount(orgId)).to.equal(1);
+      const back = await Users.findById(removed._id).lean();
+      expect([back?.isDeleted, back?.role]).to.deep.equal([true, 'member']);
+    });
+
+    // The lease expiring mid-change is forced by moving its `until` into the past while the change is parked: no clock.
+    const expireLease = (orgId: string) => Org.updateOne({ _id: orgId }, { $set: { 'adminRoleLease.until': new Date(0) } });
+
+    it('R4: a create whose lease expired before its re-count failed keeps its admin, so the demotion that counted it leaves one', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const atRecount = gate();
+      const recount = gate();
+      let counts = 0;
+      install({
+        countActiveAdmins: async (o: string, tx?: any) => {
+          // 1: the create's pre-check; 2: its re-count, parked, then failing as a store error would.
+          if (++counts === 2) {
+            atRecount.open();
+            await recount.opened;
+            throw new Error('store down');
+          }
+          return real.countActiveAdmins(o, tx);
+        },
+      });
+      const create = createUserEnsuringAdminCap(orgId, { email: `b-${randomUUID().slice(0, 8)}@example.com`, fullName: 'B', role: 'admin' }, false);
+      await atRecount.opened;
+      await expireLease(orgId);
+      // The lease is free, so the demotion runs at once and passes because B counts.
+      await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, false);
+      recount.open();
+      const [created] = await Promise.allSettled([create]);
+      expect(await adminCount(orgId)).to.equal(1);
+      expect(created.status === 'fulfilled' && created.value.role).to.equal('admin');
+    });
+
+    it('a demotion whose lease expired before its write is not made, so a later take-back cannot leave no admin', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const atCheck = gate();
+      const check = gate();
+      const atRecount = gate();
+      const recount = gate();
+      let counts = 0;
+      install({
+        countActiveAdmins: async (o: string, tx?: any) => {
+          const n = ++counts;
+          // 1: the demotion's check, parked until the create has written B; 3: the create's re-count, parked, then failing.
+          if (n === 1) {
+            atCheck.open();
+            await check.opened;
+          }
+          if (n === 3) {
+            atRecount.open();
+            await recount.opened;
+            throw new Error('store down');
+          }
+          return real.countActiveAdmins(o, tx);
+        },
+      });
+      const demotion = saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, false);
+      await atCheck.opened;
+      await expireLease(orgId);
+      const create = createUserEnsuringAdminCap(orgId, { email: `b-${randomUUID().slice(0, 8)}@example.com`, fullName: 'B', role: 'admin' }, false);
+      await atRecount.opened;
+      check.open();
+      const [demoted] = await Promise.allSettled([demotion]);
+      recount.open();
+      const [created] = await Promise.allSettled([create]);
+      expect(await adminCount(orgId)).to.equal(1);
+      expect((await Users.findById(a).lean())?.role).to.equal('admin');
+      expect(demoted.status === 'rejected' && demoted.reason).to.be.instanceOf(ServiceUnavailableError);
+      expect(created.status).to.equal('rejected');
+    });
+
+    it('a lease left by a holder that died is taken over once it has expired, without waiting', async () => {
+      const orgId = await newOrg();
+      await Org.updateOne({ _id: orgId }, { $set: { adminRoleLease: { holder: 'crashed', until: new Date(Date.now() - 60_000) } } });
+      const saved = { ...adminLeaseTiming };
+      adminLeaseTiming.waitMs = 0;
+      try {
+        expect(await real.withAdminLease(orgId, async () => 'ran')).to.equal('ran');
+      } finally {
+        Object.assign(adminLeaseTiming, saved);
+      }
+      expect((await Org.findById(orgId).lean())?.adminRoleLease).to.equal(undefined);
+    });
+
+    it('a lease another holder still holds turns the change away with 503 once the wait runs out', async () => {
+      const orgId = await newOrg();
+      await Org.updateOne({ _id: orgId }, { $set: { adminRoleLease: { holder: 'other', until: new Date(Date.now() + 60_000) } } });
+      const saved = { ...adminLeaseTiming };
+      adminLeaseTiming.waitMs = 50;
+      let error: unknown;
+      try {
+        await real.withAdminLease(orgId, async () => 'ran');
+      } catch (e) {
+        error = e;
+      } finally {
+        Object.assign(adminLeaseTiming, saved);
+      }
+      expect(error).to.be.instanceOf(ServiceUnavailableError);
+      expect((await Org.findById(orgId).lean())?.adminRoleLease?.holder).to.equal('other');
+    });
+
+    it('a holder whose lease expired under it cannot give back the newer holder\'s lease', async () => {
+      const orgId = await newOrg();
+      const result = await real.withAdminLease(orgId, async () => {
+        // Our lease expired mid-change and another change took it.
+        await Org.updateOne({ _id: orgId }, { $set: { adminRoleLease: { holder: 'newer', until: new Date(Date.now() + 60_000) } } });
+        return 'ran';
+      });
+      expect(result).to.equal('ran');
+      expect((await Org.findById(orgId).lean())?.adminRoleLease?.holder).to.equal('newer');
+    });
+
+    it('whole-organisation reads leave the lease out', async () => {
+      const orgId = await newOrg();
+      await Org.updateOne({ _id: orgId }, { $set: { adminRoleLease: { holder: 'other', until: new Date(Date.now() + 60_000) } } });
+      const orgs = new MongoOrgRepository();
+      expect(await orgs.getLive(orgId)).to.include({ _id: orgId }).and.not.have.property('adminRoleLease');
+      expect(await orgs.update(orgId, { registeredName: 'Renamed' })).to.not.have.property('adminRoleLease');
+    });
   });
 });

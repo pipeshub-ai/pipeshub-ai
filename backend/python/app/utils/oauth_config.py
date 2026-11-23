@@ -7,7 +7,10 @@ from typing import Any, Dict, Optional  # noqa: UP035 - keep aliases for legacy 
 from urllib.parse import quote, urlparse
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.core.base.token_service.oauth_service import OAuthConfig
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthConfig,
+    OAuthStoreUnavailableError,
+)
 from app.connectors.core.constants import AuthFieldKeys
 
 logger = logging.getLogger(__name__)
@@ -70,15 +73,18 @@ def extract_oauth_error_message(exc: Exception) -> str:
     helper span more than just the OAuth token exchange (DB updates, cache
     refresh, scheduling), so ``exc`` may carry internal details unrelated to
     the OAuth provider. Instead it only classifies the exception against a
-    fixed allow-list of known messages. Callers log ``exc`` itself, which
-    carries the provider's full response.
+    fixed allow-list of known messages. Callers hand ``exc`` to the request
+    line without its text (``mark_request_failure(..., include_error_text=False)``).
 
-    The function tries, in order:
+    An ``OAuthStoreUnavailableError`` (our own store failed, not the provider) answers a retry message. Otherwise
+    the function tries, in order:
       1. Parse the embedded JSON response from the exception message
       2. Map the ``error`` code to a known user-friendly string
       3. Use the HTTP status code for a generic message
       4. Fall back to a safe generic message
     """
+    if isinstance(exc, OAuthStoreUnavailableError):
+        return "PipesHub couldn't record this sign-in because its own storage didn't respond. Please try again."
     msg = str(exc)
 
     # --- 1. Try to extract the JSON body from the exception string --------
@@ -129,6 +135,9 @@ def extract_oauth_error_message(exc: Exception) -> str:
     # --- 5. Check for common ValueError messages from handle_callback -----
     if "Invalid or expired state" in msg:
         return "The authentication session has expired. Please close this window and try again."
+    if "already submitted" in msg:
+        return ("This sign-in was already submitted. Close this window and check the connector; "
+                "if it isn't connected, start a new sign-in.")
     if "already been used" in msg:
         return "This authorization code has already been used. Please close this window and start a new authentication."
 

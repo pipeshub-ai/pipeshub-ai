@@ -1424,6 +1424,87 @@ export const enterpriseSearchEntityNeighborsSchema = z.object({
   }),
 });
 
+const optionalIds = (max: number): z.ZodOptional<z.ZodArray<z.ZodString>> =>
+  z.array(z.string().min(1).max(256)).max(max).optional();
+const pageCursor = z.string().min(1).max(4096).optional();
+const pageLimit = z.number().int().min(1).max(50).optional();
+
+// `records` lists the records of any entity a search returns, people and organizations too.
+const RECORD_ENTITY_TYPES = [
+  ...ENTITY_TYPES,
+  'person',
+  'organization',
+] as const;
+
+export const enterpriseSearchEntityRecordsSchema = z.object({
+  body: z.object({
+    entityId: z.string().min(1).max(256),
+    entityType: z.enum(RECORD_ENTITY_TYPES),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    limit: pageLimit,
+    cursor: pageCursor,
+  }),
+});
+
+export const enterpriseSearchCoMentionedSchema = z.object({
+  body: z.object({
+    entityIds: z.array(z.string().min(1).max(256)).min(1).max(20),
+    kinds: z.array(z.string().min(1).max(64)).max(20).optional(),
+    limit: pageLimit,
+  }),
+});
+
+export const enterpriseSearchRecordsByPersonSchema = z.object({
+  body: z.object({
+    person: z.string().min(1, { message: 'A person is required' }).max(320),
+    roles: z.array(z.string().min(1).max(32)).max(20).optional(),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    limit: pageLimit,
+    cursor: pageCursor,
+  }),
+});
+
+export const enterpriseSearchRecordsByValueSchema = z.object({
+  body: z.object({
+    kinds: z.array(z.string().min(1).max(64)).max(20).optional(),
+    name: z.string().min(1).max(200).optional(),
+    entityIds: optionalIds(20),
+    dateFrom: z.string().min(1).max(64).optional(),
+    dateTo: z.string().min(1).max(64).optional(),
+    amountMin: z.number().optional(),
+    amountMax: z.number().optional(),
+    currency: z.string().min(1).max(16).optional(),
+    quantityMin: z.number().optional(),
+    quantityMax: z.number().optional(),
+    dimension: z.string().min(1).max(64).optional(),
+    percentMin: z.number().optional(),
+    percentMax: z.number().optional(),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    sourceIds: optionalIds(50),
+    limit: pageLimit,
+    cursor: pageCursor,
+  }),
+});
+
+export const enterpriseSearchRecordsByEntitiesSchema = z.object({
+  body: z.object({
+    mentions: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(200),
+          kind: z.string().min(1).max(64).optional(),
+        }),
+      )
+      .min(1, { message: 'At least one name is required' })
+      // The AI service looks up at most 5 names (linking.mentions.MAX_MENTIONS).
+      .max(5),
+    match: z.enum(['any', 'all']).optional(),
+    query: z.string().max(1000).optional(),
+    limit: pageLimit,
+    maxChunksPerRecord: pageLimit,
+  }),
+});
+
 export const enterpriseSearchSearchHistorySchema = z.object({
   params: z.object({
     limit: limitSchema.optional(),

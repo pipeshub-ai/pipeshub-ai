@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-import importlib
 from unittest.mock import patch
 
 import pytest
+
+from app.modules.parsers.html_parser import html_parser
+from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
+from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
+from tests.support.fresh_module import fresh_copy
 
 
 class TestHTMLParserProtocol:
@@ -47,38 +51,26 @@ class TestHTMLParserProtocol:
 class TestHTMLParserBackendSelection:
     def test_html_parser_defaults_to_selectolax_when_env_unset(self):
         with patch.dict("os.environ", {}, clear=True):
-            import app.modules.parsers.html_parser.html_parser as html_parser_module
+            shim = fresh_copy(html_parser)
 
-            importlib.reload(html_parser_module)
-            HTMLParser = html_parser_module.HTMLParser
-
-        assert HTMLParser.__name__ == "SelectolaxHtmlParser"
-        assert "HTMLParser" in html_parser_module.__all__
-        assert "HTMLParserProtocol" in html_parser_module.__all__
+        assert shim.HTMLParser is SelectolaxHtmlParser
+        assert "HTMLParser" in shim.__all__
+        assert "HTMLParserProtocol" in shim.__all__
 
     def test_html_parser_defaults_to_selectolax(self):
         with patch.dict("os.environ", {"PARSER_BACKEND": "selectolax"}, clear=False):
-            import app.modules.parsers.html_parser.html_parser as html_parser_module
+            shim = fresh_copy(html_parser)
 
-            importlib.reload(html_parser_module)
-            HTMLParser = html_parser_module.HTMLParser
-
-        assert HTMLParser.__name__ == "SelectolaxHtmlParser"
-        assert HTMLParser.__module__ == (
-            "app.modules.parsers.html_parser.selectolax_html_parser"
-        )
+        assert shim.HTMLParser is SelectolaxHtmlParser
 
     def test_html_parser_can_select_docling_backend(self):
+        shared = html_parser.HTMLParser
         with patch.dict("os.environ", {"PARSER_BACKEND": "docling"}, clear=False):
             with patch(
                 "docling.document_converter.DocumentConverter"
             ):
-                import app.modules.parsers.html_parser.html_parser as html_parser_module
+                shim = fresh_copy(html_parser)
 
-                importlib.reload(html_parser_module)
-                HTMLParser = html_parser_module.HTMLParser
-
-        assert HTMLParser.__name__ == "DoclingHtmlParser"
-        assert HTMLParser.__module__ == (
-            "app.modules.parsers.html_parser.docling_html_parser"
-        )
+        assert shim.HTMLParser is DoclingHtmlParser
+        # A reload here used to leave the shared shim on Docling for every later test in the process.
+        assert html_parser.HTMLParser is shared

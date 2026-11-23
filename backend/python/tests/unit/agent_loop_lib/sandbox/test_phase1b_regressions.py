@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agent_loop_lib.sandbox.capacity import org_tag
 from app.agent_loop_lib.sandbox.coding.base import SandboxContext
 from app.agent_loop_lib.sandbox.governor import (
     GovernorLimits,
@@ -237,7 +238,7 @@ class TestB7PerOrgFairnessApplies:
             def create(self, ctx):
                 return _AwaitingBackend()
 
-        gov = SandboxResourceGovernor(
+        gov = SandboxResourceGovernor.in_process(
             GovernorLimits(max_total_sandboxes=100, max_per_org=2)
         )
         mgr = SandboxManager(governor=gov)
@@ -253,21 +254,21 @@ class TestB7PerOrgFairnessApplies:
         with pytest.raises(SandboxLimitExceeded):
             await mgr.get_or_create(SandboxType.CODING)
 
-        assert gov.snapshot()["per_org"] == {"orgA": 2}
+        assert gov.snapshot()["by_org"] == {org_tag("orgA").decode(): 2}
 
     async def test_org_counter_drains_on_destroy(self) -> None:
         class _Factory:
             def create(self, ctx):
                 return _AwaitingBackend()
 
-        gov = SandboxResourceGovernor(GovernorLimits(max_per_org=2))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_per_org=2))
         mgr = SandboxManager(governor=gov)
         mgr.register_backend(
             SandboxType.CODING, _Factory(), ctx=SandboxContext(org_id="orgB"),
         )
         sid, _ = await mgr.get_or_create(SandboxType.CODING)
         await mgr.destroy(SandboxType.CODING, sid)
-        assert gov.snapshot()["per_org"] == {}
+        assert gov.snapshot()["by_org"] == {}
 
 
 class TestB1TypedBackendConfigReachesTheFactory:
@@ -461,7 +462,7 @@ class TestM3CapacityDenialReachesTheModel:
             def create(self, ctx):
                 return _AwaitingBackend()
 
-        gov = SandboxResourceGovernor(GovernorLimits(max_total_sandboxes=1))
+        gov = SandboxResourceGovernor.in_process(GovernorLimits(max_total_sandboxes=1))
         mgr = SandboxManager(governor=gov)
         mgr.register_backend(SandboxType.CODING, _Factory())
         await mgr.get_or_create(SandboxType.CODING)  # consume the only slot
@@ -608,15 +609,16 @@ class TestM12SettingsActuallyReachTheManager:
         monkeypatch.setenv("SANDBOX_MAX_PER_ORG", "3")
 
         manager = await build_coding_sandbox_manager()
-        assert manager._governor.limits.max_total_sandboxes == 7
-        assert manager._governor.limits.max_per_org == 3
+        assert manager._governor.capacity.ceiling() == 7
+        assert manager._governor.capacity.per_org_limit(7) == 3
 
     @pytest.mark.parametrize("raw", ["0", "-1"])
-    async def test_zero_or_negative_cap_means_unlimited(
+    async def test_zero_or_negative_cap_means_the_largest_cap(
         self, monkeypatch, raw: str,
     ) -> None:
         """Zeroing a cap is how an operator disables it. Reading it as
-        "allow nothing" would make the platform refuse every sandbox."""
+        "allow nothing" would make the platform refuse every sandbox; the
+        shared slot files cannot be unlimited, so it is their maximum."""
         from app.agent_loop_lib.sandbox.coding.settings import (
             EnvSandboxSettingsLoader,
         )
@@ -625,7 +627,7 @@ class TestM12SettingsActuallyReachTheManager:
         monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         monkeypatch.setenv("SANDBOX_MAX_TOTAL", raw)
         settings = await EnvSandboxSettingsLoader().load(SandboxContext())
-        assert settings.governor.max_total_sandboxes is None
+        assert settings.governor.max_total_sandboxes == 1024
 
     async def test_network_flag_comes_from_settings(self, monkeypatch) -> None:
         from app.agents.agent_loop.sandbox_bridge import (

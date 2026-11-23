@@ -165,6 +165,7 @@ NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::delete_skill": AGENT,
     "api/routes/chatbot.py::_rollback_attachment_records":
         "rolls back attachment records the same request just created: nothing could have been cached for them",
+    "api/routes/entity.py::write_update": "update_team's write block; update_team itself bumps after it",
     "connectors/core/base/data_store/graph_data_store.py::delete_nodes_and_edges": STORE,
     "connectors/core/base/data_store/graph_data_store.py::delete_user_group_by_id": STORE,
     "connectors/core/base/data_store/graph_data_store.py::reap_stale_external_app_relations": STORE,
@@ -255,6 +256,7 @@ CREATE_NO_BUMP = {
     "api/routes/agent.py::write_agent": AGENT,
     "api/routes/chatbot.py::_upload_chat_attachments": NEW_RECORD,
     "api/routes/entity.py::write_team": HELPER,
+    "api/routes/entity.py::write_update": HELPER,
     "services/artifact_registry/versioning.py::create": NEW_RECORD,
     "services/artifact_registry/versioning.py::create_from_existing_document": NEW_RECORD,
     "connectors/sources/localKB/handlers/kb_service.py::write_kb": HELPER,

@@ -31,7 +31,7 @@ from app.modules.retrieval.context.targeted import (
 from app.modules.retrieval.context.units import unit_children
 from app.modules.retrieval.selection_scope import connection_sources_of
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, is_base64_image
-from app.utils.error_class import log_failure
+from app.utils.error_class import failure_reason, log_failure
 
 if TYPE_CHECKING:
     import logging
@@ -62,6 +62,7 @@ _FILTER_REFUSED_STATUS_CODE = 422
 _SEARCH_FAILED_STATUSES = frozenset({
     Status.ERROR.value,
     Status.SEARCH_INDEX_UNAVAILABLE.value,
+    Status.EMBEDDING_OUT_OF_CREDIT.value,
     Status.PERMISSION_CHECK_UNAVAILABLE.value,
     Status.VECTOR_DB_NOT_READY.value,
 })
@@ -177,7 +178,7 @@ async def prefetch_retrieval(
             tool_records=[],
             citation_ref_mapper=ref_mapper,
             is_empty=True,
-            error_message=str(exc),
+            error_message=failure_reason(exc),
             failure_notice=_SEARCH_RAISED_NOTICE,
         )
 

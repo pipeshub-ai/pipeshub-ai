@@ -28,7 +28,18 @@ class PermissionVerificationUnavailableError(Exception):
     Raised rather than returning an empty map, because an empty map is also the
     honest answer when every candidate is denied — and the two need opposite
     responses: retry later versus "nothing you can read matched".
+
+    Raise it ``from`` the failure with the default message, never ``str(exc)``:
+    a driver's text (host, query, values) would travel in it to every log line
+    and tool result that prints this error. The cause keeps type and text, and
+    its chain is logged without messages (``log_failure`` and any ``exc_info``
+    record), whether or not the graph client stamped the cause.
     """
+
+    log_hide_text = True
+
+    def __init__(self, message: str = "The graph could not verify access.") -> None:
+        super().__init__(message)
 
 
 class GraphLockUnavailableError(GraphDBError):
@@ -122,6 +133,27 @@ def is_out_of_memory(error: BaseException) -> bool:
             return True
         error = getattr(error, "__cause__", None)
     return False
+
+
+def listing_busy(error: BaseException) -> KnowledgeHubListingBusy | None:
+    """The listing's own busy refusal behind ``error``, however it was wrapped on the way up (``check_access`` wraps whatever stopped it,
+    a passed deadline too, in ``PermissionVerificationUnavailableError``), or None."""
+    seen: set[int] = set()
+
+    def find(error: BaseException | None) -> KnowledgeHubListingBusy | None:
+        # A group can sit anywhere along the chain (a check that ran several tasks), so its members are searched at every link.
+        while error is not None and id(error) not in seen:
+            seen.add(id(error))
+            if isinstance(error, KnowledgeHubListingBusy):
+                return error
+            if isinstance(error, BaseExceptionGroup):
+                for member in error.exceptions:
+                    if (busy := find(member)) is not None:
+                        return busy
+            error = getattr(error, "__cause__", None)
+        return None
+
+    return find(error)
 
 
 def is_graph_memory_refusal(exc: BaseException) -> bool:

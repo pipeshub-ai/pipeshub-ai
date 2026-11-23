@@ -26,6 +26,7 @@ import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/ser
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeKeyValueStore } from '../../knowledge_base/routes/kb-http-harness'
 import { useInertWriteState } from '../../../support/inert-write-state'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 const JWT_SECRET = 'storage-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'storage-http-test-scoped-secret'
@@ -88,6 +89,7 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     // so a test can tell which one a URL was built from.
     defaultEndpoint = backend.url
     const byName = backend.url.replace('127.0.0.1', 'localhost')
+    registerUpstreams({ nodejs: [defaultEndpoint, byName] })
 
     kv = new FakeKeyValueStore()
     kv.values.set(storageEtcdPaths, JSON.stringify({ storageType: 'local' }))
@@ -136,6 +138,7 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     // Other suites in this worker expect the controller's cache to start empty.
     kv.changed(storageEtcdPaths)
     sinon.restore()
+    registerUpstreams({})
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await backend.stop()
     fs.rmSync(home, { recursive: true, force: true })

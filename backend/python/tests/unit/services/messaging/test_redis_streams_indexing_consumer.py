@@ -30,7 +30,6 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
@@ -138,7 +137,7 @@ class TestInit:
         assert consumer.message_handler is None
         assert len(consumer._active_futures) == 0
         assert consumer._backpressure_active is False
-        assert consumer.consumer_name.startswith(f"{config.client_id}/sp3-")
+        assert consumer.consumer_name.startswith(f"{config.client_id}/sp4-")
 
     def test_consumer_name_is_unique_per_instance(self, logger, config):
         first = IndexingRedisStreamsConsumer(logger, config)
@@ -1353,22 +1352,6 @@ class TestProcessMessageWrapper:
         assert consumer.lease_renewer._handles == {}
 
     @pytest.mark.asyncio
-    async def test_a_record_deleted_mid_indexing_is_not_logged_as_an_error(self, consumer) -> None:
-        consumer.parsing_semaphore = asyncio.Semaphore(1)
-        consumer.indexing_semaphore = asyncio.Semaphore(1)
-        consumer.logger = MagicMock()
-        consumer._ack_message = AsyncMock()
-
-        async def handler(msg) -> AsyncGenerator[PipelineEvent, None]:
-            raise RecordDeletedError("r1")
-            yield
-
-        consumer.message_handler = handler
-        await consumer._process_message_wrapper("s", "1-0", _valid_fields())
-        assert not any("process_message_wrapper" in str(c.args[0]) for c in consumer.logger.error.call_args_list)
-        assert any("ended as expected" in str(c.args[0]) for c in consumer.logger.info.call_args_list)
-
-    @pytest.mark.asyncio
     async def test_handler_exception_after_parsing_released(self, consumer):
         """Handler raises after yielding PARSING_COMPLETE. Only indexing released in finally."""
         consumer.parsing_semaphore = asyncio.Semaphore(1)
@@ -2307,7 +2290,7 @@ class TestProcessMessageWrapperWithGovernor:
         caplog.set_level(logging.DEBUG, logger=governor_consumer.logger.name)
         for _ in range(2):
             assert await governor_consumer._process_message_wrapper("stream-a", "1-0", _valid_fields()) is False
-        handed_back = [r.levelno for r in caplog.records if "handed back without counting an attempt" in r.getMessage()]
+        handed_back = [r.levelno for r in caplog.records if r.getMessage() == "index.end"]  # the hand-back's one line
         assert handed_back == [logging.WARNING, logging.DEBUG]
 
     @pytest.mark.asyncio
@@ -2515,7 +2498,7 @@ class TestRetryDelayBeforeSemaphore:
         from app.core import envelope, org_context
 
         key = envelope.derive_key("requeue-secret")
-        envelope.configure(None, None, key)
+        envelope.configure(None, key)
         monkeypatch.setenv("ENVELOPE_SIGN", "true")
         sent = []
 
@@ -3235,11 +3218,13 @@ class TestConsumeLoop:
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
             with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
-                with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                with patch.object(
+                    consumer, "_IndexingRedisStreamsConsumer__wait_for_finish", new_callable=AsyncMock
+                ) as wait_for_finish:
                     await consumer._consume_loop()
 
-        # Backpressure engaged on first iteration -> sleep(0.5)
-        mock_sleep.assert_any_call(0.5)
+        # Backpressure engaged on the first iteration -> it waits for a finish, at most the backpressure wait
+        wait_for_finish.assert_awaited_once_with(indexing_consumer_module._BACKPRESSURE_WAIT_SECONDS)
 
     @pytest.mark.asyncio
     async def test_backpressure_flag_toggles(self, consumer):
@@ -3268,7 +3253,12 @@ class TestConsumeLoop:
 
         with patch.object(consumer, "_drain_pending", new_callable=AsyncMock):
             with patch.object(consumer, "_dispatch_budget", side_effect=mock_budget):
-                with patch("asyncio.sleep", new_callable=AsyncMock):
+                with (
+                    patch("asyncio.sleep", new_callable=AsyncMock),
+                    patch.object(
+                        consumer, "_IndexingRedisStreamsConsumer__wait_for_finish", AsyncMock(return_value=False)
+                    ),
+                ):
                     await consumer._consume_loop()
 
     @pytest.mark.asyncio
@@ -3456,7 +3446,7 @@ class TestWaitOutBackpressure:
     @pytest.mark.asyncio
     async def test_not_paused_returns_immediately(self, consumer):
         coordinator = MagicMock()
-        coordinator.is_paused.return_value = False
+        coordinator.pause_remaining.return_value = 0.0
         consumer.backpressure_coordinator = coordinator
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
@@ -3470,13 +3460,12 @@ class TestWaitOutBackpressure:
         returning — this is what actually stops XREADGROUP from running."""
         coordinator = MagicMock()
         coordinator.paused_services = frozenset({"ParsingService"})
-        coordinator.pause_remaining.return_value = 3.0
-        paused_calls = [True, True, False]
-        coordinator.is_paused.side_effect = lambda: paused_calls.pop(0)
+        slept: list[float] = []
+        coordinator.pause_remaining.side_effect = lambda **_: 0.0 if len(slept) >= 2 else 3.0
         consumer.backpressure_coordinator = coordinator
         consumer.running = True
 
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("asyncio.sleep", new_callable=AsyncMock, side_effect=slept.append) as mock_sleep:
             await consumer._wait_out_backpressure()
 
         assert mock_sleep.await_count == 2
@@ -3490,7 +3479,6 @@ class TestWaitOutBackpressure:
         coordinator = MagicMock()
         coordinator.paused_services = frozenset({"ParsingService"})
         coordinator.pause_remaining.return_value = 300.0
-        coordinator.is_paused.return_value = True
         consumer.backpressure_coordinator = coordinator
         consumer.running = True
 

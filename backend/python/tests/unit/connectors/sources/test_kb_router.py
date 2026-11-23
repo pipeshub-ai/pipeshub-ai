@@ -38,7 +38,6 @@ def _mock_kb_service():
     svc.get_folder_contents = AsyncMock()
     svc.updateFolder = AsyncMock()
     svc.delete_folder = AsyncMock()
-    svc.list_kb_records = AsyncMock()
     svc.get_kb_children = AsyncMock()
     svc.get_folder_children = AsyncMock()
     svc.create_kb_permissions = AsyncMock()
@@ -631,21 +630,6 @@ class TestDeleteFolder:
         assert exc_info.value.status_code == 403
 
 
-class TestListKBRecords:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.connectors.sources.localKB.api.kb_router import list_kb_records
-        kb_svc = _mock_kb_service()
-        kb_svc.list_kb_records.return_value = {
-            "success": True, "records": [], "total": 0
-        }
-        request = _make_request()
-        result = await list_kb_records(
-            kb_id="kb-1", request=request, kb_service=kb_svc
-        )
-        assert result["success"] is True
-
-
 class TestGetKBChildren:
     @pytest.mark.asyncio
     async def test_success(self):
@@ -921,7 +905,6 @@ def _mock_kb_service():
     svc.get_folder_contents = AsyncMock()
     svc.updateFolder = AsyncMock()
     svc.delete_folder = AsyncMock()
-    svc.list_kb_records = AsyncMock()
     svc.get_kb_children = AsyncMock()
     svc.get_folder_children = AsyncMock()
     svc.create_kb_permissions = AsyncMock()
@@ -1512,21 +1495,6 @@ class TestDeleteFolderCoverage:
                 request=request, kb_service=kb_svc, kafka_service=kafka_svc
             )
         assert exc_info.value.status_code == 403
-
-
-class TestListKBRecordsCoverage:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.connectors.sources.localKB.api.kb_router import list_kb_records
-        kb_svc = _mock_kb_service()
-        kb_svc.list_kb_records.return_value = {
-            "success": True, "records": [], "total": 0
-        }
-        request = _make_request()
-        result = await list_kb_records(
-            kb_id="kb-1", request=request, kb_service=kb_svc
-        )
-        assert result["success"] is True
 
 
 class TestGetKBChildrenCoverage:

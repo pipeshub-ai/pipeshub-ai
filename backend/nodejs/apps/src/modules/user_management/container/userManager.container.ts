@@ -137,7 +137,6 @@ export class UserManagerContainer {
       });
 
       const serviceAccountsService = new ServiceAccountsService(
-        container.get('Logger'),
         container.get<EntitiesEventProducer>('EntitiesEventProducer'),
       );
       container

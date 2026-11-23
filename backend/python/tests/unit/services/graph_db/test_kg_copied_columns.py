@@ -34,7 +34,7 @@ COUNTS = "python/app/services/graph_db/postgres/kg/counts.py"
 ALLOWED = {
     (LISTING, "record_type"),                                                       # the listing's filter: a connector kg serves only
     ("python/app/services/graph_db/postgres/kg/verify.py", "*"),                    # the verify compares the whole row with the graph: what must see the difference
-    (COUNTS, "record_type"), (COUNTS, "origin"),                                    # the counters' facets: counts.facets is read for a connector kg serves only
+    (COUNTS, "record_type"), (COUNTS, "origin"),                                    # the seed's recount of the counters' facet 2, which nothing serves to a viewer
     ("db/versions/kg/0015_counts.sql", "*"),                                        # the counter trigger takes each changed row whole; its facet keys are read as the line above says
 }
 # (source, tag or start of the statement): statements that name kg.records and that sqlglot does not parse, with the reason they need no reading
@@ -485,7 +485,7 @@ def listing_statements() -> list[str]:
         out += [kgl.children_sql(where, links), kgl.children_held_sql(where, links), kgl.browse_undecided_sql(where, "$6", "$7", links),
                 kgl.browse_count_sql(where, "$6", "$7", "$8", "$9", "$10", links)]
     q = kgl.Params([None, None, None])
-    out += [kgl.LINKED_CHILDREN, kgl.children_of_sql(), kgl.children_of_sql(total=True), kgl.arrows_sql(kgl.class_admit("c", q, viewer), kgl.undecided_child(q, [1], 2))]
+    out += [kgl.LINKED_CHILDREN, kgl.CHILD_CLASSES, kgl.children_of_sql(), kgl.children_of_sql(total=True), kgl.arrows_sql(kgl.class_admit("c", q, viewer), kgl.undecided_child(q, [1], 2))]
     return out
 
 

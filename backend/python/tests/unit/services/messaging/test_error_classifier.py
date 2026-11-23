@@ -509,6 +509,23 @@ class TestOpenAIErrors:
         except ImportError:
             pytest.skip("OpenAI not available")
 
+    def test_openai_empty_balance_is_terminal_although_it_is_a_429(self) -> None:
+        """A 429 that says the account is out of credit fails the same way on every redelivery."""
+        import httpx
+        import openai
+
+        from app.exceptions.indexing_exceptions import EmbeddingError
+
+        exc = openai.RateLimitError(
+            "Error code: 429",
+            response=httpx.Response(429, request=httpx.Request("POST", "http://x/v1/embeddings")),
+            body={"error": {"message": "no credit", "type": "insufficient_quota", "code": "insufficient_quota"}},
+        )
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL
+        wrapped = EmbeddingError("Dense embedding failed")
+        wrapped.__cause__ = exc
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL
+
     def test_openai_auth_error(self):
         """Test that OpenAI auth errors are terminal."""
         try:
@@ -1283,3 +1300,46 @@ class TestARecordsSchemaRefusalIsTransient:
 
         bare = ArangoQueryError("Query failed", 400, '{"errorNum":1620}')
         assert MessageErrorClassifier.classify_by_exception(bare) == MessageErrorType.TERMINAL
+
+
+class TestWorkerDeathRetryIsReadFromExplicitCausesOnly:
+    @staticmethod
+    def _wrap(inner: BaseException) -> DocumentProcessingError:
+        try:
+            raise DocumentProcessingError("Failed to process document") from inner
+        except DocumentProcessingError as wrapped:
+            return wrapped
+
+    def test_a_retried_death_that_caused_the_failure_is_transient(self) -> None:
+        from app.modules.parsers.parse_pool import ParseWorkerError
+
+        killed = ParseWorkerError("killed", "crashed", retrying=True)
+        assert MessageErrorClassifier.classify_by_exception(self._wrap(killed)) == MessageErrorType.TRANSIENT
+
+    def test_a_terminal_error_raised_while_a_death_was_handled_stays_terminal(self) -> None:
+        from app.modules.parsers.parse_pool import ParseWorkerError
+        from app.services.parsing.interface import ParseError, ParseErrorCode
+
+        try:
+            try:
+                raise ParseWorkerError("killed", "crashed", retrying=True)
+            except ParseError:
+                raise ParseError(ParseErrorCode.PARSE_FAILED, "OCR found no text")  # noqa: B904
+        except ParseError as later:
+            wrapped = self._wrap(later)
+
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL
+
+    def test_a_second_death_raised_while_the_first_was_handled_stays_terminal(self) -> None:
+        from app.modules.parsers.parse_pool import ParseWorkerError
+        from app.services.parsing.interface import ParseError
+
+        try:
+            try:
+                raise ParseWorkerError("killed", "crashed", retrying=True)
+            except ParseError:
+                raise ParseWorkerError("too large", "crashed")  # noqa: B904
+        except ParseError as later:
+            wrapped = self._wrap(later)
+
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL

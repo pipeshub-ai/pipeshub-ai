@@ -12,7 +12,10 @@ from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+
     from app.services.messaging.config import StreamMessage
+    from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 
 # A fairness key addresses one level per configured key field, outermost
 # first -- ``("org-7", "connector-42")``. Tuples rather than a joined string
@@ -135,3 +138,45 @@ class FairSchedulerConfig:
     def key_depth(self) -> int:
         """Levels a fully-qualified fairness key has, tier level included."""
         return self.entity_depth + (1 if self.tier_level else 0)
+
+
+class SlotPlan(Protocol):
+    def allows(self, key: FairnessKey) -> bool: ...
+
+
+class SlotPlanner(Protocol):
+    """What a consumer asks of its slot planner; ``SlotShare`` is the default."""
+
+    def started(self, token: Hashable, key: FairnessKey, pool: str) -> None: ...
+
+    def admitted(self, token: Hashable) -> None: ...
+
+    def finished(self, token: Hashable) -> None: ...
+
+    def plan(
+        self,
+        backlogged: Iterable[FairnessKey],
+        pool_of: Callable[[FairnessKey], str],
+        limit_of: Callable[[str], int],
+    ) -> SlotPlan: ...
+
+
+@dataclass(frozen=True)
+class IndexingFairness:
+    """Optional parts the record consumer takes from the services module's ``indexing_fairness``; each None or empty
+    field leaves the consumer's own behaviour as it is."""
+
+    key_fields: tuple[str, ...]
+    key_extractor: FairnessKeyExtractor
+    weights: WeightProvider | None = None
+    # (entity_depth, weights) -> planner; None keeps SlotShare.
+    planner: Callable[[int, WeightProvider | None], SlotPlanner] | None = None
+    # (key, scheduler) -> (bucket, places left in that shared bucket), or None for no limit on the key.
+    buffer_room: Callable[[FairnessKey, DRRScheduler], tuple[Hashable, int] | None] | None = None
+    # Most entries one Redis Streams read pass may take from the extra topics together; None for no limit.
+    extra_read_budget: Callable[[DRRScheduler], int | None] | None = None
+    # Told entered/left by the consumer's admission backlog.
+    observer: object | None = None
+    extra_topics: tuple[str, ...] = ()
+    # PostgreSQL only: (free places, handlers in flight per topic) -> (topic, most rows) claim steps, in order.
+    claim_steps: Callable[[int, Mapping[str, int]], Sequence[tuple[str, int]]] | None = None

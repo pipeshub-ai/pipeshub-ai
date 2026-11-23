@@ -280,6 +280,6 @@ def signing(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     async def keys() -> tuple[bytes]:
         return (key,)
 
-    envelope.configure(keys, None, key)
+    envelope.configure(keys, key)
     yield
-    envelope.configure(None, None, None)
+    envelope.configure(None)

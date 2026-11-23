@@ -128,6 +128,21 @@ def _note_context_failure(exc: Exception) -> None:
         sys.stderr.write(f"app.utils.logger: log context not added ({type(exc).__name__})\n")
 
 
+def _hide_driver_text(record: logging.LogRecord) -> None:
+    """A ``logger.exception`` or ``exc_info=True`` record of a stamped chain prints the text-free stack, as ``log_failure``'s does."""
+    # Imported here, not at the top: error_class's own imports stay out of this module's load. A first import runs those
+    # modules' code, which can raise anything, and makeRecord must not.
+    try:
+        from app.utils.error_class import hide_record_text
+    except Exception:
+        # Fail closed: without the module the stamp cannot be checked, so every chain keeps its type alone.
+        exc = record.exc_info[1] if isinstance(record.exc_info, tuple) else None
+        if exc is not None:
+            record.exc_info, record.exc_text = None, f"{type(exc).__qualname__}: <stack omitted>"
+        return
+    hide_record_text(record)
+
+
 def _make_record_factory(
     base_factory: Callable[..., logging.LogRecord],
 ) -> Callable[..., logging.LogRecord]:
@@ -135,6 +150,8 @@ def _make_record_factory(
     # this module cannot rebind it to ourselves and cause infinite recursion.
     def _record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
         record = base_factory(*args, **kwargs)  # type: ignore[arg-type]
+        if record.exc_info:
+            _hide_driver_text(record)
 
         ctx = get_context()
         _stamp_context(record, ctx)

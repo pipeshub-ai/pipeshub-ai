@@ -24,15 +24,8 @@ from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterUnavailableError,
 )
-from app.utils.logger import log_record_fields
-from tests.support.graph_read_errors import (
-    CASES,
-    GRAPH_KEY,
-    assert_text_free,
-    failure_line,
-    rendered,
-    wrapped,
-)
+from tests.support.graph_read_errors import CASES, GRAPH_KEY, SENTINELS, wrapped
+from tests.support.log_capture import assert_not_logged, assert_text_free, failure_line
 from tests.unit.modules.retrieval.test_narrow_access_fallback import (
     ORG,
     _Access,
@@ -110,14 +103,12 @@ def _warned(records: list[logging.LogRecord]) -> list[str]:
 
 def _no_user_in_warnings(log: pytest.LogCaptureFixture) -> None:
     """No WARNING-or-above line names the user (DEBUG cache lines on main do, adjacent to this change)."""
-    assert not [r.getMessage() for r in log.records if r.levelno >= logging.WARNING and USER_ID in rendered(r)]
+    assert_not_logged([r for r in log.records if r.levelno >= logging.WARNING], USER_ID)
 
 
-def _checked(log: pytest.LogCaptureFixture, event: str, func: str, error_class: str, level: int) -> logging.LogRecord:
-    assert_text_free(log.records)
-    line = failure_line(log.records, event, func)
-    assert (line.error_class, line.levelno) == (error_class, level)
-    return line
+def _checked(log: pytest.LogCaptureFixture, event: str, func: str, error_class: str, level: int) -> dict[str, object]:
+    assert_text_free(log.records, *SENTINELS)
+    return failure_line(log.records, event, error_class, level, *SENTINELS, handler=func)
 
 
 # --- the connector gate and the demo setting: the access notices -------------------------------------------------
@@ -157,10 +148,10 @@ async def test_the_user_is_the_bound_one_on_the_line_not_in_the_message(service,
             patch.object(mod, "excluded_demo_connector_ids", AsyncMock(side_effect=CASES[0][0]())):
         await service._excluded_demo_apps(USER_ID, "o1")
 
-    line = failure_line(log.records, "search.demo_setting_failed", "_excluded_demo_apps")
-    assert log_record_fields(line)["user_id"] == USER_ID
-    assert log_record_fields(line)["org_id"] == "o1"
-    assert USER_ID not in line.getMessage()
+    fields = failure_line(log.records, "search.demo_setting_failed", "unavailable", logging.WARNING, *SENTINELS,
+                          handler="_excluded_demo_apps")  # CASES[0], an outage; the message is the event, not the user
+    assert fields["user_id"] == USER_ID
+    assert fields["org_id"] == "o1"
 
 
 @pytest.mark.parametrize(("error", "error_class", "level"), CASES)
@@ -172,7 +163,7 @@ async def test_an_unlisted_demo_connector_set_logs_one_text_free_line_and_is_rea
     assert await demo_access.demo_connector_ids(graph, "o1") == ()
 
     assert graph.get_org_apps.await_count == 2  # a failure is not cached
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
     lines = [r for r in log.records if r.getMessage() == "demo_data.list_failed"]
     assert [(r.error_class, r.levelno) for r in lines] == [(error_class, level)] * 2
 
@@ -227,7 +218,7 @@ async def test_an_unreadable_record_list_on_a_remembered_scope_searches_the_cont
     assert not mod.narrow_access_memo.is_narrow(key)
     # The container search then falls short and retries by record ids: a second read, a second failure.
     assert _warned(log.records) == ["search.remembered_scope_unreadable", "search.record_id_retry_failed"]
-    assert_text_free(log.records)
+    assert_text_free(log.records, *SENTINELS)
     assert {(r.error_class, r.levelno) for r in log.records if r.levelno >= logging.WARNING} == {(error_class, level)}
 
 
@@ -285,8 +276,8 @@ async def test_an_unverifiable_container_page_is_degraded_with_one_line(log, cau
     response = await _search(_narrow(_FakeStore(list(corpus.points)), graph), 10)
 
     assert response["status"] == Status.PERMISSION_CHECK_UNAVAILABLE.value
-    line = _checked(log, "container_search.verification_unavailable", "_search_and_adjudicate", error_class, level)
-    assert line.vrid_count == len(graph.check_access.await_args.kwargs["virtual_record_ids"])
+    fields = _checked(log, "container_search.verification_unavailable", "_search_and_adjudicate", error_class, level)
+    assert fields["vrid_count"] == len(graph.check_access.await_args.kwargs["virtual_record_ids"])
     assert _warned(log.records) == ["container_search.verification_unavailable"]
 
 
@@ -312,8 +303,8 @@ async def test_a_failed_batch_fetch_falls_back_per_id_with_one_line(log, error, 
     assert response["status"] == Status.SUCCESS.value
     assert response["searchResults"]
     assert graph.get_document.await_count
-    line = _checked(log, "search.batch_fetch_failed", "_fetch_by_ids", error_class, level)
-    assert line.collection == "files"
+    fields = _checked(log, "search.batch_fetch_failed", "_fetch_by_ids", error_class, level)
+    assert fields["collection"] == "files"
 
 
 @pytest.mark.parametrize(("error", "error_class", "level"), CASES)

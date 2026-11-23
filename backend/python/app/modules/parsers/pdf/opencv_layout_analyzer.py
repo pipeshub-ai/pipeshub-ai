@@ -1707,6 +1707,11 @@ def extract_layout_regions(
         (fx0 * page_w, fy0 * page_h, fx1 * page_w, fy1 * page_h)
         for (fx0, fy0, fx1, fy1), _s in (model_boxes or {}).get("caption", [])
     ])
+    # After every grid is chosen: the choices prefer more columns, and the sign
+    # columns this removes would otherwise count.
+    for region in ordered:
+        if region.type == LayoutRegionType.TABLE and region.table_grid:
+            _merge_table_currency_columns(region)
     return _inject_hyperlinks_into_regions(ordered, page, all_words)
 
 
@@ -3076,6 +3081,44 @@ def _demote_lossy_tables(
     return out
 
 
+# A layout model's table box can stop a fraction of a point inside a ruled table's outer border. Cropped to the box, that border is
+# gone and pdfplumber merges the row beside it into its neighbour (a header row into the first data row). A ruled line this close
+# outside a side, running along most of it, is the border: the side is moved out to it.
+_BORDER_SNAP_PT = 3.0
+_BORDER_MIN_SPAN = 0.5
+
+
+def _snap_to_border(page: "Page", bbox: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """*bbox* with each side moved out to a ruled line just outside it; a side with none is left as it is."""
+    x0, top, x1, bottom = bbox
+    try:
+        edges = page.edges
+    except Exception:
+        return bbox
+
+    def span(a0: float, a1: float, b0: float, b1: float) -> float:
+        """The share of [b0, b1] that [a0, a1] covers."""
+        return (min(a1, b1) - max(a0, b0)) / (b1 - b0) if b1 > b0 else 0.0
+
+    new_x0, new_top, new_x1, new_bottom = bbox
+    for edge in edges:
+        try:
+            ex0, ex1, etop, ebottom = float(edge["x0"]), float(edge["x1"]), float(edge["top"]), float(edge["bottom"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if edge.get("orientation") == "h" and span(ex0, ex1, x0, x1) >= _BORDER_MIN_SPAN:
+            if top - _BORDER_SNAP_PT <= etop < top:
+                new_top = min(new_top, etop)
+            if bottom < ebottom <= bottom + _BORDER_SNAP_PT:
+                new_bottom = max(new_bottom, ebottom)
+        elif edge.get("orientation") == "v" and span(etop, ebottom, top, bottom) >= _BORDER_MIN_SPAN:
+            if x0 - _BORDER_SNAP_PT <= ex0 < x0:
+                new_x0 = min(new_x0, ex0)
+            if x1 < ex1 <= x1 + _BORDER_SNAP_PT:
+                new_x1 = max(new_x1, ex1)
+    return new_x0, new_top, new_x1, new_bottom
+
+
 def _reextract_grid_for_bbox(
     page,
     bbox: Tuple[float, float, float, float],
@@ -3083,7 +3126,7 @@ def _reextract_grid_for_bbox(
     page_h: float,
 ) -> Optional[List[List[Optional[str]]]]:
     try:
-        sub = page.within_bbox(_clamp_bbox(bbox, page_w, page_h))
+        sub = page.within_bbox(_clamp_bbox(_snap_to_border(page, bbox), page_w, page_h))
     except Exception:
         return None
     if sub is None:
@@ -3712,6 +3755,74 @@ def _trim_empty_rows_cols(grid):
     if not keep_cols:
         return []
     return [[row[ci] for ci in keep_cols] for row in rows]
+
+
+_CURRENCY_SIGNS = "$€£¥"
+# 1,234.56 and 1.234,56 alike; "31," (a date) is not a figure.
+_AMOUNT_RE = re.compile(r"\(?[-\u2212]?\d(?:[\d.,]*\d)?\)?%?")
+_YEAR_RE = re.compile(r"\b(?:19|20)\d\d\b")
+# A sign followed by its figure ("$ 2000"), unlike a header "2022" over a "$".
+_SIGNED_AMOUNT_RE = re.compile(r"[$€£¥]\s*\(?[-\u2212]?\d")
+
+
+def _is_amount(token: str, *, year_ok: bool = False) -> bool:
+    return bool(_AMOUNT_RE.fullmatch(token)) and (year_ok or not _YEAR_RE.fullmatch(token))
+
+
+def _merge_currency_columns(grid: list[list[str | None]]) -> list[list[str | None]]:
+    """Join each column of bare currency signs to the amounts on its right.
+
+    Statements that print "$" before the first figure in a row get a column for
+    the sign, and the year header above it lands there too, one column from its
+    figures: "2022" over "$", and "34,229" under nothing.
+    """
+    def text(cell: str | None) -> str:
+        return str(cell).strip() if cell is not None else ""
+
+    def holds_amount(cell: str | None, *, year_ok: bool = False) -> bool:
+        return any(_is_amount(t, year_ok=year_ok) for t in text(cell).split())
+
+    def years(cell: str | None) -> set[str]:
+        return set(_YEAR_RE.findall(text(cell)))
+
+    ci = 0
+    while ci < (len(grid[0]) if grid else 0) - 1:
+        signs = [text(r[ci]) for r in grid]
+        bare = [len(c) == 1 and c in _CURRENCY_SIGNS for c in signs]
+        # Beside a bare sign, "2000" is a figure, not a year.
+        body = [holds_amount(r[ci + 1], year_ok=b) for r, b in zip(grid, bare)]
+        # The sign and its figure must meet in one row, not come from two columns.
+        paired = any(b and f for b, f in zip(bare, body))
+        own_figure = any(
+            _SIGNED_AMOUNT_RE.search(c)
+            # Header cells name a period: "52 Weeks Ended August 29, 2021".
+            or (holds_amount(c.strip(_CURRENCY_SIGNS + " \n")) and not years(c))
+            for c in signs
+        )
+        # Header rows over both columns, compared together: two periods would end
+        # up over one figure.
+        sign_years = set().union(*(years(c) for c, f in zip(signs, body) if not f))
+        figure_years = set().union(*(years(r[ci + 1]) for r, f in zip(grid, body) if not f))
+        blocked = own_figure or bool(sign_years and figure_years and sign_years != figure_years)
+        if paired and not blocked:
+            for r in grid:
+                parts = [text(r[ci]), text(r[ci + 1])]
+                r[ci:ci + 2] = [" ".join(p for p in parts if p) or r[ci + 1]]
+            continue
+        ci += 1
+    return grid
+
+
+def _merge_table_currency_columns(region: LayoutRegion) -> None:
+    before = _grid_to_text(region.table_grid)
+    region.table_grid = _merge_currency_columns(region.table_grid)
+    after = _grid_to_text(region.table_grid)
+    if after == before:
+        return
+    # A table merged with a neighbour keeps that neighbour's text beside its grid.
+    region.text = (
+        region.text.replace(before, after) if region.text and before in region.text else after
+    )
 
 
 def _is_plausible_table(
@@ -5615,6 +5726,7 @@ def _inject_hyperlinks_into_region(
     if not region_words:
         return
 
+    original = region.text
     if region.text:
         region.text = _inject_hyperlinks_into_text(
             region.text, hyperlinks, region_words,
@@ -5627,6 +5739,7 @@ def _inject_hyperlinks_into_region(
         ]
 
     if region.table_grid:
+        before = _grid_to_text(region.table_grid)
         region.table_grid = [
             [
                 _inject_hyperlinks_into_text(
@@ -5636,7 +5749,13 @@ def _inject_hyperlinks_into_region(
             ]
             for row in region.table_grid
         ]
-        region.text = _grid_to_text(region.table_grid)
+        # A table merged with a neighbour keeps that neighbour's text beside its grid.
+        head, found, tail = (original or "").partition(before) if before else ("", "", "")
+        region.text = (
+            _inject_hyperlinks_into_text(head, hyperlinks, region_words)
+            + _grid_to_text(region.table_grid)
+            + _inject_hyperlinks_into_text(tail, hyperlinks, region_words)
+        ) if found else _grid_to_text(region.table_grid)
 
 
 def _inject_hyperlinks_into_regions(

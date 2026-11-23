@@ -18,8 +18,12 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.connector.connector_service import (
     connector_sync_lock,
+    note_sync_started,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    USER_LINK_MARK_TTL_MS,
+)
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
@@ -112,6 +116,20 @@ def _superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
     if sent is None or current is None:
         return False
     return int(sent) < int(current) and bool(app_doc.get(ConnectorStateKeys.IS_ACTIVE))
+
+
+def _enable_superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
+    """Whether a toggle numbered after this appEnabled has been written since.
+
+    A newer enable sends its own event, which starts the sync; a newer disable left the
+    connector off, so this one must not start a sync on it. Either way this event has no
+    work left. Two enables that overlap both write and send, and without this check both
+    events start a sync."""
+    sent = payload.get(ConnectorStateKeys.TOGGLE_SEQ)
+    current = app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)
+    if sent is None or current is None:
+        return False
+    return int(sent) < int(current)
 
 
 class EntityEventService(BaseEventService):
@@ -579,7 +597,30 @@ class EntityEventService(BaseEventService):
                 app = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
                 if not app or not app.get("isActive", False) or app.get("status") == APP_STATUS_DELETING:
                     return True
-                await connector.link_new_users()
+                # A reindex sees this pass as it sees a sync (`unless_synced_since`), since the pass writes access too: it moves a
+                # stand-in group's grants onto the user it stood for, which a reindex that read the source earlier would take back.
+                # The start moves the start time (seen by a reindex that began before). The mark, rewritten while the pass runs, is
+                # what a reindex that begins meanwhile, in any process, takes for a running sync. It is not cleared at the end: a
+                # pass in another process may share it, so it goes stale instead. A pass whose mark is not written does not run on.
+                # A write gets a quarter of the TTL, as does the wait between writes: the next mark lands at most 3/4 of the
+                # TTL after the last one's time, before it expires. A write that misses its deadline stops the pass.
+                async def mark(*keys: str) -> None:
+                    now = get_epoch_timestamp_in_ms()
+                    ensure_written(await asyncio.wait_for(self.graph_provider.batch_upsert_nodes(
+                        [{"id": connector_id, **dict.fromkeys(keys, now)}], CollectionNames.APPS.value,
+                    ), USER_LINK_MARK_TTL_MS / 4000), "the user-link pass mark")
+
+                note_sync_started(connector_id)
+                await mark(ConnectorStateKeys.LAST_SYNC_STARTED_AT, ConnectorStateKeys.USER_LINK_STARTED_AT)
+                link = org_context.spawn_in_request(connector.link_new_users(), name="connector_link_users")
+                try:
+                    while not (await asyncio.wait({link}, timeout=USER_LINK_MARK_TTL_MS / 4000))[0]:
+                        await mark(ConnectorStateKeys.USER_LINK_STARTED_AT)
+                    await link
+                finally:
+                    if not link.done():
+                        link.cancel()
+                        await asyncio.gather(link, return_exceptions=True)
         except Exception as e:
             error_class.log_failure(self.logger, "entity_event.step_failed", e, step="link_users")
         return True
@@ -788,6 +829,18 @@ class EntityEventService(BaseEventService):
             if not org:
                 self.logger.error(f"Organization not found: {org_id}")
                 return False
+
+            if connector_id and payload.get(ConnectorStateKeys.TOGGLE_SEQ) is not None:
+                app_doc = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value
+                )
+                if app_doc and _enable_superseded_by_a_newer_toggle(payload, app_doc):
+                    self.logger.info(
+                        f"Skipping app enabled event for connector {connector_id}: a newer toggle "
+                        f"(#{app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)}) was written after this one "
+                        f"(#{payload.get(ConnectorStateKeys.TOGGLE_SEQ)})"
+                    )
+                    return True
 
             for app_name in apps:
                 if sync_action == "immediate":
