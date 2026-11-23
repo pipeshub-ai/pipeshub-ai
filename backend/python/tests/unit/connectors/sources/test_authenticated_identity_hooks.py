@@ -724,6 +724,37 @@ class TestSlackWorkspace:
 
         assert (grant.email, grant.entity_type, grant.type) == ("admin@corp.com", EntityType.USER, PermissionType.READ)
 
+    async def test_a_listed_authenticator_gets_no_grant_even_when_suspended(self) -> None:
+        conn = self._conn(authenticator="Admin@corp.com")
+        conn._listed_user_emails = {"admin@corp.com"}
+
+        assert await SlackConnector._authenticator_grant(conn) is None
+
+    @pytest.mark.parametrize("flag", ["_users_read_failed", "_users_listing_cut"])
+    async def test_an_incomplete_listing_adds_no_new_grant(self, flag: str) -> None:
+        conn = self._conn(authenticator="admin@corp.com")
+        setattr(conn, flag, True)
+
+        assert await SlackConnector._authenticator_grant(conn) is None
+
+    @pytest.mark.parametrize("flag", ["_users_read_failed", "_users_listing_cut"])
+    async def test_an_incomplete_listing_keeps_the_grant_the_last_sync_made(self, flag: str) -> None:
+        conn = self._conn(authenticator="admin@corp.com")
+        setattr(conn, flag, True)
+        previous = Permission(email="admin@corp.com", entity_type=EntityType.USER, type=PermissionType.READ)
+        other = Permission(email="old@corp.com", entity_type=EntityType.USER, type=PermissionType.READ)
+
+        assert await SlackConnector._authenticator_grant(conn, previous) is previous
+        assert await SlackConnector._authenticator_grant(conn, other) is None
+
+    async def test_an_incomplete_listing_that_shows_the_authenticator_drops_the_grant(self) -> None:
+        conn = self._conn(authenticator="admin@corp.com")
+        conn._users_listing_cut = True
+        conn._listed_user_emails = {"admin@corp.com"}
+        previous = Permission(email="admin@corp.com", entity_type=EntityType.USER, type=PermissionType.READ)
+
+        assert await SlackConnector._authenticator_grant(conn, previous) is None
+
     async def test_no_authenticator_means_no_grant(self) -> None:
         conn = self._conn(authenticator=None)
 

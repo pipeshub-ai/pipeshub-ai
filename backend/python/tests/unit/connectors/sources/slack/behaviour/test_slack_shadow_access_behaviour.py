@@ -68,8 +68,26 @@ class TestBotToken:
         await connector.run_sync()
 
         assert len(grants_for(store, SECRET, "alice@acme.com")) == 1
-        (grant,) = grants_for(store, GENERAL, "alice@acme.com")
-        assert grant.email == "Alice@Acme.com", "a public channel names its members through the role, not one by one"
+        assert grants_for(store, GENERAL, "alice@acme.com") == [], "a public channel names its members through the role"
+
+    async def test_a_listed_authenticator_gets_no_grant_on_a_private_channel_they_are_not_in(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = "bob@acme.com"
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert grants_for(store, PARTNERS, "bob@acme.com") == []
+        assert len(grants_for(store, SECRET, "bob@acme.com")) == 1, "their own membership still shows their channels"
+
+    async def test_an_unlisted_authenticator_still_gets_every_channel(self, workspace, store, checkpoints) -> None:
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert len(grants_for(store, PARTNERS, ADMIN)) == 1
 
     async def test_a_bot_has_no_account_to_link_and_an_earlier_link_is_removed(self, workspace, store, checkpoints) -> None:
         store.authenticator_email = ADMIN
