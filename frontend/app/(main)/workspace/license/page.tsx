@@ -24,11 +24,17 @@ function Detail({ label, children }: { label: string; children: React.ReactNode 
   );
 }
 
-function LicenseDetails({ view, license }: { view: LicenseStatusView; license: LicenseView }) {
+/** The key in force (or the one that ended last), or with `pending` a key dated ahead that has not started yet. */
+function LicenseDetails({ view, license, pending = false }: { view: LicenseStatusView; license: LicenseView; pending?: boolean }) {
   const { t, i18n } = useTranslation();
   const date = (iso: string) => new Date(iso).toLocaleDateString(i18n.language, { dateStyle: 'medium' });
   return (
     <>
+      {pending && (
+        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+          {t('workspace.license.startsOn', { date: date(license.startDate) })}
+        </Text>
+      )}
       <Detail label={t('workspace.license.fields.type')}>
         <Flex gap="2" align="center" wrap="wrap" justify="end">
           {typeLabel(t, license.type)}
@@ -45,7 +51,7 @@ function LicenseDetails({ view, license }: { view: LicenseStatusView; license: L
       {(view.status === 'grace' || view.status === 'expiring') && (
         <Detail label={t('workspace.license.fields.graceEndsAt')}>{date(license.graceEndsAt)}</Detail>
       )}
-      {view.upcoming && (
+      {!pending && view.upcoming && (
         <Detail label={t('workspace.license.fields.upcoming')}>{date(view.upcoming.startDate)}</Detail>
       )}
     </>
@@ -132,7 +138,10 @@ export default function LicensePage() {
   const date = (iso: string) => new Date(iso).toLocaleDateString(i18n.language, { dateStyle: 'medium' });
   const graceEnd = view && upgradeGraceEnd(view);
   const syncOff = view?.permissionSync?.allowed === false;
-  const inForce = view && (view.status === 'active' || view.status === 'expiring' || view.status === 'grace');
+  const inForce = !!view && (view.status === 'active' || view.status === 'expiring' || view.status === 'grace');
+  // No key in force and none waiting to start: none installed, or the last one ended.
+  const noKey = !!view && !inForce && !view.upcoming;
+  const keyLacksSync = inForce && !view.license?.features.includes('permissionSync');
   const address = publicUrl ?? undefined;
 
   return (
@@ -161,10 +170,12 @@ export default function LicensePage() {
             </Callout.Root>
           )}
 
-          {syncOff && (
+          {syncOff && (noKey || keyLacksSync) && (
             <Callout.Root color="red">
               <Callout.Icon><MaterialIcon name="lock" size={16} /></Callout.Icon>
-              <Callout.Text>{t('workspace.license.permissionSyncOff')}</Callout.Text>
+              <Callout.Text>
+                {noKey ? t('workspace.license.permissionSyncOff') : t('workspace.license.keyLacksPermissionSync')}
+              </Callout.Text>
             </Callout.Root>
           )}
 
@@ -177,7 +188,11 @@ export default function LicensePage() {
                 </Badge>
               }
             >
-              {view.license && <LicenseDetails view={view} license={view.license} />}
+              {view.license ? (
+                <LicenseDetails view={view} license={view.license} />
+              ) : (
+                view.upcoming && <LicenseDetails view={view} license={view.upcoming} pending />
+              )}
               <Detail label={t('workspace.license.fields.permissionSync')}>
                 {syncOff ? t('workspace.license.off') : t('workspace.license.on')}
               </Detail>
@@ -223,7 +238,7 @@ export default function LicensePage() {
           </SettingsSection>
 
           <Flex gap="4" wrap="wrap">
-            {!inForce && (
+            {noKey && (
               <Link href={procurementLink(PROCUREMENT_PATHS.trial, { url: address })} target="_blank" rel="noopener noreferrer" size="2">
                 {t('workspace.license.getTrial')}
               </Link>

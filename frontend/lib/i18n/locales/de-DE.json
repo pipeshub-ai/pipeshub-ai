@@ -5174,7 +5174,9 @@
         "expired": "Dieser Schlüssel ist bereits abgelaufen. Fordern Sie einen neuen Schlüssel an und installieren Sie ihn.",
         "malformed": "Das ist keine Lizenzschlüsseldatei. Fügen Sie die ganze Datei ein, einschließlich der öffnenden und schließenden geschweiften Klammern.",
         "generic": "Der Lizenzschlüssel konnte nicht installiert werden. Versuchen Sie es erneut."
-      }
+      },
+      "startsOn": "Dieser Schlüssel gilt ab {{date}}.",
+      "keyLacksPermissionSync": "Dieser Schlüssel umfasst keine Berechtigungssynchronisierung. Unternehmensweite Connectors, die Zugriffsrechte aus ihrer Quelle übernehmen, sind auf die Person beschränkt, die sie erstellt hat. Es wurde nichts gelöscht: Installieren Sie einen Schlüssel mit Berechtigungssynchronisierung, und der Zugriff jedes Connectors kehrt zurück, sobald seine nächste vollständige Synchronisierung abgeschlossen ist."
     }
   },
   "filePreview": {

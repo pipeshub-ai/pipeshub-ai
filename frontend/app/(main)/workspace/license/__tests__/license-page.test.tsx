@@ -145,6 +145,57 @@ describe('License page: status', () => {
   });
 });
 
+describe('License page: a key dated ahead, and a key without permission sync', () => {
+  it('pending: shows the upcoming key with its start date, and no trial link or install-a-key callout', async () => {
+    const upcoming = license({ licensee: 'Future Labs', seats: 40, startDate: iso(5), endDate: iso(370) });
+    api.getStatus.mockResolvedValue(
+      view({ status: 'pending', upcoming, permissionSync: { allowed: false, until: null } }),
+    );
+    renderPage();
+    expect(await screen.findByText('Starts later')).toBeTruthy();
+    expect(screen.getByText('Future Labs')).toBeTruthy();
+    expect(screen.getByText('Pro')).toBeTruthy();
+    expect(screen.getByText('40')).toBeTruthy();
+    const starts = new Date(upcoming.startDate).toLocaleDateString('en-US', { dateStyle: 'medium' });
+    expect(screen.getByText(`This key starts on ${starts}.`)).toBeTruthy();
+    expect(screen.queryByText('Get a trial key')).toBeNull();
+    expect(screen.queryByText(/Nothing was deleted/)).toBeNull();
+  });
+
+  it('expired with a key coming up: no trial link', async () => {
+    api.getStatus.mockResolvedValue(
+      view({
+        status: 'expired',
+        license: license({ startDate: iso(-400), endDate: iso(-30), graceEndsAt: iso(-27) }),
+        upcoming: license({ licenseId: 'lic-2', startDate: iso(3), endDate: iso(368) }),
+        permissionSync: { allowed: false, until: null },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText('Expired')).toBeTruthy();
+    expect(screen.getByText('Next key starts')).toBeTruthy();
+    expect(screen.queryByText('Get a trial key')).toBeNull();
+    expect(screen.queryByText(/install a key, and each connector/)).toBeNull();
+  });
+
+  it('an active key without permission sync says so, not "install a key"', async () => {
+    api.getStatus.mockResolvedValue(
+      view({ status: 'active', license: license({ features: [] }), permissionSync: { allowed: false, until: null } }),
+    );
+    renderPage();
+    expect(await screen.findByText(/This key does not include permission sync/)).toBeTruthy();
+    expect(screen.queryByText(/Nothing was deleted: install a key, and/)).toBeNull();
+    expect(screen.queryByText('Get a trial key')).toBeNull();
+  });
+
+  it('no key and permission sync off: the install-a-key callout and the trial link, as before', async () => {
+    api.getStatus.mockResolvedValue(view({ permissionSync: { allowed: false, until: null } }));
+    renderPage();
+    expect(await screen.findByText(/Nothing was deleted: install a key, and/)).toBeTruthy();
+    expect(screen.getByText('Get a trial key')).toBeTruthy();
+  });
+});
+
 describe('License page: installing a key', () => {
   it('sends the pasted file as JSON and shows the new status', async () => {
     const file = { license: { licenseId: 'lic-1' }, signature: 'sig' };
