@@ -23276,8 +23276,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
              size([n IN rows WHERE n.nodeType = 'record' | 1]) AS nRecord,
              size([n IN rows WHERE n.nodeType = 'folder' | 1]) AS nFolder,
              size([n IN rows WHERE n.nodeType = 'recordGroup' | 1]) AS nGroup, {probes_of.format("rows")} AS khProbes
+        // The page rows in their place in the sorted list: UNWIND does not promise list order.
         CALL (rows) {{
-            UNWIND rows[0..$kh_limit] AS pageItem
+            UNWIND range(0, size(rows[0..$kh_limit]) - 1) AS kh_i
+            WITH rows[kh_i] AS pageItem, kh_i
+            ORDER BY kh_i
             RETURN collect(pageItem) AS page
         }}
         WITH total, nRecord, nFolder, nGroup, khProbes, page

@@ -223,5 +223,5 @@ async def test_neo4j_the_page_is_cut_from_rows_sorted_before_they_are_collected(
     listing, _ = _listing(await _statements(_neo4j(["r1"]), filters))
     head, _, cut = listing.partition("AS rows")
     assert "ORDER BY nullRank" in head
-    assert "UNWIND rows[0..$kh_limit] AS pageItem" in cut
+    assert "UNWIND range(0, size(rows[0..$kh_limit]) - 1) AS kh_i" in cut and "ORDER BY kh_i" in cut
     assert "LIMIT $kh_limit" not in cut
