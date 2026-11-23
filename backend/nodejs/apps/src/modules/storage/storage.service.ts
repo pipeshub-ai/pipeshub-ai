@@ -30,20 +30,12 @@ export class StorageService {
 
   public async initialize(): Promise<void> {
     if (!this.isInitialized) {
-      try {
-        const storageConfig =
-          (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
-          '{}';
-        const { storageType } =
-          parseKvObject(storageConfig) || storageTypes.LOCAL;
-        this.adapter = await this.initializeStorageAdapter(storageType);
-        this.isInitialized = true;
-      } catch (error) {
-        logger.error('Failed to initialize storage service', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-        throw error;
-      }
+      const storageConfig =
+        (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
+      const { storageType } =
+        parseKvObject(storageConfig) || storageTypes.LOCAL;
+      this.adapter = await this.initializeStorageAdapter(storageType);
+      this.isInitialized = true;
     }
   }
 
