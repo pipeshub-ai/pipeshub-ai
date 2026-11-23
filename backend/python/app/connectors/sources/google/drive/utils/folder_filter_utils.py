@@ -130,6 +130,20 @@ def drive_error_reasons(error: HttpError) -> set:
     return reasons
 
 
+def sharing_refused(error: BaseException) -> bool:
+    """Whether Google refused to show an item's sharing for good: a 404, or a 403 that is not a rate limit.
+
+    Such a read is answered: the sharing is unknown to this user. Anything else (a rate limit, a 5xx, a timeout)
+    is a read that did not happen, to be tried again, not an answer.
+    """
+    if not isinstance(error, HttpError):
+        return False
+    status = getattr(error.resp, "status", None)
+    if status == 404:
+        return True
+    return status == 403 and not (drive_error_reasons(error) & QUOTA_403_REASONS)
+
+
 def _403_reasons(error: HttpError) -> set:
     if error.resp.status != HttpStatusCode.FORBIDDEN.value:
         return set()

@@ -88,3 +88,125 @@ def test_sync_masks_request_people_fields(mask) -> None:
     assert "owners" in requested
     assert "lastModifyingUser" in requested
     assert "driveId" in requested
+
+
+# Hidden owner emails and direct shares.
+
+from app.connectors.sources.google.common.drive_people import drive_shared_with  # noqa: E402
+
+
+def _grant(pid: str, email: str | None, role: str, *, kind: str = "user", **extra: object) -> dict:
+    grant: dict = {"id": pid, "type": kind, "role": role, **extra}
+    if email:
+        grant["emailAddress"] = email
+    return grant
+
+
+def test_owner_email_is_filled_from_the_permission_with_the_same_id() -> None:
+    hidden = {"displayName": "test", "permissionId": "01448"}
+    people = drive_file_people(
+        {"id": "f1", "owners": [hidden]}, [_grant("01448", "test@ext.test", "owner")],
+    )
+
+    assert people.owners[0].email == "test@ext.test"
+    assert people.owners[0].source_id == "01448"
+    assert people.authored_by is not None and people.authored_by.email == "test@ext.test"
+
+
+def test_last_modifier_email_is_filled_the_same_way() -> None:
+    hidden = {"displayName": "abhishek", "permissionId": "0366"}
+    people = drive_file_people({"id": "f1", "lastModifyingUser": hidden}, [_grant("0366", "ab@ext.test", "writer")])
+
+    assert people.last_modified_by is not None and people.last_modified_by.email == "ab@ext.test"
+
+
+def test_an_email_drive_did_give_is_never_replaced() -> None:
+    people = drive_file_people({"id": "f1", "owners": [ALICE]}, [_grant(ALICE["permissionId"], "other@x.test", "owner")])
+
+    assert people.owners[0].email == "alice@example.com"
+
+
+def test_shared_drive_grants_follow_permission_details() -> None:
+    direct = _grant("1", "bob@x.test", "writer", permissionDetails=[{"permissionType": "file", "inherited": False}])
+    inherited = _grant("2", "cat@x.test", "reader", permissionDetails=[{"permissionType": "member", "inherited": True}])
+
+    shared = drive_shared_with([direct, inherited], owner_ids=set(), parent_grants=None, has_details=True)
+
+    assert [p.email for p in shared] == ["bob@x.test"]
+
+
+def test_my_drive_grant_absent_from_the_parent_is_direct() -> None:
+    grants = [_grant("o", "alice@x.test", "owner"), _grant("1", "bob@x.test", "writer"), _grant("2", "cat@x.test", "reader")]
+    parent = [_grant("o", "alice@x.test", "owner"), _grant("2", "cat@x.test", "reader")]
+
+    shared = drive_shared_with(grants, owner_ids={"o"}, parent_grants=parent, has_details=False)
+
+    assert [(p.source_id, p.email) for p in shared] == [("1", "bob@x.test")]
+
+
+def test_my_drive_role_ranking() -> None:
+    def shared(file_role: str, parent_role: str) -> list[str]:
+        return [p.email for p in drive_shared_with(
+            [_grant("1", "bob@x.test", file_role)], owner_ids=set(),
+            parent_grants=[_grant("1", "bob@x.test", parent_role)], has_details=False,
+        )]
+
+    assert shared("writer", "reader") == ["bob@x.test"]
+    assert shared("reader", "writer") == []
+    assert shared("writer", "writer") == []
+
+
+def test_a_parent_grant_is_matched_by_email_when_ids_differ() -> None:
+    shared = drive_shared_with(
+        [_grant("1", "Bob@X.test", "reader")], owner_ids=set(),
+        parent_grants=[_grant("9", "bob@x.test", "reader")], has_details=False,
+    )
+
+    assert shared == []
+
+
+def test_no_parent_means_every_grant_is_direct() -> None:
+    shared = drive_shared_with([_grant("1", "bob@x.test", "reader")], owner_ids=set(), parent_grants=[], has_details=False)
+
+    assert [p.email for p in shared] == ["bob@x.test"]
+
+
+def test_an_unknown_parent_leaves_my_drive_shares_unknown() -> None:
+    assert drive_shared_with([_grant("1", "bob@x.test", "reader")], owner_ids=set(), parent_grants=None, has_details=False) is None
+
+
+def test_owners_are_never_shared_with() -> None:
+    grants = [_grant("o", "alice@x.test", "owner"), _grant("o2", "dan@x.test", "writer")]
+
+    shared = drive_shared_with(grants, owner_ids={"o2"}, parent_grants=[], has_details=False)
+
+    assert shared == []
+
+
+def test_non_person_grants_are_ignored() -> None:
+    grants = [
+        _grant("g", "team@x.test", "reader", kind="group"),
+        {"id": "d", "type": "domain", "role": "reader", "domain": "x.test"},
+        {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
+        _grant("del", "gone@x.test", "reader", deleted=True),
+        {"type": "user", "role": "reader"},
+    ]
+
+    assert drive_shared_with(grants, owner_ids=set(), parent_grants=[], has_details=False) == []
+
+
+def test_a_metadata_only_grant_neither_shares_nor_ranks_on_the_parent() -> None:
+    limited = _grant("1", "bob@x.test", "reader", view="metadata")
+
+    assert drive_shared_with([limited], owner_ids=set(), parent_grants=[], has_details=False) == []
+    assert [p.email for p in drive_shared_with(
+        [_grant("1", "bob@x.test", "reader")], owner_ids=set(), parent_grants=[limited], has_details=False,
+    )] == ["bob@x.test"]
+
+
+def test_a_service_account_sharee_is_marked_and_not_identifiable() -> None:
+    shared = drive_shared_with(
+        [_grant("9", "bot@proj.iam.gserviceaccount.com", "writer")], owner_ids=set(), parent_grants=[], has_details=False,
+    )
+
+    assert shared is not None and shared[0].is_service_account and not shared[0].identifiable

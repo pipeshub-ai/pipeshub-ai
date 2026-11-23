@@ -19,7 +19,8 @@ DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, "
     "headRevisionId, version, shared, owners, lastModifyingUser, md5Checksum, sha1Checksum, "
     "sha256Checksum, parents, "
-    f"driveId, {_DRIVE_FILE_ACCESS_FIELDS}"
+    f"driveId, {_DRIVE_FILE_ACCESS_FIELDS}, capabilities/canShare, "
+    "permissions(id, type, role, emailAddress, displayName, deleted, view)"
 )
 
 DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS = (

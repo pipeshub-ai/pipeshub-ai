@@ -62,6 +62,9 @@ fields:
   owners:
     required: false
     type: array
+  shared_with:
+    required: false
+    type: array
   block_containers:
     type: object
     required: false
