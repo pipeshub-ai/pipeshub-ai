@@ -94,7 +94,14 @@ class LocalCodingSandbox(CodingSandboxBackend):
             typecheck_typescript=typecheck_typescript,
             limits=limits,
         )
-        self._reflection = ReflectionEngine()
+        effective_limits = limits or ExecutionLimits()
+        self._reflection = ReflectionEngine(
+            memory_limit_mb=effective_limits.max_memory_bytes // 2**20,
+            cpu_limit_s=effective_limits.max_cpu_seconds,
+            process_limit=effective_limits.max_processes,
+            process_limit_shared=True,
+            file_size_limit_mb=effective_limits.max_file_size_bytes / 2**20,
+        )
         self._provisioned = False
 
     @property
@@ -132,7 +139,14 @@ class LocalCodingSandbox(CodingSandboxBackend):
         return self._working_dir
 
     async def provision(self) -> SandboxInfo:
-        os.makedirs(self._working_dir, exist_ok=True)
+        # 0700: other local users must not read another chat's inputs and
+        # outputs (the app's own user still can; local mode isolates nothing
+        # from it).
+        os.makedirs(self._working_dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(self._working_dir, 0o700)
+        except OSError as exc:
+            logger.warning("could not make sandbox dir %s private: %s", self._working_dir, exc)
         # `output/` backs $OUTPUT_DIR (see `sanitized_subprocess_env`) —
         # created up front so it exists before the pre-execution mtime
         # snapshot; `_snapshot_mtimes` records files, not directories, so
@@ -219,6 +233,15 @@ class LocalCodingSandbox(CodingSandboxBackend):
         full_path = self._resolve_path(path)
         with open(full_path, "rb") as f:
             return f.read()
+
+    async def read_file_head(self, path: str, max_bytes: int) -> tuple[bytes, bool]:
+        max_bytes = max(0, int(max_bytes))
+        with open(self._resolve_path(path), "rb") as f:
+            data = f.read(max_bytes + 1)
+        return data[:max_bytes], len(data) > max_bytes
+
+    async def file_size(self, path: str) -> int | None:
+        return os.stat(self._resolve_path(path)).st_size
 
     async def list_files(self) -> list[str]:
         results: list[str] = []

@@ -57,6 +57,8 @@ interface MailEndFields {
   smtpCode?: number;
   /** Only our own exceptions: an SMTP failure's text quotes the recipient. */
   error?: unknown;
+  /** A skip the sender asked for: logged at INFO. */
+  expected?: boolean;
 }
 
 // A template type is a short identifier (`loginWithOTP`); anything else is not printed.
@@ -196,7 +198,7 @@ export class MailConsumer {
   ): void {
     job.ended = true;
     const level =
-      outcome === 'success'
+      outcome === 'success' || fields.expected
         ? 'info'
         : fields.errorClass
           ? levelFor(fields.errorClass)
@@ -246,6 +248,11 @@ export class MailConsumer {
     payload: MailEventPayload,
     job: MailJob,
   ): Promise<void> {
+    if (payload.ifSmtpConfigured) {
+      // Mail only if SMTP is set: skipping it is the plan, not a fault.
+      this.end(job, 'skipped', { reason: 'smtp_optional', expected: true });
+      return;
+    }
     // Not retryable until an admin configures SMTP.
     this.end(job, 'skipped', {
       reason: 'smtp_not_configured',
