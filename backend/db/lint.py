@@ -331,14 +331,36 @@ def _drops_index(sql: str) -> bool:
     of other statements (data). Fails closed on what it does not read: any EXECUTE in a body (its SQL is a string, as lint_file takes it), a
     body that is not dollar-quoted (a quoted string, BEGIN ATOMIC), and a dollar-quoted body inside a body (a nested DO or routine)."""
     stmts = statements(sql)
-    found = [_FIRST_BODY.search(q) for q in stmts if _CODE.match(q)]
-    if None in found:
-        return True
-    bodies = [d for m in found for d in _body_statements(m.group(2))]
-    if any(_DOLLAR.search(_strip_literals(d)) for d in bodies):
-        return True
-    return any(re.search(r"\bEXECUTE\b(?!\s+ON\b)", _strip_literals(_strip_bodies(d)), re.I) for d in bodies) or any(
-        re.search(r"\bDROP\s+INDEX\b", _strip_literals(_strip_bodies(q)), re.I) for q in stmts + bodies)
+    return any(_CODE.match(q) and _body_unsafe(q) for q in stmts) or any(
+        re.search(r"\bDROP\s+INDEX\b", _strip_literals(_strip_bodies(q)), re.I) for q in stmts)
+
+
+def _body_unsafe(stmt: str) -> bool:
+    """Whether the body of a DO, function or procedure statement may DROP INDEX, read one level deep: a DROP INDEX or any EXECUTE in it, a
+    dollar-quoted body inside it, or a body that is not dollar-quoted (a quoted string, BEGIN ATOMIC)."""
+    m = _FIRST_BODY.search(stmt)
+    return m is None or any(_DOLLAR.search(q) or re.search(r"\bEXECUTE\b(?!\s+ON\b)|\bDROP\s+INDEX\b", q, re.I)
+                            for q in map(_strip_literals, _body_statements(m.group(2))))
+
+
+_ROUTINE = re.compile(rf"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+({_N})", re.I)
+_NOT_A_RUN = re.compile(r"(?:GRANT|REVOKE|COMMENT|(?:ALTER|DROP)\s+(?:FUNCTION|PROCEDURE|ROUTINE))\b", re.I)
+
+
+def _routines_run(stmts: list[str]) -> list[tuple[str, str]]:
+    """(name, CREATE statement) of each function or procedure these statements create and also run: named with ``(`` outside strings in a
+    statement that is not a routine's CREATE, GRANT, REVOKE, COMMENT, ALTER or DROP (a CALL, a SELECT, a PERFORM in a DO body, a trigger), or in
+    the body of a routine that is run. A name matches with or without its schema (the search path), in any case."""
+    routines = [(m.group(1), s) for s in stmts if (m := _ROUTINE.match(s))]
+    texts = [_strip_literals(_strip_bodies(s)) for s in stmts if not _ROUTINE.match(s) and not _NOT_A_RUN.match(s)]
+
+    def named(name: str, text: str) -> bool:
+        return re.search(rf'(?<![\w$])"?{re.escape(_key(name).split(".")[-1])}"?\s*\(', text, re.I) is not None
+    run: list[tuple[str, str]] = []
+    while new := [r for r in routines if r not in run and any(named(r[0], x) for x in texts)]:
+        run += new
+        texts = [_strip_literals(" ".join(_body_statements(m.group(2)))) for _, s in new if (m := _FIRST_BODY.search(s))]
+    return run
 
 
 def lint_file(path: Path) -> list[str]:
@@ -372,6 +394,11 @@ def lint_file(path: Path) -> list[str]:
         if not compat_ok:
             flag(f"{what} can break older code: set min_code_epoch or older_code_compatible = \"<reason>\"")
 
+    if not contract:
+        for name, s in _routines_run(stmts):
+            if _body_unsafe(s):
+                flag(f"{name} is run in this file and its body may DROP INDEX (a DROP INDEX, an EXECUTE, a nested or not dollar-quoted body): "
+                     "set min_code_epoch")
     if py_dynamic:
         breaks("SQL built at run time in upgrade() (not parsed)")
     for raw, full in items:

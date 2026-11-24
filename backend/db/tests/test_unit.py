@@ -787,3 +787,29 @@ def test_lint_takes_sql_it_cannot_read_to_the_end_as_a_possible_drop(tmp_path, c
     assert any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2})) is flagged, call
     py.write_text('revision = "graph_0003"\nmin_code_epoch = 3\n' + body)
     assert not any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2}))
+
+
+_PROC = "CREATE PROCEDURE graph.p() LANGUAGE plpgsql AS $$ BEGIN DROP INDEX graph.x; END $$;\n"
+_EXEC_FN = "CREATE OR REPLACE FUNCTION graph.f() RETURNS void LANGUAGE plpgsql AS $f$ BEGIN EXECUTE 'SELECT 1'; END $f$;\n"
+
+
+@pytest.mark.parametrize("name,sql,mark,flagged", [
+    ("a procedure that drops an index, called", _PROC + "CALL graph.p();\n", "", True),
+    ("called by its bare name", _PROC + "CALL P();\n", "", True),
+    ("a function with EXECUTE, selected", _EXEC_FN + "SELECT graph.f();\n", "", True),
+    ("performed in a DO body", _EXEC_FN + "DO $$ BEGIN PERFORM \"f\"(); END $$;\n", "", True),
+    ("called from a routine that is run", _EXEC_FN + "CREATE FUNCTION graph.g() RETURNS void LANGUAGE sql AS $$ SELECT graph.f() $$;\n"
+                                          "SELECT graph.g();\n", "", True),
+    ("run by a trigger the file creates", _EXEC_FN + "CREATE TRIGGER t AFTER INSERT ON graph.y FOR EACH ROW EXECUTE FUNCTION graph.f();\n", "", True),
+    ("created, not run (a writer the services call)", _EXEC_FN + "GRANT EXECUTE ON FUNCTION graph.f() TO pipeshub_node;\n"
+                                                      "SELECT kernel.register_function('graph.f()'::regprocedure);\n", "", False),
+    ("run, its body reads nothing unsafe", "CREATE FUNCTION graph.h() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;\nSELECT graph.h();\n", "", False),
+    ("run, with a contract", _PROC + "CALL graph.p();\n", "min_code_epoch = 3\n", False),
+])
+def test_lint_reads_the_body_of_a_routine_the_file_runs(tmp_path, name, sql, mark, flagged):
+    """A routine the .sql creates and runs in the same upgrade is code of that upgrade: its body is read with the DO-body rules. A routine it
+    only creates (called later by the services) runs outside the upgrade's transaction and is not read."""
+    f = tmp_path / "0003_x.sql"
+    f.write_text(sql)
+    f.with_suffix(".py").write_text('revision = "graph_0003"\nolder_code_compatible = "a test revision that older code never sees"\n' + mark)
+    assert any("is run in this file" in m for m in lint.lint_file(f)) is flagged, (name, lint.lint_file(f))
