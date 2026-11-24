@@ -10,6 +10,7 @@ Skips without a Neo4j: set NEO4J_IT_URI and NEO4J_IT_PASSWORD (see real_graph.py
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -26,7 +27,8 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.models.entities import FileRecord, RecordType
-from app.services.graph_db.neo4j.neo4j_provider import LISTED
+from app.services.graph_db.neo4j.neo4j_provider import FOLDER_MIME_TYPES, LISTED
+from app.services.graph_db.neo4j.permission_stamps import Neo4jStampGraph
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import backend_unavailable, connect_neo4j
 
@@ -242,6 +244,74 @@ async def test_a_page_reads_the_listed_ids_on_the_id_index_whatever_the_plan(w) 
     # Two seeks per id (one per label) and a few property reads: a plan reading the App's records per id is thousands per id.
     hits = sum(o.get("dbHits") or 0 for o in ops)
     assert hits <= 12 * BIG, hits
+
+
+# A seek on an index that holds the id beside the org or App (`Record(orgId, id)`, `RecordGroup(connectorId, id)`): the planner chose it
+# because the statement tests the org or App next to its match by id, and with other statistics it seeks the org or App index alone.
+# A paged read (`id > $after`) on such an index is not one: only an equality or IN on the id is.
+_SEEK_BESIDE_ID = re.compile(r"INDEX \w+:(?:Record|RecordGroup|App)\((?=[^)]*,)[^)]*\bid\b[^)]*\) WHERE .*\bid (?:=|IN) ")
+
+
+# Nor does any read every record or group of the org or the label: these reads start from ids, an App or a group.
+_SCANS = ("NodeIndexScan", "NodeByLabelScan", "UnionNodeByLabelsScan")
+_RECORDS = re.compile(r"\b\w+:(?:Record|RecordGroup)\b")
+
+
+def _calls(w: W) -> dict[str, Any]:
+    svc, g, user = KnowledgeHubService(log, w.g), w.g, f"uid-{w.user}"
+    kids = sorted(w.n(f"c{i}") for i in range(BIG))
+
+    def browse(parent: str, ptype: str, **kw: Any) -> Any:  # noqa: ANN401
+        return svc.get_nodes(user_id=user, org_id=w.org, parent_id=parent, parent_type=ptype, sort_by="name", sort_order="asc",
+                             **{"flattened": False, "depth": 1, "limit": 50, **kw})
+    return {
+        "browse a folder": lambda: browse(w.n("BIG"), "folder"),
+        "a later page": lambda: browse(w.n("BIG"), "folder", page=3),
+        "browse the App": lambda: browse(w.app, "app"),
+        "browse a group": lambda: browse(w.n("G3"), "recordGroup"),
+        "flatten the App": lambda: browse(w.app, "app", flattened=True, depth=3, limit=100),
+        "records by id": lambda: g.get_records_by_record_ids(kids, w.org),
+        "selection": lambda: g.get_selection_nodes(w.org, group_ids=[w.n("G3")], record_ids=[w.n("BIG")], exact_record_ids=kids[:500],
+                                                   limit=100),
+        "node access": lambda: g.get_knowledge_hub_node_access(w.n("BIG"), w.user, w.org, FOLDER_MIME_TYPES),
+        "stamp nodes": lambda: Neo4jStampGraph(lambda: g.client).nodes(w.org, frozenset(kids)),
+        "stamp subtree": lambda: Neo4jStampGraph(lambda: g.client).subtree_vrids(w.org, [w.n("G3")]),
+        "uploads under a folder": lambda: g.get_uploaded_document_ids(w.app, under_record_ids=[w.n("BIG")]),
+        "purge failure": lambda: g.record_purge_failure(kids, w.org, "x"),
+    }
+
+
+@pytest.mark.parametrize("call", [
+    "browse a folder", "a later page", "browse the App", "browse a group", "flatten the App", "records by id", "selection", "node access",
+    "stamp nodes", "stamp subtree", "uploads under a folder", "purge failure"])
+async def test_a_statement_seeks_nodes_by_id_on_the_unique_id_index(w, monkeypatch, call: str) -> None:
+    """Every statement these reads run seeks a record or group it has the id of on the label's unique id index, never on an index that
+    holds the id beside the org or App, and scans no index or label of records or groups. The planner picks such a seek only when the
+    statement tests the org or App beside the match by id, and on other statistics it then seeks the org or App index alone and tests
+    the id after (`LISTED`): every node of the org or App read once per id. Read from each statement's plan (EXPLAIN), so nothing is
+    written."""
+    ran: dict[str, tuple[str, dict[str, Any]]] = {}
+    execute = w.g.client.execute_query
+
+    async def capture(query: str, parameters: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        ran.setdefault(query, (query, parameters or {}))
+        return await execute(query, parameters, *args, **kwargs)
+
+    monkeypatch.setattr(w.g.client, "execute_query", capture)
+    await _calls(w)[call]()
+    monkeypatch.setattr(w.g.client, "execute_query", execute)
+    assert ran
+    beside: list[str] = []
+    async with w.g.client.driver.session(database="neo4j") as s:
+        for query, parameters in ran.values():
+            if query.lstrip().upper().startswith(("CALL DBMS", "SHOW")):
+                continue
+            prefix, body = re.match(r"\s*((?:CYPHER [^\n]*?replan=\w+\s+)?)(.*)", query, re.S).groups()
+            plan = (await (await s.run(f"{prefix}EXPLAIN {body}", parameters)).consume()).plan
+            beside += [f"{' '.join(body.split())[:120]} :: {o['operatorType']} {o['args'].get('Details', '')[:120]}" for o in _plan_ops(plan)
+                       if (o["operatorType"].startswith("NodeIndexSeek") and _SEEK_BESIDE_ID.search((o.get("args") or {}).get("Details", "")))
+                       or (o["operatorType"].startswith(_SCANS) and _RECORDS.search((o.get("args") or {}).get("Details", "")))]
+    assert not beside, beside
 
 
 async def test_relations_batch_is_bounded_per_record_and_direction(w) -> None:
