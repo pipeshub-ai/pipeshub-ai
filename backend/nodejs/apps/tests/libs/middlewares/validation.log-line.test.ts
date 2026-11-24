@@ -268,9 +268,8 @@ describe('ValidationMiddleware: a refused request is logged once, at WARNING, wi
     ])
   })
 
-  // A refused route param: no ERROR line any more, so its value is no longer in a raw `path`. It is still in
-  // `params` on http.request.error, as for every failed request (pinned; changing that is a separate decision).
-  it('a refused route param writes no ERROR line; its value is only in params on the failure line', async () => {
+  // A refused route param: no ERROR line, and `params` on http.request.error names it without its value (N5n).
+  it('a refused route param writes no ERROR line and its value is on no line', async () => {
     const r = await get(`/api/v1/things/${encodeURIComponent(PARAM)}`)
 
     expect(r.status).to.equal(400)
@@ -281,7 +280,7 @@ describe('ValidationMiddleware: a refused request is logged once, at WARNING, wi
     ])
     const [failure, end] = r.lines
     expect(failure.route).to.equal('/api/v1/things/:thingId')
-    expect(failure.metadata.params).to.deep.equal({ thingId: PARAM })
+    expect(failure.metadata.params).to.deep.equal({ thingId: '[not an id]' })
     expect(JSON.stringify(failure.metadata.error)).to.not.include('n5k-fake-param')
     expect(JSON.stringify(end)).to.not.include('n5k-fake-param')
   })

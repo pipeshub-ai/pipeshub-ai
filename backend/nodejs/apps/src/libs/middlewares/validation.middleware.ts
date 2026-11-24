@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import { Request, Response, NextFunction } from 'express';
 
-import { Logger } from '../services/logger.service';
 import { ValidationUtils } from '../utils/validation.utils';
 import { ValidationError } from '../errors/validation.error';
 import {
@@ -34,10 +33,6 @@ function describeGuardViolation(violation: ArrayGuardViolation): string {
 }
 
 export class ValidationMiddleware {
-  private static logger = Logger.getInstance({
-    service: 'ValidationMiddleware',
-  });
-
   // First modify the validation method to include headers
   static validate(schema: z.ZodObject, options: ValidatorOptions = {}) {
     return async (req: Request, _res: Response, next: NextFunction) => {
@@ -101,11 +96,6 @@ export class ValidationMiddleware {
         req.params = validatedData.params as Request['params'];
         // Note: req.headers is read-only, so we can't replace it
         // but we can still validate it
-
-        this.logger.debug('Validation successful', {
-          path: req.path,
-          method: req.method,
-        });
 
         next();
       } catch (error) {

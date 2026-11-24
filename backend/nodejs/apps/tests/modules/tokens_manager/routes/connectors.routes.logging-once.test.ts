@@ -224,6 +224,28 @@ describe('Connector routes: a request is logged once, with its connector', funct
     expect(visible().map((r) => [r.message, r.connector_type])).to.deep.equal([['http.request.end', 'Jira']])
   })
 
+  // N5n: a value the caller put in the path is logged only if it is an id (or, for a type, a name).
+  const EMAIL = 'n5n-fake-ada@example.com'
+  const carriesEmail = (): boolean => [EMAIL, encodeURIComponent(EMAIL)].some((v) => JSON.stringify(mine()).includes(v))
+
+  it('an email pasted as a connector id on resync: refused, and on no line, the error message included', async () => {
+    backend.on('GET', '/api/v1/connectors/active', { status: 200, body: { connectors: [{ _key: CONNECTOR }] } })
+
+    expect(await send('POST', `/api/v1/connectors/${encodeURIComponent(EMAIL)}/resync`, { connectorName: 'Jira' })).to.equal(400)
+
+    expect(byMessage('http.request.error').map((r) => [r.metadata.params, r.metadata.error.message])).to.deep.equal([
+      [{ connectorId: '[not an id]' }, 'Connector not allowed'],
+    ])
+    expect(carriesEmail()).to.equal(false)
+  })
+
+  it('an email as an OAuth connector type is not a name: not bound, on no line', async () => {
+    await send('GET', `/api/v1/oauth/${encodeURIComponent(EMAIL)}`)
+
+    expect(mine().some((r) => r.connector_type !== undefined)).to.equal(false)
+    expect(carriesEmail()).to.equal(false)
+  })
+
   it('a record read names the record on its lines', async () => {
     backend.on('GET', '/api/v1/records/rec-1/content', { status: 404, body: { detail: 'Record not found' } })
 

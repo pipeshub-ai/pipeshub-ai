@@ -2040,7 +2040,7 @@ const validateActiveConnector = async (
   );
 
   if (!isAllowed) {
-    throw new BadRequestError(`Connector ${connectorId} not allowed`);
+    throw new BadRequestError('Connector not allowed');
   }
 
   logger.debug('Connector validation successful', {

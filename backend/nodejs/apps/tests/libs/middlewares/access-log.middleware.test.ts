@@ -1,11 +1,11 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import express from 'express'
+import express, { Request } from 'express'
 import http from 'node:http'
 import { EventEmitter } from 'node:events'
 import { AddressInfo } from 'node:net'
-import { accessLog } from '../../../src/libs/middlewares/access-log.middleware'
+import { accessLog, routeParams } from '../../../src/libs/middlewares/access-log.middleware'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context'
 import { Logger } from '../../../src/libs/services/logger.service'
@@ -295,4 +295,21 @@ describe('accessLog: one http.request.end line per request', () => {
     res.emit('close')
     expect(records[0]).to.include({ request_id: 'req-outside', org_id: ORG, status: 204, client_ip: '10.0.0.1', route: 'unmatched' })
   })
+})
+
+describe('routeParams: an id as sent, any other value by its name only', () => {
+  const shown = (value: string) => routeParams({ params: { p: value } } as unknown as Request).p
+  const label = (value: string) => JSON.stringify(value.length > 40 ? `${value.slice(0, 8)}… (${value.length} chars)` : value)
+
+  for (const value of ['Ada Lovelace', 'a'.repeat(129), '100%', 'a/b', 'n5n-fake-ada@example.com']) {
+    it(`masks ${label(value)}`, () => {
+      expect(shown(value)).to.equal('[not an id]')
+    })
+  }
+
+  for (const value of [ORG, '3f2c9e7a-1b4d-4c8e-9a6f-2d5e8b7c1a90', '0123456789abcdef0123456789abcdef', 'org:key.v1', 'a'.repeat(128)]) {
+    it(`keeps ${label(value)}`, () => {
+      expect(shown(value)).to.equal(value)
+    })
+  }
 })
