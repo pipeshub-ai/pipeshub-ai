@@ -87,6 +87,17 @@ test('asks each language only for the plural categories it uses', () => {
   assert.deepEqual(complete.errors.extra, [], '_many is a real Spanish category, not an orphan');
 });
 
+test('compares a category the source lacks with its _other form, not a _one without the count', () => {
+  const source = { added_one: 'Added', added_other: '{{count}} added' };
+  const result = checkLocaleParity(
+    source,
+    { added_one: 'Přidáno', added_few: '{{count}} přidány', added_many: '{{count}} přidáno', added_other: '{{count}} přidáno' },
+    'cs-CZ',
+  );
+  assert.deepEqual(result.errors.placeholders, []);
+  assert.equal(result.valid, true);
+});
+
 test('checks placeholders inside a plural category the source does not define', () => {
   const source = { items_one: '{{count}} item', items_other: '{{count}} items' };
   const result = checkLocaleParity(

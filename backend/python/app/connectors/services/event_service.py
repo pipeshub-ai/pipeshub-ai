@@ -942,12 +942,14 @@ class EventService:
                 try:
                     # Delete sync points
                     self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
+                    sync_points_reset = False
                     try:
                         deleted_count, success = await self.graph_provider.delete_sync_points_by_connector_id(
                             connector_id=connector_id
                         )
                         if success:
                             self.logger.info(f"Successfully deleted {deleted_count} sync points for connector {connector_id}")
+                            sync_points_reset = True
                         else:
                             self.logger.warning(f"Failed to delete sync points for connector {connector_id}, continuing with sync")
                     except Exception as sync_point_error:
@@ -981,6 +983,7 @@ class EventService:
                                 connector_name=connector_name,
                                 org_id=org_id,
                             ),
+                            sync_points_reset=sync_points_reset,
                         ),
                     )
 

@@ -4,13 +4,23 @@ The same facts as the in-memory graph of the permission harness (``tests/permiss
 hierarchy parents (``nodeRelations`` of a hierarchy type whose source exists), inherited parents (``inheritPermissions`` from the node), the record groups it belongs to and
 whether it belongs to its app (``belongsTo``), and whether a grant reaches it (``permission`` from a principal that exists). :func:`closure` loads the parents and group chains
 level by level (at most 51 levels, the oracle's hop cap) so that a node the compiler needs but the closure lacks is *absent*, and the compiler refuses it (fail closed).
+
+Whether a node is granted is read from kg (``kg.records.granted``) for a node kg holds under a verified copy (``shadow`` or ``enforce`` at this code's epoch), and from the graph
+otherwise. kg's flag changes only in a projection of that node, which restamps everything below it when the flag flips (project.py); so a grant change that leaves the flag as
+it is can restamp the node alone, even when a stamp below it was compiled while the change still waited in the log.
 """
 from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
 
-from app.services.graph_db.postgres.kg.model import HIERARCHY, flag
+from app.services.graph_db.postgres.kg.model import (
+    CODE_COLL,
+    CODE_EPOCH,
+    COLL_CODE,
+    HIERARCHY,
+    flag,
+)
 from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.permissions.ports import StampApp, StampNode
 
@@ -45,6 +55,9 @@ GRANTED = """/* pipeshub:kg.stamp_granted */ SELECT DISTINCT e.to_coll AS coll, 
     CROSS JOIN LATERAL (SELECT e.to_coll, e.to_id, e.from_coll, e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'permission'
       AND e.to_id >= k.i AND e.to_id <= k.i ORDER BY e.to_id OFFSET 0) e
     WHERE EXISTS (SELECT 1 FROM graph.nodes p WHERE p.org_id = $1 AND p.coll = e.from_coll AND p.id = e.from_id AND p.coll = ANY($3::text[]) OFFSET 0)"""
+KG_GRANTED = """/* pipeshub:kg.stamp_kg_granted */ SELECT r.coll, r.id, r.granted FROM unnest($2::smallint[], $3::text[]) AS k(c, i)
+    JOIN kg.records r ON r.org_id = $1 AND r.coll = k.c AND r.id = k.i
+    JOIN kg.projection_state s ON s.org_id = $1 AND s.app_sk = r.app_sk AND s.mode IN ('shadow', 'enforce') AND s.code_epoch = $4"""
 
 
 def _json(raw: str | None) -> object:
@@ -116,6 +129,8 @@ async def nodes(tx: Tx, org: str, keys: Iterable[str]) -> dict[str, StampNode]:
         else:
             groups.setdefault(member, []).append(nk("recordGroups", r["target"]))
     granted = {nk(r["coll"], r["node"]) for r in rows[3]}
+    asked = sorted((COLL_CODE[split(k)[0]], split(k)[1]) for k in found if split(k)[0] != "apps")
+    kg_granted = {nk(CODE_COLL[r["coll"]], r["id"]): r["granted"] for r in await tx.fetch(KG_GRANTED, org, [c for c, _ in asked], [i for _, i in asked], CODE_EPOCH)}
     out: dict[str, StampNode] = {}
     for key, r in found.items():
         kind = KIND[r["coll"]]
@@ -123,7 +138,7 @@ async def nodes(tx: Tx, org: str, keys: Iterable[str]) -> dict[str, StampNode]:
             out[key] = StampNode(key, "app", key)
             continue
         out[key] = StampNode(key, kind, _app_nk(r["connector"]), tuple(sorted(parents.get(key, ()))), frozenset(inherits.get(key, ())), r["rule"], flag(_json(r["deleted"])),
-                             flag(_json(r["placeholder"])), key in granted, kind == "group" and r["model"] == "RECORD_GROUP_LEVEL", tuple(sorted(groups.get(key, ()))), r["vrid"],
+                             flag(_json(r["placeholder"])), kg_granted.get(key, key in granted), kind == "group" and r["model"] == "RECORD_GROUP_LEVEL", tuple(sorted(groups.get(key, ()))), r["vrid"],
                              key in belongs_app, r["origin"])
     return out
 

@@ -456,6 +456,19 @@ describe('StorageController', () => {
       expect(rows).to.have.length(0)
     })
 
+    it('a storage check that fails keeps the document: a 503 whose cause is the vendor code, with no line of its own', async () => {
+      const row = placeholder()
+      adapter.objectExists.rejects(Object.assign(new Error('n5d-vendor-text'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }))
+      const next = sinon.stub()
+
+      await controller.abortDirectUpload(serviceReq(String(row.orgId), String(row._id)), makeRes(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(ServiceUnavailableError)
+      expect(next.firstCall.args[0].cause).to.deep.equal({ status: 403, code: 'AccessDenied' })
+      expect(rows).to.deep.equal([row])
+      expect(mockLogger.error.called || mockLogger.warn.called).to.be.false
+    })
+
     it('refuses when the file is in storage, and keeps the document', async () => {
       const row = placeholder()
       adapter.objectExists.resolves(true)
@@ -541,6 +554,10 @@ describe('StorageController', () => {
       expect(findStub.firstCall.args[0]).to.have.property('$nor')
       expect(deleteManyStub.calledAfter(adapter.deleteTree)).to.be.true
       expect(res.body).to.deep.equal({ deleted: 4 })
+      // A static message; the connector and the count are fields.
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Deleted storage documents for a connector', { connector_id: 'conn-1', deleted: 4 }],
+      ])
     })
 
     it('still removes the rows when one tagged document cannot be deleted from storage', async () => {
@@ -819,6 +836,21 @@ describe('StorageController', () => {
       const error = next.firstCall.args[0]
       expect(error).to.be.instanceOf(ServiceUnavailableError)
       expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+      // The error middleware's line says why; the controller writes none, and never the mount path.
+      expect(error.cause).to.deep.equal({})
+      expect(mockLogger.error.called).to.be.false
+    })
+
+    it('reports storage that cannot be opened with the vendor status and code as the cause', async () => {
+      initAdapterStub.rejects(
+        new StorageConfigurationError('Failed to initialize S3 adapter', { originalError: 'n5d-vendor-text', statusCode: 403, code: 'InvalidAccessKeyId' }),
+      )
+
+      const next = sinon.stub()
+      await controller.uploadDocument(makeReq({ body: { fileBuffer: {} } }), makeRes(), next)
+
+      expect(next.firstCall.args[0].cause).to.deep.equal({ status: 403, code: 'InvalidAccessKeyId' })
+      expect(mockLogger.error.called).to.be.false
     })
 
     it('passes on a failure that is not about storage unchanged', async () => {
@@ -1645,6 +1677,30 @@ describe('StorageController', () => {
 
       await controller.uploadDirectDocument(req as any, res, next)
       expect(next.calledOnce).to.be.true
+      // The thrown error carries the status; the controller writes no line of its own.
+      expect(next.firstCall.args[0].metadata).to.include({ statusCode: 500 })
+      expect(mockLogger.error.called).to.be.false
+    })
+
+    it('a document store that cannot record the link is a 503 whose cause is the store\'s error, with no line of its own', async () => {
+      const doc = makeDocument({ storageVendor: StorageVendor.S3, documentPath: 'org/PipesHub/docs' })
+      sinon.stub(DocumentModel, 'findOne').resolves(doc)
+      sinon.stub(storageUtils, 'normalizeExtension').returns('.pdf')
+      sinon.stub(storageUtils, 'getCurrentFilePath').returns('upload/path')
+      sinon.stub(storageUtils, 'isValidStorageVendor').returns(true)
+      sinon.stub(storageUtils, 'getBaseUrl').returns('https://base.url')
+      const down = new Error('document store down')
+      const base = inertWriteState()
+      setDocumentRepository(
+        new Proxy(base, { get: (t, prop, r) => (prop === 'bumpSeq' ? () => Promise.reject(down) : Reflect.get(t, prop, r)) }),
+      )
+      const next = sinon.stub()
+
+      await controller.uploadDirectDocument(makeReq({ params: { documentId: doc._id.toString() } }) as any, makeRes(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(ServiceUnavailableError)
+      expect(next.firstCall.args[0].cause).to.equal(down)
+      expect(mockLogger.error.called).to.be.false
     })
 
     it('should throw when presigned URL is empty', async () => {

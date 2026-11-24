@@ -295,6 +295,13 @@ the auth middleware bound.
   is still cancelled before it reads.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
+- Node: a request a route's schema refuses (`ValidationMiddleware`: the zod schema, the array/key/depth guard, the
+  stack-overflow net, and a value a schema callback can't read, which gets a fixed message and no field) writes no line
+  of its own. `http.request.error` (WARNING, `bad_request`) names each issue in
+  `error.metadata.errors` as `field`, `code` and `message`, never the issue's `value`; the route's `params` are on the line
+  as on every `http.request.error`. A key the caller made up (an unknown field, a record key) is named, and a few rules quote
+  an enum-like value the caller sent in `message` (a duplicate model id), as the 400 body does.
+  `POST /oauth2/token` answers its own refusals (see the OAuth provider below).
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
   is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
   token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.
@@ -904,9 +911,9 @@ role name, group name or field value: a role change is told by the event and its
 
 | Event | Outcome | `reason` | Notes |
 | --- | --- | --- | --- |
-| `user.create` | `success`, `failure` | success: `demo_password` (a demo account got a starting password), else none; failure: `email_taken`, `password_not_allowed`, `admin_limit` (created as admin past the organisation's admin limit) | |
+| `user.create` | `success`, `partial`, `failure` | success: `demo_password` (a demo account got a starting password), else none; partial: `kept_after_failure` (the create failed after the account was saved, and the account was kept because removing it could have left the organisation without an admin, the removal itself failed, or an invite restored it meanwhile; followed by `user.role.change` `new_admin` when it is kept as the admin it was created as); failure: `email_taken`, `password_not_allowed`, `admin_limit` (created as admin past the organisation's admin limit) | |
 | `user.invite` | `success`, `failure` | success: `new`, `reinvite`, `resend`; failure: `not_admin`, `admin_limit` | `new` is written when the account is created, even if its mail then fails; `reinvite` and `resend` only after the mail was accepted |
-| `user.restore` | `success` | `invite` | a removed account brought back by an invite |
+| `user.restore` | `success` | `invite` | a removed account brought back by an invite, as a member; an admin invite then logs `user.role.change promote` |
 | `user.role.change` | `success`, `failure` | success: `promote`, `demote`, `new_admin` (created or invited as admin); failure: `not_admin`, `last_admin`, `admin_limit` | "who made U an admin" is this one event |
 | `user.update` | `success`, `failure` | success: `profile`, `sign_in_state` (an admin set whether the user has signed in); failure: `not_admin` | a user's own first sign-in is `auth.sign_in`, not this |
 | `user.email_change.request` | `success`, `failure` | failure: `not_self`, `email_taken` | the verification link was sent; the change itself is `auth.email.change reason=link` when the link is opened |
@@ -955,6 +962,44 @@ Not audited: route-guard refusals (`userAdminCheck`, `requireScopes`), validatio
 service's 400s: no name, the last owner, people who are gone), and system failures. **Known gap:** the team service's
 `update_team` is not atomic. It saves a rename and member removals before checks that can still answer 400 or 500, and those
 saved changes get no line here; the team service's own log has them.
+
+## Configuration audit events (Node)
+
+Every settings change an admin saves through the configuration manager (`/api/v1/configurationManager`) is one INFO line on
+the `audit` logger, written right after the key-value store accepted the write: `config.<section>.update`, or
+`config.<section>.delete` when a whole setting is removed (today only the SMTP settings; removing one model, provider or Slack
+bot rewrites its list, so it is an update). The admin routes write through an audited store
+(`modules/configuration_manager/utils/config-audit.ts`), so an admin route that saves a setting gets its line without code
+of its own, as long as it is given that store (`adminStore` in `cm_routes.ts`, not the unaudited `serviceStore`). Fields as
+the other audit events: `org_id`, `actor` (the admin), `outcome=success`; `target` and `reason` are null. Never the stored
+key, a field name or a value: the event names the settings, nothing else.
+
+| Section | Settings |
+| --- | --- |
+| `storage` | file storage (local, S3, Azure Blob) |
+| `smtp` | mail server settings, turning mail on or off, removing them |
+| `auth_microsoft`, `auth_google` | sign-in with Microsoft and Google |
+| `platform` | platform settings and feature flags |
+| `slack_bot` | Slack bots (add, change, remove) |
+| `system_prompt` | the custom system prompts |
+| `ai_models` | AI models, their providers, defaults, roles, connection credentials and identity forwarding |
+| `ai_identity_policy` | the identity policy for an AI gateway |
+| `mcp_access` | what the org's `/mcp` endpoint allows |
+| `web_search` | web search providers and settings |
+| `public_urls` | the frontend and connector public URLs |
+| `metrics` | metrics collection |
+| `connector_google_workspace`, `connector_atlassian`, `connector_onedrive`, `connector_sharepoint` | connector OAuth apps and credentials saved from the admin settings |
+
+`auth_azure_ad`, `auth_sso`, `auth_oauth`, `auth_github` and `inheritance` name settings that only the enterprise
+edition's admin routes save; a path no section names is `other`.
+One action that saves several settings writes one line per saved setting. A compare-and-set retry writes a line only for the
+write that took. A save whose later step fails (the mail service did not reload the new SMTP settings) still has its line:
+the setting was stored.
+
+Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
+validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
+migrations, and settings saved through other routers (connector instances and their credentials, connector OAuth apps,
+OAuth clients, toolsets, MCP servers).
 
 ## Upstream calls (Node)
 
@@ -1043,12 +1088,18 @@ run. Each says why it failed on the request's lines:
   the OIDC bearer check) answers in RFC 6749 shape (`modules/oauth_provider/utils/oauth-failure.ts`). A refusal (an OAuth
   error, or a deliberate `BadRequestError`, `NotFoundError`, `UnauthorizedError` or `ForbiddenError`) keeps its 4xx and its
   RFC code: a dead, rotated or unknown refresh token is `invalid_grant`. It writes one DEBUG `oauth.request.refused` with
-  `code`, and a wrong client credential marks the access line `bad_request`. Anything else is ours, whatever its status (a
+  `code` (a `/token` request its schema refuses adds `errors`, each issue's `field` and `code`, never a value), and a wrong
+  client credential marks the access line `bad_request`. Anything else is ours, whatever its status (a
   stored secret that no longer decrypts, a lock timeout's 409, a driver error): one `oauth.request.failed` at
   `levelFor(classifyRequestError(error, 500))` with the error, the access line marked with that class, and the answer
   `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
   retries; `/authorize`: a `server_error` redirect; `/introspect`: `active: false`, as before) with a fixed description.
-  `server_error` is never a refusal's code.
+  `server_error` is never a refusal's code. A change that succeeds (an OAuth app, a personal access token, a code or token
+  grant, an agent registration) is written by the service that made the write, never also by the controller; a step the
+  change runs keeps its own line (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`,
+  `app_id`, `pat_id` or `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token
+  endpoint, the user the grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A personal
+  access token's name is not logged.
 
 The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and
@@ -1114,6 +1165,23 @@ The level, by the first matching row:
   stream's headers, and regenerate's checks before its stream. The request's own `http.request.error` line covers them.
 - **Known duplicate.** A failed save still logs ERROR twice: the persistence helper's own line and the end line.
 
+## Configuration manager (Node)
+
+The configuration manager routes (`/api/v1/configurationManager`) write no line of their own for a failure they pass on: the
+error middleware's `http.request.error` is the one failure line, at its class's level (a refused setting is WARNING
+`bad_request`, a key-value store outage ERROR `internal` with one stack), and the access line records the request. A failure
+Node wraps keeps what caused it as the error's `cause`: the AI model registry unreachable (503), a container reload that
+failed, unreadable Slack bot settings (a `JSON.parse` failure reads `response was not valid JSON`, never the stored text).
+
+- **AI model health check.** A model the AI service's health check refuses, when it is added or updated, is answered with the
+  reason for the admin's dialog and one WARNING `ai_model.health_check.failed` with `status` (the check's), `model_type` and
+  `provider` in its metadata; never the provider's text, which can quote part of the key. A bulk save whose check fails with
+  a 5xx is a 500 whose cause is `{ status }`, never the check's body.
+- **Embedding model download.** A progress stream that loses the embedding server is one WARNING
+  (`Lost connection to embedding server`); the stream tells the browser.
+- **Events.** The config event producers write DEBUG `broker.event.published` with `event_type` and `topic`, and ERROR
+  `broker.event.publish_failed` when a publish fails (the save already succeeded, so this is the only line).
+
 ## Mail delivery (Node)
 
 Each mail job the mail consumer takes from the broker writes exactly one `mail.send.end` line
@@ -1154,6 +1222,23 @@ DEBUG `mail.send.retry` (`attempt`, `error_class`, `smtp_code`, `next_retry_ms`)
 - The notification consumer logs a skipped or failed message with its `type` and `size_bytes`, never its value (a
   `mail.deliveryFailed` notification quotes the recipients). Producers log each publish at DEBUG (`broker.event.published`,
   `event_type`, `topic`).
+
+## Storage (Node)
+
+The storage routes (`/api/v1/document`) write no line of their own for a failure they pass on: the error middleware's
+`http.request.error` is the one failure line. When the storage vendor fails a write, a removal or a read check, the answer is
+503 (WARNING `unavailable`) and the error's `cause` is `{ status, code }`: the vendor's HTTP status and its error code
+(`AccessDenied`, `NoSuchBucket`, `SlowDown`, Azure's `AuthorizationFailure`, a local disk's `ENOENT` or `EACCES`), so a
+misconfigured bucket and a throttle read differently. The vendor's text is never logged for a write or a removal: it can
+quote the bucket, the object path and the file name. Read failures that answer 500 and the S3 settings check's WARNING lines
+still carry it (`metadata.originalError`). The providers (`storage/providers/*.ts`) keep it as `metadata.originalError` for
+the admin's S3 settings check, and read the status and code through `vendorFailure` (`storage/providers/vendor-failure.ts`).
+
+- Each upload, update, read, copy, rename and removal is DEBUG, with the object path and never its URL.
+- The S3 settings check (run when an admin saves the storage settings) writes one INFO `S3 health check completed` with each
+  check's result; a failed check is WARNING (the admin's settings), a passed one DEBUG.
+- A document whose blob moved but whose record did not is ERROR (`moveTree: blob relocated but the record update failed`): it
+  needs a human. Ids go in fields (`document_id`, `connector_id`), never in the message.
 
 ## Connector proxy (Node)
 
@@ -1218,10 +1303,13 @@ WARNING. Neither line logs the error's message for a parse failure: it would quo
 
 ## Redaction
 
-Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
-basic tokens, JWTs, known key shapes, URL passwords and query secrets, private keys, this process's secret env values, and
-`name=value` pairs whose name is a credential) are replaced by `[REDACTED]`. In text (the message, a traceback, the text format's
-field list, and any JSON string value that holds such pairs), a pair value that only describes the credential is kept: a bare
+Both formats redact: the whole text line (message, fields, traceback; in Node, the message, metadata and traceback, not the
+typed fields such as `route`), and in JSON every string value. Credentials (bearer and basic tokens, JWTs, known key shapes, URL
+passwords and query secrets, private keys, this process's secret env values, and `name=value` pairs whose name is a credential)
+are replaced by `[REDACTED]`. In Node, the text a `JSON.parse` error quotes (`Unexpected token 'x', "…" is not valid JSON`) is
+`[REDACTED]`, offending character included, in the message, the metadata and a traceback: it is the start of what failed to
+parse, which may be a stored setting or a request body. In text (the message, a traceback, the text format's field list, and any
+JSON string value that holds such pairs), a pair value that only describes the credential is kept: a bare
 `None`, `null`, `true`, `false`, `undefined`, `present` or `missing`; a time under a time name (`token_expires_at=1730000000`,
 `refresh_token_expires_in: 7776000`, also with a fraction, but not a negative number such as `token_ttl=-1` and not
 `updated_password=…`); and an `http(s)` URL with no query, fragment or userinfo under `token_url`, `token_uri`, `token_endpoint`,
@@ -1268,7 +1356,8 @@ Node, drop the address from the thrown message.
 
 **Finding a user's lines (support).** Get the PipesHub id from the admin console (Users, open the user: the profile URL has
 `userId=<id>`) or `GET /api/v1/users?search=<email>` (`_id`), then filter on `user_id=<id>` (requests made by that user) or
-`target_user_id=<id>` (sign-in, user management, connector-creator, and notification socket and queue lines). A connector's per-user lines carry
+`target_user_id=<id>` (sign-in, user management, connector-creator, notification socket and queue, and OAuth token mint and
+revoke lines). A connector's per-user lines carry
 `source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object id, Atlassian
 account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry only
 `connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.

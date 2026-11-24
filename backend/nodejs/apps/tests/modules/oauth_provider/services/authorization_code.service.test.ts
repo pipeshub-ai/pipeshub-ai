@@ -11,6 +11,7 @@ import {
 import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
 import { InvalidGrantError } from '../../../../src/libs/errors/oauth.errors'
+import { createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
 
 describe('AuthorizationCodeService', () => {
   let service: AuthorizationCodeService
@@ -26,7 +27,11 @@ describe('AuthorizationCodeService', () => {
     service = new AuthorizationCodeService(mockLogger)
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -69,9 +74,10 @@ describe('AuthorizationCodeService', () => {
     it('should store PKCE challenge when provided', async () => {
       const createStub = sinon.stub(AuthorizationCode, 'create').resolves({} as any)
 
+      const userId = new Types.ObjectId().toString()
       await service.generateCode(
         'client-1',
-        new Types.ObjectId().toString(),
+        userId,
         new Types.ObjectId().toString(),
         'https://example.com/cb',
         ['org:read'],
@@ -82,6 +88,9 @@ describe('AuthorizationCodeService', () => {
       const createArgs = createStub.firstCall.args[0] as any
       expect(createArgs.codeChallenge).to.equal('challenge-value')
       expect(createArgs.codeChallengeMethod).to.equal('S256')
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Authorization code generated', { client_id: 'client-1', user_id: userId, scopes: ['org:read'], has_pkce: true }],
+      ])
     })
   })
 
@@ -122,6 +131,9 @@ describe('AuthorizationCodeService', () => {
       expect(result.orgId).to.equal(orgId.toString())
       expect(result.scopes).to.deep.equal(['org:read'])
       expect(consume.calledOnce).to.be.true
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Authorization code exchanged', { client_id: 'client-1', user_id: userId.toString() }],
+      ])
     })
 
     it('should throw InvalidGrantError when code not found', async () => {
@@ -154,6 +166,12 @@ describe('AuthorizationCodeService', () => {
         expect(error).to.be.instanceOf(InvalidGrantError)
         expect((error as InvalidGrantError).message).to.include('already been used')
       }
+      expect(mockLogger.warn.args).to.deep.equal([
+        ['Authorization code reuse detected! Revoking all associated tokens', {
+          client_id: 'client-1', user_id: userId.toString(), code_id: mockCode._id.toString(),
+        }],
+        ['All tokens revoked due to code reuse', { client_id: 'client-1', user_id: userId.toString() }],
+      ])
     })
 
     describe('losing the write for the code', () => {
@@ -476,6 +494,9 @@ describe('AuthorizationCodeService', () => {
       const userId = new Types.ObjectId().toString()
       await service.revokeCodesForUser(userId)
       expect(deleteStub.calledOnce).to.be.true
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Revoked authorization codes for user', { target_user_id: userId }],
+      ])
     })
   })
 
@@ -484,6 +505,9 @@ describe('AuthorizationCodeService', () => {
       const deleteStub = sinon.stub(AuthorizationCode, 'deleteMany').resolves({} as any)
       await service.revokeCodesForApp('client-1')
       expect(deleteStub.calledOnce).to.be.true
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Revoked authorization codes for app', { client_id: 'client-1' }],
+      ])
     })
   })
 

@@ -283,7 +283,7 @@ export interface UserRepository {
     id: string,
     extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null>;
-  /** Brings removed accounts at these addresses back; returns them. */
+  /** Brings removed accounts at these addresses back as members; returns every live account at them, restored now or already live. */
   restoreByEmails(orgId: string, emails: string[], tx?: Tx): Promise<UserDto[]>;
   /** Makes these people admins (service accounts excluded). */
   promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void>;

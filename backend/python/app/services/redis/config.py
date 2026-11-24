@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Literal, Optional
+from urllib.parse import unquote, urlsplit
 
 ScaleReads = Literal["master", "slave", "all"]
 
@@ -173,6 +174,44 @@ class RedisConnectionConfig:
             username=getattr(config, "username", None),
             tls=bool(getattr(config, "tls", False)),
         )
+
+    @staticmethod
+    def for_cache(config: object) -> "RedisConnectionConfig":
+        """The Redis that holds caches: ``REDIS_CACHE_URL`` when set, else the
+        main Redis (``from_redis_config``), so a single-Redis install is unchanged.
+
+        Only rebuildable entries go here (a lost key is a miss), so the cache
+        instance may run an evicting ``maxmemory-policy`` while the main one,
+        which holds the key-value store, broker streams, leases and counters,
+        stays on ``noeviction``. TLS comes from the scheme (``rediss://``);
+        the CA path, verification, timeout and key namespace from ``REDIS_*``.
+        The mode is ``REDIS_MODE``: on cluster the URL's host is the seed node.
+        """
+        url = os.getenv("REDIS_CACHE_URL", "").strip()
+        if not url:
+            return RedisConnectionConfig.from_redis_config(config)
+        parts = urlsplit(url)
+        err = (
+            "REDIS_CACHE_URL must look like redis://[user:password@]host[:port][/db] "
+            "(rediss:// for TLS)"
+        )
+        try:
+            port = parts.port or 6379
+        except ValueError as exc:
+            raise ValueError(err) from exc
+        path = parts.path.strip("/")
+        if parts.scheme not in ("redis", "rediss") or not parts.hostname or not (path == "" or path.isdigit()):
+            raise ValueError(err)
+        base = RedisConnectionConfig.from_env()
+        base.host = parts.hostname
+        base.port = port
+        # The cache is another server: credentials come from the URL only, never REDIS_USERNAME/PASSWORD.
+        base.username = unquote(parts.username) if parts.username else None
+        base.password = unquote(parts.password) if parts.password else None
+        base.db = int(path or "0")
+        base.tls = parts.scheme == "rediss"
+        base.cluster_endpoints = []
+        return base
 
     @staticmethod
     def from_env(prefix: str = "REDIS_") -> "RedisConnectionConfig":

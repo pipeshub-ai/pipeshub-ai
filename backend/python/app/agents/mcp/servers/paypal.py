@@ -4,7 +4,13 @@ Production host only. PayPal's docs still show a `/http` path; that path returns
 and `https://mcp.paypal.com/mcp` is the endpoint that answers.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -35,6 +41,12 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Sign in with your PayPal account. PipesHub registers itself; no PayPal app is required.",
         ),
         tags=["payments", "invoices", "finance"],
+        category=MCPCategory.FINANCE,
+        capabilities=[
+            "Create and send invoices",
+            "Look up payments",
+            "Review merchant activity",
+        ],
     )
 )
 class PayPalMCPServer:

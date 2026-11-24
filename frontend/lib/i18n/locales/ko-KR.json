@@ -3801,6 +3801,25 @@
         "reach": "{{connector}}의 변경 사항은 {{interval}} 이내에 PipesHub에 반영됩니다.",
         "reachUnknown": "{{connector}}의 변경 사항은 다음 동기화 때 PipesHub에 반영됩니다.",
         "syncNow": "지금 권한 동기화",
+        "filter": {
+          "label": "검색이 접근 권한을 확인하는 방식",
+          "mode": {
+            "inherit": "배포 기본값",
+            "legacy": "기본 확인",
+            "scopes": "더 빠른 검색"
+          },
+          "effective": {
+            "scopes": "{{connector}} 검색은 더 빠른 검색을 사용합니다. 결과는 찾기 전에 각 사용자가 볼 수 있는 항목으로 좁혀지며, 모든 결과는 계속 확인됩니다.",
+            "legacy": "{{connector}} 검색은 기본 확인을 사용합니다. 결과는 찾은 뒤에 확인됩니다."
+          },
+          "waiting": "{{connector}}의 권한이 최신 상태가 되면 더 빠른 검색이 시작됩니다.",
+          "applies": "이 변경 사항은 30초 이내에 검색에 적용됩니다.",
+          "blocker": {
+            "serving_off": "이 배포에서는 더 빠른 검색이 꺼져 있습니다.",
+            "store_unsupported": "이 배포의 벡터 저장소는 더 빠른 검색을 지원하지 않습니다."
+          },
+          "saveError": "이 설정을 변경하지 못했습니다. 다시 시도하세요."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -3973,7 +3992,6 @@
         "unavailable": "사용 불가"
       },
       "catalog": {
-        "title": "서버 더 추가",
         "description": "바로 쓸 수 있는 서버입니다. 추가한 다음 로그인하세요.",
         "personalDescription": "여기서 추가한 서버는 나만 볼 수 있습니다.",
         "added": "추가됨",
@@ -4228,6 +4246,67 @@
         "signIn": "{{name}}이(가) 추가되었습니다. 도구를 실행하려면 아래에서 로그인하세요.",
         "other": "{{name}}이(가) 추가되었지만 아직 작동하지 않습니다. 아래에서 이유를 확인하세요.",
         "dismiss": "완료"
+      },
+      "searchYourServers": "내 서버 검색",
+      "categories": {
+        "communication": "커뮤니케이션",
+        "meetings": "회의 및 캘린더",
+        "docs": "문서 및 파일",
+        "projects": "프로젝트 관리",
+        "developer": "개발자 도구",
+        "data": "데이터 및 분석",
+        "sales": "영업 및 CRM",
+        "support": "고객 지원",
+        "finance": "재무 및 법무",
+        "design": "디자인 및 화이트보드",
+        "automation": "자동화",
+        "search": "검색 및 리서치",
+        "security": "보안 및 ID"
+      },
+      "discover": {
+        "title": "서버 찾기",
+        "searchPlaceholder": "이름이나 하려는 일(영어)로 검색하세요. 예: “schedule meetings”",
+        "searchLabel": "준비된 서버 검색",
+        "clearSearch": "검색 지우기",
+        "categoriesLabel": "카테고리",
+        "all": "전체",
+        "allServers": "모든 서버",
+        "resultsFor_one": "“{{query}}” 검색 결과 서버 {{count}}개",
+        "resultsFor_other": "“{{query}}” 검색 결과 서버 {{count}}개",
+        "searching": "검색 중…",
+        "catalogLoadFailed": "카탈로그를 불러오지 못했습니다.",
+        "noMatch": "“{{query}}”에 맞는 준비된 서버가 없습니다. 어떤 서버든 URL로 추가할 수 있습니다.",
+        "whatItDoes": "할 수 있는 일",
+        "beforeYouAdd": "추가하기 전에",
+        "readOnly": "읽기 전용",
+        "changesData": "데이터를 읽고 변경함",
+        "readOnlyNote": "정보를 조회하기만 합니다.",
+        "changesDataNote": "데이터를 바꾸는 도구는 허용하지 않는 한 실행 전에 확인을 요청합니다.",
+        "signIn": "로그인",
+        "signInOauth": "각자 자신의 {{name}} 계정으로 로그인합니다",
+        "signInToken": "API 토큰",
+        "signInNone": "로그인 필요 없음",
+        "documentation": "문서",
+        "added_one": "추가됨",
+        "added_other": "{{count}}개 추가됨",
+        "addOrg": "조직에 추가",
+        "addPersonal": "나만 쓰도록 추가",
+        "orgNote": "조직의 모든 사람이 볼 수 있습니다. 각자 로그인해서 사용합니다.",
+        "personalNote": "나만 볼 수 있습니다.",
+        "popularTitle": "조직에서 인기 있는 서버",
+        "popularHint": "로그인한 사람 수 기준",
+        "peopleUse_one": "{{count}}명이 사용 중",
+        "peopleUse_other": "{{count}}명이 사용 중",
+        "browse": "MCP 서버 둘러보기",
+        "browseHint": "서버를 추가하고 로그인하면 목록에 나타나며 캔버스로 끌어올 수 있습니다.",
+        "fromCatalog": "카탈로그에서",
+        "add": "추가",
+        "view": "보기",
+        "askAdmin": "공유 에이전트는 조직이 추가한 서버만 사용할 수 있습니다. 관리자에게 추가를 요청하세요.",
+        "sharedAgentNote": "공유 에이전트가 쓸 수 있는 서버는 관리자만 추가할 수 있습니다. 관리자에게 조직용 {{name}} 추가를 요청하세요.",
+        "addedSignIn": "{{name}}이(가) 추가되었습니다. 도구를 사용하려면 목록에서 로그인하세요.",
+        "emptyBuilder": "아직 MCP 서버가 없습니다. Linear, Slack, GitHub 같은 앱의 도구를 이 에이전트에 주려면 하나를 추가하세요.",
+        "noAddedMatch": "일치하는 서버가 없습니다."
       }
     },
     "bots": {
@@ -5679,7 +5758,6 @@
     "mcpServerAlreadyAttachedNotify": "이 에이전트에는 이미 {{name}}과(와) 같은 유형의 다른 서버가 있습니다. 에이전트는 유형별로 서버를 하나만 사용할 수 있습니다.",
     "webSearchOnlyOne": "웹 검색 제공자는 하나만 연결할 수 있습니다",
     "mcpServerNodeSubtitle": "MCP 서버의 도구",
-    "noMcpServersAvailable": "사용 가능한 MCP 서버가 없습니다",
     "webSearchLocked": "이 에이전트의 웹 검색은 변경할 수 없습니다",
     "webSearchLoading": "웹 검색 제공자를 불러오는 중…",
     "webSearchConfigureFirst": "먼저 {{name}}을(를) 구성하세요",

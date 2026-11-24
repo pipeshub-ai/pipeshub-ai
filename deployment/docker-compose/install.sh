@@ -297,16 +297,16 @@ optional_env_line() {
 }
 
 # The opt-in PostgreSQL profiles are not derived from a selector: keep the ones already set (in the shell or in the saved .env), and
-# both of them whenever the document-store override is in use, since it depends on services of both.
+# postgres and postgres-migrate whenever the document-store override is in use, since it depends on services of both.
 # PIPESHUB_EXTRA_PROFILES come last. A profile the selections decide (graph, broker, key-value store, sandbox) is not taken from
 # there: the selections stay the one place that turns those on.
 # A PostgreSQL profile that PIPESHUB_EXTRA_PROFILES named until this run, and names no longer, is off again: without this the
-# "already set" rule would keep it for good. The document-store override still brings both.
+# "already set" rule would keep it for good. The document-store override still brings its two.
 opt_in_profiles() {
   local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)" seen=",graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,"
   local was=",${SAVED_EXTRA_PROFILES:-}," now=",${EXTRA_PROFILES:-},"
-  for o in postgres postgres-migrate; do
-    if [[ "${PIPESHUB_COMPOSE_OVERRIDES:-}" != *docker-compose.postgres-docstore.yml* ]]; then
+  for o in postgres postgres-migrate postgres-metrics; do
+    if [[ "$o" == postgres-metrics || "${PIPESHUB_COMPOSE_OVERRIDES:-}" != *docker-compose.postgres-docstore.yml* ]]; then
       [[ ",${have}," == *",${o},"* ]] || continue
       if [[ "$was" == *",${o},"* && "$now" != *",${o},"* ]]; then continue; fi
     fi
@@ -721,7 +721,7 @@ if $FLAG_STOP; then
   # ("Resource is still in use"). --remove-orphans clears containers left by a
   # previously-active profile too. PIPESHUB_EXTRA_PROFILES are named as well:
   # a service of an inactive profile is not an orphan, so `down` would leave it.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,postgres-metrics"
   if [[ -n "$EXTRA_PROFILES" ]]; then COMPOSE_PROFILES+=",${EXTRA_PROFILES}"; fi
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
@@ -745,7 +745,7 @@ if $FLAG_UNINSTALL; then
   # profile was active for this deployment.  Without this, volumes from a
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind. The same goes for PIPESHUB_EXTRA_PROFILES.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,postgres-metrics"
   if [[ -n "$EXTRA_PROFILES" ]]; then COMPOSE_PROFILES+=",${EXTRA_PROFILES}"; fi
   # `down -v` with the postgres profile would delete the database with everything else: keep it unless asked.
   _keep_pg=false
@@ -1439,7 +1439,7 @@ NEO4J_DATABASE=neo4j
 $(optional_env_line NEO4J_HEAP_INITIAL "$NEO4J_HEAP_INITIAL" "1G")
 $(optional_env_line NEO4J_HEAP_MAX "$NEO4J_HEAP_MAX" "2G")
 $(optional_env_line NEO4J_PAGECACHE "$NEO4J_PAGECACHE" "1G")
-$(optional_env_line NEO4J_MEMORY_LIMIT "$NEO4J_MEMORY_LIMIT" "3G")
+$(optional_env_line NEO4J_MEMORY_LIMIT "$NEO4J_MEMORY_LIMIT" "4G")
 $(optional_env_line NEO4J_MEMORY_RESERVATION "$NEO4J_MEMORY_RESERVATION" "2G")
 
 # ── Key-value / config store ─────────────────────────────────────────────────

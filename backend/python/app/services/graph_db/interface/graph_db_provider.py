@@ -7800,6 +7800,11 @@ class IGraphDBProvider(ABC):
         switched off (demo data), which only it can read."""
         return []
 
+    async def kh_refresh_plans(self, max_age: float | None = None) -> int:
+        """Plan again, off the request path, the listing statements in use whose cached plan is older than ``max_age``;
+        how many were planned. 0 for a backend with no plan cache to keep."""
+        return 0
+
     async def kh_scope_enabled(self) -> bool:
         return False
 
@@ -9373,10 +9378,14 @@ class IGraphDBProvider(ABC):
         origin: str,
         edges: list[dict],
         transaction: str | None = None,
+        *,
+        keep_edge_types: Collection[str] = (),
     ) -> None:
         """Replace the record's ``entityRelations`` edges of ``origin`` to nodes of
         ``to_collections`` with *edges*. A failed write must leave the old edges,
         even with no transaction, or a caller that logs the failure and commits.
+        Old edges whose ``edgeType`` is in *keep_edge_types* are not deleted;
+        new edges of those types are still written.
         """
 
     @abstractmethod

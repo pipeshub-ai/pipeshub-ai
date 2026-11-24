@@ -27,6 +27,7 @@ import {
 } from '../config/storage.config';
 import { Logger } from '../../../libs/services/logger.service';
 import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { ConfigurationManagerServiceCommand } from '../../../libs/commands/configuration_manager/cm.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -73,6 +74,7 @@ import {
   isValidStorageVendor,
   normalizeExtension,
   serveFileFromLocalStorage,
+  storageUnavailable,
   writeToStorage,
 } from '../utils/utils';
 import {
@@ -105,7 +107,8 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { getMimeType } from '../mimetypes/mimetypes';
 import path from 'path';
 import type { FileHandle } from 'fs/promises';
-import { ErrorMetadata } from '../../../libs/errors/base.error';
+import { ErrorMetadata, withCause } from '../../../libs/errors/base.error';
+import { storageCause } from '../providers/vendor-failure';
 import {
   StorageError,
   StorageNotFoundError,
@@ -318,9 +321,7 @@ export class StorageController {
     };
     // Throws rather than calling next: every caller is inside its own try, and
     // answering here as well would send a second response.
-    return writeToStorage(adapter, cloneFilePayload, {
-      documentId: document._id,
-    });
+    return writeToStorage(adapter, cloneFilePayload);
   }
 
   /** Writes a change to a row this request read; the row may have been removed since. */
@@ -419,11 +420,7 @@ export class StorageController {
       if (!(error instanceof StorageError)) {
         throw error;
       }
-      this.logger.error('Could not open storage to save a file', {
-        error: error.message,
-        metadata: error.metadata,
-      });
-      throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+      throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
     }
   }
 
@@ -437,7 +434,7 @@ export class StorageController {
   ): Promise<string> {
     const storageConfig =
       (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-    const { storageType } = JSON.parse(storageConfig);
+    const { storageType } = parseKvObject(storageConfig);
     return storageType ?? 'local';
   }
 
@@ -450,7 +447,7 @@ export class StorageController {
       const adapter = await this.initializeStorageAdapterForWrite(req);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       if (!isValidStorageVendor(storageType ?? '')) {
         throw new BadRequestError(`Invalid storage type: ${storageType}`);
       }
@@ -504,7 +501,7 @@ export class StorageController {
       const fullDocumentPath = getFullDocumentPath(orgId, documentPath);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       const storageVendor = getStorageVendor(storageType ?? '');
       const documentInfo: Partial<Document> = {
         documentName,
@@ -626,12 +623,13 @@ export class StorageController {
         try {
           const adapter = await this.initializeStorageAdapter(req);
           await adapter.deleteTree(rootPath);
-          this.logger.info(
-            `Hard-delete: blob cleanup successful for ${documentId}, ${rootPath}`,
-          );
+          this.logger.debug('Hard-delete: blob cleanup done', {
+            document_id: documentId,
+          });
         } catch (blobErr) {
           this.logger.warn(
-            `Hard-delete: blob cleanup failed for ${documentId}, ${rootPath}, continuing with Mongo removal`,
+            'Hard-delete: blob cleanup failed; removing the record anyway',
+            { document_id: documentId, ...storageCause(blobErr) },
           );
         }
         await repo.remove(document._id);
@@ -828,15 +826,9 @@ export class StorageController {
         try {
           await adapter.deleteTree(artifactRoot);
         } catch (error) {
-          this.logger.error(
-            'Could not remove an artifact set; its document was kept',
-            {
-              documentId: document._id,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-          throw new ServiceUnavailableError(
+          throw storageUnavailable(
             'Could not remove the stored files; the document was kept so the removal can be retried',
+            error,
           );
         }
       }
@@ -844,15 +836,9 @@ export class StorageController {
         try {
           await adapter.deleteObject(copy);
         } catch (error) {
-          this.logger.error(
-            'Could not remove a stored file; its document was kept',
-            {
-              documentId: document._id,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-          throw new ServiceUnavailableError(
+          throw storageUnavailable(
             'Could not remove the stored file; the document was kept so the removal can be retried',
+            error,
           );
         }
       }
@@ -983,12 +969,7 @@ export class StorageController {
           body,
         );
       } catch (error) {
-        this.logger.error('Could not write an artifact file', {
-          documentId: String(document._id),
-          path,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+        throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
       }
       res.status(HTTP_STATUS.OK).json({ path, size: Buffer.byteLength(body) });
     } catch (error) {
@@ -1379,10 +1360,7 @@ export class StorageController {
           written = await adapter.writeObjectIfAbsent(storageKey, body);
         }
       } catch (error) {
-        this.logger.error('Could not write a paid result', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+        throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
       }
       if (!written) {
         // Answered here, not thrown: losing the race is the normal outcome, not a request error to log.
@@ -1972,12 +1950,9 @@ export class StorageController {
       try {
         exists = await adapter.objectExists(document);
       } catch (error) {
-        this.logger.error('Could not check whether a direct upload arrived', {
-          documentId: document._id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(
+        throw storageUnavailable(
           'Could not confirm the file is absent from storage; the document was kept',
+          error,
         );
       }
       if (exists) {
@@ -2101,9 +2076,10 @@ export class StorageController {
 
       const deleted = await repo.deleteByConnector(orgId, scope);
 
-      this.logger.info(
-        `Deleted ${deleted} storage documents for connector ${connectorId}`,
-      );
+      this.logger.info('Deleted storage documents for a connector', {
+        connector_id: connectorId,
+        deleted,
+      });
 
       res.status(HTTP_STATUS.OK).json({
         deleted,
@@ -2487,11 +2463,7 @@ export class StorageController {
     if (missing > 0) {
       this.logger.warn(
         'moveTree: documents not found under the new path were left as they were',
-        {
-          oldFullPath,
-          newFullPath,
-          missing,
-        },
+        { missing },
       );
     }
     // Bounded round trips for a large tree; each update names its own row, so
@@ -2581,8 +2553,8 @@ export class StorageController {
         await getDocumentRepository().setFields(doc._id, extraSet);
         return true;
       } catch (error) {
-        this.logger.warn(`relocate: could not update document ${docId}`, {
-          documentId: docId,
+        this.logger.warn('relocate: could not update a document', {
+          document_id: docId,
           error: error instanceof Error ? error.message : String(error),
         });
         return false;
@@ -2609,17 +2581,11 @@ export class StorageController {
       }
       await adapter.renameObject(oldFilePath, newFilePath);
     } catch (error) {
-      // StorageError wraps the real provider error (e.g. the actual AWS
-      // AccessDenied/NoSuchKey reason) in `metadata.originalError` --
-      // `.message` alone is just the generic "Failed to rename object in
-      // S3" wrapper text and hides the reason the operation failed.
-      const detail =
-        error instanceof StorageError
-          ? (error.metadata?.['originalError'] ?? error.message)
-          : ((error as Error)?.message ?? error);
+      // The wrapper's message ("Failed to rename object in S3") hides why;
+      // the vendor's code (AccessDenied, NoSuchKey) says it.
       this.logger.warn(
-        `moveTree: failed to relocate blob for document ${docId}; leaving it at its old path`,
-        { documentId: docId, oldFilePath, newFilePath, error: detail },
+        'moveTree: failed to relocate a blob; leaving it at its old path',
+        { document_id: docId, ...storageCause(error) },
       );
       return false;
     }
@@ -2644,9 +2610,9 @@ export class StorageController {
     } catch (error) {
       // The blob already moved but Mongo didn't take the update -- this
       // document is now genuinely inconsistent and needs manual repair.
-      this.logger.warn(
-        `moveTree: blob relocated for document ${docId} but the Mongo update failed; document needs manual repair`,
-        { documentId: docId, error: (error as Error)?.message ?? error },
+      this.logger.error(
+        'moveTree: blob relocated but the record update failed; the document needs manual repair',
+        { document_id: docId, error },
       );
       return false;
     }
@@ -2758,7 +2724,7 @@ export class StorageController {
 
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       const storageVendorInETCD = storageType;
 
       // TODO: fix this usage
@@ -2878,20 +2844,13 @@ export class StorageController {
         try {
           uploadResult = await adapter.updateBuffer(buffer, document);
         } catch (error) {
-          this.logger.error('Failed to upload buffer', {
-            documentId: document._id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+          throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
         }
 
         if (uploadResult.statusCode !== 200) {
-          this.logger.error('Failed to upload buffer', {
-            documentId: document._id,
+          throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, {
             statusCode: uploadResult.statusCode,
-            error: uploadResult.msg,
           });
-          throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
         }
         await this.saveDocument(document, {
           mutationCount: (document.mutationCount ?? 0) + 1,
@@ -3039,7 +2998,7 @@ export class StorageController {
         const storageConfig =
           (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
           '{}';
-        const { storageType: configStorageType } = JSON.parse(storageConfig);
+        const { storageType: configStorageType } = parseKvObject(storageConfig);
 
         addVersion({
           version: 0,
@@ -3153,17 +3112,11 @@ export class StorageController {
         // The version file first, then the current file. Written together, a
         // failed version write could still replace the current file while the
         // document keeps describing the previous one.
-        const logContext = { documentId: document._id };
         const versionResponse = await writeToStorage(
           adapter,
           nextVersionPayload,
-          logContext,
         );
-        const currentResponse = await writeToStorage(
-          adapter,
-          currentPayload,
-          logContext,
-        );
+        const currentResponse = await writeToStorage(adapter, currentPayload);
 
         const fileExtension = path.extname(originalname);
 
@@ -3385,10 +3338,6 @@ export class StorageController {
         await adapter.generatePresignedUrlForDirectUpload(pathForUpload);
 
       if (presignedUrlResponse.statusCode !== 200) {
-        this.logger.error(
-          'Error generating presigned URL for part:',
-          presignedUrlResponse.data?.url,
-        );
         const errorMetadata: ErrorMetadata = {
           statusCode: presignedUrlResponse.statusCode,
           requestedUrl: presignedUrlResponse.data?.url,
@@ -3431,11 +3380,10 @@ export class StorageController {
           document._id,
         );
       } catch (error) {
-        this.logger.error('Could not record a direct-upload link', {
-          documentId: document._id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+        throw withCause(
+          new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE),
+          error,
+        );
       }
       if (!bumped) {
         throw new NotFoundError('Document does not exist');

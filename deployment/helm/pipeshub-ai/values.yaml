@@ -1163,3 +1163,33 @@ parsing:
       periodSeconds: 20
       timeoutSeconds: 10
       failureThreshold: 6
+
+# Prometheus exporter for the PostgreSQL server the application uses (prometheus-community/postgres_exporter), off by default. The
+# chart does not run PostgreSQL: dataSource names yours, as host:port/database?sslmode=... (for example
+# pg.example.internal:5432/pipeshub?sslmode=require). Log in as the monitoring role: python -m db.bootstrap_roles with
+# PG_MONITOR_PASSWORD set creates pipeshub_monitor, a member of pg_monitor that holds no privilege on any table of the application
+# (backend/db/README.md). Its password is read from an existing Secret. Metrics are served on port 9187 (/metrics) of the Service
+# <fullname>-postgres-exporter, unauthenticated over plain HTTP: let only your Prometheus reach it. The args add the collectors for
+# long transactions, transaction-id wraparound and running autovacuums to the exporter's defaults (connections, locks, replication,
+# WAL, table statistics such as dead rows and the last vacuum). Statement statistics (--collector.stat_statements) also need the
+# pg_stat_statements extension in the database, whose surface lines the migrate job must then be given (PG_MIGRATE_SURFACE_FILES).
+postgresExporter:
+  enabled: false
+  image:
+    repository: quay.io/prometheuscommunity/postgres-exporter
+    tag: v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
+  dataSource: ""
+  user: pipeshub_monitor
+  passwordSecret:
+    name: ""
+    key: PG_MONITOR_PASSWORD
+  args:
+    - --collector.long_running_transactions
+    - --collector.database_wraparound
+    - --collector.stat_activity_autovacuum
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi

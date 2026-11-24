@@ -103,6 +103,7 @@ from app.modules.indexing.rate_limit_deferral import (
 from app.modules.indexing.record_diagnostics import WriteKind
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.indexing.record_republish import record_event as rebuilt_record_event
+from app.modules.indexing.taxonomy_cleanup import delete_unreached_taxonomy_points
 from app.modules.pipeline import parser_identity
 from app.modules.pipeline.parse_now import (
     ELIGIBLE_STATUSES as PARSE_NOW_ELIGIBLE_STATUSES,
@@ -172,6 +173,7 @@ from app.utils.error_class import log_failure, quotes_content
 from app.utils.indexing_timing import current_timeline, note, stage
 from app.utils.jwt import generate_jwt
 from app.utils.loop_bridge import run_on_loop
+from app.utils.table_row_memory import end_previous_rows
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
@@ -198,7 +200,6 @@ if TYPE_CHECKING:
     from redis.asyncio import Redis
 
     from app.modules.pipeline.leases import RecordLeases
-    from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 RECONCILE_ATTEMPTS = 2
 RECONCILE_RETRY_DELAY_SECONDS = 1.0
@@ -979,28 +980,6 @@ class RecordEventHandler(BaseEventService):
         if not await clear_pending_entity_cleanup(self.config_service, connector_id):
             # The rebuild loop runs the intent again; cleanup is idempotent.
             self.logger.warning("Entity cleanup intent for connector %s not cleared", connector_id)
-
-    async def _delete_unreached_taxonomy_points(
-        self, store: "EntityVectorStore", org_id: str, record_id: str, refs: object,
-    ) -> None:
-        """Delete the points of the taxonomy entities a deleted record linked to
-        (its ``taxonomyRefs``) that no other live record reaches. Raises so the
-        consumer retries, then dead-letters; every step of the delete is
-        idempotent, so a retry repeats them harmlessly."""
-        if not refs or not isinstance(refs, list):
-            return
-        graph_provider = self.event_processor.graph_provider
-        try:
-            await store.delete_unreached_entities(
-                org_id,
-                refs,
-                lambda wanted: graph_provider.get_unreached_taxonomy_entities(wanted, org_id),
-            )
-        except Exception as exc:
-            raise IndexingError(
-                f"Entity cleanup for deleted record {record_id} did not complete",
-                details={"org_id": org_id, "record_id": record_id},
-            ) from exc
 
     async def _reconcile_pending_duplicates(
         self,
@@ -2281,6 +2260,7 @@ class RecordEventHandler(BaseEventService):
         # Nothing of an earlier delivery's run survives into this one.
         end_run()
         end_attempt()
+        end_previous_rows()
         replay_set.end_delivery()
         try:
             if not event_type:
@@ -2565,8 +2545,9 @@ class RecordEventHandler(BaseEventService):
                         await entity_store.delete_entity(
                             org_id, EntityType.RECORD.value, record_id
                         )
-                        await self._delete_unreached_taxonomy_points(
-                            entity_store, org_id, record_id, payload.get("taxonomyRefs"),
+                        await delete_unreached_taxonomy_points(
+                            entity_store, self.event_processor.graph_provider, org_id, record_id,
+                            payload.get("taxonomyRefs"),
                         )
                     else:
                         self.logger.warning(
@@ -3212,6 +3193,8 @@ class RecordEventHandler(BaseEventService):
                     return
                 except SameBytesSkipPending:
                     raise  # a hand-back, not a failure: the outer handler leaves the record alone
+                except RequeueWithoutAttempt:
+                    raise  # queue time: the consumer hands the message back only for the exception itself
                 except IndexingError:
                     error_occurred = True
                     raise  # preserve DocumentProcessingError and other IndexingError subtypes
@@ -3320,6 +3303,10 @@ class RecordEventHandler(BaseEventService):
                 if await self._hand_back_for_provider_wait(record_id, record, delay):
                     handed_back = True
                     raise ProviderRateLimitRequeue(f"{record_id}: {e}", delay_s=delay) from e
+            if isinstance(e, RequeueWithoutAttempt):
+                # Queue time (a parse that waited out its slot), as in the IndexingError arm: back in line, QUEUED,
+                # even on its last counted delivery.
+                handed_back = True
             # Not logged: the consumer's index.end writes the failure once.
             raise  # bare re-raise — preserves IndexingError / DocumentProcessingError
         finally:
@@ -3550,6 +3537,7 @@ class RecordEventHandler(BaseEventService):
             # Last, so every status write above is shaped by the run.
             end_run()
             end_attempt()
+            end_previous_rows()
             replay_set.end_delivery()
 
     async def __update_document_status(
