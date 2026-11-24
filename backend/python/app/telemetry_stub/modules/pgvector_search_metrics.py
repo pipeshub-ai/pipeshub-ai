@@ -14,3 +14,7 @@ QUANTIZATION_RECALL = NOOP
 
 def leg_band(leg: int) -> str:
     return "40" if leg <= 40 else "120" if leg <= 120 else "600"
+
+
+def observe_leg(tier: str, leg: int, started: float) -> None:
+    return None

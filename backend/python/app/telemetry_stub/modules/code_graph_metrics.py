@@ -18,3 +18,7 @@ def record_busy_request() -> None:
 
 def record_reconcile_sweep(due: int, waiting: int, started: int) -> None:
     return None
+
+
+def record_tool_call(tool: str, *, ok: bool) -> None:
+    return None

@@ -67,3 +67,7 @@ PROPERTY_VALUES_DROPPED = NOOP
 
 def record_property_value_dropped() -> None:
     return None
+
+
+def record_recovery_org_pass(job: str, outcome: str, count: int = 1) -> None:
+    return None

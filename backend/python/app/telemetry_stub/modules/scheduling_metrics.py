@@ -63,3 +63,15 @@ def record_gate_waiters(broker: str, tier: str, count: int) -> None:
 
 def record_connector_off_settled(broker: str, count: int) -> None:
     return None
+
+
+def record_record_waits(broker: str, owner: object, count: int) -> None:
+    return None
+
+
+def forget_record_waits(broker: str, owner: object) -> None:
+    return None
+
+
+def refresh_record_waits(broker: str) -> None:
+    return None
