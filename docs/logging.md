@@ -296,7 +296,8 @@ the auth middleware bound.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
 - Node: a request a route's schema refuses (`ValidationMiddleware`: the zod schema, the array/key/depth guard, the
-  stack-overflow net) writes no line of its own. `http.request.error` (WARNING, `bad_request`) names each issue in
+  stack-overflow net, and a value a schema callback can't read, which gets a fixed message and no field) writes no line
+  of its own. `http.request.error` (WARNING, `bad_request`) names each issue in
   `error.metadata.errors` as `field`, `code` and `message`, never the issue's `value`; the route's `params` are on the line
   as on every `http.request.error`. A key the caller made up (an unknown field, a record key) is named, and a few rules quote
   an enum-like value the caller sent in `message` (a duplicate model id), as the 400 body does.
