@@ -550,10 +550,10 @@ wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^ 
   gen_secret() { printf 'x%.0s' $(seq 1 "${1:-32}"); }
   eval "$wizard"
   check "wizard keeps an existing PG password" "$PG_NODE_PASSWORD" "kept"
-  check "wizard generates the others" "$PG_BACKUP_PASSWORD:$PG_ADMIN_PASSWORD" "xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx"
+  check "wizard generates the others" "$PG_BACKUP_PASSWORD:$PG_ADMIN_PASSWORD:$PG_MONITOR_PASSWORD" "xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx"
   check "wizard pins the major" "$PG_MAJOR" "18"
 )
-check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "9"
+check ".env writer lists all ten PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "10"
 
 # --reconfigure rebuilds COMPOSE_PROFILES from the wizard's choices; the saved override needs the PostgreSQL profiles, so they must
 # survive it, and the project must still render afterwards.
@@ -593,7 +593,7 @@ check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=
   summary="$(printf '%s\n' "$out" | grep -E '^  (Graph DB|KV store|Broker):' | tr -s ' ')"
   check_exact "the summary names PostgreSQL for every store" "$summary" "$(printf ' Graph DB: postgres (docker-compose.postgres-only.yml)\n KV store: postgres (docker-compose.postgres-only.yml)\n Broker: postgres (docker-compose.postgres-only.yml)')"
   check "the printed command lists the PostgreSQL-only override" "$out" "docker-compose.postgres-only.yml"
-  check ".env has all nine PG passwords" "$(grep -cE '^PG_(ADMIN|NODE|CONNECTORS|INDEXING|QUERY|JOBS|MIGRATE|BACKUP|KV)_PASSWORD=.+' "$work/.env")" "9"
+  check ".env has all ten PG passwords" "$(grep -cE '^PG_(ADMIN|NODE|CONNECTORS|INDEXING|QUERY|JOBS|MIGRATE|BACKUP|KV|MONITOR)_PASSWORD=.+' "$work/.env")" "10"
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     services="$(cd "$work" && docker compose --env-file .env -f docker-compose.yml -f docker-compose.postgres-only.yml config --services 2>&1)"
     check_exact "the project renders with no other store" "$(printf '%s\n' "$services" | grep -cE '^(mongodb|qdrant|redis|neo4j|arango|etcd|zookeeper|kafka-1)$')" "0"
@@ -601,6 +601,24 @@ check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=
   else
     pass "the project renders with no other store (skipped: no docker compose here)"
   fi
+)
+
+# A reused .env from before the metrics login gets PG_MONITOR_PASSWORD once (the exporters cannot log in without it); later runs and
+# a value set by hand keep theirs.
+(
+  work="$TMP_ROOT/monitor-backfill"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/env.template" "$work/"
+  base='IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nMONGO_PASSWORD=m\nREDIS_PASSWORD=r\nNEO4J_PASSWORD=n\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j,sandbox\n'
+  printf "$base" >"$work/.env"
+  (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1) && pass "reusing an old .env exits 0" || fail "reusing an old .env exits 0"
+  first="$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")"
+  check_exact "a reused .env gets one 32-character monitoring password" "$(grep -cE '^PG_MONITOR_PASSWORD=[0-9a-f]{32}$' "$work/.env")" "1"
+  (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "the next run keeps it" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "$first"
+  printf "${base}PG_MONITOR_PASSWORD=mine\n" >"$work/.env"
+  (cd "$work" && bash ./install.sh --yes --print-env-only >/dev/null 2>&1)
+  check_exact "a value set by hand is kept" "$(grep '^PG_MONITOR_PASSWORD=' "$work/.env")" "PG_MONITOR_PASSWORD=mine"
 )
 
 # When docker needs root the installer runs itself again through sudo, which resets the environment: every setting the installer
@@ -1000,7 +1018,8 @@ echo "== In-tree installer: --upgrade honours --version / PIPESHUB_VERSION =="
   # must survive it, or a small machine silently goes back to the defaults.
   sizing=(NEO4J_HEAP_INITIAL=256M NEO4J_HEAP_MAX=1536M NEO4J_PAGECACHE=256M
           NEO4J_MEMORY_LIMIT=2688M NEO4J_MEMORY_RESERVATION=1G
-          MONGO_MEMORY_RESERVATION=256M QDRANT_MEMORY_RESERVATION=512M)
+          MONGO_MEMORY_RESERVATION=256M QDRANT_MEMORY_RESERVATION=512M
+          PG_MEMORY_LIMIT=16G PG_SHARED_BUFFERS=4GB PG_SHM=2g)
   seed_env "0.6.0-slim"
   printf '%s\n' "${sizing[@]}" >>"$work/.env"
   run_installer "--reconfigure with datastore sizing" -- --reconfigure --yes

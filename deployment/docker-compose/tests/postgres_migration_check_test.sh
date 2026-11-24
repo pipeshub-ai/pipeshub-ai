@@ -2,6 +2,7 @@
 # The repository's own migration and security-surface check (backend/db, `python -m db.migrate`, exit 4 on a violation) run against
 # a fresh database made by the PostgreSQL image: it must exit 0, twice, and leave kernel.rls_violations empty. This is what stops the
 # image's role setup and the schema from drifting apart (a stray extension or a missing login makes the check refuse the database).
+# PG_MONITOR_PASSWORD is set, as install.sh sets it, so the monitoring login is part of the database checked.
 # Test-only environment: PROJECT_PREFIX names the compose project; EXTRA_COMPOSE_FILE adds one compose file (for example to use a
 # network of your own on a host whose address pools are used up). Both change nothing when unset.
 # Needs docker; PG_IMAGE_<major> names the built postgres images (default pmcompose/postgres:<major>-pmc), MIGRATE_IMAGE the migrate
@@ -16,7 +17,7 @@ trap cleanup EXIT
 pw() { head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 fail=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fail=1; fi; }
-pwvars="PG_ADMIN_PASSWORD PG_NODE_PASSWORD PG_CONNECTORS_PASSWORD PG_INDEXING_PASSWORD PG_QUERY_PASSWORD PG_JOBS_PASSWORD PG_MIGRATE_PASSWORD PG_BACKUP_PASSWORD PG_KV_PASSWORD"
+pwvars="PG_ADMIN_PASSWORD PG_NODE_PASSWORD PG_CONNECTORS_PASSWORD PG_INDEXING_PASSWORD PG_QUERY_PASSWORD PG_JOBS_PASSWORD PG_MIGRATE_PASSWORD PG_BACKUP_PASSWORD PG_KV_PASSWORD PG_MONITOR_PASSWORD"
 migrate_image="${MIGRATE_IMAGE:-pmcompose/migrate:pmc}"
 if [ -z "${MIGRATE_IMAGE:-}" ]; then $DOCKER build -q -f ../../backend/db/Dockerfile -t "$migrate_image" ../.. >/dev/null; fi
 

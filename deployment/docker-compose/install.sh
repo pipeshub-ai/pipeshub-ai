@@ -1254,7 +1254,7 @@ if ! ${SKIP_WIZARD:-false}; then
   QDRANT_API_KEY="$(get_existing_val QDRANT_API_KEY "$(gen_secret 20)")"
   # PostgreSQL profile (opt-in): kept across --reconfigure like the other credentials.
   PG_MAJOR="$(get_existing_val PG_MAJOR "18")"
-  for _pg in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP; do
+  for _pg in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP MONITOR; do
     printf -v "PG_${_pg}_PASSWORD" '%s' "$(get_existing_val "PG_${_pg}_PASSWORD" "$(gen_secret 16)")"
   done
 
@@ -1275,6 +1275,9 @@ if ! ${SKIP_WIZARD:-false}; then
   NEO4J_MEMORY_LIMIT="$(get_existing_val NEO4J_MEMORY_LIMIT "")"
   NEO4J_MEMORY_RESERVATION="$(get_existing_val NEO4J_MEMORY_RESERVATION "")"
   QDRANT_MEMORY_RESERVATION="$(get_existing_val QDRANT_MEMORY_RESERVATION "")"
+  PG_MEMORY_LIMIT="$(get_existing_val PG_MEMORY_LIMIT "")"
+  PG_SHARED_BUFFERS="$(get_existing_val PG_SHARED_BUFFERS "")"
+  PG_SHM="$(get_existing_val PG_SHM "")"
   # Qdrant's memory limit decides search speed once the index grows
   # (docs/deployment/vector-db-sizing.md); keep an operator's value.
   QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "${QDRANT_MEMORY_LIMIT:-}")"
@@ -1432,6 +1435,12 @@ PG_KV_PASSWORD=${PG_KV_PASSWORD}
 PG_JOBS_PASSWORD=${PG_JOBS_PASSWORD}
 PG_MIGRATE_PASSWORD=${PG_MIGRATE_PASSWORD}
 PG_BACKUP_PASSWORD=${PG_BACKUP_PASSWORD}
+# The login of the postgres-metrics exporters (pg_monitor only, reads no data).
+PG_MONITOR_PASSWORD=${PG_MONITOR_PASSWORD}
+# Server memory: the container limit, shared_buffers (about a quarter of the limit) and /dev/shm for parallel index builds.
+$(optional_env_line PG_MEMORY_LIMIT "$PG_MEMORY_LIMIT" "4G")
+$(optional_env_line PG_SHARED_BUFFERS "$PG_SHARED_BUFFERS" "1GB")
+$(optional_env_line PG_SHM "$PG_SHM" "1g")
 
 # ── MongoDB ──────────────────────────────────────────────────────────────────
 MONGO_USERNAME=${MONGO_USERNAME}
@@ -1562,6 +1571,8 @@ fi
 
 # Keep .env and -p in sync so later --stop / --uninstall only tear down this copy.
 persist_env_var "COMPOSE_PROJECT_NAME" "$PROJECT_NAME"
+# A .env written before the metrics login existed (reused, or --upgrade) gets its password once; a value already set is kept.
+[[ -n "$(get_existing_val PG_MONITOR_PASSWORD "")" ]] || persist_env_var PG_MONITOR_PASSWORD "$(gen_secret 16)"
 
 # ==============================================================================
 # 14. DEPLOYMENT SUMMARY

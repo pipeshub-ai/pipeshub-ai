@@ -14,6 +14,7 @@ on:
       - 'deployment/docker-compose/docker-compose.yml'
       - 'deployment/docker-compose/docker-compose.postgres-docstore.yml'
       - 'deployment/docker-compose/docker-compose.postgres-only.yml'
+      - 'deployment/docker-compose/install.sh'
       - 'backend/db/**'
       - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
       - 'deployment/docker-compose/tests/postgres_*_test.sh'
@@ -70,6 +71,9 @@ jobs:
 
       - name: Migration job and the document-store override
         run: bash deployment/docker-compose/tests/postgres_migrate_test.sh
+
+      - name: A fresh install's metrics exporters log in
+        run: bash deployment/docker-compose/tests/postgres_metrics_test.sh
 
       - name: The PostgreSQL-only override starts no other store
         run: bash deployment/docker-compose/tests/postgres_only_test.sh
