@@ -35,7 +35,7 @@ _DOLLAR = re.compile(r"\$([A-Za-z_]*)\$")
 
 
 def statements(sql: str) -> list[str]:
-    """Split on ';', skipping comments, quoted strings and dollar-quoted bodies (kept in the text)."""
+    """Split on ';'. A comment becomes a space (``DROP/**/INDEX`` is ``DROP INDEX``); quoted strings and dollar-quoted bodies are kept in the text."""
     out, buf, i, n = [], [], 0, len(sql)
     while i < n:
         c = sql[i]
@@ -45,6 +45,7 @@ def statements(sql: str) -> list[str]:
         elif sql.startswith("/*", i):
             i = sql.find("*/", i)
             i = n if i < 0 else i + 2
+            buf.append(" ")
         elif c == "'":
             j = i + 1
             while j < n and not (sql[j] == "'" and sql[j + 1:j + 2] != "'"):
@@ -82,6 +83,16 @@ _BREAKING = (r"^(?:ADD (?:COLUMN )?(?:IF NOT EXISTS )?\S+ .*\b(?:CHECK|REFERENCE
              r"|ALTER (?:COLUMN )?(?:\"[^\"]+\"|\S+) (?:SET NOT NULL|DROP DEFAULT)"
              r"|DROP CONSTRAINT\b|DETACH PARTITION\b|(?:ENABLE|FORCE) ROW LEVEL SECURITY)")
 _EXEC_CALLS = ("execute", "exec_driver_sql", "text")
+_SQL_KWARGS = ("sqltext", "statement", "sql", "text")      # Alembic op.execute(sqltext), Connection.execute / exec_driver_sql(statement), text(text)
+
+
+def _sql_arg(call: ast.Call) -> ast.expr:
+    """The SQL argument of an execute / exec_driver_sql / text call, by position or keyword, ``text(...)`` unwrapped. A call whose SQL
+    cannot be found (``**kw``, no argument) is returned itself: it is not constant text, so it fails closed."""
+    a = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg in _SQL_KWARGS), None)
+    if a is None:
+        return call
+    return _sql_arg(a) if isinstance(a, ast.Call) and _call_name(a.func) == "text" else a
 
 
 def _key(name: str) -> str:
@@ -255,8 +266,7 @@ def _upgrade_sql(py_text: str, runtime: list[str] | None = None) -> tuple[list[s
             if name == "ensure_index":
                 args = call.args[2:3] or [k.value for k in call.keywords if k.arg == "ddl"]
             elif name in _EXEC_CALLS:
-                args = call.args[:1]
-                args = [a.args[0] if isinstance(a, ast.Call) and _call_name(a.func) == "text" and a.args else a for a in args]
+                args = [_sql_arg(call)]
             elif name in _OP_API:
                 r = _op_sql(name, call)
                 if r is None:
@@ -301,6 +311,13 @@ def _do_statements(stmt: str) -> list[str]:
         if sub.strip():
             out.append(sub.strip())
     return out
+
+
+def _drops_index(sql: str) -> bool:
+    """A DROP INDEX in any statement of ``sql`` or of a DO body in it, read as ``statements()`` reads SQL (comments are spaces) and outside
+    string literals."""
+    stmts = statements(sql)
+    return any(re.search(r"\bDROP\s+INDEX\b", _strip_literals(q), re.I) for q in stmts + [d for q in stmts for d in _do_statements(q)])
 
 
 def lint_file(path: Path) -> list[str]:
@@ -485,7 +502,8 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
         # fail closed: SQL the lint cannot read to the end may be a DROP INDEX, wherever the unknown part is
         bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: SQL built at run time: {s[:60]}" for s in runtime]
         bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: {s[:60]}"     # a .sql's revision: lint_file reads its constant SQL
-                for s in ([] if sql_file.is_file() else const_sql) if re.search(r"\bDROP\s+INDEX\b", s, re.I)]
+                for s in ([] if sql_file.is_file() else const_sql)
+                if _drops_index(s)]
     return bad
 
 

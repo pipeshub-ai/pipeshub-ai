@@ -702,6 +702,11 @@ def test_lint_takes_an_index_a_later_revision_lists_online_as_built_ahead(tmp_pa
                                    'def upgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n', True),
     ("a contract does", 'min_code_epoch = 3\ndef upgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n', False),
     ("another statement", 'def upgrade():\n    op.execute("CREATE INDEX x ON graph.x (c)")\n', False),
+    ("a comment inside the drop", 'def upgrade():\n    op.execute("DROP /* retired lookup */ INDEX graph.x")\n', True),
+    ("a comment between the words", 'def upgrade():\n    op.execute("DROP/**/INDEX graph.x")\n', True),
+    ("a line comment in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN DROP -- retired\\n INDEX graph.x; END $$")\n', True),
+    ("DROP INDEX only in a string", 'def upgrade():\n    op.execute("SELECT \'DROP INDEX graph.x\'")\n', False),
+    ("DROP INDEX only in a comment", 'def upgrade():\n    op.execute("SELECT 1 -- DROP INDEX graph.x")\n', False),
     ("in downgrade()", 'def downgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n\n\ndef upgrade():\n    pass\n', False),
 ])
 def test_lint_refuses_a_drop_index_built_at_run_time(tmp_path, name, body, flagged):
@@ -726,6 +731,8 @@ def test_lint_of_a_revision_py_reads_the_constant_sql_of_its_upgrade_when_it_has
     py.write_text('revision = "graph_9999"\n\n\ndef upgrade():\n    op.execute("DROP INDEX graph.x")\n')
     py.with_suffix(".sql").write_text("SELECT 1;\n")
     assert lint.main([str(py)]) == 1
+    py.write_text('revision = "graph_9999"\n\n\ndef upgrade():\n    op.execute("DROP/**/INDEX graph.x")\n')    # comments are whitespace
+    assert lint.main([str(py)]) == 1
 
 
 @pytest.mark.parametrize("call,flagged", [
@@ -743,6 +750,14 @@ def test_lint_of_a_revision_py_reads_the_constant_sql_of_its_upgrade_when_it_has
     ('op.execute(CONST)', False),                               # a module constant nothing else binds
     ('op.execute(f"SELECT 1 FROM {CONST}")', False),
     ('op.get_bind().exec_driver_sql(sa.text(CONST))', False),
+    ('op.execute(sql="DROP INDEX graph.x")', True),           # SQL passed by keyword
+    ('op.execute(sqltext="DROP INDEX graph.x")', True),
+    ('op.get_bind().exec_driver_sql(statement="DROP INDEX graph.x")', True),
+    ('op.execute(sqltext=f"SELECT {n}")', True),
+    ('op.execute(sa.text(text=f"SELECT {n}"))', True),
+    ('op.execute(**kw)', True),                                 # SQL that cannot be found
+    ('op.execute(*args)', True),
+    ('op.execute(sqltext="SELECT 1")', False),
 ])
 def test_lint_takes_sql_it_cannot_read_to_the_end_as_a_possible_drop(tmp_path, call, flagged):
     """Fail closed: SQL that is not constant text needs min_code_epoch, wherever its unknown part is; only constant text is read."""
