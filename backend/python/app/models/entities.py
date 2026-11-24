@@ -405,6 +405,9 @@ class Record(BaseModel):
     # People the file is shared with directly. None: the connector did not read
     # the shares, so the stored SHARED_WITH edges stay; []: shared with nobody.
     shared_with: list[SourcePerson] | None = Field(default=None)
+    # Person edge types (AUTHORED_BY, OWNED_BY, ...) whose people the connector
+    # could not tell this time: their stored edges stay and nothing is linked.
+    people_unknown: list[str] = Field(default_factory=list)
 
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")

@@ -81,7 +81,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
 )
-from app.connectors.sources.google.common.drive_people import drive_file_people, drive_shared_with
+from app.connectors.sources.google.common.drive_people import drive_file_people, drive_shared_with, set_drive_people
 from app.connectors.sources.google.drive.utils.drive_export import (
     GoogleExportStreamer,
     drive_http_reasons,
@@ -5196,7 +5196,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             return
         grants = self._with_known_addresses(grants)
         people = drive_file_people(metadata, grants)
-        record.authored_by, record.last_modified_by, record.owners = people
+        set_drive_people(record, people)
         file_id = str(metadata.get("id") or "")
         allowed = getattr(permissions, "allowed_email", None)
         if allowed is not None:
@@ -5423,10 +5423,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
-                authored_by=people.authored_by,
-                last_modified_by=people.last_modified_by,
-                owners=people.owners,
             )
+            set_drive_people(file_record, people)
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")

@@ -917,6 +917,21 @@ class TestPersonalSharedDriveItemSharedWith:
         metadata["capabilities"] = {"canShare": can_share}
         return metadata
 
+    async def test_a_last_modifier_with_no_address_anywhere_keeps_the_stored_one(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "p-ext", "type": "user", "role": "writer",
+             "permissionDetails": [{"permissionType": "file", "inherited": True}]},
+        ]})
+        metadata = self._item()
+        metadata["lastModifyingUser"] = {"displayName": "Ext", "permissionId": "p-ext"}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        assert result.record.last_modified_by is None
+        assert "LAST_MODIFIED_BY" in result.record.people_unknown
+
     async def test_an_editor_who_cannot_share_still_reads_the_items_list(self, connector) -> None:
         """A Content manager reads sharing even where the drive keeps sharing folders to Managers."""
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [

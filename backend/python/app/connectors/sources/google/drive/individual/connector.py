@@ -81,7 +81,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
 )
-from app.connectors.sources.google.common.drive_people import drive_file_people, drive_shared_with
+from app.connectors.sources.google.common.drive_people import drive_file_people, drive_shared_with, set_drive_people
 from app.connectors.sources.google.drive.utils.drive_export import (
     GoogleExportStreamer,
     drive_http_reasons,
@@ -604,9 +604,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
-                authored_by=people.authored_by,
-                last_modified_by=people.last_modified_by,
-                owners=people.owners,
             )
 
             if metadata.get("driveId"):
@@ -614,12 +611,13 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 # made on them, and carries the address Drive hid from the last modifier.
                 item_grants = await self._item_grants(metadata)
                 if item_grants is not None:
-                    file_record.last_modified_by = drive_file_people(metadata, item_grants).last_modified_by
+                    people = people._replace(last_modified_by=drive_file_people(metadata, item_grants).last_modified_by)
                     file_record.shared_with = drive_shared_with(
                         item_grants, owner_ids=set(), parent_grants=None, has_details=True
                     )
             elif grants is not None:
                 file_record.shared_with = await self._shared_with(metadata, grants, people.owners)
+            set_drive_people(file_record, people)
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")

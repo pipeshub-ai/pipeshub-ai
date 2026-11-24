@@ -230,3 +230,34 @@ def test_a_hidden_address_on_a_grant_that_is_not_direct_changes_nothing() -> Non
     )
 
     assert [p.email for p in shared or []] == ["bob@x.test"]
+
+
+from app.connectors.sources.google.common.drive_people import set_drive_people  # noqa: E402
+from app.models.entities import FileRecord, RecordType  # noqa: E402
+
+
+def _record() -> FileRecord:
+    return FileRecord(
+        record_name="f", record_type=RecordType.FILE, external_record_id="f1", version=0,
+        origin="CONNECTOR", connector_name="DRIVE", connector_id="c1", is_file=True,
+    )
+
+
+def test_a_person_drive_gave_no_address_for_is_not_linked_by_id_and_their_role_keeps_what_is_stored() -> None:
+    hidden = {"displayName": "Ext", "permissionId": "p-ext"}
+    record = _record()
+
+    set_drive_people(record, drive_file_people({"id": "f1", "owners": [hidden], "lastModifyingUser": hidden}))
+
+    assert record.owners == [] and record.authored_by is None and record.last_modified_by is None
+    assert sorted(record.people_unknown) == ["AUTHORED_BY", "LAST_MODIFIED_BY", "OWNED_BY"]
+
+
+def test_people_with_addresses_are_set_and_no_role_is_unknown() -> None:
+    record = _record()
+
+    set_drive_people(record, drive_file_people({"id": "f1", "owners": [ALICE], "lastModifyingUser": ALICE}))
+
+    assert [o.email for o in record.owners] == ["alice@example.com"]
+    assert record.last_modified_by is not None and record.last_modified_by.email == "alice@example.com"
+    assert record.people_unknown == []

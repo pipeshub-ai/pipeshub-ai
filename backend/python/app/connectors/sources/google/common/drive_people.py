@@ -2,7 +2,8 @@
 
 from typing import NamedTuple
 
-from app.models.entities import SourcePerson
+from app.config.constants.arangodb import EntityRelations
+from app.models.entities import Record, SourcePerson
 
 _SERVICE_ACCOUNT_EMAIL_SUFFIX = ".gserviceaccount.com"
 
@@ -71,6 +72,31 @@ def drive_file_people(metadata: dict, permissions: list[dict] | None = None) -> 
         last_modified_by=_drive_user_to_person(metadata.get("lastModifyingUser"), emails),
         owners=owners,
     )
+
+
+def set_drive_people(record: Record, people: DriveFilePeople) -> None:
+    """Put the file's people on the record, except anyone Drive gave no address for.
+
+    Linked by permission id alone, such a person is another node than the one stored by
+    email, so their role is left unknown: the stored edges stay until a read that shows
+    the address.
+    """
+    unknown: list[str] = []
+
+    def addressed(person: SourcePerson | None, role: EntityRelations) -> SourcePerson | None:
+        if person is not None and not person.email:
+            unknown.append(role.value)
+            return None
+        return person
+
+    record.authored_by = addressed(people.authored_by, EntityRelations.AUTHORED_BY)
+    record.last_modified_by = addressed(people.last_modified_by, EntityRelations.LAST_MODIFIED_BY)
+    if any(not owner.email for owner in people.owners):
+        unknown.append(EntityRelations.OWNED_BY.value)
+        record.owners = []
+    else:
+        record.owners = list(people.owners)
+    record.people_unknown = unknown
 
 
 def _person_grants(grants: list[dict]) -> list[dict]:

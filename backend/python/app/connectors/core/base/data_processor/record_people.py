@@ -367,7 +367,12 @@ async def link_record_people(
     # would delete that record's person edges.
     if record.is_placeholder:
         return 0
-    links = person_links(record)
+    # None means the connector did not read the shares this time: keep the stored ones, as for any role
+    # the connector could not tell.
+    keep = list(dict.fromkeys([
+        *record.people_unknown, *([EntityRelations.SHARED_WITH.value] if record.shared_with is None else []),
+    ]))
+    links = [link for link in person_links(record) if link.edge_type.value not in keep]
     if not links and not may_have_edges and not isinstance(record, LINKED_RECORD_TYPES):
         return 0
     propagate = must_propagate or (lambda _exc: False)
@@ -407,8 +412,6 @@ async def link_record_people(
         logger.warning("Record %s: %d people could not be written", record.id, resolver.failed)
     collections = [CollectionNames.USERS.value, CollectionNames.PEOPLE.value]
     origin = EntityOrigin.INFERRED.value
-    # None means the connector did not read the shares this time: keep the stored ones.
-    keep = [EntityRelations.SHARED_WITH.value] if record.shared_with is None else []
     # After the reads, and one replace: where a store commits each statement, a
     # failed read or write must leave the old edges.
     try:

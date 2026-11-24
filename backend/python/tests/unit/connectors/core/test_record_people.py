@@ -709,3 +709,30 @@ class TestOutsiderIdentity:
         record = _file(shared_with=[SourcePerson(source_id="test", email="test@ext.test")])
         await link_record_people(record, store, logging.getLogger("t"))
         assert _edges(store) == {("person/p-by-email", "SHARED_WITH")}
+
+
+class TestUnknownPeople:
+    """A role the connector could not tell keeps its stored edges, and nothing is linked for it."""
+
+    async def test_an_unknown_role_keeps_its_stored_edges_and_links_no_one(self) -> None:
+        store = _person_store()
+        record = _file(
+            owners=[SourcePerson(source_id="p7")],
+            last_modified_by=SourcePerson(email="ann@acme.com"),
+            people_unknown=["OWNED_BY"],
+            shared_with=[],
+        )
+
+        await link_record_people(record, store, logging.getLogger("t"))
+
+        assert _kept(store) == ["OWNED_BY"]
+        assert _edges(store) == {("users/u-ann", "LAST_MODIFIED_BY")}
+        store.upsert_person_by_source_key.assert_not_awaited()
+
+    async def test_unknown_shares_and_an_unknown_role_are_both_kept(self) -> None:
+        store = _person_store()
+        record = _file(people_unknown=["LAST_MODIFIED_BY"])
+
+        await link_record_people(record, store, logging.getLogger("t"))
+
+        assert _kept(store) == ["LAST_MODIFIED_BY", "SHARED_WITH"]

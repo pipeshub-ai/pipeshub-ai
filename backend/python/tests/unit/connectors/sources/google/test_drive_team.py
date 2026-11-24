@@ -1084,6 +1084,29 @@ class TestTeamDriveItemSharedWith:
         assert again.record.shared_with is None
         assert again.record.last_modified_by is not None and again.record.last_modified_by.email == "ext@other.test"
 
+    async def test_a_hidden_owner_and_modifier_keep_their_stored_people_while_a_visible_sharee_is_linked(
+        self, connector
+    ) -> None:
+        """A new sync knows no address yet: an id alone would be another node than the one stored by email."""
+        connector.drive_data_source.permissions_list, _ = self._lists({
+            "file-1": [{"id": "p-own", "type": "user", "role": "owner"},
+                       _user_grant("p-bob", "bob@example.com", "writer")],
+            "folder-1": [{"id": "p-own", "type": "user", "role": "owner"}],
+        })
+        connector._grant_emails_this_run = {}
+        connector._shares_linked_this_run = {}
+        hidden = {"displayName": "Own", "permissionId": "p-own"}
+        metadata = self._my_drive_file(owners=[hidden], lastModifyingUser=hidden)
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        record = result.record
+        assert [p.email for p in record.shared_with] == ["bob@example.com"]
+        assert record.owners == [] and record.last_modified_by is None and record.authored_by is None
+        assert sorted(record.people_unknown) == ["AUTHORED_BY", "LAST_MODIFIED_BY", "OWNED_BY"]
+
     async def test_a_later_sync_whose_read_hides_an_address_keeps_the_stored_shares(self, connector) -> None:
         """A new sync knows no address yet: the share stays on the person stored by email."""
         connector.drive_data_source.permissions_list, _ = self._lists({
