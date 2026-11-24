@@ -282,6 +282,8 @@ class FakeRecordsDb:
         self.active_users: list[Any] = []
         self.user_groups: dict[str, list[Any]] = {}
         self.kept_user_groups: list[str] = []
+        self.kept_records: list[str] = []
+        self.kept_record_groups: list[str] = []
         self.user_group_writes: list[tuple[Any, list[Any]]] = []
         self.fail_group_write: set[str] = set()
         self.deleted_groups: list[str] = []
@@ -430,6 +432,17 @@ class FakeRecordsDb:
             rows = [r for r in rows if r.id > after_key]
         return [Record.from_arango_base_record(r.to_arango_base_record()) for r in rows[:limit]]
 
+    async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any], **_: object) -> list[dict[str, Any]]:
+        """Stored record groups matching ``connectorId`` and ``groupType``; no other collection is stored as nodes."""
+        if collection != "recordGroups":
+            return []
+        return [
+            {"externalGroupId": group.external_group_id}
+            for group in self.record_groups.values()
+            if group.connector_id == filters.get("connectorId", group.connector_id)
+            and getattr(group.group_type, "value", group.group_type) == filters.get("groupType", group.group_type)
+        ]
+
     async def on_record_group_deleted(self, external_group_id: str, connector_id: str, **_: object) -> bool:
         self.record_groups.pop(external_group_id, None)
         for external_id, record in list(self.records.items()):
@@ -467,6 +480,15 @@ class FakeRecordsDb:
 
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
+
+    def full_sync_running(self, connector_id: str) -> bool:
+        return False
+
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        self.kept_records.extend(record_ids)
+
+    async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
+        self.kept_record_groups.append(external_group_id)
 
     async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
         self.kept_user_groups.append(external_group_id)
