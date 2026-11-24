@@ -1,0 +1,1411 @@
+{
+ "pipeshub_acl_serving_degraded": {
+  "labels": [
+   "plan"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_acl_serving_plan": {
+  "labels": [
+   "plan"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_acl_serving_unreadable_group_rows": {
+  "labels": [
+   "store",
+   "org"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_acl_shadow": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_acl_shadow_seconds": {
+  "buckets": [
+   0.005,
+   0.025,
+   0.1,
+   0.25,
+   0.5,
+   1.0,
+   2.5,
+   5.0,
+   Infinity
+  ],
+  "labels": [
+   "result"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_acl_shadow_skipped": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_activity": {
+  "labels": [
+   "service",
+   "activity",
+   "connector",
+   "status",
+   "org",
+   "kb",
+   "domain",
+   "mimetype"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_capability_downgrade": {
+  "labels": [
+   "from",
+   "to"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_code_graph_build_duration_seconds": {
+  "buckets": [
+   0.5,
+   2.0,
+   10.0,
+   30.0,
+   60.0,
+   300.0,
+   900.0,
+   1800.0,
+   3600.0,
+   Infinity
+  ],
+  "labels": [
+   "mode"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_code_graph_builds": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_code_graph_edges_written": {
+  "labels": [
+   "relation"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_code_graph_events": {
+  "labels": [
+   "event"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_code_graph_owed_builds": {
+  "labels": [
+   "state"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_code_graph_references": {
+  "labels": [
+   "result"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_code_graph_tool_calls": {
+  "labels": [
+   "tool",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_connector_active": {
+  "labels": [
+   "connector",
+   "domain"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_consumer_inbox_errors": {
+  "labels": [
+   "op"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_db_query_seconds": {
+  "buckets": [
+   0.001,
+   0.005,
+   0.01,
+   0.025,
+   0.05,
+   0.1,
+   0.25,
+   0.5,
+   1.0,
+   2.5,
+   5.0,
+   10.0,
+   30.0,
+   Infinity
+  ],
+  "labels": [
+   "store",
+   "op"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_entity_index_writes": {
+  "labels": [
+   "operation",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_entity_resolution_fallbacks": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_entity_resolution_lookup_errors": {
+  "labels": [
+   "lookup",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_entity_resolution_model_calls": {
+  "labels": [
+   "result"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_entity_resolution_names": {
+  "labels": [
+   "kind",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_entity_resolution_seconds": {
+  "buckets": [
+   0.05,
+   0.1,
+   0.25,
+   0.5,
+   1.0,
+   2.0,
+   5.0,
+   10.0,
+   Infinity
+  ],
+  "labels": [
+   "mode"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_envelope_admission_refused": {
+  "labels": [
+   "topic"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_envelope_ctx_missing": {
+  "labels": [
+   "topic"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_envelope_rejected": {
+  "labels": [
+   "topic",
+   "reason",
+   "event_type"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_envelope_stale": {
+  "labels": [
+   "topic"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_envelope_stale_by_type": {
+  "labels": [
+   "topic",
+   "event_type"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_envelope_stripped": {
+  "labels": [
+   "topic"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_envelope_unsigned": {
+  "labels": [
+   "topic",
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_envelope_unverified": {
+  "labels": [
+   "topic"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_explain_mismatch": {
+  "labels": [
+   "graph"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_graph_schema_rejections": {
+  "labels": [
+   "collection"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_graph_view_duration_seconds": {
+  "buckets": [
+   0.05,
+   0.1,
+   0.25,
+   0.5,
+   1.0,
+   2.5,
+   5.0,
+   10.0,
+   30.0,
+   Infinity
+  ],
+  "labels": [
+   "operation"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_graph_view_items": {
+  "labels": [
+   "operation",
+   "kind"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_graph_view_requests": {
+  "labels": [
+   "operation",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_http_request_duration_seconds": {
+  "buckets": [
+   0.01,
+   0.025,
+   0.05,
+   0.1,
+   0.25,
+   0.5,
+   1.0,
+   2.5,
+   5.0,
+   10.0,
+   30.0,
+   Infinity
+  ],
+  "labels": [
+   "service",
+   "route",
+   "method"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_http_requests": {
+  "labels": [
+   "service",
+   "route",
+   "method",
+   "status",
+   "org",
+   "domain"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_indexing_connector_off_settled": {
+  "labels": [
+   "broker"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_indexing_gate_waiters": {
+  "labels": [
+   "broker",
+   "tier"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_indexing_lane_connectors": {
+  "labels": [
+   "lane",
+   "size"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_indexing_lane_oldest_waiting_seconds": {
+  "labels": [
+   "lane"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_indexing_lanes_paused": {
+  "labels": [
+   "broker"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_indexing_llm_breaker_open": {
+  "labels": [
+   "provider"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_indexing_llm_calls": {
+  "labels": [
+   "call_site",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_indexing_llm_tokens": {
+  "labels": [
+   "call_site",
+   "direction"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_indexing_record_waits": {
+  "labels": [
+   "broker"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_indexing_scheduler_active_keys": {
+  "labels": [
+   "broker",
+   "level"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_indexing_scheduler_buffer_depth": {
+  "labels": [
+   "broker"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_indexing_scheduler_deferred": {
+  "labels": [
+   "broker",
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_indexing_scheduler_dispatched": {
+  "labels": [
+   "broker",
+   "org"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_indexing_scheduler_dwell_exceeded": {
+  "labels": [
+   "broker"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_indexing_scheduler_missing_key": {
+  "labels": [
+   "broker",
+   "field"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_indexing_watermark_lag": {
+  "labels": [
+   "topic",
+   "partition"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_keep_old_copy_refused": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_backfill_batches": {
+  "labels": [
+   "scope"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_backfill_flips": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_bootstrap": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_change_log_rows": {
+  "labels": [
+   "org"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_kg_counts_checked": {
+  "labels": [
+   "result"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_drain_failed": {
+  "labels": [
+   "where"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_drain_retry_later": {
+  "labels": [
+   "where"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_drained_rows": {
+  "labels": [
+   "where"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_fence_oldest_seconds": {
+  "labels": [
+   "org"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_kg_flush_failed": {
+  "labels": [
+   "where"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_flushed_nodes": {
+  "labels": [
+   "where"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_hierarchy": {
+  "labels": [
+   "what",
+   "answer"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_legacy_records": {
+  "labels": [
+   "org",
+   "app",
+   "reason"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_kg_net": {
+  "labels": [
+   "source",
+   "result"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_net_demoted": {
+  "labels": [
+   "source"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_net_last_verified_seconds": {
+  "labels": [
+   "org",
+   "connector"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_kg_net_older_epoch": {
+  "labels": [
+   "org"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_kg_net_verify_overdue": {
+  "labels": [
+   "org"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_kg_quarantined_rows": {
+  "labels": [
+   "org"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_kg_read_fallback": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_read_nodes": {
+  "labels": [
+   "answer"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_refused_rows": {
+  "labels": [
+   "coll"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_restamp_batches": {
+  "labels": [
+   "kind"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_restamp_failed": {
+  "labels": [
+   "kind"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_restamp_jobs": {
+  "labels": [
+   "kind"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_restamp_queue": {
+  "labels": [
+   "org",
+   "state"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_kg_unclassified_graph_writes": {
+  "labels": [
+   "method"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kg_worker_loop_failed": {
+  "labels": [
+   "where"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_kh_cross_grant_fallbacks": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_lane_assignment_fallbacks": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_metric_collection_enabled": {
+  "labels": [
+   "service"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_named_entities": {
+  "labels": [
+   "kind",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_named_entity_agent_tool_calls": {
+  "buckets": [
+   0.0,
+   1.0,
+   2.0,
+   4.0,
+   8.0,
+   12.0,
+   16.0,
+   24.0,
+   32.0,
+   Infinity
+  ],
+  "labels": [
+   "strategy"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_named_entity_agent_turns": {
+  "buckets": [
+   0.0,
+   1.0,
+   2.0,
+   3.0,
+   4.0,
+   6.0,
+   8.0,
+   12.0,
+   Infinity
+  ],
+  "labels": [
+   "strategy"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_named_entity_extract_seconds": {
+  "buckets": [
+   0.05,
+   0.25,
+   0.5,
+   1.0,
+   2.0,
+   5.0,
+   15.0,
+   30.0,
+   60.0,
+   120.0,
+   Infinity
+  ],
+  "labels": [
+   "strategy"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_named_entity_fallbacks": {
+  "labels": [
+   "strategy",
+   "termination_reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_named_entity_grounding": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_named_entity_runs": {
+  "labels": [
+   "strategy",
+   "termination_reason",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_named_entity_schema_step_downs": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_named_entity_stage_seconds": {
+  "buckets": [
+   0.05,
+   0.25,
+   0.5,
+   1.0,
+   2.0,
+   5.0,
+   15.0,
+   30.0,
+   60.0,
+   120.0,
+   Infinity
+  ],
+  "labels": [
+   "strategy"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_named_entity_sweep": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_named_entity_tokens": {
+  "buckets": [
+   0.0,
+   500.0,
+   1000.0,
+   2500.0,
+   5000.0,
+   10000.0,
+   20000.0,
+   40000.0,
+   60000.0,
+   Infinity
+  ],
+  "labels": [
+   "strategy",
+   "outcome"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_org_context_missing": {
+  "labels": [
+   "service"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_org_context_violations": {
+  "labels": [
+   "kind",
+   "site"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_bump": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_cache": {
+  "labels": [
+   "kind",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_orphan_check": {
+  "labels": [
+   "source",
+   "result"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_orphan_graph_reads_per_delivery": {
+  "buckets": [
+   0.0,
+   1.0,
+   2.0,
+   3.0,
+   5.0,
+   10.0,
+   25.0,
+   60.0,
+   180.0,
+   Infinity
+  ],
+  "labels": [
+   "kind"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_paid_orphan_reparse": {
+  "labels": [
+   "kind"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_orphan_stopped": {
+  "labels": [
+   "site"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_purge_records": {
+  "labels": [
+   "route",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_purge_storage_requests": {
+  "labels": [
+   "route"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_repurge_failed_ids": {
+  "labels": [
+   "kind"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_repurge_fallback": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_repurge_invalid_ids": {
+  "labels": [
+   "where"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_repurge_messages": {
+  "labels": [
+   "kind"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_repurge_pages": {
+  "labels": [
+   "kind"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_repurge_seal_repaired": {
+  "labels": [
+   "kind"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_repurge_window_ids": {
+  "buckets": [
+   1.0,
+   5.0,
+   25.0,
+   100.0,
+   500.0,
+   2000.0,
+   10000.0,
+   50000.0,
+   250000.0,
+   Infinity
+  ],
+  "labels": [
+   "kind"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_paid_repurge_window_lost": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_paid_sweep_changed": {
+  "labels": [],
+  "type": "counter"
+ },
+ "pipeshub_pdf_page_count_unavailable": {
+  "labels": [],
+  "type": "counter"
+ },
+ "pipeshub_pg_pool_wait_seconds": {
+  "buckets": [
+   0.001,
+   0.005,
+   0.02,
+   0.1,
+   0.5,
+   2.0,
+   10.0,
+   60.0,
+   Infinity
+  ],
+  "labels": [
+   "service"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_pg_query_seconds": {
+  "buckets": [
+   0.001,
+   0.005,
+   0.02,
+   0.1,
+   0.5,
+   2.0,
+   10.0,
+   60.0,
+   Infinity
+  ],
+  "labels": [
+   "service",
+   "site",
+   "class"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_pg_retries": {
+  "labels": [
+   "code"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_pg_session_role_leak": {
+  "labels": [
+   "service"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_pg_uow_seconds": {
+  "buckets": [
+   0.001,
+   0.005,
+   0.02,
+   0.1,
+   0.5,
+   2.0,
+   10.0,
+   60.0,
+   Infinity
+  ],
+  "labels": [
+   "service",
+   "outcome"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_pgvector_admission_rejected": {
+  "labels": [
+   "slot"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_pgvector_admission_wait_seconds": {
+  "buckets": [
+   0.001,
+   0.0025,
+   0.005,
+   0.01,
+   0.025,
+   0.05,
+   Infinity
+  ],
+  "labels": [
+   "slot"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_pgvector_degraded": {
+  "labels": [
+   "reason",
+   "tier",
+   "leg_band"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_pgvector_empty_leg": {
+  "labels": [
+   "tier"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_pgvector_leg_seconds": {
+  "buckets": [
+   0.005,
+   0.01,
+   0.025,
+   0.05,
+   0.1,
+   0.15,
+   0.25,
+   0.5,
+   0.75,
+   1.0,
+   2.0,
+   5.0,
+   Infinity
+  ],
+  "labels": [
+   "tier",
+   "leg_band"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_pgvector_org_recall_low": {
+  "labels": [
+   "window"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_pgvector_quantization_recall": {
+  "buckets": [
+   0.0,
+   0.5,
+   0.8,
+   0.9,
+   0.95,
+   0.98,
+   0.99,
+   1.0,
+   Infinity
+  ],
+  "labels": [
+   "verdict"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_pgvector_recall_sample": {
+  "buckets": [
+   0.0,
+   0.5,
+   0.8,
+   0.9,
+   0.95,
+   0.98,
+   0.99,
+   1.0,
+   Infinity
+  ],
+  "labels": [
+   "tier",
+   "size_band",
+   "share_band",
+   "leg_band"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_pgvector_recall_sample_dropped": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_pgvector_search_tier": {
+  "labels": [
+   "tier",
+   "leg_band"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_pgvector_timeout": {
+  "labels": [
+   "leg",
+   "tier"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_purge_oldest_pending_age_seconds": {
+  "labels": [
+   "state"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_purge_records": {
+  "labels": [
+   "result"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_purge_run_duration_seconds": {
+  "buckets": [
+   10.0,
+   60.0,
+   300.0,
+   900.0,
+   1800.0,
+   3600.0,
+   7200.0,
+   21600.0,
+   Infinity
+  ],
+  "labels": [
+   "status"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_purge_runs": {
+  "labels": [
+   "status"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_artifact_reads": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_artifact_shadow_mismatches": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_artifact_shadow_reads": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_artifact_writes": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_property_projections": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_property_values_dropped": {
+  "labels": [],
+  "type": "counter"
+ },
+ "pipeshub_record_reader_relookup": {
+  "labels": [
+   "outcome",
+   "trigger"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_retention": {
+  "labels": [
+   "kind",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_retire_mark": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_schema_rewiden": {
+  "labels": [
+   "collection",
+   "trigger"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_schema_rewiden_contended": {
+  "labels": [
+   "collection",
+   "trigger"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_schema_rewiden_wait_seconds": {
+  "buckets": [
+   0.01,
+   0.05,
+   0.1,
+   0.5,
+   1.0,
+   2.0,
+   5.0,
+   10.0,
+   Infinity
+  ],
+  "labels": [
+   "collection",
+   "trigger"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_record_storage_rejected_too_large": {
+  "labels": [
+   "status"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_record_store_switch": {
+  "labels": [
+   "layout",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_records_restored": {
+  "labels": [
+   "source"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_records_soft_deleted": {
+  "labels": [
+   "source"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_recovery_org_pass": {
+  "labels": [
+   "job",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_redis_eviction_policy_unsafe": {
+  "labels": [
+   "service"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_refresh_intent": {
+  "labels": [
+   "event"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_replay_set_acknowledged": {
+  "labels": [
+   "service"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_replay_set_errors": {
+  "labels": [
+   "op"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_scope_fields_failed": {
+  "labels": [
+   "where"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_scope_fields_refused": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_scope_prefilter_capped": {
+  "labels": [
+   "store"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_scope_prefilter_dropped": {
+  "labels": [
+   "store"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_soft_deleted_records": {
+  "labels": [
+   "state"
+  ],
+  "type": "gauge"
+ },
+ "pipeshub_vector_org_skipped": {
+  "labels": [
+   "site"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_vector_rekey_fallback": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_vector_rekeyed_blocks": {
+  "labels": [
+   "store"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_vector_search_retries": {
+  "labels": [
+   "provider",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_viewer_scope_cache": {
+  "labels": [
+   "result"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_viewer_scopes_unavailable": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_web_browser_rejected_fetches": {
+  "labels": [
+   "reason"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_web_browser_restarts": {
+  "labels": [
+   "reason",
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_web_fetch_duration_seconds": {
+  "buckets": [
+   0.25,
+   0.5,
+   1.0,
+   2.0,
+   4.0,
+   8.0,
+   15.0,
+   20.0,
+   30.0,
+   Infinity
+  ],
+  "labels": [
+   "outcome"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_web_fetch_requests": {
+  "labels": [
+   "outcome"
+  ],
+  "type": "counter"
+ },
+ "pipeshub_web_search_duration_seconds": {
+  "buckets": [
+   0.25,
+   0.5,
+   1.0,
+   2.0,
+   4.0,
+   8.0,
+   15.0,
+   20.0,
+   30.0,
+   Infinity
+  ],
+  "labels": [
+   "provider"
+  ],
+  "type": "histogram"
+ },
+ "pipeshub_web_search_requests": {
+  "labels": [
+   "provider",
+   "outcome"
+  ],
+  "type": "counter"
+ }
+}

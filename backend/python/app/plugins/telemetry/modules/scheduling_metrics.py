@@ -12,9 +12,7 @@ labelled by org only -- bounded by customer count, and the same choice
 exposed as a *count* of active keys rather than one series per key.
 """
 
-import itertools
 import threading
-import weakref
 from collections import deque
 
 from app.plugins.telemetry.backend import METRICS_BACKEND
@@ -143,85 +141,55 @@ def record_lanes_paused(broker: str, count: int) -> None:
 
 # Several consumers of one broker wait in one process (the record and the
 # priority consumers): the gauge is their total, kept here because no one
-# consumer can see the others'.
+# consumer can see the others'. A consumer is named by the id it announces
+# itself with, which is never reused within a process.
 _record_waits_lock = threading.Lock()
+_record_waits_by_consumer: dict[str, dict[int, int]] = {}
+# Consumers collected without a stop, as (broker, consumer id). The event that
+# reports one is emitted from a finalizer, on whatever thread a collection
+# happens on, possibly one already inside this lock or the gauge's own
+# (prometheus-client's is not re-entrant), so noting it takes no lock and
+# publishes nothing. The next publication or refresh takes them out of the total.
+_record_waits_discarded: deque[tuple[str, int]] = deque()
 
 
-class _WaitsOwner:
-    """One owner's registration. Keyed by id(), which CPython reuses once an
-    object is freed, so it also holds a weak reference (is this still the
-    owner?) and a token its collection notice carries (is this notice for
-    this registration?). By id alone, a dropped owner's queued notice took
-    away the count of a new owner that got the same id before the drain."""
-
-    __slots__ = ("count", "finalizer", "ref", "token")
-
-    def __init__(self, owner: object, token: int, count: int, finalizer: weakref.finalize) -> None:
-        self.ref = weakref.ref(owner)
-        self.token = token
-        self.count = count
-        # Detached by a stop: a consumer stopped and started again would
-        # otherwise gather one finalizer, and one notice at collection, per
-        # restart.
-        self.finalizer = finalizer
-
-
-_record_waits_by_owner: dict[str, dict[int, _WaitsOwner]] = {}
-_record_waits_tokens = itertools.count(1)
-# Owners collected without a stop, as (broker, id, token). Their finalizer
-# only appends here: it runs on whatever thread a collection happens on,
-# possibly one already inside this lock or the gauge's own (prometheus-client's
-# is not re-entrant), so it takes no lock and publishes nothing. The next
-# publication or refresh takes them out of the total.
-_record_waits_collected: deque[tuple[str, int, int]] = deque()
-
-
-def record_record_waits(broker: str, owner: object, count: int) -> None:
+def record_record_waits(broker: str, consumer_id: int, count: int) -> None:
     with _record_waits_lock:
-        owners = _record_waits_by_owner.setdefault(broker, {})
-        registered = owners.get(id(owner))
-        if registered is None or registered.ref() is not owner:
-            token = next(_record_waits_tokens)
-            finalizer = weakref.finalize(owner, _record_waits_collected.append, (broker, id(owner), token))
-            owners[id(owner)] = _WaitsOwner(owner, token, count, finalizer)
-        else:
-            registered.count = count
+        _record_waits_by_consumer.setdefault(broker, {})[consumer_id] = count
         _publish_record_waits_locked(broker)
 
 
-def forget_record_waits(broker: str, owner: object) -> None:
+def forget_record_waits(broker: str, consumer_id: int) -> None:
     with _record_waits_lock:
-        owners = _record_waits_by_owner.setdefault(broker, {})
-        registered = owners.get(id(owner))
-        if registered is not None and registered.ref() is owner:
-            registered.finalizer.detach()
-            del owners[id(owner)]
+        _record_waits_by_consumer.setdefault(broker, {}).pop(consumer_id, None)
         _publish_record_waits_locked(broker)
+
+
+def note_consumer_discarded(broker: str, consumer_id: int) -> None:
+    """Lock-free: see ``_record_waits_discarded``."""
+    _record_waits_discarded.append((broker, consumer_id))
 
 
 def refresh_record_waits(broker: str) -> None:
-    """Take collected owners out of the total; cheap when there are none.
+    """Take discarded consumers out of the total; cheap when there are none.
     Called on every consume pass, so a quiet process does not keep counting
     a consumer it dropped."""
-    if not _record_waits_collected:
+    if not _record_waits_discarded:
         return
     with _record_waits_lock:
         _publish_record_waits_locked(broker)
 
 
 def _publish_record_waits_locked(broker: str) -> None:
-    """Drop collected owners, then publish the total; hold _record_waits_lock.
+    """Drop discarded consumers, then publish the total; hold _record_waits_lock.
 
-    Computed and set under the lock, and no finalizer publishes, so no older
-    total can be written after a newer one.
+    Computed and set under the lock, and noting a discard publishes nothing, so
+    no older total can be written after a newer one.
     """
-    while _record_waits_collected:
-        collected_broker, owner_id, token = _record_waits_collected.popleft()
-        owners = _record_waits_by_owner.get(collected_broker, {})
-        registered = owners.get(owner_id)
-        if registered is not None and registered.token == token:
-            del owners[owner_id]
-    RECORD_WAITS.set(broker, value=sum(r.count for r in _record_waits_by_owner.get(broker, {}).values()))
+    while _record_waits_discarded:
+        discarded_broker, consumer_id = _record_waits_discarded.popleft()
+        _record_waits_by_consumer.get(discarded_broker, {}).pop(consumer_id, None)
+    RECORD_WAITS.set(broker, value=sum(_record_waits_by_consumer.get(broker, {}).values()))
 
 
 def record_lane_assignment_fallback(reason: str) -> None:

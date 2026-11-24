@@ -1,17 +1,17 @@
 """Edge-build metrics: outcomes, durations, edges and the reconciler backlog (O-3)."""
-from app.modules.code_graph.edge_builder import EdgeBuildResult
+from app import platform_events
 from app.plugins.telemetry.backend import METRICS_BACKEND
-from app.plugins.telemetry.modules import code_graph_metrics
 
 
 def test_a_finished_build_reports_what_it_did() -> None:
     METRICS_BACKEND.reset()
-    code_graph_metrics.record_build(
-        "ready", EdgeBuildResult(edges_by_type={"CALLS": 5}, ambiguous_skipped=2, facts_missing=1,
-                                 duration_s=1.5), "full")
-    code_graph_metrics.record_build("lease_lost")
-    code_graph_metrics.record_busy_request()
-    code_graph_metrics.record_reconcile_sweep(due=3, waiting=4, started=2)
+    platform_events.emit(
+        "code_graph.build.settled", outcome="ready", mode="full", duration_seconds=1.5, edges_by_relation={"CALLS": 5},
+        external_references=0, unresolved_references=0, ambiguous_references=2, files_without_facts=1,
+    )
+    platform_events.emit("code_graph.build.settled", outcome="lease_lost")
+    platform_events.emit("code_graph.build.request_deferred")
+    platform_events.emit("code_graph.builds.reconciled", due=3, waiting=4, started=2)
     out = METRICS_BACKEND.serialize()
     for line in ('pipeshub_code_graph_builds_total{outcome="ready"} 1.0',
                  'pipeshub_code_graph_builds_total{outcome="lease_lost"} 1.0',
@@ -28,9 +28,9 @@ def test_a_finished_build_reports_what_it_did() -> None:
 
 def test_tool_calls_are_counted_by_tool_and_outcome() -> None:
     METRICS_BACKEND.reset()
-    code_graph_metrics.record_tool_call("impact", ok=True)
-    code_graph_metrics.record_tool_call("impact", ok=True)
-    code_graph_metrics.record_tool_call("impact", ok=False)
+    platform_events.emit("code_graph.tool.called", tool="impact", ok=True)
+    platform_events.emit("code_graph.tool.called", tool="impact", ok=True)
+    platform_events.emit("code_graph.tool.called", tool="impact", ok=False)
     out = METRICS_BACKEND.serialize()
     assert 'pipeshub_code_graph_tool_calls_total{outcome="ok",tool="impact"} 2.0' in out
     assert 'pipeshub_code_graph_tool_calls_total{outcome="error",tool="impact"} 1.0' in out

@@ -1,6 +1,4 @@
-"""Counters for vector work skipped because no organisation could be named."""
-
-from __future__ import annotations
+"""Vector maintenance passes that skipped a virtual record naming no organisation."""
 
 from app.plugins.telemetry.backend import METRICS_BACKEND
 

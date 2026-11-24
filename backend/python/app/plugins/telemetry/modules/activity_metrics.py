@@ -84,3 +84,18 @@ def record_service_activity(
         _bound_value("org", org), _bound_value("kb", kb),
         _bound_value("domain", domain), bound_mimetype(mimetype),
     )
+
+
+def record_document_indexed(status: str, connector: str, org_id: str, kb_id: str, mime_type: str) -> None:
+    """Per-record indexing outcome (powers the Ingestion dashboard)."""
+    record_service_activity(
+        "indexing_service", "document_indexed", connector=connector, status=status, org=org_id, kb=kb_id, mimetype=mime_type
+    )
+
+
+def record_sync_start_not_recorded(connector: str) -> None:
+    record_service_activity("connector_service", "sync_start_not_recorded", connector=connector, status="failed")
+
+
+def record_graph_schema_not_ensured() -> None:
+    record_service_activity("connector_service", "graph_schema_not_ensured", status="failed")

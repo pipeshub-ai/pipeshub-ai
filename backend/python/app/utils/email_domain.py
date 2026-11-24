@@ -1,7 +1,6 @@
-from typing import Optional
 
 
-def domain_from_email(email: Optional[str]) -> str:
+def domain_from_email(email: str | None) -> str:
     """Lower-cased domain part of an email, or ``"unknown"`` when absent."""
     if not email or "@" not in email:
         return "unknown"

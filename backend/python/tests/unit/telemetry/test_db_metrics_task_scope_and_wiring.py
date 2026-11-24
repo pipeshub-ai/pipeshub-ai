@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from app.plugins.telemetry.modules import db_metrics
+from app.utils import store_timing
 from tests.unit.telemetry.test_db_metrics import _count, hist  # noqa: F401  (fixture)
 
 
@@ -23,7 +23,7 @@ class Spawner:
 
 def test_spawned_task_is_timed_task_scoped(hist) -> None:  # noqa: F811
     async def run() -> None:
-        s = db_metrics.instrument_store(Spawner(), "kv")
+        s = store_timing.announce_store_calls(Spawner(), "kv")
         await s.refresh()
         await s.task
 

@@ -6,18 +6,29 @@ from typing import Never
 
 import pytest
 
+from app import platform_events
+from app.plugins.telemetry import listeners
 from app.plugins.telemetry.backend import PrometheusBackend
-from app.plugins.telemetry.modules import db_metrics
+from app.utils import store_timing
 from tests.support.cpu_budget import thread_cpu
 
 
 @pytest.fixture
 def hist(monkeypatch) -> PrometheusBackend:
+    """The plug-in's own handler for ``db.query.completed``, observing a histogram of this test's."""
     backend = PrometheusBackend()
     h = backend.histogram("t_db_seconds", "t", ["store", "op"], buckets=(0.001, 1.0))
-    monkeypatch.setattr(db_metrics, "DB_QUERY_SECONDS", h)
-    monkeypatch.setattr(db_metrics, "METRICS_BACKEND", backend)
+    handler = listeners._histogram(h, "store", "operation", value="duration_seconds")
+    monkeypatch.setattr(platform_events, "_listeners", {"db.query.completed": (handler,)})
     return backend
+
+
+def test_the_plugin_observes_the_real_histogram_with_the_same_labels() -> None:
+    from app.plugins.telemetry.backend import METRICS_BACKEND
+
+    assert platform_events.is_listening("db.query.completed", listeners.handlers()["db.query.completed"])
+    platform_events.emit("db.query.completed", store="graph", operation="t_probe_op", duration_seconds=0.002)
+    assert 'pipeshub_db_query_seconds_count{op="t_probe_op",store="graph"} 1.0' in METRICS_BACKEND.serialize()
 
 
 class Store:
@@ -45,7 +56,7 @@ def _count(backend, op) -> float:
 
 
 def test_histogram_increments_per_call_and_keeps_type(hist) -> None:
-    s = db_metrics.instrument_store(Store(), "graph")
+    s = store_timing.announce_store_calls(Store(), "graph")
     assert type(s) is Store
     assert asyncio.run(s.get_document("k")) == "k"
     asyncio.run(s.get_document("k"))
@@ -54,14 +65,14 @@ def test_histogram_increments_per_call_and_keeps_type(hist) -> None:
 
 
 def test_error_is_observed_and_propagates(hist) -> None:
-    s = db_metrics.instrument_store(Store(), "kv")
+    s = store_timing.announce_store_calls(Store(), "kv")
     with pytest.raises(RuntimeError):
         asyncio.run(s.boom())
     assert _count(hist, "boom") == 1
 
 
 def test_labels_bounded_by_method_names(hist) -> None:
-    s = db_metrics.instrument_store(Store(), "graph")
+    s = store_timing.announce_store_calls(Store(), "graph")
     for i in range(500):  # arguments never become labels
         asyncio.run(s.get_document(f"key-{i}"))
     samples = {ln.split("{")[1].split("}")[0] for ln in hist.serialize().splitlines()
@@ -73,18 +84,16 @@ def test_labels_bounded_by_method_names(hist) -> None:
 
 
 def test_nested_port_call_counted_once_as_outer(hist) -> None:
-    s = db_metrics.instrument_store(Store(), "graph")
+    s = store_timing.announce_store_calls(Store(), "graph")
     asyncio.run(s.outer("k"))
     assert _count(hist, "outer") == 1
     assert _count(hist, "get_document") == 0
 
 
-def test_noop_backend_returns_store_untouched(monkeypatch) -> None:
-    from app.plugins.telemetry.backend import NoopBackend
-
-    monkeypatch.setattr(db_metrics, "METRICS_BACKEND", NoopBackend())
+def test_with_nothing_listening_the_store_is_returned_untouched(monkeypatch) -> None:
+    monkeypatch.setattr(platform_events, "_listeners", {})
     s = Store()
-    assert db_metrics.instrument_store(s, "kv") is s
+    assert store_timing.announce_store_calls(s, "kv") is s
     assert "get_document" not in vars(s)
 
 
@@ -124,7 +133,7 @@ def test_overhead_relative_to_realistic_await(hist) -> None:
                 await obj.op()
         return cpu.seconds / n
 
-    instrumented = db_metrics.instrument_store(Fast(), "kv")
+    instrumented = store_timing.announce_store_calls(Fast(), "kv")
     assert calls_per_op(instrumented) - calls_per_op(Fast()) < 60
     # Interleaved and the fastest of each kept: load on a shared runner then slows both sides of a trial alike.
     base = inst = float("inf")
@@ -140,7 +149,7 @@ def test_lifecycle_ops_not_timed(hist) -> None:
         async def subscribe_changes(self) -> None: ...
         async def get_key(self) -> None: ...
 
-    s = db_metrics.instrument_store(S(), "kv")
+    s = store_timing.announce_store_calls(S(), "kv")
     for f in (s.connect, s.subscribe_changes, s.get_key):
         asyncio.run(f())
     assert _count(hist, "get_key") == 1
@@ -163,9 +172,7 @@ def test_factories_instrument_when_telemetry_on(monkeypatch, hist, on) -> None:
     )
 
     if not on:
-        from app.plugins.telemetry.backend import NoopBackend
-
-        monkeypatch.setattr(db_metrics, "METRICS_BACKEND", NoopBackend())
+        monkeypatch.setattr(platform_events, "_listeners", {})
     log = logging.getLogger("t")
     fake = _Fake()
 

@@ -3,8 +3,6 @@
 Labels are small closed sets (tier, reason, size or share band); no org, query or collection is ever a label.
 """
 
-import time
-
 from app.plugins.telemetry.backend import METRICS_BACKEND
 
 _RECALL_BUCKETS = (0.0, 0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 1.0)
@@ -45,6 +43,17 @@ def leg_band(leg: int) -> str:
     return "40" if leg <= 40 else "120" if leg <= 120 else "600"
 
 
-def observe_leg(tier: str, leg: int, started: float) -> None:
-    """``started`` is a ``time.monotonic()`` reading taken when the leg began."""
-    LEG_SECONDS.observe(tier, leg_band(leg), value=time.monotonic() - started)
+def record_served(tier: str, leg_size: int) -> None:
+    TIER.inc(tier, leg_band(leg_size))
+
+
+def record_leg(tier: str, leg_size: int, duration_seconds: float) -> None:
+    LEG_SECONDS.observe(tier, leg_band(leg_size), value=duration_seconds)
+
+
+def record_degraded(reason: str, tier: str, leg_size: int) -> None:
+    DEGRADED.inc(reason, tier, leg_band(leg_size))
+
+
+def record_recall(tier: str, size_band: str, share_band: str, leg_size: int, recall: float) -> None:
+    RECALL.observe(tier, size_band, share_band, leg_band(leg_size), value=recall)

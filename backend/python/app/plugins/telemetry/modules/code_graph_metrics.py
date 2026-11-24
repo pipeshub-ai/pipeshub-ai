@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
-    from app.modules.code_graph.edge_builder import EdgeBuildResult
+    from collections.abc import Mapping
 
 BUILDS = METRICS_BACKEND.counter(
     "pipeshub_code_graph_builds_total",
@@ -70,21 +70,28 @@ def record_tool_call(tool: str, *, ok: bool) -> None:
     TOOL_CALLS.inc(tool, "ok" if ok else "error")
 
 
-def record_build(outcome: str, result: EdgeBuildResult | None = None,
-                 mode: str | None = None) -> None:
+def record_build(
+    outcome: str,
+    mode: str | None = None,
+    duration_seconds: float | None = None,
+    edges_by_relation: Mapping[str, int] | None = None,
+    external_references: int = 0,
+    unresolved_references: int = 0,
+    ambiguous_references: int = 0,
+    files_without_facts: int = 0,
+) -> None:
+    """How an edge build settled; the rest only for a build that ran to the end."""
     BUILDS.inc(outcome)
-    if result is None:
-        return
-    if mode:
-        BUILD_DURATION.observe(mode, value=result.duration_s)
-    for relation, count in result.edges_by_type.items():
+    if mode and duration_seconds is not None:
+        BUILD_DURATION.observe(mode, value=duration_seconds)
+    for relation, count in (edges_by_relation or {}).items():
         EDGES_WRITTEN.inc(relation, value=count)
-    for name, count in (("external", result.external_refs), ("unresolved", result.unresolved),
-                        ("ambiguous_skipped", result.ambiguous_skipped)):
+    for name, count in (("external", external_references), ("unresolved", unresolved_references),
+                        ("ambiguous_skipped", ambiguous_references)):
         if count:
             REFERENCES.inc(name, value=count)
-    if result.facts_missing:
-        EVENTS.inc("files_without_facts", value=result.facts_missing)
+    if files_without_facts:
+        EVENTS.inc("files_without_facts", value=files_without_facts)
 
 
 def record_busy_request() -> None:

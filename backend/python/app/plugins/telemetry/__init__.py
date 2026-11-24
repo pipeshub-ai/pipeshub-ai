@@ -9,12 +9,13 @@ package and its manifest line.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from app.plugins import USAGE_COLLECTION, PluginContext, ServiceRuntime
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from fastapi import FastAPI
 
     from app.plugins.telemetry.ops_exporter import OpsExporter

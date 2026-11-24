@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
-    from app.modules.named_entities.domain.models import NamedEntityExtraction
+    from collections.abc import Mapping
 
 ENTITIES = METRICS_BACKEND.counter(
     "pipeshub_named_entities_total",
@@ -79,24 +79,38 @@ TOKENS = METRICS_BACKEND.histogram(
 )
 
 
-def record_run(extraction: NamedEntityExtraction, *, outcome: str) -> None:
-    strategy = extraction.strategy or "none"
-    RUNS.inc(strategy, extraction.termination_reason or "none", outcome)
-    if outcome == "written":
-        for entity in extraction.entities:
-            ENTITIES.inc(entity.kind.value, "accepted")
-            for mention in entity.mentions:
-                GROUNDING.inc(mention.grounding or "none")
-    stats = extraction.stats
-    if stats.dropped_cap:
-        ENTITIES.inc("all", "dropped_cap", value=float(stats.dropped_cap))
-    if stats.rejected:
-        ENTITIES.inc("all", "rejected", value=float(stats.rejected))
+def record_run(
+    strategy: str,
+    termination_reason: str,
+    outcome: str,
+    duration_seconds: float,
+    entities_by_kind: Mapping[str, int],
+    mentions_by_grounding: Mapping[str, int],
+    dropped_cap: int,
+    rejected: int,
+    turns: int,
+    tool_calls: int,
+    tokens_in: int,
+    tokens_out: int,
+) -> None:
+    """One record's extraction run, as the persist stage reports it. The two
+    tallies are of the written entities and mentions, and empty for a run that wrote none."""
+    strategy = strategy or "none"
+    STAGE_SECONDS.observe(strategy, value=duration_seconds)
+    RUNS.inc(strategy, termination_reason or "none", outcome)
+    for kind, count in entities_by_kind.items():
+        ENTITIES.inc(kind, "accepted", value=float(count))
+    for grounding, count in mentions_by_grounding.items():
+        GROUNDING.inc(grounding, value=float(count))
+    if dropped_cap:
+        ENTITIES.inc("all", "dropped_cap", value=float(dropped_cap))
+    if rejected:
+        ENTITIES.inc("all", "rejected", value=float(rejected))
     if strategy in {"agent", "single_call"}:
-        TURNS.observe(strategy, value=float(stats.turns))
-        TOOL_CALLS.observe(strategy, value=float(stats.tool_calls))
-        TOKENS.observe(strategy, "input", value=float(stats.tokens_in))
-        TOKENS.observe(strategy, "output", value=float(stats.tokens_out))
+        TURNS.observe(strategy, value=float(turns))
+        TOOL_CALLS.observe(strategy, value=float(tool_calls))
+        TOKENS.observe(strategy, "input", value=float(tokens_in))
+        TOKENS.observe(strategy, "output", value=float(tokens_out))
 
 
 def record_fallback(to_strategy: str, reason: str) -> None:
@@ -105,10 +119,6 @@ def record_fallback(to_strategy: str, reason: str) -> None:
 
 def record_step_down(mode: str) -> None:
     STEP_DOWNS.inc(mode)
-
-
-def observe_stage(strategy: str, seconds: float) -> None:
-    STAGE_SECONDS.observe(strategy or "none", value=seconds)
 
 
 def observe_extract(strategy: str, seconds: float) -> None:
