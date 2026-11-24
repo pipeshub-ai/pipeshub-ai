@@ -2,10 +2,10 @@
 
 On a Data Center release without /user/list the bulk read goes through /user/search, and
 on either edition it may be refused. Neither can say who is missing, so the authenticator
-is looked up on their own: found, they are listed; absent, the listing is complete; a
-lookup that fails leaves the pass removal-only. Jira Cloud's user search answers a caller
-without Browse users with no rows, so there "absent" counts only once the same search finds
-the token's own account.
+is looked up on their own: found, they are listed; a lookup that fails leaves the pass
+removal-only. On Data Center the lookup includes inactive users, so "absent" completes the
+listing. Jira Cloud's user search lists active users only, so there "not found" never does,
+whatever the token's own account shows: only a found authenticator settles it.
 """
 
 from collections.abc import Callable
@@ -230,12 +230,13 @@ def _cloud(find_users, *, creator: str | None = CREATOR, token: str | None = TOK
 
 
 class TestJiraCloudRefusedBulkRead:
-    async def test_an_unlisted_authenticator_gets_a_complete_listing(self) -> None:
+    async def test_an_authenticator_the_active_only_search_does_not_find_is_incomplete(self) -> None:
+        # The token's own account is found, so the search can see users: a deactivated creator still could not be.
         conn = _cloud(_by_query([_acct("a1", "someone.else@corp.com")]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is True
+        assert conn._listing_complete_for_link is False
         assert "creator@corp.com" not in conn._listed_user_emails
 
     async def test_a_search_that_cannot_find_the_tokens_own_account_is_incomplete(self) -> None:
@@ -256,6 +257,16 @@ class TestJiraCloudRefusedBulkRead:
 
     async def test_an_authenticator_who_is_the_token_account_and_is_not_found_is_incomplete(self) -> None:
         conn = _cloud(_by_query([], token_rows=[]), creator=TOKEN)
+
+        await conn._fetch_users(active_pipeshub_users=[])
+
+        assert conn._listing_complete_for_link is False
+
+    async def test_the_token_account_is_never_probed(self) -> None:
+        def find_users(*, query: str, **_: object) -> SimpleNamespace:
+            assert query.lower() != TOKEN.lower(), "probed the token account"
+            return _resp(OK, [])
+        conn = _cloud(find_users)
 
         await conn._fetch_users(active_pipeshub_users=[])
 
@@ -300,8 +311,8 @@ class TestJiraCloudRefusedBulkRead:
 
         assert conn._listing_complete_for_link is False
 
-    async def test_an_app_account_with_no_email_does_not_hide_an_answer(self) -> None:
-        conn = _cloud(_by_query([_acct("bot", None, kind="app")]))
+    async def test_an_app_account_beside_the_found_authenticator_does_not_hide_the_match(self) -> None:
+        conn = _cloud(_by_query([_acct("bot", None, kind="app"), _acct("a1", "creator@corp.com")]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
@@ -321,7 +332,7 @@ def _inactive(account_id: str, email: str | None = None) -> dict:
 
 class TestJiraCloudBulkReadWithHiddenEmails:
     """A listed account whose email the read cannot resolve may be the authenticator, so a complete bulk
-    read settles the link only after the authenticator's own lookup."""
+    read settles the link only once the authenticator's own lookup finds them."""
 
     async def test_a_read_where_every_email_shows_needs_no_lookup(self) -> None:
         conn = _cloud_bulk([_acct("a1", "other@corp.com"), _inactive("a2", "gone@corp.com")],
@@ -332,21 +343,32 @@ class TestJiraCloudBulkReadWithHiddenEmails:
         assert conn._listing_complete_for_link is True
 
     @pytest.mark.parametrize("hidden", [_inactive("a2"), _acct("a2", None)])
-    async def test_a_hidden_email_and_an_authenticator_the_lookup_does_not_find_is_complete(self, hidden: dict) -> None:
+    async def test_a_hidden_email_and_an_authenticator_the_lookup_does_not_find_is_incomplete(
+        self, hidden: dict,
+    ) -> None:
+        # The active-only search cannot find a deactivated account, so the hidden one may still be them.
         conn = _cloud_bulk([_acct("a1", "other@corp.com"), hidden], _by_query([]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
-        assert conn._listing_complete_for_link is True
+        assert conn._listing_complete_for_link is False
         assert "creator@corp.com" not in conn._listed_user_emails
 
     async def test_a_hidden_email_and_an_authenticator_the_lookup_finds_is_listed(self) -> None:
         conn = _cloud_bulk([_acct("a1", "other@corp.com"), _inactive("a2")],
-                           _by_query([_inactive("a2", "creator@corp.com")]))
+                           _by_query([_acct("a2", "creator@corp.com")]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
+        assert conn._listing_complete_for_link is True
         assert "creator@corp.com" in conn._listed_user_emails
+
+    async def test_a_hidden_email_beside_the_authenticators_own_listed_email_needs_no_lookup(self) -> None:
+        conn = _cloud_bulk([_acct("a1", "creator@corp.com"), _inactive("a2")], lambda **_: pytest.fail("looked up"))
+
+        await conn._fetch_users(active_pipeshub_users=[])
+
+        assert conn._listing_complete_for_link is True
 
     @pytest.mark.parametrize("find_users", [
         _by_query([_inactive("a2")]),

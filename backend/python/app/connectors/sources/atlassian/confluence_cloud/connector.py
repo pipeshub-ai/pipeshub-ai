@@ -1309,7 +1309,12 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 response_data = response.json()
-                users_data = response_data.get("results", [])
+                users_data = response_data.get("results") if isinstance(response_data, dict) else None
+                if not isinstance(users_data, list):
+                    # Not a page of users: it says nothing about whether more follow.
+                    self._note_problem("The Confluence user list returned a page with no user list")
+                    user_list_complete = False
+                    break
 
                 if not users_data:
                     break
@@ -1416,12 +1421,10 @@ class ConfluenceConnector(BaseConnector):
         return ((shared or {}).get(OAuthConfigKeys.CONFIG) or {}).get(INCLUDE_JIRA_SCOPE)
 
     async def _authenticator_is_listed(self) -> bool:
-        """Whether the user search may settle the authenticator's link: it listed them, or the site's Jira
-        user search, which matches hidden emails too, does not find them. Found there, they are listed.
-
-        Jira's user search answers a caller without Browse users with no rows, so "not found" counts only
-        once the same search finds the token's own account. False when that cannot be told: the pass then
-        only ever removes a link."""
+        """Whether the user search may settle the authenticator's link: only once the authenticator is
+        found, in it or through the site's Jira user search (which matches hidden emails too). Neither
+        shows they are absent: the Confluence search pages by offset with no snapshot, and Jira's lists
+        active users only. False otherwise: the pass then only ever removes a link."""
         email = (await self.authenticator_email() or "").strip().lower()
         if not email:
             return False
@@ -1434,19 +1437,10 @@ class ConfluenceConnector(BaseConnector):
             self.logger.warning("Could not tell whether the connector may search Jira's users: %s", e)
             return False
         rows = await self._find_jira_accounts(email)
-        if rows is None:
+        if rows is None or not _names_email(rows, email):
             return False
-        if _names_email(rows, email):
-            self._listed_user_emails.add(email)
-            return True
-        # A row with its email hidden may be the authenticator, and a full page may hide the match.
-        if any(not r.get("emailAddress") for r in rows) or len(rows) >= JIRA_USER_SEARCH_PAGE:
-            return False
-        own_email = (self._authenticated_confluence_email or "").strip().lower()
-        if not own_email or own_email == email:
-            return False
-        own_rows = await self._find_jira_accounts(own_email)
-        return own_rows is not None and _names_email(own_rows, own_email)
+        self._listed_user_emails.add(email)
+        return True
 
     async def _jira_user_search_allowed(self) -> bool:
         """An OAuth connector reaches Jira only when its app was given Jira's scope."""
@@ -1459,18 +1453,14 @@ class ConfluenceConnector(BaseConnector):
     async def _find_jira_accounts(self, email: str) -> list[dict] | None:
         """The Atlassian accounts the site's Jira user search returns for an email; None when it gives
         no answer, or a row that is not an account."""
-        policy = self._client_policy
-        quota_already_spent = bool(policy and policy.quota_reset_at and policy.quota_reset_at > time.time())
         try:
             datasource = await self._get_fresh_datasource()
             response = await datasource.search_jira_users(email, max_results=JIRA_USER_SEARCH_PAGE)
             if not response or response.status != HttpStatusCode.SUCCESS.value:
                 return None
             rows = response.json()
-        except AtlassianQuotaExhausted:
-            # Jira's quota, not Confluence's: undo the mark the shared policy just set.
-            if policy is not None and not quota_already_spent:
-                policy.quota_reset_at = None
+        except AtlassianQuotaExhausted as quota_error:
+            self._forget_jira_quota(quota_error)
             return None
         except Exception as e:
             self.logger.warning("Could not look up the authenticator among the Jira users: %s", e)
@@ -1478,6 +1468,13 @@ class ConfluenceConnector(BaseConnector):
         if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
             return None
         return [r for r in rows if r.get("accountType", "atlassian") == "atlassian"]
+
+    def _forget_jira_quota(self, error: AtlassianQuotaExhausted) -> None:
+        """A Jira call hit Jira's quota, not Confluence's: undo the pause the shared policy set for that
+        call. A pause the call did not set (Confluence's own, or one another request set meanwhile) stays."""
+        policy = self._client_policy
+        if policy is not None and error.set_by_this_call and policy.quota_reset_at == error.reset_at:
+            policy.quota_reset_at = None
 
     async def _link_platform_users_via_jira(self, confluence_account_ids: set[str] | None = None) -> None:
         """
@@ -1495,8 +1492,6 @@ class ConfluenceConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
         org_id = self.data_entities_processor.org_id
-        policy = self._client_policy
-        quota_already_spent = bool(policy and policy.quota_reset_at and policy.quota_reset_at > time.time())
 
         active_users = await self.data_entities_processor.get_all_active_users()
         linked_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
@@ -1547,10 +1542,8 @@ class ConfluenceConnector(BaseConnector):
                     try:
                         account_id = await datasource.find_user_account_id_by_email(email)
                     except AtlassianQuotaExhausted as quota_error:
-                        # Jira's quota, not Confluence's: undo the mark the shared policy just set
-                        # (unless Confluence's own quota was already spent) and stop linking.
-                        if policy is not None and not quota_already_spent:
-                            policy.quota_reset_at = None
+                        # Jira's quota, not Confluence's: stop linking.
+                        self._forget_jira_quota(quota_error)
                         raise RuntimeError(f"Jira rate limit: {quota_error}") from quota_error
                     if not account_id:
                         not_found_count += 1

@@ -2606,8 +2606,8 @@ class JiraConnector(BaseConnector):
     async def _user_listing_complete_for_link(self) -> bool:
         """Whether this sync's user read shows everyone the authenticator's link depends on. A full read
         does, unless it shows an account (inactive ones too) whose email it could not resolve: then, as when
-        a bulk read is refused from its first page, the authenticator is looked up on their own. Any other
-        shortfall stays incomplete."""
+        a bulk read is refused from its first page, only finding the authenticator on their own settles it.
+        Any other shortfall stays incomplete."""
         if self._user_read_unfinished:
             return False
         if not (self._user_bulk_forbidden or self._user_bulk_refused):
@@ -2617,29 +2617,19 @@ class JiraConnector(BaseConnector):
         return await self._authenticator_is_listed()
 
     async def _authenticator_is_listed(self) -> bool:
-        """Look the authenticator up by email and add it to the listed emails when found. False when it
-        cannot be looked up or the answer cannot be told from a hidden email: the pass then only ever
-        removes a link.
-
-        The user search answers a caller without Browse users with no rows, so "not found" counts only
-        once the same search finds the token's own account."""
+        """Look the authenticator up by email and add it to the listed emails when found: True then.
+        The user search lists active users only, so not finding them shows nothing about a deactivated
+        account: False, and the pass only ever removes a link."""
         email = (await self.authenticator_email() or "").strip().lower()
         if not email:
             return False
-        rows = await self._find_atlassian_accounts(email)
-        if rows is None:
-            return False
-        if self._names_email(rows, email):
-            self._listed_user_emails.add(email)
+        if email in self._listed_user_emails:
             return True
-        # A row with its email hidden may be the authenticator, and a full page may hide the match.
-        if any(not r.get("emailAddress") for r in rows) or len(rows) >= 50:
+        rows = await self._find_atlassian_accounts(email)
+        if rows is None or not self._names_email(rows, email):
             return False
-        own_email = (self._authenticated_jira_email or "").strip().lower()
-        if not own_email or own_email == email:
-            return False
-        own_rows = await self._find_atlassian_accounts(own_email)
-        return own_rows is not None and self._names_email(own_rows, own_email)
+        self._listed_user_emails.add(email)
+        return True
 
     async def _find_atlassian_accounts(self, email: str) -> list[dict] | None:
         """The user accounts the user search returns for an email; None when it gives no answer."""

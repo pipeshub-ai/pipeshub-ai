@@ -1679,6 +1679,20 @@ class TestConfluenceCloudUserListing:
         conn._authenticator_is_listed.assert_not_awaited()
         assert conn._user_list_complete is False
 
+    @pytest.mark.parametrize("malformed", [{}, {"results": None}, {"results": {"user": {}}}, ["not", "a", "page"]])
+    async def test_a_page_without_a_results_list_is_incomplete_and_keeps_the_emails_seen(self, malformed: object) -> None:
+        datasource = _confluence_cloud_search([
+            (200, {"results": [_cloud_user("a1", "Live@corp.com")]}),
+            (200, malformed),
+        ])
+        conn = self._conn(datasource)
+
+        await ConfluenceConnector._sync_users(conn)
+
+        assert conn._user_list_complete is False
+        assert conn._listed_user_emails == {"live@corp.com"}
+        conn._authenticator_is_listed.assert_not_awaited()
+
     async def test_a_failed_page_is_an_incomplete_search(self) -> None:
         datasource = _confluence_cloud_search([
             (200, {"results": [_cloud_user("a1", "live@corp.com")]}),
@@ -1738,9 +1752,9 @@ def _jira_account(account_id: str, email: str | None = None, kind: str = "atlass
 
 
 class TestConfluenceCloudAuthenticatorLookup:
-    """Confluence's user search pages by offset with no snapshot and may hide an email, so before it can
-    settle the link the authenticator is found in it or looked up through the site's Jira user search,
-    whose "not found" counts only once it finds the token's own account."""
+    """Confluence's user search pages by offset with no snapshot and may hide an email, and the site's
+    Jira user search lists active users only: finding the authenticator settles the link, not finding
+    them never does, whatever the token's own account shows."""
 
     TOKEN = "admin@corp.com"
 
@@ -1754,7 +1768,8 @@ class TestConfluenceCloudAuthenticatorLookup:
         conn.config_service = MagicMock(get_config=AsyncMock(return_value={"auth": auth or {"authType": "API_TOKEN"}}))
         datasource = MagicMock(search_jira_users=AsyncMock(side_effect=search))
         conn._get_fresh_datasource = AsyncMock(return_value=datasource)
-        for name in ("_authenticator_is_listed", "_jira_user_search_allowed", "_find_jira_accounts"):
+        for name in ("_authenticator_is_listed", "_jira_user_search_allowed", "_find_jira_accounts",
+                     "_forget_jira_quota"):
             setattr(conn, name, partial(getattr(ConfluenceConnector, name), conn))
         return conn
 
@@ -1767,11 +1782,13 @@ class TestConfluenceCloudAuthenticatorLookup:
 
         assert await ConfluenceConnector._authenticator_is_listed(conn) is True
 
-    async def test_an_authenticator_jira_does_not_find_is_absent_once_the_token_account_is_found(self) -> None:
+    async def test_not_found_by_the_active_only_search_is_incomplete_whatever_the_token_account_shows(self) -> None:
         conn = self._conn(self._by_query([_jira_account("a1", "someone.else@corp.com")]))
 
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is True
+        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
         assert "creator@corp.com" not in conn._listed_user_emails
+        searched = [c.args[0] for c in conn._get_fresh_datasource.return_value.search_jira_users.await_args_list]
+        assert searched == ["creator@corp.com"]
 
     async def test_an_authenticator_jira_finds_is_listed(self) -> None:
         conn = self._conn(self._by_query([_jira_account("a1", "creator@corp.com")]))
@@ -1779,9 +1796,16 @@ class TestConfluenceCloudAuthenticatorLookup:
         assert await ConfluenceConnector._authenticator_is_listed(conn) is True
         assert "creator@corp.com" in conn._listed_user_emails
 
+    async def test_an_authenticator_jira_finds_on_a_full_page_with_app_accounts_is_listed(self) -> None:
+        rows = [_jira_account(f"bot{i}", kind="app") for i in range(49)] + [_jira_account("a1", "creator@corp.com")]
+        conn = self._conn(self._by_query(rows))
+
+        assert await ConfluenceConnector._authenticator_is_listed(conn) is True
+
     @pytest.mark.parametrize("search", [
-        lambda query, **_: _jira_rows() if query == "admin@corp.com" else _jira_rows(),
+        lambda query, **_: _jira_rows(),
         lambda query, **_: _jira_rows(_jira_account("a9")),
+        lambda query, **_: _jira_rows(*[_jira_account(f"bot{i}", kind="app") for i in range(50)]),
         lambda query, **_: _jira_rows("not a row"),
         lambda query, **_: SimpleNamespace(status=500, json=lambda: []),
         lambda query, **_: SimpleNamespace(status=200, json=lambda: {"not": "a list"}),
@@ -1789,18 +1813,10 @@ class TestConfluenceCloudAuthenticatorLookup:
         lambda query, **_: (_ for _ in ()).throw(OSError("reset")),
         lambda query, **_: (_ for _ in ()).throw(AtlassianQuotaExhausted(0.0)),
     ])
-    async def test_a_lookup_that_cannot_settle_absence_is_incomplete(self, search: Callable[..., object]) -> None:
+    async def test_a_lookup_that_does_not_find_the_authenticator_is_incomplete(
+        self, search: Callable[..., object],
+    ) -> None:
         conn = self._conn(search)
-
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
-
-    async def test_a_full_page_of_matches_is_incomplete(self) -> None:
-        conn = self._conn(self._by_query([_jira_account(f"a{i}", f"u{i}@corp.com") for i in range(50)]))
-
-        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
-
-    async def test_an_authenticator_who_is_the_token_account_and_is_not_found_is_incomplete(self) -> None:
-        conn = self._conn(self._by_query([], token_rows=[]), creator=self.TOKEN)
 
         assert await ConfluenceConnector._authenticator_is_listed(conn) is False
 
@@ -1815,18 +1831,48 @@ class TestConfluenceCloudAuthenticatorLookup:
 
         assert await ConfluenceConnector._authenticator_is_listed(conn) is False
 
-    async def test_a_quota_hit_on_jira_does_not_stop_the_confluence_run(self) -> None:
-        conn = self._conn(lambda *_, **__: (_ for _ in ()).throw(AtlassianQuotaExhausted(0.0)))
+    async def test_the_pause_a_jira_quota_hit_set_is_undone(self) -> None:
+        conn = self._conn(self._by_query([]))
         conn._client_policy = SimpleNamespace(quota_reset_at=None)
 
         async def search(query: str, **_: object) -> object:
             conn._client_policy.quota_reset_at = reset_at = time.time() + 3600
-            raise AtlassianQuotaExhausted(reset_at)
+            raise AtlassianQuotaExhausted(reset_at, set_by_this_call=True)
 
         conn._get_fresh_datasource.return_value.search_jira_users = AsyncMock(side_effect=search)
 
         assert await ConfluenceConnector._authenticator_is_listed(conn) is False
         assert conn._client_policy.quota_reset_at is None
+
+    async def test_a_pause_this_lookup_did_not_set_stays(self) -> None:
+        conn = self._conn(self._by_query([]))
+        other = time.time() + 1800
+        conn._client_policy = SimpleNamespace(quota_reset_at=None)
+
+        async def search(query: str, **_: object) -> object:
+            # Another Confluence request paused the policy meanwhile; this call was refused by that pause.
+            conn._client_policy.quota_reset_at = other
+            raise AtlassianQuotaExhausted(other)
+
+        conn._get_fresh_datasource.return_value.search_jira_users = AsyncMock(side_effect=search)
+
+        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
+        assert conn._client_policy.quota_reset_at == other
+
+    async def test_a_pause_set_after_this_lookups_own_stays(self) -> None:
+        conn = self._conn(self._by_query([]))
+        later = time.time() + 7200
+        conn._client_policy = SimpleNamespace(quota_reset_at=None)
+
+        async def search(query: str, **_: object) -> object:
+            own = time.time() + 3600
+            conn._client_policy.quota_reset_at = later  # another request's 429 overwrote it
+            raise AtlassianQuotaExhausted(own, set_by_this_call=True)
+
+        conn._get_fresh_datasource.return_value.search_jira_users = AsyncMock(side_effect=search)
+
+        assert await ConfluenceConnector._authenticator_is_listed(conn) is False
+        assert conn._client_policy.quota_reset_at == later
 
 
 class TestConfluenceDataCenterSyncOrder:
