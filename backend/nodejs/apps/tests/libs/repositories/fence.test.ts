@@ -294,6 +294,17 @@ describe('Mongo store fence', () => {
       expect(await armed({ fence: new Error('down'), log: [] }).mongoStoreMoving()).to.equal(false)
     })
 
+    it('a pause holds through a failed fence read and ends only on active', async () => {
+      const state = { fence: { mode: 'draining' } as Fence, log: [] as unknown[][] }
+      const f = armed(state)
+      setTimeout(() => { state.fence = new Error('primary stepping down') }, 15)
+      setTimeout(() => { state.fence = { mode: 'active' } }, 60)
+      const t0 = Date.now()
+      expect(await f.untilMongoWritable(() => true, 5)).to.equal(true)
+      expect(Date.now() - t0, 'released at active, not at the failed read').to.be.at.least(55)
+      expect(state.log.filter((l) => l[0] === 'fence-read').length).to.be.greaterThan(4)
+    })
+
     it('waits until the store is writable again, and stops waiting when the consumer stops', async () => {
       const state = { fence: { mode: 'readonly' } as Fence, log: [] as unknown[][] }
       const f = armed(state)

@@ -526,6 +526,8 @@ export abstract class BaseRedisStreamsConsumerConnection
           }
 
           for (const entry of claimed) {
+            // a store move (F3): a recovered entry waits as a new one does, and stays pending if the consumer stops
+            if (!(await untilMongoWritable(() => this.running))) return;
             const entryId = entry[0];
             const fields = entry[1];
             try {

@@ -96,6 +96,45 @@ describe('background writers pause while the document store is moved (F3)', () =
     expect(xack.called).to.equal(false);
   });
 
+  it('Redis Streams: an entry recovered from the pending list at start waits too, and stays pending if the consumer stops', async () => {
+    const wait = sinon.stub(fence(), 'untilMongoWritable').resolves(false);
+    const { BaseRedisStreamsConsumerConnection } = (fresh('../../../src/libs/services/redis-streams.service') as typeof import('../../../src/libs/services/redis-streams.service'));
+    class C extends BaseRedisStreamsConsumerConnection {}
+    const c = Object.create(C.prototype) as Record<string, unknown>;
+    const xack = sinon.stub().resolves(1);
+    Object.assign(c, {
+      running: true,
+      subscribedTopics: ['s'],
+      groupId: 'g',
+      consumerId: 'x',
+      count: 10,
+      config: {},
+      logger: createMockLogger(),
+      ackRedis: { xack },
+      redis: { xautoclaim: sinon.stub().resolves(['0-0', [['1-0', ['key', 'k', 'value', '{"n":1}']]], []]) },
+    });
+    wait.callsFake(async () => { c.running = false; return false; });
+    const handler = sinon.stub().resolves();
+    await (c as unknown as { drainPending(h: unknown): Promise<void> }).drainPending(handler);
+    expect(wait.calledOnce).to.equal(true);
+    expect(handler.called).to.equal(false);
+    expect(xack.called).to.equal(false);
+  });
+
+  it('PostgreSQL queue: no claim is made (no attempt counted) while the store is moved', async () => {
+    const { BasePgQueueConsumerConnection } = (fresh('../../../src/libs/services/pg-queue.service') as typeof import('../../../src/libs/services/pg-queue.service'));
+    class C extends BasePgQueueConsumerConnection {}
+    const c = Object.create(C.prototype) as Record<string, unknown>;
+    let running = true;
+    Object.assign(c, { isRunning: () => running, held: new Map(), topics: ['t'], groupId: 'g', clientId: 'x', visibilityS: 30, config: {}, logger: createMockLogger(), settle: sinon.stub(), idle: async () => { running = false; } });
+    const boot = require('../../../src/libs/db/runtime-boot') as typeof import('../../../src/libs/db/runtime-boot');
+    const claims = sinon.stub().resolves({ rows: [] });
+    sinon.stub(boot, 'ensurePgRuntime').returns({ withUow: async (_o: unknown, fn: (tx: unknown) => unknown) => fn({ query: claims }) } as never);
+    sinon.stub(fence(), 'untilMongoWritable').callsFake(async () => { running = false; return false; });
+    await (c as unknown as { consumeLoop(h: unknown): Promise<void> }).consumeLoop(sinon.stub());
+    expect(claims.called, 'the claim query counts an attempt: it must not run').to.equal(false);
+  });
+
   it('PostgreSQL queue: a claimed row is not settled (no attempt spent) while the store is moved', async () => {
     const f = fence();
     const { BasePgQueueConsumerConnection } = (fresh('../../../src/libs/services/pg-queue.service') as typeof import('../../../src/libs/services/pg-queue.service'));
@@ -118,7 +157,8 @@ describe('background writers pause while the document store is moved (F3)', () =
     const boot = require('../../../src/libs/db/runtime-boot') as typeof import('../../../src/libs/db/runtime-boot');
     const claimed = { rows: [{ topic: 't', message_id: '1', attempts: 1 }] };
     sinon.stub(boot, 'ensurePgRuntime').returns({ withUow: async (_o: unknown, fn: (tx: unknown) => unknown) => fn({ query: async () => claimed }) } as never);
-    sinon.stub(f, 'untilMongoWritable').callsFake(async () => { running = false; return false; });
+    // the store starts moving between the claim and the row: the first wait (before the claim) passes, the per-row one holds
+    sinon.stub(f, 'untilMongoWritable').onFirstCall().resolves(true).callsFake(async () => { running = false; return false; });
     await (c as unknown as { consumeLoop(h: unknown): Promise<void> }).consumeLoop(sinon.stub());
     expect(settle.called).to.equal(false);
   });

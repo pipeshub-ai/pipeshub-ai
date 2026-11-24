@@ -269,7 +269,11 @@ export async function untilMongoWritable(
   pollMs = CONSUMER_PAUSE_POLL_MS,
 ): Promise<boolean> {
   let paused = false;
-  while (running() && (await mongoStoreMoving())) {
+  while (running() && pauseDb) {
+    const mode = await readFenceMode(pauseDb);
+    if (mode === 'active') break;
+    // before a pause, an unreadable fence lets the work go on (its writes are refused anyway); once paused, only `active` ends it
+    if (!paused && (mode === 'unreadable' || mode === 'late')) break;
     if (!paused)
       Logger.getInstance({ service: 'MongoFence' }).info(
         'consumer paused: the document store is being moved',

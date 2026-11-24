@@ -454,6 +454,8 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
           await this.idle();
           continue;
         }
+        // a store move (F3): a claim counts a delivery attempt, so none is made while the store is moved
+        if (!(await untilMongoWritable(() => this.isRunning()))) break;
         const rows = (
           await unit(true, (tx) =>
             tx.query<ClaimedRow>(SQL.claim, [
@@ -476,7 +478,7 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
             attempts: r.attempts,
           });
         for (const r of rows) {
-          // a store move (F3): the claim is kept alive by the heartbeat, so the wait costs no delivery attempt
+          // a row claimed just before a move began waits too; the heartbeat keeps its claim
           if (!(await untilMongoWritable(() => this.isRunning()))) break;
           await this.settle(r, handler);
         }
