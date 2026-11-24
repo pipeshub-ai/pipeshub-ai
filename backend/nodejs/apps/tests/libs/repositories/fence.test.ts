@@ -144,6 +144,27 @@ describe('Mongo store fence', () => {
     }
   })
 
+  it('a newer read still in flight when a draining answer lands does not re-trust active either', async () => {
+    setFenceTrustMsForTests(60000)
+    try {
+      const resolvers: Array<(d: { mode: string }) => void> = []
+      let reads = 0
+      const db = { collection: () => ({ findOne: () => new Promise((res) => { reads += 1; resolvers.push(res as never) }) }) }
+      const older = assertMongoWritable(db as never)
+      const newer = assertMongoWritable(db as never)
+      resolvers[0]!({ mode: 'draining' }) // the older read sees the move
+      await older
+      resolvers[1]!({ mode: 'active' }) // the newer one was served before it, and answers last
+      await newer
+      await Promise.resolve(); const third = assertMongoWritable(db as never)
+      resolvers[2]!({ mode: 'draining' })
+      await third
+      expect(reads).to.equal(3) // the stale active was not trusted: the next write read the fence again
+    } finally {
+      setFenceTrustMsForTests(0)
+    }
+  })
+
   it('a missing fence document means active', async () => {
     const { state, c } = setup(null)
     await c.updateOne({ a: 1 }, { $set: { b: 1 } })

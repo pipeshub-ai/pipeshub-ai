@@ -203,7 +203,8 @@ async function readFenceMode(
   const mode = doc?.mode ?? 'active';
   // only `active` is trusted: `draining` still allows writes, so a cached one would let a write through after a move to `readonly`
   if (mode !== 'active') {
-    lastNotActiveSeq = Math.max(lastNotActiveSeq, seq);
+    // every read already started may have been served before the change: none of them may re-trust `active`
+    lastNotActiveSeq = readSeq;
     activeUntil = 0;
   } else if (seq > lastNotActiveSeq) activeUntil = Date.now() + trustMs();
   return mode;
