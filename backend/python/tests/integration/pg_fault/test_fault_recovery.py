@@ -8,6 +8,7 @@ worker carries on without a restart.
 from __future__ import annotations
 
 import asyncio
+import collections
 import os
 import sys
 import time
@@ -27,6 +28,7 @@ from tests.integration.pg_fault.load import (
     Search,
     Stack,
     login,
+    until,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(900)]
@@ -99,9 +101,15 @@ async def test_the_stack_recovers_from_the_fault_without_losing_or_mixing_anythi
         t0 = time.monotonic()
         await FAULTS[fault](stack, env)
         took = time.monotonic() - t0
+        # what had worked before the fault must work again after it: totals alone would pass a load that stopped at the fault
+        before = {c.name: collections.Counter(c.done) for c in comps}
         if fault in ("restart_fast", "restart_immediate", "outage"):
             assert await server_start(stack) != started, "the server did not restart: the fault was not injected"
         await asyncio.sleep(5)
+
+        async def recovered() -> bool:
+            return not any(c.stalled_since(before[c.name]) for c in comps)
+        await until(recovered, 90)
         await asyncio.gather(*(c.stop_load() for c in comps))
         spent: dict[str, float] = {}
 
@@ -113,6 +121,8 @@ async def test_the_stack_recovers_from_the_fault_without_losing_or_mixing_anythi
                 spent[name] = round(time.monotonic() - t, 1)
         await asyncio.gather(*(timed(f"settle {c.name}", c.settle(90)) for c in comps))
         problems = {c.name: await timed(f"check {c.name}", c.check()) for c in comps}
+        for c in comps:
+            problems[c.name] += [f"no {kind} succeeded after the fault" for kind in c.stalled_since(before[c.name])]
         seen = {c.name: dict(c.errors) for c in comps if c.errors}
         print(f"{fault}: {took:.1f}s; errors the load saw: {seen}; seconds: {spent}")
         assert not any(problems.values()), "\n".join(f"{k}: {p}" for k, ps in problems.items() for p in ps)
