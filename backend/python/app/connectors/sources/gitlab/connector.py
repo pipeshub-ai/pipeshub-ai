@@ -295,6 +295,8 @@ class GitLabConnector(BaseConnector):
         self._creator_token_view = False
         # The creator whose earlier token view is taken back this run, where stored grants are kept.
         self._withheld_creator_email: str | None = None
+        # Whether taking that view off a group failed: then "no grant" is not stored, the next sync retries.
+        self._creator_withdrawal_failed = False
         # GitLab ids of each project's members at Guest or above, from this run's member read.
         self._project_reader_ids: dict[int, set[int]] = {}
         self._is_admin: bool = False
@@ -463,6 +465,7 @@ class GitLabConnector(BaseConnector):
             await self._decide_creator_token_view()
             self.logger.info("Starting sync of GitLab projects")
             await self.projects.sync_all_projects()
+            await self._confirm_creator_withdrawal()
             self.repos.schedule_timestamp_backfill()
             self.raise_if_sync_incomplete()
         except Exception as e:
@@ -611,6 +614,7 @@ class GitLabConnector(BaseConnector):
         """
         creator = (self.creator_email or "").strip().lower()
         self._withheld_creator_email = None
+        self._creator_withdrawal_failed = False
         if not creator:
             self._creator_token_view = False
         elif self._token_account_email == creator:
@@ -624,6 +628,12 @@ class GitLabConnector(BaseConnector):
             self._creator_token_view = decision.granted
             if decision.withdraw:
                 self._withheld_creator_email = creator
+
+    async def _confirm_creator_withdrawal(self) -> None:
+        """Store "no grant" once the projects pass has taken the creator's token view off every group
+        it kept as stored. Not when a removal failed: the next sync tries again."""
+        if self._withheld_creator_email and not self._creator_withdrawal_failed:
+            await self.confirm_authenticator_withdrawn(self._withheld_creator_email)
 
     def creator_token_view_permission(self) -> Permission | None:
         """The creator's OWNER permission where they get the token's view, else None."""

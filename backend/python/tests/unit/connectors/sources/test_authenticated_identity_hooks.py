@@ -747,7 +747,7 @@ def _with_grant_record(conn: MagicMock, kv: _Kv) -> MagicMock:
     conn.config_service = kv
     for name in (
         "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_may_list",
-        "_read_grant_record",
+        "_read_grant_record", "confirm_authenticator_withdrawn",
     ):
         setattr(conn, name, partial(getattr(BaseConnector, name), conn))
     return conn
@@ -766,8 +766,14 @@ class TestSlackWorkspace:
             user_id_to_email_cache={"U0ALICE": "alice@corp.com"},
             _users_read_failed=False, _users_listing_cut=False, _listed_user_emails=set(),
             authenticator_email=AsyncMock(return_value=authenticator),
-            data_entities_processor=MagicMock(unlink_authenticator=AsyncMock()),
+            data_entities_processor=MagicMock(
+                unlink_authenticator=AsyncMock(), remove_user_grant_from_record_groups=AsyncMock(return_value=1),
+                get_app_authenticator_user=AsyncMock(return_value={"_key": "admin-key", "email": authenticator}),
+            ),
+            created_by="admin-id", _channel_list_failed=False,
         )
+        conn._withdraw_withheld_authenticator = partial(SlackConnector._withdraw_withheld_authenticator, conn)
+        conn._confirm_authenticator_withdrawal = partial(SlackConnector._confirm_authenticator_withdrawal, conn)
         return _with_grant_record(conn, kv or _Kv())
 
     async def test_a_user_token_registers_the_account_it_belongs_to(self) -> None:
@@ -853,22 +859,29 @@ class TestSlackWorkspace:
         conn = self._conn(authenticator="admin@corp.com", kv=kv)
         conn._listed_user_emails = {"admin@corp.com"}
         await SlackConnector._authenticator_grant(conn)
+        await SlackConnector._confirm_authenticator_withdrawal(conn)
         fresh = self._conn(authenticator="admin@corp.com", kv=kv)
         fresh._users_listing_cut = True
 
         assert await SlackConnector._authenticator_grant(fresh) is None
 
-    async def test_an_incomplete_listing_that_names_the_authenticator_stores_no_grant(self) -> None:
+    async def test_an_incomplete_listing_that_names_the_authenticator_stores_no_grant_once_withdrawn(self) -> None:
         kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
         conn = self._conn(authenticator="admin@corp.com", kv=kv)
         conn._users_listing_cut = True
         conn._listed_user_emails = {"admin@corp.com"}
 
         assert await SlackConnector._authenticator_grant(conn) is None
+        assert kv.values[GRANT_KEY]["granted"] is True, "kept until the token's view is taken back"
+        await SlackConnector._confirm_authenticator_withdrawal(conn)
         assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
 
     async def test_two_incomplete_listings_the_first_naming_the_authenticator_both_grant_nothing(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
+        # The processor writes the listed-authenticators marker when the first listing names them.
+        kv = _Kv({
+            GRANT_KEY: {"email": "admin@corp.com", "granted": True},
+            "/services/connectors/connector-1/listedAuthenticators": ["admin-key"],
+        })
         first = self._conn(authenticator="admin@corp.com", kv=kv)
         first._users_listing_cut = True
         first._listed_user_emails = {"admin@corp.com"}
@@ -898,7 +911,7 @@ class TestSlackWorkspace:
         ({"admin@corp.com"}, None, None),
         (set(), {"email": "admin@corp.com", "granted": True}, None),
     ], ids=["grant-taken-back", "no-earlier-grant", "nothing-stored", "not-listed"])
-    async def test_only_the_sync_that_takes_back_a_given_grant_withdraws_it(
+    async def test_only_a_given_grant_is_withdrawn_and_only_until_that_is_confirmed(
         self, listed: set[str], stored: object, withheld: str | None,
     ) -> None:
         kv = _Kv({GRANT_KEY: stored})
@@ -907,17 +920,65 @@ class TestSlackWorkspace:
 
         await SlackConnector._authenticator_grant(conn)
         assert conn._withheld_authenticator_email == withheld
+        await SlackConnector._withdraw_withheld_authenticator(conn, ["C1"])
+        await SlackConnector._confirm_authenticator_withdrawal(conn)
 
         await SlackConnector._authenticator_grant(conn)
         assert conn._withheld_authenticator_email is None, "the next sync has nothing left to take"
 
-    async def test_an_unreadable_earlier_grant_withdraws_nothing(self) -> None:
-        conn = self._conn(authenticator="admin@corp.com", kv=_Kv(error=RuntimeError("kv down")))
+    async def test_a_failed_removal_leaves_the_grant_stored_and_the_next_sync_withdraws_again(self) -> None:
+        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
+        conn = self._conn(authenticator="admin@corp.com", kv=kv)
+        conn._listed_user_emails = {"admin@corp.com"}
+        remove = conn.data_entities_processor.remove_user_grant_from_record_groups
+        remove.side_effect = [RuntimeError("graph down"), 1]
+
+        await SlackConnector._authenticator_grant(conn)
+        await SlackConnector._withdraw_withheld_authenticator(conn, ["C1"])
+        await SlackConnector._confirm_authenticator_withdrawal(conn)
+        assert kv.values[GRANT_KEY]["granted"] is True
+
+        await SlackConnector._authenticator_grant(conn)
+        assert conn._withheld_authenticator_email == "admin@corp.com"
+        await SlackConnector._withdraw_withheld_authenticator(conn, ["C1"])
+        await SlackConnector._confirm_authenticator_withdrawal(conn)
+
+        assert remove.await_count == 2
+        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
+
+    async def test_no_channel_left_to_clean_still_confirms_the_withdrawal(self) -> None:
+        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
+        conn = self._conn(authenticator="admin@corp.com", kv=kv)
         conn._listed_user_emails = {"admin@corp.com"}
 
         await SlackConnector._authenticator_grant(conn)
+        await SlackConnector._withdraw_withheld_authenticator(conn, [])
+        await SlackConnector._confirm_authenticator_withdrawal(conn)
+
+        conn.data_entities_processor.remove_user_grant_from_record_groups.assert_not_awaited()
+        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
+
+    async def test_a_channel_list_not_read_in_full_does_not_confirm_the_withdrawal(self) -> None:
+        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
+        conn = self._conn(authenticator="admin@corp.com", kv=kv)
+        conn._listed_user_emails = {"admin@corp.com"}
+
+        await SlackConnector._authenticator_grant(conn)
+        conn._channel_list_failed = True
+        await SlackConnector._confirm_authenticator_withdrawal(conn)
+
+        assert kv.values[GRANT_KEY]["granted"] is True
+
+    async def test_an_unreadable_earlier_grant_withdraws_and_stores_nothing(self) -> None:
+        kv = _Kv(error=RuntimeError("kv down"))
+        conn = self._conn(authenticator="admin@corp.com", kv=kv)
+        conn._listed_user_emails = {"admin@corp.com"}
+
+        assert await SlackConnector._authenticator_grant(conn) is None
+        await SlackConnector._confirm_authenticator_withdrawal(conn)
 
         assert conn._withheld_authenticator_email is None
+        assert kv.values == {}
         conn.logger.warning.assert_called()
 
     async def test_a_failed_read_of_the_stored_grant_grants_nothing(self) -> None:

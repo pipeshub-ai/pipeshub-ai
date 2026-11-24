@@ -372,10 +372,10 @@ class ProjectsSync:
                 await self._withdraw_withheld_creator([full_path])
 
     async def _withdraw_withheld_creator(self, external_group_ids: list[str]) -> None:
-        """On the sync that takes back the creator's token view, take their grant off groups whose
-        grants are kept as stored because their members could not be read. Only once: a creator who is
-        a member of such a group holds the same grant through their membership, and later syncs have
-        nothing left to take. Non-fatal."""
+        """While the creator's token view is taken back, take their grant off groups whose grants are
+        kept as stored because their members could not be read. Only until "no grant" is stored: a
+        creator who is a member of such a group holds the same grant through their membership.
+        Non-fatal; a failure leaves the withdrawal unconfirmed so the next sync tries again."""
         c = self.c
         email = c._withheld_creator_email
         if not email or not external_group_ids:
@@ -385,8 +385,10 @@ class ProjectsSync:
                 c.connector_id, external_group_ids, email,
             )
         except Exception as e:
+            c._creator_withdrawal_failed = True
             self.logger.warning(
-                "Could not take the creator's creator-only access away from %s: %s", external_group_ids, e,
+                "Could not take the creator's creator-only access away from %s; the next sync tries again: %s",
+                external_group_ids, e,
             )
 
     # ------------------------------------------------------------------

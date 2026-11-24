@@ -688,22 +688,28 @@ class TestAuthenticatorGrantRecord:
 
     @pytest.mark.parametrize("complete", [True, False])
     async def test_a_listing_that_names_the_authenticator_withholds_and_stores_no_grant(self, complete: bool) -> None:
-        conn = self._connector({"email": "admin@corp.com", "granted": True})
+        conn = self._connector({"email": "admin@corp.com", "granted": False})
 
         assert (await self._decide(conn, complete=complete, listed=True)).granted is False
         conn.config_service.set_config.assert_awaited_once_with(GRANT_KEY, {"email": "admin@corp.com", "granted": False})
 
     @pytest.mark.parametrize("complete", [True, False])
-    async def test_the_sync_that_withdraws_an_earlier_grant_says_so_once(self, complete: bool) -> None:
+    async def test_a_given_grant_is_withdrawn_until_the_withdrawal_is_confirmed(self, complete: bool) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
         kv = _DictConfig({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
         conn = self._connector(config_service=kv)
 
         first = await self._decide(conn, complete=complete, listed=True)
-        second = await self._decide(conn, complete=complete, listed=True)
-
         assert first == AuthenticatorGrant(granted=False, withdraw=True)
+        assert kv.values[GRANT_KEY]["granted"] is True, "nothing is stored before the view is taken back"
+
+        retried = await self._decide(conn, complete=complete, listed=True)
+        assert retried == AuthenticatorGrant(granted=False, withdraw=True), "a failed removal is tried again"
+
+        await BaseConnector.confirm_authenticator_withdrawn(conn, "Admin@Corp.com")
         assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
-        assert second == AuthenticatorGrant(granted=False, withdraw=False)
+        assert await self._decide(conn, complete=complete, listed=True) == AuthenticatorGrant(granted=False)
 
     @pytest.mark.parametrize("stored", [
         None,
@@ -716,11 +722,13 @@ class TestAuthenticatorGrantRecord:
         assert await self._decide(conn, complete=True, listed=True) == AuthenticatorGrant(granted=False, withdraw=False)
 
     @pytest.mark.parametrize("unreadable", [{"error": RuntimeError("kv down")}, {"stored": "granted"}])
-    async def test_nothing_is_withdrawn_when_the_earlier_grant_cannot_be_read(self, unreadable: dict) -> None:
+    async def test_nothing_is_withdrawn_or_stored_when_the_earlier_grant_cannot_be_read(self, unreadable: dict) -> None:
         conn = self._connector(**unreadable)
 
         assert await self._decide(conn, complete=True, listed=True) == AuthenticatorGrant(granted=False, withdraw=False)
         conn.logger.warning.assert_called_once()
+        conn.config_service.set_config.assert_not_awaited()
+        conn.config_service.delete_config.assert_not_awaited()
 
     async def test_a_complete_listing_without_the_authenticator_grants_and_stores_it(self) -> None:
         conn = self._connector()
@@ -742,7 +750,9 @@ class TestAuthenticatorGrantRecord:
         conn.config_service.set_config.assert_not_awaited()
 
     async def test_two_incomplete_listings_the_first_naming_the_authenticator_both_withhold(self) -> None:
-        kv = _DictConfig({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
+        # The processor records the listed authenticator in the marker on the first; the grant stays
+        # stored until the withdrawal is confirmed, and the marker keeps the second from using it.
+        kv = _DictConfig({GRANT_KEY: {"email": "admin@corp.com", "granted": True}, LISTED_KEY: ["creator-key"]})
         conn = self._connector(config_service=kv)
 
         assert (await self._decide(conn, complete=False, listed=True)).granted is False

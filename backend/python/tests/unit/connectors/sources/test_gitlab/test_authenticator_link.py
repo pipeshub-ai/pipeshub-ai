@@ -334,9 +334,10 @@ def _with_creator_gate(c: MagicMock, kv: _Kv | None = None) -> MagicMock:
     c.creator_token_view_permission = partial(GitLabConnector.creator_token_view_permission, c)
     for name in (
         "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_may_list",
-        "_read_grant_record",
+        "_read_grant_record", "confirm_authenticator_withdrawn",
     ):
         setattr(c, name, partial(getattr(BaseConnector, name), c))
+    c._confirm_creator_withdrawal = partial(GitLabConnector._confirm_creator_withdrawal, c)
     c.data_entities_processor.get_app_authenticator_user = AsyncMock(
         return_value={"_key": "creator-key", "email": CREATOR},
     )
@@ -514,20 +515,67 @@ class TestCreatorTokenViewOnFallbacks:
 
         c.data_entities_processor.remove_user_grant_from_record_groups.assert_not_awaited()
 
-    async def test_the_withdrawal_happens_on_one_sync_only(self) -> None:
+    async def test_the_withdrawal_is_stored_only_after_the_removal_and_then_not_repeated(self) -> None:
         kv = _given()
         first = await _decided(listed=_LISTED, kv=kv)
+        assert first._withheld_creator_email == CREATOR
+        assert kv.values[GRANT_KEY]["granted"] is True, "nothing stored before the view is taken back"
+
+        await GitLabConnector._confirm_creator_withdrawal(first)
         second = await _decided(listed=_LISTED, kv=kv)
 
-        assert first._withheld_creator_email == CREATOR
+        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
         assert second._withheld_creator_email is None
+
+    async def test_a_failed_removal_leaves_the_grant_stored_and_the_next_sync_withdraws_again(self) -> None:
+        kv = _given()
+        first = await _decided(listed=_LISTED, kv=kv)
+        first.data_entities_processor.remove_user_grant_from_record_groups.side_effect = RuntimeError("graph down")
+        first.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
+        first.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
+
+        await ProjectsSync(first)._ensure_gitlab_group_record_groups(["eng"])
+        await GitLabConnector._confirm_creator_withdrawal(first)
+        assert kv.values[GRANT_KEY]["granted"] is True
+
+        second = await _decided(listed=_LISTED, kv=kv)
+        second.runtime.ds_call = first.runtime.ds_call
+        second.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
+        await ProjectsSync(second)._ensure_gitlab_group_record_groups(["eng"])
+        await GitLabConnector._confirm_creator_withdrawal(second)
+
+        second.data_entities_processor.remove_user_grant_from_record_groups.assert_awaited_once_with(
+            second.connector_id, ["eng"], CREATOR,
+        )
         assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
 
-    async def test_an_unreadable_earlier_grant_withdraws_nothing(self) -> None:
-        c = await _decided(listed=_LISTED, kv=_Kv(error=RuntimeError("kv down")))
+    async def test_no_group_left_to_clean_still_confirms_the_withdrawal(self) -> None:
+        kv = _given()
+        c = await _decided(listed=_LISTED, kv=kv)
+
+        await GitLabConnector._confirm_creator_withdrawal(c)
+
+        c.data_entities_processor.remove_user_grant_from_record_groups.assert_not_awaited()
+        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
+
+    async def test_an_unreadable_earlier_grant_withdraws_and_stores_nothing(self) -> None:
+        kv = _Kv(error=RuntimeError("kv down"))
+        c = await _decided(listed=_LISTED, kv=kv)
+        await GitLabConnector._confirm_creator_withdrawal(c)
 
         assert c._withheld_creator_email is None
+        assert c._creator_token_view is False
+        assert kv.values == {}
         c.logger.warning.assert_called()
+
+    async def test_the_withdrawal_is_confirmed_after_the_projects_pass(self) -> None:
+        order: list[str] = []
+        c = TestRunSyncOrder()._conn(order)
+        c._confirm_creator_withdrawal = AsyncMock(side_effect=lambda: order.append("confirm"))
+
+        await TestRunSyncOrder()._run(c)
+
+        assert order.index("projects") < order.index("confirm")
 
     @pytest.mark.parametrize("case", list(_CASES))
     async def test_the_creator_only_project_fallback(self, case: str) -> None:
@@ -546,7 +594,7 @@ class TestCreatorTokenViewRecord:
         await _decided(listed=_UNLISTED, kv=kv)
         assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": True}
 
-        await _decided(listed=_LISTED, kv=kv)
+        await GitLabConnector._confirm_creator_withdrawal(await _decided(listed=_LISTED, kv=kv))
         assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
 
     async def test_after_a_restart_an_incomplete_listing_keeps_the_stored_grant(self) -> None:
@@ -565,7 +613,7 @@ class TestCreatorTokenViewRecord:
 
     async def test_a_withdrawn_grant_whose_write_fails_is_not_revived_by_an_incomplete_listing(self) -> None:
         kv = _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}}, writes_fail=True)
-        await _decided(listed=_LISTED, kv=kv)
+        await GitLabConnector._confirm_creator_withdrawal(await _decided(listed=_LISTED, kv=kv))
 
         fresh = await _decided(listed=_UNLISTED, complete=False, kv=kv)
 
@@ -583,12 +631,14 @@ class TestCreatorTokenViewRecord:
         kv = _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}})
 
         c = await _decided(listed=_LISTED, complete=False, kv=kv)
-
         assert await _group_grantees(c) == set()
+        await GitLabConnector._confirm_creator_withdrawal(c)
+
         assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
 
     async def test_two_partial_listings_the_first_naming_the_creator_both_grant_nothing(self) -> None:
-        kv = _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}})
+        # The processor writes the listed-authenticators marker when the first listing names them.
+        kv = _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}, "/services/connectors/gitlab-conn-1/listedAuthenticators": ["creator-key"]})
         await _decided(listed=_LISTED, complete=False, kv=kv)
 
         second = await _decided(listed=_UNLISTED, complete=False, kv=kv)

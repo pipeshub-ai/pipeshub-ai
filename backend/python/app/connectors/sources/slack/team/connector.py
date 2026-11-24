@@ -558,8 +558,10 @@ class SlackConnector(BaseConnector):
         self._cache_rebuild_event:         Optional[asyncio.Event]   = None
         # Set each run_sync by _authenticator_grant(); added to every channel's grants.
         self._authenticator_permission:    Permission | None         = None
-        # An authenticator whose earlier grant from the token's view is taken back this sync.
+        # An authenticator whose earlier grant from the token's view is taken back this sync, and
+        # whether taking it off a channel failed (then "no grant" is not stored and the next sync retries).
         self._withheld_authenticator_email: str | None = None
+        self._authenticator_withdrawal_failed = False
         # Until a sync has read the user listing, it counts as cut.
         self._users_listing_cut:           bool                      = True
         self._listed_user_emails:          set[str]                  = set()
@@ -871,6 +873,7 @@ class SlackConnector(BaseConnector):
 
             # Phase 3 — Channels → RecordGroups + HAS_PERMISSION
             channels = await self._sync_channels()
+            await self._confirm_authenticator_withdrawal()
 
             # Phase 3a — App membership for the authenticator's grants, judged against
             # the channels Phase 3 committed
@@ -1482,6 +1485,7 @@ class SlackConnector(BaseConnector):
         channels through their membership, not the token's view. The decision and what is
         stored follow decide_authenticator_grant."""
         self._withheld_authenticator_email = None
+        self._authenticator_withdrawal_failed = False
         email = await self.authenticator_email()
         if not email:
             self.logger.warning(
@@ -1499,10 +1503,11 @@ class SlackConnector(BaseConnector):
         return Permission(email=email, entity_type=EntityType.USER, type=PermissionType.READ) if decision.granted else None
 
     async def _withdraw_withheld_authenticator(self, channel_ids: list[str]) -> None:
-        """On the sync that takes back the token's view from an authenticator the user list names, take
-        its grant off channels whose members could not be read: the stored grants there are kept, the
-        token's one among them. Only once: an authenticator who is a member of such a channel holds
-        the same grant through their membership, and later syncs have nothing left to take. Non-fatal."""
+        """While the token's view is taken back from an authenticator the user list names, take its
+        grant off channels whose members could not be read: the stored grants there are kept, the
+        token's one among them. Only until "no grant" is stored: an authenticator who is a member of
+        such a channel holds the same grant through their membership. Non-fatal; a failure leaves the
+        withdrawal unconfirmed so the next sync tries again."""
         email = getattr(self, "_withheld_authenticator_email", None)
         if not email or not channel_ids:
             return
@@ -1511,10 +1516,20 @@ class SlackConnector(BaseConnector):
                 self.connector_id, channel_ids, email,
             )
         except Exception as exc:
+            self._authenticator_withdrawal_failed = True
             self.logger.warning(
                 f"Connector {self.connector_id}: could not take the connector account's view away from "
-                f"the authenticator on {len(channel_ids)} channel(s) whose members could not be read: {exc}"
+                f"the authenticator on {len(channel_ids)} channel(s) whose members could not be read; "
+                f"the next sync tries again: {exc}"
             )
+
+    async def _confirm_authenticator_withdrawal(self) -> None:
+        """Store "no grant" once every channel this sync wrote has had the token's view taken off.
+        Not when a removal failed or the channel list was not read in full: the next sync tries again."""
+        email = getattr(self, "_withheld_authenticator_email", None)
+        if not email or getattr(self, "_authenticator_withdrawal_failed", False) or self._channel_list_failed:
+            return
+        await self.confirm_authenticator_withdrawn(email)
 
     def _with_authenticator(self, perms: list[Permission]) -> list[Permission]:
         """The channel's grants plus the authenticator's, unless they are already a member."""

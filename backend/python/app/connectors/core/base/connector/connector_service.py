@@ -878,24 +878,32 @@ class BaseConnector(ABC):
         that; a complete listing that does not grants it and stores that. An incomplete listing that
         does not name them cannot decide: the stored decision stands (authenticator_grant_kept).
 
-        ``withdraw`` is set only on the sync that takes back a grant the stored record shows was
-        given; a record that cannot be read withdraws nothing."""
+        ``withdraw`` is set while the stored record shows the token's view was given to them: the
+        caller takes it back where the source cannot be read, and only then stores "no grant"
+        (confirm_authenticator_withdrawn), so a removal that fails is tried again next sync. A record
+        that cannot be read withdraws nothing and stores nothing: the next sync reads it again."""
         if listed:
             try:
                 stored = await self._read_grant_record()
             except Exception as e:
                 self.logger.warning(
-                    "Connector %s: could not read the authenticator's last grant; nothing is withdrawn: %s",
+                    "Connector %s: could not read the authenticator's last grant; withholding it this sync, "
+                    "nothing withdrawn or stored: %s",
                     self.connector_id, e,
                 )
-                stored = None
-            given = bool(stored and stored["granted"] and stored.get("email") == email.strip().lower())
+                return AuthenticatorGrant(granted=False)
+            if stored and stored["granted"] and stored["email"] == email.strip().lower():
+                return AuthenticatorGrant(granted=False, withdraw=True)
             await self.remember_authenticator_grant(email, granted=False)
-            return AuthenticatorGrant(granted=False, withdraw=given)
+            return AuthenticatorGrant(granted=False)
         if listing_complete:
             await self.remember_authenticator_grant(email, granted=True)
             return AuthenticatorGrant(granted=True)
         return AuthenticatorGrant(granted=await self.authenticator_grant_kept(email))
+
+    async def confirm_authenticator_withdrawn(self, email: str) -> None:
+        """Store "no grant" once the token's view a withdraw decision named has been taken back."""
+        await self.remember_authenticator_grant(email, granted=False)
 
     async def _read_grant_record(self) -> dict | None:
         """The stored grant record, None when there is none. Raises when it cannot be read or is malformed."""
