@@ -2,6 +2,19 @@ import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import eslintPluginPrettier from 'eslint-plugin-prettier/recommended';
 
+const SHARP_IMPORT = {
+  name: 'sharp',
+  message:
+    'Import sharp from src/libs/utils/image.utils so decoding stays limited to JPEG, PNG, WebP and GIF.',
+};
+
+const TELEMETRY_IMPORT = {
+  group: ['*telemetry*'],
+  caseSensitive: false,
+  message:
+    'Application code must not import telemetry: emit a platform event (src/libs/platform-events) and let the plug-in in src/plugins/telemetry listen.',
+};
+
 export default tseslint.config(
   // Base recommended rules
   eslint.configs.recommended,
@@ -126,22 +139,37 @@ export default tseslint.config(
   // sharp's loader allowlist is applied when image.utils is imported.
   // Every other file must go through that module so a new decode site
   // cannot skip it.
+  //
+  // Telemetry is a plug-in (src/plugins/telemetry) that an image can be built
+  // without. Application code announces platform events and never imports it;
+  // only the generated plug-in list may name it.
+  //
+  // One rule holds both restrictions: a later block replaces an earlier
+  // block's options for the same rule instead of adding to them.
   {
     files: ['src/**/*.ts'],
-    ignores: ['src/libs/utils/image.utils.ts'],
+    ignores: [
+      'src/libs/utils/image.utils.ts',
+      'src/plugins/telemetry/**',
+      'src/plugins.generated.ts',
+    ],
     rules: {
       'no-restricted-imports': [
         'error',
-        {
-          paths: [
-            {
-              name: 'sharp',
-              message:
-                'Import sharp from src/libs/utils/image.utils so decoding stays limited to JPEG, PNG, WebP and GIF.',
-            },
-          ],
-        },
+        { paths: [SHARP_IMPORT], patterns: [TELEMETRY_IMPORT] },
       ],
+    },
+  },
+  {
+    files: ['src/libs/utils/image.utils.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [TELEMETRY_IMPORT] }],
+    },
+  },
+  {
+    files: ['src/plugins/telemetry/**/*.ts', 'src/plugins.generated.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { paths: [SHARP_IMPORT] }],
     },
   },
 
