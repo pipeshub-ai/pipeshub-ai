@@ -46,6 +46,18 @@ if [[ $EUID -ne 0 ]] && \
    [[ -S /var/run/docker.sock ]] && \
    ! docker info >/dev/null 2>&1; then
   if command -v sudo >/dev/null 2>&1; then
+    # sudo resets the environment, so every setting read below that is set here is named to keep. --preserve-env=list, not
+    # `sudo env NAME=value`: it keeps the values off sudo's logged command line and also works where sudo allows only this script.
+    _keep=""
+    for _v in PIPESHUB_DEPLOY_TYPE PIPESHUB_GRAPH_DB PIPESHUB_BROKER PIPESHUB_KV_STORE PIPESHUB_VERSION PIPESHUB_IMAGE_SOURCE \
+              PIPESHUB_NO_PULL PIPESHUB_PORT PIPESHUB_PROJECT PIPESHUB_PUBLIC_URL PIPESHUB_IMAGE PIPESHUB_COMPOSE_OVERRIDES \
+              PIPESHUB_ENV_EXTRA PIPESHUB_INSTALL_REF PIPESHUB_BLOCK_PRIVATE_ADDRESSES HEALTH_WAIT_SECS APP_MEMORY_LIMIT \
+              APP_MEMSWAP_LIMIT APP_VERSION GIT_COMMIT IMAGE_TAG DEPLOY_TYPE DATA_STORE KV_STORE_TYPE MESSAGE_BROKER \
+              COMPOSE_PROFILES QDRANT_MEMORY_LIMIT SANDBOX_DOCKER_IMAGE; do
+      [[ -n "${!_v+x}" ]] && _keep="${_keep:+$_keep,}$_v"
+    done
+    # With nothing set the call stays plain sudo, which needs no permission to keep variables.
+    if [[ -n "$_keep" ]]; then exec sudo --preserve-env="$_keep" "${BASH_SOURCE[0]}" "$@"; fi
     exec sudo "${BASH_SOURCE[0]}" "$@"
   fi
   # sudo not available — fall through; the pre-flight check will give a clear error
@@ -270,11 +282,13 @@ optional_env_line() {
 }
 
 # The opt-in PostgreSQL profiles are not derived from a selector: keep the ones already set (in the shell or in the saved .env), and
-# both of them whenever the document-store override is in use, since it depends on services of both.
+# postgres and postgres-migrate whenever the document-store override is in use, since it depends on services of both.
 opt_in_profiles() {
   local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)"
-  for o in postgres postgres-migrate; do
-    if [[ ",${have}," == *",${o},"* || "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ]]; then echo "$o"; fi
+  for o in postgres postgres-migrate postgres-metrics; do
+    if [[ ",${have}," == *",${o},"* || ( "$o" != postgres-metrics && "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ) ]]; then
+      echo "$o"
+    fi
   done
 }
 
@@ -679,7 +693,7 @@ if $FLAG_STOP; then
   # profile stays attached to the network and blocks its removal
   # ("Resource is still in use"). --remove-orphans clears containers left by a
   # previously-active profile too.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,postgres-metrics"
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
@@ -702,7 +716,7 @@ if $FLAG_UNINSTALL; then
   # profile was active for this deployment.  Without this, volumes from a
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,postgres-metrics"
   # `down -v` with the postgres profile would delete the database with everything else: keep it unless asked.
   _keep_pg=false
   _pg_vol=""
@@ -1709,9 +1723,12 @@ printf "\n"
 printf "  %-22s %s\n" "Compose project:" "$PROJECT_NAME"
 printf "  %-22s %s\n" "Image source:"  "${IMAGE_SOURCE:-prebuilt}"
 printf "  %-22s %s\n" "Image tag:"     "${IMAGE_TAG:-latest}"
-printf "  %-22s %s\n" "Graph DB:"      "${DATA_STORE:-(unset)}"
-printf "  %-22s %s\n" "KV store:"      "${KV_STORE_TYPE:-redis}"
-printf "  %-22s %s\n" "Broker:"        "${MESSAGE_BROKER:-redis}"
+# This override puts every store on PostgreSQL, whatever the selections in .env say.
+_pg_only=""
+[[ "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-only.yml* ]] && _pg_only="postgres (docker-compose.postgres-only.yml)"
+printf "  %-22s %s\n" "Graph DB:"      "${_pg_only:-${DATA_STORE:-(unset)}}"
+printf "  %-22s %s\n" "KV store:"      "${_pg_only:-${KV_STORE_TYPE:-redis}}"
+printf "  %-22s %s\n" "Broker:"        "${_pg_only:-${MESSAGE_BROKER:-redis}}"
 printf "  %-22s %s\n" "Profiles:"      "${COMPOSE_PROFILES:-(none)}"
 printf "  %-22s %s\n" "Local URL:"     "http://localhost:${APP_PORT}"
 if [[ -n "${FRONTEND_PUBLIC_URL:-}" ]]; then

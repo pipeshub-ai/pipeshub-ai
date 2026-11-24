@@ -1058,6 +1058,33 @@ def _dated_rows(results: list[dict] | None) -> list[DatedRow]:
 
 _EXISTING_KEYS_CHUNK = 20000
 
+def _aql_expectations(expected: dict[str, Any], bind_vars: dict[str, Any], doc: str = "doc") -> list[str]:
+    """One FILTER per expected field (``None`` means absent), its names and values bound in ``bind_vars``."""
+    filters = []
+    for i, (name, value) in enumerate(expected.items()):
+        bind_vars[f"f{i}"] = name
+        if value is None:
+            filters.append(f"FILTER {doc}[@f{i}] == null")
+        else:
+            bind_vars[f"v{i}"] = value
+            filters.append(f"FILTER {doc}[@f{i}] == @v{i}")
+    return filters
+
+
+# A node's edges in one edge collection, one statement per direction: an OR over the
+# two cannot use the edge index, so it scanned the whole collection per node.
+_DELETE_EDGES_FROM_AQL = """
+            FOR edge IN @@edge_collection
+                FILTER edge._from IN @node_ids
+                REMOVE edge IN @@edge_collection
+            """
+_DELETE_EDGES_TO_AQL = """
+            FOR edge IN @@edge_collection
+                FILTER edge._to IN @node_ids
+                REMOVE edge IN @@edge_collection
+            """
+
+
 class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     ArangoDB implementation using REST API for fully async operations.
@@ -8860,14 +8887,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             transaction=transaction,
         )
 
-    async def get_graph_user_keys_by_mongo_user_ids(
+    async def get_graph_user_keys_by_mongo_user_ids_all_orgs(
         self,
         user_ids: list[str],
-        org_id: str | None = None,
         *,
         chunk_size: int,
     ) -> dict[str, str]:
-        """Return graph user _key for each Mongo userId (batched lookup)."""
+        """System-scope variant of ``get_graph_user_keys_by_mongo_user_ids``: no organisation term, because a Mongo
+        ``userId`` is unique across organisations. For maintenance jobs that hold ids from every organisation (the
+        service-account kind backfill); a request handler must use the org-bound lookup. The call sites are pinned by
+        ``tests/unit/services/graph_db/test_system_scope_lookups_allowlist.py``."""
+        from app.core.org_context import peek
+
+        ctx = peek()
+        if ctx is None or ctx.kind != "system":
+            # Fail closed: no organisation term below, so only an explicit system scope may run it.
+            raise PermissionError("get_graph_user_keys_by_mongo_user_ids_all_orgs requires an explicit system context")
         if not user_ids:
             return {}
 
@@ -8877,7 +8912,37 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = f"""
                 FOR user IN {CollectionNames.USERS.value}
                     FILTER user.userId IN @user_ids
-                    FILTER @org_id == null OR user.orgId == @org_id
+                    RETURN {{ userId: user.userId, _key: user._key }}
+            """
+            result = await self.http_client.execute_aql(query, bind_vars={"user_ids": chunk})
+            for user in result or []:
+                if user.get("userId") and user.get("_key"):
+                    mongo_to_key[user["userId"]] = user["_key"]
+
+        return mongo_to_key
+
+    async def get_graph_user_keys_by_mongo_user_ids(
+        self,
+        user_ids: list[str],
+        org_id: str | None = None,
+        *,
+        chunk_size: int,
+        allow_missing: bool = False,
+    ) -> dict[str, str]:
+        """Return graph user _key for each Mongo userId (batched lookup)."""
+        if not user_ids:
+            return {}
+        if not org_id:
+            # Fail closed: without an org the lookup would match a user of any organisation.
+            raise ValueError("org_id is required to look up graph users by Mongo user id")
+
+        mongo_to_key: dict[str, str] = {}
+        for i in range(0, len(user_ids), chunk_size):
+            chunk = user_ids[i:i + chunk_size]
+            query = f"""
+                FOR user IN {CollectionNames.USERS.value}
+                    FILTER user.userId IN @user_ids
+                    FILTER user.orgId == @org_id
                     RETURN {{ userId: user.userId, _key: user._key }}
             """
             result = await self.http_client.execute_aql(
@@ -8891,7 +8956,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     mongo_to_key[mongo_id] = graph_key
 
         missing = [user_id for user_id in user_ids if user_id not in mongo_to_key]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError(f"Users not found in graph: {missing}")
 
         return mongo_to_key
@@ -14274,102 +14339,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Delete every edge attached to a Local FS record."""
         await self._delete_every_edge_of_record(record_id, transaction)
 
-    async def get_key_by_external_file_id(
-        self,
-        external_file_id: str,
-        transaction: str | None = None
-    ) -> str | None:
-        """
-        Get internal file key using the external file ID.
-
-        Args:
-            external_file_id (str): External file ID to look up
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Internal file key if found, None otherwise
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Retrieving internal key for external file ID {external_file_id}"
-            )
-
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_file_id
-                RETURN record._key
-            """
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={"external_file_id": external_file_id},
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Successfully retrieved internal key for external file ID {external_file_id}"
-                )
-                return results[0]
-            else:
-                self.logger.warning(
-                    f"⚠️ No internal key found for external file ID {external_file_id}"
-                )
-                return None
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_key_by_external_file_id")
-            return None
-
-    async def get_key_by_external_message_id(
-        self,
-        external_message_id: str,
-        transaction: str | None = None
-    ) -> str | None:
-        """
-        Get internal key by external message ID.
-
-        Args:
-            external_message_id (str): External message ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Internal key if found, None otherwise
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Retrieving internal key for external message ID {external_message_id}"
-            )
-
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record.externalRecordId == @external_message_id
-                RETURN record._key
-            """
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={"external_message_id": external_message_id},
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Successfully retrieved internal key for external message ID {external_message_id}"
-                )
-                return results[0]
-            else:
-                self.logger.warning(
-                    f"⚠️ No internal key found for external message ID {external_message_id}"
-                )
-                return None
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_key_by_external_message_id")
-            return None
-
     async def get_message_id_header_by_key(
         self,
         record_key: str,
@@ -14419,62 +14388,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="get_message_id_header_by_key", record_id=record_key)
             return None
-
-    async def get_related_mails_by_message_id_header(
-        self,
-        message_id_header: str,
-        exclude_key: str,
-        collection: str,
-        transaction: str | None = None
-    ) -> list[str]:
-        """
-        Find all mail records with the same messageIdHeader, excluding a specific key.
-
-        Args:
-            message_id_header (str): messageIdHeader value to search for
-            exclude_key (str): Record key to exclude from results
-            collection (str): Collection name (e.g., "records" or "mails")
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[str]: List of record keys (_key or id) matching the criteria
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Finding related mails with messageIdHeader {message_id_header}, excluding {exclude_key}"
-            )
-
-            query = f"""
-            FOR record IN {collection}
-                FILTER record.messageIdHeader == @message_id_header
-                AND record._key != @exclude_key
-                RETURN record._key
-            """
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={
-                    "message_id_header": message_id_header,
-                    "exclude_key": exclude_key
-                },
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Found {len(results)} related mails with messageIdHeader {message_id_header}"
-                )
-                return results
-            else:
-                self.logger.debug(
-                    f"ℹ️ No related mails found with messageIdHeader {message_id_header}"
-                )
-                return []
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_related_mails_by_message_id_header")
-            return []
 
     async def count_connector_instances_by_scope(
         self,
@@ -15404,6 +15317,69 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     error_class.log_failure(self.logger, "graph.provider.step_failed", rb_err, include_error_text=False,
                                             op="delete_nodes_and_edges", step="rollback")
             raise
+
+    async def delete_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        expected: dict[str, Any],
+        graph_name: str = GraphNames.KNOWLEDGE_GRAPH.value,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.delete_node_if_match`.
+
+        The first statement removes the node only while the expectation holds; the edges
+        go after it in the same transaction, so a miss writes nothing. Two deleters, or a
+        deleter and a writer that re-created the key, meet on the node's document: the loser
+        gets a write-write conflict and runs again from a new transaction, where the
+        expectation is read against the winner's write. Inside a caller's transaction the
+        conflict is raised for its owner to handle."""
+        if not expected:
+            raise ValueError("delete_node_if_match needs an expectation")
+        if collection == CollectionNames.RECORDS.value:
+            raise ValueError("records are deleted with their type documents: use delete_nodes_and_edges")
+        edge_collections = list(dict.fromkeys(
+            c for listed in await self._edge_collections_of_graph(graph_name) for c in self._logical_edge_collections(listed)
+        ))
+        bind_vars: dict[str, Any] = {"@collection": collection, "key": key}
+        newline = "\n                "
+        remove_node = f"""
+            FOR doc IN @@collection
+                FILTER doc._key == @key
+                {newline.join(_aql_expectations(expected, bind_vars))}
+                REMOVE doc IN @@collection
+                RETURN 1
+            """
+        node_ids = [f"{collection}/{key}"]
+
+        async def delete_in(txn: str) -> bool:
+            if not await self.http_client.execute_aql(remove_node, bind_vars=bind_vars, txn_id=txn):
+                return False
+            for edge_collection in edge_collections:
+                for query in (_DELETE_EDGES_FROM_AQL, _DELETE_EDGES_TO_AQL):
+                    await self.http_client.execute_aql(
+                        query, bind_vars={"node_ids": node_ids, "@edge_collection": edge_collection}, txn_id=txn,
+                    )
+            return True
+
+        if transaction is not None:
+            return await delete_in(transaction)
+
+        async def in_own_transaction() -> bool:
+            txn = await self.begin_transaction(read=[], write=[collection, *edge_collections])
+            committed = False
+            try:
+                deleted = await delete_in(txn)
+                if deleted:
+                    await self.commit_transaction(txn)
+                    committed = True
+                return deleted
+            finally:
+                if not committed:
+                    # BaseException too: a cancelled task must not leave the stream transaction holding its lock until the idle timeout.
+                    await asyncio.shield(self._abort_quietly(txn))
+
+        return await self._retry_write_conflicts(in_own_transaction, None)
 
     async def update_edge(
         self,
@@ -23706,6 +23682,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         origin: str,
         edges: list[dict],
         transaction: str | None = None,
+        *,
+        keep_edge_types: Collection[str] = (),
     ) -> None:
         """See :meth:`IGraphDBProvider.replace_record_entity_relations`."""
         if not record_id or not to_collections or not origin:
@@ -23722,11 +23700,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR e IN {relations}
                     FILTER e._from == @from AND PARSE_IDENTIFIER(e._to).collection IN @collections
                     FILTER NOT_NULL(e.origin, @inferred) == @origin AND [e._to, e.edgeType] NOT IN @kept
+                    FILTER NOT_NULL(e.edgeType, '') NOT IN @keep
                     REMOVE e IN {relations}
                 """,
                 bind_vars={
                     "from": f"{CollectionNames.RECORDS.value}/{record_id}", "collections": to_collections,
-                    "origin": origin, "inferred": EntityOrigin.INFERRED.value,
+                    "origin": origin, "inferred": EntityOrigin.INFERRED.value, "keep": list(keep_edge_types),
                     "kept": [[e["_to"], e["edgeType"]] for e in self._translate_edges_to_arango(edges)],
                 },
                 txn_id=txn,

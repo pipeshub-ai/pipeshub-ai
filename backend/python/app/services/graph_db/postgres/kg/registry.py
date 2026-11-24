@@ -41,6 +41,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "delete_edges_to": (PROJECTED, ""),
     "delete_edges_to_groups": (PROJECTED, ""),
     "delete_edges_touching_nodes": (PROJECTED, ""),
+    "delete_node_if_match": (PROJECTED, ""),
     "delete_nodes": (PROJECTED, ""),
     "delete_parent_child_edge_to_record": (PROJECTED, ""),
     "delete_records_and_relations": (PROJECTED, ""),

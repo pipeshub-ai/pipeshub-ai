@@ -12,7 +12,13 @@ its authorization server is that org's ``/oauth2/v1``, with PKCE S256 and a
 ``registration_endpoint`` that returns 403 ``E0000005`` without a session.
 """
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -37,6 +43,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             ),
         ),
         tags=["identity", "iam", "admin"],
+        category=MCPCategory.SECURITY,
+        capabilities=[
+            "Look up users and groups",
+            "Check group membership",
+            "Review who has access",
+        ],
+        read_only=True,
     )
 )
 class OktaMCPServer:

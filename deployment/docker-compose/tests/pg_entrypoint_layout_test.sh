@@ -43,4 +43,10 @@ for bad in 'a@b' 'a:b' 'a/b' 'a?b' 'a#b' 'a%b' 'a!b' 'a=b'; do
   EXTRA_ENV="PG_JOBS_PASSWORD=$bad" run "password '$bad' refused" 78 ROOT/data
 done
 EXTRA_ENV='PG_NODE_PASSWORD=Ab1._~-' run "the allowed punctuation starts" 0 ROOT/data
+# WAL archiving follows docker-compose.postgres-backup.yml (PGBACKREST_STANZA), and is off without it
+archive="-c archive_mode=on -c archive_command=pgbackrest-archive-push.sh %p -c archive_timeout=60"
+run "starts without a stanza" 0 ROOT/data
+if [[ "$out" == *archive_* ]]; then echo "FAIL archiving is off without a stanza: $out"; fail=1; else echo "ok   archiving is off without a stanza"; fi
+EXTRA_ENV='PGBACKREST_STANZA=pipeshub' run "starts with a stanza" 0 ROOT/data
+if [[ "$out" == *"$archive"* ]]; then echo "ok   a stanza turns archiving on"; else echo "FAIL a stanza turns archiving on: $out"; fail=1; fi
 exit $fail

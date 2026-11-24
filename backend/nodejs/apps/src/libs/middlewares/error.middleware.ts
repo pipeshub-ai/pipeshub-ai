@@ -16,6 +16,7 @@ import {
   routeParams,
   routeTemplate,
 } from './access-log.middleware';
+import { INVALID_PATH_SEGMENT_MESSAGE } from './safe-path-params.middleware';
 
 /**
  * What a reader is told when the failure is in PipesHub's own plumbing (a
@@ -71,6 +72,19 @@ function bodyParserError(error: Error): HttpError | null {
   }
 }
 
+/**
+ * Express's router answers a path segment that is not valid percent-encoding
+ * (`%E0%A4%A`, `%ZZ`) with a URIError marked 400, before any route runs. Its
+ * message quotes the segment as sent, so a fixed sentence replaces it. Our own
+ * `decodeURIComponent` throws a URIError without `status`: that stays a 500.
+ */
+function malformedPathError(error: Error): HttpError | null {
+  return error instanceof URIError &&
+    (error as URIError & { status?: unknown }).status === 400
+    ? new BadRequestError(INVALID_PATH_SEGMENT_MESSAGE)
+    : null;
+}
+
 const omitAccessNotices = (
   metadata: ErrorMetadata | undefined,
 ): ErrorMetadata | undefined => {
@@ -120,11 +134,14 @@ export class ErrorMiddleware {
       try {
         // A call to another PipesHub service that got no answer is a 503
         // (504 on a timeout) wherever it was thrown, not an unknown 500.
-        // The parser's own error is not kept as the cause: its message quotes the body.
+        // The parser's or router's own error is not kept as the cause: its
+        // message quotes the body or the path.
         const mapped =
           error instanceof BaseError
             ? error
-            : (bodyParserError(error) ?? unansweredCallError(error));
+            : (bodyParserError(error) ??
+              malformedPathError(error) ??
+              unansweredCallError(error));
         // Logged even when the response has started (a stream that failed
         // midway): controllers no longer log what they pass on.
         this.logRequestError(mapped ?? error, req, res);

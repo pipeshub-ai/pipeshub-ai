@@ -627,17 +627,21 @@ def counters(c, org: str) -> list[tuple]:
 
 
 def test_a_write_of_the_records_adds_its_counter_deltas_in_the_writers_org_and_the_fold_writers_replace_them(pdb):
-    """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record of a connector adds a facet 2 delta, an
-    unchanged repeat adds none, its delete takes it back. The fold's writers delete the deltas by id in the session org only and insert folded rows."""
+    """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record a listing counts by class (stamped and
+    decided) adds a facet 1 delta, an unchanged repeat adds none, its delete takes it back. kg_0023: no facet 2 delta (record type and origin) any more. The fold's writers
+    delete the deltas by id in the session org only and insert folded rows."""
     with conn(pdb) as c:
         clean(c)
         live = rec_args((11, rec_values(deleted=False)))
         call(c, "kg.w_records_upsert", ORG_A, live)
-        call(c, "kg.w_records_upsert", ORG_A, live)
         call(c, "kg.w_records_upsert", ORG_B, rec_args((11, rec_values(deleted=True))))          # not live: counts nowhere
-        assert counters(c, ORG_A) == [(2, "FILE", "CONNECTOR", 1, False)] and counters(c, ORG_B) == []
+        assert counters(c, ORG_A) == [] and counters(c, ORG_B) == []                            # live, not decided yet: no facet 1, and no facet 2 at all
+        call(c, "kg.w_stamps_set", ORG_A, ([11], [3], ["rec-1"], [3], [b"\x00\x01"], [9], [True], [True], [False], [True], [4], [False]))
+        call(c, "kg.w_r13_set", ORG_A, ([11], [3], ["rec-1"], [3], [False]))
+        call(c, "kg.w_records_upsert", ORG_A, live)
+        assert counters(c, ORG_A) == [(1, None, None, 1, False)]
         call(c, "kg.w_records_delete", ORG_A, ([11],))
-        assert counters(c, ORG_A) == [(2, "FILE", "CONNECTOR", 1, False), (2, "FILE", "CONNECTOR", -1, False)]
+        assert counters(c, ORG_A) == [(1, None, None, 1, False), (1, None, None, -1, False)]
         ids = [r[0] for r in c.execute("SELECT id FROM kg.counts WHERE org_id = %s", (ORG_A,))]
         assert call(c, "kg.w_counts_delete", ORG_B, (ids,)) == [(0,)]                                # another org's ids are not theirs to delete
         assert call(c, "kg.w_counts_delete", ORG_A, (ids,)) == [(2,)]

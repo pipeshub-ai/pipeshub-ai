@@ -1,6 +1,12 @@
 """GitHub MCP server template — official remote server (Streamable HTTP)."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -24,6 +30,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Create a fine-grained PAT at https://github.com/settings/tokens, or sign in with OAuth.",
         ),
         tags=["dev", "vcs"],
+        category=MCPCategory.DEVELOPER,
+        capabilities=[
+            "Review pull requests",
+            "Open and triage issues",
+            "Search code",
+            "Check workflow runs",
+        ],
     )
 )
 class GitHubMCPServer:

@@ -155,6 +155,7 @@ CALLS = [
     ("set_record_properties", ("k",), {"values": {}, "previous_names": (), "controls": {"propsVer": 1}, "conditions": [Cond("propsVer", "is_null")]}),
     ("delete_nodes", (["k"], "things"), {}),
     ("delete_nodes_and_edges", (["k"], "things"), {}),
+    ("delete_node_if_match", ("k", "things", {"v": 0}), {}),
     ("batch_create_edges", ([_EDGE], "belongsTo"), {}),
     ("get_edge", ("x", "things", "y", "things", "belongsTo"), {}),
     ("get_edges_to_node", ("things/y", "belongsTo"), {}),

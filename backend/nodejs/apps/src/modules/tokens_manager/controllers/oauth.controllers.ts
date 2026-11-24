@@ -19,6 +19,7 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../utils/connector.utils';
 import { buildProxyHeaders } from './connector.controllers';
 import { isSecretRevealRequested } from '../../configuration_manager/utils/secretReveal';
+import { auditSettingsChange } from '../../configuration_manager/utils/config-audit';
 
 // ============================================================================
 // Helper Functions
@@ -35,6 +36,7 @@ import { isSecretRevealRequested } from '../../configuration_manager/utils/secre
  * @param buildPayload - Optional function to build request payload
  * @param operationName - Human-readable operation name for logging
  * @param method - HTTP method (GET, POST, PUT, DELETE)
+ * @param onSaved - For a write: called with the service's answer once it saved (2xx), to write the audit line
  * @returns Express route handler function
  */
 const createOAuthApiHandler = (
@@ -45,6 +47,7 @@ const createOAuthApiHandler = (
   operationName: string,
   method: HttpMethod,
   notFoundMessage: string,
+  onSaved?: (req: AuthenticatedUserRequest, data: unknown) => void,
 ) => {
   return async (
     req: AuthenticatedUserRequest,
@@ -84,6 +87,7 @@ const createOAuthApiHandler = (
         operationName,
         notFoundMessage,
       );
+      onSaved?.(req, connectorResponse.data);
     } catch (error: any) {
       const handledError = handleBackendError(error, operationName.toLowerCase());
       next(handledError);
@@ -213,6 +217,10 @@ export const createOAuthConfig = (appConfig: AppConfig) =>
     'Creating OAuth config',
     HttpMethod.POST,
     'Failed to create OAuth config',
+    (_req, data) =>
+      auditSettingsChange('connector_oauth_app', 'create', {
+        target: (data as { oauthConfig?: { _id?: string } }).oauthConfig?._id,
+      }),
   );
 
 /**
@@ -276,6 +284,10 @@ export const updateOAuthConfig = (appConfig: AppConfig) =>
     'Updating OAuth config',
     HttpMethod.PUT,
     'OAuth config not found',
+    (req) =>
+      auditSettingsChange('connector_oauth_app', 'update', {
+        target: req.params.configId as string,
+      }),
   );
 
 /**
@@ -298,5 +310,9 @@ export const deleteOAuthConfig = (appConfig: AppConfig) =>
     'Deleting OAuth config',
     HttpMethod.DELETE,
     'OAuth config not found',
+    (req) =>
+      auditSettingsChange('connector_oauth_app', 'delete', {
+        target: req.params.configId as string,
+      }),
   );
 

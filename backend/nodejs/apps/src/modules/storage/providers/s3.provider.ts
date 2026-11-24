@@ -30,6 +30,7 @@ import {
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
+import { vendorFailure } from './vendor-failure';
 import { Logger } from '../../../libs/services/logger.service';
 import { encodeRFC5987 } from '../utils/utils';
 import {
@@ -132,7 +133,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new StorageConfigurationError('Failed to initialize S3 adapter', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -156,13 +157,6 @@ class AmazonS3Adapter implements StorageServiceInterface {
         Body: documentInPayload.buffer,
         ContentType: documentInPayload.mimeType,
       };
-      if (process.env.NODE_ENV == 'development') {
-        this.logger.info('Starting S3 upload', {
-          path: documentInPayload.documentPath,
-          size: documentInPayload.buffer.length,
-        });
-      }
-
       const result = await this.s3.upload(uploadParams).promise();
 
       if (result.Key === undefined || result.Key === '') {
@@ -171,9 +165,8 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
       const fileUrl = this.getS3Url(result.Key);
       if (process.env.NODE_ENV == 'development') {
-        this.logger.info('S3 upload successful', {
+        this.logger.debug('S3 upload successful', {
           path: documentInPayload.documentPath,
-          url: fileUrl,
         });
       }
 
@@ -186,7 +179,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new StorageUploadError('Failed to upload document to S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -225,7 +218,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
       const updatedUrl = this.getS3Url(result.Key);
       if (process.env.NODE_ENV == 'development') {
-        this.logger.info('S3 update successful', { key, updatedUrl });
+        this.logger.debug('S3 update successful', { key });
       }
       return { statusCode: 200, data: updatedUrl };
     } catch (error) {
@@ -233,7 +226,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new StorageUploadError('Failed to update document in S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -356,7 +349,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw new StorageDownloadError('Retrieved object has no content');
       }
       if (process.env.NODE_ENV == 'development') {
-        this.logger.info('S3 object fetched successfully', { key });
+        this.logger.debug('S3 object fetched successfully', { key });
       }
       return {
         statusCode: 200,
@@ -367,7 +360,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new StorageDownloadError('Failed to get document from S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -405,7 +398,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new MultipartUploadError('Failed to initialize multipart upload', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -442,7 +435,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new PresignedUrlError('Failed to generate presigned URL for part', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -483,7 +476,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new MultipartUploadError('Failed to complete multipart upload', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -515,7 +508,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new PresignedUrlError('Failed to generate presigned URL', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -562,7 +555,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new PresignedUrlError('Failed to generate signed URL', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -633,7 +626,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new PresignedUrlError('Failed to generate signed URL', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -733,7 +726,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw new StorageValidationError('The listing cursor is not valid');
       }
       throw new StorageDownloadError('Failed to list objects in S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -765,7 +758,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to delete objects from S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -820,7 +813,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to delete objects from S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1173,12 +1166,12 @@ class AmazonS3Adapter implements StorageServiceInterface {
         // ignore; the key may not exist as a standalone object
       }
 
-      this.logger.info('S3 delete successful', { path: storagePath });
+      this.logger.debug('S3 delete successful', { path: storagePath });
       return { statusCode: 200, data: undefined };
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to delete object from S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1197,7 +1190,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         })
         .promise();
       const destUrl = this.getS3Url(destinationPath);
-      this.logger.info('S3 copy successful', {
+      this.logger.debug('S3 copy successful', {
         src: sourcePath,
         dst: destinationPath,
       });
@@ -1205,7 +1198,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to copy object in S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1242,7 +1235,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
           .promise();
       }
 
-      this.logger.info('S3 tree copy successful', {
+      this.logger.debug('S3 tree copy successful', {
         src: sourcePrefix,
         dst: destinationPrefix,
       });
@@ -1250,7 +1243,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to copy tree in S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1272,7 +1265,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         .deleteObject({ Bucket: this.bucketName, Key: sourcePath })
         .promise();
       const destUrl = this.getS3Url(destinationPath);
-      this.logger.info('S3 rename successful', {
+      this.logger.debug('S3 rename successful', {
         src: sourcePath,
         dst: destinationPath,
       });
@@ -1280,7 +1273,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to rename object in S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1292,7 +1285,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     try {
       await this.copyTree(sourcePrefix, destinationPrefix);
       await this.deleteTree(sourcePrefix);
-      this.logger.info('S3 tree rename successful', {
+      this.logger.debug('S3 tree rename successful', {
         src: sourcePrefix,
         dst: destinationPrefix,
       });
@@ -1300,7 +1293,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to rename tree in S3', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1381,7 +1374,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
         url,
         bucket: this.bucketName,
         region: this.region,
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }

@@ -1433,7 +1433,15 @@
         },
         "toolNeedsApproval": "Vyžaduje schválení",
         "toolNeedsApprovalHint": "Tento nástroj může mazat data. V chatu projektu se spustí až po schválení.",
-        "indexingStatusLabel": "Indexování: {{status}}"
+        "indexingStatusLabel": "Indexování: {{status}}",
+        "collectionsTitle": "Kolekce",
+        "collectionsSubtitle": "Chaty v tomto projektu prohledávají vybrané kolekce a nahrané projektové soubory.",
+        "noCollectionsAvailable": "Zatím nejsou k dispozici žádné kolekce k přidání.",
+        "failedToLoadCollections": "Nepodařilo se načíst kolekce",
+        "updateCollectionsFailed": "Nepodařilo se aktualizovat kolekce",
+        "collectionsStatusCount": "Vybráno: {{count}}",
+        "collectionsStatusNone": "Žádné",
+        "untitledCollection": "Nepojmenovaná kolekce"
       },
       "moveDialog": {
         "title": "Přesunout do projektu",
@@ -2943,7 +2951,7 @@
           "pipeshub_search": "Prohledává indexované dokumenty podle významu v konektorech a kolekcích, které může uživatel číst, a vrací odpovídající pasáže s jejich záznamy.",
           "pipeshub_get_record_content": "Přečte celý text jednoho záznamu. Umí také najít záznam podle adresy URL, klíče požadavku nebo externího ID, procházet obsah složky, prostoru nebo epiku a přečíst celé vlákno ve Slacku.",
           "pipeshub_download_record": "Stáhne původní soubor uložený k záznamu, volitelně převedený do PDF.",
-          "pipeshub_directory": "Vyhledá přihlášeného uživatele, uživatele a skupiny pracovního prostoru a týmy, do kterých uživatel patří. Nic nemění.",
+          "pipeshub_directory": "Vyhledá přihlášeného uživatele, uživatele pracovního prostoru a týmy, do kterých uživatel patří. Nic nemění.",
           "pipeshub_create_collection": "Vytvoří novou prázdnou kolekci ve vlastnictví uživatele, připravenou pro nahrávání.",
           "pipeshub_upload": "Nahraje dokumenty do kolekce, aby se indexovaly a daly se vyhledat. Nejvýše 20 dokumentů a přibližně 3 MB na jedno volání.",
           "pipeshub_indexing_status": "Hlásí, jak daleko je indexování kolekce a které dokumenty selhaly a proč.",
@@ -2992,7 +3000,7 @@
           },
           "people": {
             "label": "Lidé a entity",
-            "description": "Uživatelé a skupiny pracovního prostoru a lidé, projekty, témata a hodnoty v jeho znalostním grafu."
+            "description": "Uživatelé pracovního prostoru a lidé, projekty, témata a hodnoty v jeho znalostním grafu."
           },
           "chat": {
             "label": "Chat a agenti",
@@ -3925,6 +3933,25 @@
         "reach": "Změny v {{connector}} se v PipesHub projeví do {{interval}}.",
         "reachUnknown": "Změny v {{connector}} se v PipesHub projeví při další synchronizaci.",
         "syncNow": "Synchronizovat oprávnění nyní",
+        "filter": {
+          "label": "Jak vyhledávání ověřuje přístup",
+          "mode": {
+            "inherit": "Výchozí nastavení nasazení",
+            "legacy": "Klasická kontrola",
+            "scopes": "Rychlejší vyhledávání"
+          },
+          "effective": {
+            "scopes": "Vyhledávání v {{connector}} používá rychlejší vyhledávání: výsledky se ještě před nalezením zúží na to, co smí každý člověk vidět, a každý výsledek se stále kontroluje.",
+            "legacy": "Vyhledávání v {{connector}} používá klasickou kontrolu: výsledky se kontrolují až po nalezení."
+          },
+          "waiting": "Rychlejší vyhledávání začne, jakmile budou oprávnění {{connector}} aktuální.",
+          "applies": "Tato změna se do vyhledávání promítne do 30 sekund.",
+          "blocker": {
+            "serving_off": "Rychlejší vyhledávání je v tomto nasazení vypnuté.",
+            "store_unsupported": "Vektorové úložiště tohoto nasazení rychlejší vyhledávání nepodporuje."
+          },
+          "saveError": "Toto nastavení se nepodařilo změnit. Zkuste to znovu."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -4114,7 +4141,6 @@
         "unavailable": "Nedostupné"
       },
       "catalog": {
-        "title": "Přidat další servery",
         "description": "Připravené servery. Přidejte jeden a pak se k němu přihlaste.",
         "personalDescription": "Servery, které sem přidáte, uvidíte jen vy.",
         "added": "Přidáno",
@@ -4377,6 +4403,73 @@
         "signIn": "{{name}} je přidán. Přihlaste se níže, aby jeho nástroje mohly běžet.",
         "other": "{{name}} je přidán, ale zatím nefunguje. Důvod najdete níže.",
         "dismiss": "Hotovo"
+      },
+      "searchYourServers": "Hledat ve vašich serverech",
+      "categories": {
+        "communication": "Komunikace",
+        "meetings": "Schůzky a kalendář",
+        "docs": "Dokumenty a soubory",
+        "projects": "Řízení projektů",
+        "developer": "Nástroje pro vývojáře",
+        "data": "Data a analytika",
+        "sales": "Prodej a CRM",
+        "support": "Zákaznická podpora",
+        "finance": "Finance a právo",
+        "design": "Design a tabule",
+        "automation": "Automatizace",
+        "search": "Vyhledávání a výzkum",
+        "security": "Zabezpečení a identita"
+      },
+      "discover": {
+        "title": "Objevit servery",
+        "searchPlaceholder": "Hledejte podle názvu nebo anglicky podle toho, co chcete udělat, např. „schedule meetings“",
+        "searchLabel": "Hledat připravené servery",
+        "clearSearch": "Vymazat hledání",
+        "categoriesLabel": "Kategorie",
+        "all": "Vše",
+        "allServers": "Všechny servery",
+        "resultsFor_one": "{{count}} server pro „{{query}}“",
+        "resultsFor_few": "{{count}} servery pro „{{query}}“",
+        "resultsFor_many": "{{count}} serverů pro „{{query}}“",
+        "resultsFor_other": "{{count}} serverů pro „{{query}}“",
+        "searching": "Hledá se…",
+        "catalogLoadFailed": "Katalog se nepodařilo načíst.",
+        "noMatch": "Žádný připravený server neodpovídá „{{query}}“. Libovolný server můžete přidat i podle jeho URL.",
+        "whatItDoes": "Co umí",
+        "beforeYouAdd": "Než ho přidáte",
+        "readOnly": "Jen čte",
+        "changesData": "Čte a mění data",
+        "readOnlyNote": "Jen vyhledává informace.",
+        "changesDataNote": "Nástroje, které mění data, se před spuštěním zeptají, pokud je nepovolíte.",
+        "signIn": "Přihlášení",
+        "signInOauth": "Každý se přihlásí svým účtem {{name}}",
+        "signInToken": "API token",
+        "signInNone": "Přihlášení není potřeba",
+        "documentation": "Dokumentace",
+        "added_one": "Přidáno",
+        "added_few": "{{count}} přidány",
+        "added_many": "{{count}} přidáno",
+        "added_other": "{{count}} přidáno",
+        "addOrg": "Přidat do organizace",
+        "addPersonal": "Přidat pro sebe",
+        "orgNote": "Uvidí ho všichni ve vaší organizaci. Každý se pro použití přihlásí.",
+        "personalNote": "Uvidíte ho jen vy.",
+        "popularTitle": "Oblíbené ve vaší organizaci",
+        "popularHint": "Podle přihlášených lidí",
+        "peopleUse_one": "Používá ho {{count}} člověk",
+        "peopleUse_few": "Používají ho {{count}} lidé",
+        "peopleUse_many": "Používá ho {{count}} lidí",
+        "peopleUse_other": "Používá ho {{count}} lidí",
+        "browse": "Procházet MCP servery",
+        "browseHint": "Přidejte server a přihlaste se k němu; pak se objeví v seznamu a půjde přetáhnout na plátno.",
+        "fromCatalog": "Z katalogu",
+        "add": "Přidat",
+        "view": "Zobrazit",
+        "askAdmin": "Sdílený agent může používat jen servery, které přidala vaše organizace. Požádejte správce, aby nějaký přidal.",
+        "sharedAgentNote": "Server, který může používat sdílený agent, může přidat jen správce. Požádejte správce, aby pro vaši organizaci přidal {{name}}.",
+        "addedSignIn": "{{name}} je přidán. Přihlaste se k němu v seznamu, abyste mohli používat jeho nástroje.",
+        "emptyBuilder": "Zatím žádné MCP servery. Přidejte jeden a dejte tomuto agentovi nástroje z aplikací jako Linear, Slack nebo GitHub.",
+        "noAddedMatch": "Žádný z vašich serverů neodpovídá."
       }
     },
     "bots": {
@@ -4518,6 +4611,7 @@
         "candidateApproved": "\"{{name}}\" schváleno",
         "candidateRejected": "\"{{name}}\" zamítnuto",
         "candidateActionError": "Nepodařilo se aktualizovat kandidáta",
+        "candidateGone": "Tento kandidát už byl zkontrolován",
         "conflict": "Tato dovednost byla změněna jinde",
         "conflictDescription": "Načtěte nejnovější verzi a poté své úpravy proveďte znovu.",
         "conflictReload": "Načíst znovu"
@@ -5855,7 +5949,6 @@
     "mcpServerAlreadyAttachedNotify": "Tento agent již má jiný server stejného typu jako {{name}}. Agent může používat jen jeden server každého typu.",
     "webSearchOnlyOne": "Lze připojit pouze jednoho poskytovatele vyhledávání na webu",
     "mcpServerNodeSubtitle": "Nástroje z MCP serveru",
-    "noMcpServersAvailable": "Nejsou k dispozici žádné MCP servery",
     "webSearchLocked": "Vyhledávání na webu nelze pro tohoto agenta měnit",
     "webSearchLoading": "Načítání poskytovatelů vyhledávání na webu…",
     "webSearchConfigureFirst": "Nejprve nastavte {{name}}",

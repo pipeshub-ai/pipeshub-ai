@@ -5,10 +5,10 @@ import { PatController } from '../../../../src/modules/oauth_provider/controller
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend'
 import { makeOrgContext, runWithOrgContext } from '../../../../src/libs/context/orgContext'
+import { captureLogRecords, inRequestContext, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 describe('PatController', () => {
   let controller: PatController
-  let mockLogger: any
   let mockPatService: any
   let mockScopeValidatorService: any
   let mockReq: any
@@ -16,7 +16,6 @@ describe('PatController', () => {
   let mockNext: any
 
   beforeEach(() => {
-    mockLogger = { info: sinon.stub(), warn: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
     mockPatService = {
       createToken: sinon.stub(),
       listTokens: sinon.stub(),
@@ -28,7 +27,7 @@ describe('PatController', () => {
     mockScopeValidatorService = {
       getScopeDefinitions: sinon.stub().returns([]),
     }
-    controller = new PatController(mockLogger, mockPatService, mockScopeValidatorService)
+    controller = new PatController(mockPatService, mockScopeValidatorService)
     mockReq = {
       user: { orgId: 'org-1', userId: 'user-1', fullName: 'Test User' },
       query: {},
@@ -330,5 +329,31 @@ describe('PatController', () => {
       await controller.adminRevokeToken(mockReq, mockRes, mockNext)
       expect(mockNext.calledOnce).to.be.true
     })
+  })
+
+  // PatService logs each change once, next to the write; the controller adds no twin (nor the token's name).
+  describe('a change that succeeds', () => {
+    const changes: Array<[string, () => Promise<void>]> = [
+      ['createToken', () => controller.createToken(mockReq, mockRes, mockNext)],
+      ['revokeToken', () => controller.revokeToken(mockReq, mockRes, mockNext)],
+      ['adminRevokeToken', () => controller.adminRevokeToken(mockReq, mockRes, mockNext)],
+    ]
+    for (const [name, run] of changes) {
+      it(`${name} writes no log line of its own`, async () => {
+        mockPatService.createToken.resolves({ id: 'tok-1', name: 'n5a7-pat-label', scopes: [], accessToken: 'raw' })
+        mockPatService.revokeToken.resolves()
+        mockPatService.adminRevokeToken.resolves()
+        mockReq.params = { tokenId: 'tok-1' }
+        mockReq.body = { name: 'n5a7-pat-label' }
+        const records = captureLogRecords()
+        const id = newRequestId('pat')
+
+        await inRequestContext(id, run)
+
+        expect(mockNext.called).to.be.false
+        expect(mockRes.json.calledOnce).to.be.true
+        expect(recordsOf(records, id)).to.deep.equal([])
+      })
+    }
   })
 })

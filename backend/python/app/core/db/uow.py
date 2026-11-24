@@ -325,7 +325,6 @@ class KernelDB:
         # set by app.services.graph_db.postgres.kg.flush.install: asked before a statement that writes the graph, and awaited before COMMIT of every write unit
         self.graph_write_hook: Callable[[Tx, str], None] | None = None
         self.pre_commit_hook: Callable[[Tx], Awaitable[None]] | None = None
-        self.post_commit_hook: Callable[[Tx], None] | None = None  # called, without waiting, once a write unit has committed
 
     # ---- lifecycle ---------------------------------------------------------------------------------------------
     async def start(self) -> None:
@@ -563,11 +562,6 @@ class KernelDB:
                 tx._record("commit", None, t_commit, failure, getattr(e, "sqlstate", None))
                 raise failure from e
             outcome = "commit"
-            if write and self.post_commit_hook is not None:
-                try:
-                    self.post_commit_hook(tx)  # the unit is committed: a hook that fails must not fail it
-                except Exception:
-                    logger.exception("post-commit hook failed")
         except BaseException as e:
             if not tx.commit_sent:
                 with suppress(Exception):

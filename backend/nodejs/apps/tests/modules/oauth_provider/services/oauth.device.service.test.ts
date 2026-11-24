@@ -19,7 +19,7 @@ import {
 import { BadRequestError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
-import { createMockLogger, MockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard, MockLogger } from '../../../helpers/mock-logger'
 
 function sha256Hex(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex')
@@ -91,7 +91,11 @@ describe('OAuthDeviceService', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT
   })
@@ -588,6 +592,14 @@ describe('OAuthDeviceService', () => {
     expect(denied.status).to.equal(OAuthDeviceCodeStatus.DENIED)
     expect(denied.userId).to.equal(undefined)
     expect(mockOAuthTokenService.generateTokens.called).to.be.false
+    expect(mockLogger.info.args).to.deep.include([
+      'Device authorization approved',
+      { client_id: 'cid', user_id: userId, org_id: orgId },
+    ])
+    expect(mockLogger.info.args).to.deep.include([
+      'Device authorization denied',
+      { client_id: 'cid', user_id: userId },
+    ])
   })
 
   it('should surface isDynamic on consent data', async () => {
