@@ -1607,6 +1607,22 @@ class TestForeignSharedDrive:
         assert self._last_group_write(connector)[1] == ["b@example.com"]
         dep.delete_permission_from_record.assert_awaited_once_with("rec-1", "a@example.com", connector.connector_id)
 
+    async def test_a_leaver_loses_their_grant_on_a_trashed_file_too(self, connector) -> None:
+        """Restored, a trashed file would come back still granting the leaver."""
+        from app.services.graph_db.common.record_visibility import RecordVisibility
+
+        self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        dep = connector.data_entities_processor
+        dep.get_record_group_by_external_id = AsyncMock(side_effect=lambda _c, ext: MagicMock(id="group-d") if ext == "0APG" else None)
+        dep.get_records_by_status = AsyncMock(side_effect=[[MagicMock(id="trashed-1")], []])
+        dep.delete_permission_from_record = AsyncMock()
+
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+
+        assert dep.get_records_by_status.await_args.kwargs["visibility"] is RecordVisibility.ALL
+        dep.delete_permission_from_record.assert_awaited_once_with("trashed-1", "a@example.com", connector.connector_id)
+
     async def test_a_leaver_whose_grants_cannot_be_cleared_stays_pending(self, connector) -> None:
         state = self._store(connector)
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])

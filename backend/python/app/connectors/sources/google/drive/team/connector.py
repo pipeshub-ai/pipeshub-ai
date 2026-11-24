@@ -7132,8 +7132,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         shared_with_me = await processor.get_record_group_by_external_id(self.connector_id, f"0S:{email}")
         after_key: str | None = None
         while True:
+            # Trashed ones too: restored, they would come back still granting the leaver.
             page = await processor.get_records_by_status(
-                self.connector_id, None, limit=FOREIGN_DRIVE_PAGE_SIZE, record_group_id=group.id, after_key=after_key
+                self.connector_id, None, limit=FOREIGN_DRIVE_PAGE_SIZE, record_group_id=group.id, after_key=after_key,
+                visibility=RecordVisibility.ALL,
             )
             if not isinstance(page, list):
                 raise RuntimeError(f"The records of shared drive {drive_id} could not be listed")

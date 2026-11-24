@@ -86,7 +86,7 @@ async def test_a_foreign_drive_and_its_people_stay_in_the_org_that_reaches_it(ba
         )
         await GoogleDriveTeamConnector._write_foreign_drive(connector_a, drive_id, {"name": "Partner drive", "members": [shared]})
         file_a = _file(ORG, conn_a, drive_id, file_id, shared_with=[SourcePerson(email=shared), SourcePerson(email=only_b)])
-        # A file its reader holds a grant of their own on, as a Viewer's fallback grant was stored.
+        # A file its reader holds a grant of their own on, as a Viewer's fallback grant was stored; trashed below.
         kept_a = _file(ORG, conn_a, drive_id, kept_id)
         await proc_a.on_new_records([
             (file_a, []), (kept_a, [Permission(email=shared, type=PermissionType.READ, entity_type=EntityType.USER)]),
@@ -116,6 +116,8 @@ async def test_a_foreign_drive_and_its_people_stay_in_the_org_that_reaches_it(ba
         assert await backend.provider.get_person_by_email(only_b, org_b) is None
 
         assert f"{USERS}/{user_a}" in await _to(backend, f"{RECORDS}/{kept_a.id}", CollectionNames.PERMISSION.value)
+        # In the trash when the member leaves: restored, it would come back still granting them.
+        await backend.provider.update_node(kept_a.id, RECORDS, {"isDeleted": True})
 
         # The member leaves: org A's group is revoked and their own grant on org A's file removed.
         await GoogleDriveTeamConnector._write_foreign_drive(connector_a, drive_id, {"name": "Partner drive", "members": []})
