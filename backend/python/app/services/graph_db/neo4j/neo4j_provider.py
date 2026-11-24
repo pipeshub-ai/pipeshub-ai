@@ -1405,6 +1405,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # COMPOSITE: externalRecordId + connectorId (ALWAYS queried together)
         # Pattern: MATCH (r:Record {externalRecordId: $id, connectorId: $cid})
         # Frequency: 3+ queries use this exact pattern
+        # The link of a connector is found, repointed and removed by its connector id.
+        indexes.append(
+            "CREATE INDEX authenticated_as_connector IF NOT EXISTS "
+            "FOR ()-[r:AUTHENTICATED_AS]-() ON (r.connectorId)"
+        )
+
         indexes.append(
             "CREATE INDEX record_external_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.externalRecordId, n.connectorId)"

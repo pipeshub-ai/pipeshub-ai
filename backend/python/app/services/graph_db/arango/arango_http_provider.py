@@ -1558,6 +1558,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not await self.http_client.ensure_persistent_index(collection, list(fields)):
                     # Not fatal for the schema (it would hold every service's start for one feature's index); the next start retries it.
                     self.logger.error("The index %s on collection '%s' was not created", list(fields), collection)
+        # The link of a connector is found, repointed and removed by its connector id.
+        await self.http_client.ensure_persistent_index(CollectionNames.AUTHENTICATED_AS.value, ["connectorId"])
         # ==================== TAXONOMY INDEXES ====================
         # Entity resolution looks canonical category/subcategory/topic/language
         # nodes up by (orgId, normalizedName) once per record — see
@@ -8825,6 +8827,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     INTO {collection}
                 RETURN 1
             """
+            if collection == CollectionNames.AUTHENTICATED_AS.value:
+                # Moved in place, so the link keeps its _key (the connector id): a copy under a new key would
+                # escape remove_authenticated_as and keep granting the source account's access.
+                query = f"""
+                FOR e IN {collection}
+                    FILTER e._from == @stub_id OR e._to == @stub_id
+                    LET newFrom = e._from == @stub_id ? @keep_id : e._from
+                    LET newTo = e._to == @stub_id ? @keep_id : e._to
+                    FILTER newFrom != newTo
+                    UPDATE e WITH {{_from: newFrom, _to: newTo}} IN {collection}
+                    RETURN 1
+                """
             await self.http_client.execute_aql(
                 query,
                 bind_vars={"stub_id": stub_id, "keep_id": keep_id},
@@ -11690,8 +11704,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> None:
         # _key = connector_id keeps exactly one link per connector instance; UPSERT repoints on re-auth.
         ts = get_epoch_timestamp_in_ms()
+        # One link per connector: a copy an older absorb left under a random key would keep pointing at the old
+        # source account, and every access read finds links by connectorId. The drop comes first, so a failure
+        # between the two statements leaves no stale link rather than two.
+        await self.execute_query(
+            f"""
+            FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
+                FILTER link.connectorId == @connectorId AND link._key != @connectorId
+                REMOVE link IN {CollectionNames.AUTHENTICATED_AS.value}
+            """,
+            bind_vars={"connectorId": connector_id},
+            transaction=transaction,
+        )
         query = f"""
-        UPSERT {{ _key: @connectorId }}
+        UPSERT {{ connectorId: @connectorId }}
         INSERT {{
             _key: @connectorId, _from: @from, _to: @to,
             connectorId: @connectorId, orgId: @orgId,
@@ -11719,7 +11745,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> bool:
         query = f"""
         FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
-            FILTER link._key == @connectorId
+            FILTER link._key == @connectorId OR link.connectorId == @connectorId
             REMOVE link IN {CollectionNames.AUTHENTICATED_AS.value}
             RETURN OLD._key
         """
