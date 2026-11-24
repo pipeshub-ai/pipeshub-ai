@@ -41,6 +41,9 @@ class UsersSync:
         self._read_cut = False
         self._member_rows = 0
         self._unresolved_members = 0
+        # The creator stubs this listing injected. Made here, not read from GitLab: never evidence that
+        # the creator is a listed member. Kept apart from the rows, which carry only GitLab's fields.
+        self._creator_stubs: list[Any] = []
 
     # ------------------------------------------------------------------
     # Entry point
@@ -58,6 +61,7 @@ class UsersSync:
         c = self.c
         c._users_listing_complete, c._listed_user_emails = False, set()
         self._unresolved_members = 0
+        self._creator_stubs = []
         # Set by any member read that was skipped or failed: what was read is then partial.
         self._read_cut = False
         self._member_rows = 0
@@ -576,8 +580,6 @@ class UsersSync:
             public_email=c.creator_email,
             email=c.creator_email,
             access_level=50,  # OWNER — creator owns the records they sync
-            # Made here, not read from GitLab: never evidence that the creator is a listed member.
-            synthesized=True,
         )
 
     def _inject_creator_member_into(self, dict_member: dict[int, Any]) -> bool:
@@ -595,7 +597,8 @@ class UsersSync:
         creator = self._build_creator_member_stub()
         if creator is None:
             return False
-        dict_member.setdefault(creator.id, creator)
+        if dict_member.setdefault(creator.id, creator) is creator:
+            self._creator_stubs.append(creator)
         return True
 
     # ------------------------------------------------------------------
@@ -625,7 +628,7 @@ class UsersSync:
                 fallback = getattr(member, "email", None)
                 user_email = fallback.strip() if isinstance(fallback, str) else ""
 
-            synthesized = getattr(member, "synthesized", False) is True
+            synthesized = any(member is stub for stub in self._creator_stubs)
             # Creator bypass: if this is the configuring user and GitLab
             # did not surface an email for them, use the PipesHub email.
             if (

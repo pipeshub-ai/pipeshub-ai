@@ -156,6 +156,35 @@ async def test_an_injected_creator_is_not_listed() -> None:
     assert c._listed_user_emails == {"a@corp.com"}, "the stub is made here, not read from GitLab"
 
 
+class _ApiRow:
+    """A member row that records every field the connector reads, as the GitLab simulator does:
+    the connector may read only what GitLab sends."""
+
+    def __init__(self, **fields: object) -> None:
+        object.__setattr__(self, "fields", fields)
+        object.__setattr__(self, "reads", set())
+
+    def __getattr__(self, name: str) -> object:
+        self.reads.add(name)
+        if name in self.fields:
+            return self.fields[name]
+        raise AttributeError(name)
+
+
+@pytest.mark.parametrize("enrich", [False, True], ids=["member-payload", "enriched-profile"])
+async def test_the_listing_reads_no_field_gitlab_does_not_send(enrich: bool) -> None:
+    rows = [_ApiRow(id=1, email="a@corp.com", public_email=None, username="u1", name="U1")]
+    c, users = _scoped(_ok(rows))
+    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
+    if enrich:
+        users._enrich_members_with_full_user = AsyncMock(side_effect=lambda d: dict(d))
+
+    await users.sync_users()
+
+    assert rows[0].reads <= {"id", "email", "public_email", "username", "name"}
+    assert c._listed_user_emails == {"a@corp.com"}
+
+
 async def test_the_creator_email_put_on_an_emailless_token_row_is_not_listed() -> None:
     c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(9, None)]))
     c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
@@ -575,6 +604,26 @@ class TestCreatorTokenViewOnFallbacks:
 
         assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
         assert second._withheld_creator_email is None
+
+    async def test_a_failed_removal_is_retried_when_an_incomplete_listing_omits_the_creator(self) -> None:
+        # The processor wrote the listed-authenticators marker when the earlier listing named them.
+        kv = _Kv({
+            GRANT_KEY: {"email": CREATOR, "granted": True},
+            "/services/connectors/gitlab-conn-1/listedAuthenticators": ["creator-key"],
+        })
+        c = await _decided(listed=_UNLISTED, complete=False, kv=kv)
+        assert c._withheld_creator_email == CREATOR
+        c._gitlab_included_group_paths = None
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
+        c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
+
+        await ProjectsSync(c)._sync_project_members_as_pseudo(_project())
+        await GitLabConnector._confirm_creator_withdrawal(c)
+
+        _connector_id, external_ids, email = c.data_entities_processor.remove_user_grant_from_record_groups.await_args.args
+        assert email == CREATOR and "7" in external_ids
+        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
+        assert c._creator_token_view is False
 
     async def test_a_failed_removal_leaves_the_grant_stored_and_the_next_sync_withdraws_again(self) -> None:
         kv = _given()
