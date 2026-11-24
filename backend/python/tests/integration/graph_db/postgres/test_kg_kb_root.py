@@ -473,7 +473,7 @@ async def test_a_copy_of_epoch_10_code_is_filled_in_place_by_the_bootstrap_and_s
         await pg_provider.soft_delete_records(["e"], KB, delete_source="USER", batch_id="bt-e", deleted_by_user_id="u1")
     await flip(pg_db, org)
 
-    async def cols(tx: Any) -> dict:
+    async def cols(tx: Any) -> dict:  # noqa: ANN401
         return {r["id"]: tuple(r)[1:] for r in await tx.fetch("""SELECT id, indexing_status, connector_name, doc_created_ms, doc_updated_ms, file_size, file_kind, kb_odd
             FROM kg.records WHERE org_id = $1 ORDER BY id""", org)}
     with ctx(org):
