@@ -271,6 +271,53 @@ class TestZoomConnectorPermissions:
         assert participants_read is False
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("empty_page", [1, 2])
+    async def test_permissions_treat_a_participants_page_with_no_body_as_a_failed_read(
+        self, empty_page: int
+    ) -> None:
+        connector = _make_connector()
+        pages = [
+            ZoomResponse(success=True, data={
+                "participants": [{"user_email": "p1@example.com"}], "next_page_token": "t2",
+            }),
+            ZoomResponse(success=True, data={
+                "participants": [{"user_email": "p2@example.com"}], "next_page_token": None,
+            }),
+        ]
+        pages[empty_page - 1] = ZoomResponse(success=True, data=None, status_code=200)
+        ds = MagicMock()
+        ds.report_meeting_participants = AsyncMock(side_effect=pages)
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        perms, participants_read = await connector._build_meeting_permissions(
+            meeting_detail=None,
+            encoded_uuid="encoded-uuid",
+            host_email="host@example.com",
+        )
+
+        expected = {"host@example.com"} if empty_page == 1 else {"host@example.com", "p1@example.com"}
+        assert {p.email for p in perms if p.email} == expected
+        assert participants_read is False
+
+    @pytest.mark.asyncio
+    async def test_permissions_read_an_empty_participant_list_in_full(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.report_meeting_participants = AsyncMock(return_value=ZoomResponse(
+            success=True, data={"participants": [], "next_page_token": ""}, status_code=200,
+        ))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        perms, participants_read = await connector._build_meeting_permissions(
+            meeting_detail=None,
+            encoded_uuid="encoded-uuid",
+            host_email="host@example.com",
+        )
+
+        assert {p.email for p in perms if p.email} == {"host@example.com"}
+        assert participants_read is True
+
+    @pytest.mark.asyncio
     async def test_stream_participants_read_stays_strict_when_a_later_page_fails(self) -> None:
         connector = _make_connector()
         ds = MagicMock()
@@ -1063,10 +1110,25 @@ class TestZoomApiWrappers:
             await connector._list_report_meetings("u1", "2026-03-01", "2026-03-31")
 
     @pytest.mark.asyncio
-    async def test_list_report_meetings_with_an_empty_success_returns_nothing(self) -> None:
+    async def test_list_report_meetings_raises_on_a_success_with_no_body(self) -> None:
         connector = _make_connector()
         ds = MagicMock()
-        ds.report_meetings = AsyncMock(return_value=MagicMock(success=True, data=None))
+        ds.report_meetings = AsyncMock(side_effect=[
+            ZoomResponse(success=True, data={"meetings": [{"uuid": "a", "id": 1}], "next_page_token": "t"}),
+            ZoomResponse(success=True, data=None, status_code=200),
+        ])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="returned no body"):
+            await connector._list_report_meetings("u1", "2026-03-01", "2026-03-31")
+
+    @pytest.mark.asyncio
+    async def test_list_report_meetings_with_an_empty_list_returns_nothing(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.report_meetings = AsyncMock(
+            return_value=ZoomResponse(success=True, data={"meetings": [], "next_page_token": ""})
+        )
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
 
         meetings = await connector._list_report_meetings("u1", "2026-03-01", "2026-03-31")

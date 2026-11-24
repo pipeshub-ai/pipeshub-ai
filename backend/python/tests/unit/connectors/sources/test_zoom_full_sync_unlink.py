@@ -45,6 +45,11 @@ def _failed(status: int) -> ZoomResponse:
     return ZoomResponse(success=False, status_code=status, message=f"Failed with status {status}")
 
 
+def _no_body() -> ZoomResponse:
+    """A 2xx whose body is empty: the wrapper sets success from the status and data from the body."""
+    return ZoomResponse(success=True, status_code=200, data=None)
+
+
 @dataclass
 class Meeting:
     uuid: str
@@ -76,6 +81,9 @@ class FakeZoom:
         # Meetings whose participants come one per page, and the page number (1-based) that fails.
         self.paged_participants: set[str] = set()
         self.failing_participant_pages: dict[str, int] = {}
+        # Meetings whose participants page (1-based) comes back as a 2xx with no body.
+        self.empty_participant_pages: dict[str, int] = {}
+        self.empty_report_ranges: set[tuple[str, str, str]] = set()
         self.created_at: dict[str, str] = {}
 
     async def user(self, user_id: str) -> ZoomResponse:
@@ -98,6 +106,8 @@ class FakeZoom:
     ) -> ZoomResponse:
         if (userId, from_, to) in self.failing_report_ranges:
             return _failed(429)
+        if (userId, from_, to) in self.empty_report_ranges:
+            return _no_body()
         listed = [
             {"uuid": m.uuid, "id": m.number, "topic": m.uuid, "host_id": m.host,
              "start_time": m.start_time, "end_time": m.start_time}
@@ -127,8 +137,10 @@ class FakeZoom:
         m = next(m for m in self.meetings.values() if ZoomConnector._encode_uuid(m.uuid) == meetingId)
         if m.uuid in self.failing_participants:
             return _failed(429)
+        page = int(next_page_token or "1")
+        if self.empty_participant_pages.get(m.uuid) == page:
+            return _no_body()
         if m.uuid in self.paged_participants:
-            page = int(next_page_token or "1")
             if self.failing_participant_pages.get(m.uuid) == page:
                 return _failed(429)
             return ZoomResponse(success=True, data={
@@ -473,6 +485,21 @@ class TestZoomFullSyncUnlinksOnlyWhatIsGone:
         await _full_sync(world)
         assert world.really_gone_unlinked() == 1
 
+    async def test_a_meeting_list_with_no_body_leaves_its_meetings_linked(self) -> None:
+        world = _world(
+            [_recent("m-ann-new", 1, days_ago=5), _recent("m-bob", 4, host="bob")],
+            gone=[_recent("m-gone", 2, host="bob", days_ago=20)],
+        )
+        newest = (TODAY - timedelta(days=180 - 30 * 5)).isoformat(), TODAY.isoformat()
+        world.zoom.empty_report_ranges = {("ann", *newest)}
+
+        await _full_sync(world)
+        assert world.wrongly_unlinked() == 0
+
+        world.zoom.empty_report_ranges = set()
+        await _full_sync(world)
+        assert world.really_gone_unlinked() == 1
+
     async def test_a_user_whose_sync_fails_keeps_its_meetings_linked(self) -> None:
         world = _world(
             [_recent("m-ann", 1), _recent("m-bob-1", 4, host="bob"), _recent("m-bob-2", 5, host="bob", days_ago=40)],
@@ -525,6 +552,35 @@ class TestZoomFullSyncUnlinksOnlyWhatIsGone:
         assert world.store.nodes["m-1"].grants == {
             "ann@acme.example", "guest@acme.example", "new1@acme.example",
         }
+        assert world.really_gone_unlinked() == 1
+
+    @pytest.mark.parametrize("empty_page", [1, 2])
+    async def test_a_participants_page_with_no_body_keeps_the_stored_grants(self, empty_page: int) -> None:
+        meeting = _recent("m-1", 1)
+        world = _world([meeting], gone=[_recent("m-gone", 2, days_ago=20)])
+        world.store.nodes["m-1"].grants.add("stored@partner.example")
+        meeting.participants = ["guest@acme.example", "new1@acme.example", "new2@acme.example"]
+        world.zoom.paged_participants = {"m-1"}
+        world.zoom.empty_participant_pages = {"m-1": empty_page}
+
+        await _full_sync(world)
+
+        # The read stopped at the empty page, so the pages before it are added and nothing stored is removed.
+        read = meeting.participants[: empty_page - 1]
+        stored = {"ann@acme.example", "guest@acme.example", "stored@partner.example"}
+        assert world.store.nodes["m-1"].grants == stored | set(read)
+        assert world.wrongly_revoked_grants() == 0
+        assert world.really_gone_unlinked() == 1
+
+    async def test_an_empty_participant_list_still_replaces_the_stored_grants(self) -> None:
+        meeting = _recent("m-1", 1)
+        world = _world([meeting], gone=[_recent("m-gone", 2, days_ago=20)])
+        world.store.nodes["m-1"].grants.add("old@partner.example")
+        meeting.participants = []
+
+        await _full_sync(world)
+
+        assert world.store.nodes["m-1"].grants == {"ann@acme.example"}
         assert world.really_gone_unlinked() == 1
 
     async def test_a_meeting_detail_read_that_fails_keeps_the_stored_grants(self) -> None:

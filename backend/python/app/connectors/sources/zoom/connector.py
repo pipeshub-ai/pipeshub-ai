@@ -670,7 +670,11 @@ class ZoomConnector(BaseConnector):
                     f"http={res.message}, zoom_code={zoom_code}"
                 )
             if not res.data:
-                break
+                # A 2xx with no body is not an empty month; ending here would drop the rest.
+                raise RuntimeError(
+                    f"Zoom report_meetings({user_id}, {from_str}–{to_str}) returned no body: "
+                    f"http={res.message}"
+                )
             meetings.extend(
                 ZoomMeetingReport.model_validate(m)
                 for m in (res.data.get("meetings") or [])  # type: ignore[union-attr]
@@ -703,17 +707,22 @@ class ZoomConnector(BaseConnector):
                 next_page_token=next_page_token,
             )
             if not res.success or not res.data:
-                if raise_on_error and not res.success:
+                if raise_on_error:
+                    # A 2xx with no body is a failed read too, not the end of the list.
+                    message = (
+                        res.message or res.error
+                        if not res.success
+                        else "Zoom returned a participants page with no body"
+                    )
                     self.logger.warning(
-                        "Zoom: participants call failed for %s — %s",
-                        encoded_uuid, res.message,
+                        "Zoom: participants call failed for %s — %s", encoded_uuid, message,
                     )
                     raise_for_stream_fetch(
                         success=False,
                         has_payload=False,
                         connector=self.display_name,
                         status=res.status_code,
-                        message=res.message or res.error,
+                        message=message,
                     )
                 break
             participants.extend(
