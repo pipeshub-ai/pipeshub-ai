@@ -118,7 +118,7 @@ WITH_CHILDREN = ("(r.kind = 2 OR r.folder OR EXISTS (SELECT 1 FROM kg.records k 
                  "OR EXISTS (SELECT 1 FROM kg.links k WHERE k.org_id = r.org_id AND k.parent_sk = r.sk AND k.kind = 1 OFFSET 0))")
 
 
-# The graph nodes of the connector ``$1`` a name search can match (``graph.records_by_name``, graph_0021: a trigram index of the nodes' names): ``$2`` a pattern
+# The graph nodes of the connector ``$1`` a name search can match (``graph.records_by_name``, graph_0022: a trigram index of the nodes' names): ``$2`` a pattern
 # of :func:`name_pattern`, ``$3`` nodes at most.
 NAME_NODES = "/* pipeshub:kg.listing_name_nodes */ SELECT coll, node_id FROM graph.records_by_name($1, $2, $3)"
 # Their rows in kg (``$2`` the kg codes of their collections, ``$3`` their ids), each a probe of its key (OFFSET 0): as one join with the function the plan

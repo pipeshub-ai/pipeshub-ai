@@ -121,20 +121,29 @@ export function ConnectorsCard({ knowledgeScope, appliedFilters, canEdit, onChan
   const catalogById = useMemo(() => new Map(connectors.map((c) => [c.id, c])), [connectors]);
 
   // Collections are not picked here; the project's own are kept as they are.
+  // Record groups and records belonging to collections (connector === 'KB') are excluded.
   const selection = useMemo<ChatKnowledgeFilters>(
     () => ({
       apps: knowledgeScope?.apps ?? [],
       kb: [],
-      recordGroups: knowledgeScope?.recordGroups ?? [],
-      records: knowledgeScope?.records ?? [],
+      recordGroups: (knowledgeScope?.recordGroups ?? []).filter((id) => {
+        const node = appliedFilters?.recordGroups?.find((n) => n.id === id);
+        return node?.connector !== 'KB';
+      }),
+      records: (knowledgeScope?.records ?? []).filter((id) => {
+        const node = appliedFilters?.records?.find((n) => n.id === id);
+        return node?.connector !== 'KB';
+      }),
     }),
-    [knowledgeScope],
+    [knowledgeScope, appliedFilters],
   );
 
   /**
    * What the project already lists below app level and this session has not
    * placed in a connector's tree yet: shown as rows of their own, so a saved
    * limit is visible without opening every connector.
+   * Nodes belonging to collections (connector === 'KB') are excluded so they do
+   * not appear in the Connectors card.
    */
   const savedNodes = useMemo(
     () =>
@@ -143,13 +152,15 @@ export function ConnectorsCard({ knowledgeScope, appliedFilters, canEdit, onChan
           .filter((id) => !metaCache[id]?.ancestorIds)
           .map((id) => {
             const saved = appliedFilters?.[key]?.find((node) => node.id === id);
-            return {
-              id,
-              name: saved?.name ?? id,
-              nodeType: saved?.nodeType || BELOW_APPS[key],
-              connector: saved?.connector ?? '',
-            };
-          }),
+            return { id, saved };
+          })
+          .filter(({ saved }) => saved?.connector !== 'KB')
+          .map(({ id, saved }) => ({
+            id,
+            name: saved?.name ?? id,
+            nodeType: saved?.nodeType || BELOW_APPS[key],
+            connector: saved?.connector ?? '',
+          })),
       ),
     [knowledgeScope, appliedFilters, metaCache],
   );
@@ -167,15 +178,47 @@ export function ConnectorsCard({ knowledgeScope, appliedFilters, canEdit, onChan
         if (row) return { id, name: row.name, nodeType: row.nodeType, connector: row.connector };
         return saved.get(id) ?? { id, name: id, nodeType: fallbackType, connector: '' };
       };
-      const recordGroups = next.recordGroups ?? [];
-      const records = next.records ?? [];
+
+      // Preserve every collection-owned ID (connector === 'KB')
+      const isCollectionNode = (node: AppliedFilterNode | undefined) => node?.connector === 'KB';
+
+      const preservedRecordGroups = (knowledgeScope?.recordGroups ?? []).filter((id) => {
+        const node = appliedFilters?.recordGroups?.find((n) => n.id === id);
+        return isCollectionNode(node);
+      });
+      const preservedRecords = (knowledgeScope?.records ?? []).filter((id) => {
+        const node = appliedFilters?.records?.find((n) => n.id === id);
+        return isCollectionNode(node);
+      });
+
+      const preservedFilterRecordGroups = (appliedFilters?.recordGroups ?? []).filter(
+        (node) => isCollectionNode(node),
+      );
+      const preservedFilterRecords = (appliedFilters?.records ?? []).filter(
+        (node) => isCollectionNode(node),
+      );
+
+      const connectorRecordGroups = next.recordGroups ?? [];
+      const connectorRecords = next.records ?? [];
+
+      const mergedRecordGroups = Array.from(new Set([...connectorRecordGroups, ...preservedRecordGroups]));
+      const mergedRecords = Array.from(new Set([...connectorRecords, ...preservedRecords]));
+
+      const connectorFilterRecordGroups = connectorRecordGroups.map((id) => nodeOf(id, BELOW_APPS.recordGroups));
+      const connectorFilterRecords = connectorRecords.map((id) => nodeOf(id, BELOW_APPS.records));
+
       onChange({
-        knowledgeScope: { apps: next.apps, kb: knowledgeScope?.kb ?? [], recordGroups, records },
+        knowledgeScope: {
+          apps: next.apps,
+          kb: knowledgeScope?.kb ?? [],
+          recordGroups: mergedRecordGroups,
+          records: mergedRecords,
+        },
         appliedFilters: {
           apps: next.apps.map((id) => nodeOf(id, 'app')),
           kb: appliedFilters?.kb ?? [],
-          recordGroups: recordGroups.map((id) => nodeOf(id, BELOW_APPS.recordGroups)),
-          records: records.map((id) => nodeOf(id, BELOW_APPS.records)),
+          recordGroups: [...preservedFilterRecordGroups, ...connectorFilterRecordGroups],
+          records: [...preservedFilterRecords, ...connectorFilterRecords],
         },
       });
     },

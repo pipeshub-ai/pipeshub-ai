@@ -4,7 +4,7 @@
  */
 import 'reflect-metadata';
 import { expect } from 'chai';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import { PG_BINS, haveStack } from '../../stores/pg-store-harness';
 import { readMongoFence } from '../../../src/scripts/docstore-migrate/fence';
 import { migrateOffline } from '../../../src/scripts/docstore-migrate/offline';
@@ -12,7 +12,7 @@ import { CutoverOptions, cutover, onlineStart, onlineVerify, precheck, verifyCon
 import { JobState } from '../../../src/scripts/docstore-migrate/state';
 import { contentDocs } from './fixtures/content';
 import { conversationDocs } from './fixtures/conversation';
-import { ADMIN_A, identityDocs } from './fixtures/identity';
+import { ADMIN_A, ORG_A, identityDocs } from './fixtures/identity';
 import { haveMongod } from './mongo-harness';
 import { World, startWorld } from './world';
 
@@ -142,6 +142,26 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(await store()).to.include({ backend: 'postgres', readonly: false, epoch: epoch + 1 });
         expect((await sql('SELECT full_name FROM identity.users WHERE id = $1', [String(ADMIN_A)]))[0].full_name).to.equal('Written Before The Cut');
         expect(await pgUsers()).to.equal(await users());
+      });
+
+      it('a user and a group created while the copy follows leave the counters above their slugs, so the next ones do not collide', async () => {
+        const started = await onlineStart(w.rt, { dryRun: false, log });
+        expect(started, JSON.stringify(started.verify)).to.include({ ok: true, stage: 'online_ready' });
+        // as the application does: take the next number from the shared counter, then insert under it
+        const db = w.mongo.client.db(DB);
+        const next = async (name: string): Promise<number> =>
+          ((await db.collection<any>('counters').findOneAndUpdate({ name }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: 'after' })) as any).seq;
+        const u = Math.max(await next('User'), 3000);
+        await db.collection('users').insertOne({ _id: new ObjectId(), slug: `user-${u}`, orgId: ORG_A, fullName: 'Made While Following', email: 'following@acme.example', createdAt: new Date(), updatedAt: new Date(), __v: 0 } as never);
+        const g = Math.max(await next('UserGroup'), 3000);
+        await db.collection('userGroups').insertOne({ _id: new ObjectId(), slug: `usergroup-${g}`, name: 'made while following', type: 'custom', orgId: ORG_A, users: [], isDeleted: false, createdAt: new Date(), updatedAt: new Date(), __v: 0 } as never);
+        const r = await cut();
+        expect(r, r.message).to.include({ ok: true, stage: 'done' });
+        // next_value is the last number used: the next claim takes next_value + 1, which must not be a slug already held
+        const counter = async (kind: string): Promise<number> =>
+          Number((await sql('SELECT next_value FROM identity.slug_counters WHERE org_id = $1 AND kind = $2', [String(ORG_A).toLowerCase(), kind]))[0]?.next_value);
+        expect(await counter('User'), 'user counter').to.be.at.least(u);
+        expect(await counter('UserGroup'), 'group counter').to.be.at.least(g);
       });
 
       it('refuses at the pre-checks, naming the one that failed, and changes nothing', async () => {
@@ -329,6 +349,17 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect(r.message).to.contain('PostgreSQL is the live store').and.to.contain('MongoDB is retired');
         expect(await mode()).to.equal('retired');
         expect(await store()).to.include({ backend: 'postgres', readonly: false });
+      });
+
+      it('a freeze budget used up by the slug counters aborts before the final verify and gives MongoDB back', async () => {
+        await onlineStart(w.rt, { dryRun: false, log });
+        const r = await cut({ failAt: 'over-after-F6' });
+        expect(r, r.message).to.include({ ok: false, stage: 'F6', aborted: true });
+        expect(r.message).to.contain('the freeze budget was used up');
+        expect(r.steps.map((x) => x.step)).to.include('F6 slug counters');
+        expect(r.steps.some((x) => x.step.startsWith('F7')), 'no verify after the budget is gone').to.equal(false);
+        expect(await mode()).to.equal('active');
+        expect(await store()).to.include({ backend: 'mongo', readonly: true });
       });
 
       it('aborts a failed cut and gives MongoDB back to the application', async () => {

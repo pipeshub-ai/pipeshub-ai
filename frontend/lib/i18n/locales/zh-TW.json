@@ -1336,7 +1336,15 @@
         },
         "toolNeedsApproval": "需要核准",
         "toolNeedsApprovalHint": "此工具可能會刪除資料。在專案對話中，它只有在獲得核准後才會執行。",
-        "indexingStatusLabel": "索引：{{status}}"
+        "indexingStatusLabel": "索引：{{status}}",
+        "collectionsTitle": "集合",
+        "collectionsSubtitle": "此專案中的對話將搜尋選取的集合與已上傳的專案檔案。",
+        "noCollectionsAvailable": "尚無可新增的集合。",
+        "failedToLoadCollections": "載入集合失敗",
+        "updateCollectionsFailed": "更新集合失敗",
+        "collectionsStatusCount": "已選取 {{count}} 個",
+        "collectionsStatusNone": "無",
+        "untitledCollection": "未命名集合"
       },
       "moveDialog": {
         "title": "移至專案",

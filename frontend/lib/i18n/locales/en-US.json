@@ -1310,6 +1310,13 @@
         "noConnectorsAvailable": "No connectors to add yet.",
         "failedToLoadConnectors": "Failed to load connectors",
         "updateConnectorsFailed": "Failed to update connectors",
+        "collectionsTitle": "Collections",
+        "collectionsSubtitle": "Chats in this project search the selected collections and uploaded project files.",
+        "noCollectionsAvailable": "No collections to add yet.",
+        "failedToLoadCollections": "Failed to load collections",
+        "updateCollectionsFailed": "Failed to update collections",
+        "collectionsStatusCount": "{{count}} selected",
+        "collectionsStatusNone": "None",
         "toolsTitle": "Tools & MCP",
         "noToolsAvailable": "No authenticated actions or MCP servers to add yet.",
         "knowledgeBaseUnavailable": "Could not prepare this project’s file storage",
@@ -1373,7 +1380,8 @@
         },
         "toolNeedsApproval": "Needs approval",
         "toolNeedsApprovalHint": "This tool can delete data. In a project chat it runs only after someone approves it.",
-        "indexingStatusLabel": "Indexing: {{status}}"
+        "indexingStatusLabel": "Indexing: {{status}}",
+        "untitledCollection": "Untitled collection"
       },
       "moveDialog": {
         "title": "Move to project",

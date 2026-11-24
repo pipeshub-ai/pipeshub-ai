@@ -1336,7 +1336,15 @@
         },
         "toolNeedsApproval": "需要批准",
         "toolNeedsApprovalHint": "此工具可能会删除数据。在项目对话中，它只有在获得批准后才会运行。",
-        "indexingStatusLabel": "索引：{{status}}"
+        "indexingStatusLabel": "索引：{{status}}",
+        "collectionsTitle": "集合",
+        "collectionsSubtitle": "此项目中的对话将搜索所选集合和已上传的项目文件。",
+        "noCollectionsAvailable": "尚无可用集合添加。",
+        "failedToLoadCollections": "加载集合失败",
+        "updateCollectionsFailed": "更新集合失败",
+        "collectionsStatusCount": "已选 {{count}} 个",
+        "collectionsStatusNone": "无",
+        "untitledCollection": "未命名集合"
       },
       "moveDialog": {
         "title": "移至项目",

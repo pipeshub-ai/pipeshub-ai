@@ -672,7 +672,7 @@ functions:
               ORDER BY n.doc->>'connectorName', 1 LIMIT 1) f)
         SELECT DISTINCT s.site FROM s WHERE s.site <> '' ORDER BY s.site LIMIT p_limit;
 
-# ---- the knowledge hub's name search (graph_0021) -------------------------------------------------------------------------------------
+# ---- the knowledge hub's name search (graph_0022) -------------------------------------------------------------------------------------
 # A connector's records and record groups whose name holds the pieces of a search, in order (p_pattern, ILIKE), by the trigram index nodes_record_name_trgm: the
 # candidates of the listing's own name condition, which still decides on the typed graph's rows. Row-level security keeps a trigram condition (not leakproof) out of
 # the index conditions of any statement it binds, so the read goes through this function, which applies the org itself. p_pattern is "%" and lower-case letters and

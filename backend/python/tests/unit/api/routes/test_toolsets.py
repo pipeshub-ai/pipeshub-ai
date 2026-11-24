@@ -60,7 +60,7 @@ class TestToolsetNotFoundError:
         from app.api.routes.toolsets import ToolsetNotFoundError
         e = ToolsetNotFoundError("jira")
         assert e.status_code == 404
-        assert "jira" in e.detail
+        assert e.detail == "Toolset not found in registry"
 
 
 class TestToolsetConfigNotFoundError:
