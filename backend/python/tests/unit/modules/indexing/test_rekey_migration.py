@@ -12,7 +12,6 @@ import pytest
 import pytest_asyncio
 
 from app.plugins.telemetry.modules import indexing_metrics
-from app.modules.indexing import rekey_metrics
 from app.modules.reconciliation.service import ReconciliationService
 from app.services.vector_db.errors import VectorsNotFetchable
 from app.services.vector_db.models import CollectionConfig, ScrollResult

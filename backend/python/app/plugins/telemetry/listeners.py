@@ -41,8 +41,11 @@ def _counter(instrument: CounterHandle, *fields: str, value: str | None = None) 
     """Increment by one, or by the event's ``value`` field when it carries one."""
 
     def handle(_name: str, payload: Payload) -> None:
-        amount = 1.0 if value is None else payload.get(value, 1.0)
-        instrument.inc(*[payload[field] for field in fields], value=amount)
+        labels = [payload[field] for field in fields]
+        if value is not None and value in payload:
+            instrument.inc(*labels, value=payload[value])
+        else:
+            instrument.inc(*labels)
 
     return handle
 
