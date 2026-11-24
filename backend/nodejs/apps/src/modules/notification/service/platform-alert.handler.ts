@@ -136,7 +136,7 @@ interface BudgetToken {
   group: string;
   scope: string;
   at: number;
-  /** The installation alert the token paid for: its other orgs' copies share it. */
+  /** The installation alert this token was taken for: its other orgs' copies share it. */
   alertId: string;
 }
 
