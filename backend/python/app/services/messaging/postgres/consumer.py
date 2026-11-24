@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import json
 import os
+import socket
 import time
 import uuid
 from collections import Counter
@@ -138,7 +139,9 @@ def _database_unavailable(e: BaseException) -> bool:
     """Whether ``e`` is a lost connection or a pool wait, itself or through explicit ``raise ... from`` wrappers that say nothing else.
 
     A commit whose outcome is unknown may have applied, so a rerun can repeat its effect: it keeps counting attempts, as a statement
-    timeout does. A wrapper that is a bug type or is stamped with another class decides the failure itself.
+    timeout does. A wrapper that is a bug type or is stamped with another class decides the failure itself. A misconfigured address is
+    no outage and keeps counting: a wrong password or database name never becomes a ConnectionLost (the kernel re-raises those), and a
+    host name that does not resolve is excluded here.
     """
     seen: set[int] = set()
     link: BaseException | None = e
@@ -147,7 +150,9 @@ def _database_unavailable(e: BaseException) -> bool:
         if isinstance(link, CommitOutcomeUnknown):
             return False
         if isinstance(link, (ConnectionLost, PoolTimeout)):
-            return True
+            # a host name that does not resolve is a wrong address, not an outage: waiting cannot fix it (EAI_AGAIN is the resolver's own outage)
+            cause = link.__cause__
+            return not (isinstance(cause, socket.gaierror) and cause.errno != socket.EAI_AGAIN)
         # a query log stamps a wrapper with the class of its chain, so a pool wait's wrapper can read "timeout"
         if isinstance(link, (ValueError, *error_class.OUR_BUGS)):
             return False

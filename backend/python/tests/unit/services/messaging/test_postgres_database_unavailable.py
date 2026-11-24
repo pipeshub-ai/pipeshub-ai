@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 
 from app.core import envelope
@@ -144,6 +146,8 @@ UNAVAILABLE = [
     lambda: _from(GraphQueryError("Could not read file record"), ConnectionLost("closed", retry_safe=True)),
     lambda: _from(PermissionVerificationUnavailableError(), _from(RuntimeError("wrapped"), PoolTimeout("pool"))),
     lambda: _from(_stamped(GraphQueryError("Could not look up records"), "timeout"), PoolTimeout("pool")),
+    # the resolver could not answer for now (EAI_AGAIN): an outage of the name service, not a wrong address
+    lambda: _from(ConnectionLost("cannot connect", retry_safe=True), socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")),
 ]
 
 
@@ -167,6 +171,13 @@ BUGS = [
     lambda: DbTimeout("statement timeout"),  # the database answered: the statement was too slow
     lambda: CommitOutcomeUnknown("connection lost after COMMIT was sent"),  # may have applied
     lambda: _from(_stamped(GraphQueryError("Could not look up records"), "internal"), ConnectionLost("closed", retry_safe=True)),
+    # a misconfigured address: wrong password, a database that does not exist, a host name that does not resolve. Waiting cannot fix
+    # them, so they must not be taken for an outage (that would hold the message for the whole hand-back backstop)
+    lambda: asyncpg.InvalidPasswordError("password authentication failed for user"),
+    lambda: _from(GraphQueryError("Could not read file record"), asyncpg.InvalidCatalogNameError('database "nope" does not exist')),
+    lambda: _from(ConnectionLost("cannot connect", retry_safe=True), socket.gaierror(socket.EAI_NONAME, "Name or service not known")),
+    lambda: _from(GraphQueryError("Could not read file record"),
+                  _from(ConnectionLost("cannot connect", retry_safe=True), socket.gaierror(socket.EAI_NONAME, "Name or service not known"))),
 ]
 
 

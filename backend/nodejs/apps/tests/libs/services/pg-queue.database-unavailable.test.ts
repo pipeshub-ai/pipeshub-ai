@@ -95,6 +95,10 @@ describe('PostgreSQL queue consumer: a database that cannot be reached', () => {
     ['a statement timeout', () => mapPgStoreError(new DbTimeout())],
     ['a full disk', () => new DbOverloaded('53100')],
     ['a TypeError caused by a lost connection', () => Object.assign(new TypeError('x'), { cause: lost() })],
+    // a misconfigured address: waiting cannot fix it, so it must not hold the message for the whole hand-back backstop
+    ['a wrong password', () => mapPgStoreError(Object.assign(new Error('password authentication failed'), { code: '28P01' }))],
+    ['a database that does not exist', () => mapPgStoreError(Object.assign(new Error('database "nope" does not exist'), { code: '3D000' }))],
+    ['a host name that does not resolve', () => mapPgStoreError(new ConnectionLost(false, Object.assign(new Error('getaddrinfo ENOTFOUND db'), { code: 'ENOTFOUND' })))],
   ] as const) {
     it(`${name} still dead-letters after the attempt limit`, async () => {
       const row = queue();
