@@ -2943,7 +2943,7 @@
           "pipeshub_search": "Prohledává indexované dokumenty podle významu v konektorech a kolekcích, které může uživatel číst, a vrací odpovídající pasáže s jejich záznamy.",
           "pipeshub_get_record_content": "Přečte celý text jednoho záznamu. Umí také najít záznam podle adresy URL, klíče požadavku nebo externího ID, procházet obsah složky, prostoru nebo epiku a přečíst celé vlákno ve Slacku.",
           "pipeshub_download_record": "Stáhne původní soubor uložený k záznamu, volitelně převedený do PDF.",
-          "pipeshub_directory": "Vyhledá přihlášeného uživatele, uživatele a skupiny pracovního prostoru a týmy, do kterých uživatel patří. Nic nemění.",
+          "pipeshub_directory": "Vyhledá přihlášeného uživatele, uživatele pracovního prostoru a týmy, do kterých uživatel patří. Nic nemění.",
           "pipeshub_create_collection": "Vytvoří novou prázdnou kolekci ve vlastnictví uživatele, připravenou pro nahrávání.",
           "pipeshub_upload": "Nahraje dokumenty do kolekce, aby se indexovaly a daly se vyhledat. Nejvýše 20 dokumentů a přibližně 3 MB na jedno volání.",
           "pipeshub_indexing_status": "Hlásí, jak daleko je indexování kolekce a které dokumenty selhaly a proč.",
@@ -2992,7 +2992,7 @@
           },
           "people": {
             "label": "Lidé a entity",
-            "description": "Uživatelé a skupiny pracovního prostoru a lidé, projekty, témata a hodnoty v jeho znalostním grafu."
+            "description": "Uživatelé pracovního prostoru a lidé, projekty, témata a hodnoty v jeho znalostním grafu."
           },
           "chat": {
             "label": "Chat a agenti",

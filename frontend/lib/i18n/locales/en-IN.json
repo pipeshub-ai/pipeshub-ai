@@ -2652,7 +2652,7 @@
           "pipeshub_search": "Searches indexed documents by meaning across the connectors and collections the user can read, and returns the matching passages with their records.",
           "pipeshub_get_record_content": "Reads the full text of one record. It also finds a record from a URL, issue key or external ID, browses what sits under a folder, space or epic, and reads a whole Slack thread.",
           "pipeshub_download_record": "Downloads the original file stored for a record, optionally converted to PDF.",
-          "pipeshub_directory": "Looks up the signed-in user, the workspace's users and groups, and the teams the user belongs to. It changes nothing.",
+          "pipeshub_directory": "Looks up the signed-in user, the workspace's users, and the teams the user belongs to. It changes nothing.",
           "pipeshub_create_collection": "Creates a new, empty collection owned by the user, ready for uploads.",
           "pipeshub_upload": "Uploads documents into a collection so they are indexed and become searchable. Up to 20 documents and about 3 MB per call.",
           "pipeshub_indexing_status": "Reports how far a collection's indexing has got, and which documents failed and why.",
@@ -2701,7 +2701,7 @@
           },
           "people": {
             "label": "People and entities",
-            "description": "The workspace's users and groups, and the people, projects, topics and values in its knowledge graph."
+            "description": "The workspace's users, and the people, projects, topics and values in its knowledge graph."
           },
           "chat": {
             "label": "Chat and agents",

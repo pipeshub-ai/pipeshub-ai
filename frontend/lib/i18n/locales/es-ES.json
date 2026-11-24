@@ -2693,7 +2693,7 @@
           "pipeshub_search": "Busca por significado en los documentos indexados de los conectores y las colecciones que el usuario puede leer, y devuelve los pasajes coincidentes con sus registros.",
           "pipeshub_get_record_content": "Lee el texto completo de un registro. También encuentra un registro a partir de una URL, una clave de incidencia o un ID externo, explora lo que hay bajo una carpeta, un espacio o una épica, y lee un hilo de Slack completo.",
           "pipeshub_download_record": "Descarga el archivo original guardado para un registro, opcionalmente convertido a PDF.",
-          "pipeshub_directory": "Consulta el usuario que ha iniciado sesión, los usuarios y grupos del espacio de trabajo y los equipos a los que pertenece el usuario. No modifica nada.",
+          "pipeshub_directory": "Consulta el usuario que ha iniciado sesión, los usuarios del espacio de trabajo y los equipos a los que pertenece el usuario. No modifica nada.",
           "pipeshub_create_collection": "Crea una colección nueva y vacía, propiedad del usuario, lista para recibir archivos.",
           "pipeshub_upload": "Sube documentos a una colección para que se indexen y se puedan buscar. Hasta 20 documentos y unos 3 MB por llamada.",
           "pipeshub_indexing_status": "Informa de cuánto ha avanzado la indexación de una colección y de qué documentos han fallado y por qué.",
@@ -2742,7 +2742,7 @@
           },
           "people": {
             "label": "Personas y entidades",
-            "description": "Los usuarios y grupos del espacio de trabajo, y las personas, proyectos, temas y valores de su grafo de conocimiento."
+            "description": "Los usuarios del espacio de trabajo, y las personas, proyectos, temas y valores de su grafo de conocimiento."
           },
           "chat": {
             "label": "Chat y agentes",
