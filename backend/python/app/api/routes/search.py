@@ -41,6 +41,7 @@ from app.core.org_context import current_org_id, peek, spawn_in_request
 from app.edition_config import resolve_llm_for_search
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import BlockSubType, BlockType
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.demo_data.chat import demo_exclusions_for_run
 from app.modules.retrieval.entity_permissions import (
     SEARCH_DEADLINE_SECONDS as ENTITY_SEARCH_DEADLINE_SECONDS,
@@ -872,7 +873,7 @@ async def _complete_lone_headings(
 
     async def blocks_of(vid: str) -> list[Any]:
         try:
-            record = await blob_store.get_record_from_storage(vid, org_id)
+            record = await record_artifact_reader(blob_store).read_record(vid, org_id)
             return list(((record or {}).get("block_containers") or {}).get("blocks") or [])
         except Exception as exc:
             logger.debug("Retrieve: could not read a record to complete a heading (%s)", type(exc).__name__)
