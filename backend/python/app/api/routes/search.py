@@ -37,7 +37,7 @@ from app.api.middlewares.auth import (
 from app.api.routes.chatbot import load_entity_vector_store
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
-from app.core.org_context import current_org_id, spawn_in_request
+from app.core.org_context import current_org_id, peek, spawn_in_request
 from app.edition_config import resolve_llm_for_search
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import BlockSubType, BlockType
@@ -849,7 +849,7 @@ def _section_opening(blocks: list[Any], index: int) -> list[str]:
 
 
 async def _complete_lone_headings(
-    results: dict[str, Any], blob_store: Any, org_id: str | None, logger: "Logger",  # noqa: ANN401
+    results: dict[str, Any], blob_store: Any, logger: "Logger",  # noqa: ANN401
 ) -> dict[str, Any]:
     """Give a heading that matched alone the opening text of its section.
 
@@ -865,6 +865,8 @@ async def _complete_lone_headings(
         h for h in hits
         if (key := _block_key(h)) is not None and (key[0], key[1] + 1) not in present and _is_heading_only(h)
     ]
+    ctx = peek()
+    org_id = ctx.org_id if ctx is not None else None
     if not lone or not org_id:
         return results
 
@@ -1007,7 +1009,7 @@ async def retrieve(
                 )
                 hide_record_source_paths(request, results)
                 results = await _complete_lone_headings(
-                    results, getattr(retrieval_service, "blob_store", None), user.get("orgId"), logger,
+                    results, getattr(retrieval_service, "blob_store", None), logger,
                 )
                 timer.mark("retrieval")
                 timer.emit(
