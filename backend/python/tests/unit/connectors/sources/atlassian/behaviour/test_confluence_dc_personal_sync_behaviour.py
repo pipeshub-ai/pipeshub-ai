@@ -1429,6 +1429,20 @@ class TestRemovalFromSource:
         # A space listed again is read afresh: no page keeps the attempts or give-up of before.
         assert not stored.get("failedPages") and not stored.get("givenUpPages")
 
+    async def test_a_space_filter_that_leaves_out_every_listed_space_removes_them_and_completes(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        connector = await self._synced(atlassian_api, records_db, checkpoints, search)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"space_keys": {"operator": "not_in", "type": "list", "value": ["ENG"]}}}
+        }
+
+        await connector.run_sync()
+
+        assert "10" not in records_db.record_groups
+        assert not {"p1", "p2", "p3"} & set(records_db.records)
+        assert connector.full_sync_coverage().complete is True, "the filters leaving every space out is no failed read"
+
     async def test_a_listed_space_that_fails_to_process_keeps_its_records(
         self, atlassian_api, records_db, checkpoints, search, monkeypatch
     ) -> None:
@@ -1493,6 +1507,7 @@ class TestRemovalFromSource:
 
         assert "10" in records_db.record_groups
         assert {"p1", "p2"} <= set(records_db.records)
+        assert connector.full_sync_coverage().complete is False
 
     async def test_a_homepage_the_filters_leave_out_is_not_backfilled(
         self, atlassian_api, records_db, checkpoints, search
@@ -1572,6 +1587,24 @@ class TestAFullSyncUnlinksOnlyWhatLeftConfluence:
 
         assert unlinked & {"p1", "a1", "c1"} == set(), "an archived page is still in Confluence"
         assert unlinked & {"a2"} == {"a2"}
+
+    async def test_an_archived_page_keeps_the_space_access_without_a_restriction_read(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        connector = await self._synced(
+            atlassian_api, records_db, checkpoints, search,
+            content("p1", attachments=[attachment("a1")]), content("p2"),
+        )
+        search.add("page", "ENG", 0, listing([content("p2")]))
+        search.existing[("page", "ENG")] = [content("p2")]
+        search.archived["ENG"] = [content("p1")]
+
+        unlinked = await self._full_sync(connector, records_db, checkpoints)
+
+        assert not [r for r in atlassian_api.requests if "/restriction" in r.url.path], "its pages carry no restrictions"
+        assert records_db.record_permissions["p1"] == [] and records_db.records["p1"].inherit_permissions is True
+        assert unlinked & {"p1", "a1"} == set()
+        assert connector.full_sync_coverage().complete is True
 
     async def test_an_archived_page_whose_stored_files_cannot_be_read_keeps_everything_linked(
         self, atlassian_api, records_db, checkpoints, search

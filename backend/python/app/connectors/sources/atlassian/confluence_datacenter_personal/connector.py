@@ -566,6 +566,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             record_groups = []
             self._space_listing_complete = False
             self._saved_space_ids = set()
+            self._spaces_listed = 0
             # A listed space that couldn't be processed would look like one that left.
             skipped_a_space = False
 
@@ -590,6 +591,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     self.logger.error("❌ The space listing had no results list; no space is removed this sync")
                     break
                 listed_count = len(spaces_data)
+                self._spaces_listed += listed_count
 
                 # Extract base URL from first response
                 if not base_url and response_data.get("_links", {}).get("base"):
@@ -1234,6 +1236,11 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
     async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
         return await self._sync_content(space.short_name, record_type, only_ids=ids)
+
+    async def _refresh_archived_page_access(self, page: Record) -> bool:
+        """Nothing to re-read: pages carry no restrictions here, only the space's access for the
+        account, and the listing that found this archived page was read as that account."""
+        return True
 
     async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """

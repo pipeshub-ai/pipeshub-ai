@@ -119,15 +119,18 @@ class ListedItem(NamedTuple):
 
 class ConfluenceDataCenterRemovalMixin:
     """Needs ``data_entities_processor``, ``connector_id``, ``logger``, ``sync_filters``,
-    ``pages_sync_point``, ``_get_fresh_datasource``, ``_space_listing_complete`` and
-    ``_saved_space_ids`` (the spaces this sync wrote to the graph), and
-    a ``_sync_content_by_ids`` that syncs the given ids and says whether it read them all.
+    ``pages_sync_point``, ``_get_fresh_datasource``, ``_space_listing_complete``,
+    ``_spaces_listed`` (how many spaces the source listed before the sync filters),
+    ``_saved_space_ids`` (the spaces this sync wrote to the graph), a ``_sync_content_by_ids``
+    that syncs the given ids and says whether it read them all, and a
+    ``_refresh_archived_page_access`` that rewrites an archived page's access.
     """
 
     # The space's stored pages and blog posts as the last reconcile read them, kept for the next one only.
     _stored_space_scan: tuple[str, dict[RecordType, list[Record]]] | None = None
     # Part of the source went unread, so a full sync must not unlink what it did not see.
     _sync_read_incomplete = False
+    _spaces_listed = 0
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """A full sync that left part of Confluence unread unlinks nothing it did not see."""
@@ -148,6 +151,13 @@ class ConfluenceDataCenterRemovalMixin:
         self._sync_read_incomplete = True
 
     async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
+        raise NotImplementedError
+
+    async def _refresh_archived_page_access(self, page: Record) -> bool:
+        """Write a stored archived page's access as Confluence has it now, with its files and comments.
+
+        False when that access could not be read; the stored access is then left as it is.
+        """
         raise NotImplementedError
 
     async def _save_content_checkpoint(
@@ -304,8 +314,19 @@ class ConfluenceDataCenterRemovalMixin:
 
         The search leaves archived pages out, but Confluence still shows them to those
         allowed, so a full sync keeps them and what hangs under them rather than
-        unlinking them. Child pages are left to their own listing state.
+        unlinking them. Child pages are left to their own listing state. A full sync
+        re-reads each one's access first: access taken away before it was archived
+        must not survive, and one whose access could not be read unlinks nothing.
         """
+        if self.data_entities_processor.full_sync_running(self.connector_id):
+            for page in pages:
+                try:
+                    refreshed = await self._refresh_archived_page_access(page)
+                except Exception as e:
+                    self.logger.warning(f"Could not refresh the access of archived page {page.external_record_id}: {e}")
+                    refreshed = False
+                if not refreshed:
+                    self._sync_read_incomplete = True
         page_types = (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST)
         kept = [r.id for r in pages]
         queue = [r.external_record_id for r in pages]
@@ -515,13 +536,14 @@ class ConfluenceDataCenterRemovalMixin:
         is listed again. Runs only after a space listing read to the end, and
         only when the listed set differs from the one last cleaned up or a
         removal is still unfinished. A listing with no spaces at all removes
-        nothing: that is the account failing, not every space leaving.
+        nothing: that is the account failing, not every space leaving. One whose
+        spaces the sync filters all leave out removes them like any other.
         """
         if not self._space_listing_complete:
             self._sync_read_incomplete = True
             return
         in_scope = sorted({str(s.external_group_id) for s in spaces})
-        if not in_scope:
+        if not in_scope and not self._spaces_listed:
             self.logger.warning("The space listing came back empty; no space is removed")
             self._sync_read_incomplete = True
             return

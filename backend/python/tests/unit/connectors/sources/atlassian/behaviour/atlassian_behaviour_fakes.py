@@ -256,7 +256,16 @@ class FakeRecordsDb:
         return [r for r in rows if after_key is None or r.id > after_key][:limit]
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        """Noted as seen by the full sync in progress, under the external ids its record writes are tracked by."""
+        from app.config.constants.arangodb import CollectionNames
+
         self.kept_records.extend(record_ids)
+        seen = getattr(self, "full_sync_seen", None)
+        if seen is not None:
+            ids = set(record_ids)
+            for record in self.records.values():
+                if record.id in ids:
+                    seen.add(CollectionNames.RECORDS.value, record.external_record_id)
 
     def full_sync_running(self, connector_id: str) -> bool:
         return self.full_sync or getattr(self, "full_sync_seen", None) is not None

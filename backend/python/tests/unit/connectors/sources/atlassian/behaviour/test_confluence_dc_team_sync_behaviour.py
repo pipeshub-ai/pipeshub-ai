@@ -1825,6 +1825,20 @@ class TestRemovalFromSource:
         assert not {"p1", "p2", "p3"} & set(db.records)
         assert store.values_for("confluence_pages/ENG")["last_sync_time"] == ""
 
+    async def test_a_space_filter_that_leaves_out_every_listed_space_removes_them_and_completes(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"space_keys": {"operator": "not_in", "type": "list", "value": ["ENG"]}}}
+        }
+
+        await connector.run_sync()
+
+        assert "10" not in db.record_groups
+        assert not {"p1", "p2", "p3"} & set(db.records)
+        assert connector.full_sync_coverage().complete is True, "the filters leaving every space out is no failed read"
+
     async def test_a_removed_space_leaves_no_type_docs_behind(self, atlassian_api, db, store, search) -> None:
         connector = await self._two_pages_synced(atlassian_api, db, store, search)
         eng_ids = {r.id for r in db.records.values() if r.external_record_group_id == "10"}
@@ -1949,9 +1963,12 @@ class TestRemovalFromSource:
 
         assert "10" in db.record_groups
         assert {"p1", "p2"} <= set(db.records)
+        assert connector.full_sync_coverage().complete is False
 
 
 ANA = user("ana", "ana@example.com")
+BOB = user("bob", "bob@example.com")
+P1_RESTRICTION = f"{API}/content/p1/restriction/relevantViewRestrictions"
 
 
 class TestAFullSyncUnlinksOnlyWhatLeftConfluence:
@@ -2062,6 +2079,86 @@ class TestAFullSyncUnlinksOnlyWhatLeftConfluence:
         assert db.kept_records == []
         assert "p1" not in parents
 
+    @staticmethod
+    async def _archived_restricted_page(atlassian_api, db, store, search, *users: str) -> ConfluenceDataCenterConnector:
+        """p1 (file a1, comment c1) restricted to ``users``, then archived; p2 stays current."""
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ANA, BOB], {})
+        atlassian_api.on("GET", f"{API}/content/p1/child/comment", {"results": [comment("c1")], "_links": {"base": BASE}})
+        atlassian_api.on("GET", P1_RESTRICTION, restricted_to(users=[{"type": "known", "userKey": u} for u in users]))
+        search.add("page", 0, listing([content("p1", attachments=[attachment("a1")]), content("p2")]))
+        await connector.run_sync()
+        assert len(db.record_permissions["p1"]) == len(users)
+        search.add("page", 0, listing([content("p2")]))
+        search.existing["page"] = [content("p2")]
+        search.archived = [content("p1")]
+        return connector
+
+    @pytest.mark.parametrize("now", [["ana"], ["ana", "bob"]], ids=["narrowed", "unchanged"])
+    async def test_an_archived_page_gets_its_current_restrictions_with_its_files_and_comments(
+        self, atlassian_api, db, store, search, now
+    ) -> None:
+        connector = await self._archived_restricted_page(atlassian_api, db, store, search, "ana", "bob")
+        atlassian_api.on("GET", P1_RESTRICTION, restricted_to(users=[{"type": "known", "userKey": u} for u in now]))
+        db.permission_updates.clear()
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert {p.email for p in db.record_permissions["p1"]} == {f"{u}@example.com" for u in now}
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
+        updated = {r.external_record_id: (r.inherit_permissions, perms) for r, perms in db.permission_updates}
+        assert updated == {"a1": (True, []), "c1": (True, [])}, "its file and comment take the page's access"
+        assert self._among(unlinked, {"p1", "a1", "c1"}) == set()
+        assert connector.full_sync_coverage().complete is True
+        assert len(atlassian_api.calls("GET", P1_RESTRICTION)) == 2, "one read on its first sync, one on the full sync"
+
+    @pytest.mark.parametrize("failure", ["restriction-read", "record-lookup", "record-gone"])
+    async def test_an_archived_page_whose_restrictions_cannot_be_read_unlinks_nothing(
+        self, atlassian_api, db, store, search, failure
+    ) -> None:
+        connector = await self._archived_restricted_page(atlassian_api, db, store, search, "ana", "bob")
+        if failure == "restriction-read":
+            atlassian_api.on("GET", P1_RESTRICTION, json_response({"message": "busy"}, status=503))
+        else:
+            atlassian_api.on("GET", P1_RESTRICTION, restricted_to(users=[{"type": "known", "userKey": "ana"}]))
+            db.get_typed_record_by_external_id = (
+                AsyncMock(side_effect=ConnectionError("database unavailable"))
+                if failure == "record-lookup"
+                # Deleted between the stored scan and the refresh: its new access is not written.
+                else AsyncMock(return_value=None)
+            )
+        p1, c1 = db.records["p1"].id, db.records["c1"].id
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert connector.full_sync_coverage().complete is False, "a full sync is still owed"
+        assert unlinked == {"records": set(), "record_groups": set(), "groups": set()}
+        assert {p.email for p in db.record_permissions["p1"]} == {"ana@example.com", "bob@example.com"}
+        assert db.records["p1"].access_rule == AccessRule.RESTRICTED
+        assert {p1, c1} <= set(db.kept_records)
+
+    async def test_a_stand_in_group_named_only_by_an_archived_page_keeps_its_links(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._archived_restricted_page(atlassian_api, db, store, search, "contractor")
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"contractor", "p1"}) == set()
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_run_that_is_not_a_full_sync_reads_no_archived_page_restrictions(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._archived_restricted_page(atlassian_api, db, store, search, "ana", "bob")
+        reads = len(atlassian_api.calls("GET", P1_RESTRICTION))
+        store.sync_points.clear()  # read in full, as a space added to the filters is
+
+        await connector.run_sync()
+
+        assert len(atlassian_api.calls("GET", P1_RESTRICTION)) == reads
+        assert {p.email for p in db.record_permissions["p1"]} == {"ana@example.com", "bob@example.com"}
+
     async def test_a_reused_stand_in_group_keeps_its_links(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         with_directory(atlassian_api, [ANA], {"eng": [ANA]})
@@ -2099,6 +2196,10 @@ class TestAFullSyncUnlinksOnlyWhatLeftConfluence:
         unlinked = await self._full_sync(connector, db, store)
 
         assert self._among(unlinked, {"eng"}) == set(), "its stored members and its space grant stay"
+        assert "ana@example.com" in db.members_of("eng")
+        assert (EntityType.GROUP, "eng", PermissionType.READ) in {
+            (p.entity_type, p.external_id, p.type) for p in db.record_group_permissions["10"]
+        }
         assert self._among(unlinked, {"old"}) == {"old"}
         assert connector.full_sync_coverage().complete is True
 

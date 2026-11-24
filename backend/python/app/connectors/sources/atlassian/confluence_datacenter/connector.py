@@ -877,6 +877,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             record_groups = []
             self._space_listing_complete = False
             self._saved_space_ids = set()
+            self._spaces_listed = 0
             # A listed space that couldn't be processed would look like one that left.
             skipped_a_space = False
 
@@ -901,6 +902,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     self.logger.error("❌ The space listing had no results list; no space is removed this sync")
                     break
                 listed_count = len(spaces_data)
+                self._spaces_listed += listed_count
 
                 # Extract base URL from first response
                 if not base_url and response_data.get("_links", {}).get("base"):
@@ -1612,6 +1614,31 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         result = await self._sync_content(space.short_name, record_type, defer_checkpoint=True, only_ids=ids)
         self._id_sync_failed_items.extend(result.failed)
         return result.complete and not result.failed
+
+    async def _refresh_archived_page_access(self, page: Record) -> bool:
+        """Write an archived page's restrictions as the audit pass does; the search never re-reads it."""
+        permissions = await self._fetch_page_permissions(page.external_record_id)
+        if permissions is None:
+            return False
+        record = await self.data_entities_processor.get_typed_record_by_external_id(
+            self.connector_id, page.external_record_id
+        )
+        if record is None:
+            return False
+        # A READ restriction keeps inheriting and is recorded as RESTRICTED instead; EDIT-only stays STRICT.
+        record.access_rule = (
+            AccessRule.RESTRICTED if any(p.type == PermissionType.READ for p in permissions) else AccessRule.STRICT
+        )
+        record.rewrite_permissions = True
+        await self.data_entities_processor.on_new_records([(record, permissions)])
+        await apply_page_access_to_dependents(
+            self.data_entities_processor,
+            self.connector_id,
+            page.external_record_id,
+            permissions,
+            inherits_space=record.inherit_permissions,
+        )
+        return True
 
     async def _sync_permission_changes_from_audit_log(self) -> None:
         """
