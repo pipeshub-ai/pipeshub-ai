@@ -83,7 +83,7 @@ class TestSearchByName:
     async def test_search_is_scoped_to_the_user_and_agent_sources(self, graph: MagicMock) -> None:
         await KnowledgeHub(_state(graph)).list_files(query="budget")
 
-        graph.get_user_by_user_id.assert_awaited_once_with(user_id=USER_ID)
+        graph.get_user_by_user_id.assert_awaited_once_with(USER_ID, raise_on_error=True)
         graph.get_knowledge_hub_access_context_v2.assert_awaited_once_with(user_key=USER_KEY, org_id=ORG_ID)
         graph.get_knowledge_hub_access_v3.assert_awaited_once_with(user_key=USER_KEY, org_id=ORG_ID)
         searched, filters = _search(graph)

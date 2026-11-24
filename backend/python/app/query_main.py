@@ -12,7 +12,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+import app.utils.runtime_threads
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_log import (
     install_request_logging,
@@ -201,6 +201,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.debug("🚀 Starting retrieval application")
 
     await configure_envelope(app_container.config_service())
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+    await check_main_redis_eviction_policy(app_container.config_service(), logger, "query")
 
     from app.agents.actions.storage_search.storage_search import (
         sweep_orphan_views_at_startup,
@@ -392,6 +395,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         try:
             settings = await EnvSandboxSettingsLoader().load(SandboxContext())
+            # Size the code sandbox ceiling from the machine in the background;
+            # runs use the minimum until it is known.
+            from app.agent_loop_lib.sandbox.capacity import get_sandbox_capacity
+
+            get_sandbox_capacity().start_sizing()
+            # The live limit samples the machine in every worker; the governor
+            # builds it for the modes that have a reading.
+            from app.agent_loop_lib.sandbox.governor import get_default_governor
+            from app.agent_loop_lib.sandbox.live_limit import get_live_limit
+
+            get_default_governor()
+            live_limit = get_live_limit()
+            if live_limit is not None:
+                live_limit.start()
             registry = build_default_registry(
                 shared_config=SharedSandboxConfig(max_lifetime_s=settings.max_lifetime_s),
                 backend_options=settings.backend_options,
@@ -424,6 +441,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
 
     app.state.sandbox_warmup_task = spawn_detached(_warmup_coding_sandbox())
+
+    # Admin alerts when code runs keep waiting for a sandbox; one worker of
+    # the container evaluates, the others wait to take over.
+    from app.services.sandbox_alerts.loop import run_sandbox_alert_loop
+
+    app.state.sandbox_alert_task = spawn_detached(
+        run_sandbox_alert_loop(app_container.config_service(), logger),
+    )
 
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
@@ -466,6 +491,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
         "lexical_reconcile_task", "entity_store_warmup_task", "skills_seed_task",
+        "sandbox_alert_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -474,6 +500,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await warmup_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+    try:
+        from app.agent_loop_lib.sandbox.live_limit import get_live_limit
+
+        live_limit = get_live_limit()
+        if live_limit is not None:
+            await live_limit.stop()
+    except Exception as e:
+        logger.error(f"Error stopping the sandbox live limit: {e}")
+
+    try:
+        from app.agent_loop_lib.sandbox.load_ledger import peek_default_load_ledger
+
+        load_ledger = peek_default_load_ledger()
+        if load_ledger is not None:
+            await asyncio.to_thread(load_ledger.close)
+    except Exception as e:
+        logger.error(f"Error flushing the sandbox load ledger: {e}")
 
     # Stop all message consumers
     try:

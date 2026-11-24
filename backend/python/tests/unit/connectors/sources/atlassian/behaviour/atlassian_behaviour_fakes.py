@@ -161,13 +161,16 @@ class FakeRecordsDb:
         self.full_sync = False
         self.unlinked_record_groups: list[str] = []
         self.fail_group_listing = False
+        self.fail_note_kept_group = False
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
         if not self.creator_email:
             return None
         return SimpleNamespace(email=self.creator_email, id=user_id)
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(
+        self, connector_id: str, external_record_id: str, *, raise_on_error: bool = False
+    ) -> Optional[Record]:
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError(f"database unavailable for {external_record_id}")
         stored = self.records.get(external_record_id)
@@ -253,7 +256,16 @@ class FakeRecordsDb:
         return [r for r in rows if after_key is None or r.id > after_key][:limit]
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        """Noted as seen by the full sync in progress, under the external ids its record writes are tracked by."""
+        from app.config.constants.arangodb import CollectionNames
+
         self.kept_records.extend(record_ids)
+        seen = getattr(self, "full_sync_seen", None)
+        if seen is not None:
+            ids = set(record_ids)
+            for record in self.records.values():
+                if record.id in ids:
+                    seen.add(CollectionNames.RECORDS.value, record.external_record_id)
 
     def full_sync_running(self, connector_id: str) -> bool:
         return self.full_sync or getattr(self, "full_sync_seen", None) is not None
@@ -272,6 +284,15 @@ class FakeRecordsDb:
         if seen is not None:
             for group in groups:
                 seen.add(CollectionNames.GROUPS.value, group.source_user_group_id)
+
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        from app.config.constants.arangodb import CollectionNames
+
+        if self.fail_note_kept_group:
+            raise RuntimeError("database unavailable")
+        seen = getattr(self, "full_sync_seen", None)
+        if seen is not None:
+            seen.add(CollectionNames.GROUPS.value, external_group_id)
 
     async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
         from app.config.constants.arangodb import CollectionNames
@@ -304,6 +325,13 @@ class FakeRecordsDb:
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, permissions))
+        # The stored grants are replaced, and the record inherits from its parent if it says so.
+        self.record_permissions[record.external_record_id] = list(permissions)
+        stored = self.records.get(record.external_record_id)
+        if stored is not None:
+            self.records[record.external_record_id] = stored.model_copy(
+                update={"inherit_permissions": record.inherit_permissions}
+            )
 
     async def reindex_existing_records(self, records: list[Any]) -> None:
         # The real one builds the indexing event from each record; a base Record raises here.

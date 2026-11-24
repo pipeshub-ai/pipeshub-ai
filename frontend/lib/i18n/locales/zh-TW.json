@@ -2205,9 +2205,29 @@
         "pasteBlockLabel": "可直接貼入您的 MCP 設定",
         "copyPasteBlockAria": "複製貼上區塊",
         "copySuccessTitle": "已複製",
-        "copyErrorTitle": "無法複製"
+        "copyErrorTitle": "無法複製",
+        "knowledgeLimitLaterHint": "你之後可以變更此項，不需要更換權杖。"
       },
-      "scopeCount_other": "{{count}} 個權限範圍"
+      "scopeCount_other": "{{count}} 個權限範圍",
+      "access": {
+        "panelTitle": "變更存取權",
+        "intro": "選擇 {{name}} 可以檢視的內容。權杖會繼續有效，變更從它的下一個要求起生效，因此不需要更新任何使用它的地方。",
+        "save": "儲存",
+        "savedTitle": "存取權已變更",
+        "savedEverything": "{{name}} 現在可以檢視你能檢視的所有內容。",
+        "savedSome_other": "{{name}} 現在可以檢視所選的 {{count}} 項。",
+        "undo": "復原",
+        "undoneTitle": "已復原變更",
+        "undoErrorTitle": "無法復原變更。請開啟「變更存取權」重新設定。",
+        "errorTitle": "無法變更存取權",
+        "errorDescription": "沒有任何變更。請再試一次。",
+        "unknownTitle": "無法確認變更",
+        "unknownDescription": "變更可能已儲存。請先檢查此處顯示的存取範圍，再重試。",
+        "unknownReloadFailedDescription": "變更可能已儲存，但無法載入最新的存取範圍。請先重新載入頁面，再以顯示內容為準。",
+        "rowAction": "變更存取權",
+        "rowActionAria": "變更 {{name}} 可以檢視的內容",
+        "rowActionTooltip": "變更存取權：選擇此權杖可以檢視的內容"
+      }
     },
     "agentSignIns": {
       "title": "代理登入",
@@ -2481,7 +2501,8 @@
         "security": "安全性",
         "personal": "個人",
         "people": "成員",
-        "developerSettings": "開發人員設定"
+        "developerSettings": "開發人員設定",
+        "help": "說明"
       },
       "nav": {
         "general": "一般",
@@ -2803,7 +2824,7 @@
           "pipeshub_search": "在使用者可讀取的連接器和集合中依語意搜尋已索引的文件，並傳回相符的段落及其所屬記錄。",
           "pipeshub_get_record_content": "讀取一筆記錄的全文。也可以透過 URL、議題編號或外部 ID 尋找記錄，瀏覽資料夾、空間或 Epic 底下的內容，以及讀取整個 Slack 討論串。",
           "pipeshub_download_record": "下載記錄所儲存的原始檔案，可選擇轉換為 PDF。",
-          "pipeshub_directory": "查詢目前登入的使用者、工作區的使用者和群組，以及該使用者所屬的團隊。不會變更任何內容。",
+          "pipeshub_directory": "查詢目前登入的使用者、工作區的使用者，以及該使用者所屬的團隊。不會變更任何內容。",
           "pipeshub_create_collection": "建立一個由使用者擁有的全新空集合，可將檔案上傳到其中。",
           "pipeshub_upload": "將文件上傳到集合，以便建立索引並可供搜尋。每次呼叫最多 20 份文件、約 3 MB。",
           "pipeshub_indexing_status": "回報集合的索引進度，以及哪些文件失敗及其原因。",
@@ -2852,7 +2873,7 @@
           },
           "people": {
             "label": "人員與實體",
-            "description": "工作區的使用者和群組，以及其知識圖譜中的人員、專案、主題和數值。"
+            "description": "工作區的使用者，以及其知識圖譜中的人員、專案、主題和數值。"
           },
           "chat": {
             "label": "聊天與代理",
@@ -3780,6 +3801,25 @@
         "reach": "{{connector}} 中的變更會在{{interval}}內同步到 PipesHub。",
         "reachUnknown": "{{connector}} 中的變更會在下次同步時送達 PipesHub。",
         "syncNow": "立即同步權限",
+        "filter": {
+          "label": "搜尋如何檢查存取權限",
+          "mode": {
+            "inherit": "部署預設值",
+            "legacy": "傳統檢查",
+            "scopes": "更快的搜尋"
+          },
+          "effective": {
+            "scopes": "{{connector}} 的搜尋使用更快的搜尋：在找到結果之前，就已將結果限定為每個人有權查看的內容，且每個結果仍會被檢查。",
+            "legacy": "{{connector}} 的搜尋使用傳統檢查：結果在找到後再檢查。"
+          },
+          "waiting": "{{connector}} 的權限更新完成後，更快的搜尋就會開始。",
+          "applies": "此變更會在 30 秒內套用至搜尋。",
+          "blocker": {
+            "serving_off": "此部署已關閉更快的搜尋。",
+            "store_unsupported": "此部署的向量儲存不支援更快的搜尋。"
+          },
+          "saveError": "無法變更此設定。請再試一次。"
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -3952,7 +3992,6 @@
         "unavailable": "無法使用"
       },
       "catalog": {
-        "title": "新增更多伺服器",
         "description": "現成的伺服器。新增後登入即可使用。",
         "personalDescription": "你在這裡新增的伺服器只有你看得到。",
         "added": "已新增",
@@ -4055,7 +4094,8 @@
           "shared": "所有人共用一個憑證",
           "sharedHint": "你在下方新增一次。所有人都以它的權限操作。"
         },
-        "advanced": "進階"
+        "advanced": "進階",
+        "nameTaken": "已有其他伺服器使用這個名稱。請換一個。"
       },
       "configPanel": {
         "editTitle": "編輯 MCP 伺服器",
@@ -4206,6 +4246,67 @@
         "signIn": "{{name}} 已新增。請在下方登入，以便執行它的工具。",
         "other": "{{name}} 已新增，但還無法使用。原因見下方。",
         "dismiss": "完成"
+      },
+      "searchYourServers": "搜尋你的伺服器",
+      "categories": {
+        "communication": "溝通",
+        "meetings": "會議與行事曆",
+        "docs": "文件與檔案",
+        "projects": "專案管理",
+        "developer": "開發者工具",
+        "data": "資料與分析",
+        "sales": "銷售與 CRM",
+        "support": "客戶支援",
+        "finance": "財務與法務",
+        "design": "設計與白板",
+        "automation": "自動化",
+        "search": "搜尋與研究",
+        "security": "安全與身分"
+      },
+      "discover": {
+        "title": "探索伺服器",
+        "searchPlaceholder": "依名稱或想做的事（英文）搜尋，例如「schedule meetings」",
+        "searchLabel": "搜尋現成的伺服器",
+        "clearSearch": "清除搜尋",
+        "categoriesLabel": "類別",
+        "all": "全部",
+        "allServers": "所有伺服器",
+        "resultsFor_one": "「{{query}}」的結果：{{count}} 個伺服器",
+        "resultsFor_other": "「{{query}}」的結果：{{count}} 個伺服器",
+        "searching": "搜尋中…",
+        "catalogLoadFailed": "無法載入目錄。",
+        "noMatch": "沒有現成的伺服器符合「{{query}}」。你仍可透過 URL 新增任何伺服器。",
+        "whatItDoes": "能做什麼",
+        "beforeYouAdd": "新增之前",
+        "readOnly": "唯讀",
+        "changesData": "讀取並變更資料",
+        "readOnlyNote": "它只查詢資訊。",
+        "changesDataNote": "會變更資料的工具在執行前會先詢問，除非你允許它們直接執行。",
+        "signIn": "登入",
+        "signInOauth": "每個人用自己的 {{name}} 帳號登入",
+        "signInToken": "API 權杖",
+        "signInNone": "不需要登入",
+        "documentation": "文件",
+        "added_one": "已新增",
+        "added_other": "已新增 {{count}} 個",
+        "addOrg": "新增到你的組織",
+        "addPersonal": "僅為自己新增",
+        "orgNote": "組織中的所有人都看得到它。每個人登入後使用。",
+        "personalNote": "只有你看得到它。",
+        "popularTitle": "你的組織中常用的伺服器",
+        "popularHint": "依登入人數",
+        "peopleUse_one": "{{count}} 人在用",
+        "peopleUse_other": "{{count}} 人在用",
+        "browse": "瀏覽 MCP 伺服器",
+        "browseHint": "新增伺服器並登入後，它會出現在清單中，可拖到畫布上。",
+        "fromCatalog": "來自目錄",
+        "add": "新增",
+        "view": "檢視",
+        "askAdmin": "共享的代理只能使用你的組織新增的伺服器。請管理員新增一個。",
+        "sharedAgentNote": "只有管理員能新增共享代理可用的伺服器。請管理員為你的組織新增 {{name}}。",
+        "addedSignIn": "已新增 {{name}}。在清單中登入後即可使用它的工具。",
+        "emptyBuilder": "還沒有 MCP 伺服器。新增一個，讓這個代理使用 Linear、Slack 或 GitHub 等應用程式的工具。",
+        "noAddedMatch": "你的伺服器中沒有符合項目。"
       }
     },
     "bots": {
@@ -4341,6 +4442,7 @@
         "candidateApproved": "已核准「{{name}}」",
         "candidateRejected": "已拒絕「{{name}}」",
         "candidateActionError": "更新候選項目失敗",
+        "candidateGone": "此候選項目已審核過",
         "conflict": "此技能已在其他位置被變更",
         "conflictDescription": "請重新載入最新版本，然後再次套用您的編輯。",
         "conflictReload": "重新載入"
@@ -5657,7 +5759,6 @@
     "mcpServerAlreadyAttachedNotify": "此代理程式已有另一個與 {{name}} 同類型的伺服器。每種類型的伺服器，一個代理程式只能使用一個。",
     "webSearchOnlyOne": "只能附加一個網路搜尋供應商",
     "mcpServerNodeSubtitle": "來自 MCP 伺服器的工具",
-    "noMcpServersAvailable": "沒有可用的 MCP 伺服器",
     "webSearchLocked": "此代理程式的網路搜尋無法變更",
     "webSearchLoading": "正在載入網路搜尋供應商…",
     "webSearchConfigureFirst": "請先設定 {{name}}",
@@ -6370,5 +6471,151 @@
       "copyDetails": "複製詳細資料給管理員",
       "copied": "詳細資料已複製"
     }
+  },
+  "support": {
+    "menuLabel": "聯絡支援團隊",
+    "title": "聯絡支援團隊",
+    "steps": {
+      "area": "類別",
+      "details": "詳細資訊"
+    },
+    "close": "關閉",
+    "cancel": "取消",
+    "back": "返回",
+    "continue": "繼續",
+    "send": "傳送要求",
+    "sending": "正在傳送…",
+    "changeArea": "變更類別",
+    "change": "變更",
+    "issueOther": "其他（未列出）",
+    "areaStep": {
+      "title": "您需要哪方面的協助？",
+      "subtitle": "請選擇與您的問題最相關的類別。",
+      "suggested": "建議",
+      "suggestion": "{{area}} 在 {{time}} 發生錯誤，因此我們建議此類別。",
+      "idea": "有想法要分享？傳送意見回饋"
+    },
+    "areas": {
+      "connectors": {
+        "label": "連接器與同步",
+        "hint": "連接應用程式、同步錯誤或資料遺失"
+      },
+      "chat": {
+        "label": "聊天與搜尋",
+        "hint": "回答、引用或搜尋結果"
+      },
+      "agents": {
+        "label": "代理與動作",
+        "hint": "建立、執行或共用代理"
+      },
+      "files": {
+        "label": "檔案與集合",
+        "hint": "上傳、資料夾或檔案預覽"
+      },
+      "access": {
+        "label": "登入與存取",
+        "hint": "登入、密碼或單一登入"
+      },
+      "people": {
+        "label": "成員與權限",
+        "hint": "邀請使用者、角色或群組"
+      },
+      "other": {
+        "label": "其他",
+        "hint": "此處未列出的任何問題"
+      }
+    },
+    "details": {
+      "descriptionLabel": "發生了什麼事？",
+      "descriptionPlaceholder": "您當時想做什麼？實際上發生了什麼？",
+      "descriptionMin_other": "至少 {{count}} 個字元。",
+      "descriptionMax_other": "已達到 {{count}} 個字元的上限。",
+      "attach": "附加螢幕截圖",
+      "removeFile": "移除 {{name}}",
+      "fileUnsupported": "{{name}}：不支援此檔案類型。",
+      "fileTooLarge": "{{name}} 超過 5 MB。",
+      "tooManyFiles": "最多可附加 5 個檔案。",
+      "filesTotalTooLarge": "檔案總大小不能超過 8 MB。",
+      "smtpTitle": "此工作區尚未設定電子郵件",
+      "smtpBody": "我們會為您產生一封郵件，您可以用自己的郵件應用程式傳送到 {{email}}。",
+      "smtpAdmin": "如需直接傳送要求，請在工作區設定中設定 SMTP。",
+      "smtpMember": "如需直接傳送要求，請讓管理員設定 SMTP。",
+      "includeErrors_other": "包含最近的 {{count}} 個錯誤",
+      "errorLine": "{{area}}：{{time}} 發生錯誤 {{status}}",
+      "errorLineUnknown": "{{time}} 發生錯誤 {{status}}",
+      "sentWith": "隨申請一併傳送：{{list}}。",
+      "sentParts": {
+        "workspace": "您的工作區",
+        "identity": "您的姓名和電子郵件",
+        "browser": "您的瀏覽器",
+        "errors": "最近的錯誤"
+      },
+      "viewDetails": "查看詳細資訊",
+      "hideDetails": "隱藏詳細資訊",
+      "rows": {
+        "issue": "問題類別",
+        "workspace": "工作區",
+        "signedInAs": "登入身分",
+        "browser": "瀏覽器",
+        "recentErrors": "最近的錯誤"
+      }
+    },
+    "blocked": {
+      "area": "請選擇一個類別以繼續。",
+      "description": "「發生了什麼事？」至少需要 {{min}} 個字元（還差 {{left}} 個）。"
+    },
+    "result": {
+      "sentTitle": "要求已傳送",
+      "sentBody": "支援團隊已收到您的要求。我們已寄給您一份副本，回覆會寄到您的收件匣。",
+      "pendingTitle": "仍在傳送",
+      "pendingBody": "寄往 {{email}} 的郵件比平常慢。如果沒有收到回覆，請提供此編號與我們聯絡。",
+      "referenceLabel": "您的編號",
+      "copyReference": "複製編號",
+      "quote": "就同一問題再次與我們聯絡時，請提供此編號。",
+      "done": "完成"
+    },
+    "email": {
+      "title": "透過您的郵件應用程式傳送",
+      "noSmtp": "此處尚未設定電子郵件，因此要求 {{reference}} 未傳送。請用您自己的郵件應用程式傳送此郵件，讓支援團隊收到。",
+      "failed": "我們無法透過電子郵件傳送要求 {{reference}}。請用您自己的郵件應用程式傳送此郵件，讓支援團隊收到。",
+      "limit": "您在過去一小時內已傳送多個要求。請透過您的郵件應用程式傳送這一則。",
+      "unsaved": "我們未能傳送您的要求。請用您自己的郵件應用程式傳送此郵件，讓支援團隊收到。",
+      "to": "收件者",
+      "subject": "主旨",
+      "copy": "複製郵件",
+      "copied": "已複製",
+      "open": "開啟郵件應用程式",
+      "shortened": "郵件應用程式中的內容已縮短。使用「複製郵件」可取得完整內容。",
+      "attachFiles_other": "您的 {{count}} 個檔案不在這封郵件中，請在郵件應用程式中自行附加。",
+      "copyFallback": "無法自動複製。郵件內容已選取，請按 Ctrl+C（Mac 上按 ⌘C）。"
+    },
+    "errors": {
+      "load": "無法載入支援選項。",
+      "retry": "重試",
+      "send": "無法傳送您的要求，請再試一次。",
+      "emailInstead": "改用郵件傳送"
+    }
+  },
+  "feedback": {
+    "menuLabel": "傳送意見回饋",
+    "title": "傳送意見回饋",
+    "subtitle": "告訴我們哪些地方好用、哪些不好用，以及您希望看到的功能。",
+    "kindIssue": "一般意見回饋",
+    "kindFeedback": "功能請求",
+    "descriptionPlaceholder": "發生了什麼，或我們應該改進什麼？",
+    "addFiles": "新增檔案",
+    "removeFile": "移除",
+    "fileHint": "選填。最多 5 個檔案，每個 5 MB。圖片、PDF、文字或 CSV。",
+    "cancel": "取消",
+    "submit": "送出",
+    "needReply": "需要回覆嗎？聯絡支援團隊",
+    "success": "謝謝，我們已收到你的回饋。",
+    "pending": "寄送到 {{email}} 的郵件耗時比平常更久。如果您沒有收到回覆，請聯絡我們。",
+    "submitError": "送出失敗，請再試一次。",
+    "descriptionTooShort": "請再補充一些細節（至少 10 個字元）。",
+    "invalidType": "不支援該檔案類型。",
+    "fileTooLarge": "每個檔案不得超過 5 MB。",
+    "tooManyFiles": "最多只能附加 5 個檔案。",
+    "filesTotalTooLarge": "檔案總大小不能超過 8 MB。"
   }
 }

@@ -514,6 +514,20 @@ async def test_a_batch_check_the_graph_could_not_answer_is_still_a_500(service, 
 
 
 @pytest.mark.asyncio
+async def test_a_user_lookup_that_finds_the_memory_pool_spent_is_busy_not_an_unknown_user(service, provider) -> None:
+    class PoolSpent(Exception):
+        code = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
+
+    provider.get_user_by_user_id.side_effect = PoolSpent()
+    result = await service.get_nodes(user_id="u1", org_id="o1")
+
+    assert (result.success, result.errorCode) == (False, 503)
+    assert result.error != "User not found"
+    assert provider.get_user_by_user_id.call_args.kwargs == {"raise_on_error": True}
+    provider.get_knowledge_hub_root_nodes_v2.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_the_wrong_type_in_the_url_is_still_a_400(service, provider) -> None:
     provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
         [], scope=admitted_scope(node_type="app")
@@ -1123,6 +1137,47 @@ async def test_a_browse_total_older_than_five_minutes_is_counted_again_without_t
     assert aged.pagination.totalItems == 2, "the whole folder, as the viewer may read it now"
     whole = provider.get_knowledge_hub_connector_page_v3.call_args_list[-1].kwargs
     assert (whole["after"], whole["include_total"]) == (None, True)
+
+
+@pytest.mark.asyncio
+async def test_counts_asked_for_on_a_later_browse_page_describe_the_whole_folder(service, provider) -> None:
+    """A first page without counts issues a cursor carrying the total alone; a later page asking for counts counts the folder again, then carries them."""
+    browse = {"user_id": "u1", "org_id": "o1", "parent_id": "p1", "parent_type": "recordGroup", "limit": 1}
+    provider.get_knowledge_hub_connector_page_v3.side_effect = lambda **kw: page_of(
+        [row("r2" if kw["after"] else "r1", "Record")], has_more=True, scope=admitted_scope(),
+        total=5 if kw["include_total"] else None, counts={"record": 3, "folder": 2} if kw["include_total"] else None)
+    first = await service.get_nodes(**browse)
+    assert first.counts is None
+
+    second = await service.get_nodes(**browse, cursor=first.pagination.nextCursor, include=["counts"])
+    assert [item.id for item in second.items] == ["r2"]
+    assert {item.label: item.count for item in second.counts.items} == {"records": 3, "folders": 2}
+    assert sum(item.count for item in second.counts.items) == second.counts.total == second.pagination.totalItems == 5
+    whole = provider.get_knowledge_hub_connector_page_v3.call_args_list[-1].kwargs
+    assert (whole["after"], whole["include_total"]) == (None, True)
+
+    provider.get_knowledge_hub_connector_page_v3.reset_mock()
+    third = await service.get_nodes(**browse, cursor=second.pagination.nextCursor)
+    fourth = await service.get_nodes(**browse, cursor=third.pagination.nextCursor, include=["counts"])
+    assert provider.get_knowledge_hub_connector_page_v3.await_count == 2, "the counts travel in the cursor, also through a page that did not ask for them"
+    assert sum(item.count for item in fourth.counts.items) == fourth.counts.total == 5
+
+
+@pytest.mark.asyncio
+async def test_counts_asked_for_on_a_later_root_page_describe_the_whole_listing(service, provider) -> None:
+    ids = [{"id": "app1", "nodeType": "app"}, {"id": "kb-1", "nodeType": "app"}, {"id": "f1", "nodeType": "folder"}]
+    provider.get_knowledge_hub_root_nodes_v2.side_effect = lambda **kw: envelope(
+        [row("kb-1" if kw["after"] else "app1", "App", node_type="app")], total=3, has_more=True,
+        ids=ids if kw["include_ids"] else None)
+    first = await service.get_nodes(user_id="u1", org_id="o1", limit=1)
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["include_ids"] is False
+
+    second = await service.get_nodes(user_id="u1", org_id="o1", limit=1, cursor=first.pagination.nextCursor, include=["counts"])
+    assert [item.id for item in second.items] == ["kb-1"]
+    assert {item.label: item.count for item in second.counts.items} == {"apps": 2, "folders": 1}
+    assert sum(item.count for item in second.counts.items) == second.counts.total == second.pagination.totalItems == 3
+    whole = provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs
+    assert (whole["after"], whole["include_ids"]) == (None, True)
 
 
 def test_only_postgresql_reads_the_rows_before_a_numbered_page_in_large_reads() -> None:

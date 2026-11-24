@@ -112,6 +112,8 @@ _COMMON_NOT_READ = {
     "/services/deployment": "read by the connectors container at start (containers/connector.py::initialize_container); " + _LIST,
     "/services/migrations": _DEAD, "/services/inheritance": _DEAD, "/services/neo4j": _DEAD, "/services/message-broker": _DEAD,
     "/services/redis-streams": _DEAD, "/services/aiModels/*": _DEAD + " (/services/aiModels/embedding)",
+    "/services/sandbox/alerts*": "the code sandbox load alerts' cooldown claims (sandbox_alerts/cooldown.py::AlertCooldown.key): query only, "
+                                 "which starts the alert loop (query_main.py::lifespan) and writes them (platform_0011)",
     "/services/mongodb": _ADMIN, "/services/smtp": _ADMIN, "/services/slackBot": _ADMIN, "/services/auth/*": _ADMIN, "crawl:*": _ADMIN,
 }
 NOT_READ = {

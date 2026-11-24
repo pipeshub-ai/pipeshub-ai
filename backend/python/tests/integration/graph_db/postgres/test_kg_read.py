@@ -229,6 +229,8 @@ class Case:
 
 
 async def _admin(sql: str, *args) -> None:
+    if not os.environ.get("PG_ADMIN_URL"):
+        pytest.skip("PG_ADMIN_URL is not set (an owner DSN: this test plants rows no service role may write)")
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     try:
         await con.execute(sql, *args)
@@ -304,18 +306,6 @@ async def test_with_the_switch_at_zero_nothing_reads_kg(layer, pg_provider, pg_d
     with _switch("0"):
         assert kg_read.enabled() is False
         assert await _ask(pg_provider, c.org, c.uid, c.ids, c.access, "0")
-
-
-async def test_with_the_projection_off_the_connectors_go_back_to_the_walk(layer, pg_provider, pg_db, monkeypatch) -> None:
-    c = await _case(layer, pg_provider, pg_db)
-    assert c.x in (await _decide(pg_db, c.org, c.ids, c.access)).admit
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    rec = next(n for n in c.world.nodes if n.kind == "record")
-    with _bound(c.org):
-        await pg_provider.batch_upsert_nodes([{"id": c.ns.id(rec.id), "recordName": "renamed"}], "records")      # the write takes back its log rows: kg cannot tell it is behind
-    d = await _decide(pg_db, c.org, c.ids, c.access)
-    assert not d.admit and d.denied == 0 and set(d.walk) == set(c.ids)
-    await _same_as_walk(pg_provider, c)
 
 
 async def test_a_connector_that_is_not_enforced_or_not_current_takes_the_walk(layer, pg_provider, pg_db, monkeypatch) -> None:

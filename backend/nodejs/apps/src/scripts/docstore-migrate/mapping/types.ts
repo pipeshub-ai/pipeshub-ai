@@ -68,6 +68,8 @@ export interface CollectionMapping {
   /** Document path of the organisation id (`_id` for the organisation itself); null when the collection is not per organisation. */
   orgPath: string | null;
   orgCol: string | null;
+  /** SQL condition on the table (alias `t`) for the rows a copy holds, when the table also keeps rows the copy skips; the per-organisation count compares only these. */
+  countWhere?: string;
   /** Column holding Mongoose's `__v`. */
   versionCol?: string;
   /** Column listing the paths that were stored as `null` (`presence: 'listed'`). */

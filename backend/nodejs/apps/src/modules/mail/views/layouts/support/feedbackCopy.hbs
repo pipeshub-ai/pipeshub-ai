@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+  {{>head}}
+  <body>
+    <main>
+      <table {{{containerstyle}}}>
+        <tr>
+          <td>{{> header}}</td>
+        </tr>
+        <tr>
+          <td>
+            <table class="mobile-width" {{{bodytablestyle}}}>
+              <tr>
+                <td
+                  style="
+                    padding: 40px 30px;
+                    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                  "
+                >
+                  <div
+                    style="
+                      font-size: 20px;
+                      font-weight: 500;
+                      color: #1d1c1d;
+                      letter-spacing: -0.25px;
+                      line-height: 28px;
+                      margin: 0 0 16px 0;
+                    "
+                  >
+                    We received your {{kindLabel}}
+                  </div>
+                  <div
+                    style="
+                      font-size: 15px;
+                      font-weight: 400;
+                      color: #434245;
+                      line-height: 22px;
+                      margin: 0 0 20px 0;
+                    "
+                  >
+                    Thanks, {{userName}}. Our team has your message and will
+                    reply to this address if we need more detail.
+                  </div>
+                  <div
+                    style="
+                      font-size: 12px;
+                      font-weight: 700;
+                      color: #60646c;
+                      line-height: 16px;
+                      margin: 0 0 8px 0;
+                    "
+                  >
+                    What you sent
+                  </div>
+                  <div
+                    style="
+                      font-size: 15px;
+                      font-weight: 400;
+                      color: #1d1c1d;
+                      line-height: 24px;
+                      background-color: #f4f6f5;
+                      border-radius: 8px;
+                      padding: 16px 18px;
+                      margin: 0 0 20px 0;
+                      white-space: pre-wrap;
+                    "
+                  >{{description}}</div>
+                  <div
+                    style="
+                      font-size: 13px;
+                      font-weight: 400;
+                      color: #696969;
+                      line-height: 20px;
+                    "
+                  >
+                    {{#if attachmentsFailed}}Your files could not be attached to this email.{{else if attachmentCount}}Your {{attachmentCount}} file(s) are attached to this email.{{else}}No files attached.{{/if}}
+                    · Submitted: {{submittedAt}}
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td>{{> footer}}</td>
+        </tr>
+      </table>
+    </main>
+  </body>
+</html>

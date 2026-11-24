@@ -81,7 +81,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
 )
-from app.connectors.sources.google.common.drive_people import drive_file_people
+from app.connectors.sources.google.common.drive_people import drive_file_people, drive_shared_with, set_drive_people
 from app.connectors.sources.google.drive.utils.drive_export import (
     GoogleExportStreamer,
     drive_http_reasons,
@@ -140,6 +140,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     adopt_shortcut_seed_target,
     probe_can_list_children,
     seeds_with_new_parent,
+    sharing_refused,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -319,6 +320,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         # Empty _tracked_folder_ids means no folder filter, so everything syncs.
         self._folder_seed_ids: set = set()
         self._tracked_folder_ids: set = set()
+        # Per folder, this run: its sharing, None when it cannot be read.
+        self._parent_grant_cache: dict[str, list[dict] | None] = {}
         self._blocked_folder_ids: set = set()
         # Selected folders this account cannot see at all: a wrong ID, deleted, or not shared.
         self._unseen_folder_ids: set = set()
@@ -563,7 +566,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             parent_external_record_id = (metadata.get("parents") or [None])[0]
 
-            people = drive_file_people(metadata)
+            # Drive omits `permissions` when this user cannot see the file's sharing.
+            grants = metadata.get("permissions") if "permissions" in metadata else None
+            people = drive_file_people(metadata, grants)
             # Create FileRecord directly
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -599,10 +604,20 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
-                authored_by=people.authored_by,
-                last_modified_by=people.last_modified_by,
-                owners=people.owners,
             )
+
+            if metadata.get("driveId"):
+                # Drive leaves `permissions` off shared-drive items; their own list says which grants were
+                # made on them, and carries the addresses Drive hid from the owner and the last modifier.
+                item_grants = await self._item_grants(metadata)
+                if item_grants is not None:
+                    people = drive_file_people(metadata, item_grants)
+                    file_record.shared_with = drive_shared_with(
+                        item_grants, owner_ids=set(), parent_grants=None, has_details=True
+                    )
+            elif grants is not None:
+                file_record.shared_with = await self._shared_with(metadata, grants, people.owners)
+            set_drive_people(file_record, people)
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
@@ -634,6 +649,71 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
             self._sync_ledger.fail_item(metadata.get("id"))
             return None
+
+    async def _shared_with(self, metadata: dict, grants: list[dict], owners: list) -> list | None:
+        """The people a My Drive file was shared with directly; None when that cannot be told."""
+        # Decided by the owner only: a reader's view of the folder may differ from the owner's.
+        if not metadata.get("ownedByMe"):
+            return None
+        parent_id = (metadata.get("parents") or [None])[0]
+        if metadata.get("inheritedPermissionsDisabled") or not parent_id:
+            # A limited-access item inherits nothing: every grant it lists was made on it.
+            parent_grants: list[dict] | None = []
+        else:
+            parent_grants = await self._parent_grants(parent_id)
+        return drive_shared_with(
+            grants,
+            owner_ids={o.source_id for o in owners if o.source_id},
+            parent_grants=parent_grants,
+            has_details=False,
+        )
+
+    async def _item_grants(self, metadata: dict) -> list[dict] | None:
+        """A shared-drive item's whole permission list with its details; None when it cannot be read whole."""
+        # Viewers and Commenters cannot read detailed permissions; anyone who can edit or share the item can, a
+        # Content manager included where only Managers may share folders. Anyone else would spend a call on nothing.
+        capabilities = metadata.get("capabilities") or {}
+        if not (capabilities.get("canShare") or capabilities.get("canEdit")):
+            return None
+        file_id = str(metadata.get("id"))
+        grants: list[dict] = []
+        walk = DrivePageWalk()
+        try:
+            async for page in iter_drive_pages(
+                self.drive_data_source.permissions_list,
+                {"fileId": file_id, "supportsAllDrives": True, "pageSize": 100,
+                 "fields": "nextPageToken, permissions(id, type, role, emailAddress, displayName, deleted, view, "
+                           "permissionDetails)"},
+                "permissions", self.logger, walk,
+            ):
+                grants.extend(page)
+        except HttpError as e:
+            if not sharing_refused(e):
+                # Not an answer: the item fails, so its checkpoint holds and it is read again.
+                raise
+            self.logger.debug(f"Sharing of file {file_id} not readable: {e}")
+            return None
+        # A reader who cannot see sharing gets an empty list, and a list without details cannot tell direct grants.
+        if walk.incomplete or not any(g.get("permissionDetails") for g in grants):
+            return None
+        return grants
+
+    async def _parent_grants(self, parent_id: str) -> list[dict] | None:
+        if parent_id not in self._parent_grant_cache:
+            try:
+                folder = await self.drive_data_source.files_get(
+                    fileId=parent_id, supportsAllDrives=True,
+                    fields="id, permissions(id, type, role, emailAddress, deleted, view)",
+                )
+                grants = folder.get("permissions") if "permissions" in folder else None
+            except HttpError as e:
+                if not sharing_refused(e):
+                    # Not an answer: the item fails, so its checkpoint holds and it is read again.
+                    raise
+                self.logger.debug(f"Sharing of folder {parent_id} not readable: {e}")
+                grants = None
+            self._parent_grant_cache[parent_id] = grants
+        return self._parent_grant_cache[parent_id]
 
     async def _content_changed(self, existing: Record, metadata: dict, source: GoogleDriveDataSource) -> bool:
         """Whether a file whose Drive revision moved has new content. A native file's `version` also moves
@@ -2305,6 +2385,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         folder_ids_filter = self.sync_filters.get_value(SyncFilterKey.FOLDER_IDS)
         self._folder_seed_ids = set(folder_ids_filter or ())
         self._tracked_folder_ids = set(self._folder_seed_ids)
+        self._parent_grant_cache = {}
         self._blocked_folder_ids = set()
         self._unseen_folder_ids = set()
         self._sync_ledger = FullSyncLedger()
@@ -2438,6 +2519,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
     async def reindex_records(self, records: List[Record]) -> None:
         """Reindex records for Google Drive."""
         try:
+            # Folder sharing may have changed since an earlier call cached it.
+            self._parent_grant_cache = {}
             if not records:
                 self.logger.info("No records to reindex")
                 return

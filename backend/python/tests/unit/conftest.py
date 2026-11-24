@@ -39,6 +39,15 @@ def _record_and_org_deletes_do_not_reach_storage(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.fixture(autouse=True)
+def _no_neo4j_restart_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A knowledge-hub listing on Neo4j first reads the server's start time (`_kh_server_restarted`); unit tests script
+    and count the statements a client is sent, so the read is off unless a test turns it on."""
+    neo4j_provider = sys.modules.get("app.services.graph_db.neo4j.neo4j_provider")
+    if neo4j_provider is not None:
+        monkeypatch.setattr(neo4j_provider.Neo4jProvider, "_KH_SERVER_CHECK_S", 0)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_connector_name_cache() -> None:
     """Connector names are cached per process; a test must not see another's."""
     chat_helpers = sys.modules.get("app.utils.chat_helpers")

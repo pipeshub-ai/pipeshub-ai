@@ -197,7 +197,7 @@ describe('SyncEventProducer - coverage', () => {
       ;(instance as any).syncTopic = 'sync-events'
       const brokerDown = new Error('broker unreachable')
       ;(instance as any).producer = { publish: sinon.stub().rejects(brokerDown) }
-      instance.logger = { info: sinon.stub(), error: sinon.stub() }
+      instance.logger = { debug: sinon.stub(), info: sinon.stub(), error: sinon.stub() }
 
       let thrown: unknown
       await instance
@@ -207,7 +207,8 @@ describe('SyncEventProducer - coverage', () => {
         })
 
       expect(thrown).to.equal(brokerDown)
-      expect(instance.logger.error.calledOnce).to.be.true
+      // The caller reports it once (a resync's error line, a crawling run's end line).
+      expect(instance.logger.error.called).to.be.false
     })
 
     it('should publish event to sync-events topic', async () => {
@@ -222,7 +223,7 @@ describe('SyncEventProducer - coverage', () => {
         healthCheck: sinon.stub().resolves(true),
       }
       ;(instance as any).producer = mockProducer
-      instance.logger = { info: sinon.stub(), error: sinon.stub() }
+      instance.logger = { debug: sinon.stub(), info: sinon.stub(), error: sinon.stub() }
 
       const event: Event = {
         eventType: 'connectorSync',
@@ -248,7 +249,10 @@ describe('SyncEventProducer - coverage', () => {
       expect(message.key).to.equal('conn-1')
       expect(JSON.parse(message.value)).to.deep.include({ eventType: 'connectorSync' })
       expect(message.headers.eventType).to.equal('connectorSync')
-      expect(instance.logger.info.calledOnce).to.be.true
+      expect(instance.logger.info.called).to.be.false
+      expect(instance.logger.debug.args).to.deep.equal([
+        ['broker.event.published', { event_type: 'connectorSync', topic: 'sync-events' }],
+      ])
     })
 
     it('should include timestamp header as string', async () => {
@@ -263,7 +267,7 @@ describe('SyncEventProducer - coverage', () => {
         healthCheck: sinon.stub().resolves(true),
       }
       ;(instance as any).producer = mockProducer
-      instance.logger = { info: sinon.stub(), error: sinon.stub() }
+      instance.logger = { debug: sinon.stub(), info: sinon.stub(), error: sinon.stub() }
 
       const timestamp = 9876543210
       const event: Event = {
@@ -295,7 +299,7 @@ describe('SyncEventProducer - coverage', () => {
       publishBatch: sinon.stub().resolves(),
       healthCheck: sinon.stub().resolves(true),
     })
-    const loggerDouble = () => ({ info: sinon.stub(), error: sinon.stub() })
+    const loggerDouble = () => ({ debug: sinon.stub(), info: sinon.stub(), error: sinon.stub() })
 
     const publish = async (event: Event): Promise<[string, StreamMessage<string>]> => {
       const publishStub = sinon.stub().resolves()
@@ -341,7 +345,7 @@ describe('SyncEventProducer - coverage', () => {
       expect(message.key).to.equal('sync.all')
     })
 
-    it('logs a publish failure and passes it to the caller', async () => {
+    it('passes a publish failure to the caller without logging it', async () => {
       const logger = loggerDouble()
       const svc = new SyncEventProducer(
         producerDouble(sinon.stub().rejects(new Error('broker down'))),
@@ -358,7 +362,7 @@ describe('SyncEventProducer - coverage', () => {
         caught = error
       }
       expect((caught as Error)?.message).to.equal('broker down')
-      expect(logger.error.called).to.be.true
+      expect(logger.error.called).to.be.false
     })
   })
 })

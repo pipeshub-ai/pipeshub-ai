@@ -9,6 +9,8 @@ import { createKnowledgeBaseRouter } from '../../../../src/modules/knowledge_bas
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
+import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
+import { accessLog } from '../../../../src/libs/middlewares/access-log.middleware'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
@@ -167,6 +169,8 @@ export const startKbHarness = async (): Promise<KbHarness> => {
 
   const router = createKnowledgeBaseRouter(container)
   const app = express()
+  app.use(requestContextMiddleware)
+  app.use(accessLog())
   app.use(express.json())
   app.use('/api/v1/knowledgeBase', router)
   app.use(ErrorMiddleware.handleError())
