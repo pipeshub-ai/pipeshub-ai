@@ -12,8 +12,7 @@ FUNCTIONS = {"stage_states_unheld": "text[]"}
 
 
 def upgrade():
-    for name, args in FUNCTIONS.items():
-        op.execute(f"DROP FUNCTION IF EXISTS graph.{name}({args})")
+    op.execute("DROP FUNCTION IF EXISTS graph.stage_states_unheld(text[])")
     op.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
     run_vetted(__file__, *FUNCTIONS)
 
