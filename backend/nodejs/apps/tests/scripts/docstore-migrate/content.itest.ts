@@ -218,6 +218,18 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       expect(by.get('sync')?.visible_at).to.equal(null);
     });
 
+    it('a notification changed in MongoDB is written in place by the follower (a partitioned table: no system column in the upsert)', async () => {
+      const m = CONTENT_MAPPINGS.find((x) => x.collection === 'notifications')!;
+      const repo = REPOSITORIES[m.repository]!() as Importable;
+      const neutral = docs.notifications!.map((d) => toNeutral(d, new SourceReport(), m.collection));
+      const before = await count('platform.notifications');
+      const changed = neutral.map((d, i) => (i === 0 ? { ...d, status: 'read' } : d));
+      const st = await jobsUnit((tx) => withUpsert(['platform.notifications'], () => repo.importBatch(m.collection, changed, tx)));
+      expect(st.inserted['platform.notifications'] ?? 0, 'every row was there: none counts as inserted').to.equal(0);
+      expect(await count('platform.notifications')).to.equal(before);
+      expect(await count('platform.notifications', `id = '${String(neutral[0]!._id)}' AND status = 'read'`)).to.equal(1);
+    });
+
     it('connector_id follows the customMetadata entry', async () => {
       const r = (await stack.admin((c) => c.query('SELECT id, connector_id, initiator_unset, initiator_user_id FROM content.documents'))).rows as Array<Record<string, unknown>>;
       const by = new Map(r.map((x) => [x.id, x]));

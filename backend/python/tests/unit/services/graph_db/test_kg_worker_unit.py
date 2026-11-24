@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from app.services.graph_db.postgres import connector_stats
 from app.services.graph_db.postgres.kg import (
     bootstrap,
     counts,
@@ -241,6 +242,12 @@ async def test_each_pass_folds_the_counters_of_every_org_and_a_failing_fold_hold
             raise ConnectionError("the database went away for a moment")
         return 3
 
+    async def stats(_db: object, org: str, *, stop: asyncio.Event | None = None) -> int:
+        seen.append(("stats", org))
+        if org == "org-b":
+            raise ConnectionError("the database went away for a moment")
+        return 2
+
     async def bring(_db: object, org: str, *_a: object) -> int:
         seen.append(("bootstrap", org))
         return 0
@@ -253,11 +260,12 @@ async def test_each_pass_folds_the_counters_of_every_org_and_a_failing_fold_hold
     monkeypatch.setattr(drainer, "drain", no_rows)
     monkeypatch.setattr(restamp, "run_jobs", no_jobs)
     monkeypatch.setattr(counts, "run", fold)
+    monkeypatch.setattr(connector_stats, "run", stats)
     monkeypatch.setattr(bootstrap, "bring_to_enforce", bring)
     monkeypatch.setattr(legacy, "publish", publish)
     w = KgWorker(_NoUow(), orgs, dsn=None, poll_s=0.05)  # type: ignore[arg-type]
-    assert await w.run_once() == 3                                                               # what the fold took counts as work done: the loop looks again at once
-    assert seen == [(step, org) for org in ("org-a", "org-b") for step in ("counts", "bootstrap", "gauges")]
+    assert await w.run_once() == 5                                                               # what the fold and the stats took counts as work done: the loop looks again at once
+    assert seen == [(step, org) for org in ("org-a", "org-b") for step in ("counts", "stats", "bootstrap", "gauges")]
 
 
 async def test_the_verify_task_works_at_most_its_share_of_the_time(monkeypatch: pytest.MonkeyPatch) -> None:

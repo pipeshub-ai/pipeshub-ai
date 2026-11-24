@@ -19,6 +19,7 @@ import { UserActivities } from '../../../../src/modules/auth/schema/userActiviti
 import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
 import { AppConfig, registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
+import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../../src/edition'
 import { createOAuthRouter } from '../../../../src/modules/tokens_manager/routes/oauth.routes'
 import { FakeBackend, RecordingProducer, buildConfig } from './connectors-http-harness'
 
@@ -294,8 +295,13 @@ describe('Connector routes: a request is logged once, with its connector', funct
     ['POST', `/api/v1/connectors/${CONNECTOR}/reindex`, {}],
     ['POST', `/api/v1/connectors/${CONNECTOR}/sync/stop`, undefined],
     ['POST', `/api/v1/connectors/${CONNECTOR}/resync`, { connectorName: 'Jira' }],
-    ['POST', '/api/v1/connectors/vector-store/cleanup', {}],
-    ['POST', '/api/v1/connectors/vector-store/reindex', {}],
+    // These two reach the service only where the deployment offers them (edition.ts); elsewhere they answer 403 first.
+    ...(VECTOR_STORE_REBUILD_AVAILABLE
+      ? ([
+          ['POST', '/api/v1/connectors/vector-store/cleanup', {}],
+          ['POST', '/api/v1/connectors/vector-store/reindex', {}],
+        ] as const)
+      : []),
     ['GET', '/api/v1/oauth/registry', undefined],
     ['GET', '/api/v1/oauth/registry/Jira', undefined],
     ['GET', '/api/v1/oauth/', undefined],

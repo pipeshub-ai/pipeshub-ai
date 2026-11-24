@@ -33,16 +33,18 @@ _ROOT = f"""n.doc->>'connectorId' = $3 AND n.doc->>'deletedAtTimestamp' IS NOT N
           ORDER BY e.from_id) e CROSS JOIN LATERAL {_node("e.to_coll", "e.to_id")} t WHERE t.doc->>'isFile' = 'true'))"""
 # The connector's batches newest first after the cursor ($6, $7), one seek each, with each batch's roots (by id), how many of its records are the connector's, and ``odd``:
 # a record of it kg cannot place as the walk does (module docstring). A single-file listing keeps no batch of more than one record. A batch with no root is no item.
+# Each record's root test runs once (``rt``): as the FILTER of the ordered aggregate it ran twice per record, a third of the count's reads.
 _BATCHES = f"""RECURSIVE b(ms, batch, n) AS (
     (SELECT x.deleted_ms, x.delete_batch, 1 FROM ({_NEXT.format(after="($6::bigint IS NULL OR (k.deleted_ms, k.delete_batch) < ($6::bigint, $7::text))")}) x)
     UNION ALL SELECT x.deleted_ms, x.delete_batch, b.n + 1 FROM b CROSS JOIN LATERAL ({_NEXT.format(after="(k.deleted_ms, k.delete_batch) < (b.ms, b.batch)")}) x),
   s AS (SELECT b.ms, b.batch, b.n, a.odd, a.batch_size, CASE WHEN $5 AND a.cnt > 1 THEN '{{}}'::text[] ELSE coalesce(a.roots, '{{}}'::text[]) END AS roots
     FROM b CROSS JOIN LATERAL (
-      SELECT count(*) AS cnt, count(*) FILTER (WHERE n.doc->>'connectorId' = $3) AS batch_size, array_agg(m.id ORDER BY m.id) FILTER (WHERE {_ROOT}) AS roots,
+      SELECT count(*) AS cnt, count(*) FILTER (WHERE n.doc->>'connectorId' = $3) AS batch_size, array_agg(m.id ORDER BY m.id) FILTER (WHERE rt.root) AS roots,
         coalesce(bool_or(m.app_sk IS DISTINCT FROM $2 OR m.deleted_ms IS DISTINCT FROM b.ms OR n.id IS NULL OR NOT coalesce((n.doc->>'isDeleted')::boolean, false)
           OR n.doc->>'deleteBatchId' IS DISTINCT FROM b.batch OR (n.doc->>'deletedAtTimestamp')::bigint IS DISTINCT FROM b.ms), false) AS odd
       FROM (SELECT * FROM kg.records m WHERE m.org_id = $1 AND m.coll = 3 AND m.deleted AND m.delete_batch IS NOT NULL AND m.delete_batch >= b.batch
-          AND m.delete_batch <= b.batch ORDER BY m.delete_batch OFFSET 0) m LEFT JOIN LATERAL {_node("'records'", "m.id")} n ON true) a)"""
+          AND m.delete_batch <= b.batch ORDER BY m.delete_batch OFFSET 0) m LEFT JOIN LATERAL {_node("'records'", "m.id")} n ON true
+        CROSS JOIN LATERAL (SELECT {_ROOT} AS root OFFSET 0) rt) a)"""
 PAGE = f"""/* pipeshub:kg.trash_page */ WITH {_BATCHES}
 SELECT s.n, s.odd, s.batch, s.ms AS deleted_at, s.roots[1] AS first_id, cardinality(s.roots)::bigint AS root_count, s.batch_size,
     ARRAY(SELECT x.doc->>'recordName' FROM unnest(s.roots[2:1 + $9]) WITH ORDINALITY u(id, o) CROSS JOIN LATERAL {_node("'records'", "u.id")} x ORDER BY u.o) AS other_names

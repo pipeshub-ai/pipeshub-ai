@@ -52,7 +52,7 @@ class TestExceptionClasses:
         from app.api.routes.agent import AgentTemplateNotFoundError
         err = AgentTemplateNotFoundError("tmpl-456")
         assert err.status_code == 404
-        assert "tmpl-456" in err.detail
+        assert "tmpl-456" not in err.detail
 
     def test_permission_denied(self) -> None:
         from app.api.routes.agent import PermissionDeniedError

@@ -307,6 +307,12 @@ the auth middleware bound.
   bound only when it fits: an id field (`connector_id`, `kb_id`, …) takes an id, `connector_type` a name (letters,
   digits, spaces, `_.:-`). This covers `params` and the bound fields: a one-word value (`ada`, `report.pdf`) or a
   first-and-last name still fits, and an error message the connector service wrote is passed on as written.
+- Node: `Rate limit exceeded` and `XSS sanitization middleware error` carry `path`: the request path (mount included, no
+  query) with each segment that is not an id as `[not an id]`, by the same rule as `params`, cut at a `/` so that it is
+  at most 256 characters, `…` included, and no segment is split. `Rejected client-supplied conversation history` carries no path (the
+  request's `http.request.error` has the route).
+  A segment made only of letters, digits and `._:-` is shown, so a single-word name, a dotted name, a number or a name
+  split across segments still appears.
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
   is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
   token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.
@@ -1005,9 +1011,11 @@ Settings the connector service saves (Node proxies the request to it) are writte
 Node read the service's 2xx answer: `config.<section>.create`, `config.<section>.update` or `config.<section>.delete`, with
 `target` the object's id and `reason` saying which part changed. The handler writes the line, not a middleware on the
 response, so a save whose browser left before the answer still has its line. The object's id is also on every line of the
-request (`connector_id`); `target` is it only when it is a PipesHub id (otherwise `target` is null and `reason` is
-`invalid_id`). The connector routes are open to members for their own connectors (a personal connector), so
-`config.connector.*` lines include a member's own connectors; Node cannot tell personal from org-wide, and `actor` says who.
+request (`connector_id`, `toolset_id`, `mcp_server_id`); `target` is it only when it is a PipesHub id (otherwise `target`
+is null and `reason` is `invalid_id`). An API toolset's id is not one, so its lines have no `target` and name it only in
+`toolset_id`. The connector, toolset and MCP server routes are open to members for their own (a personal connector,
+toolset or MCP server), so `config.connector.*`, `config.toolset.*` and `config.mcp_server.*` lines include a member's own;
+Node cannot tell personal from org-wide, and `actor` says who.
 
 | Event | Route | `reason` | `target` |
 | --- | --- | --- | --- |
@@ -1022,15 +1030,49 @@ request (`connector_id`); `target` is it only when it is a PipesHub id (otherwis
 | `config.connector_oauth_app.create` | `POST /api/v1/oauth/:connectorType` | | the new OAuth app's id, from the service's answer |
 | `config.connector_oauth_app.update` | `PUT /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
 | `config.connector_oauth_app.delete` | `DELETE /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
+| `config.toolset.create` | `POST /api/v1/toolsets/instances` | | the new toolset's id, from the service's answer |
+| `config.toolset.update` | `PUT /api/v1/toolsets/instances/:instanceId` | `settings` | the toolset |
+| `config.toolset.update` | `PUT /api/v1/toolsets/instances/:instanceId/tool-rules` | `tool_rules` | the toolset |
+| `config.toolset.delete` | `DELETE /api/v1/toolsets/instances/:instanceId` | | the toolset |
+| `config.toolset_oauth_app.update` | `PUT /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId` | | the OAuth app |
+| `config.toolset_oauth_app.delete` | `DELETE /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId` | | the OAuth app |
+| `config.mcp_server.create` | `POST /api/v1/mcp-servers/instances` | | the new MCP server's id, from the service's answer |
+| `config.mcp_server.update` | `PUT /api/v1/mcp-servers/instances/:instanceId` | `settings` | the MCP server |
+| `config.mcp_server.update` | `PUT`, `DELETE /api/v1/mcp-servers/instances/:instanceId/logo` | `logo` | the MCP server |
+| `config.mcp_server.update` | `PUT /api/v1/mcp-servers/instances/:instanceId/oauth-config` | `oauth_app` | the MCP server |
+| `config.mcp_server.delete` | `DELETE /api/v1/mcp-servers/instances/:instanceId` | | the MCP server |
+| `config.api_toolset.create` | `POST /api/v1/api-toolsets/instances` | | none |
+| `config.api_toolset.update` | `PUT /api/v1/api-toolsets/instances/:instanceId` | `settings` | none (`toolset_id`) |
+| `config.api_toolset.update` | `PUT /api/v1/api-toolsets/instances/:instanceId/shared-credentials` | `shared_credential_set` | none (`toolset_id`) |
+| `config.api_toolset.update` | `DELETE /api/v1/api-toolsets/instances/:instanceId/shared-credentials` | `shared_credential_removed` | none (`toolset_id`) |
+| `config.api_toolset.delete` | `DELETE /api/v1/api-toolsets/instances/:instanceId` | | none (`toolset_id`) |
 
 The line means Node read the service's 2xx. A save the service made whose answer Node did not get (a timeout, a connection
 cut after the service committed, a 2xx whose body does not parse) has no audit line; its error and access lines, and the
 connector service's own line with the same `request_id`, record the attempt. A create resent after a cut connection (the
-connector and OAuth app creates are sent up to three times) may have been made twice with one line.
+connector, connector OAuth app and toolset creates are sent up to three times) may have been made twice with one line.
+
+OAuth clients (Developer Settings, `/api/v1/oauth-clients`) are saved by Node itself: the controller writes
+`config.oauth_client.*` once the OAuth app service returned (it throws on a refusal or a failure, which then has no line),
+with `target` the app's id (as above, an id that is not a PipesHub id gives `target` null and `reason` `invalid_id`
+instead of the table's reason). Any member registers and manages their own apps, so these lines include a member's own apps;
+`actor` says who. The service's own INFO lines (`OAuth app created`, `OAuth app suspended`, …, with `app_id`, and
+`client_id` where the service has it) stay next to the audit line.
+
+| Event | Route | `reason` | `target` |
+| --- | --- | --- | --- |
+| `config.oauth_client.create` | `POST /api/v1/oauth-clients/` | | the new app's id |
+| `config.oauth_client.update` | `PUT /:appId` | `settings` | the app |
+| `config.oauth_client.update` | `PUT /:appId/token-identity` | `token_identity` | the app |
+| `config.oauth_client.update` | `POST /:appId/regenerate-secret` | `secret_rotate` | the app |
+| `config.oauth_client.update` | `POST /:appId/suspend`, `POST /:appId/activate` | `suspend`, `activate` | the app |
+| `config.oauth_client.update` | `POST /:appId/revoke-all-tokens` | `tokens_revoked` | the app |
+| `config.oauth_client.delete` | `DELETE /:appId` | | the app |
 
 Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
 validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
-migrations, and settings saved through other routers (OAuth clients, toolsets, MCP servers).
+migrations, and writes that are not settings: a member's own credentials and sign-ins, OAuth callbacks, agent
+credentials, and operations such as sync, reindex and test.
 
 ## Upstream calls (Node)
 
@@ -1126,12 +1168,13 @@ run. Each says why it failed on the request's lines:
   `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
   retries; `/authorize`: a `server_error` redirect; `/introspect`: `active: false`, as before) with a fixed description.
   `server_error` is never a refusal's code. A change that succeeds (an OAuth app, a personal access token, a code or token
-  grant, an agent registration) is written by the service that made the write, never also by the controller; a step the
-  change runs keeps its own line (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`,
-  `app_id`, `pat_id` or `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token
-  endpoint, the user the grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A
-  delegation's user (whom a service account may act for) is `subject_user_id`, and the admin who granted or revoked it is
-  `granted_by` / `revoked_by`. A personal access token's name is not logged.
+  grant, an agent registration) is written by the service that made the write, never also by the controller (an OAuth
+  client's controller adds only its `config.oauth_client.*` audit line); a step the change runs keeps its own line
+  (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`, `app_id`, `pat_id` or
+  `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token endpoint, the user the
+  grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A delegation's user (whom a
+  service account may act for) is `subject_user_id`, and the admin who granted or revoked it is `granted_by` / `revoked_by`.
+  A personal access token's name is not logged.
 
 The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and

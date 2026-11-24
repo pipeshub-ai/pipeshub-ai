@@ -560,7 +560,9 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           const r = await cut();
           expect(r.out.ok, JSON.stringify(r.out).slice(0, 900)).to.equal(true);
           expect(r.out.freezeMs).to.be.lessThan(600_000);
-          expect(r.out.steps.map((x: any) => x.step.split(' ')[0])).to.deep.equal(['F0', 'F1-F2', 'F3', 'F4', 'F4', 'F5', 'F6', 'F7', 'F8', 'F8']);
+          expect(r.out.steps.map((x: any) => x.step.split(' ')[0])).to.deep.equal(['F0', 'F1-F2', 'F3', 'F4', 'F4', 'F5', 'F6', 'F6', 'F7', 'F8', 'F8', 'F8']);
+          // no authorization on the test server, so no user to take write roles from (the app-writes suite has a server with users)
+          expect(r.out.mongoAppWrites).to.deep.equal({ revoked: [], stillWrite: [] });
           expect(await fence()).to.equal('retired');
           const ep = await storeEpoch();
           expect([ep.backend, ep.readonly]).to.deep.equal(['postgres', false]);
