@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 import app.connectors_main as connectors_main
+from tests.support.platform_event_capture import replace_event_listener
 from app.core.org_context import MissingOrgContext, current_org_id, for_org, system
 from app.utils.logger import log_record_fields
 
@@ -115,7 +116,7 @@ async def test_the_gauge_loop_publishes_every_orgs_counts_from_a_detached_task(o
     ta, tb = (f"t-{uuid.uuid4().hex[:10]}" for _ in range(2))
     a, _b = await _seed(orgs, org_ctx, [[_app(ta), _app(ta)], [_app(tb)]])
     published: list[dict] = []
-    monkeypatch.setattr(connectors_main, "set_connector_active", published.append)
+    replace_event_listener(monkeypatch, "connector.inventory.counted", published.append, "active_by_type")
 
     async def stop(_s: float) -> None:
         raise asyncio.CancelledError      # one refresh, then leave the loop

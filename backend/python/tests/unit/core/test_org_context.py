@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from app.plugins.telemetry.modules import org_context_metrics
 from app.core.org_context import (
     MissingOrgContext,
     OrgContext,
@@ -132,7 +133,7 @@ def test_shadow_mode_logs_counts_and_lets_missing_and_mismatched_access_through(
     from app.utils import logging_fields
 
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
-    before = oc.VIOLATIONS._metric.labels("missing", "site-a")._value.get()
+    before = org_context_metrics.VIOLATIONS._metric.labels("missing", "site-a")._value.get()
     with caplog.at_level("WARNING"):
         assert oc.ambient_org("org_x", site="site-a") == "org_x"
         assert oc.ambient_org("org_x", site="site-a") == "org_x"
@@ -140,7 +141,7 @@ def test_shadow_mode_logs_counts_and_lets_missing_and_mismatched_access_through(
             assert oc.ambient_org("org_b", site="site-b") == "org_b"  # mismatch, still allowed
             assert oc.ambient_org("org_a", site="site-b") == "org_a"  # consistent: silent
             assert oc.ambient_org(None, site="site-b") == "org_a"
-    assert oc.VIOLATIONS._metric.labels("missing", "site-a")._value.get() == before + 2
+    assert org_context_metrics.VIOLATIONS._metric.labels("missing", "site-a")._value.get() == before + 2
     assert caplog.text.count("org_context_missing site=site-a") == 1  # logged once per site
     assert "org_context_mismatch site=site-b" in caplog.text
 
@@ -224,12 +225,12 @@ def test_bootstrap_system_org_is_counted_apart_and_refused_in_enforce(monkeypatc
     from app.core import org_context as oc
 
     with bind(OrgContext(oc.SYSTEM_ORG_ID, None, "service", "scoped_jwt", "r")):
-        mismatches = oc.VIOLATIONS._metric.labels("mismatch", "s")._value.get()
-        system = oc.VIOLATIONS._metric.labels("system_token", "s")._value.get()
+        mismatches = org_context_metrics.VIOLATIONS._metric.labels("mismatch", "s")._value.get()
+        system = org_context_metrics.VIOLATIONS._metric.labels("system_token", "s")._value.get()
         monkeypatch.setenv("ORG_CONTEXT_MODE", "shadow")
         assert oc.ambient_org("org_b", site="s") == "org_b"
-        assert oc.VIOLATIONS._metric.labels("mismatch", "s")._value.get() == mismatches
-        assert oc.VIOLATIONS._metric.labels("system_token", "s")._value.get() == system + 1
+        assert org_context_metrics.VIOLATIONS._metric.labels("mismatch", "s")._value.get() == mismatches
+        assert org_context_metrics.VIOLATIONS._metric.labels("system_token", "s")._value.get() == system + 1
         monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
         with pytest.raises(OrgMismatch):
             oc.ambient_org("org_b", site="s")

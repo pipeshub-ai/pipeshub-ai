@@ -25,6 +25,7 @@ from typing import Any, Literal, TypeVar
 
 import asyncpg
 
+from app import platform_events
 from app.core import org_context
 from app.core.db import capabilities as caps_mod
 from app.core.db import catalog
@@ -48,20 +49,12 @@ from app.core.db.errors import (
     UowUsageError,
 )
 from app.core.db.pool import connect_failure, create_pool, lost_state
-from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.utils import db_query_log, error_class
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
 Isolation = Literal["read_committed", "repeatable_read", "serializable"]
 
-_BUCKETS = (0.001, 0.005, 0.02, 0.1, 0.5, 2, 10, 60)
-QUERY_SECONDS = METRICS_BACKEND.histogram("pipeshub_pg_query_seconds", "Statement duration", ["service", "site", "class"], _BUCKETS)
-UOW_SECONDS = METRICS_BACKEND.histogram("pipeshub_pg_uow_seconds", "Unit of work duration", ["service", "outcome"], _BUCKETS)
-POOL_WAIT = METRICS_BACKEND.histogram("pipeshub_pg_pool_wait_seconds", "Wait for a pooled connection", ["service"], _BUCKETS)
-RETRIES = METRICS_BACKEND.counter("pipeshub_pg_retries_total", "Unit-of-work retries", ["code"])
-ROLE_LEAKS = METRICS_BACKEND.counter("pipeshub_pg_session_role_leak_total", "Session-level SET ROLE found on a pooled connection", ["service"])
-ORG_MISSING = METRICS_BACKEND.counter("pipeshub_org_context_missing_total", "Unit of work started without a usable org context", ["service"])
 
 # Frames the db.query records skip to find the caller: this runtime and the graph provider's plumbing.
 QUERY_LOG_SKIP = ("app.core.db", "app.services.graph_db.postgres.base")
@@ -194,7 +187,13 @@ class Tx:
                 raise mapped from e
             raise
         finally:
-            QUERY_SECONDS.observe(self._db.cfg.service, site, self._class, value=time.perf_counter() - t0)
+            platform_events.emit(
+                "db.statement.completed",
+                service=self._db.cfg.service,
+                site=site,
+                statement_class=self._class,
+                duration_seconds=time.perf_counter() - t0,
+            )
         threshold = db_query_log.slow_query_ms()
         if threshold and (time.perf_counter() - t0) * 1000 >= threshold:
             self._record(op, site, t0)
@@ -422,7 +421,7 @@ class KernelDB:
             except (RetryableConflict, ConnectionLost) as e:
                 if attempt == RETRIES_MAX or (isinstance(e, ConnectionLost) and not e.retry_safe):
                     raise
-                RETRIES.inc(type(e).__name__)
+                platform_events.emit("db.unit_of_work.retried", error_code=type(e).__name__)
                 await asyncio.sleep(BACKOFF_BASE_S * 2**attempt * (1 + random.random()))
         raise AssertionError("unreachable")
 
@@ -438,7 +437,7 @@ class KernelDB:
             else:
                 ctx = org_context.current()
         except (org_context.MissingOrgContext, org_context.SystemContextNotAllowed):
-            ORG_MISSING.inc(self.cfg.service)
+            platform_events.emit("db.unit_of_work.started_without_org", service=self.cfg.service)
             raise
         pool = await self._pool_here(jobs=jobs)
         if pool is None:
@@ -547,7 +546,7 @@ class KernelDB:
                 raise
             raise lost from e
         waited = time.perf_counter() - t_start
-        POOL_WAIT.observe(self.cfg.service, value=waited)
+        platform_events.emit("db.connection.acquired", service=self.cfg.service, wait_seconds=waited)
         if timeout_ms and statement_ms <= timeout_ms:      # the caller's budget covers the wait for a connection and the statement together
             statement_ms = max(1, statement_ms - int(waited * 1000))
         tx = Tx(con, self, klass=klass, idempotent=idempotent, request_id=request_id)
@@ -593,7 +592,12 @@ class KernelDB:
         finally:
             tx._close()
             await self._release(pool, con)
-            UOW_SECONDS.observe(self.cfg.service, outcome, value=time.perf_counter() - t_start)
+            platform_events.emit(
+                "db.unit_of_work.completed",
+                service=self.cfg.service,
+                outcome=outcome,
+                duration_seconds=time.perf_counter() - t_start,
+            )
 
     async def _check_alive(self, con: asyncpg.Connection, tx: Tx, *, write: bool) -> None:
         """COMMIT of an aborted transaction answers ROLLBACK without an error, so ask first. The flag is the fast path;
@@ -633,7 +637,7 @@ class KernelDB:
         if row:
             tx.started = row["started"]
         if pre != "none":
-            ROLE_LEAKS.inc(self.cfg.service)
+            platform_events.emit("db.session_role.leaked", service=self.cfg.service)
             logger.error("session role %r found on a pooled connection; discarding it", pre)
             raise SessionRoleLeak("a session-level role was left on the pooled connection")
 

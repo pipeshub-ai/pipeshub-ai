@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from app.plugins.telemetry.modules import kg_metrics
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from tests.permissions import gen
 from tests.permissions.scenario import load_all
@@ -31,7 +32,7 @@ WORLDS = 8
 @pytest.fixture
 def tally(monkeypatch: pytest.MonkeyPatch) -> Tally:
     t = Tally()
-    monkeypatch.setattr(kg_hier, "HIERARCHY", t)
+    monkeypatch.setattr(kg_metrics.HIERARCHY, "inc", t.inc)
     return t
 
 

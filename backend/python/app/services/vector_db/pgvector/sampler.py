@@ -19,11 +19,11 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core import org_context
 from app.core.db import DbError
 from app.services.vector_db.pgvector import dense
 from app.services.vector_db.pgvector.scope import org_scope
-from app.plugins.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -79,12 +79,12 @@ class Sampler:
             return False
         now = self._clock()
         if len(self._stamps) == self._stamps.maxlen and now - self._stamps[0] < 1.0:
-            telemetry.SAMPLE_DROPPED.inc("rate")
+            platform_events.emit("vector_search.recall_sample.dropped", reason="rate")
             return False
         try:
             self._queue.put_nowait(sample)
         except asyncio.QueueFull:
-            telemetry.SAMPLE_DROPPED.inc("queue_full")
+            platform_events.emit("vector_search.recall_sample.dropped", reason="queue_full")
             return False
         self._stamps.append(now)
         if self._worker is None or self._worker.done():
@@ -118,17 +118,20 @@ class Sampler:
             with org_scope(q.org):
                 rows = await dense.exact(self._db, q, timeout_ms=self._t.sampler_timeout_ms, t=self._t)
         except dense.Rejected:
-            telemetry.SAMPLE_DROPPED.inc("no_slot")
+            platform_events.emit("vector_search.recall_sample.dropped", reason="no_slot")
             return None
         except DbError:
-            telemetry.SAMPLE_DROPPED.inc("timeout")
+            platform_events.emit("vector_search.recall_sample.dropped", reason="timeout")
             return None
         finally:
             self._busy.append((self._clock(), self._clock() - started))
         r = recall(s.live, [sk for sk, _ in rows], q.leg)
         if r is None:
             return None
-        telemetry.RECALL.observe(s.tier, dense.size_band(s.n_hat, self._t.n_e0), s.share_band, telemetry.leg_band(q.leg), value=r)
+        platform_events.emit(
+            "vector_search.recall.sampled",
+            tier=s.tier, size_band=dense.size_band(s.n_hat, self._t.n_e0), share_band=s.share_band, leg_size=q.leg, recall=r,
+        )
         if s.tier == "degraded":           # overload is not a property of the org's data
             return r
         if len(self._orgs) >= MAX_ORGS and q.org not in self._orgs:
@@ -136,7 +139,7 @@ class Sampler:
         recent = self._orgs.setdefault(q.org, collections.deque(maxlen=ORG_WINDOW))
         recent.append(r)
         if len(recent) >= ORG_MIN_SAMPLES and sum(recent) / len(recent) < RECALL_FLOOR:
-            telemetry.ORG_RECALL_LOW.inc("recent")
+            platform_events.emit("vector_search.org_recall.fell_low", window="recent")
             logger.warning("sampled dense recall of an organisation is %.3f over its last %d samples (floor %.2f)",
                            sum(recent) / len(recent), len(recent), RECALL_FLOOR)
         if s.tier == dense.Tier.E0 and r < 1.0:

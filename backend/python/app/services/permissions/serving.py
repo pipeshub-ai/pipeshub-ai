@@ -18,10 +18,10 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge
 
 from .errors import ViewerScopesUnavailable
-from .metrics import SCOPES_UNAVAILABLE, SERVING_PLAN
 from .mode import AclFilterMode
 from .scope_fields import SCOPE_FIELDS_VERSION, current_scope_generation
 
@@ -100,7 +100,7 @@ class ServingPlanner:
         except Exception as exc:
             _logger.warning("serving plan failed: %s", type(exc).__name__)
             flt, exact, reason = None, False, "error"
-        SERVING_PLAN.inc(reason)
+        platform_events.emit("permission.serving.planned", plan=reason)
         return flt, exact
 
     async def _plan(self, org_id: str, user_key: str) -> tuple[ScopeFilter | None, bool, str]:
@@ -109,7 +109,7 @@ class ServingPlanner:
         try:
             scopes = await self._scopes.scopes(org_id, user_key)      # the cache or ViewerScopesUnavailable, never a wait on the graph
         except ViewerScopesUnavailable as exc:
-            SCOPES_UNAVAILABLE.inc(exc.reason.split(":", 1)[0])
+            platform_events.emit("permission.viewer_scopes.unavailable", reason=exc.reason.split(":", 1)[0])
             return None, False, "miss"
         if len(scopes.readable_groups) + len(scopes.readable_scopes) + len(scopes.unreadable_restricted) > MAX_SERVED_TERMS:
             return None, False, "broad"

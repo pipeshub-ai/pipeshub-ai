@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from app.plugins.telemetry.modules import kg_metrics
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 
@@ -30,7 +31,7 @@ FOLDER = FOLDER_MIME_TYPES[0]
 @pytest.fixture
 def tally(monkeypatch: pytest.MonkeyPatch) -> Tally:
     t = Tally()
-    monkeypatch.setattr(kg_hier, "HIERARCHY", t)
+    monkeypatch.setattr(kg_metrics.HIERARCHY, "inc", t.inc)
     return t
 
 

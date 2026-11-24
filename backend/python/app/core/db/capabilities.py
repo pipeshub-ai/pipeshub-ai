@@ -16,14 +16,13 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from app import platform_events
 from app.core.db.errors import CapabilityError
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
-DOWNGRADES = METRICS_BACKEND.counter("pipeshub_capability_downgrade_total", "Capabilities downgraded in non-strict mode", ["from", "to"])
 
 DEFAULT_TABLE: dict[str, Any] = {
     "postgres": {"floor": 17, "tested_up_to": 18},
@@ -147,6 +146,6 @@ def evaluate(row: Mapping[str, Any], table: dict[str, Any], *, strict: bool, wan
     if problems and strict:
         raise CapabilityError("; ".join(m for _, m in problems))
     for key, msg in problems:
-        DOWNGRADES.inc(key, "degraded")
+        platform_events.emit("db.capability.downgraded", capability=key, mode="degraded")
         logger.warning("capability downgrade: %s", msg)
     return Capabilities(pg_major, states, versions, flags, tuple(m for _, m in warnings + problems))

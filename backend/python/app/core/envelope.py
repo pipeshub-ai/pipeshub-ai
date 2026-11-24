@@ -35,9 +35,9 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app import platform_events
 from app.core.org_context import OrgContext, enforcing, spawn_detached, validate_mode
 from app.exceptions.non_retryable import NonRetryableError
-from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.utils.logging_fields import log_once
 from app.utils.request_context import sanitize_root_id
 
@@ -45,50 +45,7 @@ DEFAULT_MAX_AGE_SECONDS = 900  # beyond normal consumer lag plus a retry backoff
 MAX_FUTURE_SKEW_SECONDS = 300
 DEFAULT_ADMITTED_MAX_AGE_SECONDS = 86400  # how long an admission of a delivery counts; re-stamped each time the delivery moves
 
-CTX_MISSING = METRICS_BACKEND.counter(
-    "pipeshub_envelope_ctx_missing_total",
-    "Broker messages accepted without a signed ctx (upgrade window)",
-    ["topic"],
-)
-STALE_BY_TYPE = METRICS_BACKEND.counter(
-    "pipeshub_envelope_stale_by_type_total",
-    "Validly signed broker messages older than the accepted signature age, by event type (a self-scheduled control "
-    "message dropped for lag ends its chain)",
-    ["topic", "event_type"],
-)
 
-
-UNVERIFIED = METRICS_BACKEND.counter(
-    "pipeshub_envelope_unverified_total",
-    "Signed broker messages processed without verification because no key is configured",
-    ["topic"],
-)
-STALE = METRICS_BACKEND.counter(
-    "pipeshub_envelope_stale_total",
-    "Validly signed broker messages older than the accepted signature age",
-    ["topic"],
-)
-REJECTED = METRICS_BACKEND.counter(
-    "pipeshub_envelope_rejected_total",
-    "Broker messages dropped because their envelope was rejected, by reason and (only once the signature verified) event "
-    "type: a dropped self-scheduled control message ends its chain, so this is the place to see one go missing",
-    ["topic", "reason", "event_type"],
-)
-ADMISSION_REFUSED = METRICS_BACKEND.counter(
-    "pipeshub_envelope_admission_refused_total",
-    "Stored admissions of a queue delivery that did not verify (forged, copied, edited, expired or made with a key no longer configured)",
-    ["topic"],
-)
-STRIPPED = METRICS_BACKEND.counter(
-    "pipeshub_envelope_stripped_total",
-    "Broker messages without a ctx while signing is enabled (stripped or unsigned producer)",
-    ["topic"],
-)
-UNSIGNED = METRICS_BACKEND.counter(
-    "pipeshub_envelope_unsigned_total",
-    "Messages sent unsigned while signing is enabled",
-    ["topic", "reason"],
-)
 _logger = logging.getLogger(__name__)
 
 
@@ -140,13 +97,6 @@ class Inbox(Protocol):
 
     async def record(self, consumer: str, ctx: OrgContext) -> None:
         """Remember that ``consumer`` finished this event; called only after its handler succeeded."""
-
-
-INBOX_ERRORS = METRICS_BACKEND.counter(
-    "pipeshub_consumer_inbox_errors_total",
-    "Consumer inbox reads or writes that failed; the message was processed as if new (at-least-once)",
-    ["op"],
-)
 
 
 def ctx_required() -> bool:
@@ -313,7 +263,7 @@ async def open_envelope(
     try:
         return await _open_envelope(topic, message, keys=keys, required=required, now=now, admitted=admitted)
     except EnvelopeRejected as e:
-        REJECTED.inc(topic, e.reason, e.event_type)
+        platform_events.emit("message.envelope.rejected", topic=topic, reason=e.reason, event_type=e.event_type)
         raise
 
 
@@ -333,12 +283,12 @@ async def _open_envelope(
             raise EnvelopeRejected("ctx_missing")
         if sign_enabled():
             # Producers sign, so a message without ctx was stripped or came from an unsigned writer.
-            STRIPPED.inc(topic)
+            platform_events.emit("message.envelope.stripped", topic=topic)
             if enforcing():
                 raise EnvelopeRejected("ctx_stripped")
             _log_loud(f"stripped:{topic}", "envelope ctx missing while signing is enabled topic=%s: accepted in shadow mode", topic)
         else:
-            CTX_MISSING.inc(topic)
+            platform_events.emit("message.envelope.accepted_without_context", topic=topic)
         return _unsigned(message)
 
     payload = message.get("payload")
@@ -346,7 +296,7 @@ async def _open_envelope(
         # No key available. Verification configured (signing or required on): never silently skip it.
         if required or (sign_enabled() and enforcing()):
             raise EnvelopeRejected("no_key")
-        UNVERIFIED.inc(topic)
+        platform_events.emit("message.envelope.processed_unverified", topic=topic)
         if sign_enabled():
             _log_loud(f"nokey:{topic}", "envelope key unavailable topic=%s: processing unverified (shadow mode)", topic)
         else:
@@ -365,8 +315,7 @@ async def _open_envelope(
         raise EnvelopeRejected("malformed") from e
     age = (now or time.time)() - c["issuedAt"]
     if age > max_age_seconds() and not admitted:
-        STALE.inc(topic)
-        STALE_BY_TYPE.inc(topic, event_type[:64])
+        platform_events.emit("message.envelope.expired", topic=topic, event_type=event_type[:64])
         if enforcing():
             raise EnvelopeRejected("stale", event_type=event_type[:64], record_id=_record_id_of(payload), age_seconds=age)
         _log_loud(f"stale:{topic}", "validly signed envelope older than %ss topic=%s: accepted in shadow mode", max_age_seconds(), topic)
@@ -474,7 +423,7 @@ async def open_configured(
     try:
         seen = await inbox.seen(consumer, ctx)
     except Exception as e:
-        INBOX_ERRORS.inc("seen")
+        platform_events.emit("message.inbox.failed", operation="seen")
         _log_loud(f"inbox-seen:{topic}", "consumer inbox read failed topic=%s: processing as new (%s)", topic, type(e).__name__)
         return opened
     if seen:
@@ -490,7 +439,7 @@ async def record_processed(inbox: Inbox | None, consumer: str, ctx: OrgContext |
     try:
         await inbox.record(consumer, ctx)
     except Exception as e:
-        INBOX_ERRORS.inc("record")
+        platform_events.emit("message.inbox.failed", operation="record")
         _log_loud(f"inbox-record:{consumer}", "consumer inbox write failed consumer=%s: a redelivery would run again (%s)", consumer, type(e).__name__)
 
 
@@ -565,7 +514,7 @@ async def configured_admission_valid(
     keys = await _keys() if _keys else ()
     ok = admission_valid(keys, topic, group_id, message_id, message, admission_ms, mac)
     if not ok and keys:
-        ADMISSION_REFUSED.inc(topic)
+        platform_events.emit("message.admission.refused", topic=topic)
         _log_loud(f"admission:{topic}", "a stored queue admission did not verify topic=%s: the message is judged by its age", topic)
     return ok
 
@@ -627,13 +576,13 @@ def sign_message(topic: str, message: dict[str, Any]) -> dict[str, Any]:
     ctx = _ctx.get()
     payload = message.get("payload")
     if not (ctx and ctx.org_id and isinstance(payload, dict)):
-        UNSIGNED.inc(topic, "no_org")
+        platform_events.emit("message.sent_unsigned", topic=topic, reason="no_org")
         return with_event_id(message)
     if payload.get("orgId") not in (None, ctx.org_id):
-        UNSIGNED.inc(topic, "org_mismatch")
+        platform_events.emit("message.sent_unsigned", topic=topic, reason="org_mismatch")
         return with_event_id(message)
     if not _sign_key:
-        UNSIGNED.inc(topic, "no_key")
+        platform_events.emit("message.sent_unsigned", topic=topic, reason="no_key")
         if enforcing():
             raise RuntimeError(f"envelope signing is enabled but no key is available (topic={topic})")
         _log_loud(f"signkey:{topic}", "envelope signing enabled but no key is available topic=%s: sent unsigned (shadow mode)", topic)

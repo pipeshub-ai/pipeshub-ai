@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import asyncpg
 import pytest
 
+from app.plugins.telemetry.modules import kg_metrics
 from app.core.db import DbConfig, KernelDB
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg import backfill as bf
@@ -424,7 +425,7 @@ async def test_a_blocked_or_slow_read_hands_the_call_to_the_walk_at_once(layer, 
     _replace(monkeypatch, "PROFILE", "'2s'", "'100ms'")
     _replace(monkeypatch, "CLASSES", "WHERE k.org_id = $1", "WHERE (SELECT pg_sleep(2)) IS NOT NULL AND k.org_id = $1")
     fell: list[tuple[str, ...]] = []
-    monkeypatch.setattr(kg_read, "FALLBACKS", SimpleNamespace(inc=lambda *labels, value=1.0: fell.append(labels)))
+    monkeypatch.setattr(kg_metrics.READ_FALLBACKS, "inc", SimpleNamespace(inc=lambda *labels, value=1.0: fell.append(labels)).inc)
     t0 = time.perf_counter()
     got = await _ask(pg_provider, c.org, c.uid, c.ids, c.access, None)
     assert got == want

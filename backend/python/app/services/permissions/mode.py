@@ -8,8 +8,9 @@ import os
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from app import platform_events
+
 from .errors import ViewerScopesUnavailable
-from .metrics import SCOPES_UNAVAILABLE
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -50,7 +51,7 @@ async def scopes_or_legacy(
     try:
         return await service.scopes(org_id, user_key)
     except ViewerScopesUnavailable as exc:
-        SCOPES_UNAVAILABLE.inc(exc.reason.split(":", 1)[0])
+        platform_events.emit("permission.viewer_scopes.unavailable", reason=exc.reason.split(":", 1)[0])
         return None
 
 

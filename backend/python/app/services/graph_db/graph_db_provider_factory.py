@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.plugins.telemetry.modules.db_metrics import instrument_store
+from app.utils.store_timing import announce_store_calls
 
 if TYPE_CHECKING:
     from app.services.cache.interface import IAccessibleRecordsCache
@@ -91,7 +91,7 @@ class GraphDBProviderFactory:
                     logger=logger,
                     config_service=config_service,
                 )
-                return instrument_store(provider, "graph")
+                return announce_store_calls(provider, "graph")
 
             # Neo4j support
             elif provider_type == "neo4j":
@@ -100,7 +100,7 @@ class GraphDBProviderFactory:
                     config_service=config_service,
                     accessible_records_cache=accessible_records_cache,
                 )
-                return instrument_store(provider, "graph")
+                return announce_store_calls(provider, "graph")
 
             # PostgreSQL alone: the graph in schema `graph`, through the kernel's database runtime (opt-in: the default stays arangodb)
             elif provider_type == "postgres":
@@ -111,7 +111,7 @@ class GraphDBProviderFactory:
 
                 # Each process connects as its own service role (PG_RUNTIME_SERVICE, next to its PG_CORE_URL)
                 db = await acquire_db(DbConfig.from_env(runtime_service()))
-                return instrument_store(PostgresGraphProvider(logger, db, config_service=config_service), "graph")
+                return announce_store_calls(PostgresGraphProvider(logger, db, config_service=config_service), "graph")
 
             else:
                 raise ValueError(f"Unsupported graph database provider: {provider_type}. Set DATA_STORE env to 'arangodb', 'neo4j' or 'postgres'")

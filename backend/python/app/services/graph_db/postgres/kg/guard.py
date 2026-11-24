@@ -14,18 +14,17 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.services.graph_db.postgres.kg.registry import (
     WRITERS,
     UnclassifiedProviderWrite,
 )
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import Tx
 
 logger = logging.getLogger(__name__)
 current_writer: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar("pg_provider_methods", default=())     # the public provider methods running, outermost first
-UNCLASSIFIED = METRICS_BACKEND.counter("pipeshub_kg_unclassified_graph_writes_total", "Graph writes by a provider method the kg registry does not list", ["method"])
 
 
 def strict() -> bool:
@@ -42,7 +41,7 @@ def check(tx: Tx, sql: str) -> None:
     label = stack[0] if stack else "<outside the provider>"
     if strict():
         raise UnclassifiedProviderWrite(f"{label} writes the graph and is not in the kg registry (app/services/graph_db/postgres/kg/registry.py)")
-    UNCLASSIFIED.inc(label)
+    platform_events.emit("knowledge_graph.write.unclassified", method=label)
     logger.warning("graph write by %s is not classified for the kg projection; its changes are captured by the triggers", label)
 
 

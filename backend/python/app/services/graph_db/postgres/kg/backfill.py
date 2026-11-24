@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg import grant_marks, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
@@ -43,7 +44,6 @@ from app.services.graph_db.postgres.kg.verify import (
     verify_principals,
 )
 from app.services.graph_db.postgres.kg.writers import KgWriter
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     import asyncio
@@ -53,8 +53,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 PRINCIPAL_COLLS = ("organizations", "users", "groups", "roles", "teams")
-BATCHES = METRICS_BACKEND.counter("pipeshub_kg_backfill_batches_total", "Backfill batches committed", ["scope"])
-FLIPS = METRICS_BACKEND.counter("pipeshub_kg_backfill_flips_total", "Backfills that ended in a verify, by outcome", ["outcome"])
 
 
 @dataclass
@@ -166,7 +164,7 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
             if not await db.run(batch, write=True):
                 break
             done += 1
-            BATCHES.inc(scope)
+            platform_events.emit("knowledge_graph.backfill.batch_committed", scope=scope)
     return done
 
 
@@ -439,7 +437,7 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
                 await w.analyze_request(app_sk)
             return Outcome(True, n, res, 0)
         out = await db.run(flip, write=True)
-    FLIPS.inc("shadow" if out.flipped else "refused")
+    platform_events.emit("knowledge_graph.backfill.verified", outcome="shadow" if out.flipped else "refused")
     return out
 
 

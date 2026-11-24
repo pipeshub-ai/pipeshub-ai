@@ -6,8 +6,8 @@ from app.config.constants.store_type import StoreType
 from app.config.key_value_store import KeyValueStore
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.config.providers.postgres_store import PostgresKeyValueStore
-from app.plugins.telemetry.modules.db_metrics import instrument_store
 from app.utils.logger import create_logger
+from app.utils.store_timing import announce_store_calls
 
 if TYPE_CHECKING:
     from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
@@ -87,25 +87,25 @@ class KeyValueStoreFactory:
                     serializer, deserializer, config
                 )
                 logger.info("✅ ETCD3 store created successfully")
-                return instrument_store(store, "kv")
+                return announce_store_calls(store, "kv")
             elif store_type == StoreType.IN_MEMORY:
                 logger.debug("🔄 Creating in-memory store")
                 store = KeyValueStoreFactory._create_in_memory_store()
                 logger.info("✅ In-memory store created successfully")
-                return instrument_store(store, "kv")
+                return announce_store_calls(store, "kv")
             elif store_type == StoreType.REDIS:
                 logger.debug("🔄 Creating Redis store")
                 store = KeyValueStoreFactory._create_redis_store(
                     serializer, deserializer, config
                 )
                 logger.info("✅ Redis store created successfully")
-                return instrument_store(store, "kv")
+                return announce_store_calls(store, "kv")
             elif store_type == StoreType.POSTGRES:
                 if not serializer or not deserializer:
                     raise ValueError("Serializer and deserializer functions must be provided for PostgreSQL store.")
                 store = PostgresKeyValueStore[T](serializer, deserializer)
                 logger.info("✅ PostgreSQL store created successfully")
-                return instrument_store(store, "kv")
+                return announce_store_calls(store, "kv")
             else:
                 logger.error("❌ Unsupported store type: %s", store_type)
                 raise ValueError(f"Unsupported store type: {store_type}")

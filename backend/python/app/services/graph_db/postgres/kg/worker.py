@@ -14,6 +14,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres import connector_stats
 from app.services.graph_db.postgres.kg import (
@@ -26,7 +27,6 @@ from app.services.graph_db.postgres.kg import (
 )
 from app.services.graph_db.postgres.kg.drainer import PAGE, _ctx, drain_or_retry, lag
 from app.services.pg_runtime import PgListener
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -39,7 +39,6 @@ CHANNELS = ("pipeshub_kg_changes", "pipeshub_kg_restamp")
 RECHECK_S = 0.3
 STOP_TIMEOUT_S = 10.0                              # how long stop() lets the pass in flight end before it cancels it
 MAX_DOUBLINGS = 8                                  # RECHECK_S * 2**8 is past any sensible poll interval
-LOOP_FAILED = METRICS_BACKEND.counter("pipeshub_kg_worker_loop_failed_total", "Iterations of the projection worker's loop that raised and were continued", ["where"])
 
 
 class KgWorker:
@@ -152,7 +151,7 @@ class KgWorker:
             try:
                 stuck = await self._once(stuck)
             except Exception:
-                LOOP_FAILED.inc("worker")
+                platform_events.emit("knowledge_graph.worker.iteration_failed", stage="worker")
                 logger.exception("kg worker iteration failed; continuing")
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self._stop.wait(), self._poll)
@@ -165,7 +164,7 @@ class KgWorker:
                 for org in await self._orgs():
                     await net.verify_due(self._db, org, self._verify_states, self._stop)
             except Exception:
-                LOOP_FAILED.inc("verify")
+                platform_events.emit("knowledge_graph.worker.iteration_failed", stage="verify")
                 logger.exception("kg verify iteration failed; continuing")
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), net.verify_rest(time.monotonic() - t0))

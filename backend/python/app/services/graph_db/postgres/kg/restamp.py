@@ -30,6 +30,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.db import notify
 from app.core.org_context import OrgContext, bind, spawn_detached
 from app.services.graph_db.postgres.kg import locks, stamp
@@ -37,7 +38,6 @@ from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_COLL, COLL_CODE, KIND, Key
 from app.services.graph_db.postgres.kg.reader import load_sks, seeks
 from app.services.graph_db.postgres.kg.writers import CAP, KgWriter
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx
@@ -58,10 +58,6 @@ HIDDEN = ("(r.fence_job IS NOT NULL OR EXISTS (SELECT 1 FROM kg.restamp_queue q 
 # The same rule for a row of kg.scopes aliased ``s`` (written with the stamps, so as stale as its record's class). A scope counts only while its record row exists and is not
 # hidden: a row whose record is gone (an older process deleted the record) is hidden too, never counted.
 HIDDEN_SCOPE = "NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = s.org_id AND r.sk = s.sk AND NOT " + HIDDEN + ")"
-
-JOBS = METRICS_BACKEND.counter("pipeshub_kg_restamp_jobs_total", "Restamp jobs queued", ["kind"])
-BATCHES = METRICS_BACKEND.counter("pipeshub_kg_restamp_batches_total", "Restamp batches committed", ["kind"])
-FAILED = METRICS_BACKEND.counter("pipeshub_kg_restamp_failed_total", "Restamp batches that failed and will be retried", ["kind"])
 
 
 class LostClaim(Exception):
@@ -140,7 +136,7 @@ async def enqueue_app(tx: Tx, org: str, app_sk: int, reason: str) -> int:
     """Hide a whole connector and queue its restamp (in the caller's unit)."""
     job = await tx.fetchval("/* pipeshub:kg.job_id */ SELECT nextval('kg.job_id_seq')")
     await KgWriter(tx).queue_add(job, app_sk, "app", reason, fenced=True)
-    JOBS.inc("app")
+    platform_events.emit("knowledge_graph.restamp.queued", kind="app")
     await _notify(tx)
     return job
 
@@ -176,7 +172,7 @@ async def enqueue_rows(tx: Tx, org: str, keys: set[Key], reason: str, *, skip_ap
         job = await tx.fetchval("/* pipeshub:kg.job_id */ SELECT nextval('kg.job_id_seq')")
         await w.fence_rows(rows, job)
         await w.queue_add(job, app_sk, "rows", reason, fenced=True)
-        JOBS.inc("rows")
+        platform_events.emit("knowledge_graph.restamp.queued", kind="rows")
     hid = {a: r for a, r in by_app.items() if a not in skip_apps}
     if hid:
         await _notify(tx)
@@ -226,7 +222,7 @@ async def enqueue_subtree(tx: Tx, org: str, keys: set[Key], *, skip_apps: frozen
         if job is None:
             jid = await tx.fetchval("/* pipeshub:kg.job_id */ SELECT nextval('kg.job_id_seq')")
             await w.queue_add(jid, app_sk, "app", SUBTREE, fenced=True)
-            JOBS.inc(SUBTREE)
+            platform_events.emit("knowledge_graph.restamp.queued", kind=SUBTREE)
         else:
             jid = job.id
             await _restart(tx, org, job)
@@ -354,7 +350,7 @@ async def _run_batch(db: KernelDB, org: str, job: Job, worker: str, beat: _Beat,
             extra |= e.apps
             wide = wide or e.wide
             continue
-        BATCHES.inc(job.kind)
+        platform_events.emit("knowledge_graph.restamp.batch_committed", kind=job.kind)
         return out
     raise RuntimeError("restamp batch kept reaching connectors it had not locked")
 
@@ -472,7 +468,7 @@ async def run_job(db: KernelDB, org: str, job: Job, worker: str, *, batch: int |
         except LostClaim:
             return False
         except Exception:
-            FAILED.inc(job.kind)
+            platform_events.emit("knowledge_graph.restamp.batch_failed", kind=job.kind)
             raise
         n += 1
         if done:

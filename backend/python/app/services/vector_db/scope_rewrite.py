@@ -36,11 +36,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
 from app.services.permissions.currency import app_is_current
 from app.services.permissions.errors import ViewerScopesUnavailable
-from app.services.permissions.metrics import SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.pending import PendingUnreadable, parse, without_done
 from app.services.permissions.rewrite_lease import LeaseLost, RewriteLease
@@ -347,7 +347,7 @@ class ScopeRewriteJob:
                     continue
                 rounds += 1
                 if todo and rounds >= MAX_ROUNDS:
-                    SCOPE_STAMP_FAILED.inc("rewrite")
+                    platform_events.emit("permission.scope_fields.failed", stage="rewrite")
                     if top == 0 and _fenced_by_time(self._vdb):
                         self._log.warning("%s refused or lost the write of %d virtual record(s) of %s: a group row computed after %s? (a host clock "
                                           "ahead of the database's); the root stays pending", type(self._vdb).__name__, len(todo), connector_id, at)
@@ -371,7 +371,7 @@ class ScopeRewriteJob:
         since this graph was read: the floor of the next round. -1 for a fence that is no plausible time (counted and logged, not followed)."""
         now = _micros(await self._now())
         if top >= MAX_FENCE - FOLLOW_JITTER_MICROS or top > max(now, fence) + MAX_FENCE_SKEW_MICROS:
-            SCOPE_STAMP_FAILED.inc("fence_out_of_range")
+            platform_events.emit("permission.scope_fields.failed", stage="fence_out_of_range")
             self._log.error("scope fence %d on a point of %s is not a plausible time (the store's clock: %d, at most %d s ahead is "
                             "followed): not followed; the rewrite stays incomplete until the point is repaired (index the record "
                             "again)", top, connector_id, now, MAX_FENCE_SKEW_MICROS // 10**6)
@@ -432,7 +432,7 @@ class ScopeRewriteJob:
             try:
                 plans[v] = await self._plan_one(org_id, v, keys)
             except Exception as exc:  # a virtual record that cannot be told keeps its points as they are; the run fails and its root stays
-                SCOPE_STAMP_FAILED.inc("rewrite")
+                platform_events.emit("permission.scope_fields.failed", stage="rewrite")
                 unplaced[v] = f"{type(exc).__name__}: {exc}"
                 self._log.warning("scope rewrite: %s: %s", v, unplaced[v])
         return plans, unplaced

@@ -21,9 +21,9 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.kg import drainer, flush, net
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -35,8 +35,6 @@ ENV = "PG_KG_READ"
 SELF = "@self"
 CHUNK = 10_000
 
-ANSWERS = METRICS_BACKEND.counter("pipeshub_kg_read_nodes_total", "Nodes an access check decided, by who answered", ["answer"])
-FALLBACKS = METRICS_BACKEND.counter("pipeshub_kg_read_fallback_total", "Nodes (or whole calls) that kg handed to the walk, by reason", ["reason"])
 
 # Every lookup by key below is a seek: the first row at or after the key in the key's unique index (``k >= q.k ORDER BY k LIMIT 1``), kept only when it is the key. Of the org's
 # indexes only that one returns its rows in key order, and PROFILE turns sorts off, so the plan is that index whatever the statistics say. With ``k = q.k`` any index on the org
@@ -143,7 +141,7 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
     served: dict[str, bool] = {}
 
     def to_walk(i: str, reason: str) -> None:
-        FALLBACKS.inc(reason)
+        platform_events.emit("knowledge_graph.access.fell_back", reason=reason)
         d.walk.append(i)
 
     verdict: dict[str, bool] = {}                                      # id -> admitted, for the nodes kg decides
@@ -230,14 +228,14 @@ async def accessible_rows(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaita
         d, shaped = await run(lambda tx: _read(tx, org, ids, access))
     except Exception:
         logger.warning("kg access check failed; the walk answers", exc_info=True)
-        FALLBACKS.inc("error")
+        platform_events.emit("knowledge_graph.access.fell_back", reason="error")
         return await walk(ids, vrids, access)
     rows = {r["id"]: r for r in shaped}
     if d.walk or vrids:
         for r in await walk(d.walk, vrids, access):
             rows.setdefault(r["id"], r)
-    ANSWERS.inc("kg", value=len(d.admit) + d.denied)
-    ANSWERS.inc("walk", value=len(d.walk))
+    platform_events.emit("knowledge_graph.access.decided", answer="kg", count=len(d.admit) + d.denied)
+    platform_events.emit("knowledge_graph.access.decided", answer="walk", count=len(d.walk))
     if db is not None and (d.admit or d.denied):
         net.maybe_sample(sample_run or run, db, org, d.admit | d.deny, access)
     return list(rows.values())

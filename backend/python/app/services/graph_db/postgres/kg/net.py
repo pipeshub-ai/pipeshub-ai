@@ -26,6 +26,7 @@ import weakref
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.core.db import notify
 from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres import access as access_sql
@@ -43,7 +44,6 @@ from app.services.graph_db.postgres.kg.verify import (
     verify_principals,
 )
 from app.services.graph_db.postgres.kg.writers import KgWriter
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
@@ -71,11 +71,6 @@ MARKER = "3:@demote"             # the one key of a demotion request in the chan
 # One worker serves the org (OSS runs one process), so the hold and the distrusted set are per process: a second process would hold its own.
 HOLD_S = 300.0                   # after a demotion by the net, the bootstrap leaves the connector alone this long
 
-NET = METRICS_BACKEND.counter("pipeshub_kg_net_total", "Checks of an enforced connector against the walk, by where they ran and what they found (over: kg admitted what the walk denies; under: kg denied what the walk admits; same; skipped; busy: a sample found the process at its limit; error)", ["source", "result"])
-LAST_VERIFIED = METRICS_BACKEND.gauge("pipeshub_kg_net_last_verified_seconds", "Unix time a connector's last complete verify against the graph finished (alert when it is older than a few verify intervals)", ["org", "connector"])
-OVERDUE = METRICS_BACKEND.gauge("pipeshub_kg_net_verify_overdue", "Enforced connectors whose full verify has not completed within 24 verify intervals", ["org"])
-OLDER = METRICS_BACKEND.gauge("pipeshub_kg_net_older_epoch", "Enforced connectors whose copy is of an older projection code epoch: not served or verified until the bootstrap brings them up to date (alert when it stays above 0)", ["org"])
-DEMOTED = METRICS_BACKEND.counter("pipeshub_kg_net_demoted_total", "Connectors taken back to the walk because kg differs from it", ["source"])
 
 # A copy of another epoch is not served, and its verify compares columns that code did not write: the bootstrap brings it up to date first (``bootstrap.bring_to_enforce``).
 ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
@@ -162,7 +157,7 @@ async def demote(db: KernelDB, org: str, apps: Iterable[str], *, source: str, wh
     for app in sorted(set(apps)):
         distrust(org, app)
         logger.error("kg connector %s of org %s goes back to the walk (%s): %s", app, org, source, why)
-        DEMOTED.inc(source)
+        platform_events.emit("knowledge_graph.connector.demoted", source=source)
         bootstrap.hold(org, app, HOLD_S)
         await _remember(db, org, app)                       # before anything that can make the worker act: a mode already legacy would leave the time unknown
         try:
@@ -289,10 +284,10 @@ async def _sample(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]
     try:
         apps, found = await run(lambda tx: compare(tx, org, ids, access))
     except Exception:
-        NET.inc("sample", "error")
+        platform_events.emit("knowledge_graph.net.checked", source="sample", result="error")
         logger.warning("kg sample against the walk failed; nothing changes", exc_info=True)
         return
-    NET.inc("sample", found)
+    platform_events.emit("knowledge_graph.net.checked", source="sample", result=found)
     if apps:
         await demote(db, org, apps, source="sample", why=f"kg {'admitted what the walk denies' if found == 'over' else 'denied what the walk admits'}")
 
@@ -320,10 +315,10 @@ def maybe_compare(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]
         try:
             diff = await run(differs)
         except Exception:
-            NET.inc(source, "error")
+            platform_events.emit("knowledge_graph.net.checked", source=source, result="error")
             logger.warning("kg %s against the walk failed; nothing changes", source, exc_info=True)
             return
-        NET.inc(source, "diff" if diff else "same")
+        platform_events.emit("knowledge_graph.net.checked", source=source, result="diff" if diff else "same")
         if diff:
             await demote(db, org, apps, source=source, why="kg's structure gives another answer than the walk")
     _start(source, org, check)
@@ -334,7 +329,7 @@ def _start(source: str, org: str, work: Callable[[], Awaitable[None]]) -> None:
     loop = asyncio.get_running_loop()
     live = _SAMPLES.setdefault(loop, set())
     if len(live) >= MAX_SAMPLES:
-        NET.inc(source, "busy")
+        platform_events.emit("knowledge_graph.net.checked", source=source, result="busy")
         return
 
     async def in_org() -> None:
@@ -426,7 +421,7 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
         with bind(drainer._ctx(org)):
             apps, older = await db.run(enforced, isolation="repeatable_read")
     except Exception:
-        NET.inc("verify", "error")
+        platform_events.emit("knowledge_graph.net.checked", source="verify", result="error")
         logger.warning("kg verify could not list the enforced connectors of an org", exc_info=True)
         return 0
     now = time.monotonic()
@@ -442,8 +437,8 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
             if not st.flagged:
                 st.flagged = True
                 logger.error("kg connector %s of org %s has not completed a verify in %d intervals", app, org, OVERDUE_INTERVALS)
-    OVERDUE.set(org, value=overdue)
-    OLDER.set(org, value=older)
+    platform_events.emit("knowledge_graph.net.overdue_counted", org_id=org, count=overdue)
+    platform_events.emit("knowledge_graph.net.older_epoch_counted", org_id=org, count=older)
     turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now),
                   key=lambda a: (states[(org, a)].turn, states[(org, a)].due))[:VERIFY_PER_PASS]
     completed = 0
@@ -453,26 +448,26 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
         deadline = time.monotonic() + VERIFY_BUDGET_S
         while True:
             if st.cursor is not None and locks.written(org, app) != st.mark:
-                NET.inc("verify", "restarted")                  # rows of the connector were rewritten since the scan began: a key it had passed may be one of them
+                platform_events.emit("knowledge_graph.net.checked", source="verify", result="restarted")                  # rows of the connector were rewritten since the scan began: a key it had passed may be one of them
                 st.cursor = None
             if st.cursor is None:
                 st.since = st.since or time.monotonic()
                 try:
                     mark = await _begin(db, org, app)
                 except Exception:                                # the lock is held longer than this unit may wait (a projection unit holds it up to its statement timeout): no scan state survives
-                    NET.inc("verify", "busy")
+                    platform_events.emit("knowledge_graph.net.checked", source="verify", result="busy")
                     st.cursor, st.due = None, time.monotonic() + SKIP_RETRY_S
                     break
                 st.cursor, st.mark = Cursor(), mark
             try:
                 found = await _chunk(db, org, app, st.cursor)
             except Exception:
-                NET.inc("verify", "error")
+                platform_events.emit("knowledge_graph.net.checked", source="verify", result="error")
                 logger.warning("kg verify of connector %s failed; it is left as it is and starts again next period", app, exc_info=True)
                 st.cursor, st.due = None, time.monotonic() + every
                 break
             if found == "skipped":
-                NET.inc("verify", "skipped")
+                platform_events.emit("knowledge_graph.net.checked", source="verify", result="skipped")
                 st.cursor, st.due = None, time.monotonic() + SKIP_RETRY_S       # a change that was waiting may have changed what this scan already passed: start again, later
                 break
             if found == "more" and st.cursor.res.ok:
@@ -483,20 +478,20 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
             try:
                 ok = ok and found == "done" and await _principals(db, org)
                 if found == "done" and locks.written(org, app) != st.mark:      # the last look, after the last step: a rewrite during the final page or the principals is not a complete verify
-                    NET.inc("verify", "restarted")
+                    platform_events.emit("knowledge_graph.net.checked", source="verify", result="restarted")
                     st.cursor = None
                     break
             except Exception:
-                NET.inc("verify", "error")
+                platform_events.emit("knowledge_graph.net.checked", source="verify", result="error")
                 logger.warning("kg verify of the principals failed; connector %s is left as it is", app, exc_info=True)
                 st.cursor, st.due = None, time.monotonic() + every
                 break
-            NET.inc("verify", "same" if ok else "differs")
+            platform_events.emit("knowledge_graph.net.checked", source="verify", result="same" if ok else "differs")
             if not ok:                                         # the first page that shows a difference: the connector goes back to the walk now, not when the scan ends
                 logger.error("kg verify of connector %s of org %s: %s", app, org, st.cursor.res.summary())
                 await demote(db, org, [app], source="verify", why="the copy differs from the graph")
             else:
-                LAST_VERIFIED.set(org, app, value=time.time())
+                platform_events.emit("knowledge_graph.net.verified", org_id=org, connector_id=app, verified_at=time.time())
                 await counts.check(db, org, app)
             st.cursor, st.since, st.flagged, st.due = None, None, False, time.monotonic() + every
             completed += 1

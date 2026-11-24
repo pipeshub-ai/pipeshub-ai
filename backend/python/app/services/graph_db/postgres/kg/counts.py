@@ -19,13 +19,13 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.org_context import bind
 from app.services.graph_db.postgres.kg import flush
 from app.services.graph_db.postgres.kg.drainer import _ctx
 from app.services.graph_db.postgres.kg.listing import DECIDED, LIVE
 from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.writers import KgWriter
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     import asyncio
@@ -64,8 +64,6 @@ DRIFT = f"""/* pipeshub:kg.counts_drift */ WITH a AS MATERIALIZED (SELECT k.sk F
       ORDER BY 1, 2, 3 LIMIT $3)
 SELECT EXISTS (SELECT 1 FROM a) AS seeded, d.class_id, d.kind, d.folder, d.kept, d.counted FROM (SELECT) one LEFT JOIN d ON true ORDER BY 2, 3, 4"""
 DRIFT_LIMIT = 20          # keys one report names
-CHECKED = METRICS_BACKEND.counter("pipeshub_kg_counts_checked_total", "Checks of a connector's counters against a recount of its rows, by what they found (same; differs: the "
-                                  "totals read from them are wrong; unseeded: not counted whole yet, nothing compared; error: the check did not run)", ["result"])
 CLASS_ROWS = """/* pipeshub:kg.counts_class_rows */ SELECT kind, folder, sum(n)::bigint AS n FROM kg.counts
     WHERE org_id = $1 AND app_sk = $2 AND facet = 1 AND class_id = ANY($3::bigint[]) GROUP BY kind, folder"""
 
@@ -151,14 +149,14 @@ async def check(db: KernelDB, org: str, app_id: str) -> list[dict] | None:
         with bind(_ctx(org)):
             rows = await db.run(lambda tx: tx.fetch(DRIFT, org, app_id, DRIFT_LIMIT))
     except Exception:
-        CHECKED.inc("error")
+        platform_events.emit("knowledge_graph.counts.checked", result="error")
         logger.warning("kg counters check of connector %s failed; nothing changes", app_id, exc_info=True)
         return None
     if not rows[0]["seeded"]:
-        CHECKED.inc("unseeded")           # not counted whole yet (the worker's seed comes later): nothing was compared
+        platform_events.emit("knowledge_graph.counts.checked", result="unseeded")           # not counted whole yet (the worker's seed comes later): nothing was compared
         return []
     diff = [{k: r[k] for k in ("class_id", "kind", "folder", "kept", "counted")} for r in rows if r["kept"] is not None]
-    CHECKED.inc("differs" if diff else "same")
+    platform_events.emit("knowledge_graph.counts.checked", result="differs" if diff else "same")
     if diff:
         logger.error("kg counters of connector %s of org %s differ from its rows (the totals read from them are wrong): %s", app_id, org,
                      ", ".join(f"class {d['class_id']} kind {d['kind']} folder {d['folder']}: kept {d['kept']}, counted {d['counted']}" for d in diff))

@@ -18,7 +18,7 @@ from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
 from app.services.vector_db.interface.vector_db import IVectorDBService
-from app.plugins.telemetry.modules.db_metrics import instrument_store
+from app.utils.store_timing import announce_store_calls
 
 
 class VectorDBProviderFactory:
@@ -53,13 +53,13 @@ class VectorDBProviderFactory:
         )
 
         if provider_type == "qdrant":
-            return instrument_store(await VectorDBProviderFactory._create_qdrant(logger, config_service), "vector")
+            return announce_store_calls(await VectorDBProviderFactory._create_qdrant(logger, config_service), "vector")
         elif provider_type == "opensearch":
-            return instrument_store(await VectorDBProviderFactory._create_opensearch(logger, config_service), "vector")
+            return announce_store_calls(await VectorDBProviderFactory._create_opensearch(logger, config_service), "vector")
         elif provider_type == "redis":
-            return instrument_store(await VectorDBProviderFactory._create_redis(logger, config_service), "vector")
+            return announce_store_calls(await VectorDBProviderFactory._create_redis(logger, config_service), "vector")
         elif provider_type == "pgvector":
-            return instrument_store(await VectorDBProviderFactory._create_pgvector(logger, config_service), "vector")
+            return announce_store_calls(await VectorDBProviderFactory._create_pgvector(logger, config_service), "vector")
         else:
             raise ValueError(
                 f"Unsupported VECTOR_DB_TYPE='{provider_type}'. "

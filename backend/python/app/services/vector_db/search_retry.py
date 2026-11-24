@@ -28,10 +28,10 @@ import os
 import time
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.db.errors import TooManyConnections
 from app.modules.retrieval import degraded_notice
 from app.services.vector_db.models import SearchFailureKind
-from app.plugins.telemetry.modules.vector_search_metrics import record_search_retry
 from app.utils.request_deadline import seconds_left
 from app.utils.retry import retry_async
 from app.utils.stage_timer import span
@@ -170,7 +170,7 @@ async def _query_with_retry(
         if classify_search_error(service, error) is None or isinstance(error, TooManyConnections):
             return False
         if deadline - time.monotonic() < MIN_RETRY_SECONDS:
-            record_search_retry(_provider_name(service), "skipped_budget")
+            platform_events.emit("vector_search.retried", provider=_provider_name(service), outcome="skipped_budget")
             logger.warning(
                 "Vector search on '%s' failed after %.1fs; no time left in the %.0fs budget to retry",
                 collection_name, budget - (deadline - time.monotonic()), budget,
@@ -190,12 +190,12 @@ async def _query_with_retry(
     except Exception as error:
         kind = classify_search_error(service, error)
         if attempts > 1:
-            record_search_retry(_provider_name(service), "failed")
+            platform_events.emit("vector_search.retried", provider=_provider_name(service), outcome="failed")
         if kind is None:
             raise
         raise VectorSearchUnavailableError(kind, collection_name) from error
     if attempts > 1:
-        record_search_retry(_provider_name(service), "recovered")
+        platform_events.emit("vector_search.retried", provider=_provider_name(service), outcome="recovered")
         logger.warning("Vector search on '%s' recovered on retry", collection_name)
     return results
 

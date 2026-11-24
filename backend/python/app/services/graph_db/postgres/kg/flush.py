@@ -15,18 +15,16 @@ import os
 import time
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.db import notify
 from app.services.graph_db.postgres.kg import guard, stamp
 from app.services.graph_db.postgres.kg.project import decode, grant_only, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx
 
 logger = logging.getLogger(__name__)
-FLUSH_FAILED = METRICS_BACKEND.counter("pipeshub_kg_flush_failed_total", "Projections in a writer's transaction that failed and left the change log rows", ["where"])
-FLUSHED = METRICS_BACKEND.counter("pipeshub_kg_flushed_nodes_total", "Nodes projected by a writer's own transaction", ["where"])
 
 
 _CHOICES = {"PG_KG_PROJECT": ("1",), "PG_KG_READ": ("0", "1"), "PG_KG_COUNTERS": ("0", "1"), "PG_KG_FLUSH": ("async", "inline"), "PG_KG_STRICT": ("0", "1"),
@@ -74,11 +72,11 @@ async def flush(tx: Tx) -> None:
         async with tx.savepoint("kg_flush"):
             await project(tx, org, decode(rows), grant_only=grant_only(rows))
             await KgWriter(tx).changes_ack()
-        FLUSHED.inc("flush", value=sum(len(r["ends"]) for r in rows))
+        platform_events.emit("knowledge_graph.nodes.flushed", stage="flush", count=sum(len(r["ends"]) for r in rows))
     except Exception:
         if os.environ.get("PG_KG_STRICT") == "1":
             raise
-        FLUSH_FAILED.inc("flush")
+        platform_events.emit("knowledge_graph.flush.failed", stage="flush")
         logger.exception("kg projection failed; the change log keeps the changes")
 
 

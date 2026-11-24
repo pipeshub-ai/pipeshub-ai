@@ -53,6 +53,7 @@ from typing import (
     runtime_checkable,
 )
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import (
     MissingOrgContext,
@@ -60,7 +61,6 @@ from app.core.org_context import (
     current_org_id,
 )
 from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
-from app.services.permissions.metrics import SCOPE_REFUSED, SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.projector import ScopeProjector
 from app.services.permissions.scope_fields import ScopeFields
@@ -629,13 +629,13 @@ async def scope_fields_for_state(
         projector = projector or ScopeProjector(graph_provider.permission_stamp_graph())
         fields, outcomes = await projector.project_virtual_record(org_id, records)
     except Exception as exc:
-        SCOPE_STAMP_FAILED.inc("membership")
+        platform_events.emit("permission.scope_fields.failed", stage="membership")
         if logger is not None:
             logger.warning("Scope fields not computed (the point stays on the legacy filter): %s", type(exc).__name__)
         return STALE_SCOPE
     for p in outcomes:
         if p.refused:
-            SCOPE_REFUSED.inc(p.reason.split(":", 1)[-1].strip()[:60])
+            platform_events.emit("permission.scope_fields.refused", reason=p.reason.split(":", 1)[-1].strip()[:60])
     return fields
 
 
@@ -644,7 +644,7 @@ def scope_org_id() -> str | None:
     try:
         return current_org_id()
     except (MissingOrgContext, SystemContextNotAllowed):
-        SCOPE_STAMP_FAILED.inc("no_org")
+        platform_events.emit("permission.scope_fields.failed", stage="no_org")
         return None
 
 
@@ -708,7 +708,7 @@ async def mark_scope_stale(vector_db, locator: CollectionLocator, virtual_record
     try:
         await write_scope_fields(vector_db, await locator.all_collections(fresh=True), [virtual_record_id], STALE_SCOPE, scope_org_id())
     except Exception as exc:
-        SCOPE_STAMP_FAILED.inc("marker")
+        platform_events.emit("permission.scope_fields.failed", stage="marker")
         if logger is not None:
             logger.error("could not mark the scope fields of %s stale: %s", virtual_record_id, type(exc).__name__)
 

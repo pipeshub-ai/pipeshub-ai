@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.services.graph_db.postgres.kg import grant_marks
 from app.services.graph_db.postgres.kg.dependents import (
     children_of,
@@ -49,13 +50,11 @@ from app.services.graph_db.postgres.kg.writers import (
     KgWriter,
     record_refusals,
 )
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import Tx
 
 logger = logging.getLogger(__name__)
-REFUSED = METRICS_BACKEND.counter("pipeshub_kg_refused_rows_total", "Rows with a value a kg writer refuses (a node written without it, a grant left out), and their connector taken off the readers", ["coll"])
 TRASH_HELD = ("/* pipeshub:kg.trash_held */ SELECT sk, deleted_ms, delete_batch, pc_top, indexing_status, connector_name, doc_created_ms, doc_updated_ms, file_size, file_kind, kb_odd "
               "FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])")
 # What kg's rows say of whether a node is granted before the unit writes them, and whether the row is under a verified copy (the stamper reads the flag from kg there).
@@ -256,14 +255,14 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
         row = d.records.get(snap.sk.get(k))
         if row is not None and (bad := record_refusals(row)):
             st.refused.add(k)
-            REFUSED.inc(k[0])
+            platform_events.emit("knowledge_graph.row.refused", collection=k[0])
             logger.error("kg: the records writer refuses the %s column of %s %s; the row is written without it and its connector is taken off the readers", ", ".join(bad), *k)
             row.update(dict.fromkeys(bad))
     # A grant's type is part of its key, so a grant whose type the writer refuses cannot be stored at all. It is left out (no row of its key can exist to go stale) and the connector of
     # the node it is on is taken off the readers below: the walk reads the graph and sees it, and a verify finds it missing, so the copy is not served again while the type stays.
     refused_g_apps: set[int] = set()
     for g in sorted(g for g in d.grants if not GRANT_TYPE_LENGTH[0] <= len(g[2]) <= GRANT_TYPE_LENGTH[1]):
-        REFUSED.inc("permission")
+        platform_events.emit("knowledge_graph.row.refused", collection="permission")
         logger.error("kg: the grants writer refuses the type (%d characters) of the grant of principal %s on node %s; it is left out and its connector is taken off the readers",
                      len(g[2]), g[0], g[1])
         if (app := d.grants.pop(g)[1]) is not None:
