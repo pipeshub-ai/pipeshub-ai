@@ -5627,8 +5627,15 @@ class GoogleDriveTeamConnector(BaseConnector):
                     and await self._foreign_group_reaches(item_drive_id, (metadata.get("parents") or [None])[0])
                 ):
                     # A member of another organization's drive reads it through that drive's group, as members of
-                    # this Workspace's drives do: a grant of their own would outlast their leaving the drive.
+                    # this Workspace's drives do: a grant of their own would outlast their leaving the drive. Their
+                    # own stored grant goes once the item inherits (`inheritance_when_unreadable`): until its
+                    # inheritance is written, that grant is their only access.
                     new_permissions, member_reads_through_drive = [], True
+                    keeps_own_grant = existing_record is None or not await (
+                        self.data_entities_processor.inheritance_when_unreadable(
+                            CollectionNames.RECORDS.value, existing_record.id
+                        )
+                    )
 
                 if is_fallback_permissions:
                     permissions_changed = False
@@ -5641,6 +5648,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                             await self.data_entities_processor.stop_inheriting_permissions(
                                 existing_record.id, self.connector_id
                             )
+                            # What a foreign drive's group reaches below it changed.
+                            self._foreign_group_reach = {}
                     elif member_reads_through_drive:
                         file_record.inherit_permissions = True
                     else:
@@ -5778,6 +5787,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             if existing is None:
                 return
             await self.data_entities_processor.stop_inheriting_permissions(existing.id, self.connector_id)
+            self._foreign_group_reach = {}
             try:
                 parent = existing.parent_external_record_id and await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id, external_record_id=existing.parent_external_record_id
@@ -7073,10 +7083,18 @@ class GoogleDriveTeamConnector(BaseConnector):
             and email in self._foreign_drive_granted.get(drive_id or "", set())
         )
 
+    async def _active_member_emails(self) -> set[str]:
+        """The active users this deployment syncs, read afresh; a failed read raises rather than answer nobody."""
+        users = await self._get_users_to_sync(self.synced_users, raise_on_error=True)
+        return {u.email.lower() for u in users if u.is_active and u.email}
+
     async def _foreign_group_reaches(self, drive_id: str | None, parent_id: str | None) -> bool:
         """Whether a foreign drive's group reaches an item below ``parent_id``: every folder between them is stored
         and inherits. A limited folder cuts the group off, and a folder not stored yet is not known to pass it on;
         either way the reader keeps a grant of their own."""
+        if not parent_id:
+            # Drive leaves `parents` out when the reader cannot see the folder: that is not the drive's root.
+            return False
         path: list[str] = []
         current = parent_id
         reaches = True
@@ -7119,8 +7137,9 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _reconcile_foreign_drives(self, email: str | None, reached: dict[str, str]) -> None:
         """Make ``email`` a member of the ``reached`` foreign drives and of no other, keep only members this
         deployment syncs, and write each drive whose membership changed."""
-        # A cut user listing leaves people out who are still there, so nobody is pruned on it.
-        active = None if self._listing_cut else await self._synced_user_emails()
+        # A cut user listing leaves people out who are still there, so nobody is pruned on it but those known to be
+        # suspended or archived. A failed read of who is active raises: it is not "nobody".
+        active = None if self._listing_cut else await self._active_member_emails()
         async with self._foreign_drives_lock:
             stored = await self.drive_delta_sync_point.read_sync_point(FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY) or {}
             # Kept as one JSON string: a sync point on Neo4j cannot hold a nested map.
@@ -7164,30 +7183,39 @@ class GoogleDriveTeamConnector(BaseConnector):
                     continue
                 kept = [
                     m for m in entry["members"]
-                    if (m != email or drive_id in reached) and (active is None or m in active)
+                    if (m != email or drive_id in reached)
+                    and (m in active if active is not None else not self._is_inactive_email(m))
                 ]
                 if kept != entry["members"]:
                     entry["members"] = kept
                     to_write.add(drive_id)
-            written: dict[str, dict] = {}
+            # The membership meant for each drive, a leaver's revocation included, is stored before any group write:
+            # a write that fails is retried by the next run's write, and no later rewrite can start from a membership
+            # that still holds someone revoked.
+            for drive_id in to_write:
+                entry = drives[drive_id]
+                gone = before.get(drive_id, set()) - set(entry["members"])
+                entry["leavers"] = sorted((set(entry["leavers"]) | gone) - set(entry["members"]))
+            await self._save_foreign_drives(known, drives, dropped, unknown)
             for drive_id in sorted(to_write):
                 entry = drives[drive_id]
                 try:
                     await self._write_foreign_drive(drive_id, entry)
                 except Exception as e:
+                    # Not written now, whatever an earlier write this run did: no one reads through it, no leaver's
+                    # grants go, and the next reconcile writes it again.
+                    self._foreign_drives_written.discard(drive_id)
+                    self._foreign_drive_granted.pop(drive_id, None)
                     self._sync_ledger.note_incomplete()
                     self.logger.error(f"Foreign shared drive {drive_id} not updated: {e}", exc_info=True)
                     continue
                 self._foreign_drives_written.add(drive_id)
-                # The revocation is written: later writes start from it, whatever happens to the leavers' own
-                # grants. One who is a member again keeps theirs.
-                gone = before.get(drive_id, set()) - set(entry["members"])
-                entry["leavers"] = sorted((set(entry["leavers"]) | gone) - set(entry["members"]))
-                written[drive_id] = entry
-            # A leaver's own grants on the drive's files are removed after the revocation, and retried each run
-            # until they are; a drive whose standing is unknown this run is left as stored.
+                self._foreign_drive_granted[drive_id] = set(entry["members"])
+            # A leaver's own grants on the drive's files go once the revocation is written (this run), and are
+            # retried each run until they are; a drive whose standing is unknown this run is left as stored.
+            changed = False
             for drive_id, entry in drives.items():
-                if drive_id in unknown or not entry["leavers"] or drive_id in to_write - set(written):
+                if drive_id in unknown or not entry["leavers"] or drive_id not in self._foreign_drives_written:
                     continue
                 cleared = []
                 for leaver in entry["leavers"]:
@@ -7204,25 +7232,21 @@ class GoogleDriveTeamConnector(BaseConnector):
                     cleared.append(leaver)
                 if cleared:
                     entry["leavers"] = [m for m in entry["leavers"] if m not in cleared]
-                    written[drive_id] = entry
-            # Only a membership whose grants were written is stored: one whose write failed keeps the stored entry,
-            # so the next run finds the same change and writes the grants again.
-            saved = {**known, **written}
-            saved = {
-                drive_id: entry for drive_id, entry in saved.items()
-                if drive_id not in self._listed_shared_drive_ids and drive_id not in dropped
-            }
-            saved = {
-                drive_id: {k: v for k, v in entry.items() if k != "leavers" or v} for drive_id, entry in saved.items()
-            }
-            if saved != known:
-                await self.drive_delta_sync_point.update_sync_point(
-                    FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": json.dumps(saved, sort_keys=True)}
-                )
-            # Who holds each drive's group grant: what is stored, as written by now.
-            self._foreign_drive_granted = {
-                drive_id: set(entry.get("members") or []) for drive_id, entry in saved.items()
-            }
+                    changed = True
+            if changed:
+                await self._save_foreign_drives(known, drives, dropped, unknown)
+
+    async def _save_foreign_drives(self, known: dict, drives: dict, dropped: set[str], unknown: set[str]) -> None:
+        """Store the foreign drives' memberships: each drive as meant now, one whose standing is unknown as stored."""
+        saved = {
+            drive_id: {k: v for k, v in entry.items() if k != "leavers" or v}
+            for drive_id, entry in {**known, **{d: e for d, e in drives.items() if d not in unknown}}.items()
+            if drive_id not in self._listed_shared_drive_ids and drive_id not in dropped
+        }
+        if saved != known:
+            await self.drive_delta_sync_point.update_sync_point(
+                FOREIGN_SHARED_DRIVES_SYNC_POINT_KEY, {"drives": json.dumps(saved, sort_keys=True)}
+            )
 
     async def _drop_leaver_grants(self, drive_id: str, email: str) -> None:
         """Remove a leaver's own grants from a foreign drive's files.
@@ -7236,6 +7260,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         if group is None or not getattr(group, "id", None):
             return
         shared_with_me = await processor.get_record_group_by_external_id(self.connector_id, f"0S:{email}")
+        # A leaver still synced is asked whether they open each file: a share of their own on it (below a limited
+        # folder, say) keeps their grant. One no longer synced cannot be asked, and reads nothing here any more.
+        leaver = next((u for u in self.synced_users if u.is_active and (u.email or "").lower() == email), None)
+        sources: dict[str, GoogleDriveDataSource] = {}
         after_key: str | None = None
         while True:
             # Trashed ones too: restored, they would come back still granting the leaver.
@@ -7247,6 +7275,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 raise RuntimeError(f"The records of shared drive {drive_id} could not be listed")
             for record in page:
                 if shared_with_me is not None and await processor.record_in_group(record.id, shared_with_me.id):
+                    continue
+                if leaver is not None and await self._file_state_for(record, leaver, sources) != "unable":
                     continue
                 await processor.delete_permission_from_record(record.id, email, self.connector_id)
             if len(page) < FOREIGN_DRIVE_PAGE_SIZE:
@@ -7751,9 +7781,10 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         return synced_drive_ids
 
-    async def _get_users_to_sync(self, users: List[AppUser]) -> List[AppUser]:
-        """Narrow the workspace's users down to those active in this deployment."""
-        all_active_users = await self.data_entities_processor.get_all_active_users()
+    async def _get_users_to_sync(self, users: List[AppUser], *, raise_on_error: bool = False) -> List[AppUser]:
+        """Narrow the workspace's users down to those active in this deployment. ``raise_on_error`` raises a failed
+        read instead of answering that nobody is active."""
+        all_active_users = await self.data_entities_processor.get_all_active_users(raise_on_error=raise_on_error)
         active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
         # A suspended or archived account cannot be impersonated, and reads nothing at the source.

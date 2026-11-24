@@ -83,6 +83,8 @@ async def test_a_foreign_drive_and_its_people_stay_in_the_org_that_reaches_it(ba
         # Org A: the same drive as a foreign drive its user reaches, through the connector's own write.
         connector_a = SimpleNamespace(
             data_entities_processor=proc_a, connector_name=Connectors.GOOGLE_DRIVE_WORKSPACE, connector_id=conn_a,
+            # The leaver is no longer synced, so nobody is asked whether they open a file: their grants go.
+            synced_users=[],
         )
         await GoogleDriveTeamConnector._write_foreign_drive(connector_a, drive_id, {"name": "Partner drive", "members": [shared]})
         file_a = _file(ORG, conn_a, drive_id, file_id, shared_with=[SourcePerson(email=shared), SourcePerson(email=only_b)])
@@ -125,9 +127,14 @@ async def test_a_foreign_drive_and_its_people_stay_in_the_org_that_reaches_it(ba
         assert await _to(backend, f"{GROUPS}/{group_a.id}", CollectionNames.PERMISSION.value) == set()
         assert f"{USERS}/{user_a}" not in await _to(backend, f"{RECORDS}/{kept_a.id}", CollectionNames.PERMISSION.value)
 
-        # Each org's drive sits under that org's own connector.
-        assert f"{CollectionNames.APPS.value}/{conn_b}" not in await _from(backend, f"{GROUPS}/{group_a.id}", CollectionNames.BELONGS_TO.value)
-        assert f"{CollectionNames.APPS.value}/{conn_a}" not in await _from(backend, f"{GROUPS}/{group_b.id}", CollectionNames.BELONGS_TO.value)
+        # Each org's drive belongs to that org's own connector and org, and to nothing of the other's.
+        apps, orgs = CollectionNames.APPS.value, CollectionNames.ORGS.value
+        for group, own_app, own_org, other_app, other_org in (
+            (group_a, conn_a, ORG, conn_b, org_b), (group_b, conn_b, org_b, conn_a, ORG),
+        ):
+            owners = await _from(backend, f"{GROUPS}/{group.id}", CollectionNames.BELONGS_TO.value)
+            assert {f"{apps}/{own_app}", f"{orgs}/{own_org}"} <= owners, owners
+            assert not owners & {f"{apps}/{other_app}", f"{orgs}/{other_org}"}, owners
 
         # Org B comes out as it wrote itself: its user still holds its drive, and no edge reaches org A.
         assert await _to(backend, f"{GROUPS}/{group_b.id}", CollectionNames.PERMISSION.value) == {f"{USERS}/{user_b}"}
