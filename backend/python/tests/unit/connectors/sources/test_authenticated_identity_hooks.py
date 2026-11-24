@@ -746,7 +746,7 @@ GRANT_KEY = "/services/connectors/connector-1/authenticatorGrant"
 def _with_grant_record(conn: MagicMock, kv: _Kv) -> MagicMock:
     conn.config_service = kv
     for name in (
-        "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_may_list",
+        "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_holds",
         "_read_grant_record", "confirm_authenticator_withdrawn",
     ):
         setattr(conn, name, partial(getattr(BaseConnector, name), conn))
@@ -976,7 +976,50 @@ class TestSlackWorkspace:
 
         assert kv.values[GRANT_KEY]["granted"] is True
 
-    async def test_an_unreadable_earlier_grant_withdraws_and_stores_nothing(self) -> None:
+    async def test_a_failed_withdrawal_is_retried_by_an_incomplete_listing_that_omits_the_authenticator(self) -> None:
+        # The processor wrote the marker when the first listing named them.
+        kv = _Kv({
+            GRANT_KEY: {"email": "admin@corp.com", "granted": True},
+            "/services/connectors/connector-1/listedAuthenticators": ["admin-key"],
+        })
+        first = self._conn(authenticator="admin@corp.com", kv=kv)
+        first._listed_user_emails = {"admin@corp.com"}
+        first.data_entities_processor.remove_user_grant_from_record_groups.side_effect = RuntimeError("graph down")
+        await SlackConnector._authenticator_grant(first)
+        await SlackConnector._withdraw_withheld_authenticator(first, ["C1"])
+        await SlackConnector._confirm_authenticator_withdrawal(first)
+        assert kv.values[GRANT_KEY]["granted"] is True
+
+        second = self._conn(authenticator="admin@corp.com", kv=kv)
+        second._users_listing_cut = True
+        assert await SlackConnector._authenticator_grant(second) is None
+        assert second._withheld_authenticator_email == "admin@corp.com"
+        await SlackConnector._withdraw_withheld_authenticator(second, ["C1"])
+        await SlackConnector._confirm_authenticator_withdrawal(second)
+
+        second.data_entities_processor.remove_user_grant_from_record_groups.assert_awaited_once_with(
+            "connector-1", ["C1"], "admin@corp.com",
+        )
+        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
+
+    async def test_a_later_sync_that_reads_the_given_grant_withdraws_it_where_members_are_unknown(self) -> None:
+        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}}, error=RuntimeError("kv down"))
+        first = self._conn(authenticator="admin@corp.com", kv=kv)
+        first._listed_user_emails = {"admin@corp.com"}
+        await SlackConnector._authenticator_grant(first)
+        assert first._withheld_authenticator_email is None
+
+        kv.error = None
+        second = self._conn(authenticator="admin@corp.com", kv=kv)
+        second._listed_user_emails = {"admin@corp.com"}
+        await SlackConnector._authenticator_grant(second)
+        await SlackConnector._withdraw_withheld_authenticator(second, ["C1"])
+        await SlackConnector._confirm_authenticator_withdrawal(second)
+
+        second.data_entities_processor.remove_user_grant_from_record_groups.assert_awaited_once()
+        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": False}
+
+    async def test_an_unreadable_grant_record_withdraws_nothing_and_stores_nothing(self) -> None:
         kv = _Kv(error=RuntimeError("kv down"))
         conn = self._conn(authenticator="admin@corp.com", kv=kv)
         conn._listed_user_emails = {"admin@corp.com"}
@@ -1173,6 +1216,18 @@ class TestConfluenceDataCenter:
 
         conn._get_fresh_datasource.return_value.get_user_v1.assert_awaited_once_with(username="dev")
         assert _registered(conn) == ("dev@corp.com", "8a7f808a")
+
+    @pytest.mark.parametrize("failure", ["refused", "raises"])
+    async def test_a_failed_identity_read_still_removes_a_link_the_listing_rules_out(self, failure: str) -> None:
+        conn = self._conn(_json_response(401, {}))
+        if failure == "raises":
+            conn._get_fresh_datasource.return_value.get_current_user_v1.side_effect = OSError("reset")
+        conn.drop_authenticator_link_if_listed = AsyncMock()
+
+        await ConfluenceDataCenterConnector._register_authenticated_identity(conn)
+
+        conn.register_authenticated_source_user.assert_not_awaited()
+        conn.drop_authenticator_link_if_listed.assert_awaited_once_with({"dev@corp.com"})
 
 
 class TestJiraCloud:
@@ -2127,16 +2182,15 @@ class TestSlackUserListing:
         assert self._complete(conn)
         assert conn._listed_user_emails == {"a@corp.com", "b@corp.com"}
 
-    async def test_a_person_without_an_email_makes_the_listing_incomplete(self) -> None:
-        conn = self._conn([self._page([_slack_member("U1", "a@corp.com"), _slack_member("U2")])])
+    @pytest.mark.parametrize("deleted", [False, True])
+    async def test_a_person_without_an_email_makes_the_listing_incomplete(self, deleted: bool) -> None:
+        conn = self._conn([self._page([_slack_member("U1", "a@corp.com"), _slack_member("U2", deleted=deleted)])])
 
         await SlackConnector._sync_users(conn)
 
         assert not self._complete(conn)
 
-    @pytest.mark.parametrize("member", [
-        _slack_member("USLACKBOT"), _slack_member("U3", deleted=True), _slack_member("B1", is_bot=True),
-    ], ids=["slackbot", "deleted", "bot"])
+    @pytest.mark.parametrize("member", [_slack_member("USLACKBOT"), _slack_member("B1", is_bot=True)], ids=["slackbot", "bot"])
     async def test_rows_that_cannot_be_the_authenticator_keep_the_listing_complete(self, member: dict) -> None:
         conn = self._conn([self._page([_slack_member("U1", "a@corp.com"), member])])
 

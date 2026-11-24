@@ -351,7 +351,7 @@ def _with_creator_gate(c: MagicMock, kv: _Kv | None = None) -> MagicMock:
     c.creator_user_permission = partial(GitLabConnector.creator_user_permission, c)
     c.creator_token_view_permission = partial(GitLabConnector.creator_token_view_permission, c)
     for name in (
-        "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_may_list",
+        "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_holds",
         "_read_grant_record", "confirm_authenticator_withdrawn",
     ):
         setattr(c, name, partial(getattr(BaseConnector, name), c))

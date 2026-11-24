@@ -35,8 +35,8 @@ CHANNELS = (GENERAL, SECRET, PARTNERS)
 def workspace(slack: SlackWorkspace) -> SlackWorkspace:
     standard_workspace(slack)
     # A person with no email may be the authenticator, which leaves every user list incomplete;
-    # here they have left, so the list is complete and the authenticator can be judged.
-    _user(slack, NOEMAIL)["deleted"] = True
+    # here they are not in the workspace, so the list is complete and the authenticator can be judged.
+    slack.users.remove(_user(slack, NOEMAIL))
     return slack
 
 
@@ -130,7 +130,7 @@ class TestBotToken:
     async def test_a_person_without_an_email_leaves_an_unlisted_authenticator_without_a_new_grant(
         self, workspace, store, checkpoints,
     ) -> None:
-        _user(workspace, NOEMAIL)["deleted"] = False
+        workspace.add_user(NOEMAIL, None, "Nomail")
         store.authenticator_email = ADMIN
         connector, _ = await workspace_connector(store, checkpoints)
 

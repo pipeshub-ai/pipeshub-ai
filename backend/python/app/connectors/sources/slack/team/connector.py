@@ -1015,7 +1015,7 @@ class SlackConnector(BaseConnector):
                 if not email and not is_bot:
                     self.logger.debug(f"Skipping {m.get('name')}: no email")
                     skipped += 1
-                    if uid != SLACKBOT_USER_ID and not m.get("deleted"):
+                    if uid != SLACKBOT_USER_ID:
                         # A person whose email Slack did not show may be the authenticator.
                         self._users_listing_cut = True
                     continue

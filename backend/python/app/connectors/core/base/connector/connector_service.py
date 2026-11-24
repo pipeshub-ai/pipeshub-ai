@@ -883,7 +883,11 @@ class BaseConnector(ABC):
         caller takes it back where the source cannot be read, and only then stores "no grant"
         (confirm_authenticator_withdrawn), so a removal that fails is tried again next sync. A record
         that cannot be read withdraws nothing and stores nothing: the next sync reads it again. A
-        grant is given only once it is stored, so a later sync always knows what to take back."""
+        grant is given only once it is stored, so a later sync always knows what to take back.
+
+        A listing that does not name them still never gives the token's view to an authenticator
+        the listed-authenticators marker holds (a listing named them once), and a grant stored for
+        them is still owed back, so a withdrawal that failed is retried on any later sync."""
         if listed:
             try:
                 stored = await self._read_grant_record()
@@ -898,6 +902,20 @@ class BaseConnector(ABC):
                 return AuthenticatorGrant(granted=False, withdraw=True)
             await self.remember_authenticator_grant(email, granted=False)
             return AuthenticatorGrant(granted=False)
+        held = await self._marker_holds(email)
+        if held is None:
+            return AuthenticatorGrant(granted=False)
+        if held:
+            try:
+                stored = await self._read_grant_record()
+            except Exception as e:
+                self.logger.warning(
+                    "Connector %s: could not read the authenticator's last grant; nothing withdrawn: %s",
+                    self.connector_id, e,
+                )
+                return AuthenticatorGrant(granted=False)
+            owed = bool(stored and stored["granted"] and stored["email"] == email.strip().lower())
+            return AuthenticatorGrant(granted=False, withdraw=owed)
         if listing_complete:
             return AuthenticatorGrant(granted=await self.remember_authenticator_grant(email, granted=True))
         return AuthenticatorGrant(granted=await self.authenticator_grant_kept(email))
@@ -937,10 +955,10 @@ class BaseConnector(ABC):
             # Another authenticator's record: replaced, so a later switch back cannot revive it.
             await self.remember_authenticator_grant(email, granted=False)
             return False
-        return stored["granted"] and not await self._marker_may_list(email)
+        return stored["granted"] and await self._marker_holds(email) is False
 
-    async def _marker_may_list(self, email: str) -> bool:
-        """Whether the listed-authenticators marker holds this authenticator, or cannot be checked."""
+    async def _marker_holds(self, email: str) -> bool | None:
+        """Whether the listed-authenticators marker holds this authenticator; None when it cannot be checked."""
         try:
             keys = listed_authenticator_keys(await self.config_service.get_config(
                 LISTED_AUTHENTICATORS_KEY.format(connector_id=self.connector_id), use_cache=False, raise_on_error=True,
@@ -953,7 +971,7 @@ class BaseConnector(ABC):
                 "Connector %s: could not check the listed-authenticators marker; granting nothing new: %s",
                 self.connector_id, e,
             )
-            return True
+            return None
         if (user.get("email") or "").strip().lower() != email.strip().lower():
             return False
         return (user.get("_key") or user.get("id")) in keys
@@ -991,13 +1009,14 @@ class BaseConnector(ABC):
             )
         return False
 
-    async def drop_authenticator_link_if_listed(self) -> None:
+    async def drop_authenticator_link_if_listed(self, extra_present_emails: Collection[str] = ()) -> None:
         """Remove the authenticator's link when the connector lists them as a source user.
         Runs before a sync reads anything, so a sync that fails early cannot leave a stale
-        link. Never links and never aborts the sync."""
+        link; ``extra_present_emails`` (the emails a listing read) lets a sync that cannot read
+        its own account still remove it. Never links and never aborts the sync."""
         if self.scope == ConnectorScope.PERSONAL.value:
             return
-        await self._link_authenticator(None, None, may_link=False)
+        await self._link_authenticator(None, None, may_link=False, extra_present_emails=extra_present_emails)
 
     async def _link_authenticator(
         self,

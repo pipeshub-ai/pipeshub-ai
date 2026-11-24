@@ -584,6 +584,16 @@ class TestRegisterAuthenticatedSourceUser:
             may_link=False, check_listing=True, extra_present_emails=(),
         )
 
+    async def test_removal_pass_can_carry_the_listed_emails(self) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector()
+        await BaseConnector.drop_authenticator_link_if_listed(conn, {"a@x.com"})
+        self._processor_call(conn).assert_awaited_once_with(
+            CONNECTOR, CREATED_BY, None, None, None,
+            may_link=False, check_listing=True, extra_present_emails={"a@x.com"},
+        )
+
     @pytest.mark.parametrize(("scope", "created_by"), [("personal", CREATED_BY), ("team", None)])
     async def test_removal_pass_is_skipped_when_there_is_nothing_to_drop(self, scope, created_by) -> None:
         from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -645,7 +655,7 @@ class TestAuthenticatorGrantRecord:
             return_value={"_key": "creator-key", "email": "admin@corp.com"} if authenticator is None else authenticator,
             side_effect=authenticator_error,
         ))
-        for name in ("remember_authenticator_grant", "authenticator_grant_kept", "_marker_may_list",
+        for name in ("remember_authenticator_grant", "authenticator_grant_kept", "_marker_holds",
                      "_read_grant_record"):
             setattr(conn, name, partial(getattr(BaseConnector, name), conn))
         return conn
@@ -750,6 +760,30 @@ class TestAuthenticatorGrantRecord:
         conn.logger.warning.assert_called_once()
         conn.config_service.set_config.assert_not_awaited()
         conn.config_service.delete_config.assert_not_awaited()
+
+    @pytest.mark.parametrize("complete", [True, False])
+    async def test_a_withdrawal_owed_to_an_authenticator_the_marker_holds_is_retried_when_a_listing_omits_them(
+        self, complete: bool,
+    ) -> None:
+        conn = self._connector({"email": "admin@corp.com", "granted": True}, marker=["creator-key"])
+
+        decision = await self._decide(conn, complete=complete, listed=False)
+
+        assert decision == AuthenticatorGrant(granted=False, withdraw=True)
+        conn.config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.parametrize("stored", [None, {"email": "admin@corp.com", "granted": False}])
+    async def test_a_complete_listing_never_grants_an_authenticator_the_marker_holds(self, stored: object) -> None:
+        conn = self._connector(stored, marker=["creator-key"])
+
+        assert await self._decide(conn, complete=True, listed=False) == AuthenticatorGrant(granted=False)
+        conn.config_service.set_config.assert_not_awaited()
+
+    async def test_a_marker_that_cannot_be_read_grants_and_withdraws_nothing(self) -> None:
+        conn = self._connector({"email": "admin@corp.com", "granted": True}, marker_error=RuntimeError("kv down"))
+
+        assert await self._decide(conn, complete=True, listed=False) == AuthenticatorGrant(granted=False)
+        conn.config_service.set_config.assert_not_awaited()
 
     async def test_a_complete_listing_without_the_authenticator_grants_and_stores_it(self) -> None:
         conn = self._connector()
