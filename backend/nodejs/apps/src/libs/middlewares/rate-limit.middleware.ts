@@ -6,6 +6,7 @@ import { TokenScopes } from '../enums/token-scopes.enum';
 import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
 import { isMcpRelay } from './mcp-relay';
+import { pathForLog } from './access-log.middleware';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
 
 /**
@@ -129,7 +130,7 @@ export function createGlobalRateLimiter(
 
       logger.warn('Rate limit exceeded', {
         key: rateLimitKey,
-        path: req.path,
+        path: pathForLog(req),
         method: req.method,
         ip: getClientIp(req),
         retryAfter,
@@ -231,7 +232,7 @@ export function createKeyedRateLimiter(
       const retryAfter = res.getHeader('Retry-After');
       logger.warn('Rate limit exceeded', {
         key: keyFor(req),
-        path: req.path,
+        path: pathForLog(req),
         method: req.method,
         ip: getClientIp(req),
         retryAfter,
