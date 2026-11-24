@@ -538,8 +538,11 @@ class TestLifespan:
         started = asyncio.Event()
         cancelled: list[bool] = []
 
-        async def _loop(config_service: object, _logger: object) -> None:
+        org_lists: list[list[str]] = []
+
+        async def _loop(config_service: object, _logger: object, *, org_ids) -> None:  # noqa: ANN001
             assert config_service is mock_config_service
+            org_lists.append(await org_ids())       # the recipients of a signed alert: the graph's orgs
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -566,6 +569,7 @@ class TestLifespan:
 
         assert task.done()
         assert cancelled == [True]
+        assert org_lists == [[]]
 
     async def test_startup_graph_provider_fallback(self):
         """When _graph_provider is not set, lifespan falls back to await graph_provider()."""
