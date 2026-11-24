@@ -655,18 +655,26 @@ class KernelDB:
             return LockTimeout(str(e))
         if prologue and state == "55000":
             return ProfileEpochMismatch(str(e))
-        lost = isinstance(e, asyncpg.InterfaceError) or (
+        lost = isinstance(e, asyncpg.InterfaceError) or _broken_protocol(e, tx._con) or (
             not isinstance(e, TimeoutError) and isinstance(e, (OSError, asyncio.IncompleteReadError))
-        ) or lost_state(state) or (
-            # a server that ends the backend while a statement starts: asyncpg reports its own state clash on a connection now closed
-            isinstance(e, asyncpg.InternalClientError) and tx._con is not None and tx._con.is_closed()
-        )
+        ) or lost_state(state)
         if lost:
             safe = not tx.commit_sent and (tx.idempotent or tx.completed == 0)
             return ConnectionLost(str(e) or type(e).__name__, retry_safe=safe)
         if prologue:
             return PrologueFailed(f"{type(e).__name__}: {e}")
         return e
+
+
+def _broken_protocol(e: Exception, con: asyncpg.Connection | None) -> bool:
+    """An asyncpg InternalClientError that means the connection is gone: its protocol state is broken ("failed", another operation in
+    progress, not connected), as a connection the server or the pooler dropped mid-operation leaves it, or the connection is already
+    closed (a backend the server ended as a statement started). asyncpg raises the same type for a missing codec on a live connection,
+    which is a bug and not a lost connection, so either the messages of its protocol state checks (protocol/coreproto.pyx
+    ``_set_state``, ``_ensure_connected``) or a closed connection is required."""
+    if not isinstance(e, asyncpg.InternalClientError):
+        return False
+    return str(e).startswith(("cannot switch to state", "not connected")) or (con is not None and con.is_closed())
 
 
 def _class_of_state(state: str) -> str:

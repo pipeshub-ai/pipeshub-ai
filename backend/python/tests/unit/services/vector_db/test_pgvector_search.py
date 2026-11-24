@@ -539,10 +539,12 @@ async def test_a_failed_connector_check_keeps_the_arms_and_only_a_statement_time
     import asyncio
 
     from app.core import org_context
-    from app.core.db import DbTimeout, PoolTimeout
+    from app.core.db import ConnectionLost, DbTimeout, PoolTimeout
 
     t = dataclasses.replace(T, connector_ttl_s=0.0, connector_fail_ttl_s=300.0)
-    for fail, again in ((PoolTimeout("no pooled connection"), True), (DbTimeout("canceling statement due to statement timeout"), False)):
+    # a connection the server dropped (a restart, a failover) says nothing about the org's size either: asked again soon, as a busy pool is
+    for fail, again in ((PoolTimeout("no pooled connection"), True), (ConnectionLost("connection was closed in the middle of operation", retry_safe=True), True),
+                        (DbTimeout("canceling statement due to statement timeout"), False)):
         db = _SlowPoolDb(0.0, fail=fail)
         sizer = dense.Sizer(db, t)
         with org_context.bind(org_context.OrgContext(ORG, None, "service", "t", "-")):
