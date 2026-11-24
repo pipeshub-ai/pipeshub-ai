@@ -196,7 +196,7 @@ Create `servers/<type_id>.py`, starting from the closest existing entry:
 ```python
 """Acme MCP server template — official remote server (Streamable HTTP), OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import MCPAuthMode, MCPCategory, MCPServerTemplate, MCPTransport
 
 
 @mcp_server(
@@ -217,6 +217,12 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         supports_dcr=True,
         documentation_url="https://docs.acme.com/mcp",
         tags=["issues", "project-management"],
+        category=MCPCategory.PROJECTS,
+        capabilities=[
+            "Create and update tickets",
+            "Plan projects",
+            "Comment on tickets",
+        ],
     )
 )
 class AcmeMCPServer:
@@ -248,6 +254,9 @@ That is all the registration there is: no list to edit, and no route or Node cha
 | `documentation_url` | A link shown in the setup and sign-in dialogs. |
 | `auth_hint` | `label`, `placeholder` and `help_text` for the API token field. The UI doesn't show it for OAuth sign-in. |
 | `tags` | Words catalog search matches. |
+| `category` | The one `MCPCategory` the catalog lists it under, so people can browse by kind of tool. |
+| `capabilities` | What people get done with it, in their own words: two to four short jobs such as "Schedule meetings" or "Manage support tickets", capitalized, no full stop, 60 characters at most. Search ranks by them (`catalog.py`) and the catalog shows them, so write the job someone would type, not the API's name for it. |
+| `read_only` | Set when every tool only looks things up. |
 | `replaced_by` | The `type_id` of the entry that replaces this one. A replaced entry makes no new instances; the ones already made keep working. |
 
 #### Rules a template has to follow
@@ -259,6 +268,7 @@ That is all the registration there is: no list to edit, and no route or Node cha
 - **Pin STDIO packages to an exact version**, such as `exa-mcp-server@3.4.1`, never `@latest`. `npx -y` and `uvx` run whatever was published last.
 - **Env var names must pass `stdio_policy.is_allowed_env_name`.** That means upper case, and not a name that changes how a process loads (`PATH`, `HOME`, `LD_*`, `NODE_*`, `NPM_CONFIG_*`, `PYTHON*`, `UV_*`, …). A name that fails is dropped at launch without an error.
 - **The test checks these** (`test_auto_discover_templates_are_well_formed`): `default_auth_mode` is in `supported_auth_modes`; an HTTP entry has `default_url` unless `url_editable`; a STDIO entry has `command`; a STDIO entry whose default is `API_TOKEN` lists `required_env`; an OAuth entry has `authorization_url` and `token_url` unless `url_editable` (those come from discovery).
+- **Category and capabilities.** Every entry in use has a `category` and at least two `capabilities` (`test_catalog_search.py` checks). Search a few jobs the server is for with `rank_templates` and check it comes up; add a synonym to `catalog.SYNONYMS` when people would use a word the capabilities don't.
 - **Say where each fact came from**, in a comment such as "Confirmed live via …", as the existing templates do, so a later reader can check it again.
 - **No per-server code.** Routes, the client and sign-in never branch on a `type_id`. Anything specific to one server is a template field. If a server needs something no field covers, that is a change to the framework (`models.py` and everything that reads it): raise it in the issue before writing it.
 
