@@ -388,21 +388,25 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
     if vrids:
         seen_ids = {r["id"] for r in rows}
         found = None
-        uniq = list(dict.fromkeys(vrids))      # a record has one virtual record id, so the pages hold disjoint records
+        uniq = list(dict.fromkeys(vrids))
         if all(0 < len(v) <= 200 for v in uniq):      # the vetted read of graph_0004, a page of ids per call: the deleted and placeholder records are dropped here
             # The statement below cannot use the key's index under row security (`->>` is not leakproof) and reads the whole org at any size;
             # the vetted read probes the index once per id, so a batch of any size costs its ids.
             asked = set(node_ids)
             found = []
+            taken: set[str] = set()
             for k in range(0, len(uniq), _VRID_IDS):
                 raw = await tx.fetch(_VRID_SQL, uniq[k:k + _VRID_IDS])
                 if len(raw) >= _VRID_PAGE:
                     found = None
                     break
                 for r in raw:
+                    if r["node_id"] in taken:      # a record whose virtual record id moved between two pages (read committed) matches both
+                        continue
                     d = json.loads(r["doc"]) if isinstance(r["doc"], str) else r["doc"]
                     if not _pgbool(d.get("isDeleted")) and (not _pgbool(d.get("isPlaceholder")) or r["node_id"] in asked):
                         found.append({"coll": "records", "id": r["node_id"], "doc": r["doc"], "app_id": r["app_id"]})      # PostgreSQL's text of the id, as the other arms compare it
+                        taken.add(r["node_id"])
         if found is None:      # shortcut: reads the whole org; only for an id over 200 characters or a page reaching 5000 records, split the page if those occur
             found = await tx.fetch("""/* pipeshub:graph.access_targets_vrid */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
             FROM graph.nodes t
