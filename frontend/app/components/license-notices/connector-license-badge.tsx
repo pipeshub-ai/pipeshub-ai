@@ -20,11 +20,16 @@ export function ConnectorLicenseBadge({ connectorId }: { connectorId: string | u
   const day = (iso: string | null | undefined) => formatDay(iso, i18n.language);
   const grace = notice.upgradeGrace;
   const date = day(grace?.endsAt);
-  // A key is installed but starts after the grace ends (the server leaves a key that takes over in time unmarked).
+  // A key dated ahead. The server marks the connector only if the key starts after the grace ends, or if it
+  // starts in time but does not turn permission sync on.
+  const keyLater = grace?.key === 'startsLater' && grace.keyDate !== null && Date.parse(grace.keyDate) > Date.parse(grace.endsAt);
   const affectedTooltip =
-    grace?.key === 'startsLater'
-      ? t('licenseNotices.connector.affectedTooltipKeyLater', { start: day(grace.keyDate), date })
-      : t('licenseNotices.connector.affectedTooltip', { date });
+    grace?.key !== 'startsLater'
+      ? t('licenseNotices.connector.affectedTooltip', { date })
+      : t(keyLater ? 'licenseNotices.connector.affectedTooltipKeyLater' : 'licenseNotices.connector.affectedTooltipKeyWithoutSync', {
+          start: day(grace.keyDate),
+          date,
+        });
   const [label, tooltip, color, icon] =
     item.state === 'affected'
       ? [t('licenseNotices.connector.affected'), affectedTooltip, 'amber', 'schedule']
