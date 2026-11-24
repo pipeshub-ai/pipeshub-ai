@@ -172,21 +172,30 @@ export function spawnDetached<T>(fn: () => T): T {
 }
 
 // --- shadow / enforce -------------------------------------------------------
-// `shadow` (default) logs and counts an access with no context, or with one for a
-// different org, and lets it through. `enforce` fails closed. Flip per deployment
-// with ORG_CONTEXT_MODE once the shadow counters stay at zero.
+// `enforce` (default) fails closed on an access with no context, or with one for a
+// different org. `shadow` is the escape hatch: it logs and counts such an access
+// and lets it through, with a warning that the mode is on.
 
 /** pipeshub_org_context_violations_total{kind,site} */
 export const orgContextViolations = new Map<string, number>();
 const logged = new Set<string>();
 
-/** true in enforce mode. An unknown ORG_CONTEXT_MODE throws (never silently shadow). */
+let shadowWarned = false;
+
+/** true in enforce mode (the default). An unknown ORG_CONTEXT_MODE throws (never silently shadow). */
 export function validateMode(): boolean {
   const mode =
-    (process.env.ORG_CONTEXT_MODE ?? 'shadow').trim().toLowerCase() || 'shadow';
+    (process.env.ORG_CONTEXT_MODE ?? '').trim().toLowerCase() || 'enforce';
   if (mode !== 'shadow' && mode !== 'enforce') {
     throw new Error(
       `ORG_CONTEXT_MODE must be 'shadow' or 'enforce', got '${mode}'`,
+    );
+  }
+  if (mode === 'shadow' && !shadowWarned) {
+    shadowWarned = true;
+    Logger.getInstance().warn(
+      'ORG_CONTEXT_MODE=shadow: an org-scoped access with no org or one of another org is logged and allowed, not refused',
+      { component: 'OrgContext' },
     );
   }
   return mode === 'enforce';
@@ -204,8 +213,8 @@ function callerSite(): string {
 
 /**
  * Check an explicit org argument against the ambient context at an org-scoped choke point.
- * Returns the explicit org (or the ambient one when none was given). Shadow mode never
- * throws; the first violation per (kind, site) is logged with the call site, every one is counted.
+ * Returns the explicit org (or the ambient one when none was given). Enforce mode throws;
+ * shadow mode never does; the first violation per (kind, site) is logged with the call site, every one is counted.
  */
 export function ambientOrg(
   explicitOrgId: string | null | undefined,

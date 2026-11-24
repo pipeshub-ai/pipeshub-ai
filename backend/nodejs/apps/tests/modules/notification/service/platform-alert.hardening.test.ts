@@ -336,10 +336,16 @@ describe('platform alerts under envelope enforcement', () => {
     }
   });
 
-  it('are delivered by default and in shadow mode', () => {
+  it('are delivered by default and with signing in shadow mode', () => {
     expect(platformAlertsBlockedByEnvelope()).to.equal(null);
     process.env.ENVELOPE_SIGN = 'true';
+    process.env.ORG_CONTEXT_MODE = 'shadow';
     expect(platformAlertsBlockedByEnvelope()).to.equal(null);
+  });
+
+  it('are named as dropped when signing is on and the mode is left at its default (enforce)', () => {
+    process.env.ENVELOPE_SIGN = 'true';
+    expect(platformAlertsBlockedByEnvelope()).to.contain('ORG_CONTEXT_MODE=enforce');
   });
 
   it('are named as dropped when a signed context is required', () => {

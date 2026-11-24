@@ -178,6 +178,10 @@ services:
       # Key-value store: "redis" (default, no extra container) | "etcd"
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
 
+      # Org binding of every request, message and job: empty or "enforce" refuses work with no org or another org's;
+      # "shadow" only logs and counts it (an escape hatch, warned at start; docs/org-context.md)
+      - ORG_CONTEXT_MODE=${ORG_CONTEXT_MODE:-}
+
       # etcd (active when KV_STORE_TYPE=etcd)
       - ETCD_URL=http://etcd:2379
       - ETCD_HOST=etcd
@@ -817,7 +821,8 @@ services:
     environment:
       - PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:${PG_MIGRATE_PASSWORD:-}@postgres:5432/pipeshub
       - PG_MIGRATE_LOCK_TIMEOUT_S=${PG_MIGRATE_LOCK_TIMEOUT_S:-600}
-      # key-value access by prefix per service role: shadow (logs what enforce would refuse) or enforce; empty keeps the stored mode
+      # key-value access by prefix per service role: enforce (the default since platform_0013) or shadow (logs what enforce would
+      # refuse, warned on every run); empty keeps the stored mode
       - PG_KV_ACCESS=${PG_KV_ACCESS:-}
       # maintenance_work_mem (MB) of the session that builds new indexes before the upgrade; empty keeps the server's
       - PG_INDEX_BUILD_MEMORY_MB=${PG_INDEX_BUILD_MEMORY_MB:-}
