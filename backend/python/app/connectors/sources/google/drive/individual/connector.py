@@ -623,10 +623,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                         )
                 elif grants is not None:
                     file_record.shared_with = await self._shared_with(metadata, grants, people.owners)
-            except HttpError as e:
+            except Exception as e:
                 if not sharing_optional:
                     raise
-                self.logger.info(f"Sharing of file {file_id} not read ({e.resp.status}); its stored shares are kept")
+                self.logger.info(f"Sharing of file {file_id} not read ({type(e).__name__}); its stored shares are kept")
                 file_record.shared_with = None
             set_drive_people(file_record, people)
 

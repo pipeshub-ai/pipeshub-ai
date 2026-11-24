@@ -1722,50 +1722,6 @@ class TestForeignSharedDrive:
         connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
         connector.data_entities_processor.add_permission_to_record.assert_awaited_once()
 
-    async def test_below_a_folder_not_stored_yet_the_viewer_keeps_their_own_grant(self, connector) -> None:
-        self._store(connector)
-        await connector._note_foreign_drives_reached(self._user("viewer@example.com"), [self.FOREIGN])
-        item = MagicMock(id="rec-1", external_record_group_id="0APG", parent_external_record_id="folder-new")
-        metadata = self._viewer_item(connector, parents=["folder-new"], records={"file-1": item})
-        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
-
-        await connector._process_drive_item(
-            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
-        )
-
-        connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
-
-    async def test_a_viewer_keeps_their_own_grant_on_a_foreign_drives_file(self, connector) -> None:
-        """It is exactly the access Google gives them; it goes when they leave the drive (`_drop_leaver_grants`)."""
-        self._store(connector)
-        await connector._note_foreign_drives_reached(self._user("viewer@example.com"), [self.FOREIGN])
-        folder = MagicMock(id="rec-F", parent_external_record_id=None)
-        item = MagicMock(id="rec-1", external_record_group_id="0APG", parent_external_record_id="folder-F")
-        metadata = self._viewer_item(connector, parents=["folder-F"], records={"file-1": item, "folder-F": folder})
-        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
-
-        await connector._process_drive_item(
-            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
-        )
-
-        connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
-        connector.data_entities_processor.add_permission_to_record.assert_awaited_once()
-
-    async def test_a_viewer_whose_group_grant_was_not_written_keeps_their_own_grant(self, connector) -> None:
-        self._store(connector)
-        connector.data_entities_processor.on_new_record_groups = AsyncMock(side_effect=RuntimeError("graph down"))
-        connector._sync_ledger = MagicMock()
-        await connector._note_foreign_drives_reached(self._user("viewer@example.com"), [self.FOREIGN])
-        item = MagicMock(id="rec-1", external_record_group_id="0APG", parent_external_record_id=None)
-        metadata = self._viewer_item(connector, parents=["0APG"], records={"file-1": item})
-
-        await connector._process_drive_item(
-            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
-        )
-
-        connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
-        connector.data_entities_processor.add_permission_to_record.assert_awaited_once()
-
     async def test_a_revoked_leaver_is_not_written_back_while_their_file_grants_wait(self, connector) -> None:
         """The group revocation is stored once written; a failed file cleanup is retried, not undone."""
         state = self._store(connector)
@@ -2058,6 +2014,57 @@ class TestForeignSharedDrive:
 
         assert result.record.inherit_permissions is False
         assert [p.email for p in result.new_permissions] == ["viewer@example.com"]
+
+    async def test_a_my_drive_file_shared_with_a_viewer_keeps_its_folder_and_inheritance(self, connector) -> None:
+        """Filed under no group on a grantee's pass, it is not a move: a hidden parent keeps its folder, and the
+        people its owner's folder share reaches keep reaching it."""
+        self._store(connector)
+        item = MagicMock(id="rec-1", external_record_group_id="owner-drive", parent_external_record_id="folder-O",
+                         parent_record_type=RecordType.FILE, record_name="test.txt")
+        metadata = self._viewer_item(connector, parents=["x"], records={"file-1": item})
+        del metadata["parents"]
+        del metadata["driveId"]
+        metadata["owners"] = [{"displayName": "Owner", "emailAddress": "owner@example.com", "permissionId": "p-own"}]
+        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="u1"
+        )
+
+        assert result.record.parent_external_record_id == "folder-O"
+        assert result.record.inherit_permissions is True
+
+    async def test_a_viewer_only_foreign_folder_turning_limited_is_checked_once(self, connector) -> None:
+        """A folder only Viewers wrote has no inherit edge to lose, so the folders known to be limited are stored."""
+        state = self._store(connector)
+        existing = MagicMock(id="rec-F", external_record_group_id="0APG", parent_external_record_id=None)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
+        connector._fetch_permissions = AsyncMock(return_value=([], True, []))
+
+        def folder(limited: bool) -> dict:
+            metadata = _make_file_metadata(file_id="folder-F", mime_type="application/vnd.google-apps.folder",
+                                           parents=["0APG"], owners=[])
+            metadata["driveId"] = "0APG"
+            metadata["inheritedPermissionsDisabled"] = limited
+            return metadata
+
+        async def read(limited: bool) -> None:
+            connector._foreign_limited_folders = set()
+            await connector._process_drive_item(
+                metadata=folder(limited), user_id="u1", user_email="viewer@example.com", drive_id="0APG",
+                is_shared_drive=True,
+            )
+
+        await read(True)
+        assert connector._foreign_limited_folders == {("0APG", "folder-F")}
+        assert json.loads(state["foreign_limited_subtrees"]["known"]) == [["0APG", "folder-F"]]
+        await read(True)
+        assert connector._foreign_limited_folders == set()
+        await read(False)
+        assert json.loads(state["foreign_limited_subtrees"]["known"]) == []
+        await read(True)
+        assert connector._foreign_limited_folders == {("0APG", "folder-F")}
 
     async def test_a_failed_removal_does_not_stop_the_other_members_check(self, connector) -> None:
         state = self._store(connector)
