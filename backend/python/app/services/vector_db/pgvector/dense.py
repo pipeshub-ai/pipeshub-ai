@@ -381,8 +381,8 @@ class Sizer:
         ttl = self._t.connector_ttl_s
         try:
             value = await self._db.run(read, custom_plan=True)
-        except PoolTimeout:
-            value = None                                       # busy, not big: ask again after connector_ttl_s, the arms apply meanwhile
+        except (PoolTimeout, ConnectionLost):
+            value = None                                       # busy or restarting, not big: ask again after connector_ttl_s, the arms apply meanwhile
         except DbError:
             # Too big to check inside the budget: keep the arms applied and do not look again soon, so a large org never pays for a
             # scan of its points every connector_ttl_s.
