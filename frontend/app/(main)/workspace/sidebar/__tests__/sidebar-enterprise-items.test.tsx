@@ -127,6 +127,16 @@ describe('WorkspaceSidebar — Enterprise Edition pages', () => {
 
     expect(screen.queryByText(SECTIONS.security)).toBeNull();
     for (const { label } of LOCKED) expect(screen.queryByText(label)).toBeNull();
+    expect(screen.queryByTestId('enterprise-sidebar-card')).toBeNull();
+    expect(screen.queryByText(en.workspace.enterprise.sidebarCard.title)).toBeNull();
+  });
+
+  it('shows an admin the way to the Enterprise Edition page below the list', () => {
+    renderSidebar();
+
+    const card = screen.getByTestId('enterprise-sidebar-card');
+    // Below every section, so it never pushes a settings link out of place.
+    expect(before(screen.getByText(SECTIONS.help), card)).toBe(true);
   });
 
   it('keeps showing them to an admin whatever the platform flags say', () => {

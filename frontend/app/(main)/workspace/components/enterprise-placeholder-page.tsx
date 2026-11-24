@@ -1,32 +1,16 @@
 'use client';
 
-import { useEffect, useId } from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useId } from 'react';
+import { Link } from '@/lib/navigation';
 import { useTranslation } from 'react-i18next';
 import { Button, Flex, Heading, Text } from '@radix-ui/themes';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
-import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
+import { ENTERPRISE_OVERVIEW_ROUTE, enterpriseContactUrl } from '@/lib/constants/enterprise';
 import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EnterpriseGlimpse, type Glimpse } from './enterprise-glimpse';
-
-const ENTERPRISE_CONTACT_URL = 'https://calendly.com/rishabh-pipeshub/30min';
-
-/**
- * The demo booking link for one Enterprise page. The tags tell sales which page a booking came
- * from; they carry the page's name only, nothing about the person or the organization.
- */
-export function enterpriseContactUrl(feature: string): string {
-  const url = new URL(ENTERPRISE_CONTACT_URL);
-  url.searchParams.set('utm_source', 'pipeshub-oss');
-  url.searchParams.set('utm_medium', 'app');
-  url.searchParams.set('utm_campaign', 'enterprise-edition');
-  url.searchParams.set('utm_content', feature);
-  return url.toString();
-}
+import { useEnterpriseAdminGate } from './use-enterprise-admin-gate';
 
 export interface EnterprisePlaceholderPageProps {
   /** Which Enterprise page this is, as named in the demo link's tags. */
@@ -64,18 +48,9 @@ export function EnterprisePlaceholderPage({
   const { t } = useTranslation();
   const benefitsTitleId = useId();
   const isMobile = useIsMobile();
-  const router = useRouter();
-  const isAdmin = useEnterprisePrompt();
-  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
+  const isAdmin = useEnterpriseAdminGate();
 
-  // Members have no sidebar link here; one who opens the URL is sent away like on other admin pages.
-  useEffect(() => {
-    if (isProfileInitialized && !isAdmin) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
-
-  if (!isProfileInitialized || !isAdmin) {
+  if (!isAdmin) {
     return null;
   }
 
@@ -176,15 +151,20 @@ export function EnterprisePlaceholderPage({
           </Flex>
         )}
 
-        <Button asChild size="2" className="touch-hit" style={{ marginTop: 'var(--space-2)' }}>
-          <a href={enterpriseContactUrl(feature)} target="_blank" rel="noopener noreferrer">
-            {/* The icon is a text ligature; hide it so the link is named by its label alone. */}
-            <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-              <MaterialIcon name="event" size={16} color="currentColor" />
-            </span>
-            {t('workspace.enterprise.contact')}
-          </a>
-        </Button>
+        <Flex align="center" justify="center" gap="3" wrap="wrap" style={{ marginTop: 'var(--space-2)' }}>
+          <Button asChild size="2" className="touch-hit">
+            <a href={enterpriseContactUrl(feature)} target="_blank" rel="noopener noreferrer">
+              {/* The icon is a text ligature; hide it so the link is named by its label alone. */}
+              <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+                <MaterialIcon name="event" size={16} color="currentColor" />
+              </span>
+              {t('workspace.enterprise.contact')}
+            </a>
+          </Button>
+          <Button asChild size="2" variant="outline" color="gray" className="touch-hit">
+            <Link href={`${ENTERPRISE_OVERVIEW_ROUTE}/`}>{t('workspace.enterprise.seeWhatsInEnterprise')}</Link>
+          </Button>
+        </Flex>
 
         {related.length > 0 && (
           <Flex asChild align="center" justify="center" gap="2" wrap="wrap" style={{ marginTop: 'var(--space-2)' }}>

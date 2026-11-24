@@ -2053,6 +2053,69 @@
           "teams": "Přidávejte do skupiny celé týmy i jednotlivé lidi",
           "builtIn": "Začněte s vestavěnými skupinami Admin a Everyone"
         }
+      },
+      "seeWhatsInEnterprise": "Co nabízí edice Enterprise",
+      "sidebarCard": {
+        "title": "Edice Enterprise",
+        "body": "Multitenance, jednotné přihlašování, SCIM, protokoly auditu a další.",
+        "action": "Zobrazit, co obsahuje",
+        "dismiss": "Skrýt kartu edice Enterprise"
+      },
+      "overview": {
+        "currentEdition": "Používáte edici Community",
+        "title": "Edice Enterprise",
+        "subtitle": "Vše, co používáte dnes, a k tomu to, co potřebují větší organizace: více tenantů v jednom nasazení, jednotné přihlašování, automatické zřizování, protokoly auditu a kontrolu nákladů.",
+        "seePreview": "Jak to vypadá",
+        "seePreviewLabel": "Jak vypadá {{name}}",
+        "communityNote": "Edice Community zůstává open source a plně použitelná.",
+        "groups": {
+          "scale": "Škálování",
+          "governance": "Přístup a správa",
+          "security": "Zabezpečení a soulad",
+          "cost": "Náklady a indexování"
+        },
+        "items": {
+          "tenants": {
+            "name": "Multitenance",
+            "description": "Více tenantů v jednom nasazení, každý s vlastními lidmi, konektory a daty."
+          },
+          "scim": {
+            "name": "Zřizování SCIM",
+            "description": "Okta nebo Microsoft Entra ID za vás přidává, aktualizuje a vypíná lidi."
+          },
+          "groups": {
+            "name": "Oprávnění skupin",
+            "description": "Udělte přístup skupině jednou, ne člověku po člověku."
+          },
+          "toolApprovals": {
+            "name": "Schvalování nástrojů v organizaci",
+            "description": "Rozhodněte pro všechny, které nástroje agentů se spustí, nejprve se zeptají, nebo se nespustí nikdy."
+          },
+          "actOnBehalf": {
+            "name": "Jednání jménem osoby",
+            "description": "Nechte servisní účet jednat jako konkrétní kolega, s každým pokusem zaznamenaným."
+          },
+          "peoplesOwnApps": {
+            "name": "Vlastní aplikace a servery lidí",
+            "description": "Kontrolujte a odebírejte aplikace OAuth, akce a servery MCP, které si lidé přidávají sami."
+          },
+          "sso": {
+            "name": "Jednotné přihlašování",
+            "description": "Přihlašujte lidi přes Okta, OneLogin nebo jiného poskytovatele SAML 2.0 či OpenID Connect."
+          },
+          "auditLogs": {
+            "name": "Protokoly auditu",
+            "description": "Zjistěte, kdo co a kdy udělal, s filtry, upozorněními a exportem."
+          },
+          "usage": {
+            "name": "Využití, kredity a fakturace",
+            "description": "Náklady na AI podle osob, agentů, konektorů a modelů, s upozorněními na útratu."
+          },
+          "indexingPriority": {
+            "name": "Priorita indexování",
+            "description": "Vyberte, které záznamy, kolekce a nahrané soubory se indexují jako první."
+          }
+        }
       }
     },
     "teams": {
@@ -2698,7 +2761,8 @@
         "tenants": "Tenanti",
         "superOrgs": "Organizace",
         "oauthApps": "OAuth aplikace konektorů",
-        "serviceAccounts": "Servisní účty"
+        "serviceAccounts": "Servisní účty",
+        "enterprise": "Edice Enterprise"
       }
     },
     "actions": {
@@ -2963,6 +3027,11 @@
         "message": "Pokud změny zahodíte, vaše úpravy nebudou uloženy",
         "confirm": "Zahodit",
         "cancel": "Pokračovat v úpravách"
+      },
+      "edition": {
+        "title": "Edice",
+        "name": "Edice Community",
+        "description": "Open source a s vlastním hostováním. Edice Enterprise přidává multitenanci, jednotné přihlašování, SCIM, protokoly auditu a další."
       }
     },
     "mcpAccess": {

@@ -26,7 +26,8 @@ vi.mock('@/lib/store/user-store', () => ({
   selectIsProfileInitialized: (s: typeof user) => s.isProfileInitialized,
 }));
 
-import { EnterprisePlaceholderPage, enterpriseContactUrl } from '../enterprise-placeholder-page';
+import { EnterprisePlaceholderPage } from '../enterprise-placeholder-page';
+import { enterpriseContactUrl } from '@/lib/constants/enterprise';
 import { ENTERPRISE_GLIMPSES } from '../enterprise-glimpses';
 
 afterEach(() => {
@@ -114,7 +115,17 @@ describe('EnterprisePlaceholderPage', () => {
 
     expect(screen.queryByRole('list')).toBeNull();
     expect(screen.queryByRole('navigation')).toBeNull();
-    expect(screen.getAllByRole('link')).toHaveLength(1);
+    // Only the demo booking and the way to everything in Enterprise.
+    expect(screen.getAllByRole('link')).toHaveLength(2);
+  });
+
+  it('offers the page with everything in Enterprise beside the demo booking', () => {
+    renderPage();
+
+    const overview = screen.getByRole('link', { name: 'workspace.enterprise.seeWhatsInEnterprise' });
+    // next/link adds the app's trailing slash only under its own config, which tests don't load.
+    expect(overview.getAttribute('href')?.replace(/\/$/, '')).toBe('/workspace/enterprise');
+    expect(overview.getAttribute('target')).toBeNull();
   });
 
   it('keeps the decorative premium icon away from screen readers', () => {

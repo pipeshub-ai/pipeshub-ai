@@ -1961,6 +1961,69 @@
           "teams": "Add whole teams and individual people to a group",
           "builtIn": "Start from the built-in Admin and Everyone groups"
         }
+      },
+      "seeWhatsInEnterprise": "See what's in Enterprise",
+      "sidebarCard": {
+        "title": "Enterprise Edition",
+        "body": "Multi-tenancy, single sign-on, SCIM, audit logs and more.",
+        "action": "See what's included",
+        "dismiss": "Hide the Enterprise Edition card"
+      },
+      "overview": {
+        "currentEdition": "You're on the Community Edition",
+        "title": "Enterprise Edition",
+        "subtitle": "Everything you use today, plus what larger organizations need: several tenants on one deployment, single sign-on, automatic provisioning, audit logs and cost control.",
+        "seePreview": "See how it looks",
+        "seePreviewLabel": "See how {{name}} looks",
+        "communityNote": "The Community Edition stays open source and fully usable.",
+        "groups": {
+          "scale": "Scale",
+          "governance": "Access and governance",
+          "security": "Security and compliance",
+          "cost": "Cost and indexing"
+        },
+        "items": {
+          "tenants": {
+            "name": "Multi-tenancy",
+            "description": "Several tenants on one deployment, each with its own people, connectors and data."
+          },
+          "scim": {
+            "name": "SCIM provisioning",
+            "description": "Okta or Microsoft Entra ID adds, updates and switches off people for you."
+          },
+          "groups": {
+            "name": "Group permissions",
+            "description": "Give access to a group once instead of person by person."
+          },
+          "toolApprovals": {
+            "name": "Organization tool approvals",
+            "description": "Decide which agent tools run, ask first or never run, for everyone."
+          },
+          "actOnBehalf": {
+            "name": "Acting on behalf of a person",
+            "description": "Let a service account act as a named colleague, with every attempt recorded."
+          },
+          "peoplesOwnApps": {
+            "name": "People's own apps and servers",
+            "description": "Review and remove the OAuth apps, actions and MCP servers people add for themselves."
+          },
+          "sso": {
+            "name": "Single sign-on",
+            "description": "Sign people in through Okta, OneLogin or any other SAML 2.0 or OpenID Connect provider."
+          },
+          "auditLogs": {
+            "name": "Audit logs",
+            "description": "See who did what, and when, with filters, alerts and export."
+          },
+          "usage": {
+            "name": "Usage, credits and billing",
+            "description": "AI cost by person, agent, connector and model, with spending alerts."
+          },
+          "indexingPriority": {
+            "name": "Indexing priority",
+            "description": "Choose which records, collections and uploads are indexed first."
+          }
+        }
       }
     },
     "teams": {
@@ -2598,7 +2661,8 @@
         "tenants": "Tenants",
         "superOrgs": "Organisations",
         "oauthApps": "Connector OAuth apps",
-        "serviceAccounts": "Service accounts"
+        "serviceAccounts": "Service accounts",
+        "enterprise": "Enterprise Edition"
       }
     },
     "actions": {
@@ -2863,6 +2927,11 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue editing"
+      },
+      "edition": {
+        "title": "Edition",
+        "name": "Community Edition",
+        "description": "Open source and self-hosted. The Enterprise Edition adds multi-tenancy, single sign-on, SCIM, audit logs and more."
       }
     },
     "mcpAccess": {

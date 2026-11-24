@@ -1871,6 +1871,69 @@
           "teams": "Ganze Teams und einzelne Personen zu einer Gruppe hinzufügen",
           "builtIn": "Mit den integrierten Gruppen Admin und Everyone starten"
         }
+      },
+      "seeWhatsInEnterprise": "Was Enterprise bietet",
+      "sidebarCard": {
+        "title": "Enterprise Edition",
+        "body": "Mandantenfähigkeit, Single Sign-on, SCIM, Audit-Protokolle und mehr.",
+        "action": "Alle Funktionen ansehen",
+        "dismiss": "Enterprise-Edition-Karte ausblenden"
+      },
+      "overview": {
+        "currentEdition": "Sie nutzen die Community Edition",
+        "title": "Enterprise Edition",
+        "subtitle": "Alles, was Sie heute nutzen, plus das, was größere Organisationen brauchen: mehrere Mandanten auf einer Installation, Single Sign-on, automatische Bereitstellung, Audit-Protokolle und Kostenkontrolle.",
+        "seePreview": "So sieht es aus",
+        "seePreviewLabel": "So sieht {{name}} aus",
+        "communityNote": "Die Community Edition bleibt Open Source und voll nutzbar.",
+        "groups": {
+          "scale": "Skalierung",
+          "governance": "Zugriff und Steuerung",
+          "security": "Sicherheit und Compliance",
+          "cost": "Kosten und Indexierung"
+        },
+        "items": {
+          "tenants": {
+            "name": "Mandantenfähigkeit",
+            "description": "Mehrere Mandanten auf einer Installation, jeder mit eigenen Personen, Connectors und Daten."
+          },
+          "scim": {
+            "name": "SCIM-Bereitstellung",
+            "description": "Okta oder Microsoft Entra ID fügt Personen für Sie hinzu, aktualisiert und deaktiviert sie."
+          },
+          "groups": {
+            "name": "Gruppenberechtigungen",
+            "description": "Zugriff einmal an eine Gruppe vergeben statt Person für Person."
+          },
+          "toolApprovals": {
+            "name": "Tool-Freigaben für die Organisation",
+            "description": "Legen Sie für alle fest, welche Agent-Tools laufen, vorher fragen oder nie laufen."
+          },
+          "actOnBehalf": {
+            "name": "Im Namen einer Person handeln",
+            "description": "Ein Dienstkonto handelt im Namen einer bestimmten Person, und jeder Versuch wird protokolliert."
+          },
+          "peoplesOwnApps": {
+            "name": "Eigene Apps und Server von Personen",
+            "description": "Prüfen und entfernen Sie die OAuth-Apps, Aktionen und MCP-Server, die Personen für sich selbst hinzufügen."
+          },
+          "sso": {
+            "name": "Single Sign-on",
+            "description": "Anmeldung über Okta, OneLogin oder jeden anderen SAML-2.0- oder OpenID-Connect-Anbieter."
+          },
+          "auditLogs": {
+            "name": "Audit-Protokolle",
+            "description": "Sehen Sie, wer was wann getan hat, mit Filtern, Warnungen und Export."
+          },
+          "usage": {
+            "name": "Nutzung, Credits und Abrechnung",
+            "description": "KI-Kosten nach Person, Agent, Connector und Modell, mit Ausgabenwarnungen."
+          },
+          "indexingPriority": {
+            "name": "Indexierungspriorität",
+            "description": "Legen Sie fest, welche Datensätze, Sammlungen und Uploads zuerst indexiert werden."
+          }
+        }
       }
     },
     "teams": {
@@ -2416,7 +2479,8 @@
         "oauthApps": "OAuth-Apps für Connectoren",
         "personalAccessTokens": "Persönliche Zugriffstoken",
         "apiDocumentation": "API-Dokumentation",
-        "serviceAccounts": "Dienstkonten"
+        "serviceAccounts": "Dienstkonten",
+        "enterprise": "Enterprise Edition"
       }
     },
     "actions": {
@@ -2681,6 +2745,11 @@
         "message": "Wenn Sie verwerfen, werden Ihre Änderungen nicht gespeichert",
         "confirm": "Verwerfen",
         "cancel": "Weiter bearbeiten"
+      },
+      "edition": {
+        "title": "Edition",
+        "name": "Community Edition",
+        "description": "Open Source und selbst gehostet. Die Enterprise Edition bietet zusätzlich Mandantenfähigkeit, Single Sign-on, SCIM, Audit-Protokolle und mehr."
       }
     },
     "mcpAccess": {

@@ -40,7 +40,7 @@ import {
   type EnterpriseFeature,
 } from '../enterprise-feature-pages';
 import { ENTERPRISE_GLIMPSES } from '@/app/(main)/workspace/components/enterprise-glimpses';
-import { enterpriseContactUrl } from '@/app/(main)/workspace/components/enterprise-placeholder-page';
+import { enterpriseContactUrl } from '@/lib/constants/enterprise';
 
 const FEATURES = Object.keys(ENTERPRISE_FEATURES) as EnterpriseFeature[];
 

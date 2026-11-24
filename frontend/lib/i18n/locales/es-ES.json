@@ -1906,6 +1906,69 @@
           "teams": "Añada equipos completos y personas concretas a un grupo",
           "builtIn": "Empiece con los grupos integrados Admin y Everyone"
         }
+      },
+      "seeWhatsInEnterprise": "Ver qué incluye Enterprise",
+      "sidebarCard": {
+        "title": "Enterprise Edition",
+        "body": "Multitenencia, inicio de sesión único, SCIM, registros de auditoría y más.",
+        "action": "Ver qué incluye",
+        "dismiss": "Ocultar la tarjeta de la Enterprise Edition"
+      },
+      "overview": {
+        "currentEdition": "Está usando la Community Edition",
+        "title": "Enterprise Edition",
+        "subtitle": "Todo lo que usa hoy, más lo que necesitan las organizaciones grandes: varios inquilinos en una sola implementación, inicio de sesión único, aprovisionamiento automático, registros de auditoría y control de costes.",
+        "seePreview": "Ver cómo es",
+        "seePreviewLabel": "Ver cómo es {{name}}",
+        "communityNote": "La Community Edition sigue siendo de código abierto y totalmente utilizable.",
+        "groups": {
+          "scale": "Escala",
+          "governance": "Acceso y gobierno",
+          "security": "Seguridad y cumplimiento",
+          "cost": "Costes e indexación"
+        },
+        "items": {
+          "tenants": {
+            "name": "Multitenencia",
+            "description": "Varios inquilinos en una sola implementación, cada uno con sus propias personas, conectores y datos."
+          },
+          "scim": {
+            "name": "Aprovisionamiento SCIM",
+            "description": "Okta o Microsoft Entra ID añaden, actualizan y desactivan personas por usted."
+          },
+          "groups": {
+            "name": "Permisos de grupo",
+            "description": "Dé acceso a un grupo una sola vez en lugar de persona por persona."
+          },
+          "toolApprovals": {
+            "name": "Aprobaciones de herramientas de la organización",
+            "description": "Decida para todos qué herramientas de los agentes se ejecutan, preguntan antes o nunca se ejecutan."
+          },
+          "actOnBehalf": {
+            "name": "Actuar en nombre de una persona",
+            "description": "Permita que una cuenta de servicio actúe como un compañero concreto, con cada intento registrado."
+          },
+          "peoplesOwnApps": {
+            "name": "Apps y servidores propios de las personas",
+            "description": "Revise y elimine las apps OAuth, acciones y servidores MCP que las personas añaden para sí mismas."
+          },
+          "sso": {
+            "name": "Inicio de sesión único",
+            "description": "Inicie sesión mediante Okta, OneLogin o cualquier otro proveedor SAML 2.0 u OpenID Connect."
+          },
+          "auditLogs": {
+            "name": "Registros de auditoría",
+            "description": "Vea quién hizo qué y cuándo, con filtros, alertas y exportación."
+          },
+          "usage": {
+            "name": "Uso, créditos y facturación",
+            "description": "Coste de la IA por persona, agente, conector y modelo, con alertas de gasto."
+          },
+          "indexingPriority": {
+            "name": "Prioridad de indexación",
+            "description": "Elija qué registros, colecciones y subidas se indexan primero."
+          }
+        }
       }
     },
     "teams": {
@@ -2448,7 +2511,8 @@
         "tenants": "Inquilinos",
         "superOrgs": "Organizaciones",
         "oauthApps": "Apps OAuth de conectores",
-        "serviceAccounts": "Cuentas de servicio"
+        "serviceAccounts": "Cuentas de servicio",
+        "enterprise": "Enterprise Edition"
       }
     },
     "actions": {
@@ -2713,6 +2777,11 @@
         "message": "If you discard, your edits won't be saved",
         "confirm": "Discard",
         "cancel": "Continue editing"
+      },
+      "edition": {
+        "title": "Edición",
+        "name": "Community Edition",
+        "description": "De código abierto y autoalojada. La Enterprise Edition añade multitenencia, inicio de sesión único, SCIM, registros de auditoría y más."
       }
     },
     "mcpAccess": {

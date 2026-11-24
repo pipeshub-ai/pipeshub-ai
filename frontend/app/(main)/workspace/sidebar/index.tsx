@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useState, type MouseEvent, type ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Badge, Flex, Text } from '@radix-ui/themes';
+import { Badge, Box, Flex, Text } from '@radix-ui/themes';
 import { SidebarBase } from '@/app/components/sidebar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
@@ -26,6 +26,8 @@ import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { ENTERPRISE_FEATURES, type EnterpriseSection } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
+import { ENTERPRISE_OVERVIEW_ROUTE } from '@/lib/constants/enterprise';
+import { EnterpriseSidebarEntry } from './enterprise-sidebar-entry';
 import { useFeedbackDialogStore } from '@/app/(main)/feedback/store';
 import { useSupportDialogStore } from '@/app/(main)/support/store';
 
@@ -188,21 +190,27 @@ export default function WorkspaceSidebar() {
         />
       ));
 
+  // On mobile any link tap closes the drawer, even to the page already shown.
+  const closeDrawerOnLinkTap = (e: MouseEvent) => {
+    if (isMobile && (e.target as HTMLElement).closest('a')) closeMobileSidebar();
+  };
+
   return (
     <SidebarBase
       header={isMobile ? <WorkspaceSidebarMobileHeader title={t('workspace.sidebar.sections.workspace')} /> : undefined}
+      footer={
+        showEnterprise ? (
+          <Box onClick={closeDrawerOnLinkTap}>
+            <EnterpriseSidebarEntry isActive={isActive(ENTERPRISE_OVERVIEW_ROUTE)} />
+          </Box>
+        ) : undefined
+      }
+      footerHeight="auto"
       isMobile={isMobile}
       mobileOpen={isMobileOpen}
       onMobileClose={closeMobileSidebar}
     >
-      {/* On mobile any link tap closes the drawer, even to the page already shown. */}
-      <Flex
-        direction="column"
-        gap="4"
-        onClick={(e) => {
-          if (isMobile && (e.target as HTMLElement).closest('a')) closeMobileSidebar();
-        }}
-      >
+      <Flex direction="column" gap="4" onClick={closeDrawerOnLinkTap}>
         {/* ── Back to app ── */}
         <WorkspaceSidebarItem
           icon={<MaterialIcon name="arrow_back" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}

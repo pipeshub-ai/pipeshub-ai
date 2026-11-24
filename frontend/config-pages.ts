@@ -13,6 +13,7 @@ export {
   AuditLogsPlaceholderPage,
   UsagePlaceholderPage,
 } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
+export { EnterpriseOverviewPage } from '@/app/(main)/workspace/enterprise/enterprise-overview-page';
 export { default as ConnectorsTeamPage } from '@/app/(main)/workspace/connectors/team/connectorsTeamPage';
 export { default as ConnectorsPersonalPage } from '@/app/(main)/workspace/connectors/personal/connectorsPersonalPage';
 export { default as ActionsTeamPage } from '@/app/(main)/workspace/actions/team/actionsTeamPage';

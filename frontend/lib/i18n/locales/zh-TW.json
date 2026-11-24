@@ -1945,6 +1945,69 @@
           "teams": "將整個團隊和個人加入群組",
           "builtIn": "從內建的 Admin 和 Everyone 群組開始"
         }
+      },
+      "seeWhatsInEnterprise": "查看企業版功能",
+      "sidebarCard": {
+        "title": "企業版",
+        "body": "多租戶、單一登入、SCIM、稽核記錄等。",
+        "action": "查看包含的功能",
+        "dismiss": "隱藏企業版卡片"
+      },
+      "overview": {
+        "currentEdition": "您正在使用社群版",
+        "title": "企業版",
+        "subtitle": "包含您現在使用的全部功能，並提供大型組織所需的能力：同一部署中的多個租戶、單一登入、自動佈建、稽核記錄和成本控管。",
+        "seePreview": "查看介面",
+        "seePreviewLabel": "查看{{name}}的介面",
+        "communityNote": "社群版依然開源，且所有功能都可正常使用。",
+        "groups": {
+          "scale": "規模",
+          "governance": "存取與治理",
+          "security": "安全與法規遵循",
+          "cost": "成本與索引"
+        },
+        "items": {
+          "tenants": {
+            "name": "多租戶",
+            "description": "在同一部署中執行多個租戶，每個租戶擁有自己的成員、連接器和資料。"
+          },
+          "scim": {
+            "name": "SCIM 佈建",
+            "description": "Okta 或 Microsoft Entra ID 自動為您新增、更新和停用成員。"
+          },
+          "groups": {
+            "name": "群組權限",
+            "description": "一次授權給群組，無需逐人授權。"
+          },
+          "toolApprovals": {
+            "name": "組織工具核准",
+            "description": "為所有人決定哪些代理程式工具可以執行、需先詢問或永不執行。"
+          },
+          "actOnBehalf": {
+            "name": "代表他人執行操作",
+            "description": "允許服務帳戶以指定同事的身分執行操作，並記錄每次嘗試。"
+          },
+          "peoplesOwnApps": {
+            "name": "成員自建的應用程式和伺服器",
+            "description": "審查並移除成員為自己新增的 OAuth 應用程式、動作和 MCP 伺服器。"
+          },
+          "sso": {
+            "name": "單一登入",
+            "description": "透過 Okta、OneLogin 或任何其他 SAML 2.0 或 OpenID Connect 提供者登入。"
+          },
+          "auditLogs": {
+            "name": "稽核記錄",
+            "description": "透過篩選、提醒和匯出，查看誰在何時做了什麼。"
+          },
+          "usage": {
+            "name": "用量、額度和帳單",
+            "description": "依人員、代理程式、連接器和模型查看 AI 成本，並設定支出提醒。"
+          },
+          "indexingPriority": {
+            "name": "索引優先順序",
+            "description": "選擇優先索引哪些記錄、集合和上傳內容。"
+          }
+        }
       }
     },
     "teams": {
@@ -2579,7 +2642,8 @@
         "tenants": "租戶",
         "superOrgs": "組織",
         "oauthApps": "連接器 OAuth 應用程式",
-        "serviceAccounts": "服務帳戶"
+        "serviceAccounts": "服務帳戶",
+        "enterprise": "企業版"
       }
     },
     "actions": {
@@ -2844,6 +2908,11 @@
         "message": "若捨棄，您的編輯內容將不會被儲存",
         "confirm": "捨棄",
         "cancel": "繼續編輯"
+      },
+      "edition": {
+        "title": "版本",
+        "name": "社群版",
+        "description": "開源且自行託管。企業版增加了多租戶、單一登入、SCIM、稽核記錄等功能。"
       }
     },
     "mcpAccess": {

@@ -1945,6 +1945,69 @@
           "teams": "将整个团队和个人添加到用户组",
           "builtIn": "从内置的 Admin 和 Everyone 用户组开始"
         }
+      },
+      "seeWhatsInEnterprise": "查看企业版功能",
+      "sidebarCard": {
+        "title": "企业版",
+        "body": "多租户、单点登录、SCIM、审计日志等。",
+        "action": "查看包含的功能",
+        "dismiss": "隐藏企业版卡片"
+      },
+      "overview": {
+        "currentEdition": "您正在使用社区版",
+        "title": "企业版",
+        "subtitle": "包含您现在使用的全部功能，并提供大型组织所需的能力：同一部署中的多个租户、单点登录、自动配置、审计日志和成本控制。",
+        "seePreview": "查看界面",
+        "seePreviewLabel": "查看{{name}}的界面",
+        "communityNote": "社区版依然开源，且所有功能都可正常使用。",
+        "groups": {
+          "scale": "规模",
+          "governance": "访问与治理",
+          "security": "安全与合规",
+          "cost": "成本与索引"
+        },
+        "items": {
+          "tenants": {
+            "name": "多租户",
+            "description": "在同一部署中运行多个租户，每个租户拥有自己的成员、连接器和数据。"
+          },
+          "scim": {
+            "name": "SCIM 配置",
+            "description": "Okta 或 Microsoft Entra ID 自动为您添加、更新和停用成员。"
+          },
+          "groups": {
+            "name": "用户组权限",
+            "description": "一次授权给用户组，无需逐人授权。"
+          },
+          "toolApprovals": {
+            "name": "组织工具审批",
+            "description": "为所有人决定哪些智能体工具可以运行、需先询问或永不运行。"
+          },
+          "actOnBehalf": {
+            "name": "代表他人执行操作",
+            "description": "允许服务账号以指定同事的身份执行操作，并记录每次尝试。"
+          },
+          "peoplesOwnApps": {
+            "name": "成员自建的应用和服务器",
+            "description": "审查并移除成员为自己添加的 OAuth 应用、操作和 MCP 服务器。"
+          },
+          "sso": {
+            "name": "单点登录",
+            "description": "通过 Okta、OneLogin 或任何其他 SAML 2.0 或 OpenID Connect 提供商登录。"
+          },
+          "auditLogs": {
+            "name": "审计日志",
+            "description": "通过筛选、提醒和导出，查看谁在何时做了什么。"
+          },
+          "usage": {
+            "name": "用量、额度和账单",
+            "description": "按人员、智能体、连接器和模型查看 AI 成本，并设置支出提醒。"
+          },
+          "indexingPriority": {
+            "name": "索引优先级",
+            "description": "选择优先索引哪些记录、集合和上传内容。"
+          }
+        }
       }
     },
     "teams": {
@@ -2579,7 +2642,8 @@
         "tenants": "租户",
         "superOrgs": "组织",
         "oauthApps": "连接器 OAuth 应用",
-        "serviceAccounts": "服务账号"
+        "serviceAccounts": "服务账号",
+        "enterprise": "企业版"
       }
     },
     "actions": {
@@ -2844,6 +2908,11 @@
         "message": "如果放弃，您的编辑将不会被保存",
         "confirm": "放弃",
         "cancel": "继续编辑"
+      },
+      "edition": {
+        "title": "版本",
+        "name": "社区版",
+        "description": "开源且自托管。企业版增加了多租户、单点登录、SCIM、审计日志等功能。"
       }
     },
     "mcpAccess": {

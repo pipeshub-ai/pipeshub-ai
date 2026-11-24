@@ -69,6 +69,8 @@ export { TEAM_CONNECTOR_VISIBILITY_WARNINGS } from '@/app/(main)/workspace/conne
 export { ToolsetToolRulesNotice as ToolsetToolRulesDialog } from '@/app/(main)/workspace/actions/components/toolset-tool-rules-notice';
 // Notices for features this edition does not include (OSS: shown)
 export { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
+// Which edition this is, on General settings (OSS: Community Edition, with a link to what Enterprise adds)
+export { WorkspaceEditionSection } from '@/app/(main)/workspace/general/edition-section';
 export { McpAgentApprovalsNotice } from '@/app/(main)/agents/agent-builder/components/mcp-agent-approvals-notice';
 // Chat model menu entries and AI model form settings (OSS: none)
 export { chatModelOptions } from '@/app/(main)/chat/utils/chat-model-options';
