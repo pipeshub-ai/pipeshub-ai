@@ -24,9 +24,16 @@ import {
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
+import { vendorFailure } from './vendor-failure';
 import { LocalStorageConfig } from '../config/storage.config';
 import { localEtagOf, type ObjectStat } from '../utils/storage-fingerprint';
 import { withDeadline } from '../utils/call-deadline';
+
+/** A local read's fs failure as a StorageError: its text (an absolute path) becomes vendorText, never a log line. */
+const readFailure = (message: string, error: unknown): StorageError =>
+  error instanceof StorageError
+    ? error
+    : new StorageDownloadError(message, vendorFailure(error));
 
 /**
  * A key's lock lease. A holder that stalls longer (event-loop stall, SIGSTOP) loses it to a taker, which is why the
@@ -161,8 +168,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new StorageConfigurationError(
         'Failed to initialize local storage adapter',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -211,7 +217,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
     } catch (error) {
       throw new StorageConfigurationError('Failed to initialize mount point', {
         mountPath: this.mountPath,
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -419,14 +425,6 @@ class LocalStorageAdapter implements StorageServiceInterface {
         path.join(this.mountPath, relativePath),
       );
       const dirPath = path.dirname(fullPath);
-      if (process.env.NODE_ENV == 'development') {
-        this.logger.info('Uploading document to local storage', {
-          path: fullPath,
-          relativePath: relativePath,
-          dirPath: dirPath,
-        });
-      }
-
       // Ensure directory exists
       await this.ensureReady();
       await fs.mkdir(dirPath, { recursive: true });
@@ -448,8 +446,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to upload document to local storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -477,9 +474,8 @@ class LocalStorageAdapter implements StorageServiceInterface {
 
       const fileUrl = this.getFileUrl(localPath);
       if (process.env.NODE_ENV == 'development') {
-        this.logger.info('Local storage update successful', {
+        this.logger.debug('Local storage update successful', {
           path: localPath,
-          url: fileUrl,
         });
       }
 
@@ -494,8 +490,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to update document in local storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -533,7 +528,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       // Read file content
       const buffer = await fs.readFile(fullPath);
       if (process.env.NODE_ENV == 'development') {
-        this.logger.info('Local storage fetch successful', {
+        this.logger.debug('Local storage fetch successful', {
           path: localPath,
         });
       }
@@ -548,8 +543,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new StorageDownloadError(
         'Failed to get document from local storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -587,7 +581,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         throw error;
       }
       throw new PresignedUrlError('Failed to generate URL for local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -644,8 +638,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       throw new PresignedUrlError(
         'Failed to generate direct upload URL for local storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -676,7 +669,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to write object to local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -705,7 +698,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to write object to local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -728,7 +721,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if ((error as { code?: string }).code === 'ENOENT') {
         return { objects: [] };
       }
-      throw error;
+      throw readFailure('Failed to list files in local storage', error);
     }
     // Keys first, sorted, so only the requested page (and one more, to know whether there is a next) is statted.
     const candidates: { key: string; full: string }[] = [];
@@ -755,7 +748,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         // Gone since the directory was read: skip it. Any other failure stops the listing, so a sweep never
         // works from a reference set with a manifest silently missing.
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-        throw error;
+        throw readFailure('Failed to list files in local storage', error);
       }
       if (!stat.isFile()) continue;
       listed.push({
@@ -1088,7 +1081,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if ((error as { code?: string }).code === 'ENOENT') return 'gone';
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to write object to local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1105,7 +1098,9 @@ class LocalStorageAdapter implements StorageServiceInterface {
   ): Promise<{ handle: FileHandle; size: number } | null> {
     const located = await this.locateInsideRealMount(
       this.objectPathInMount(storageKey),
-    );
+    ).catch((error: unknown) => {
+      throw readFailure('Failed to open file in local storage', error);
+    });
     if (located === null) {
       return null;
     }
@@ -1124,7 +1119,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       if (code === 'ELOOP') {
         throw new StorageValidationError('Invalid document path');
       }
-      throw error;
+      throw readFailure('Failed to open file in local storage', error);
     }
     try {
       const [opened, atPath, relocated] = await Promise.all([
@@ -1143,7 +1138,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       return { handle, size: opened.size };
     } catch (error) {
       await handle.close();
-      throw error;
+      throw readFailure('Failed to open file in local storage', error);
     }
   }
 
@@ -1179,12 +1174,12 @@ class LocalStorageAdapter implements StorageServiceInterface {
       this.assertInsideMount(fullPath);
       await this.removeTree(fullPath);
       await this.pruneEmptyAncestors(relativePath);
-      this.logger.info('Local storage delete successful', { path: relativePath });
+      this.logger.debug('Local storage delete successful', { path: relativePath });
       return { statusCode: 200, data: undefined };
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to delete object from local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1202,12 +1197,12 @@ class LocalStorageAdapter implements StorageServiceInterface {
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       await fs.copyFile(srcFull, dstFull);
       const destUrl = this.getFileUrl(dstRelative);
-      this.logger.info('Local storage copy successful', { src: srcRelative, dst: dstRelative });
+      this.logger.debug('Local storage copy successful', { src: srcRelative, dst: dstRelative });
       return { statusCode: 200, data: destUrl };
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to copy object in local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1239,12 +1234,12 @@ class LocalStorageAdapter implements StorageServiceInterface {
       }
       await this.pruneEmptyAncestors(srcRelative);
       const destUrl = this.getFileUrl(dstRelative);
-      this.logger.info('Local storage rename successful', { src: srcRelative, dst: dstRelative });
+      this.logger.debug('Local storage rename successful', { src: srcRelative, dst: dstRelative });
       return { statusCode: 200, data: destUrl };
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to rename object in local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1261,19 +1256,19 @@ class LocalStorageAdapter implements StorageServiceInterface {
       await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       await fs.cp(srcFull, dstFull, { recursive: true });
-      this.logger.info('Local storage tree copy successful', { src: srcRelative, dst: dstRelative });
+      this.logger.debug('Local storage tree copy successful', { src: srcRelative, dst: dstRelative });
       return { statusCode: 200, data: undefined };
     } catch (error) {
       // A missing source tree means there was nothing to copy - treat as a no-op success.
       if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
-        this.logger.info('Local storage tree copy skipped: source prefix does not exist', {
+        this.logger.debug('Local storage tree copy skipped: source prefix does not exist', {
           src: sourcePrefix,
         });
         return { statusCode: 200, data: undefined };
       }
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to copy tree in local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -1306,7 +1301,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         }
       }
       await this.pruneEmptyAncestors(srcRelative);
-      this.logger.info('Local storage tree rename successful', { src: srcRelative, dst: dstRelative });
+      this.logger.debug('Local storage tree rename successful', { src: srcRelative, dst: dstRelative });
       return { statusCode: 200, data: undefined };
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
@@ -1318,7 +1313,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       }
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError('Failed to rename tree in local storage', {
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }

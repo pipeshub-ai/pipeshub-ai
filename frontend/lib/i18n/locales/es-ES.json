@@ -1266,7 +1266,15 @@
         },
         "toolNeedsApproval": "Requiere aprobación",
         "toolNeedsApprovalHint": "Esta herramienta puede eliminar datos. En un chat de proyecto solo se ejecuta después de que alguien la apruebe.",
-        "indexingStatusLabel": "Indexación: {{status}}"
+        "indexingStatusLabel": "Indexación: {{status}}",
+        "collectionsTitle": "Colecciones",
+        "collectionsSubtitle": "Los chats de este proyecto buscan en las colecciones seleccionadas y en los archivos subidos del proyecto.",
+        "noCollectionsAvailable": "Aún no hay colecciones para agregar.",
+        "failedToLoadCollections": "Error al cargar las colecciones",
+        "updateCollectionsFailed": "Error al actualizar las colecciones",
+        "collectionsStatusCount": "{{count}} seleccionadas",
+        "collectionsStatusNone": "Ninguna",
+        "untitledCollection": "Colección sin título"
       },
       "moveDialog": {
         "title": "Mover a proyecto",
@@ -2693,7 +2701,7 @@
           "pipeshub_search": "Busca por significado en los documentos indexados de los conectores y las colecciones que el usuario puede leer, y devuelve los pasajes coincidentes con sus registros.",
           "pipeshub_get_record_content": "Lee el texto completo de un registro. También encuentra un registro a partir de una URL, una clave de incidencia o un ID externo, explora lo que hay bajo una carpeta, un espacio o una épica, y lee un hilo de Slack completo.",
           "pipeshub_download_record": "Descarga el archivo original guardado para un registro, opcionalmente convertido a PDF.",
-          "pipeshub_directory": "Consulta el usuario que ha iniciado sesión, los usuarios y grupos del espacio de trabajo y los equipos a los que pertenece el usuario. No modifica nada.",
+          "pipeshub_directory": "Consulta el usuario que ha iniciado sesión, los usuarios del espacio de trabajo y los equipos a los que pertenece el usuario. No modifica nada.",
           "pipeshub_create_collection": "Crea una colección nueva y vacía, propiedad del usuario, lista para recibir archivos.",
           "pipeshub_upload": "Sube documentos a una colección para que se indexen y se puedan buscar. Hasta 20 documentos y unos 3 MB por llamada.",
           "pipeshub_indexing_status": "Informa de cuánto ha avanzado la indexación de una colección y de qué documentos han fallado y por qué.",
@@ -2742,7 +2750,7 @@
           },
           "people": {
             "label": "Personas y entidades",
-            "description": "Los usuarios y grupos del espacio de trabajo, y las personas, proyectos, temas y valores de su grafo de conocimiento."
+            "description": "Los usuarios del espacio de trabajo, y las personas, proyectos, temas y valores de su grafo de conocimiento."
           },
           "chat": {
             "label": "Chat y agentes",
@@ -3672,6 +3680,25 @@
         "reach": "Los cambios en {{connector}} llegan a PipesHub en {{interval}}.",
         "reachUnknown": "Los cambios en {{connector}} llegan a PipesHub en su próxima sincronización.",
         "syncNow": "Sincronizar permisos ahora",
+        "filter": {
+          "label": "Cómo comprueba la búsqueda el acceso",
+          "mode": {
+            "inherit": "Valor predeterminado de la implementación",
+            "legacy": "Comprobación clásica",
+            "scopes": "Búsqueda más rápida"
+          },
+          "effective": {
+            "scopes": "Las búsquedas en {{connector}} usan la búsqueda más rápida: los resultados se limitan a lo que cada persona puede ver antes de encontrarlos, y cada resultado se sigue comprobando.",
+            "legacy": "Las búsquedas en {{connector}} usan la comprobación clásica: los resultados se comprueban después de encontrarlos."
+          },
+          "waiting": "La búsqueda más rápida empieza cuando los permisos de {{connector}} estén al día.",
+          "applies": "Este cambio llega a la búsqueda en un máximo de 30 segundos.",
+          "blocker": {
+            "serving_off": "La búsqueda más rápida está desactivada en esta implementación.",
+            "store_unsupported": "El almacén de vectores de esta implementación no admite la búsqueda más rápida."
+          },
+          "saveError": "No se pudo cambiar este ajuste. Inténtalo de nuevo."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -3858,7 +3885,6 @@
         "unavailable": "No disponible"
       },
       "catalog": {
-        "title": "Añadir más servidores",
         "description": "Servidores listos para usar. Añade uno y luego inicia sesión en él.",
         "personalDescription": "Solo tú verás los servidores que añadas aquí.",
         "added": "Añadido",
@@ -4118,6 +4144,70 @@
         "signIn": "{{name}} se ha añadido. Inicia sesión abajo para que sus herramientas puedan funcionar.",
         "other": "{{name}} se ha añadido, pero aún no funciona. Abajo verás por qué.",
         "dismiss": "Listo"
+      },
+      "searchYourServers": "Buscar en tus servidores",
+      "categories": {
+        "communication": "Comunicación",
+        "meetings": "Reuniones y calendario",
+        "docs": "Documentos y archivos",
+        "projects": "Gestión de proyectos",
+        "developer": "Herramientas de desarrollo",
+        "data": "Datos y analítica",
+        "sales": "Ventas y CRM",
+        "support": "Atención al cliente",
+        "finance": "Finanzas y legal",
+        "design": "Diseño y pizarras",
+        "automation": "Automatización",
+        "search": "Búsqueda e investigación",
+        "security": "Seguridad e identidad"
+      },
+      "discover": {
+        "title": "Descubrir servidores",
+        "searchPlaceholder": "Busca por nombre o, en inglés, por lo que quieres hacer, como «schedule meetings»",
+        "searchLabel": "Buscar servidores listos para usar",
+        "clearSearch": "Borrar búsqueda",
+        "categoriesLabel": "Categorías",
+        "all": "Todos",
+        "allServers": "Todos los servidores",
+        "resultsFor_one": "{{count}} servidor para «{{query}}»",
+        "resultsFor_many": "{{count}} de servidores para «{{query}}»",
+        "resultsFor_other": "{{count}} servidores para «{{query}}»",
+        "searching": "Buscando…",
+        "catalogLoadFailed": "No se pudo cargar el catálogo.",
+        "noMatch": "Ningún servidor listo para usar coincide con «{{query}}». Aun así puedes añadir cualquier servidor por su URL.",
+        "whatItDoes": "Qué puede hacer",
+        "beforeYouAdd": "Antes de añadirlo",
+        "readOnly": "Solo lectura",
+        "changesData": "Lee y cambia datos",
+        "readOnlyNote": "Solo consulta información.",
+        "changesDataNote": "Las herramientas que cambian datos preguntan antes de ejecutarse, salvo que las permitas.",
+        "signIn": "Inicio de sesión",
+        "signInOauth": "Cada persona inicia sesión con su cuenta de {{name}}",
+        "signInToken": "Un token de API",
+        "signInNone": "No hace falta iniciar sesión",
+        "documentation": "Documentación",
+        "added_one": "Añadido",
+        "added_many": "{{count}} de añadidos",
+        "added_other": "{{count}} añadidos",
+        "addOrg": "Añadir a tu organización",
+        "addPersonal": "Añadir para ti",
+        "orgNote": "Todos en tu organización lo verán. Cada persona inicia sesión para usarlo.",
+        "personalNote": "Solo tú lo verás.",
+        "popularTitle": "Populares en tu organización",
+        "popularHint": "Según las personas con sesión iniciada",
+        "peopleUse_one": "Lo usa {{count}} persona",
+        "peopleUse_many": "Lo usan {{count}} de personas",
+        "peopleUse_other": "Lo usan {{count}} personas",
+        "browse": "Explorar servidores MCP",
+        "browseHint": "Añade un servidor e inicia sesión; después aparece en la lista, listo para arrastrarlo al lienzo.",
+        "fromCatalog": "Del catálogo",
+        "add": "Añadir",
+        "view": "Ver",
+        "askAdmin": "Un agente compartido solo puede usar servidores que haya añadido tu organización. Pide a un administrador que añada uno.",
+        "sharedAgentNote": "Solo un administrador puede añadir un servidor que pueda usar un agente compartido. Pide a un administrador que añada {{name}} para tu organización.",
+        "addedSignIn": "Se ha añadido {{name}}. Inicia sesión desde la lista para usar sus herramientas.",
+        "emptyBuilder": "Aún no hay servidores MCP. Añade uno para dar a este agente herramientas de apps como Linear, Slack o GitHub.",
+        "noAddedMatch": "Ninguno de tus servidores coincide."
       }
     },
     "bots": {
@@ -4935,6 +5025,7 @@
         "candidateApproved": "\"{{name}}\" aprobada",
         "candidateRejected": "\"{{name}}\" rechazada",
         "candidateActionError": "No se ha podido actualizar la candidata",
+        "candidateGone": "Esta candidata ya se ha revisado",
         "conflict": "Esta skill se ha modificado en otro sitio",
         "conflictDescription": "Vuelva a cargar la última versión y aplique de nuevo sus cambios.",
         "conflictReload": "Recargar"
@@ -5686,7 +5777,6 @@
     "mcpServerAlreadyAttachedNotify": "Este agente ya tiene otro servidor del mismo tipo que {{name}}. Un agente puede usar un servidor de cada tipo.",
     "webSearchOnlyOne": "Solo se puede adjuntar un proveedor de búsqueda web",
     "mcpServerNodeSubtitle": "Herramientas de un servidor MCP",
-    "noMcpServersAvailable": "No hay servidores MCP disponibles",
     "webSearchLocked": "La búsqueda web no se puede cambiar para este agente",
     "webSearchLoading": "Cargando proveedores de búsqueda web…",
     "webSearchConfigureFirst": "Configure primero {{name}}",

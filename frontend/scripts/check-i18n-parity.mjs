@@ -105,9 +105,11 @@ export function checkLocaleParity(source, target, targetLanguage = 'de-DE') {
 
     for (const [group, type] of groups) {
       // The source may not carry the category this language needs, so compare
-      // placeholders against whichever variant it does define.
-      const reference = Object.entries(expected)
-        .find(([key, value]) => typeof value === 'string' && pluralParts(key)?.group === group)?.[1];
+      // placeholders against a variant it does define: `_other` when it has one,
+      // since `_one` may spell the number out ("Added") and carry no {{count}}.
+      const variants = Object.entries(expected)
+        .filter(([key, value]) => typeof value === 'string' && pluralParts(key)?.group === group);
+      const reference = (variants.find(([key]) => pluralParts(key).category === 'other') ?? variants[0])?.[1];
       const required = pluralCategories(targetLanguage, type);
       for (const category of required) {
         const key = `${group}_${category}`;

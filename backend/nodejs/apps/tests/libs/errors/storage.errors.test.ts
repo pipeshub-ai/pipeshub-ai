@@ -16,6 +16,7 @@ import {
   StorageInsufficientSpaceError,
   StorageNetworkError,
   StoragePreconditionFailedError,
+  StorageUrlParseError,
 } from '../../../src/libs/errors/storage.errors';
 
 describe('Storage Errors', () => {
@@ -885,6 +886,61 @@ describe('Storage Errors', () => {
       expect(json).to.have.property('name', 'StoragePreconditionFailedError');
       expect(json).to.have.property('code', 'STORAGE_PRECONDITION_FAILED');
       expect(json).to.have.property('statusCode', 412);
+    });
+  });
+
+  // The vendor's text (it quotes buckets, paths, file names) reaches no log: the logger and a dev-mode answer write `metadata`.
+  describe("the vendor's text stays out of metadata", () => {
+    const TEXT = 'n5o-vendor-text User: arn:aws:iam::123456789012:user/n5o on arn:aws:s3:::n5o-bucket/org/report.pdf';
+    const subclasses: Array<[string, new (message: string, metadata?: Record<string, unknown>) => StorageError]> = [
+      ['StorageUploadError', StorageUploadError],
+      ['StorageDownloadError', StorageDownloadError],
+      ['StorageNotFoundError', StorageNotFoundError],
+      ['StorageAuthenticationError', StorageAuthenticationError],
+      ['StoragePermissionError', StoragePermissionError],
+      ['StorageValidationError', StorageValidationError],
+      ['StorageUrlParseError', StorageUrlParseError],
+      ['StorageConfigurationError', StorageConfigurationError],
+      ['MultipartUploadError', MultipartUploadError],
+      ['PresignedUrlError', PresignedUrlError],
+      ['StorageDeleteError', StorageDeleteError],
+      ['StorageThrottlingError', StorageThrottlingError],
+      ['StorageInsufficientSpaceError', StorageInsufficientSpaceError],
+      ['StorageNetworkError', StorageNetworkError],
+      ['StoragePreconditionFailedError', StoragePreconditionFailedError],
+    ];
+
+    for (const [name, Subclass] of subclasses) {
+      it(`${name} keeps the text as vendorText and the rest of the metadata`, () => {
+        const error = new Subclass('Failed', { originalError: TEXT, statusCode: 403, code: 'AccessDenied', bucket: 'b' });
+        expect(error.vendorText).to.equal(TEXT);
+        expect(error.metadata).to.not.have.property('originalError');
+        expect(error.metadata).to.include({ statusCode: 403, code: 'AccessDenied', bucket: 'b' });
+        expect(error.metadata).to.have.property('hint').that.is.a('string');
+        expect(JSON.stringify(error.toJSON(true))).to.not.contain('n5o-vendor-text');
+      });
+    }
+
+    it('the base class moves it too', () => {
+      const error = new StorageError('CUSTOM', 'Failed', 500, { originalError: TEXT, code: 'EACCES' });
+      expect(error.vendorText).to.equal(TEXT);
+      expect(error.metadata).to.deep.equal({ code: 'EACCES' });
+    });
+
+    it('no metadata stays no metadata, with no vendorText', () => {
+      const base = new StorageError('CUSTOM', 'Failed');
+      expect(base.metadata).to.equal(undefined);
+      expect(base.vendorText).to.equal(undefined);
+      const download = new StorageDownloadError('Failed');
+      expect(Object.keys(download.metadata ?? {})).to.deep.equal(['hint']);
+      expect(download.vendorText).to.equal(undefined);
+    });
+
+    it('an originalError that is not a string is dropped, not kept', () => {
+      const error = new StorageDownloadError('Failed', { originalError: { path: '/home/n5o/secret' }, code: 'EACCES' });
+      expect(error.vendorText).to.equal(undefined);
+      expect(error.metadata).to.not.have.property('originalError');
+      expect(error.metadata).to.include({ code: 'EACCES' });
     });
   });
 });

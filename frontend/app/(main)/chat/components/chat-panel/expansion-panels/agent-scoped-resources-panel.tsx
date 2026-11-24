@@ -261,7 +261,7 @@ function useScopedResourceSource(scope: ScopedResourcesSource) {
       setKnowledgeScope: setProjectKnowledgeScope,
       setTools: setProjectStreamTools,
       getToolCatalog: getProjectToolCatalog,
-      internalSearchEnabled: hasAnyFilter(defaults),
+      internalSearchEnabled: hasAnyFilter(defaults) || Boolean(projectScope?.linkedKnowledgeBaseId),
     };
   }
 

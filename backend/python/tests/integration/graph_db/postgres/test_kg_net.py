@@ -15,7 +15,7 @@ import pytest
 
 from app.core.db import DbConfig, KernelDB
 from app.services.graph_db.postgres.kg import backfill as bf
-from app.services.graph_db.postgres.kg import bootstrap, drainer, net, restamp
+from app.services.graph_db.postgres.kg import bootstrap, counts, drainer, net, restamp
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg import verify as verify_mod
 from app.services.graph_db.postgres.kg.reader import seeks
@@ -287,6 +287,24 @@ async def test_a_complete_verify_sets_the_last_verified_gauge(pg_db, no_jitter, 
     await _admin("DELETE FROM kg.records WHERE org_id = $1 AND id = 'r3'", org)
     await net.verify_due(pg_db, org, {})
     assert sets == []                                                          # a verify that found a difference is not a verified connector
+
+
+async def test_after_a_verify_the_counters_are_checked_and_a_difference_is_reported_not_repaired_or_demoted(pg_db, no_jitter, caplog) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    await counts.run(pg_db, org)
+    stray = """SELECT count(*) FROM kg.counts WHERE org_id = $1 AND facet = 1 AND n = 7000"""
+    await _admin("""INSERT INTO kg.counts (org_id, app_sk, facet, class_id, kind, folder, n, folded) SELECT org_id, app_sk, 1, class_id, kind, folder, 7000, true FROM kg.counts
+        WHERE org_id = $1 AND facet = 1 ORDER BY id LIMIT 1""", org)
+    with caplog.at_level(logging.ERROR, logger=counts.logger.name):
+        assert await net.verify_due(pg_db, org, {}) == 1
+    assert await _mode(p, org) == "enforce"                                   # the copy equals the graph: a counter difference demotes nothing
+    assert any("kg counters of connector drv" in r.getMessage() for r in caplog.records)
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        assert await con.fetchval(stray, org) == 1                            # and repairs nothing
+    finally:
+        await con.close()
 
 
 async def test_the_first_verifies_are_spread_over_the_interval(pg_db, monkeypatch) -> None:

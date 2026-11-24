@@ -1106,7 +1106,7 @@ const assertKbWritePermission = async (
     headers,
   );
   if (kbCheckResponse.statusCode === 404) {
-    throw new NotFoundError(`Knowledge base ${kbId} not found`);
+    throw new NotFoundError('Knowledge base not found');
   }
   if (kbCheckResponse.statusCode === 403) {
     throw new ForbiddenError(
@@ -1485,7 +1485,7 @@ export const getRecordById =
         throw new NotFoundError(
           typeof detail === 'string' && /connector/i.test(detail)
             ? detail
-            : `Record ${recordId} not found`,
+            : 'Record not found',
         );
       }
 

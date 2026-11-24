@@ -30,6 +30,10 @@ import { BadRequestError, NotFoundError, InternalServerError } from '../../../..
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import mongoose from 'mongoose'
 import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { PassThrough } from 'stream'
+import { captureLogRecords } from '../../../helpers/log-capture'
 
 describe('storage/utils/utils', () => {
   afterEach(() => {
@@ -921,6 +925,43 @@ describe('storage/utils/utils - additional coverage', () => {
         expect(root.startsWith(`${getFullDocumentPath('org1', recordPath)}/`), recordPath).to.be.false
         expect(root, recordPath).to.not.equal(getFullDocumentPath('org1', recordPath))
       }
+    })
+  })
+
+  describe('serveFileFromLocalStorage - a stream that fails', () => {
+    /** Streams a temp file, fails its stream with `error`, and returns the records and the temp folder. */
+    const failStream = (error: Error): { records: Record<string, any>[]; dir: string } => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'n5d-stream-'))
+      const file = path.join(dir, 'Q3-board-minutes.pdf')
+      fs.writeFileSync(file, 'abc')
+      const res: any = Object.assign(new PassThrough(), { setHeader: () => undefined, headersSent: true })
+      let source: NodeJS.EventEmitter | undefined
+      res.on('pipe', (s: NodeJS.EventEmitter) => { source = s })
+      const records = captureLogRecords()
+      try {
+        serveFileFromLocalStorage({ documentName: 'Q3-board-minutes', extension: '.pdf', local: { localPath: `file://${file}` } } as any, res)
+        source!.emit('error', error)
+        return { records, dir }
+      } finally {
+        res.destroy()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    }
+    const levelsOf = (records: Record<string, any>[]) =>
+      records.filter((r) => r.message === 'Streaming a local file failed').map((r) => r.level)
+
+    it('is one line at its class level (our read failed: ERROR), with no path and no document name', () => {
+      const { records, dir } = failStream(Object.assign(new Error('EIO: i/o error, read'), { code: 'EIO' }))
+
+      expect(levelsOf(records)).to.deep.equal(['error'])
+      expect(JSON.stringify(records)).to.not.contain('Q3-board-minutes')
+      expect(JSON.stringify(records)).to.not.contain(dir)
+    })
+
+    it('is INFO when the read was cancelled, not ERROR', () => {
+      const { records } = failStream(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }))
+
+      expect(levelsOf(records)).to.deep.equal(['info'])
     })
   })
 })

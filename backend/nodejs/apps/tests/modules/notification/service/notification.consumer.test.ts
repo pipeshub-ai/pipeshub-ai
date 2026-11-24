@@ -6,6 +6,8 @@ import { NotificationConsumer, notificationEventRefused } from '../../../../src/
 import { NotificationService } from '../../../../src/modules/notification/service/notification.service';
 import { setNotificationRepository } from '../../../../src/libs/repositories/notification';
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
+import { configureInbox, runWithEnvelope } from '../../../../src/libs/context/envelope';
+import { MemInbox } from '../../../helpers/memory-inbox';
 import { DocStoreFencedError, DocStoreReadOnlyError } from '../../../../src/libs/repositories/errors';
 import { GatewayTimeoutError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import * as NotificationSchema from '../../../../src/modules/notification/schema/notification.schema';
@@ -157,6 +159,32 @@ describe('notification/service/notification.consumer', () => {
       expect(createStub.calledOnce).to.be.true;
       expect((mockNotificationService.sendToUser as sinon.SinonStub).callCount).to.equal(2);
       expect(userHandler.calledOnce).to.be.true;
+    });
+
+    it('a copy of an event another delivery already stored is acknowledged without a write, a push or an error log', async () => {
+      mockConsumer.isConnected.returns(true);
+      const inbox = new MemInbox();
+      configureInbox(inbox);
+      try {
+        const user = new mongoose.Types.ObjectId().toString();
+        const value = { orgId: new mongoose.Types.ObjectId().toString(), type: 'CONNECTOR_SYNC_ERROR', recipientUserIds: [user], eventId: 'evt-1' };
+        sinon.stub(RecipientResolver, 'resolveNotificationRecipientUserIds').resolves([new mongoose.Types.ObjectId(user)]);
+        const insertMany = sinon.stub().resolves([{ _id: 'n1', assignedTo: user }]);
+        setNotificationRepository({ insertMany } as never);
+        // the other delivery recorded the event after this one passed the inbox check
+        inbox.seen = async () => false;
+        await inbox.record('notification-consumer-group', 'evt-1', value.orgId);
+        await consumer.consume(sinon.stub().resolves());
+        const wrapped = mockConsumer.consume.firstCall.args[0];
+        const out = await runWithEnvelope('notification', value, (v) => wrapped({ value: v }), 'notification-consumer-group');
+        expect(out).to.equal(undefined);
+        expect(insertMany.called).to.be.false;
+        expect((mockNotificationService.sendToUser as sinon.SinonStub).called).to.be.false;
+        expect(mockLogger.error.called).to.be.false;
+      } finally {
+        configureInbox(null);
+        setNotificationRepository();
+      }
     });
 
     it('skips persist when event has no valid recipients', async () => {

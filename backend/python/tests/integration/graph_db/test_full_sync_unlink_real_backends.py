@@ -38,6 +38,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.services.event_service import EventService
 from app.connectors.sources.web.connector import WebConnector
@@ -951,3 +952,85 @@ async def test_a_web_full_sync_restores_access_to_an_unchanged_page_an_earlier_f
     assert await _can_search(sync, sync.alice, page.external_record_id)
     assert await _browse(sync, sync.alice, page.external_record_id) == (True, {parent_id})
     assert not await _can_search(sync, sync.bob, page.external_record_id), "no wider than before"
+
+
+_CURSOR_KEY = "messages"
+
+
+def _cursor(sync: _Sync) -> SyncPoint:
+    return SyncPoint(sync.connector_id, sync.org_id, SyncDataPointType.RECORDS, GraphDataStore(logger, sync.graph))
+
+
+async def _cursor_script(s: _Sync) -> None:
+    """Re-reads everything only when it finds no cursor, as Jira, Linear or S3 do: m2 is the one change since it."""
+    if await _cursor(s).read_sync_point(_CURSOR_KEY):
+        await s.processor.on_new_records([s.message("m2", readers=(s.alice, s.bob))])
+    else:
+        await s.processor.on_new_record_groups([s.channel(readers=(s.alice, s.bob))])
+        await s.processor.on_new_records([s.message(name, readers=(s.alice, s.bob)) for name in ("m1", "m2", "m3")])
+    await _cursor(s).update_sync_point(_CURSOR_KEY, {"cursor": s.now})
+
+
+async def _unlinked(sync: _Sync) -> tuple[int, int]:
+    """(nodes still at the source that lost every link, nodes gone at the source that did)."""
+    channel = await sync.graph.get_record_group_by_external_id(sync.connector_id, f"C-{sync.connector_id}")
+    nodes = [(RECORD_GROUPS, channel.id, True)] + [
+        (RECORDS, await sync.record_id(name), name != "gone") for name in ("m1", "m2", "m3", "gone")
+    ]
+    wrongly = gone = 0
+    for collection, node_id, at_source in nodes:
+        if not any((await sync.links(collection, node_id)).values()):
+            wrongly += at_source
+            gone += not at_source
+    return wrongly, gone
+
+
+async def _full_sync_owed(sync: _Sync) -> bool:
+    doc = await sync.graph.get_document(sync.connector_id, CollectionNames.APPS.value)
+    return bool((doc or {}).get("pendingFullSync"))
+
+
+async def _with_a_cursor(sync: _Sync, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECRET_KEY", "full-sync-unlink-it-secret")
+    await _first_sync(sync)
+    await sync.processor.on_new_records([sync.message("gone", readers=(sync.alice, sync.bob))])
+    await _cursor(sync).update_sync_point(_CURSOR_KEY, {"cursor": sync.now - DAY_MS})
+
+
+async def test_a_full_sync_that_reset_its_sync_points_unlinks_only_what_is_gone(
+    sync: _Sync, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _with_a_cursor(sync, monkeypatch)
+
+    task, _ = await sync.full_sync(_cursor_script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await _unlinked(sync) == (0, 1)
+    assert await sync.can_read(sync.alice, "m1")
+    assert not await _full_sync_owed(sync)
+
+
+@pytest.mark.parametrize("failure", ["returned_false", "raised"])
+async def test_a_full_sync_whose_sync_points_could_not_be_deleted_unlinks_nothing_and_owes_one(
+    sync: _Sync, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    await _with_a_cursor(sync, monkeypatch)
+    failing = (
+        AsyncMock(return_value=(0, False)) if failure == "returned_false"
+        else AsyncMock(side_effect=RuntimeError("sync points unreachable"))
+    )
+
+    with patch.object(sync.graph, "delete_sync_points_by_connector_id", failing):
+        task, _ = await sync.full_sync(_cursor_script)
+        await asyncio.wait_for(task, timeout=60)
+
+    wrongly, gone = await _unlinked(sync)
+    assert (wrongly, gone) == (0, 0), f"wrongly unlinked: {wrongly}, really gone unlinked: {gone}"
+    assert await sync.can_read(sync.alice, "m1")
+    assert await _full_sync_owed(sync)
+
+    task, _ = await sync.full_sync(_cursor_script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await _unlinked(sync) == (0, 1)
+    assert not await _full_sync_owed(sync)

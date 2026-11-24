@@ -797,7 +797,8 @@ export class MongoUserRepository implements UserRepository {
   ): Promise<UserDto[]> {
     const session = sessionOf(tx);
     const filter = { email: { $in: emails }, isDeleted: true, orgId };
-    const restore = { $set: { isDeleted: false } };
+    // A restore grants nothing: an admin invite promotes afterwards, cap-checked.
+    const restore = { $set: { isDeleted: false, role: 'member' as const } };
     if (session) await Users.updateMany(filter, restore, { session });
     else await Users.updateMany(filter, restore);
     const query = Users.find({

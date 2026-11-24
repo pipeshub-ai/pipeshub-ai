@@ -55,6 +55,7 @@ from app.agents.mcp.failure import (
 from app.agents.mcp.models import (
     DiscoveredOAuthMetadata,
     MCPAuthMode,
+    MCPCategory,
     MCPServerInstanceConfig,
     MCPServerLogoPayload,
     MCPTransport,
@@ -581,23 +582,43 @@ async def list_catalog(
     request: Request,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
-    search: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None, max_length=200),
+    category: Optional[MCPCategory] = Query(default=None),
 ) -> dict[str, Any]:
     _get_user_context(request)
     registry = _get_mcp_registry(request)
 
-    from app.agents.mcp.catalog import paginate, search_templates
+    from app.agents.mcp.catalog import paginate, rank_templates
 
-    templates = search_templates(registry.list_templates(), search)
-    page_items, total = paginate(templates, page, limit)
+    matches = rank_templates(registry.list_templates(), search, category.value if category else None)
+    page_items, total = paginate(matches, page, limit)
 
     return {
-        "templates": [t.model_dump(by_alias=True) for t in page_items],
+        # `matchedCapability` says which job a search matched, so the UI can show why.
+        "templates": [
+            {**m.template.model_dump(by_alias=True), **({"matchedCapability": m.capability} if m.capability else {})}
+            for m in page_items
+        ],
         "total": total,
         "page": page,
         "limit": limit,
         "customStdioAllowed": stdio_policy.custom_stdio_allowed(),
     }
+
+
+@router.get("/popular", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])
+async def list_popular_servers(request: Request, limit: int = Query(default=6, ge=1, le=50)) -> dict[str, Any]:
+    """The organization's servers people signed in to, most used first: counts only, never who.
+
+    Servers people reach through one shared credential, or with no sign-in, keep no per-person
+    record, so they aren't ranked here.
+    """
+    user_context = _get_user_context(request)
+    config_service = _get_config_service(request)
+    # Only the servers this person can see: an edition may keep an admin server from some members.
+    visible = await resolve_mcp_instances_with_inheritance(config_service, current_org_id(), user_context["user_id"])
+    rows = await mcp_service.popular_org_servers(config_service, visible)
+    return {"servers": rows[:limit]}
 
 
 @router.get("/catalog/{type_id}", dependencies=[Depends(require_scopes(OAuthScopes.MCP_READ))])

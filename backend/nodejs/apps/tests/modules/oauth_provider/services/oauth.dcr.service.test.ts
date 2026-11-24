@@ -9,7 +9,7 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { BadRequestError, ForbiddenError } from '../../../../src/libs/errors/http.errors'
 import { setUserRepository } from '../../../../src/libs/repositories/user'
 import { setIdentityPort } from '../../../../src/libs/repositories/identity'
-import { createMockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard, MockLogger } from '../../../helpers/mock-logger'
 import { NO_APP_CREATOR, setOAuthAppRepository } from '../../../../src/libs/repositories/oauth-app'
 import { setClientMetadataGetter } from '../../../../src/modules/oauth_provider/services/client_metadata_document'
 import { InvalidClientError } from '../../../../src/libs/errors/oauth.errors'
@@ -24,6 +24,15 @@ describe('OAuthDcrService', () => {
   let mockScopeValidatorService: any
   const orgId = new Types.ObjectId()
   const userId = new Types.ObjectId()
+  // Every logger a test builds, for the snake_case check after it.
+  const madeLoggers: MockLogger[] = []
+  const newLogger = (): MockLogger => {
+    const logger = createMockLogger()
+    madeLoggers.push(logger)
+    return logger
+  }
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
 
   beforeEach(() => {
     delete process.env.PIPESHUB_ENABLE_DCR
@@ -51,7 +60,7 @@ describe('OAuthDcrService', () => {
       ]),
     }
     service = new OAuthDcrService(
-      createMockLogger(),
+      newLogger(),
       mockOAuthAppService,
       mockScopeValidatorService,
       {
@@ -78,7 +87,8 @@ describe('OAuthDcrService', () => {
     sinon.stub(Users, 'findOne').returns(userQuery)
   })
 
-  afterEach(() => {
+  afterEach(function () {
+    snakeCaseKeys.check(this, ...madeLoggers.splice(0))
     sinon.restore()
     setUserRepository()
     setIdentityPort()
@@ -105,7 +115,7 @@ describe('OAuthDcrService', () => {
   it('stores a registered client in the organisation it is given, and refuses before the instance has one', async () => {
     process.env.PIPESHUB_ENABLE_DCR = 'true'
     const placed = new OAuthDcrService(
-      createMockLogger(), mockOAuthAppService, mockScopeValidatorService,
+      newLogger(), mockOAuthAppService, mockScopeValidatorService,
       { mcpScopes: ['user:read'] } as any,
       async () => 'org-9',
     )
@@ -113,7 +123,7 @@ describe('OAuthDcrService', () => {
     expect(mockOAuthAppService.createDynamicClient.firstCall.args[0].orgId).to.equal('org-9')
 
     const empty = new OAuthDcrService(
-      createMockLogger(), mockOAuthAppService, mockScopeValidatorService,
+      newLogger(), mockOAuthAppService, mockScopeValidatorService,
       { mcpScopes: ['user:read'] } as any,
       async () => null,
     )
@@ -351,8 +361,9 @@ describe('OAuthDcrService', () => {
 
     it('stores a metadata document client in the organisation it is given for the person who consented', async () => {
       const asked: unknown[] = []
+      const logger = newLogger()
       const placed = new OAuthDcrService(
-        createMockLogger(), mockOAuthAppService, mockScopeValidatorService,
+        logger, mockOAuthAppService, mockScopeValidatorService,
         (service as any).appConfig,
         async (consenter?: unknown) => {
           asked.push(consenter)
@@ -366,6 +377,10 @@ describe('OAuthDcrService', () => {
       const created = mockOAuthAppService.createDynamicClient.firstCall.args[0]
       expect(created.orgId).to.equal('org-shared')
       expect(created.createdBy).to.equal(CONSENTER.userId)
+      expect(logger.info.args).to.deep.include([
+        'Stored client from its metadata document',
+        { client_id: CID },
+      ])
     })
 
     it('allows refresh_token when the document names no grant types', async () => {
