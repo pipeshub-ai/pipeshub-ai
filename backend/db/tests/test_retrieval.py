@@ -768,16 +768,16 @@ def test_the_upgrade_to_the_term_bounds_takes_its_locks_in_the_order_a_running_f
     holding the term tables while it waits (a deadlock, which aborts one of the two)."""
     import time
 
-
     cluster, name = rdb
     url = cluster.url(name, "pipeshub_migrate")
     r = run_migrate(url, "downgrade", "retrieval_0007", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout
-    with connect_as(cluster, name, "pipeshub_jobs") as fold_tx, fold_tx.transaction():
-        fold_tx.execute("SET LOCAL lock_timeout = '20s'")
-        fold_tx.execute("DELETE FROM retrieval.lexical_df_delta WHERE org_id = %s", (ORG_A,))            # what FOLD takes first
-        proc = start_migrate(url)
-        try:
+    proc = None
+    try:
+        with connect_as(cluster, name, "pipeshub_jobs") as fold_tx, fold_tx.transaction():
+            fold_tx.execute("SET LOCAL lock_timeout = '20s'")
+            fold_tx.execute("DELETE FROM retrieval.lexical_df_delta WHERE org_id = %s", (ORG_A,))        # what FOLD takes first
+            proc = start_migrate(url)
             with cluster.admin(name) as a:
                 for _ in range(600):
                     if a.execute("SELECT count(*) FROM pg_stat_activity WHERE usename = 'pipeshub_migrate' AND wait_event_type = 'Lock'").fetchone()[0]:
@@ -785,12 +785,13 @@ def test_the_upgrade_to_the_term_bounds_takes_its_locks_in_the_order_a_running_f
                     time.sleep(0.05)
                 else:
                     raise AssertionError("the upgrade never waited for the fold")
-            fold_tx.execute("DELETE FROM retrieval.lexical_term_delta WHERE org_id = %s", (ORG_A,))       # then FOLD_TERMS: no deadlock
-        except BaseException:
+            fold_tx.execute("DELETE FROM retrieval.lexical_term_delta WHERE org_id = %s", (ORG_A,))   # then FOLD_TERMS: no deadlock
+        out, _ = proc.communicate(timeout=120)
+        assert proc.returncode == 0, out
+    finally:
+        if proc is not None and proc.poll() is None:      # a failure anywhere above: the upgrade never outlives the test
             proc.kill()
-            raise
-    out, _ = proc.communicate(timeout=120)
-    assert proc.returncode == 0, out
+            proc.communicate()
 
 
 def test_downgrading_the_term_bounds_restores_the_previous_search_and_trigger_and_an_upgrade_brings_them_back(rdb):

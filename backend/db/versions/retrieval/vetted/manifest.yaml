@@ -411,7 +411,8 @@ functions:
   # * arms that admit few points: those points are scored on every term directly (an index probe per point and term);
   # * otherwise max-score pruning: each term has a bound, |query weight x idf| x the largest |weight| of its postings (retrieval_0008,
   #   kept beside its frequency; for postings written before it, not known until the fold worker has filled it in the background, or
-  #   recount at once: such a term is summed in full). The postings of the common terms are left
+  #   recount has computed it, and while a delta written before it is still unfolded: such a term is summed in full). The postings of
+  #   the common terms are left
   #   out of the candidates while the sum of their bounds stays below the last score of the answer: a point that has none of the other
   #   terms scores at most that sum. Every candidate is still scored on the left-out terms (an index probe each), best partial sum first,
   #   in windows, until the rest cannot reach the answer. When the sum is not below it, terms join the candidates, cheapest first, up to
