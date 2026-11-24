@@ -183,6 +183,36 @@ export interface ProjectSettingsPanelProps {
  * for the Files card, which owns its own KB fetch/upload/delete lifecycle
  * (see `FilesCard`).
  */
+export function computeScopeCounts(
+  knowledgeScope: ProjectKnowledgeScope | undefined,
+  appliedFilters: AppliedFilters | undefined,
+): { connectorCount: number; collectionCount: number } {
+  const isCollectionGroup = (id: string) =>
+    appliedFilters?.recordGroups?.find((n) => n.id === id)?.connector === 'KB';
+  const isCollectionRecord = (id: string) =>
+    appliedFilters?.records?.find((n) => n.id === id)?.connector === 'KB';
+
+  const collectionRecordGroupCount =
+    (knowledgeScope?.recordGroups ?? []).filter(isCollectionGroup).length;
+  const collectionRecordCount =
+    (knowledgeScope?.records ?? []).filter(isCollectionRecord).length;
+  const collectionCount =
+    (knowledgeScope?.kb?.length ?? 0) +
+    collectionRecordGroupCount +
+    collectionRecordCount;
+
+  const connectorRecordGroupCount =
+    (knowledgeScope?.recordGroups?.length ?? 0) - collectionRecordGroupCount;
+  const connectorRecordCount =
+    (knowledgeScope?.records?.length ?? 0) - collectionRecordCount;
+  const connectorCount =
+    (knowledgeScope?.apps?.length ?? 0) +
+    connectorRecordGroupCount +
+    connectorRecordCount;
+
+  return { connectorCount, collectionCount };
+}
+
 export function ProjectSettingsPanel({
   project,
   canEdit,
@@ -210,11 +240,10 @@ export function ProjectSettingsPanel({
   const [fileSummary, setFileSummary] = useState({ count: 0, totalBytes: 0 });
 
   const hasInstructions = Boolean(project.instructions?.trim());
-  const connectorCount =
-    (project.knowledgeScope?.apps?.length ?? 0) +
-    (project.knowledgeScope?.recordGroups?.length ?? 0) +
-    (project.knowledgeScope?.records?.length ?? 0);
-  const collectionCount = project.knowledgeScope?.kb?.length ?? 0;
+  const { connectorCount, collectionCount } = useMemo(
+    () => computeScopeCounts(project.knowledgeScope, project.appliedFilters),
+    [project.knowledgeScope, project.appliedFilters],
+  );
   const toolCount = project.tools?.length ?? 0;
   const memberCount = project.members.length; // additional members beyond the owner
 

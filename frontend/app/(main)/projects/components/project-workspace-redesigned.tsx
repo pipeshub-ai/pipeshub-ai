@@ -237,7 +237,14 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const scopeSaver = useMemo(
     () =>
       createSerialSaver<ScopePatch, ProjectDetail>({
-        save: (patch) => ProjectApi.update(projectId, patch),
+        save: async (patch) => {
+          const updated = await ProjectApi.update(projectId, patch);
+          confirmedScopeRef.current = {
+            knowledgeScope: updated.knowledgeScope ?? { apps: [], kb: [] },
+            appliedFilters: updated.appliedFilters ?? { apps: [], kb: [] },
+          };
+          return updated;
+        },
         onSaved: (updated) => {
           const savedScope: ScopePatch = {
             knowledgeScope: updated.knowledgeScope ?? { apps: [], kb: [] },
@@ -305,7 +312,11 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const toolsSaver = useMemo(
     () =>
       createSerialSaver<string[], ProjectDetail>({
-        save: (tools) => ProjectApi.update(projectId, { tools }),
+        save: async (tools) => {
+          const updated = await ProjectApi.update(projectId, { tools });
+          confirmedToolsRef.current = updated.tools ?? [];
+          return updated;
+        },
         onSaved: (updated) => {
           confirmedToolsRef.current = updated.tools ?? [];
           toolsRef.current = updated.tools ?? [];

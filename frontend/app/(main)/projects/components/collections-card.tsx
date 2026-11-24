@@ -63,7 +63,7 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
           });
           for (const item of res.knowledgeBases) {
             if (seen.has(item.id)) continue;
-            if (!isCollectionItem(item) && res.knowledgeBases.some(isCollectionItem)) continue;
+            if (!isCollectionItem(item)) continue;
             seen.add(item.id);
             rows.push({
               id: item.id,
@@ -227,7 +227,7 @@ export function CollectionsCard({ knowledgeScope, appliedFilters, canEdit, onCha
     <Flex direction="column" gap="1">
       <Text size="1" style={{ color: 'var(--slate-10)', marginBottom: 'var(--space-1)' }}>
         {t('chat.projects.workspace.collectionsSubtitle', {
-          defaultValue: 'Chats in this project search only these collections.',
+          defaultValue: 'Chats in this project search the selected collections and uploaded project files.',
         })}
       </Text>
       <Flex
