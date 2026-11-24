@@ -2824,7 +2824,7 @@
           "pipeshub_search": "在使用者可讀取的連接器和集合中依語意搜尋已索引的文件，並傳回相符的段落及其所屬記錄。",
           "pipeshub_get_record_content": "讀取一筆記錄的全文。也可以透過 URL、議題編號或外部 ID 尋找記錄，瀏覽資料夾、空間或 Epic 底下的內容，以及讀取整個 Slack 討論串。",
           "pipeshub_download_record": "下載記錄所儲存的原始檔案，可選擇轉換為 PDF。",
-          "pipeshub_directory": "查詢目前登入的使用者、工作區的使用者和群組，以及該使用者所屬的團隊。不會變更任何內容。",
+          "pipeshub_directory": "查詢目前登入的使用者、工作區的使用者，以及該使用者所屬的團隊。不會變更任何內容。",
           "pipeshub_create_collection": "建立一個由使用者擁有的全新空集合，可將檔案上傳到其中。",
           "pipeshub_upload": "將文件上傳到集合，以便建立索引並可供搜尋。每次呼叫最多 20 份文件、約 3 MB。",
           "pipeshub_indexing_status": "回報集合的索引進度，以及哪些文件失敗及其原因。",
@@ -2873,7 +2873,7 @@
           },
           "people": {
             "label": "人員與實體",
-            "description": "工作區的使用者和群組，以及其知識圖譜中的人員、專案、主題和數值。"
+            "description": "工作區的使用者，以及其知識圖譜中的人員、專案、主題和數值。"
           },
           "chat": {
             "label": "聊天與代理",
