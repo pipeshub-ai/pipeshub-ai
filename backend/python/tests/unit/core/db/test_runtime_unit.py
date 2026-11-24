@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar
 
 import asyncpg
@@ -1094,3 +1095,13 @@ async def test_a_pool_timeout_is_unchanged() -> None:
     from app.core.db.errors import PoolTimeout
 
     assert isinstance(await _open_with(_refusing_pool(TimeoutError())), PoolTimeout)
+
+
+@pytest.mark.parametrize(("closed", "lost"), [(True, True), (False, False)])
+def test_a_driver_state_clash_is_a_lost_connection_only_when_the_connection_closed(closed, lost) -> None:
+    """A backend ended by the server as a statement starts surfaces as asyncpg's InternalClientError ("cannot switch to state")
+    on a closed connection; on an open one the same error is our misuse of the connection and stays as it is."""
+    tx = _tx()
+    tx._con = SimpleNamespace(is_closed=lambda: closed)  # type: ignore[assignment]
+    err = asyncpg.InternalClientError("cannot switch to state 11; another operation (2) is in progress")
+    assert isinstance(_db().map_error(err, tx), ConnectionLost) is lost

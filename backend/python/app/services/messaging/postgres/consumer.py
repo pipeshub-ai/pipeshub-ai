@@ -20,6 +20,7 @@ from collections import Counter
 from logging import Logger
 from typing import TYPE_CHECKING, Any, override
 
+from app.core.db.errors import CommitOutcomeUnknown, ConnectionLost, PoolTimeout
 from app.core.envelope import (
     INBOX_ERRORS,
     DuplicateEnvelope,
@@ -124,6 +125,36 @@ class RecordHeld(RequeueWithoutAttempt):
 
 def _retry_base_s() -> float:
     return float(os.getenv("PG_QUEUE_RETRY_BASE_S", "5"))
+
+
+class DatabaseUnavailable(RequeueWithoutAttempt):
+    """The handler failed only because the database could not be reached: handed back without an attempt, so a failover or a run of
+    dropped connections cannot dead-letter good work. Its hand-backs count toward the backstop, which ends a handler that never recovers."""
+
+    pauses_consumer = False
+
+
+def _database_unavailable(e: BaseException) -> bool:
+    """Whether ``e`` is a lost connection or a pool wait, itself or through explicit ``raise ... from`` wrappers that say nothing else.
+
+    A commit whose outcome is unknown may have applied, so a rerun can repeat its effect: it keeps counting attempts, as a statement
+    timeout does. A wrapper that is a bug type or is stamped with another class decides the failure itself.
+    """
+    seen: set[int] = set()
+    link: BaseException | None = e
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        if isinstance(link, CommitOutcomeUnknown):
+            return False
+        if isinstance(link, (ConnectionLost, PoolTimeout)):
+            return True
+        # a query log stamps a wrapper with the class of its chain, so a pool wait's wrapper can read "timeout"
+        if isinstance(link, (ValueError, *error_class.OUR_BUGS)):
+            return False
+        if getattr(link, "log_error_class", None) not in (None, "unavailable", "timeout"):
+            return False
+        link = link.__cause__
+    return False
 
 
 @contextlib.contextmanager
@@ -821,30 +852,34 @@ class PgMessagingConsumer(IMessagingConsumer):
         except (RequeueWithoutAttempt, ClaimLost):
             raise
         except Exception as e:
-            expected = is_expected_outcome(e)
-            # In a record's run (the indexing consumer) its index.end writes the failure once.
-            if not timing.note(exc=e):
-                if expected:
-                    # Expected (deleted while indexed, refused by the source): the handler
-                    # already logged it once, so no traceback at error level here.
-                    self.logger.info(
-                        "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
-                    )
-                else:
-                    # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
-                    error_class.log_failure(
-                        self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
-                    )
-            terminal = (
-                MessageErrorClassifier.classify_by_exception(e)
-                == MessageErrorType.TERMINAL
-            )
-            if terminal and parsed is not None:
-                parsed.is_final_failure = True
-            reason = f"{error_class.classify_error(e)}: {type(e).__name__}"  # kept in last_error: no text, as above
-            return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
+            if not _database_unavailable(e):
+                expected = is_expected_outcome(e)
+                # In a record's run (the indexing consumer) its index.end writes the failure once.
+                if not timing.note(exc=e):
+                    if expected:
+                        # Expected (deleted while indexed, refused by the source): the handler
+                        # already logged it once, so no traceback at error level here.
+                        self.logger.info(
+                            "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
+                        )
+                    else:
+                        # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
+                        error_class.log_failure(
+                            self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
+                        )
+                terminal = (
+                    MessageErrorClassifier.classify_by_exception(e)
+                    == MessageErrorType.TERMINAL
+                )
+                if terminal and parsed is not None:
+                    parsed.is_final_failure = True
+                reason = f"{error_class.classify_error(e)}: {type(e).__name__}"  # kept in last_error: no text, as above
+                return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
+            unavailable = e  # handed back below; the per-minute hand-back summary counts it, by reason
         finally:
             reset_context(token)
+        first = compute_retry_backoff_seconds(1) if self.indexing else min(_retry_base_s(), 30.0)
+        raise DatabaseUnavailable(f"{error_class.classify_error(unavailable)}: {type(unavailable).__name__}", delay_s=first) from unavailable
 
     async def _renew_leases(self) -> None:
         """Renew every held lease; a record lease the manager says is no longer ours cancels the delivery that holds it."""

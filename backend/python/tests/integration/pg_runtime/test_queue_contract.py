@@ -901,3 +901,57 @@ async def test_pg_the_statements_per_delivery_are_counted(pg) -> None:
     await pg.queue.ack("g", d)
     assert [x for x in seen if x in ("queue.admit", "queue.ack")] == ["queue.admit", "queue.ack"]
     assert seen.count("queue.admit") == 1
+
+
+# -- a handler failed only by the database: no attempt is spent, and the hand-back backstop still ends one that never recovers ---------
+
+
+def _dropping_handler(pg: Backend, drops: int) -> tuple[list[int], Callable[[StreamMessage], Awaitable[bool]]]:
+    """A handler whose database connection is cut under it ``drops`` times (a superuser ends its backend, as a failover does), then
+    works. The service roles may not end a backend, so this needs ``PG_ADMIN_URL``."""
+    import asyncpg
+
+    admin_url = os.environ.get("PG_ADMIN_URL")
+    if not admin_url:
+        missing("PG_ADMIN_URL is not set")
+    runs: list[int] = []
+
+    async def handler(m: StreamMessage) -> bool:
+        runs.append(m.payload["i"])
+        async with (await pg.runtime.db()).runtime_uow() as tx:
+            pid = await tx.fetchval("/* pipeshub:test.pid */ SELECT pg_backend_pid()")
+            if len(runs) <= drops:
+                admin = await asyncpg.connect(admin_url)
+                try:
+                    await admin.execute("SELECT pg_terminate_backend($1)", pid)
+                finally:
+                    await admin.close()
+            await tx.fetchval("/* pipeshub:test.after */ SELECT 1")
+        return True
+
+    return runs, handler
+
+
+async def test_pg_a_database_cut_more_often_than_the_attempt_limit_does_not_dead_letter_the_event(pg, monkeypatch) -> None:
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.01")
+    runs, handler = _dropping_handler(pg, drops=5)  # more than MAX_DELIVERY_ATTEMPTS (3)
+    await pg.consume("g", handler)
+    await send(pg, 1)
+    await until(lambda: len(runs) == 6)
+    await asyncio.sleep(0.5)  # the ack lands
+    assert await pg.queue.backlog("g", [pg.topic]) == {}  # acked: handled once the database answered again
+    assert runs == [0] * 6
+
+
+async def test_pg_a_database_that_never_answers_is_dead_lettered_by_the_backstop(pg, monkeypatch) -> None:
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_BASE_S", "0.01")
+    monkeypatch.setenv("PG_QUEUE_HANDBACK_LIMIT", "4")
+    runs, handler = _dropping_handler(pg, drops=1000)
+    await pg.consume("g", handler)
+    await send(pg, 1)
+    for _ in range(100):
+        if await pg.queue.backlog("g", [pg.topic]) == {"dead": 1}:
+            break
+        await asyncio.sleep(0.1)
+    assert await pg.queue.backlog("g", [pg.topic]) == {"dead": 1}
+    assert len(runs) == 7  # four refunded hand-backs, then the three attempts

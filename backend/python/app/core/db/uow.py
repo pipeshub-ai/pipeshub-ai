@@ -657,7 +657,10 @@ class KernelDB:
             return ProfileEpochMismatch(str(e))
         lost = isinstance(e, asyncpg.InterfaceError) or (
             not isinstance(e, TimeoutError) and isinstance(e, (OSError, asyncio.IncompleteReadError))
-        ) or lost_state(state)
+        ) or lost_state(state) or (
+            # a server that ends the backend while a statement starts: asyncpg reports its own state clash on a connection now closed
+            isinstance(e, asyncpg.InternalClientError) and tx._con is not None and tx._con.is_closed()
+        )
         if lost:
             safe = not tx.commit_sent and (tx.idempotent or tx.completed == 0)
             return ConnectionLost(str(e) or type(e).__name__, retry_safe=safe)
