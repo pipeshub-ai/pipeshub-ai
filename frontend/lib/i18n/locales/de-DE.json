@@ -2661,7 +2661,7 @@
           "pipeshub_search": "Durchsucht indexierte Dokumente nach Bedeutung in den Konnektoren und Sammlungen, die der Benutzer lesen kann, und liefert die passenden Textstellen mit ihren Datensätzen.",
           "pipeshub_get_record_content": "Liest den vollständigen Text eines Datensatzes. Findet außerdem einen Datensatz anhand einer URL, eines Ticketschlüssels oder einer externen ID, zeigt, was unter einem Ordner, Bereich oder Epic liegt, und liest einen ganzen Slack-Thread.",
           "pipeshub_download_record": "Lädt die Originaldatei eines Datensatzes herunter, auf Wunsch in PDF umgewandelt.",
-          "pipeshub_directory": "Schlägt den angemeldeten Benutzer, die Benutzer und Gruppen des Arbeitsbereichs und die Teams des Benutzers nach. Ändert nichts.",
+          "pipeshub_directory": "Schlägt den angemeldeten Benutzer, die Benutzer des Arbeitsbereichs und die Teams des Benutzers nach. Ändert nichts.",
           "pipeshub_create_collection": "Erstellt eine neue, leere Sammlung, die dem Benutzer gehört und Uploads aufnehmen kann.",
           "pipeshub_upload": "Lädt Dokumente in eine Sammlung hoch, damit sie indexiert und durchsuchbar werden. Bis zu 20 Dokumente und etwa 3 MB pro Aufruf.",
           "pipeshub_indexing_status": "Meldet, wie weit die Indexierung einer Sammlung ist und welche Dokumente warum fehlgeschlagen sind.",
@@ -2710,7 +2710,7 @@
           },
           "people": {
             "label": "Personen und Entitäten",
-            "description": "Die Benutzer und Gruppen des Arbeitsbereichs sowie die Personen, Projekte, Themen und Werte in seinem Wissensgraphen."
+            "description": "Die Benutzer des Arbeitsbereichs sowie die Personen, Projekte, Themen und Werte in seinem Wissensgraphen."
           },
           "chat": {
             "label": "Chat und Agenten",

@@ -2824,7 +2824,7 @@
           "pipeshub_search": "在用户可读取的连接器和集合中按语义搜索已索引的文档，并返回匹配的段落及其所属记录。",
           "pipeshub_get_record_content": "读取一条记录的全文。还可以通过 URL、问题编号或外部 ID 查找记录，浏览文件夹、空间或史诗下的内容，以及读取整个 Slack 会话串。",
           "pipeshub_download_record": "下载记录存储的原始文件，可选择转换为 PDF。",
-          "pipeshub_directory": "查询当前登录的用户、工作区的用户和群组，以及该用户所属的团队。不会更改任何内容。",
+          "pipeshub_directory": "查询当前登录的用户、工作区的用户，以及该用户所属的团队。不会更改任何内容。",
           "pipeshub_create_collection": "创建一个归用户所有的新空集合，可向其中上传文件。",
           "pipeshub_upload": "将文档上传到集合，以便建立索引并可供搜索。每次调用最多 20 个文档、约 3 MB。",
           "pipeshub_indexing_status": "报告集合的索引进度，以及哪些文档失败及其原因。",
@@ -2873,7 +2873,7 @@
           },
           "people": {
             "label": "人员和实体",
-            "description": "工作区的用户和群组，以及其知识图谱中的人员、项目、主题和数值。"
+            "description": "工作区的用户，以及其知识图谱中的人员、项目、主题和数值。"
           },
           "chat": {
             "label": "聊天和智能体",
