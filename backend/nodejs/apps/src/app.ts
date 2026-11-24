@@ -159,6 +159,7 @@ import { releaseOnClientClose } from './libs/utils/release-on-close';
 import './redisProviders';
 import {
   RedisConnectionProviderFactory,
+  checkRedisEvictionPolicy,
   closeAllRedisProviders,
   getPreparedRedisProvider,
 } from './libs/services/redis/connectionProviderFactory';
@@ -238,7 +239,7 @@ export class Application {
       // services), so `prepare()` on the EE provider must prime a
       // process-level credential cache rather than per-instance state for
       // one call to cover both.
-      await getPreparedRedisProvider();
+      await checkRedisEvictionPolicy(await getPreparedRedisProvider());
 
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();

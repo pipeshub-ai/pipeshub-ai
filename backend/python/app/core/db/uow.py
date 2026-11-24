@@ -147,6 +147,7 @@ class Tx:
         self.org_id = ""  # the org the unit is bound to
         self.role = ""  # the database role the unit runs as
         self.kg_dirty = False  # a statement of this unit that the guard recognised writes graph.nodes or graph.edges (the capture trigger's mark is the authority)
+        self.before_commit: list[Callable[[Tx], Awaitable[None]]] = []  # run last, right before COMMIT (after the pre-commit hook)
         self._open = True
 
     @staticmethod
@@ -255,6 +256,7 @@ class Tx:
         if not _IDENT.fullmatch(name):
             raise ValueError(f"invalid savepoint name {name!r}")
         await self._run("execute", f"/* pipeshub:kernel.savepoint */ SAVEPOINT {name}", internal=True)
+        mark = len(self.before_commit)
         try:
             yield
         except Exception:
@@ -267,6 +269,7 @@ class Tx:
                 mapped = self._db.map_error(e, self)
                 self._record("rollback_to", "kernel.savepoint", t0, mapped, getattr(e, "sqlstate", None))
                 raise mapped from e
+            del self.before_commit[mark:]  # what the rolled-back block registered (an event of its write) is rolled back with it
             self.failed = False
             raise
         else:
@@ -546,6 +549,8 @@ class KernelDB:
             yield tx
             if write and self.pre_commit_hook is not None and not tx.failed:
                 await self.pre_commit_hook(tx)
+            for step in tx.before_commit:
+                await step(tx)
             await self._check_alive(con, tx, write=write)
             tx.commit_sent = True
             t_commit = time.perf_counter()
@@ -557,7 +562,10 @@ class KernelDB:
                 tx._record("commit", None, t_commit, failure, getattr(e, "sqlstate", None))
                 raise failure from e
             outcome = "commit"
-        except BaseException:
+        except BaseException as e:
+            if not tx.commit_sent:
+                with suppress(Exception):
+                    e.commit_not_sent = True  # type: ignore[attr-defined]  # a known rollback: nothing of the unit was applied
             await self._abort(con, txn, tx)
             raise
         finally:

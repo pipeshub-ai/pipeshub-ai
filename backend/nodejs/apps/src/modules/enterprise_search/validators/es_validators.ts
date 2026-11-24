@@ -1403,11 +1403,18 @@ const ENTITY_TYPES = [
   'record',
   'named_entity',
 ] as const;
+// Any entity a search returns: a search can be narrowed to people and
+// organizations, and `records` lists theirs; `neighbors` cannot expand them.
+const RECORD_ENTITY_TYPES = [
+  ...ENTITY_TYPES,
+  'person',
+  'organization',
+] as const;
 
 export const enterpriseSearchEntitiesSchema = z.object({
   body: z.object({
     query: z.string().min(1, { message: 'A query is required' }).max(500),
-    entityTypes: z.array(z.enum(ENTITY_TYPES)).max(10).optional(),
+    entityTypes: z.array(z.enum(RECORD_ENTITY_TYPES)).max(10).optional(),
     namedEntityKinds: z.array(z.string().min(1).max(64)).max(10).optional(),
     limit: z.number().int().min(1).max(25).optional(),
   }),
@@ -1428,13 +1435,6 @@ const optionalIds = (max: number): z.ZodOptional<z.ZodArray<z.ZodString>> =>
   z.array(z.string().min(1).max(256)).max(max).optional();
 const pageCursor = z.string().min(1).max(4096).optional();
 const pageLimit = z.number().int().min(1).max(50).optional();
-
-// `records` lists the records of any entity a search returns, people and organizations too.
-const RECORD_ENTITY_TYPES = [
-  ...ENTITY_TYPES,
-  'person',
-  'organization',
-] as const;
 
 export const enterpriseSearchEntityRecordsSchema = z.object({
   body: z.object({
