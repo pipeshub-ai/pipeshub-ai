@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -418,3 +419,45 @@ async def test_excluding_an_extension_deletes_the_record_an_earlier_sync_made(en
     with patch.object(mod, "load_connector_filters", AsyncMock(return_value=(excluded, FilterCollection()))):
         await env.c.run_sync()
     assert EXCLUDABLE not in env.graph.records and "src/app.py" in env.graph.records
+
+
+# One path per family of file_role.is_sensitive_path; placeholder contents, never key-shaped text.
+CREDENTIALS = (".env", ".env.production", "deploy/prod.env", "id_rsa", "terraform.tfstate", "credentials.json", "infra/prod.tfvars", ".npmrc", "tls/server.pem")
+
+
+async def test_credential_files_get_no_record_and_are_counted_as_left_out_while_code_and_env_templates_are_kept(env):
+    # The git connectors drop these by name; here every one used to become a FILE record whose text was embedded.
+    push(env.repo, **dict.fromkeys(CREDENTIALS, "A=1\n"), **{"src/app.py": "x = 1\n", ".env.example": "A=\n", ".env.sample": "A=\n", "README.md": "# shop\n"})
+    await env.c.run_sync()
+    # no folder record either for deploy/, infra/ and tls/, which hold only credential files
+    assert sorted(env.graph.records) == [".env.example", ".env.sample", "README.md", "src", "src/app.py"]
+    assert env.repo.meta()["excludedFiles"] == dict.fromkeys(CREDENTIALS, "sensitive")
+
+
+async def test_a_credential_file_indexed_before_the_rule_loses_its_record_and_its_folder_on_the_next_sync(env):
+    push(env.repo, **{".env": "A=1\n", "tls/server.pem": "A=1\n", "app.py": "x = 1\n"})
+    with patch.object(mod, "is_sensitive_path", lambda path: False, create=True):  # the sync before the rule
+        await env.c.run_sync()
+    assert {".env", "tls", "tls/server.pem"} <= set(env.graph.records)
+    await env.c.run_sync()  # nothing pushed in between: same mtime and size, so no file is read again
+    assert sorted(env.graph.records) == ["app.py"]
+    assert {".env", "tls", "tls/server.pem"} <= set(env.graph.deleted)
+    assert env.repo.meta()["excludedFiles"] == {".env": "sensitive", "tls/server.pem": "sensitive"}
+
+
+async def test_a_credential_file_is_never_read_even_when_its_name_has_a_language(env):
+    push(env.repo, **{"id_rsa": "A=1\n"})
+    env.c._inspect = MagicMock(side_effect=AssertionError("a credential file was read"))
+    with patch.object(mod, "detect_language", lambda name: "python"):  # the rule must not depend on the language table
+        await env.c.run_sync()
+    assert env.graph.records == {}
+
+
+async def test_the_sync_summary_counts_the_credential_files_and_no_log_line_carries_their_contents(env, caplog):
+    push(env.repo, **{"id_rsa": "PLACEHOLDER-BODY\n", "a.py": "x = 1\n"})
+    env.c.logger = logging.getLogger("test.local_repo.credentials")
+    with caplog.at_level(logging.DEBUG, logger="test.local_repo.credentials"):
+        await env.c.run_sync()
+        await env.c.run_sync()  # a later sync over the same files still counts them
+    assert caplog.text.count("1 credential files left out") == 2
+    assert "PLACEHOLDER-BODY" not in caplog.text
