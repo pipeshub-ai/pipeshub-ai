@@ -1103,8 +1103,9 @@ run. Each says why it failed on the request's lines:
   grant, an agent registration) is written by the service that made the write, never also by the controller; a step the
   change runs keeps its own line (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`,
   `app_id`, `pat_id` or `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token
-  endpoint, the user the grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A personal
-  access token's name is not logged.
+  endpoint, the user the grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A
+  delegation's user (whom a service account may act for) is `subject_user_id`, and the admin who granted or revoked it is
+  `granted_by` / `revoked_by`. A personal access token's name is not logged.
 
 The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and
@@ -1362,10 +1363,10 @@ Node, drop the address from the thrown message.
 **Finding a user's lines (support).** Get the PipesHub id from the admin console (Users, open the user: the profile URL has
 `userId=<id>`) or `GET /api/v1/users?search=<email>` (`_id`), then filter on `user_id=<id>` (requests made by that user) or
 `target_user_id=<id>` (sign-in, user management, connector-creator, notification socket and queue, and OAuth token mint and
-revoke lines). A connector's per-user lines carry
-`source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object id, Atlassian
-account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry only
-`connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.
+revoke lines); a delegation's grant and revoke lines carry the person as `subject_user_id=<id>`. A connector's per-user
+lines carry `source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object
+id, Atlassian account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry
+only `connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.
 
 **CI.** `.github/scripts/new_lint_findings.py log-pii` (scanner `scripts/log_pii.py`, which reads TypeScript through
 `scripts/log_pii_ts.cjs`) fails a pull request that adds an email or a person's name to a log call under `backend/python/app` or

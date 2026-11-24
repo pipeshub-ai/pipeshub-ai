@@ -270,7 +270,7 @@ export class OAuthDcrService {
         isConfidential: false,
       });
       this.logger.info('Stored client from its metadata document', {
-        clientId,
+        client_id: clientId,
       });
     } catch (error) {
       // Two first consents at once: the other one stored it. Anything else is a real failure.

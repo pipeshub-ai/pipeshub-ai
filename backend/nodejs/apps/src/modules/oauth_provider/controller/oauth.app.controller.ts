@@ -186,17 +186,7 @@ export class OAuthAppController {
       const appId = req.params.appId!
 
       const isAdmin = await callerIsAdmin(userId, orgId);
-
-      // Revoke all tokens first
-      const app = await this.oauthAppService.getAppById(
-        appId,
-        orgId,
-        userId,
-        isAdmin,
-      );
-      await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
-
-      // Then delete the app
+      // The service revokes the app's tokens after marking it revoked.
       await this.oauthAppService.deleteApp(appId, orgId, userId, isAdmin);
 
       res.json({
