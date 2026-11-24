@@ -802,7 +802,8 @@ class EntityEventService(BaseEventService):
         """A deleted user's own connector OAuth apps: no one else may use them, so their client
         secrets go. Unlike the steps above, a failure is raised: the event is redelivered and the
         client secrets do not stay behind. Every step before this one is safe to run again."""
-        from app.connectors.api.connector_resolvers import resolve_config_service
+        # The edition's own: EE keeps each org's OAuth apps under that org.
+        from app.edition_config import resolve_config_service
         from app.utils.oauth_config import remove_personal_oauth_apps
 
         try:

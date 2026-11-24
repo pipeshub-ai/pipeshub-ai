@@ -525,6 +525,21 @@ class TestDeletedUser:
         assert [app["_id"] for app in store.apps()] == ["org-app", "bob-app", "elsewhere"]
         assert store.values["/services/oauth/gmail"] == []
 
+    async def test_the_event_handler_reads_the_edition_s_store_for_the_org(self) -> None:
+        # EE keeps each org's apps under that org: the cleanup goes through the edition's resolver.
+        from app.services.messaging.kafka.handlers.entity import EntityEventService
+
+        svc = object.__new__(EntityEventService)
+        svc.logger = MagicMock()
+        svc.app_container = MagicMock()
+        org_store = InMemoryConfigService({APPS_PATH: [_personal_app(ALICE, "alice-app")]})
+
+        with patch("app.edition_config.resolve_config_service", return_value=org_store) as scoped:
+            await svc._remove_personal_oauth_apps(ORG_ID, ALICE)
+
+        scoped.assert_called_once_with(svc.app_container, ORG_ID)
+        assert org_store.apps() == []
+
 
 @pytest.mark.asyncio
 class TestPublicOnly:
