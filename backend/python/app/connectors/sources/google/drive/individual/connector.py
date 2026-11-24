@@ -608,10 +608,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             if metadata.get("driveId"):
                 # Drive leaves `permissions` off shared-drive items; their own list says which grants were
-                # made on them, and carries the address Drive hid from the last modifier.
+                # made on them, and carries the addresses Drive hid from the owner and the last modifier.
                 item_grants = await self._item_grants(metadata)
                 if item_grants is not None:
-                    people = people._replace(last_modified_by=drive_file_people(metadata, item_grants).last_modified_by)
+                    people = drive_file_people(metadata, item_grants)
                     file_record.shared_with = drive_shared_with(
                         item_grants, owner_ids=set(), parent_grants=None, has_details=True
                     )

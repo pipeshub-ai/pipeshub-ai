@@ -932,6 +932,21 @@ class TestPersonalSharedDriveItemSharedWith:
         assert result.record.last_modified_by is None
         assert "LAST_MODIFIED_BY" in result.record.people_unknown
 
+    async def test_an_owner_address_the_items_list_carries_is_filled_in(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "p-own", "type": "user", "role": "owner", "emailAddress": "own@ext.test",
+             "permissionDetails": [{"permissionType": "file", "inherited": True}]},
+        ]})
+        metadata = self._item()
+        metadata["owners"] = [{"displayName": "Own", "permissionId": "p-own"}]
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        assert [o.email for o in result.record.owners] == ["own@ext.test"]
+        assert "OWNED_BY" not in result.record.people_unknown
+
     async def test_an_editor_who_cannot_share_still_reads_the_items_list(self, connector) -> None:
         """A Content manager reads sharing even where the drive keeps sharing folders to Managers."""
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
