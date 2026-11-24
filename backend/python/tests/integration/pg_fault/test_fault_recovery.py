@@ -78,7 +78,8 @@ async def test_the_stack_recovers_from_the_fault_without_losing_or_mixing_anythi
     comps = []
     try:
         await reads.preload()
-        comps = [RecordWrites(stack, conn_db), InboxConsumer(stack), KgLoad(stack, conn_db, reads.orgs()), ConfigLoad(),
+        writes = RecordWrites(stack, conn_db)
+        comps = [writes, InboxConsumer(stack), KgLoad(stack, conn_db, [*reads.orgs(), writes.org]), ConfigLoad(),
                  Maintainers(stack, os.environ.get("KERNEL_TEST_MIGRATE_PYTHON", sys.executable)), Search(stack), reads]
         for c in comps:
             await c.start()

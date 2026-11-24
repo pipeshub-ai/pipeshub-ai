@@ -100,9 +100,9 @@ async def _sample(stack: Stack, containers: list[str], wal0: list[str]) -> dict:
         try:
             out["connections"] = {r["usename"] or "-": r["n"] for r in await con.fetch(
                 "SELECT usename, count(*) AS n FROM pg_stat_activity WHERE backend_type = 'client backend' GROUP BY usename")}
-            lsn = await con.fetchval("SELECT pg_current_wal_lsn()::text")
-            wal0[:] = wal0 or [lsn]
-            out["wal_mb"] = round(await con.fetchval("SELECT pg_wal_lsn_diff($1::pg_lsn, $2::pg_lsn)", lsn, wal0[0]) / 2**20, 1)
+            wal0[:] = wal0 or [await con.fetchval("SELECT pg_current_wal_lsn()::text")]
+            out["wal_mb"] = round(float(await con.fetchval("SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), $1::text::pg_lsn)", wal0[0])) / 2**20, 1)
+            out["wal_dir_mb"] = round(float(await con.fetchval("SELECT coalesce(sum(size), 0) FROM pg_ls_waldir()")) / 2**20, 1)
             out["db_mb"] = round(await con.fetchval("SELECT pg_database_size(current_database())") / 2**20, 1)
             out["queue_open"] = await con.fetchval("SELECT count(*) FROM platform.queue_deliveries WHERE status <> 'dead'")
             out["kg_log"] = await con.fetchval("SELECT count(*) FROM kg.graph_changes")
@@ -120,7 +120,8 @@ async def _sample(stack: Stack, containers: list[str], wal0: list[str]) -> dict:
 
 async def _cycle(stack: Stack, reads: Reads, fault: Callable[[], Awaitable[None]], run_s: float) -> dict:
     conn_db = await stack.kernel("connectors")
-    comps = [RecordWrites(stack, conn_db), InboxConsumer(stack), KgLoad(stack, conn_db, reads.orgs()), ConfigLoad(), Search(stack), reads]
+    writes = RecordWrites(stack, conn_db)
+    comps = [writes, InboxConsumer(stack), KgLoad(stack, conn_db, [*reads.orgs(), writes.org]), ConfigLoad(), Search(stack), reads]
     started = []
     try:
         for c in comps:

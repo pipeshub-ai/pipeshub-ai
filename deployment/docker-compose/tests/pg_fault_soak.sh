@@ -23,6 +23,7 @@ env_file="$work/env"
 dc() { $DOCKER compose --env-file "$env_file" -p "$proj" -f docker-compose.yml -f docker-compose.postgres-only.yml -f "$work/soak.yml" "$@"; }
 cleanup() { if [ "${KEEP:-0}" != 1 ]; then dc down -v >/dev/null 2>&1 || true; fi; rm -rf "$work"; }
 trap cleanup EXIT
+trap 'exit 143' INT TERM
 pw() { head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 
 image_var="PG_IMAGE_$major"; image="${!image_var:-pmcompose/postgres:$major-pmc}"
@@ -34,23 +35,25 @@ declare -A pass
 for v in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP; do pass[$v]="$(pw)"; echo "PG_${v}_PASSWORD=${pass[$v]}"; done > "$env_file"
 { echo "PG_MAJOR=$major"; echo "PG_IMAGE=${image%:*}"; echo "PG_IMAGE_REV=${image##*:$major-}"
   echo "PIPESHUB_MIGRATE_IMAGE=${migrate_image%:*}"; echo "IMAGE_TAG=${migrate_image##*:}"; echo "PG_MEMORY_LIMIT=4G"; } >> "$env_file"
-cat > "$work/soak.yml" <<'YML'
+# fixed host ports: an ephemeral one would change when a fault restarts the container
+free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+pg_port="$(free_port)"; pgb_port="$(free_port)"
+cat > "$work/soak.yml" <<YML
 services:
   postgres:
     command: ["postgres", "-c", "jit=off"]
-    ports: ["127.0.0.1::5432"]
+    ports: ["127.0.0.1:$pg_port:5432"]
   pgbouncer:
-    ports: ["127.0.0.1::6432"]
+    ports: ["127.0.0.1:$pgb_port:6432"]
 YML
 
 dc up -d --no-build postgres pgbouncer pipeshub-migrate pipeshub-placement pipeshub-fold
 for _ in $(seq 120); do [ "$($DOCKER inspect -f '{{.State.Status}}' "$proj-pipeshub-migrate-1")" = exited ] && break; sleep 2; done
 [ "$($DOCKER inspect -f '{{.State.ExitCode}}' "$proj-pipeshub-migrate-1")" = 0 ] || { echo "the migration job failed"; dc logs pipeshub-migrate | tail -40; exit 1; }
-port() { $DOCKER port "$proj-$1-1" "$2" | head -1 | sed 's/.*://'; }
 
 PG_SOAK_PASSWORDS="$(printf '{"admin":"%s","node":"%s","connectors":"%s","indexing":"%s","query":"%s","kv":"%s","jobs":"%s"}' \
   "${pass[ADMIN]}" "${pass[NODE]}" "${pass[CONNECTORS]}" "${pass[INDEXING]}" "${pass[QUERY]}" "${pass[KV]}" "${pass[JOBS]}")" \
-PG_SOAK_SERVER_PORT="$(port postgres 5432)" PG_SOAK_POOLER_PORT="$(port pgbouncer 6432)" \
+PG_SOAK_SERVER_PORT="$pg_port" PG_SOAK_POOLER_PORT="$pgb_port" \
 PG_SOAK_PG_CONTAINER="$proj-postgres-1" PG_SOAK_POOLER_CONTAINER="$proj-pgbouncer-1" \
 PG_SOAK_WORKERS="$proj-pipeshub-placement-1 $proj-pipeshub-fold-1" \
   bash -c 'cd ../../backend/python && PYTHONPATH="$PWD" exec "$0" "$@"' "$py" -m tests.integration.pg_fault.soak --hours "${SOAK_HOURS:-6}" --cycle-min "${CYCLE_MIN:-15}" --out "$out"
