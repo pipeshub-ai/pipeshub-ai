@@ -16,6 +16,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { revealQuery } from '../../configuration_manager/utils/secretReveal';
 import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../../tokens_manager/utils/connector.utils';
+import { auditSettingsChange } from '../../configuration_manager/utils/config-audit';
 
 // ============================================================================
 // Helper Functions
@@ -643,7 +644,9 @@ export const createToolsetInstance =
         ...(req.headers as Record<string, string>),
       };
 
-      const connectorResponse = await executeConnectorCommand(
+      const connectorResponse = await executeConnectorCommand<{
+        instance?: { _id?: string };
+      }>(
         `${appConfig.connectorBackend}/api/v1/toolsets/instances`,
         HttpMethod.POST,
         headers,
@@ -651,6 +654,9 @@ export const createToolsetInstance =
       );
 
       handleConnectorResponse(connectorResponse, res, 'Creating toolset instance', 'Failed to create toolset instance');
+      auditSettingsChange('toolset', 'create', {
+        target: connectorResponse.data?.instance?._id,
+      });
     } catch (error: any) {
       next(handleBackendError(error, 'create toolset instance'));
     }
@@ -712,6 +718,10 @@ export const updateToolsetInstance =
       );
 
       handleConnectorResponse(connectorResponse, res, 'Updating toolset instance', 'Failed to update toolset instance');
+      auditSettingsChange('toolset', 'update', {
+        target: instanceId,
+        reason: 'settings',
+      });
     } catch (error: any) {
       next(handleBackendError(error, 'update toolset instance'));
     }
@@ -746,6 +756,12 @@ const proxyToolsetToolRules =
         operation,
         'Toolset not found',
       );
+      if (method === HttpMethod.PUT) {
+        auditSettingsChange('toolset', 'update', {
+          target: instanceId,
+          reason: 'tool_rules',
+        });
+      }
     } catch (error: unknown) {
       next(handleBackendError(error, operation));
     }
@@ -785,6 +801,7 @@ export const deleteToolsetInstance =
       );
 
       handleConnectorResponse(connectorResponse, res, 'Deleting toolset instance', 'Failed to delete toolset instance');
+      auditSettingsChange('toolset', 'delete', { target: instanceId });
     } catch (error: any) {
       next(handleBackendError(error, 'delete toolset instance'));
     }
@@ -1090,6 +1107,9 @@ export const updateToolsetOAuthConfig =
       );
 
       handleConnectorResponse(connectorResponse, res, 'Updating toolset OAuth config', 'Failed to update OAuth configuration');
+      auditSettingsChange('toolset_oauth_app', 'update', {
+        target: oauthConfigId,
+      });
     } catch (error: any) {
       next(handleBackendError(error, 'update toolset OAuth config'));
     }
@@ -1122,6 +1142,9 @@ export const deleteToolsetOAuthConfig =
       );
 
       handleConnectorResponse(connectorResponse, res, 'Deleting toolset OAuth config', 'Failed to delete OAuth configuration');
+      auditSettingsChange('toolset_oauth_app', 'delete', {
+        target: oauthConfigId,
+      });
     } catch (error: any) {
       next(handleBackendError(error, 'delete toolset OAuth config'));
     }
