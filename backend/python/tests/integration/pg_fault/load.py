@@ -7,10 +7,11 @@ Each component drives the product code a service runs (no stand-ins for the unit
 - ``KgLoad``: the typed-graph worker (drain, restamp, counters, bootstrap, verify loop) while the graph keeps changing.
 - ``ConfigLoad``: two configuration services on the PostgreSQL key-value store; one writes, the other reads through its cache.
 - ``Maintainers``: the placement and fold workers (``python -m db.maintain ... --watch``) as processes of their own.
-- ``Reads``: the permission corpus asked through ``check_access`` as the query service, again and again.
+- ``Search``: pgvector writes as the indexing service and searches as the query service.
+- ``Reads``: the permission corpus asked through ``check_access`` and the Knowledge Hub as the query service, again and again.
 
-``check()`` of each returns what is wrong once the database is back and the load has settled; an empty list is a pass. ``faults``
-names the faults the soak and the tests inject. Used by ``test_fault_recovery.py`` and ``scripts/pg_fault_soak.py``.
+``check()`` of each returns what is wrong once the database is back and the load has settled; an empty list is a pass. Used by
+``test_fault_recovery.py`` (the faults on a throwaway cluster) and ``soak.py`` (hours against the Compose services).
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import logging
 import os
 import random
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -467,17 +469,22 @@ class Maintainers(Component):
         super().__init__()
         self.stack, self.python = stack, python
         self.procs: dict[str, subprocess.Popen] = {}
+        self.logs: dict[str, Any] = {}          # a file, not a pipe: a pipe nobody reads fills up and blocks the worker
 
     async def start(self) -> None:
         env = {**os.environ, "PYTHONPATH": str(BACKEND), "PG_JOBS_URL": self.stack.direct("jobs"), "PG_MIGRATE_URL": self.stack.migrate_dsn}
         for job in ("placement", "fold"):
+            self.logs[job] = tempfile.TemporaryFile("w+")
             self.procs[job] = subprocess.Popen([self.python, "-m", "db.maintain", job, "--watch", "0.5"], cwd=BACKEND, env=env,
-                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                               stdout=self.logs[job], stderr=subprocess.STDOUT, text=True)
         await super().start()
 
+    def _output(self, job: str) -> str:
+        self.logs[job].seek(0)
+        return self.logs[job].read()[-2000:]
+
     async def check(self) -> list[str]:
-        bad = [f"the {job} worker exited with {p.returncode}: {(p.stdout.read() if p.stdout else '')[-2000:]}"
-               for job, p in self.procs.items() if p.poll() is not None]
+        bad = [f"the {job} worker exited with {p.returncode}: {self._output(job)}" for job, p in self.procs.items() if p.poll() is not None]
         return bad or await maintainers_work(self.stack)
 
     async def close(self) -> None:
@@ -490,8 +497,8 @@ class Maintainers(Component):
             if p.poll() is None:
                 p.kill()
                 p.wait(10)
-            if p.stdout:
-                p.stdout.close()
+        for f in self.logs.values():
+            f.close()
 
 
 class Search(Component):

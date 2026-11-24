@@ -53,19 +53,30 @@ async def pooler_restart(stack: Stack, env) -> None:
 async def terminate_each_role(stack: Stack, env) -> None:
     """Every session of each service role, again and again for a few seconds: whatever statement it runs is cut."""
     con = await asyncpg.connect(stack.admin_dsn)
+    cut = 0
     try:
         for _ in range(8):
             for role in ROLES:
-                await con.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = $1 AND datname = current_database()", login(role))
+                cut += await con.fetchval("""SELECT count(*) FILTER (WHERE pg_terminate_backend(pid)) FROM pg_stat_activity
+                    WHERE usename = $1 AND datname = current_database()""", login(role))
                 await asyncio.sleep(0.1)
     finally:
         await con.close()
+    assert cut, "no session was terminated: the fault was not injected"
 
 
 async def outage(stack: Stack, env) -> None:
     await asyncio.to_thread(pg_ctl, env.cluster, "-m", "fast", "stop")
     await asyncio.sleep(OUTAGE_S)
     await asyncio.to_thread(start_server, env.cluster)
+
+
+async def server_start(stack: Stack) -> object:
+    con = await asyncpg.connect(stack.admin_dsn)
+    try:
+        return await con.fetchval("SELECT pg_postmaster_start_time()")
+    finally:
+        await con.close()
 
 
 FAULTS = {f.__name__: f for f in (restart_fast, restart_immediate, pooler_restart, terminate_each_role, outage)}
@@ -84,9 +95,12 @@ async def test_the_stack_recovers_from_the_fault_without_losing_or_mixing_anythi
         for c in comps:
             await c.start()
         await asyncio.sleep(3)
+        started = await server_start(stack)
         t0 = time.monotonic()
         await FAULTS[fault](stack, env)
         took = time.monotonic() - t0
+        if fault in ("restart_fast", "restart_immediate", "outage"):
+            assert await server_start(stack) != started, "the server did not restart: the fault was not injected"
         await asyncio.sleep(5)
         await asyncio.gather(*(c.stop_load() for c in comps))
         spent: dict[str, float] = {}
@@ -101,7 +115,6 @@ async def test_the_stack_recovers_from_the_fault_without_losing_or_mixing_anythi
         problems = {c.name: await timed(f"check {c.name}", c.check()) for c in comps}
         seen = {c.name: dict(c.errors) for c in comps if c.errors}
         print(f"{fault}: {took:.1f}s; errors the load saw: {seen}; seconds: {spent}")
-        assert seen, "the fault reached no component: it was not injected"
         assert not any(problems.values()), "\n".join(f"{k}: {p}" for k, ps in problems.items() for p in ps)
     finally:
         for c in reversed(comps):
