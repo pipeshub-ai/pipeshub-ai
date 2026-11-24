@@ -685,7 +685,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 response_data = response.json()
                 users_data = response_data.get("results") if isinstance(response_data, dict) else None
                 if not isinstance(users_data, list):
-                    self.logger.error("❌ User list response has no 'results' list; keeping the listing incomplete")
+                    self.logger.error("User list response has no 'results' list; keeping the listing incomplete")
                     break
 
                 # Only a missing next link ends the listing: the server may cut `limit`, so a short page can have
