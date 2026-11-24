@@ -154,9 +154,12 @@ async def test_arango_a_moved_link_and_a_random_key_link_of_a_listed_creator_go_
 
 
 async def test_neo4j_a_moved_link_of_a_listed_creator_goes_at_startup(monkeypatch) -> None:
-    from tests.integration.real_graph import connect_neo4j
+    from tests.integration.real_graph import backend_unavailable, connect_neo4j
 
-    p = await connect_neo4j(logging.getLogger("wsleak-it"), monkeypatch)
+    try:
+        p = await connect_neo4j(logging.getLogger("wsleak-it"), monkeypatch)
+    except Exception as exc:
+        backend_unavailable("neo4j", exc)
     try:
         t = uuid.uuid4().hex[:8]
         org, conn = f"org-{t}", f"gm-{t}"
