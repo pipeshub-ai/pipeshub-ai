@@ -136,6 +136,8 @@ interface BudgetToken {
   group: string;
   scope: string;
   at: number;
+  /** The installation alert the token paid for: its other orgs' copies share it. */
+  alertId: string;
 }
 
 /**
@@ -144,6 +146,11 @@ interface BudgetToken {
  */
 class HourlyBudget {
   private readonly used = new Map<string, number[]>();
+  // One installation alert is one token however many orgs' signed copies it arrives as: (group, alert id) -> token, holders.
+  private readonly shared = new Map<
+    string,
+    { token: BudgetToken; holders: number }
+  >();
 
   constructor(
     private readonly perScope: number,
@@ -162,8 +169,21 @@ class HourlyBudget {
     return [`${group}|${scope}`, `${group}|`];
   }
 
-  /** A token, or null (nothing taken) when the scope or the group is used up. */
-  take(group: string, scope: string, now: number): BudgetToken | null {
+  /**
+   * A token, or null (nothing taken) when the scope or the group is used up. A copy of an alert another copy already holds a
+   * token for (within the hour) shares that token and takes nothing.
+   */
+  take(
+    group: string,
+    scope: string,
+    now: number,
+    alertId: string,
+  ): BudgetToken | null {
+    const held = this.shared.get(`${group}|${alertId}`);
+    if (held && now - held.token.at < HOUR_MS) {
+      held.holders += 1;
+      return held.token;
+    }
     const [scopeKey, groupKey] = HourlyBudget.keys(group, scope);
     const inScope = this.recent(scopeKey, now);
     const inGroup = this.recent(groupKey, now);
@@ -172,10 +192,22 @@ class HourlyBudget {
     }
     this.used.set(scopeKey, [...inScope, now]);
     this.used.set(groupKey, [...inGroup, now]);
-    return { group, scope, at: now };
+    const token = { group, scope, at: now, alertId };
+    for (const [k, v] of this.shared)
+      if (now - v.token.at >= HOUR_MS) this.shared.delete(k);
+    this.shared.set(`${group}|${alertId}`, { token, holders: 1 });
+    return token;
   }
 
+  /** Gives the token back once no copy of its alert holds it any more. */
   refund(token: BudgetToken): void {
+    const key = `${token.group}|${token.alertId}`;
+    const held = this.shared.get(key);
+    if (held?.token === token) {
+      held.holders -= 1;
+      if (held.holders > 0) return;
+      this.shared.delete(key);
+    }
     for (const key of HourlyBudget.keys(token.group, token.scope)) {
       const times = this.used.get(key);
       if (!times) continue;
@@ -306,8 +338,7 @@ export class PlatformAlertHandler {
       });
       return;
     }
-    // shortcut: a signed copy draws on its org's own budget, the all-scopes caps stay shared; split them too if many orgs share a host
-    const scope = org ? `${budgetScope(alert)}@${org}` : budgetScope(alert);
+    const scope = budgetScope(alert);
     const durable = inDurableDelivery();
     let orgs: PlatformRecipientOrg[] | undefined;
     // An alert whose notifications an earlier delivery already stored was counted against the hourly cap then: its redelivery
@@ -317,7 +348,9 @@ export class PlatformAlertHandler {
       orgs = await this.recipients(org);
       begun = await this.anyOrg(orgs, (org) => deliveryRecordedFor(org.orgId));
     }
-    const token = begun ? null : this.deliveries.take(type, scope, now);
+    const token = begun
+      ? null
+      : this.deliveries.take(type, scope, now, alertId);
     if (!begun && !token) {
       this.warnLimited(
         `rate:${type}:${scope}`,
@@ -361,6 +394,15 @@ export class PlatformAlertHandler {
     }
     if (recipients === 0 && storedBefore === 0) {
       if (token) this.deliveries.refund(token);
+      if (org && orgs.length === 0) {
+        // The publisher signs a copy for every active org; the recipients are the orgs `resolveRecipients` names, as for an
+        // unsigned alert (here: the installation's org). Another org's copy is expected, not a failure: a redelivery finds the same.
+        this.logger.debug(
+          'Platform alert copy skipped: its org receives no installation alerts',
+          { type, alertId, orgId: org },
+        );
+        return;
+      }
       this.logger.warn('Platform alert not delivered: no recipients', {
         type,
         alertId,
@@ -422,7 +464,7 @@ export class PlatformAlertHandler {
     );
     let emailToken: BudgetToken | null = null;
     if (!granted) {
-      emailToken = this.emails.take(alert.kind, scope, now);
+      emailToken = this.emails.take(alert.kind, scope, now, alert.alertId);
       if (!emailToken) {
         this.warnLimited(
           `email-rate:${alert.kind}:${scope}`,

@@ -273,6 +273,26 @@ describe('notification/service/platform-alert.handler', () => {
       expect(mailProducer.publishEvent.callCount).to.equal(2);
       expect(mailProducer.publishEvent.secondCall.args[0].payload.orgId).to.equal(orgB);
     });
+    it("one alert signed for more orgs than the hourly email cap is one budget: every org's admins are mailed", async () => {
+      const orgs = Array.from({ length: 13 }, () => ({ orgId: id(), userIds: [id()] }));
+      resolveRecipients.resolves(orgs);
+      for (const o of orgs) await signedFor(o.orgId, () => handler.handle(event({}, { orgId: o.orgId })));
+      expect(insertOrgs).to.deep.equal(orgs.map((o) => o.orgId));
+      expect(mailProducer.publishEvent.callCount).to.equal(13);
+      // and it took one token: a second alert in the same hour is delivered and mailed too
+      for (const o of orgs.slice(0, 1))
+        await signedFor(o.orgId, () => handler.handle(event({}, { orgId: o.orgId, alertId: 'a2' })));
+      expect(mailProducer.publishEvent.callCount).to.equal(14);
+    });
+
+    it('a copy signed for an org that receives no installation alerts is skipped quietly, as an unsigned alert never reaches it', async () => {
+      const other = id();
+      await signedFor(other, () => handler.handle(event({}, { orgId: other })));
+      expect(insertOrgs).to.deep.equal([]);
+      expect(logger.warn.called).to.equal(false);
+      await signedFor(orgA, () => handler.handle(event({}, { orgId: orgA })));    // the installation's org still gets it
+      expect(insertOrgs).to.deep.equal([orgA]);
+    });
   });
 
   describe('with the durable consumer inbox', () => {
