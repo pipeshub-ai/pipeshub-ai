@@ -17,16 +17,21 @@ export function isAutoModel(model: { modelKey?: string | null } | null | undefin
   return model?.modelKey?.trim() === AUTO_MODEL_KEY;
 }
 
-export function canUseAuto(models: readonly unknown[] | null | undefined): boolean {
-  return (models?.length ?? 0) >= MIN_MODELS_FOR_AUTO;
+/** Auto is offered only when a decision model will classify the turn and there is a real choice of chat models. */
+export function canUseAuto(
+  models: readonly unknown[] | null | undefined,
+  decisionModelConfigured = false,
+): boolean {
+  return decisionModelConfigured && (models?.length ?? 0) >= MIN_MODELS_FOR_AUTO;
 }
 
-/** Whether `model` is still selectable in `models`; Auto is valid while there are enough models. */
+/** Whether `model` is still selectable in `models`; Auto is valid while there are enough models and a decision model. */
 export function isModelInList(
   models: ReadonlyArray<{ modelKey: string; modelName: string }>,
   model: { modelKey?: string | null; modelName?: string | null },
+  decisionModelConfigured = false,
 ): boolean {
-  if (isAutoModel(model)) return canUseAuto(models);
+  if (isAutoModel(model)) return canUseAuto(models, decisionModelConfigured);
   const k = model.modelKey?.trim();
   const n = model.modelName?.trim();
   return Boolean(k && n) && models.some((m) => m.modelKey === k && m.modelName === n);

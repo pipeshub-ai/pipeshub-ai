@@ -725,6 +725,7 @@ interface ChatState {
   /** Store the agent-configured default reasoning effort for a context. */
   setAgentDefaultReasoningEffort: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
   setAutoDefault: (autoDefault: boolean) => void;
+  setDecisionModelConfigured: (decisionModelConfigured: boolean) => void;
   /** Update universal agent mode capability toggles and persist to localStorage. */
   setAgentCapabilities: (caps: Partial<import('./types').AgentCapabilities>) => void;
   /**
@@ -864,6 +865,7 @@ const initialState = {
     reasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
     agentDefaultReasoningEffort: {} as Record<string, import('./types').ReasoningEffort | null>,
     autoDefault: false,
+    decisionModelConfigured: false,
   },
 
   scopedAgentCapabilities: {} as Record<string, AgentCapabilities>,
@@ -1667,6 +1669,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     settings: { ...state.settings, autoDefault },
   })),
 
+  setDecisionModelConfigured: (decisionModelConfigured: boolean) => set((state) => ({
+    settings: { ...state.settings, decisionModelConfigured },
+  })),
+
   setAgentCapabilities: (caps) => set((state) => {
     const next: AgentCapabilities = { ...state.settings.agentCapabilities, ...caps };
     lsSetAgentCapabilities(next);
@@ -1775,7 +1781,7 @@ export function getEffectiveModel(
     ctxKey === ASSISTANT_CTX
     && autoDefault
     && !state.projectScope
-    && canUseAuto(availableModels[ctxKey]?.models)
+    && canUseAuto(availableModels[ctxKey]?.models, state.settings.decisionModelConfigured)
   ) {
     return AUTO_MODEL;
   }

@@ -427,6 +427,10 @@ export interface ChatSettings {
    * and a project chat keeps the concrete default model.
    */
   autoDefault: boolean;
+  /**
+   * Org has a saved decision model. Auto stays out of the chat menu until this is true.
+   */
+  decisionModelConfigured: boolean;
 }
 
 /**
