@@ -46,7 +46,10 @@ if [[ $EUID -ne 0 ]] && \
    [[ -S /var/run/docker.sock ]] && \
    ! docker info >/dev/null 2>&1; then
   if command -v sudo >/dev/null 2>&1; then
-    exec sudo "${BASH_SOURCE[0]}" "$@"
+    # sudo starts from a clean environment, so PIPESHUB_EXTRA_PROFILES goes in as
+    # an argument. Only when it is set: unset means "use the saved value", and set
+    # but empty means "clear it". Quoted, so a list with spaces stays one argument.
+    exec sudo ${PIPESHUB_EXTRA_PROFILES+env "PIPESHUB_EXTRA_PROFILES=$PIPESHUB_EXTRA_PROFILES"} "${BASH_SOURCE[0]}" "$@"
   fi
   # sudo not available — fall through; the pre-flight check will give a clear error
 fi

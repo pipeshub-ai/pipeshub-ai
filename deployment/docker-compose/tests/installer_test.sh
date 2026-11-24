@@ -1054,6 +1054,45 @@ STUB
   : >"$work/docker.log"
   (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --stop >/dev/null 2>&1)
   check "--stop without extras names the installer's own profiles only" "$(grep ' down ' "$work/docker.log")" "sandbox,postgres,postgres-migrate]"
+
+  # A user outside the docker group: the installer re-runs itself under sudo, and sudo starts from a clean
+  # environment. The setting crosses as an argument. Here docker refuses `info` until that re-run, and sudo is
+  # `env -i`. The re-run needs a non-root user and the Docker socket, so the checks are skipped without them.
+  if [[ $EUID -ne 0 && -S /var/run/docker.sock ]]; then
+    real_docker="$(command -v docker)"
+    mkdir -p "$work/sudobin"
+    cat >"$work/sudobin/docker" <<STUB
+#!/usr/bin/env bash
+[[ "\${1:-}" == info && -z "\${SUDO_USER:-}" ]] && exit 1
+exec "$real_docker" "\$@"
+STUB
+    cat >"$work/sudobin/sudo" <<STUB
+#!/bin/sh
+echo x >>"$work/sudo.log"
+exec /usr/bin/env -i SUDO_USER=me HOME="$HOME" PATH="$work/sudobin:$PATH" "\$@"
+STUB
+    chmod +x "$work/sudobin/docker" "$work/sudobin/sudo"
+    sudo_run() { run PATH="$work/sudobin:$PATH" "$@"; }
+
+    seed "graph-neo4j,sandbox"; : >"$work/sudo.log"
+    sudo_run PIPESHUB_EXTRA_PROFILES=my-proxy && pass "an extra profile through the sudo re-run exits 0" || fail "an extra profile through the sudo re-run exits 0"
+    [[ -s "$work/sudo.log" ]] && pass "the installer re-ran itself under sudo" || fail "the installer re-ran itself under sudo"
+    check_exact "the setting crosses the sudo re-run" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy"
+    check_exact "the profile is on after the sudo re-run" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox,my-proxy"
+
+    seed "graph-neo4j,sandbox"
+    sudo_run "PIPESHUB_EXTRA_PROFILES=my-proxy, my-cron" && pass "a list with spaces through the sudo re-run exits 0" || fail "a list with spaces through the sudo re-run exits 0"
+    check_exact "a list with spaces crosses the sudo re-run as one value" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy,my-cron"
+
+    seed "graph-neo4j,sandbox,my-proxy" 'PIPESHUB_EXTRA_PROFILES=my-proxy\n'
+    sudo_run PIPESHUB_UNRELATED=1
+    check_exact "without the variable the sudo re-run keeps the saved setting" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy"
+    sudo_run PIPESHUB_EXTRA_PROFILES=
+    check_exact "an empty value clears the saved setting through the sudo re-run" "$(saved PIPESHUB_EXTRA_PROFILES)" ""
+    check_exact "and takes the profile off" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox"
+  else
+    echo "  skip - PIPESHUB_EXTRA_PROFILES through the sudo re-run (needs a non-root user and /var/run/docker.sock)"
+  fi
 )
 
 PASS="$(wc -l <"$PASS_FILE" | tr -d ' ')"
