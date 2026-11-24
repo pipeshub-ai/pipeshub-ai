@@ -294,6 +294,12 @@ def images_not_inlined(attachments: list[dict[str, Any]]) -> set[str]:
 
 # Most users /wiki/rest/api/search/user?cql=type=user returns (Atlassian's documented cap).
 USER_SEARCH_CAP = 10_000
+# Rows asked of Jira's user search per lookup; a page this full may hide the match.
+JIRA_USER_SEARCH_PAGE = 50
+
+
+def _names_email(rows: list[dict], email: str) -> bool:
+    return any((r.get("emailAddress") or "").strip().lower() == email for r in rows)
 
 # Confluence v2 space permission access-class principals (ROLES-mode / default ACLs), as
 # normalised by _access_class_id: Cloud spells them "access-class"/"ALL_LICENSED_USERS" or
@@ -951,6 +957,12 @@ class ConfluenceConnector(BaseConnector):
 
             # Step 1: Sync users
             await self._sync_users()
+            # The group sync can stop the run on Atlassian's quota: what the user search showed removes
+            # a link first. Only the call below, after the group read settles who is active, may make one.
+            await self.register_authenticated_source_user(
+                self._authenticated_confluence_email, self._authenticated_confluence_account_id,
+                listing_complete=False, extra_present_emails=self._listed_user_emails,
+            )
 
             # Step 2: Sync groups and memberships
             await self._sync_user_groups()
@@ -1356,9 +1368,11 @@ class ConfluenceConnector(BaseConnector):
                 await self._withdraw_users_gone_from_source(seen_account_ids)
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
             # A capped search (users past the cap are unseen) and an empty one are not the whole directory.
+            # One read to the end may still have skipped an account that shifted between pages, or hidden
+            # the authenticator's email, so it settles the link only with the authenticator settled too.
             self._user_list_complete = bool(
                 user_list_complete and seen_account_ids and len(seen_account_ids) < USER_SEARCH_CAP
-            )
+            ) and await self._authenticator_is_listed()
 
             try:
                 if user_list_complete and len(seen_account_ids) < USER_SEARCH_CAP:
@@ -1401,6 +1415,70 @@ class ConfluenceConnector(BaseConnector):
             return value
         return ((shared or {}).get(OAuthConfigKeys.CONFIG) or {}).get(INCLUDE_JIRA_SCOPE)
 
+    async def _authenticator_is_listed(self) -> bool:
+        """Whether the user search may settle the authenticator's link: it listed them, or the site's Jira
+        user search, which matches hidden emails too, does not find them. Found there, they are listed.
+
+        Jira's user search answers a caller without Browse users with no rows, so "not found" counts only
+        once the same search finds the token's own account. False when that cannot be told: the pass then
+        only ever removes a link."""
+        email = (await self.authenticator_email() or "").strip().lower()
+        if not email:
+            return False
+        if email in self._listed_user_emails:
+            return True
+        try:
+            if not await self._jira_user_search_allowed():
+                return False
+        except Exception as e:
+            self.logger.warning("Could not tell whether the connector may search Jira's users: %s", e)
+            return False
+        rows = await self._find_jira_accounts(email)
+        if rows is None:
+            return False
+        if _names_email(rows, email):
+            self._listed_user_emails.add(email)
+            return True
+        # A row with its email hidden may be the authenticator, and a full page may hide the match.
+        if any(not r.get("emailAddress") for r in rows) or len(rows) >= JIRA_USER_SEARCH_PAGE:
+            return False
+        own_email = (self._authenticated_confluence_email or "").strip().lower()
+        if not own_email or own_email == email:
+            return False
+        own_rows = await self._find_jira_accounts(own_email)
+        return own_rows is not None and _names_email(own_rows, own_email)
+
+    async def _jira_user_search_allowed(self) -> bool:
+        """An OAuth connector reaches Jira only when its app was given Jira's scope."""
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        auth_config = (config or {}).get("auth") or {}
+        if (auth_config.get("authType") or "OAUTH").upper() != "OAUTH":
+            return True
+        return include_jira_scope_enabled(await self._include_jira_scope_setting(auth_config))
+
+    async def _find_jira_accounts(self, email: str) -> list[dict] | None:
+        """The Atlassian accounts the site's Jira user search returns for an email; None when it gives
+        no answer, or a row that is not an account."""
+        policy = self._client_policy
+        quota_already_spent = bool(policy and policy.quota_reset_at and policy.quota_reset_at > time.time())
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.search_jira_users(email, max_results=JIRA_USER_SEARCH_PAGE)
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                return None
+            rows = response.json()
+        except AtlassianQuotaExhausted:
+            # Jira's quota, not Confluence's: undo the mark the shared policy just set.
+            if policy is not None and not quota_already_spent:
+                policy.quota_reset_at = None
+            return None
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the Jira users: %s", e)
+            return None
+        if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+            return None
+        return [r for r in rows if r.get("accountType", "atlassian") == "atlassian"]
+
     async def _link_platform_users_via_jira(self, confluence_account_ids: set[str] | None = None) -> None:
         """
         Link active platform users to Confluence via Jira user search.
@@ -1412,12 +1490,8 @@ class ConfluenceConnector(BaseConnector):
         Uses batch-parallel processing with bounded concurrency to efficiently handle
         large numbers of unlinked users while respecting API rate limits.
         """
-        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
-        auth_config = (config or {}).get("auth") or {}
-        auth_type = (auth_config.get("authType") or "OAUTH").upper()
-        if auth_type == "OAUTH":
-            if not include_jira_scope_enabled(await self._include_jira_scope_setting(auth_config)):
-                return
+        if not await self._jira_user_search_allowed():
+            return
 
         datasource = await self._get_fresh_datasource()
         org_id = self.data_entities_processor.org_id

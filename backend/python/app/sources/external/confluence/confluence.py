@@ -8781,18 +8781,9 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
-    async def find_user_account_id_by_email(self, email: str) -> Optional[str]:
-        """
-        Resolve an Atlassian accountId from email via Jira user search.
-
-        Used when Confluence user search omits emails that users keep private.
-        Supports all Atlassian Cloud auth types (OAuth, API_TOKEN, BEARER_TOKEN).
-        Not supported for Data Center/Server deployments.
-        """
-        normalized_email = (email or "").strip()
-        if not normalized_email or "@" not in normalized_email:
-            return None
-        
+    def _jira_user_search_url(self) -> Optional[str]:
+        """The site's Jira Cloud user search URL; None on Data Center/Server or an unrecognized host,
+        where Jira is a separate instance with its own auth."""
         # Determine Jira API URL based on base_url pattern
         url: Optional[str] = None
         
@@ -8823,24 +8814,37 @@ class ConfluenceDataSource:
                     url = f"{jira_base}/rest/api/3/user/search"
             except Exception:
                 pass
-        
+        return url
+
+    async def search_jira_users(self, query: str, max_results: int = 50) -> Optional[HTTPResponse]:
+        """GET /rest/api/3/user/search on the site's Jira Cloud, which matches the query against accountId,
+        displayName and email. None when the site has no Jira Cloud user search."""
+        url = self._jira_user_search_url()
         if not url:
-            # Data Center/Server or unrecognized pattern - Jira fallback not supported
-            # In DC deployments, Jira is typically a separate instance with separate auth,
-            # so this Cloud-specific fallback cannot be used. Return None to skip silently.
             return None
-        
-        # Make the Jira API request
-        # maxResults=50 gives room for multi-match scenarios (query matches displayName, email, accountId)
         req = HTTPRequest(
             method='GET',
             url=url,
             headers=_as_str_dict({}),
             path={},
-            query=_as_str_dict({'query': normalized_email, 'maxResults': '50'}),
+            query=_as_str_dict({'query': query, 'maxResults': str(max_results)}),
             body=None,
         )
-        response = await self._client.execute(req)
+        return await self._client.execute(req)
+
+    async def find_user_account_id_by_email(self, email: str) -> Optional[str]:
+        """
+        Resolve an Atlassian accountId from email via Jira user search.
+
+        Used when Confluence user search omits emails that users keep private.
+        Supports all Atlassian Cloud auth types (OAuth, API_TOKEN, BEARER_TOKEN).
+        Not supported for Data Center/Server deployments.
+        """
+        normalized_email = (email or "").strip()
+        if not normalized_email or "@" not in normalized_email:
+            return None
+        
+        response = await self.search_jira_users(normalized_email)
         if not response:
             return None
         
