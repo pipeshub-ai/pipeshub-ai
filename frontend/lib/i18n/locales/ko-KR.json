@@ -3801,6 +3801,25 @@
         "reach": "{{connector}}의 변경 사항은 {{interval}} 이내에 PipesHub에 반영됩니다.",
         "reachUnknown": "{{connector}}의 변경 사항은 다음 동기화 때 PipesHub에 반영됩니다.",
         "syncNow": "지금 권한 동기화",
+        "filter": {
+          "label": "검색이 접근 권한을 확인하는 방식",
+          "mode": {
+            "inherit": "배포 기본값",
+            "legacy": "기본 확인",
+            "scopes": "더 빠른 검색"
+          },
+          "effective": {
+            "scopes": "{{connector}} 검색은 더 빠른 검색을 사용합니다. 결과는 찾기 전에 각 사용자가 볼 수 있는 항목으로 좁혀지며, 모든 결과는 계속 확인됩니다.",
+            "legacy": "{{connector}} 검색은 기본 확인을 사용합니다. 결과는 찾은 뒤에 확인됩니다."
+          },
+          "waiting": "{{connector}}의 권한이 최신 상태가 되면 더 빠른 검색이 시작됩니다.",
+          "applies": "이 변경 사항은 30초 이내에 검색에 적용됩니다.",
+          "blocker": {
+            "serving_off": "이 배포에서는 더 빠른 검색이 꺼져 있습니다.",
+            "store_unsupported": "이 배포의 벡터 저장소는 더 빠른 검색을 지원하지 않습니다."
+          },
+          "saveError": "이 설정을 변경하지 못했습니다. 다시 시도하세요."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",

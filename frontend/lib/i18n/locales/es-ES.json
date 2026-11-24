@@ -3673,6 +3673,25 @@
         "reach": "Los cambios en {{connector}} llegan a PipesHub en {{interval}}.",
         "reachUnknown": "Los cambios en {{connector}} llegan a PipesHub en su próxima sincronización.",
         "syncNow": "Sincronizar permisos ahora",
+        "filter": {
+          "label": "Cómo comprueba la búsqueda el acceso",
+          "mode": {
+            "inherit": "Valor predeterminado de la implementación",
+            "legacy": "Comprobación clásica",
+            "scopes": "Búsqueda más rápida"
+          },
+          "effective": {
+            "scopes": "Las búsquedas en {{connector}} usan la búsqueda más rápida: los resultados se limitan a lo que cada persona puede ver antes de encontrarlos, y cada resultado se sigue comprobando.",
+            "legacy": "Las búsquedas en {{connector}} usan la comprobación clásica: los resultados se comprueban después de encontrarlos."
+          },
+          "waiting": "La búsqueda más rápida empieza cuando los permisos de {{connector}} estén al día.",
+          "applies": "Este cambio llega a la búsqueda en un máximo de 30 segundos.",
+          "blocker": {
+            "serving_off": "La búsqueda más rápida está desactivada en esta implementación.",
+            "store_unsupported": "El almacén de vectores de esta implementación no admite la búsqueda más rápida."
+          },
+          "saveError": "No se pudo cambiar este ajuste. Inténtalo de nuevo."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",

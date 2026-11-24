@@ -3925,6 +3925,25 @@
         "reach": "Změny v {{connector}} se v PipesHub projeví do {{interval}}.",
         "reachUnknown": "Změny v {{connector}} se v PipesHub projeví při další synchronizaci.",
         "syncNow": "Synchronizovat oprávnění nyní",
+        "filter": {
+          "label": "Jak vyhledávání ověřuje přístup",
+          "mode": {
+            "inherit": "Výchozí nastavení nasazení",
+            "legacy": "Klasická kontrola",
+            "scopes": "Rychlejší vyhledávání"
+          },
+          "effective": {
+            "scopes": "Vyhledávání v {{connector}} používá rychlejší vyhledávání: výsledky se ještě před nalezením zúží na to, co smí každý člověk vidět, a každý výsledek se stále kontroluje.",
+            "legacy": "Vyhledávání v {{connector}} používá klasickou kontrolu: výsledky se kontrolují až po nalezení."
+          },
+          "waiting": "Rychlejší vyhledávání začne, jakmile budou oprávnění {{connector}} aktuální.",
+          "applies": "Tato změna se do vyhledávání promítne do 30 sekund.",
+          "blocker": {
+            "serving_off": "Rychlejší vyhledávání je v tomto nasazení vypnuté.",
+            "store_unsupported": "Vektorové úložiště tohoto nasazení rychlejší vyhledávání nepodporuje."
+          },
+          "saveError": "Toto nastavení se nepodařilo změnit. Zkuste to znovu."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
