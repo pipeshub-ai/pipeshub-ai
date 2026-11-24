@@ -271,7 +271,12 @@ def _names_called(node: ast.AST) -> set[str]:
             func = child.func
             if isinstance(func, ast.Name):
                 called.add(func.id)
-            elif isinstance(func, ast.Attribute):
+            elif isinstance(func, ast.Attribute) and (
+                func.attr in PYTHON_ADMIN_CHECKS
+                or (isinstance(func.value, ast.Name) and func.value.id in ("self", "cls"))
+            ):
+                # Another object's method that shares a name with a function here
+                # (graph_provider.get_agent vs the get_agent route) is not that function.
                 called.add(func.attr)
     return called
 
@@ -288,6 +293,19 @@ def _route_decorator(fn: ast.AST) -> tuple[str, str] | None:
         ):
             return deco.func.attr.upper(), deco.args[0].value
     return None
+
+
+def discover_python_routes(app_root: Path = PYTHON_APP) -> dict[str, str]:
+    """``"<file under app>::<handler>"`` -> ``"<METHOD> <path>"`` for every FastAPI route handler."""
+    found: dict[str, str] = {}
+    for path in sorted(app_root.rglob("*.py")):
+        if "/tests/" in str(path):
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            route = _route_decorator(node)
+            if route:
+                found[f"{path.relative_to(app_root).as_posix()}::{node.name}"] = f"{route[0]} {route[1]}"
+    return found
 
 
 def discover_python_admin_handlers(app_root: Path = PYTHON_APP) -> dict[str, str]:

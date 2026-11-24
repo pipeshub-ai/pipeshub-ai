@@ -37,6 +37,7 @@ from helper.admin_routes import (
     admin_routes_in_file,
     discover_admin_routes,
     discover_python_admin_handlers,
+    discover_python_routes,
     router_mounts,
 )
 from helper.admin_route_conditional_table import (
@@ -146,6 +147,38 @@ def _write(tmp_path: Path, name: str, body: str) -> Path:
     return path
 
 
+def test_the_python_reader_follows_only_this_module_s_functions(tmp_path: Path) -> None:
+    (tmp_path / "routes.py").write_text(textwrap.dedent("""
+        @router.get("/{agent_id}")
+        async def get_agent(request):
+            await is_request_admin(request)
+
+        @router.delete("/{agent_id}")
+        async def delete_agent(request):
+            await services["graph_provider"].get_agent(request)
+
+        async def _helper(request):
+            await request.app.check_user_is_admin(request)
+
+        @router.post("/{agent_id}/run")
+        async def run_agent(request):
+            await _helper(request)
+
+        class Service:
+            async def _check(self, request):
+                await is_request_admin(request)
+
+            @router.put("/{agent_id}")
+            async def update(self, request):
+                await self._check(request)
+    """), encoding="utf-8")
+    assert discover_python_admin_handlers(tmp_path) == {
+        "routes.py::get_agent": "GET /{agent_id}",
+        "routes.py::run_agent": "POST /{agent_id}/run",
+        "routes.py::update": "PUT /{agent_id}",
+    }
+
+
 def test_the_reader_finds_inline_and_router_wide_admin_checks(tmp_path: Path) -> None:
     source = _write(tmp_path, "sample.routes.ts", """
         export function createSampleRouter(container: Container) {
@@ -250,8 +283,9 @@ def test_every_conditional_admin_handler_has_live_cases() -> None:
 
 
 def test_each_conditional_row_calls_the_route_its_handler_serves() -> None:
-    """The gateway may serve a handler under a longer path; the end of it must match."""
-    served = discover_python_admin_handlers()
+    """The gateway may serve a handler under a longer path; the end of it must match.
+    Some rows name a handler with no admin check of its own, so every route is looked up."""
+    served = discover_python_routes()
     wrong = []
     for handler, route in _conditional_rows().items():
         method, _, path = served[handler].partition(" ")
