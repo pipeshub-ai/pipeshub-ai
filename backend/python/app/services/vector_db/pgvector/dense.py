@@ -207,9 +207,17 @@ def bounded_sql(q: Query, *, narrow: bool) -> str:
 
 
 def count_sql(q: Query) -> str:
+    """The candidates, counted up to ``$10``. With arms, group by group through the index of the points by group (OFFSET 0 keeps it a
+    loop that stops at the cap): hashed against the org's leaf instead, the planner's choice for a broad filter, the count read 2.3 M of a
+    5 M-point leaf's rows to reach 40,001."""
+    if q.scope.whole_org:
+        rows = f"SELECT 1 FROM retrieval.points p WHERE {_BASE}{q.scope.tail()}"
+    else:
+        rows = (f"SELECT 1 FROM ({q.scope.admitted()}) g CROSS JOIN LATERAL (SELECT 1 FROM retrieval.points p "
+                f"WHERE {_BASE} AND p.group_key = g.group_key{q.scope.tail()} OFFSET 0) x")
     return f"""/* pipeshub:pgvector.dense_count */
         WITH {_SCOPE_TYPES}
-        SELECT count(*) FROM (SELECT 1 FROM retrieval.points p WHERE {_BASE}{q.scope.candidates()} LIMIT $10) c"""
+        SELECT count(*) FROM ({rows} LIMIT $10) c"""
 
 
 _TOMBSTONES = """/* pipeshub:pgvector.tombstone_count */

@@ -851,6 +851,7 @@ column retrieval.lexical_df.df type=bigint notnull=true identity= generated= def
 column retrieval.lexical_df.org_id type=text notnull=true identity= generated= default=-
 column retrieval.lexical_df.space_id type=smallint notnull=true identity= generated= default=-
 column retrieval.lexical_df.term type=integer notnull=true identity= generated= default=-
+column retrieval.lexical_df.wmax type=real notnull=false identity= generated= default=-
 column retrieval.lexical_df_delta.collection_id type=smallint notnull=true identity= generated= default=-
 column retrieval.lexical_df_delta.d type=integer notnull=true identity= generated= default=-
 column retrieval.lexical_df_delta.org_id type=text notnull=true identity= generated= default=-
@@ -866,6 +867,7 @@ column retrieval.lexical_term_delta.org_id type=text notnull=true identity= gene
 column retrieval.lexical_term_delta.seq type=bigint notnull=true identity=a generated= default=-
 column retrieval.lexical_term_delta.space_id type=smallint notnull=true identity= generated= default=-
 column retrieval.lexical_term_delta.term type=integer notnull=true identity= generated= default=-
+column retrieval.lexical_term_delta.wmax type=real notnull=false identity= generated= default=-
 column retrieval.member_stats.collection_id type=smallint notnull=true identity= generated= default=-
 column retrieval.member_stats.kind type=smallint notnull=true identity= generated= default=-
 column retrieval.member_stats.member_id type=text notnull=true identity= generated= default=-
@@ -1409,8 +1411,8 @@ func retrieval.org_space_name(text) owner=pipeshub_vetted_retrieval secdef=true 
 func retrieval.org_space_named_by() owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=a88c56b36a816e8b8dea17f0a111210f ext=-
 func retrieval.org_space_replace_empty(text,integer,text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on body=1dfeb2fbdd5d12c80f3daf9de061cc5b ext=-
 func retrieval.points_member_keys() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp body=4ad58bfe8dca9b96d84ab6c6aa1919b4 ext=-
-func retrieval.postings_df_capture() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;enable_nestloop=off;jit=off body=d52969cdc4d528f0be9f9bf36b48ee79 ext=-
-func retrieval.search_sparse(smallint,bigint[],real[],text[],text[],text[],text[],text[],integer) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=8ac92fc00540a2e92e83e2fde942dcce ext=-
+func retrieval.postings_df_capture() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;enable_nestloop=off;jit=off body=3aafa56cc4be81c737ff962fda2dd794 ext=-
+func retrieval.search_sparse(smallint,bigint[],real[],text[],text[],text[],text[],text[],integer) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f93a4774c2a34761ccc25d916ede83b4 ext=-
 func retrieval.vrid_held_elsewhere(text) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=5fe07c5cf707ea14417034c8fe0d83e3 ext=-
 func retrieval.vrid_orgs(text[]) owner=pipeshub_vetted_retrieval secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, retrieval, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=053b81fdd72b9c2dc3be4dde01323756 ext=-
 funcacl graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) pipeshub_connectors EXECUTE

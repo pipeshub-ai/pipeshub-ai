@@ -9,6 +9,9 @@ jobs role (the tables are org data behind row-level security; the jobs policies 
 The document frequency of each term is kept the same way: triggers on the postings add ``retrieval.lexical_term_delta`` rows (retrieval_0005),
 ``fold_org`` folds them into ``retrieval.lexical_df`` in the same transaction as the point count, and ``recount_org`` recomputes them from
 the postings (which also ends the counting of a collection whose postings predate the triggers, ``retrieval.lexical_df_pending``).
+Beside each frequency they keep ``wmax``, the largest |weight| of the term's postings (retrieval_0008), the bound the lexical search prunes
+with: the fold keeps the larger of the folded and the delta values, recount computes it, and NULL (a row written before retrieval_0008) means
+not known, which the fold carries and the search does not prune on.
 """
 from collections.abc import Callable
 
@@ -45,30 +48,35 @@ SELECT (SELECT count(*) FROM taken)"""
 
 # A frequency that folds to 0 loses its row instead (the search reads a missing row as 0), so the table does not keep every term that
 # ever came and went. The current values are read in the statement's snapshot: only a fold or a recount changes them, under the org lock.
+# A delta that nets to nothing still folds its bound (a weight that grew); a bound not known on either side stays not known.
 FOLD_TERMS = """
 WITH taken AS (
   DELETE FROM retrieval.lexical_term_delta d WHERE d.org_id = %(org)s
      AND d.seq IN (SELECT t.seq FROM retrieval.lexical_term_delta t WHERE t.org_id = %(org)s ORDER BY t.seq LIMIT %(batch)s)
-  RETURNING d.collection_id, d.space_id, d.term, d.d),
+  RETURNING d.collection_id, d.space_id, d.term, d.d, d.wmax),
 sums AS (
-  SELECT s.*, coalesce(f.df, 0) + s.d AS df FROM (SELECT collection_id, space_id, term, sum(d)::bigint AS d FROM taken GROUP BY 1, 2, 3 HAVING sum(d) <> 0) s
+  SELECT s.collection_id, s.space_id, s.term, s.d, coalesce(f.df, 0) + s.d AS df,
+         CASE WHEN NOT s.unknown AND (f.term IS NULL OR f.wmax IS NOT NULL) THEN greatest(f.wmax, s.wmax) END AS wmax
+    FROM (SELECT collection_id, space_id, term, sum(d)::bigint AS d, max(wmax) AS wmax, bool_or(wmax IS NULL) AS unknown FROM taken GROUP BY 1, 2, 3) s
     LEFT JOIN retrieval.lexical_df f ON f.org_id = %(org)s AND f.collection_id = s.collection_id AND f.space_id = s.space_id AND f.term = s.term),
 gone AS (
   DELETE FROM retrieval.lexical_df f USING sums s
    WHERE f.org_id = %(org)s AND f.collection_id = s.collection_id AND f.space_id = s.space_id AND f.term = s.term AND s.df = 0
   RETURNING 1),
 up AS (
-  INSERT INTO retrieval.lexical_df AS f (org_id, collection_id, space_id, term, df)
-  SELECT %(org)s, s.collection_id, s.space_id, s.term, s.d FROM sums s WHERE s.df <> 0
-  ON CONFLICT (org_id, collection_id, space_id, term) DO UPDATE SET df = f.df + EXCLUDED.df
+  INSERT INTO retrieval.lexical_df AS f (org_id, collection_id, space_id, term, df, wmax)
+  SELECT %(org)s, s.collection_id, s.space_id, s.term, s.d, s.wmax FROM sums s WHERE s.df <> 0
+  ON CONFLICT (org_id, collection_id, space_id, term) DO UPDATE SET df = f.df + EXCLUDED.df, wmax = EXCLUDED.wmax
   RETURNING 1)
 SELECT (SELECT count(*) FROM taken)"""
 
 # Every term's frequency from the postings of one snapshot (the recount's), minus the deltas that snapshot sees, as RECOUNT does for the
 # point count; a delta committed later belongs to a posting the snapshot does not count either. The collections it covered stop counting.
+# The bound is the largest |weight| the snapshot holds (0 for none); the deltas it sees without one (written before retrieval_0008) belong
+# to postings it read, so they get 0 (RECOUNT_BOUNDS), and the deltas written after it carry their own.
 RECOUNT_TERMS = """
 WITH live AS (
-  SELECT p.collection_id, p.space_id, p.term, count(*) AS n FROM retrieval.postings p WHERE p.org_id = %(org)s GROUP BY 1, 2, 3),
+  SELECT p.collection_id, p.space_id, p.term, count(*) AS n, max(abs(p.w)) AS wmax FROM retrieval.postings p WHERE p.org_id = %(org)s GROUP BY 1, 2, 3),
 pending AS (SELECT d.collection_id, d.space_id, d.term, sum(d.d) AS d FROM retrieval.lexical_term_delta d WHERE d.org_id = %(org)s GROUP BY 1, 2, 3),
 stale AS (
   DELETE FROM retrieval.lexical_df f WHERE f.org_id = %(org)s
@@ -77,13 +85,14 @@ stale AS (
   RETURNING 1),
 done AS (DELETE FROM retrieval.lexical_df_pending x WHERE x.org_id = %(org)s RETURNING 1),
 up AS (
-  INSERT INTO retrieval.lexical_df AS f (org_id, collection_id, space_id, term, df)
-  SELECT %(org)s, k.collection_id, k.space_id, k.term, coalesce(l.n, 0) - coalesce(x.d, 0)
+  INSERT INTO retrieval.lexical_df AS f (org_id, collection_id, space_id, term, df, wmax)
+  SELECT %(org)s, k.collection_id, k.space_id, k.term, coalesce(l.n, 0) - coalesce(x.d, 0), coalesce(l.wmax, 0)
     FROM (SELECT collection_id, space_id, term FROM live UNION SELECT collection_id, space_id, term FROM pending) k
     LEFT JOIN live l USING (collection_id, space_id, term) LEFT JOIN pending x USING (collection_id, space_id, term)
-  ON CONFLICT (org_id, collection_id, space_id, term) DO UPDATE SET df = EXCLUDED.df
+  ON CONFLICT (org_id, collection_id, space_id, term) DO UPDATE SET df = EXCLUDED.df, wmax = EXCLUDED.wmax
   RETURNING 1)
 SELECT (SELECT count(*) FROM up)"""
+RECOUNT_BOUNDS = "UPDATE retrieval.lexical_term_delta d SET wmax = 0 WHERE d.org_id = %(org)s AND d.wmax IS NULL"
 
 # The true count of live points per (collection, space), from one snapshot, minus the deltas that snapshot already sees: the search
 # adds the deltas back, and a delta committed later belongs to a point this snapshot does not count either.
@@ -133,6 +142,7 @@ def recount_org(jobs: psycopg.Connection, org: str) -> list[tuple[int, int, int]
                 return None
             counts = [tuple(r) for r in jobs.execute(RECOUNT, {"org": org}).fetchall()]
             jobs.execute(RECOUNT_TERMS, {"org": org})
+            jobs.execute(RECOUNT_BOUNDS, {"org": org})
             return counts
     except psycopg.errors.SerializationFailure:      # a fold committed between the lock and the snapshot: nothing changed, run again
         return None
