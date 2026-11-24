@@ -10374,7 +10374,7 @@ describe('Enterprise Search Controller', () => {
       ['addMessageStreamToAgentConversationInternal', (c) => addMessageStreamToAgentConversationInternal(c)],
     ]
     for (const [name, make] of cases) {
-      it(`${name}`, async () => {
+      it(name, async () => {
         const seen: Array<string | undefined> = []
         const req: any = createMockRequest({
           body: {},

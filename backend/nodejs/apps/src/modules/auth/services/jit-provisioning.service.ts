@@ -1,6 +1,9 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { BadRequestError, ForbiddenError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  ForbiddenError,
+} from '../../../libs/errors/http.errors';
 import { forOrg } from '../../../libs/context/orgContext';
 import { audit } from '../../../libs/services/audit';
 import { authRefusal } from '../utils/sign-in-audit';

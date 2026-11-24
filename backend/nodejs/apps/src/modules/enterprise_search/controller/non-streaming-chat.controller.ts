@@ -226,7 +226,9 @@ const nonStreamingTurn =
           const conversation = await redactConversationFor(
             appConfig,
             viewerOf(userId, orgId),
-            turn.conversation as Record<string, unknown> & { messages?: unknown },
+            turn.conversation as Record<string, unknown> & {
+              messages?: unknown;
+            },
             { known: access, freshIds: [freshId] },
           );
           res.status(HTTP_STATUS.OK).json({

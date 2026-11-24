@@ -4825,8 +4825,10 @@ describe('UserController', () => {
       role: 'member',
       save: sinon.stub().resolves(),
       toObject() {
-        const { save, toObject, ...rest } = this as any;
-        return { ...rest };
+        const rest = { ...(this as any) };
+        delete rest.save;
+        delete rest.toObject;
+        return rest;
       },
     });
 
