@@ -150,16 +150,25 @@ def test_concurrent_runners_serialise(db):
     url = cluster.url(name, MIGRATE)
     holder = connect(cluster, name, MIGRATE)
     holder.execute("SELECT pg_advisory_lock(hashtext('pipeshub:migrate'))")
+    mine = holder.execute("SELECT pg_backend_pid()").fetchone()[0]
     p = start_migrate(url)
     try:
-        for _ in range(100):                                                           # it must be parked on the lock
+        for _ in range(100):                                                           # it must be parked on the lock: connected, polling
             with connect(cluster, name) as c:
-                waiting = c.execute("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted").fetchone()[0]
+                waiting = c.execute("SELECT count(*) FROM pg_stat_activity WHERE usename = %s AND pid <> %s", (MIGRATE, mine)).fetchone()[0]
             if waiting:
                 break
             time.sleep(0.1)
+        time.sleep(1.5)                                                                # a few polls
         assert waiting == 1 and p.poll() is None
         with connect(cluster, name) as c:
+            # between polls it holds no snapshot: a waiter inside pg_advisory_lock did, and a CREATE INDEX CONCURRENTLY of the holder waited for it
+            q = "SELECT backend_xmin FROM pg_stat_activity WHERE usename = %s AND pid <> %s"
+            xmins = []
+            for _ in range(10):
+                xmins.append(c.execute(q, (MIGRATE, mine)).fetchone()[0])
+                time.sleep(0.05)
+            assert xmins.count(None) >= 5, xmins
             assert c.execute("SELECT to_regclass('kernel.schema_epoch')").fetchone()[0] is None
     finally:
         holder.close()
