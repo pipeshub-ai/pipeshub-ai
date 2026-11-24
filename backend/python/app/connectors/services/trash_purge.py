@@ -53,6 +53,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames, EventTypes
 from app.connectors.services.vector_cleanup_events import (
     build_stored_document_cleanup_events,
@@ -67,11 +68,6 @@ from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import is_storage_document_id
 from app.services.messaging.utils import MessagingUtils
 from app.services.permissions.structure_generation import note_org_structure_change
-from app.plugins.telemetry.modules.soft_delete_metrics import (
-    record_purge_run,
-    record_purged,
-    set_trash_backlog,
-)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -324,7 +320,7 @@ class TrashPurger:
             if not enabled:
                 return Outcome.DISABLED
             if not await self._drain_outbox():
-                record_purge_run(Outcome.PAUSED)
+                platform_events.emit("trash.purge.finished", status=Outcome.PAUSED)
                 return Outcome.PAUSED
             if not await self.graph.is_trash_walk_index_ready():
                 # Without it each page reads the whole trash; the next tick looks again.
@@ -344,7 +340,7 @@ class TrashPurger:
                 self.logger.info("Trash purge %s resumed", state.run.run_id)
             outcome = await self._work(state)
             if outcome != Outcome.FINISHED:
-                record_purge_run(outcome)
+                platform_events.emit("trash.purge.finished", status=outcome)
             return outcome
         finally:
             await self.lock.release()
@@ -457,8 +453,8 @@ class TrashPurger:
         run.purged += len(purged)
         run.pass_purged += len(purged)
         run.kept += len(kept)
-        record_purged("purged", len(purged))
-        record_purged("kept", len(kept))
+        platform_events.emit("trash.records.purged", result="purged", count=len(purged))
+        platform_events.emit("trash.records.purged", result="kept", count=len(kept))
         owed = {row["id"]: cleanup_owed(row) for row in purged}
         # In neither list means not stored: a delete that committed although its
         # answer was lost, and that the retry found already gone. It still owes.
@@ -471,7 +467,7 @@ class TrashPurger:
         recovered = len(owed) - len(purged)
         run.purged += recovered
         run.pass_purged += recovered
-        record_purged("purged", recovered)
+        platform_events.emit("trash.records.purged", result="purged", count=recovered)
         if owed and not await self._publish(org_id, owed):
             # Only what is gone from the graph stays owed; the next tick publishes it.
             await self._save_outbox(outbox_key, org_id, owed)
@@ -498,7 +494,7 @@ class TrashPurger:
             except Exception as exc:
                 self._failed.add(record_id)
                 run.failed += 1
-                record_purged("failed", 1)
+                platform_events.emit("trash.records.purged", result="failed", count=1)
                 self.logger.warning(
                     "Trash purge: could not remove record %s (org %s) from the graph: %s", record_id, org_id, exc
                 )
@@ -610,7 +606,7 @@ class TrashPurger:
         state.last_counts = {"purged": run.purged, "kept": run.kept, "failed": run.failed, "groups": run.groups}
         await self._save_state(state)
         duration = max(0.0, (now - run.started_at) / 1000)
-        record_purge_run(Outcome.FINISHED, duration)
+        platform_events.emit("trash.purge.finished", status=Outcome.FINISHED, duration_seconds=duration)
         self.logger.info(
             "Trash purge %s finished in %.0fs: %d purged, %d kept, %d failed, %d record group(s) removed",
             run.run_id, duration, run.purged, run.kept, run.failed, run.groups,
@@ -632,7 +628,12 @@ class TrashPurger:
         except Exception as exc:
             self.logger.warning("Trash purge: could not read the trash backlog: %s", exc)
             return
-        set_trash_backlog(pending, stuck, max(0.0, (now - oldest) / 1000) if oldest is not None else 0.0)
+        platform_events.emit(
+            "trash.backlog.measured",
+            pending=pending,
+            stuck=stuck,
+            oldest_pending_age_seconds=max(0.0, (now - oldest) / 1000) if oldest is not None else 0.0,
+        )
         if stuck:
             self.logger.error(
                 "Trash purge: %d record(s) failed every purge attempt and are left in the trash; see purgeLastError",
@@ -716,7 +717,7 @@ async def run_trash_purge_loop(
                 raise
             except Exception:
                 logger.exception("Trash purge tick failed; it resumes from its cursor")
-                record_purge_run("failed")
+                platform_events.emit("trash.purge.finished", status="failed")
                 if lock is not None:
                     await lock.close()
                     lock = None

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from jsonschema import Draft7Validator
 
+from tests.support.platform_event_capture import event_calls
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -41,9 +42,7 @@ def test_a_schema_rejection_must_propagate_and_is_logged_at_error_and_counted(ca
     proc.logger = logging.getLogger("schema-rejection-test")
     with (
         caplog.at_level(logging.ERROR, logger="schema-rejection-test"),
-        patch(
-            "app.connectors.core.base.data_processor.data_source_entities_processor.record_schema_rejection"
-        ) as counted,
+        event_calls("graph.write.rejected", "collection") as counted,
     ):
         assert proc._must_propagate(_rejection(), MagicMock(explicit=False)) is True
 
@@ -72,7 +71,7 @@ def test_a_quarantined_record_logs_where_and_which_rule_never_the_value(
     record.id = "rec-1"
     with (
         caplog.at_level(logging.ERROR, logger="schema-rejection-test"),
-        patch("app.connectors.core.base.data_processor.data_source_entities_processor.record_schema_rejection"),
+        event_calls("graph.write.rejected", "collection"),
     ):
         proc._quarantine_record(record, raised.value)
 
@@ -158,9 +157,7 @@ async def test_one_bad_record_in_a_slice_of_100_is_quarantined_and_the_other_99_
     proc, ctxs = _slice_processor({"rec-37"})
     items = _records(100)
 
-    with patch(
-        "app.connectors.core.base.data_processor.data_source_entities_processor.record_schema_rejection"
-    ) as counted:
+    with event_calls("graph.write.rejected", "collection") as counted:
         await proc.on_new_records(items)
 
     assert _published(proc) == [r.id for r, _ in items if r.id != "rec-37"]  # order kept, bad one not published
@@ -220,9 +217,7 @@ async def test_a_schema_error_raised_by_a_helper_outside_the_slice_loop_is_repor
     proc._after_slice_committed = AsyncMock(side_effect=SchemaValidationError("records", "late"))
 
     with (
-        patch(
-            "app.connectors.core.base.data_processor.data_source_entities_processor.record_schema_rejection"
-        ) as counted,
+        event_calls("graph.write.rejected", "collection") as counted,
         pytest.raises(SchemaValidationError),
     ):
         await proc.on_new_records(_records(2))
@@ -234,9 +229,7 @@ def test_a_rejection_passing_several_handlers_is_logged_and_counted_once() -> No
     proc = _processor(MagicMock(explicit=False))
     proc.logger = MagicMock()
     error = SchemaValidationError("records", "x")
-    with patch(
-        "app.connectors.core.base.data_processor.data_source_entities_processor.record_schema_rejection"
-    ) as counted:
+    with event_calls("graph.write.rejected", "collection") as counted:
         assert proc._must_propagate(error, None) is True
         assert proc._must_propagate(error, None) is True
         proc._log_failure("outer", error)

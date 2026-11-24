@@ -25,6 +25,7 @@ from app.edition_config import (
 from app.core.envelope import configure_from_config as configure_envelope
 from app.core.org_context import spawn_detached, for_org, system
 from app.core.org_jobs import for_each_org, of_org
+from app import platform_events
 from app.api.middlewares.request_log import install_request_logging, mark_request_failure
 from app.api.validation_errors import input_free_422
 from app.modules.demo_data.router import demo_data_router
@@ -105,9 +106,7 @@ from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
-from app.plugins.telemetry.flag import telemetry_enabled  # noqa: E402 - like the imports around it, after set_service_suffix()
-from app.plugins.telemetry.modules.connector_metrics import set_connector_active
-from app.plugins import load_plugins
+from app.plugins import load_plugins  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.utils.pdf_stream_conversion import document_conversion_available  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -926,7 +925,7 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
             # A count of every org's Apps; PostgreSQL counts them org by org only under a system context.
             with system("connector_metrics"):
                 counts = await graph_provider.count_active_apps_by_type()
-            set_connector_active(counts)
+            platform_events.emit("connector.inventory.counted", active_by_type=counts)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -982,7 +981,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await plugin_host.start(config_service=app_container.config_service(), logger=logger)
 
-    if telemetry_enabled():
+    # The count reads every org's Apps: only worth it while something listens for it.
+    if platform_events.has_listeners("connector.inventory.counted"):
         app.state.connector_metrics_task = spawn_detached(
             refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
         )

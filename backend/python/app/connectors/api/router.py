@@ -35,6 +35,7 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import HttpRequest, MediaIoBaseDownload
 from pydantic import BaseModel
 
+from app import platform_events
 from app.agents.actions.knowledge_graph.catalog import ConnectorCatalog
 from app.agents.actions.knowledge_graph.identifiers import _BARE_ISSUE_KEY, _is_url
 from app.agents.actions.knowledge_graph.models import (
@@ -240,7 +241,6 @@ from app.utils.oauth_config import (
     oauth_app_usable_by,
     pin_oauth_urls,
 )
-from app.plugins.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.credential_refresh_log import token_endpoint_error_class
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
@@ -2746,7 +2746,7 @@ async def delete_record(
                         f"its vectors stay until the purge: {str(e)}"
                     )
                     failed_ids.extend(event["payload"]["virtualRecordIds"])
-            record_soft_deleted(DeleteSource.USER.value, len(result.get("softDeletedRecords") or []))
+            platform_events.emit("record.soft_deleted", source=DeleteSource.USER.value, count=len(result.get("softDeletedRecords") or []))
             if result.get("isKb") and result.get("connectorId"):
                 await notify_kb_records_changed(result["connectorId"], result.get("orgId"))
             response = {

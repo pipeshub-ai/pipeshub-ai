@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.support.platform_event_capture import event_calls, replace_event_listener
 from app.config.constants.arangodb import EventTypes
 from app.connectors.services import trash_purge as purge_module
 from app.connectors.services.trash_purge import (
@@ -660,7 +661,7 @@ class TestBookkeeping:
         graph, kv = _Graph(), _KV()
         graph.trash("young", days_ago=3)
         graph.trash("stuck", days_ago=40, purgeAttempts=5)
-        with patch.object(purge_module, "set_trash_backlog") as gauges:
+        with event_calls("trash.backlog.measured", "pending", "stuck", "oldest_pending_age_seconds") as gauges:
             assert await _purger(graph, kv).tick() == Outcome.FINISHED
         gauges.assert_called_once_with(1, 1, pytest.approx(3 * 24 * 3600, rel=1e-6))
 
@@ -702,7 +703,7 @@ class TestLoop:
         monkeypatch.setenv("SOFT_DELETE_PURGE_TICK_SECONDS", "60")
         monkeypatch.setenv("SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS", "0")
         runs = MagicMock()
-        monkeypatch.setattr(purge_module, "record_purge_run", runs)
+        replace_event_listener(monkeypatch, "trash.purge.finished", runs, "status", "duration_seconds")
 
         with pytest.raises(asyncio.CancelledError):
             await purge_module.run_trash_purge_loop(container, _Graph(), sleep=sleep)
