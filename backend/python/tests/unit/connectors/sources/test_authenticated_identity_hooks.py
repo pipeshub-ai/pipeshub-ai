@@ -25,6 +25,7 @@ from app.connectors.sources.atlassian.confluence_datacenter.connector import (
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.atlassian.jira_data_center.connector import (
+    DcRestProfile,
     JiraDataCenterConnector,
 )
 from app.connectors.sources.dropbox.connector import DropboxConnector
@@ -1268,11 +1269,26 @@ class TestJiraCloudSyncOrder:
         assert order == ["drop"]
 
     async def test_an_empty_first_listing_is_not_complete(self) -> None:
-        conn = self._conn([], active_users=[MagicMock()], complete=False)
+        conn = self._conn([], active_users=[MagicMock()])
+        for name in ("_fetch_users", "_fetch_all_jira_users_bulk", "_user_listing_complete_for_link",
+                     "_authenticator_is_listed", "_directory_read_complete", "_safe_json_parse"):
+            setattr(conn, name, partial(getattr(JiraConnector, name), conn))
+        conn.connector_name, conn._stored_app_users = "JIRA", []
+        conn._user_bulk_forbidden = conn._user_bulk_refused = False
+        conn.data_entities_processor.org_id = "org"
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        datasource = MagicMock(get_all_users=AsyncMock(return_value=SimpleNamespace(
+            status=HttpStatusCode.OK.value, json=lambda: [], text=lambda: "")))
+
+        async def call_with_retry(call: Callable[..., object], **_: object) -> object:
+            return await call(datasource)
+
+        conn._call_with_retry = call_with_retry
 
         with pytest.raises(_AtlassianStop):
             await self._run(conn)
 
+        datasource.get_all_users.assert_awaited_once()
         assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is False
 
     async def test_the_full_pass_runs_after_the_users_are_written_and_withdrawn(self) -> None:
@@ -1381,11 +1397,23 @@ class TestJiraDataCenterSyncOrder:
         assert order == ["drop"]
 
     async def test_an_empty_first_listing_is_not_complete(self) -> None:
-        conn = self._conn([], active_users=[MagicMock()], complete=False)
+        conn = self._conn([], active_users=[MagicMock()])
+        for name in ("_fetch_users", "_fetch_all_jira_users_bulk", "_fetch_users_via_list",
+                     "_user_listing_complete_for_link", "_authenticator_is_listed", "_directory_read_complete",
+                     "_safe_json_parse"):
+            setattr(conn, name, partial(getattr(JiraDataCenterConnector, name), conn))
+        conn.connector_name, conn._stored_app_users = "JIRA", []
+        conn._dc_profile = DcRestProfile(supported=True, user_list=True)
+        conn.data_entities_processor.org_id = "org"
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        datasource = MagicMock(get_user_list_v2=AsyncMock(return_value=SimpleNamespace(
+            status=HttpStatusCode.OK.value, json=lambda: {"values": [], "isLast": True}, text=lambda: "")))
+        conn._get_fresh_datasource = AsyncMock(return_value=datasource)
 
         with pytest.raises(_AtlassianStop):
             await self._run(conn)
 
+        datasource.get_user_list_v2.assert_awaited_once()
         assert conn.register_authenticated_source_user.await_args.kwargs["listing_complete"] is False
 
     async def test_the_account_is_read_early_and_registered_after_the_users(self) -> None:

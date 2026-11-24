@@ -659,6 +659,8 @@ class JiraConnector(BaseConnector):
         self._listed_account_ids: set[str] = set()
         # Every account the user list showed, active or not.
         self._seen_account_ids: set[str] = set()
+        # Listed accounts whose email this sync could not resolve: any of them may be the authenticator.
+        self._unresolved_account_ids: set[str] = set()
         # Projects this sync could not build, so their issues were not read: they still owe a re-read.
         self._skipped_project_keys: list[str] = []
         # The emails of the directory snapshot last filtered against (the map itself, then its emails).
@@ -2449,6 +2451,7 @@ class JiraConnector(BaseConnector):
         self._user_read_unfinished = False
         self._listing_complete_for_link = False
         self._listed_user_emails = set()
+        self._unresolved_account_ids = set()
 
         # ====================================================================
         # Phase 1: DB reads (0 API calls)
@@ -2586,6 +2589,11 @@ class JiraConnector(BaseConnector):
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira AppUsers resolved")
         self._listed_user_emails |= {u.email.lower() for u in resolved.values() if u.email}
+        self._unresolved_account_ids = {
+            u["accountId"] for u in raw_jira_users
+            if u.get("accountType") == "atlassian" and u.get("accountId")
+            and not (isinstance(u.get("emailAddress"), str) and u["emailAddress"].strip())
+        } - resolved.keys()
         if self._user_read_unfinished:
             self.logger.warning(
                 "⚠️ The Jira user list could not be read in full; when an earlier sync left access to keep, "
@@ -2597,12 +2605,15 @@ class JiraConnector(BaseConnector):
 
     async def _user_listing_complete_for_link(self) -> bool:
         """Whether this sync's user read shows everyone the authenticator's link depends on. A full read
-        does. A bulk read refused from its first page cannot say who is missing, so the authenticator is
-        looked up on their own; any other shortfall stays incomplete."""
+        does, unless it shows an account (inactive ones too) whose email it could not resolve: then, as when
+        a bulk read is refused from its first page, the authenticator is looked up on their own. Any other
+        shortfall stays incomplete."""
         if self._user_read_unfinished:
             return False
         if not (self._user_bulk_forbidden or self._user_bulk_refused):
-            return self._directory_read_complete() and bool(self._listed_account_ids)
+            if not (self._directory_read_complete() and self._listed_account_ids):
+                return False
+            return not self._unresolved_account_ids or await self._authenticator_is_listed()
         return await self._authenticator_is_listed()
 
     async def _authenticator_is_listed(self) -> bool:
