@@ -296,7 +296,8 @@ the auth middleware bound.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
 - Node: a request a route's schema refuses (`ValidationMiddleware`: the zod schema, the array/key/depth guard, the
-  stack-overflow net) writes no line of its own. `http.request.error` (WARNING, `bad_request`) names each issue in
+  stack-overflow net, and a value a schema callback can't read, which gets a fixed message and no field) writes no line
+  of its own. `http.request.error` (WARNING, `bad_request`) names each issue in
   `error.metadata.errors` as `field`, `code` and `message`, never the issue's `value`; the route's `params` are on the line
   as on every `http.request.error`. A key the caller made up (an unknown field, a record key) is named, and a few rules quote
   an enum-like value the caller sent in `message` (a duplicate model id), as the 400 body does.
@@ -962,6 +963,44 @@ service's 400s: no name, the last owner, people who are gone), and system failur
 `update_team` is not atomic. It saves a rename and member removals before checks that can still answer 400 or 500, and those
 saved changes get no line here; the team service's own log has them.
 
+## Configuration audit events (Node)
+
+Every settings change an admin saves through the configuration manager (`/api/v1/configurationManager`) is one INFO line on
+the `audit` logger, written right after the key-value store accepted the write: `config.<section>.update`, or
+`config.<section>.delete` when a whole setting is removed (today only the SMTP settings; removing one model, provider or Slack
+bot rewrites its list, so it is an update). The admin routes write through an audited store
+(`modules/configuration_manager/utils/config-audit.ts`), so an admin route that saves a setting gets its line without code
+of its own, as long as it is given that store (`adminStore` in `cm_routes.ts`, not the unaudited `serviceStore`). Fields as
+the other audit events: `org_id`, `actor` (the admin), `outcome=success`; `target` and `reason` are null. Never the stored
+key, a field name or a value: the event names the settings, nothing else.
+
+| Section | Settings |
+| --- | --- |
+| `storage` | file storage (local, S3, Azure Blob) |
+| `smtp` | mail server settings, turning mail on or off, removing them |
+| `auth_microsoft`, `auth_google` | sign-in with Microsoft and Google |
+| `platform` | platform settings and feature flags |
+| `slack_bot` | Slack bots (add, change, remove) |
+| `system_prompt` | the custom system prompts |
+| `ai_models` | AI models, their providers, defaults, roles, connection credentials and identity forwarding |
+| `ai_identity_policy` | the identity policy for an AI gateway |
+| `mcp_access` | what the org's `/mcp` endpoint allows |
+| `web_search` | web search providers and settings |
+| `public_urls` | the frontend and connector public URLs |
+| `metrics` | metrics collection |
+| `connector_google_workspace`, `connector_atlassian`, `connector_onedrive`, `connector_sharepoint` | connector OAuth apps and credentials saved from the admin settings |
+
+`auth_azure_ad`, `auth_sso`, `auth_oauth`, `auth_github` and `inheritance` name settings that only the enterprise
+edition's admin routes save; a path no section names is `other`.
+One action that saves several settings writes one line per saved setting. A compare-and-set retry writes a line only for the
+write that took. A save whose later step fails (the mail service did not reload the new SMTP settings) still has its line:
+the setting was stored.
+
+Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
+validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
+migrations, and settings saved through other routers (connector instances and their credentials, connector OAuth apps,
+OAuth clients, toolsets, MCP servers).
+
 ## Upstream calls (Node)
 
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
@@ -1183,6 +1222,23 @@ DEBUG `mail.send.retry` (`attempt`, `error_class`, `smtp_code`, `next_retry_ms`)
 - The notification consumer logs a skipped or failed message with its `type` and `size_bytes`, never its value (a
   `mail.deliveryFailed` notification quotes the recipients). Producers log each publish at DEBUG (`broker.event.published`,
   `event_type`, `topic`).
+
+## Storage (Node)
+
+The storage routes (`/api/v1/document`) write no line of their own for a failure they pass on: the error middleware's
+`http.request.error` is the one failure line. When the storage vendor fails a write, a removal or a read check, the answer is
+503 (WARNING `unavailable`) and the error's `cause` is `{ status, code }`: the vendor's HTTP status and its error code
+(`AccessDenied`, `NoSuchBucket`, `SlowDown`, Azure's `AuthorizationFailure`, a local disk's `ENOENT` or `EACCES`), so a
+misconfigured bucket and a throttle read differently. The vendor's text is never logged for a write or a removal: it can
+quote the bucket, the object path and the file name. Read failures that answer 500 and the S3 settings check's WARNING lines
+still carry it (`metadata.originalError`). The providers (`storage/providers/*.ts`) keep it as `metadata.originalError` for
+the admin's S3 settings check, and read the status and code through `vendorFailure` (`storage/providers/vendor-failure.ts`).
+
+- Each upload, update, read, copy, rename and removal is DEBUG, with the object path and never its URL.
+- The S3 settings check (run when an admin saves the storage settings) writes one INFO `S3 health check completed` with each
+  check's result; a failed check is WARNING (the admin's settings), a passed one DEBUG.
+- A document whose blob moved but whose record did not is ERROR (`moveTree: blob relocated but the record update failed`): it
+  needs a human. Ids go in fields (`document_id`, `connector_id`), never in the message.
 
 ## Connector proxy (Node)
 

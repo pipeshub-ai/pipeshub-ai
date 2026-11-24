@@ -1,7 +1,12 @@
 """Apollo's hosted Streamable HTTP MCP server with OAuth and dynamic registration."""
 
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -27,6 +32,12 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         supports_dcr=True,
         documentation_url="https://docs.apollo.io/docs/apollo-mcp",
         tags=["sales", "prospecting", "crm"],
+        category=MCPCategory.SALES,
+        capabilities=[
+            "Find people by role and company",
+            "Look up a company",
+            "Find contact details for a lead",
+        ],
     )
 )
 class ApolloMCPServer:

@@ -6,6 +6,7 @@ import path from 'path'
 import sinon from 'sinon'
 import { Logger } from '../../src/libs/services/logger.service'
 import { ErrorMiddleware } from '../../src/libs/middlewares/error.middleware'
+import { UNREADABLE_REQUEST_MESSAGE } from '../../src/libs/middlewares/validation.middleware'
 import { collectValidatorMounts, ValidatorMount } from './route-validators'
 
 /**
@@ -126,6 +127,10 @@ async function run(mount: ValidatorMount, payload: Payload): Promise<Expected> {
     return { ok: hash }
   }
   if (nextArg === 'NOT_CALLED') return { status: -1 }
+  // Checked even when re-recording: a recorded payload is well formed, so the net must never be what answers it.
+  if (nextArg?.errors?.some((e: { message?: string }) => e.message === UNREADABLE_REQUEST_MESSAGE)) {
+    throw new Error(`${mount.key}: a schema callback threw on a recorded payload; report it with ctx.addIssue`)
+  }
   const res: any = {
     statusCode: 0,
     body: null,

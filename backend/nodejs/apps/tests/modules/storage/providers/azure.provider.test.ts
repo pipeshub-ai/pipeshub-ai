@@ -847,7 +847,7 @@ describe('AzureBlobStorageAdapter', () => {
           .onFirstCall().returns(blobClient)
           .returns(exactBlobClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.deleteTree('records/conn-1')
 
@@ -866,7 +866,7 @@ describe('AzureBlobStorageAdapter', () => {
         listBlobsFlat: sinon.stub().returns([][Symbol.iterator]()),
         getBlockBlobClient: sinon.stub().returns(exactBlobClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       await proto.deleteTree('records/conn-1/single-file.json')
 
@@ -882,7 +882,7 @@ describe('AzureBlobStorageAdapter', () => {
         listBlobsFlat: sinon.stub().throws(new Error('container error')),
         getBlockBlobClient: sinon.stub(),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       try {
         await proto.deleteTree('records/conn-1')
@@ -900,7 +900,7 @@ describe('AzureBlobStorageAdapter', () => {
       const create = sinon.stub().resolves({ succeeded: false })
       const deleteIfExists = sinon.stub().resolves()
       adapter.containerName = 'container'
-      adapter.logger = { info: sinon.stub(), error: sinon.stub() }
+      adapter.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
       adapter.containerClient = {
         createIfNotExists: create,
         listBlobsFlat: () => ({ async *[Symbol.asyncIterator]() {} }),
@@ -938,7 +938,7 @@ describe('AzureBlobStorageAdapter', () => {
           .onFirstCall().returns(srcClient)
           .onSecondCall().returns(dstClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.copyObject('records/src.json', 'records/dst.json')
 
@@ -962,7 +962,7 @@ describe('AzureBlobStorageAdapter', () => {
           .onFirstCall().returns(srcClient)
           .onSecondCall().returns(dstClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.copyObject('records/src.json', 'records/dst.json')
 
@@ -984,7 +984,7 @@ describe('AzureBlobStorageAdapter', () => {
           .onFirstCall().returns(srcClient)
           .onSecondCall().returns(dstClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       try {
         await proto.copyObject('records/src.json', 'records/dst.json')
@@ -1021,7 +1021,7 @@ describe('AzureBlobStorageAdapter', () => {
         getBlockBlobClient: sinon.stub()
           .callsFake((name: string) => name.startsWith('org1/new/') ? mockDstClient : mockSrcClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.copyTree('org1/old/doc1', 'org1/new/doc1')
 
@@ -1040,7 +1040,7 @@ describe('AzureBlobStorageAdapter', () => {
         }),
         getBlockBlobClient: sinon.stub(),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.copyTree('org1/empty', 'org1/dst')
       expect(result.statusCode).to.equal(200)
@@ -1055,7 +1055,7 @@ describe('AzureBlobStorageAdapter', () => {
         listBlobsFlat: sinon.stub().throws(new Error('container error')),
         getBlockBlobClient: sinon.stub(),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       try {
         await proto.copyTree('org1/old', 'org1/new')

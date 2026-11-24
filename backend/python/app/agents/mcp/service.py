@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Optional
 
 from app.agents.constants.mcp_server_constants import (
     get_mcp_credentials_path,
+    get_mcp_instance_credentials_prefix,
     get_mcp_instance_path,
     get_mcp_instances_prefix,
     get_mcp_org_user_instances_prefix,
@@ -163,6 +165,39 @@ async def load_visible_instances(
         load_user_instances(config_service, org_id, user_id, strict=strict),
     )
     return [*org_instances, *own]
+
+
+# A person's id has the shape of a MongoDB ObjectId in either document store (`newObjectId`);
+# an agent's own credential is keyed by its UUID, and the shared slot by `_shared`.
+_PERSON_ID = re.compile(r"[0-9a-f]{24}")
+
+
+async def count_signed_in_people(config_service: ConfigurationService, instance_id: str) -> int:
+    """How many people keep their own sign-in for `instance_id`. Never says who."""
+    marker = f"/credentials/{instance_id}/"
+    try:
+        keys = await config_service.list_keys_in_directory(get_mcp_instance_credentials_prefix(instance_id))
+    except Exception as e:
+        logger.warning(f"Failed to list MCP credential keys for {instance_id}: {e}")
+        return 0
+    # One owner can have several keys (the credential, its OAuth tokens, a registered client).
+    owners = {key.split(marker, 1)[1].split("/", 1)[0] for key in keys if marker in key}
+    return sum(1 for owner in owners if _PERSON_ID.fullmatch(owner))
+
+
+async def popular_org_servers(config_service: ConfigurationService, org_id: str) -> list[dict[str, Any]]:
+    """The org's servers that people signed in to, most used first, with how many people."""
+    instances = await load_org_instances(config_service, org_id)
+    counts = await gather_with_concurrency(
+        _PREFIX_READ_CONCURRENCY, *[count_signed_in_people(config_service, i["_id"]) for i in instances],
+    )
+    rows = [
+        {"instanceId": i["_id"], "typeId": i.get("typeId"), "name": i.get("name") or "", "people": n}
+        for i, n in zip(instances, counts)
+        if n > 0
+    ]
+    rows.sort(key=lambda r: (-r["people"], r["name"].casefold()))
+    return rows
 
 
 async def load_personal_instances_for_admin(config_service: ConfigurationService, org_id: str) -> list[dict[str, Any]]:

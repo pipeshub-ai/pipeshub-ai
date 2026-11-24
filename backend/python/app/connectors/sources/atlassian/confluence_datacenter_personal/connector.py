@@ -66,7 +66,6 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterPersonalApp
 from app.connectors.sources.atlassian.core.confluence_access import (
     content_id as listed_item_id,
@@ -425,10 +424,6 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
 
-    def full_sync_coverage(self) -> FullSyncCoverage:
-        """A full sync that left part of Confluence unread unlinks nothing it did not see."""
-        return FullSyncCoverage(complete=not self._sync_read_incomplete)
-
     async def run_sync(self) -> None:
         """
         Run simplified sync for Confluence DC Personal connector.
@@ -441,13 +436,13 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
         3. Pages per space (inherit from space)
         4. Blogposts per space (inherit from space)
         """
+        self._sync_read_incomplete = False
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(
                 f"▶️ Confluence DC Personal connector {self.connector_id}: run_sync starting for org {org_id}"
             )
 
-            self._sync_read_incomplete = False
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
                 if not await self.init():
@@ -581,6 +576,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             record_groups = []
             self._space_listing_complete = False
             self._saved_space_ids = set()
+            self._spaces_listed = 0
             # A listed space that couldn't be processed would look like one that left.
             skipped_a_space = False
             listed_space_ids: set[str] = set()
@@ -613,6 +609,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     self.logger.error("The space listing repeated a page; no space is removed this sync")
                     break
                 listed_space_ids |= page_space_ids
+                self._spaces_listed += listed_count
 
                 # Extract base URL from first response
                 if not base_url and response_data.get("_links", {}).get("base"):
@@ -751,6 +748,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                     space_key,
                     response.status if response else "no response",
                 )
+                await self._note_homepage_unread(space_homepage_id)
                 return 0
 
             item_data = response.json()
@@ -798,7 +796,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 e,
                 exc_info=True,
             )
-            self._sync_read_incomplete = True
+            await self._note_homepage_unread(space_homepage_id)
             return 0
 
     async def _sync_content(
@@ -1225,10 +1223,11 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
                 # A given-up item the search didn't return again is unchanged; syncing it by id would only fail again.
                 settled = await self._reconcile_space_content(space, record_type, ContentListing(
                     full=not last_sync_time, complete=listing_complete, seen=frozenset(seen | set(given_up)),
-                    checkpoint_key=sync_point_key,
+                    checkpoint_key=sync_point_key, failed=tuple(failed_items),
                 ))
-            # Unread, unsettled, or read from a checkpoint: a full sync must not unlink what it did not see.
-            if not listing_complete or not settled or last_sync_time:
+            # Unread, or read from a checkpoint: a full sync must not unlink what it did not see. A failed delete or a
+            # never-stored item that failed does not count: the reconcile marks only stored items at risk.
+            if not listing_complete or last_sync_time:
                 self._sync_read_incomplete = True
             if not listing_complete:
                 self.logger.warning(
@@ -1255,6 +1254,11 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
 
     async def _sync_content_by_ids(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
         return await self._sync_content(space.short_name, record_type, only_ids=ids)
+
+    async def _refresh_archived_page_access(self, page: Record) -> bool:
+        """Nothing to re-read: pages carry no restrictions here, only the space's access for the
+        account, and the listing that found this archived page was read as that account."""
+        return True
 
     async def _fetch_all_attachments(self, content_id: str) -> tuple[list[dict[str, Any]], Optional[str]]:
         """

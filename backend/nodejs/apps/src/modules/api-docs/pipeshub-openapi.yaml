@@ -2734,6 +2734,25 @@ components:
           type: array
           items:
             type: string
+        category:
+          type: string
+          nullable: true
+          enum: [communication, meetings, docs, projects, developer, data, sales, support, finance, design, automation, search, security]
+          description: The one category the server is listed under.
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: What people get done with it, in plain words (for example "Schedule meetings"). Search reads these.
+          example: [Schedule meetings, Find free time]
+        readOnly:
+          type: boolean
+          description: Every tool only looks things up.
+        matchedCapability:
+          type: string
+          description: |
+            Only in `GET /mcp-servers/catalog` results for a `search`: the capability the search
+            matched, to show why the server is listed.
         replacedBy:
           type: string
           nullable: true
@@ -65770,9 +65789,21 @@ paths:
             default: 50
         - name: search
           in: query
-          description: Matches name, description and tags.
+          description: |
+            Ranked: a name match first, then servers whose capabilities match (common synonyms
+            count, for less than the word itself), then the category, then servers whose description
+            or tags contain every word. In capabilities, the category, descriptions and tags, words
+            match only where a word starts ("sign" doesn't find "assign"); a name also matches
+            inside a word ("hub" finds GitHub). Without it, templates keep the catalog's order.
           schema:
             type: string
+            maxLength: 200
+        - name: category
+          in: query
+          description: Only templates in this category.
+          schema:
+            type: string
+            enum: [communication, meetings, docs, projects, developer, data, sales, support, finance, design, automation, search, security]
       responses:
         '200':
           description: One page of templates
@@ -65877,6 +65908,86 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No template with this type id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Unexpected failure in the gateway or in the connectors service.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/popular:
+    get:
+      tags:
+        - MCP Server Catalog
+      summary: List the organization's most used MCP servers
+      description: |
+        The organization's servers that people signed in to with their own credentials, most used
+        first, with how many people. Counts only, never who. A server people reach through one
+        shared credential, or with no sign-in, keeps no per-person record and is not listed;
+        agents' own credentials are not counted. Personal servers are never listed.
+      operationId: listPopularMcpServers
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:read
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 6
+      responses:
+        '200':
+          description: Servers, most used first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        instanceId:
+                          type: string
+                        typeId:
+                          type: string
+                          nullable: true
+                          description: The catalog entry it was made from; null for a custom server.
+                        name:
+                          type: string
+                        people:
+                          type: integer
+                          minimum: 1
+                          description: How many people signed in to it.
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:read` scope
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: '`limit` is not a whole number from 1 to 50'
           content:
             application/json:
               schema:

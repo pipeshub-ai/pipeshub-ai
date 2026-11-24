@@ -67,7 +67,6 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterApp
 from app.connectors.sources.atlassian.core.confluence_access import (
     _is_folder,
@@ -529,6 +528,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             - Attachments
             - Comments (inline, footer)
         """
+        self._sync_read_incomplete = False
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Data Center sync for org: {org_id}")
@@ -537,7 +537,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
 
-            self._sync_read_incomplete = False
             await self._register_authenticated_identity()
 
             # Load sync and indexing filters
@@ -571,11 +570,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         except Exception as e:
             self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
             raise
-
-    def full_sync_coverage(self) -> FullSyncCoverage:
-        """A full sync that left part of Confluence unread unlinks nothing it did not see: a user, group,
-        space or page listing that failed would otherwise read as everything in it having left."""
-        return FullSyncCoverage(complete=not self._sync_read_incomplete)
 
     # Bound the per-level source fanout; Confluence is rate-limited.
     _PLACEHOLDER_SWEEP_CONCURRENCY = 5
@@ -917,7 +911,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             self.logger.warning(
                                 f"Keeping the stored members of group {group_name}: its member list could not be read"
                             )
-                            self._sync_read_incomplete = True
+                            await self._keep_group_as_stored(group_id or group_name)
                             continue
 
                         # Create user group
@@ -935,7 +929,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                                 f"Keeping the stored members of group {group_name}: "
                                 f"its members could not be looked up ({lookup_error})"
                             )
-                            self._sync_read_incomplete = True
+                            await self._keep_group_as_stored(group_id or group_name)
                             continue
 
                         # Save group with members
@@ -959,6 +953,14 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         except Exception as e:
             self.logger.error(f"❌ Group sync failed: {e}", exc_info=True)
             raise
+
+    async def _keep_group_as_stored(self, external_group_id: str) -> None:
+        """Note a group whose members could not be read kept as stored, so a full sync leaves its links."""
+        try:
+            await self.data_entities_processor.note_kept_user_group(self.connector_id, external_group_id)
+        except Exception as e:
+            self.logger.warning(f"Could not note group {external_group_id} kept; this full sync unlinks nothing: {e}")
+            self._sync_read_incomplete = True
 
     async def _sync_spaces(self) -> list[RecordGroup]:
         """
@@ -997,6 +999,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             record_groups = []
             self._space_listing_complete = False
             self._saved_space_ids = set()
+            self._spaces_listed = 0
             # A listed space that couldn't be processed would look like one that left.
             skipped_a_space = False
             listed_space_ids: set[str] = set()
@@ -1029,6 +1032,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     self.logger.error("The space listing repeated a page; no space is removed this sync")
                     break
                 listed_space_ids |= page_space_ids
+                self._spaces_listed += listed_count
 
                 # Extract base URL from first response
                 if not base_url and response_data.get("_links", {}).get("base"):
@@ -1087,7 +1091,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             self.logger.warning(
                                 f"Keeping the stored access of space {space_name}: its permissions could not be read"
                             )
-                            self._sync_read_incomplete = True
+                            await self.data_entities_processor.note_kept_record_group(
+                                self.connector_id, record_group.external_group_id
+                            )
                             continue
 
                         total_permissions_synced += len(permissions)
@@ -1184,6 +1190,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     space_key,
                     response.status if response else "no response",
                 )
+                await self._note_homepage_unread(space_homepage_id)
                 return 0
 
             item_data = response.json()
@@ -1205,6 +1212,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             permissions = await self._fetch_page_permissions(item_id)
             if permissions is None:
                 self.logger.warning("Skipping space homepage %s: its restrictions could not be read", item_id)
+                if existing_record:
+                    self._sync_read_incomplete = True
                 return 0
             webpage_record_update = await self._process_webpage_with_update(
                 item_data, record_type, existing_record, permissions
@@ -1242,7 +1251,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 e,
                 exc_info=True,
             )
-            self._sync_read_incomplete = True
+            await self._note_homepage_unread(space_homepage_id)
             return 0
 
     async def _sync_content(
@@ -1714,8 +1723,9 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 self._id_sync_failed_items = []
                 settled = await self._reconcile_space_content(space, record_type, listing)
                 # A listing read from a checkpoint (left over when a full sync could not forget it) did not list the
-                # unchanged pages before its window, so a full sync must not unlink what it did not see.
-                if not listing.complete or not settled or not listing.full:
+                # unchanged pages before its window, so a full sync must not unlink what it did not see. A failed
+                # delete or a never-stored item that failed does not count: the reconcile marks only stored items at risk.
+                if not listing.complete or not listing.full:
                     self._sync_read_incomplete = True
                 if not listing.complete:
                     continue
@@ -1735,6 +1745,31 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
         result = await self._sync_content(space.short_name, record_type, defer_checkpoint=True, only_ids=ids)
         self._id_sync_failed_items.extend(result.failed)
         return result.complete and not result.failed
+
+    async def _refresh_archived_page_access(self, page: Record) -> bool:
+        """Write an archived page's restrictions as the audit pass does; the search never re-reads it."""
+        permissions = await self._fetch_page_permissions(page.external_record_id)
+        if permissions is None:
+            return False
+        record = await self.data_entities_processor.get_typed_record_by_external_id(
+            self.connector_id, page.external_record_id
+        )
+        if record is None:
+            return False
+        # A READ restriction keeps inheriting and is recorded as RESTRICTED instead; EDIT-only stays STRICT.
+        record.access_rule = (
+            AccessRule.RESTRICTED if any(p.type == PermissionType.READ for p in permissions) else AccessRule.STRICT
+        )
+        record.rewrite_permissions = True
+        await self.data_entities_processor.on_new_records([(record, permissions)])
+        await apply_page_access_to_dependents(
+            self.data_entities_processor,
+            self.connector_id,
+            page.external_record_id,
+            permissions,
+            inherits_space=record.inherit_permissions,
+        )
+        return True
 
     async def _sync_permission_changes_from_audit_log(self) -> None:
         """
@@ -3665,6 +3700,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                     if not pseudo_group:
                         # Create pseudo-group on-the-fly
                         pseudo_group = await self._create_pseudo_group(principal_id)
+                    else:
+                        self.data_entities_processor.note_kept_user_groups(self.connector_id, [pseudo_group])
 
                     if pseudo_group:
                         self.logger.debug(
