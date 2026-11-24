@@ -56,14 +56,16 @@ def discovered() -> list[str]:
 
     A file needs a graph store when it, a module it imports or a conftest above it names one. Files that also need
     storage run in the storage job; files that need a server started at a memory preset (NEO4J_IT_PRESET) are run by
-    hand against one; the GitLab simulator and the PostgreSQL provider have jobs of their own.
+    hand against one; the GitLab simulator, the PostgreSQL provider and the Knowledge Hub browse cost budgets
+    (permission-conformance.yml, kh-browse-cost) have jobs of their own.
     """
     with contextlib.chdir(PYTHON_ROOT):  # discovery names modules after paths relative to the import root
         return discover(
             Path("tests/integration"),
             "NEO4J_IT_URI|ARANGO_IT_URL",
             "ARTIFACTS_IT_STORAGE_URL|NEO4J_IT_PRESET",
-            exclude_dirs=[Path("tests/integration/gitlab_simulated"), Path("tests/integration/graph_db/postgres")],
+            exclude_dirs=[Path("tests/integration/gitlab_simulated"), Path("tests/integration/graph_db/postgres"),
+                          Path("tests/integration/kh_browse_cost")],
         )
 
 

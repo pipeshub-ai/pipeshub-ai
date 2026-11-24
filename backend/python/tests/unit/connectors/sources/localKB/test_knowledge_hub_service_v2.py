@@ -514,6 +514,20 @@ async def test_a_batch_check_the_graph_could_not_answer_is_still_a_500(service, 
 
 
 @pytest.mark.asyncio
+async def test_a_user_lookup_that_finds_the_memory_pool_spent_is_busy_not_an_unknown_user(service, provider) -> None:
+    class PoolSpent(Exception):
+        code = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
+
+    provider.get_user_by_user_id.side_effect = PoolSpent()
+    result = await service.get_nodes(user_id="u1", org_id="o1")
+
+    assert (result.success, result.errorCode) == (False, 503)
+    assert result.error != "User not found"
+    assert provider.get_user_by_user_id.call_args.kwargs == {"raise_on_error": True}
+    provider.get_knowledge_hub_root_nodes_v2.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_the_wrong_type_in_the_url_is_still_a_400(service, provider) -> None:
     provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
         [], scope=admitted_scope(node_type="app")

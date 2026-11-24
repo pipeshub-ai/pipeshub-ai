@@ -478,6 +478,20 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await users.getLive(o1, live._id))!._id).to.equal(live._id);
     });
 
+    it('restoreByEmails brings a removed admin back as a member and leaves live accounts as they are', async () => {
+      const org = await fx.newOrg();
+      const goneAdmin = await person(org, { role: 'admin' });
+      const goneMember = await person(org);
+      const liveAdmin = await person(org, { role: 'admin' });
+      await users.markDeleted(org, goneAdmin._id);
+      await users.markDeleted(org, goneMember._id);
+      const restored = await users.restoreByEmails(org, [goneAdmin.email, goneMember.email, liveAdmin.email]);
+      const roleOf = (id: string) => restored.find((r) => r._id === id)?.role;
+      expect([roleOf(goneAdmin._id), roleOf(goneMember._id), roleOf(liveAdmin._id)]).to.deep.equal(['member', 'member', 'admin']);
+      expect((await users.getLive(org, goneAdmin._id))!.role).to.equal('member');
+      expect((await users.getLive(org, liveAdmin._id))!.role).to.equal('admin');
+    });
+
     it('promoteToAdmin promotes people; a batch that reaches a service account is refused by the schema', async () => {
       const org = await fx.newOrg();
       const p = await person(org);
@@ -823,6 +837,20 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(await users.updateProfile(org, u._id, { fullName: 'x' })).to.equal(null);
     });
 
+    it('updateProfile to an address another account in the organisation holds is a UniqueConstraintError on email', async () => {
+      const org = await fx.newOrg();
+      const [u, other] = [await person(org), await person(org)];
+      let err: unknown;
+      try {
+        await users.updateProfile(org, u._id, { email: other.email });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).to.be.instanceOf(UniqueConstraintError);
+      expect(String((err as UniqueConstraintError).metadata?.key)).to.include('email');
+      expect((await users.getLive(org, u._id))!.email).to.equal(u.email);
+    });
+
     it('markDeleted keeps the row, optionally signs the person out and records who deleted', async () => {
       const org = await fx.newOrg();
       const actor = fx.newId();
@@ -833,6 +861,41 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const d2 = await users.markDeleted(org, v._id);
       expect(d2).to.include({ isDeleted: true, hasLoggedIn: true });
       expect(await users.markDeleted(await fx.newOrg(), v._id)).to.equal(null);
+    });
+
+    it('markDeleted with onlyMember removes a member, and leaves an admin exactly as it was', async () => {
+      const org = await fx.newOrg();
+      const actor = fx.newId();
+      const m = await person(org, { hasLoggedIn: true });
+      const d = await users.markDeleted(org, m._id, { signedOut: true, deletedBy: actor, onlyMember: true });
+      expect(d).to.include({ isDeleted: true, hasLoggedIn: false, deletedBy: actor, role: 'member' });
+      const a = await person(org, { role: 'admin', hasLoggedIn: true });
+      expect(await users.markDeleted(org, a._id, { signedOut: true, deletedBy: actor, onlyMember: true })).to.equal(null);
+      const kept = await users.getAny(org, a._id);
+      expect(kept).to.include({ isDeleted: false, hasLoggedIn: true, role: 'admin' });
+      expect(kept!.deletedBy ?? undefined).to.equal(undefined);
+      expect(await users.countActiveAdmins(org)).to.equal(1);
+      expect(await users.markDeleted(await fx.newOrg(), m._id, { onlyMember: true })).to.equal(null);
+      // Without the flag an admin is still removed: the other callers keep their behaviour.
+      expect(await users.markDeleted(org, a._id)).to.include({ isDeleted: true, role: 'admin' });
+    });
+
+    it('markDeleted with deletedBy undefined clears who deleted the account', async () => {
+      const org = await fx.newOrg();
+      const m = await person(org);
+      await users.markDeleted(org, m._id, { deletedBy: fx.newId() });
+      const cleared = await users.markDeleted(org, m._id, { deletedBy: undefined });
+      expect(cleared!.deletedBy ?? undefined).to.equal(undefined);
+      expect((await users.getAny(org, m._id))!.deletedBy ?? undefined).to.equal(undefined);
+    });
+
+    it('markDeleted with onlyMember matches a member removed before, so a retried deletion finishes', async () => {
+      const org = await fx.newOrg();
+      const actor = fx.newId();
+      const m = await person(org, { hasLoggedIn: true });
+      await users.markDeleted(org, m._id, { signedOut: true, deletedBy: actor, onlyMember: true });
+      const again = await users.markDeleted(org, m._id, { signedOut: true, deletedBy: actor, onlyMember: true });
+      expect(again).to.include({ _id: m._id, isDeleted: true, hasLoggedIn: false, deletedBy: actor });
     });
 
     it('countActiveAdmins and listAdminIds exclude removed accounts and service accounts', async () => {

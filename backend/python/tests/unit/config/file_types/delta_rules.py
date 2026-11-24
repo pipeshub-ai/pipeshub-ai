@@ -6,6 +6,11 @@ checks the new value against main itself: a spelling that differs only in case o
 (``any-spelling``), or another spelling of the same type (``alias-spelling``), must now decide exactly as main decided
 the plain spelling.
 
+A cell's ``tier`` and ``kind`` are checked against the reader the replayed dispatch reached for the same labels
+(``reader-labels``): the handler in the replay's ``legacy`` column, mapped through the hand-written
+``HANDLER_TIER_KIND`` table, never through the registry code under test. Where such a reader exists its value is
+binding for those two columns, main-indexed cells included; no other reason can accept a different value.
+
     python -m tests.unit.config.file_types.delta_rules PINNED REPLAY
 
 writes ``allowed_deltas.json`` from a replay (``gen_pinned_decisions --replay``), and fails on any
@@ -38,6 +43,9 @@ REASONS: dict[str, str] = {
     "filter-options": "the sync filter offers the new types; log moves from exclude-only to offered",
     "bounded-token-cost": "a .log/.cfg main read (as text, code or JSON) is indexed as at most "
                           "TEXT_LOG_MAX_BYTES of text and refused over TEXT_LOG_HARD_LIMIT_BYTES",
+    "reader-labels": "the tier and kind are those of the reader the labels select: the handler the replayed dispatch "
+                     "reached for these labels, by HANDLER_TIER_KIND (a SQL table is light, a CSV sent as "
+                     "application/vnd.ms-excel is read as XLS)",
     "package-not-text": "a FILE stored as text/plain whose bytes are a package (msg, odt, rtf, xlsm, docm, dotx, "
            "potx, pptm) is read as that package, not as text (listed cell by cell below)",
 }
@@ -98,12 +106,79 @@ def _canonical_spelling(mime: str) -> str | None:
     return ft.mimes[0]
 
 
-class Oracle:
-    """The decisions pinned on main, looked up by their inputs."""
+# What each in-process parser is admitted as, written out by hand so the rule never asks the code it checks. None: the
+# parser has no tier or kind of its own (an image has no kind, epub neither), and main's value stands.
+HANDLER_TIER_KIND: dict[str, tuple[str | None, str | None]] = {
+    "_dispatch_pdf_binary": ("heavy", "pdf"),
+    "process_docx_document": ("heavy", "docling_docx"),
+    "process_doc_document": ("heavy", "docling_docx"),
+    "process_pptx_document": ("heavy", "docling_docx"),
+    "process_ppt_document": ("heavy", "docling_docx"),
+    "process_libreoffice_document": ("heavy", "docling_docx"),
+    "process_excel_document": ("heavy", "excel_load"),
+    "process_xls_document": ("heavy", "excel_load"),
+    "process_image": ("heavy", None),
+    "process_epub_document": (None, None),
+    "process_delimited_document": ("light", "csv"),
+    "process_txt_document": ("light", "text"),
+    "process_md_document": ("light", "text"),
+    "process_mdx_document": ("light", "text"),
+    "process_html_document": ("light", "text"),
+    "process_structured_document": ("light", "text"),
+    "process_sql_structured_data": ("light", "text"),
+    "process_plain_text_document": ("light", "text"),
+    "process_msg_document": ("light", "text"),
+    "process_gmail_message": ("light", "text"),
+    "process_code_document": ("light", "code"),
+    "process_blocks": ("light", None),
+}
+# Rows whose tier or kind may differ from their reader's, each reviewed (none so far).
+ORACLE_EXCEPTIONS: dict[str, str] = {}
+_TIER, _KIND = COLUMNS.index("tier"), COLUMNS.index("kind")
 
-    def __init__(self, pinned: dict[str, Any]) -> None:
+
+def _labels_decide(row: list[Any]) -> bool:
+    """A FILE row whose reader its labels alone chose: the name is the default one, or the mime names something."""
+    from app.config import file_types
+
+    ext, mime, name, record_type = row[:4]
+    return (
+        record_type == "FILE" and all(v is None or isinstance(v, str) for v in (ext, mime))
+        and (name == _name_for(ext) or not file_types._names_nothing(mime))
+    )
+
+
+def _readers(pinned_rows: list[list[Any]], replayed_rows: list[list[Any]]) -> dict[str, dict[int, object]]:
+    """Per labels, the tier and kind of the handler the replayed dispatch reached for a FILE row they decide."""
+    found: dict[str, dict[int, object]] = {}
+    legacy = COLUMNS.index("legacy")
+    for pinned, replayed in zip(pinned_rows, replayed_rows, strict=True):
+        handler = replayed[legacy]
+        if not _labels_decide(pinned) or not isinstance(handler, str) or handler not in HANDLER_TIER_KIND:
+            if _labels_decide(pinned) and isinstance(handler, str) and "!" not in handler and handler != "-":
+                raise AssertionError(f"{handler} is not in HANDLER_TIER_KIND: add the parser by hand")
+            continue
+        tier, kind = HANDLER_TIER_KIND[handler]
+        expected = {_TIER: tier or pinned[_TIER], _KIND: kind or pinned[_KIND]}
+        key = json.dumps(pinned[:2])
+        if found.setdefault(key, expected) != expected:
+            raise AssertionError(f"two readers for the labels {key}")
+    return found
+
+
+class Oracle:
+    """The decisions pinned on main, looked up by their inputs; with *replayed* (the replay's rows, in pinned order),
+    also the reader each pair of labels selects."""
+
+    def __init__(self, pinned: dict[str, Any], replayed: list[list[Any]] | None = None) -> None:
         self.rows = {json.dumps(r[:4]): r for r in pinned["rows"]}
         self.mimes = dict(pinned["mimes"])
+        self.readers = _readers(pinned["rows"], replayed) if replayed is not None else {}
+
+    def reader_value(self, row: list[Any], column: str) -> tuple[bool, object]:
+        """``(True, value)`` when the labels' reader decides *column* (tier or kind), else ``(False, None)``."""
+        found = self.readers.get(json.dumps(row[:2])) if column in ("tier", "kind") else None
+        return (True, found[COLUMNS.index(column)]) if found is not None else (False, None)
 
     def row(self, ext: object, mime: object, name: str, record_type: str) -> list[Any] | None:
         for candidate in (name, _name_for(ext)):
@@ -134,6 +209,10 @@ def _read_by_its_name(row: list[Any], name_ext: str | None, new: object) -> bool
 
 def classify_cell(oracle: Oracle, row: list[Any], column: str, new: object) -> str | None:
     """The reason a row's *column* may now read *new*, or None when no reviewed reason covers it."""
+    decided, expected = oracle.reader_value(row, column)
+    if decided:
+        # Binding: no other reason may accept a tier or kind the labels' reader does not have.
+        return "reader-labels" if new == expected else ORACLE_EXCEPTIONS.get(_key(row))
     if main_indexed(row):
         return EXISTING_CELL_EXCEPTIONS.get(json.dumps(list(row[:4])))
     ext, mime, name, record_type = row[:4]
@@ -215,7 +294,7 @@ def size_rows(pinned: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def build(pinned: dict[str, Any], replay: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
-    oracle = Oracle(pinned)
+    oracle = Oracle(pinned, replayed=replay["rows"])
     rows: dict[str, dict[str, Any]] = {}
     unexplained: list[str] = []
     for old, new in zip(pinned["rows"], replay["rows"], strict=True):

@@ -151,6 +151,8 @@ NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::detach_from_agents": AGENT,
     "api/routes/agent.py::update_agent": "agent sharing edges, not records: no viewer scope reads them",
     "connectors/core/base/data_processor/data_source_entities_processor.py::_drop_shared_groups": SYNC,
+    "connectors/core/registry/connector_registry.py::discard_connector_instance":
+        "takes back an instance its own create just wrote: it holds no permission edge yet and the create never bumped",
     "connectors/core/base/data_processor/pr_links.py::write_modifies":
         "replaces a PR's MODIFIES links to the code files it changed: record links, not permission edges",
     "connectors/core/base/data_processor/data_source_entities_processor.py::_drop_stale_group_parents": SYNC,

@@ -120,15 +120,16 @@ function xssRejectionMessage(value: string, field: string): string {
 }
 
 /**
- * The one field of a request that holds a person's question, when it is a
- * string. `holder` is the object the field sits on, so the field is found by
- * object identity rather than by a dotted path a caller could imitate with a
- * key such as "params.arguments.query".
+ * The fields of a request that hold free text: a person's question, or the
+ * quotes an MCP citations call shows. Each is found by the object it sits on
+ * (object identity) rather than by a dotted path a caller could imitate with
+ * a key such as "params.arguments.query".
  */
 interface QuestionField {
-  holder: Record<string, unknown>;
-  /** A route can carry several such fields (a code search has a pattern and a path). */
-  keys: readonly string[];
+  /** Each object holding free text, and the keys on it that hold it. A route
+   *  can carry several such fields (a code search has a pattern and a path),
+   *  and a citations call one quote per citation. */
+  holders: ReadonlyMap<object, readonly string[]>;
 }
 
 /** MCP tools with a free-text argument typed for chat or search, and its name.
@@ -139,6 +140,17 @@ const MCP_QUESTION_TOOLS = new Map([
   ['pipeshub_search_entities', 'query'],
   ['pipeshub_grep', 'pattern'],
 ]);
+
+/**
+ * The MCP citations tool, and the free-text field of each citation it takes.
+ * A quote is text copied from a record, and a Slack message's text is full
+ * of angle brackets (`<!here>`, `<@U123>`, `<https://…|label>`), so checking
+ * it refused the whole call. The quote is only ever shown as text: the
+ * citations card sets it with `textContent` (@pipeshub-ai/mcp,
+ * src/mcp-app/citation-viewer.ts `el`).
+ */
+const MCP_CITATIONS_TOOL = 'pipeshub_show_citations';
+const MCP_CITATION_TEXT_FIELDS: readonly string[] = ['quote'];
 
 /** The routes behind those tools, and the field each reads. */
 const SEARCH_QUESTION_ROUTES = new Map<string, readonly string[]>([
@@ -179,9 +191,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * app/(main)/chat/sidebar/chat-section-element.tsx). It is also the same
  * text the web chat route already stores unchecked.
  *
- * Only that one string is passed through. Every other field of these
- * requests (filters, ids, model keys) and every field of every other request
- * is still checked and sanitized as before. Matching is exact and
+ * The same holds for the quotes of an MCP `pipeshub_show_citations` call
+ * (see MCP_CITATIONS_TOOL): text copied from a record, shown only as text.
+ *
+ * Only those strings are passed through. Every other field of these
+ * requests (filters, ids, model keys, a citation's `cite`) and every field
+ * of every other request is still checked and sanitized as before. Matching is exact and
  * case-sensitive, so a request that does not match is checked as before.
  */
 function findQuestionField(req: Request): QuestionField | undefined {
@@ -193,7 +208,7 @@ function findQuestionField(req: Request): QuestionField | undefined {
   // The search route MCP's pipeshub_search calls, and the web search box.
   const routeFields = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
   if (routeFields !== undefined) {
-    return { holder: body, keys: routeFields };
+    return { holders: new Map([[body, routeFields]]) };
   }
 
   // A JSON-RPC tool call to the MCP endpoint.
@@ -202,15 +217,27 @@ function findQuestionField(req: Request): QuestionField | undefined {
     if (
       body.method !== 'tools/call' ||
       !isPlainObject(params) ||
-      typeof params.name !== 'string' ||
-      !MCP_QUESTION_TOOLS.has(params.name)
+      typeof params.name !== 'string'
     ) {
       return undefined;
     }
     const args = params.arguments;
+    if (params.name === MCP_CITATIONS_TOOL) {
+      const citations = isPlainObject(args) ? args.citations : undefined;
+      if (!Array.isArray(citations)) return undefined;
+      const holders = new Map<object, readonly string[]>(
+        citations
+          .filter(isPlainObject)
+          .map((citation) => [citation, MCP_CITATION_TEXT_FIELDS] as const),
+      );
+      return holders.size > 0 ? { holders } : undefined;
+    }
+    if (!MCP_QUESTION_TOOLS.has(params.name)) {
+      return undefined;
+    }
     const field = MCP_QUESTION_TOOLS.get(params.name) as string;
     return isPlainObject(args) && typeof args[field] === 'string'
-      ? { holder: args, keys: [field] }
+      ? { holders: new Map([[args, [field]]]) }
       : undefined;
   }
 
@@ -228,14 +255,14 @@ function isQuestionField(
   key: string,
   question: QuestionField | undefined,
 ): boolean {
-  if (
-    question === undefined ||
-    holder !== question.holder ||
-    !question.keys.includes(key)
-  ) {
+  const keys =
+    question !== undefined && typeof holder === 'object' && holder !== null
+      ? question.holders.get(holder)
+      : undefined;
+  if (keys === undefined || !keys.includes(key)) {
     return false;
   }
-  const text = question.holder[key];
+  const text = (holder as Record<string, unknown>)[key];
   return typeof text === 'string' && text.length <= XSS_CHECK_MAX_LENGTH;
 }
 

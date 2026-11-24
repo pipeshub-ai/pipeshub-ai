@@ -892,6 +892,10 @@ export class OAuthAppService {
     clientId: string,
     clientSecret: string,
   ): Promise<OAuthAppDto> {
+    // A missing secret is the client's mistake; hashing it would throw a TypeError, which reads as ours.
+    if (typeof clientSecret !== 'string' || clientSecret === '') {
+      throw new InvalidClientError('client_secret is required');
+    }
     const app = await this.getAppByClientId(clientId);
 
     const storedSecret = this.encryptionService.decrypt(

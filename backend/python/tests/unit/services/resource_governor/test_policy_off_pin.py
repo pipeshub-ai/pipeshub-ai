@@ -27,6 +27,10 @@ EDITED = {
         "docling_working_set_gb", "resolve_heavy_working_set", "class HeavyWorkingSet", "HeavyWorkingSet.gb",  # new
         "HeavyWorkingSet.source", "HeavyWorkingSet.as_dict",
         "assign:PDF_PARENT_WORKING_SET_GB", "assign:DOCLING_WORKING_SET_DEFAULT_GB",
+        # The code sandbox yield: only acts with host_yield=True, which the grid never passes.
+        "assign:YIELD_INDEX_SHRINK_FACTOR", "assign:YIELD_GROW_CONFIRM_SAMPLES", "assign:YIELD_POOLS",
+        "_yield_shrink_target", "_yield_holdoff",
+        "assign:YIELD_REPEAT_WINDOW_SAMPLES", "assign:YIELD_HEAVY_MAX_HOLDOFF_SAMPLES",
         # Read-only admission explain: a rule tag on the returned state, no change to any limit.
         "_with_rule", "_feedback_services", "assign:_GROWTH_HOLDS", "assign:_SHRINK_CAUSE",
         "_feedback_for", "assign:SERVICE_POOL",  # a Docling-only report brakes INDEX_HEAVY only; no memory gate reads feedback
@@ -96,9 +100,12 @@ EDITED = {
         # PIPESHUB_CAPACITY_PROFILE=auto only: __init__ (inputs and the container link), _sample_once (one step on the shared limits), stats (one extra key). Flag off: the branches are not taken.
         "ResourceGovernor._policy_working_set", "ResourceGovernor._measured_base_applies",
         "ResourceGovernor._resolve_heavy_working_set",
+        # The code sandbox yield signal: without one (every governor but indexing's) none of it runs.
+        "ResourceGovernor._read_yield", "ResourceGovernor._after_yield_read", "ResourceGovernor._yield_stats",
+        "ResourceGovernor.close",
         # Read-only admission explain.
         "ResourceGovernor.admission_explain", "ResourceGovernor.slot_wait", "ResourceGovernor.report_memory_incident",
-        "if:TYPE_CHECKING",  # Iterator, for slot_wait
+        "if:TYPE_CHECKING",  # Iterator, for slot_wait; YieldSignal, for the yield signal
         # A monotonic count of brake entries per pool and reason, incremented where the decision is made
         # (_sample_once, report_memory_incident) and shown in admission_explain: no limit, state or
         # admission outcome changes. Reason: load notifications must not miss an entry a delayed read skipped.

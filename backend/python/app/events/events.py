@@ -137,6 +137,11 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.error_class import log_failure
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import note, stage
+from app.utils.table_row_memory import (
+    PreviousRows,
+    end_previous_rows,
+    offer_previous_rows,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file
 
@@ -170,6 +175,25 @@ def _is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
 
 # Storage cleanups of abandoned virtual record ids still running in the background.
 _ABANDONED_VRID_CLEANUPS: set[asyncio.Task] = set()
+
+def keeps_stored_row_text(
+    event_type: str | None, event_data: dict[str, Any], stored_vrid: str | None, org_id: str | None, *, store_only: bool,
+) -> bool:
+    """Whether this delivery's tables keep the row text the stored version already has (``table_row_memory``).
+
+    Only a content update (an update or a reindex of a record that has a stored version) does. A new record has none, a forced
+    reindex (``forceReindex``, or a refresh of paid outputs) asks for every row again, and a store-only run describes nothing.
+    """
+    paid_run = current_paid_run()
+    return bool(
+        event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value)
+        and stored_vrid
+        and org_id
+        and not store_only
+        and not event_data.get("forceReindex")
+        and not (paid_run is not None and paid_run.refresh)
+    )
+
 
 class EventProcessor:
     def __init__(
@@ -2370,6 +2394,14 @@ class EventProcessor:
                         "Failed to clear the embedding marker of record",
                         doc,
                     )
+            stored_vrid = record.get("virtualRecordId")
+            if keeps_stored_row_text(event_type, event_data, stored_vrid, org_id, store_only=store_only):
+                # Read only if a table asks.
+                offer_previous_rows(PreviousRows(
+                    lambda: self.processor.load_stored_blocks(stored_vrid, org_id), self.logger, record_id,
+                ))
+            else:
+                end_previous_rows()
             if checkpoint is not None:
                 # No parse permit is taken: the START_DOWNLOAD reservation already covers this record's
                 # size until INDEXING_COMPLETE, and the loaded blocks are the parse output it was sized for.

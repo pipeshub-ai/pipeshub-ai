@@ -148,6 +148,7 @@ from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
+from app.services.resource_governor.yield_signal import YieldSignal
 from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.telemetry.ops_exporter import exporter_from_env
 from app.telemetry.setup import setup_telemetry
@@ -3284,6 +3285,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             app_container.config_service(), logger
         ),
+        # Indexing admits work first in this container, so it alone slows
+        # down for code sandbox runs waiting for memory; parsing and Docling
+        # would brake the same parse a second time.
+        yield_signal=YieldSignal.open_default(role="indexing governor"),
         remote_parse_slots=remote_parse_concurrency(),
     )
     app.state.governor = governor

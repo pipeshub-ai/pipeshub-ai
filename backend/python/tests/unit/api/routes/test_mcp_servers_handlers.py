@@ -103,10 +103,14 @@ def _oauth_instance(**overrides) -> dict:
 
 
 def _admin_request(config_service=None, registry=None) -> MagicMock:
+    config_service = config_service or MagicMock()
+    if not isinstance(getattr(config_service, "list_keys_in_directory", None), AsyncMock):
+        # Saving a server reads every server to check its name; a store set up without them is empty.
+        config_service.list_keys_in_directory = AsyncMock(return_value=[])
     return _mock_request(
         user={"userId": "admin-1", "orgId": "org-1"},
         app_state={
-            "config_service": config_service or MagicMock(),
+            "config_service": config_service,
             "mcp_registry": registry or MagicMock(),
         },
     )

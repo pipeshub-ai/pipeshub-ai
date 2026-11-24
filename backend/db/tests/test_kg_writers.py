@@ -70,7 +70,7 @@ def marks(args: tuple, name: str | None = None) -> str:
 
 # The writers that take the caller's projection code epoch last (kg_0013); call() passes it.
 GUARDED = ("kg.w_stamps_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
-EPOCH = 8
+EPOCH = 9
 
 
 def call(c, name: str, org: str | None, args: tuple, *, epoch: int | None = EPOCH):
@@ -159,7 +159,7 @@ def test_the_change_log_is_acknowledged_by_transaction_and_by_id_and_only_in_the
         c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:mine'])", (ORG_A,))              # as the capture trigger will: this transaction's id by default
         c.execute("SET LOCAL ROLE pipeshub_connectors")
         c.execute("SELECT set_config('app.org_id', %s, true)", (ORG_A,))
-        assert c.execute("SELECT kg.w_changes_ack(8)").fetchone()[0] == 1
+        assert c.execute("SELECT kg.w_changes_ack(%s)", (EPOCH,)).fetchone()[0] == 1
         c.execute("COMMIT")
         assert [list(r[4]) for r in rows(c, "kg.graph_changes", ORG_A)] == [["3:other", "4:u"]]
         clean(c)
@@ -628,7 +628,7 @@ def counters(c, org: str) -> list[tuple]:
 
 def test_a_write_of_the_records_adds_its_counter_deltas_in_the_writers_org_and_the_fold_writers_replace_them(pdb):
     """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record a listing counts by class (stamped and
-    decided) adds a facet 1 delta, an unchanged repeat adds none, its delete takes it back. kg_0021: no facet 2 delta (record type and origin) any more. The fold's writers
+    decided) adds a facet 1 delta, an unchanged repeat adds none, its delete takes it back. kg_0022: no facet 2 delta (record type and origin) any more. The fold's writers
     delete the deltas by id in the session org only and insert folded rows."""
     with conn(pdb) as c:
         clean(c)

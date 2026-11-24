@@ -8,7 +8,6 @@
 
 import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   UnauthorizedError,
@@ -17,10 +16,6 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { revealQuery } from '../../configuration_manager/utils/secretReveal';
 import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../../tokens_manager/utils/connector.utils';
-
-const logger = Logger.getInstance({
-  service: 'ToolsetsController',
-});
 
 // ============================================================================
 // Helper Functions
@@ -62,8 +57,6 @@ export const getRegistryToolsets =
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.info(`Getting toolset registry for user ${userId}`);
-
       const queryParams = new URLSearchParams();
       if (page) queryParams.append('page', String(page));
       if (limit) queryParams.append('limit', String(limit));
@@ -86,12 +79,6 @@ export const getRegistryToolsets =
         'Toolsets from registry not found'
       );
     } catch (error: any) {
-      logger.error('Error getting toolset registry', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(error, 'get toolset registry');
       next(handledError);
     }
@@ -115,8 +102,6 @@ export const getConfiguredToolsets =
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.info(`Getting configured toolsets for user ${userId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -134,10 +119,6 @@ export const getConfiguredToolsets =
         'Configured toolsets not found'
       );
     } catch (error: any) {
-      logger.error('Error getting configured toolsets', {
-        error: error.message,
-        userId: req.user?.userId,
-      });
       const handledError = handleBackendError(error, 'get configured toolsets');
       next(handledError);
     }
@@ -160,8 +141,6 @@ export const getToolsetSchema =
         throw new BadRequestError('Toolset type is required');
       }
 
-      logger.info(`Getting toolset schema for ${toolsetType}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -179,13 +158,6 @@ export const getToolsetSchema =
         'Toolset schema not found'
       );
     } catch (error: any) {
-      logger.error('Error getting toolset schema', {
-        error: error.message,
-        toolsetType: req.params.toolsetType,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(error, 'get toolset schema');
       next(handledError);
     }
@@ -212,8 +184,6 @@ export const createToolset =
         throw new BadRequestError('Toolset name is required');
       }
 
-      logger.info(`Creating toolset ${toolsetData.name}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -232,11 +202,6 @@ export const createToolset =
         'Failed to create toolset'
       );
     } catch (error: any) {
-      logger.error('Error creating toolset:', {
-        error: error.message,
-        toolsetName: req.body?.name,
-        userId: req.user?.userId,
-      });
       const handledError = handleBackendError(error, 'create toolset');
       next(handledError);
     }
@@ -259,8 +224,6 @@ export const checkToolsetStatus =
         throw new BadRequestError('toolsetId is required');
       }
 
-      logger.info(`Checking toolset status for ${toolsetId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -278,10 +241,6 @@ export const checkToolsetStatus =
         'Toolset status not found'
       );
     } catch (error: any) {
-      logger.error('Error checking toolset status:', {
-        error: error.message,
-        toolsetId: req.params.toolsetId,
-      });
       const handledError = handleBackendError(error, 'check toolset status');
       next(handledError);
     }
@@ -304,8 +263,6 @@ export const getToolsetConfig =
         throw new BadRequestError('toolsetId is required');
       }
 
-      logger.info(`Getting toolset config for ${toolsetId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -323,10 +280,6 @@ export const getToolsetConfig =
         'Toolset config not found'
       );
     } catch (error: any) {
-      logger.error('Error getting toolset config:', {
-        error: error.message,
-        toolsetId: req.params.toolsetId,
-      });
       const handledError = handleBackendError(error, 'get toolset config');
       next(handledError);
     }
@@ -350,8 +303,6 @@ export const saveToolsetConfig =
         throw new BadRequestError('toolsetId is required');
       }
 
-      logger.info(`Saving toolset config for ${toolsetId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -370,10 +321,6 @@ export const saveToolsetConfig =
         'Failed to save toolset config'
       );
     } catch (error: any) {
-      logger.error('Error saving toolset config:', {
-        error: error.message,
-        toolsetId: req.params.toolsetId,
-      });
       const handledError = handleBackendError(error, 'save toolset config');
       next(handledError);
     }
@@ -397,8 +344,6 @@ export const updateToolsetConfig =
         throw new BadRequestError('toolsetId is required');
       }
 
-      logger.info(`Updating toolset config for ${toolsetId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -417,10 +362,6 @@ export const updateToolsetConfig =
         'Failed to update toolset config'
       );
     } catch (error: any) {
-      logger.error('Error updating toolset config:', {
-        error: error.message,
-        toolsetId: req.params.toolsetId,
-      });
       const handledError = handleBackendError(error, 'update toolset config');
       next(handledError);
     }
@@ -443,8 +384,6 @@ export const deleteToolsetConfig =
         throw new BadRequestError('toolsetId is required');
       }
 
-      logger.info(`Deleting toolset config for ${toolsetId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -462,10 +401,6 @@ export const deleteToolsetConfig =
         'Failed to delete toolset config'
       );
     } catch (error: any) {
-      logger.error('Error deleting toolset config:', {
-        error: error.message,
-        toolsetId: req.params.toolsetId,
-      });
       const handledError = handleBackendError(error, 'delete toolset config');
       next(handledError);
     }
@@ -489,8 +424,6 @@ export const reauthenticateToolset =
         throw new BadRequestError('toolsetId is required');
       }
 
-      logger.info(`Reauthenticating toolset ${toolsetId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -508,10 +441,6 @@ export const reauthenticateToolset =
         'Failed to reauthenticate toolset'
       );
     } catch (error: any) {
-      logger.error('Error reauthenticating toolset:', {
-        error: error.message,
-        toolsetId: req.params.toolsetId,
-      });
       const handledError = handleBackendError(error, 'reauthenticate toolset');
       next(handledError);
     }
@@ -539,8 +468,6 @@ export const getOAuthAuthorizationUrl =
         throw new BadRequestError('toolsetId is required');
       }
 
-      logger.info(`Getting OAuth authorization URL for toolset ${toolsetId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -561,10 +488,6 @@ export const getOAuthAuthorizationUrl =
         'Failed to get OAuth authorization URL'
       );
     } catch (error: any) {
-      logger.error('Error getting OAuth authorization URL:', {
-        error: error.message,
-        toolsetId: req.params.toolsetId,
-      });
       const handledError = handleBackendError(error, 'get OAuth authorization URL');
       next(handledError);
     }
@@ -584,8 +507,6 @@ export const handleOAuthCallback =
   ): Promise<void> => {
     try {
       const { code, state, error: oauthError, base_url } = req.query;
-
-      logger.info('Handling OAuth callback for toolset');
 
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
@@ -654,9 +575,6 @@ export const handleOAuthCallback =
         'OAuth callback failed'
       );
     } catch (error: any) {
-      logger.error('Error handling OAuth callback:', {
-        error: error.message,
-      });
       const handledError = handleBackendError(error, 'handle OAuth callback');
       next(handledError);
     }
@@ -686,8 +604,6 @@ export const getToolsetInstances =
       if (limit) queryParams.append('limit', String(limit));
       if (search) queryParams.append('search', String(search));
 
-      logger.info(`Getting toolset instances for user ${userId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -700,7 +616,6 @@ export const getToolsetInstances =
 
       handleConnectorResponse(connectorResponse, res, 'Getting toolset instances', 'Toolset instances not found');
     } catch (error: any) {
-      logger.error('Error getting toolset instances', { error: error.message, userId: req.user?.userId });
       next(handleBackendError(error, 'get toolset instances'));
     }
   };
@@ -724,8 +639,6 @@ export const createToolsetInstance =
       if (!body.toolsetType) throw new BadRequestError('toolsetType is required');
       if (!body.authType) throw new BadRequestError('authType is required');
 
-      logger.info(`Creating toolset instance '${body.instanceName}' for user ${userId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -739,7 +652,6 @@ export const createToolsetInstance =
 
       handleConnectorResponse(connectorResponse, res, 'Creating toolset instance', 'Failed to create toolset instance');
     } catch (error: any) {
-      logger.error('Error creating toolset instance', { error: error.message, userId: req.user?.userId });
       next(handleBackendError(error, 'create toolset instance'));
     }
   };
@@ -758,8 +670,6 @@ export const getToolsetInstance =
       const { instanceId } = req.params;
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Getting toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -772,7 +682,6 @@ export const getToolsetInstance =
 
       handleConnectorResponse(connectorResponse, res, 'Getting toolset instance', 'Toolset instance not found');
     } catch (error: any) {
-      logger.error('Error getting toolset instance', { error: error.message, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'get toolset instance'));
     }
   };
@@ -791,8 +700,6 @@ export const updateToolsetInstance =
       const { instanceId } = req.params;
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Updating toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -806,7 +713,6 @@ export const updateToolsetInstance =
 
       handleConnectorResponse(connectorResponse, res, 'Updating toolset instance', 'Failed to update toolset instance');
     } catch (error: any) {
-      logger.error('Error updating toolset instance', { error: error.message, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'update toolset instance'));
     }
   };
@@ -841,10 +747,6 @@ const proxyToolsetToolRules =
         'Toolset not found',
       );
     } catch (error: unknown) {
-      logger.error(`Failed to ${operation}`, {
-        error: error instanceof Error ? error.message : 'unknown error',
-        instanceId,
-      });
       next(handleBackendError(error, operation));
     }
   };
@@ -872,8 +774,6 @@ export const deleteToolsetInstance =
       const { instanceId } = req.params;
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Deleting toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -886,7 +786,6 @@ export const deleteToolsetInstance =
 
       handleConnectorResponse(connectorResponse, res, 'Deleting toolset instance', 'Failed to delete toolset instance');
     } catch (error: any) {
-      logger.error('Error deleting toolset instance', { error: error.message, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'delete toolset instance'));
     }
   };
@@ -928,8 +827,6 @@ export const getMyToolsets =
         queryParams.append('includeRegistry', 'true');
       }
 
-      logger.info(`Getting my toolsets for user ${userId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -942,7 +839,6 @@ export const getMyToolsets =
 
       handleConnectorResponse(connectorResponse, res, 'Getting my toolsets', 'My toolsets not found');
     } catch (error: any) {
-      logger.error('Error getting my toolsets', { error: error.message, userId: req.user?.userId });
       next(handleBackendError(error, 'get my toolsets'));
     }
   };
@@ -961,8 +857,6 @@ export const authenticateToolsetInstance =
       const { instanceId } = req.params;
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Authenticating toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -976,7 +870,6 @@ export const authenticateToolsetInstance =
 
       handleConnectorResponse(connectorResponse, res, 'Authenticating toolset instance', 'Failed to authenticate toolset instance');
     } catch (error: any) {
-      logger.error('Error authenticating toolset instance', { error: error.message, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'authenticate toolset instance'));
     }
   };
@@ -996,8 +889,6 @@ export const updateUserToolsetInstance =
       const { instanceId } = req.params;
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Updating toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1011,7 +902,6 @@ export const updateUserToolsetInstance =
 
       handleConnectorResponse(connectorResponse, res, 'Updating toolset instance', 'Failed to update toolset instance');
     } catch (error: any) {
-      logger.error('Error updating toolset instance', { error: error.message, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'update toolset instance'));
     }
   };
@@ -1030,8 +920,6 @@ export const removeToolsetCredentials =
       const { instanceId } = req.params;
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Removing credentials for toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1044,7 +932,6 @@ export const removeToolsetCredentials =
 
       handleConnectorResponse(connectorResponse, res, 'Removing toolset credentials', 'Failed to remove credentials');
     } catch (error: any) {
-      logger.error('Error removing toolset credentials', { error: error.message, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'remove toolset credentials'));
     }
   };
@@ -1063,8 +950,6 @@ export const reauthenticateToolsetInstance =
       const { instanceId } = req.params;
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Re-authenticating toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1077,7 +962,6 @@ export const reauthenticateToolsetInstance =
 
       handleConnectorResponse(connectorResponse, res, 'Re-authenticating toolset instance', 'Failed to re-authenticate');
     } catch (error: any) {
-      logger.error('Error re-authenticating toolset instance', { error: error.message, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'reauthenticate toolset instance'));
     }
   };
@@ -1098,8 +982,6 @@ export const getInstanceOAuthAuthorizationUrl =
 
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Getting OAuth authorization URL for toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1116,7 +998,6 @@ export const getInstanceOAuthAuthorizationUrl =
 
       handleConnectorResponse(connectorResponse, res, 'Getting instance OAuth URL', 'Failed to get OAuth authorization URL');
     } catch (error: any) {
-      logger.error('Error getting instance OAuth authorization URL', { error: error.message, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'get instance OAuth authorization URL'));
     }
   };
@@ -1135,8 +1016,6 @@ export const getInstanceStatus =
       const { instanceId } = req.params;
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Getting status for toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1149,7 +1028,6 @@ export const getInstanceStatus =
 
       handleConnectorResponse(connectorResponse, res, 'Getting instance status', 'Instance status not found');
     } catch (error: any) {
-      logger.error('Error getting instance status', { error: error.message, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'get instance status'));
     }
   };
@@ -1168,8 +1046,6 @@ export const listToolsetOAuthConfigs =
       const { toolsetType } = req.params;
       if (!toolsetType) throw new BadRequestError('toolsetType is required');
 
-      logger.info(`Listing OAuth configs for toolset type ${toolsetType}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1182,7 +1058,6 @@ export const listToolsetOAuthConfigs =
 
       handleConnectorResponse(connectorResponse, res, 'Listing toolset OAuth configs', 'OAuth configs not found');
     } catch (error: any) {
-      logger.error('Error listing toolset OAuth configs', { error: error.message, toolsetType: req.params.toolsetType });
       next(handleBackendError(error, 'list toolset OAuth configs'));
     }
   };
@@ -1203,8 +1078,6 @@ export const updateToolsetOAuthConfig =
       if (!toolsetType) throw new BadRequestError('toolsetType is required');
       if (!oauthConfigId) throw new BadRequestError('oauthConfigId is required');
 
-      logger.info(`Admin updating OAuth config ${oauthConfigId} for toolset type ${toolsetType}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1218,7 +1091,6 @@ export const updateToolsetOAuthConfig =
 
       handleConnectorResponse(connectorResponse, res, 'Updating toolset OAuth config', 'Failed to update OAuth configuration');
     } catch (error: any) {
-      logger.error('Error updating toolset OAuth config', { error: error.message, toolsetType: req.params.toolsetType, oauthConfigId: req.params.oauthConfigId });
       next(handleBackendError(error, 'update toolset OAuth config'));
     }
   };
@@ -1239,8 +1111,6 @@ export const deleteToolsetOAuthConfig =
       if (!toolsetType) throw new BadRequestError('toolsetType is required');
       if (!oauthConfigId) throw new BadRequestError('oauthConfigId is required');
 
-      logger.info(`Admin deleting OAuth config ${oauthConfigId} for toolset type ${toolsetType}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1253,7 +1123,6 @@ export const deleteToolsetOAuthConfig =
 
       handleConnectorResponse(connectorResponse, res, 'Deleting toolset OAuth config', 'Failed to delete OAuth configuration');
     } catch (error: any) {
-      logger.error('Error deleting toolset OAuth config', { error: error.message, toolsetType: req.params.toolsetType, oauthConfigId: req.params.oauthConfigId });
       next(handleBackendError(error, 'delete toolset OAuth config'));
     }
   };
@@ -1288,8 +1157,6 @@ export const getAgentToolsets =
 
       if (!agentKey) throw new BadRequestError('agentKey is required');
 
-      logger.info(`Getting agent toolsets for agent ${agentKey}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1313,7 +1180,6 @@ export const getAgentToolsets =
 
       handleConnectorResponse(connectorResponse, res, 'Getting agent toolsets', 'Agent toolsets not found');
     } catch (error: any) {
-      logger.error('Error getting agent toolsets', { error: error.message, agentKey: req.params.agentKey });
       next(handleBackendError(error, 'get agent toolsets'));
     }
   };
@@ -1333,8 +1199,6 @@ export const authenticateAgentToolset =
       if (!agentKey) throw new BadRequestError('agentKey is required');
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Authenticating agent ${agentKey} against toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1348,7 +1212,6 @@ export const authenticateAgentToolset =
 
       handleConnectorResponse(connectorResponse, res, 'Authenticating agent toolset', 'Failed to authenticate agent toolset');
     } catch (error: any) {
-      logger.error('Error authenticating agent toolset', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'authenticate agent toolset'));
     }
   };
@@ -1368,8 +1231,6 @@ export const updateAgentToolsetCredentials =
       if (!agentKey) throw new BadRequestError('agentKey is required');
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Updating agent ${agentKey} credentials for toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1383,7 +1244,6 @@ export const updateAgentToolsetCredentials =
 
       handleConnectorResponse(connectorResponse, res, 'Updating agent toolset credentials', 'Failed to update agent toolset credentials');
     } catch (error: any) {
-      logger.error('Error updating agent toolset credentials', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'update agent toolset credentials'));
     }
   };
@@ -1403,8 +1263,6 @@ export const removeAgentToolsetCredentials =
       if (!agentKey) throw new BadRequestError('agentKey is required');
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Removing agent ${agentKey} credentials for toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1417,7 +1275,6 @@ export const removeAgentToolsetCredentials =
 
       handleConnectorResponse(connectorResponse, res, 'Removing agent toolset credentials', 'Failed to remove agent toolset credentials');
     } catch (error: any) {
-      logger.error('Error removing agent toolset credentials', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'remove agent toolset credentials'));
     }
   };
@@ -1437,8 +1294,6 @@ export const reauthenticateAgentToolset =
       if (!agentKey) throw new BadRequestError('agentKey is required');
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Re-authenticating agent ${agentKey} for toolset instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1451,7 +1306,6 @@ export const reauthenticateAgentToolset =
 
       handleConnectorResponse(connectorResponse, res, 'Re-authenticating agent toolset', 'Failed to re-authenticate agent toolset');
     } catch (error: any) {
-      logger.error('Error re-authenticating agent toolset', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'reauthenticate agent toolset'));
     }
   };
@@ -1474,8 +1328,6 @@ export const getAgentToolsetOAuthUrl =
       if (!agentKey) throw new BadRequestError('agentKey is required');
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
-      logger.info(`Getting OAuth URL for agent ${agentKey}, instance ${instanceId}`);
-
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
       };
@@ -1492,7 +1344,6 @@ export const getAgentToolsetOAuthUrl =
 
       handleConnectorResponse(connectorResponse, res, 'Getting agent toolset OAuth URL', 'Failed to get OAuth authorization URL for agent toolset');
     } catch (error: any) {
-      logger.error('Error getting agent toolset OAuth URL', { error: error.message, agentKey: req.params.agentKey, instanceId: req.params.instanceId });
       next(handleBackendError(error, 'get agent toolset OAuth URL'));
     }
   };

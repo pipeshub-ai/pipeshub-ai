@@ -745,6 +745,8 @@ export interface UserAccessConnection {
   lastError: string | null;
   /** `oauth`: signed in with the source; `token`: pasted a token. */
   method?: 'token' | 'oauth';
+  /** Connected through the connector's own sign-in, which this person completed. */
+  viaConnector?: boolean;
 }
 
 /** GET /connectors/user-access/mine: a per-user team connector with the caller's own connection. */

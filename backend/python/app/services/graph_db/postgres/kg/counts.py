@@ -9,7 +9,7 @@ Reading a count is on unless ``PG_KG_COUNTERS=0`` (any other value raises, ``flu
 instead of from the rows (:func:`class_rows`). A count sums only the classes the caller hands in, so it says nothing about rows the viewer may not read. The fold and the
 seed run whatever that switch says: the trigger adds deltas on every write, and unfolded they would grow without bound, so reading them costs one index read and nothing
 more. A restore keeps no counter row and adds no delta (kg_0015), so the seed counts each connector whole again. Facet 2 (record type and origin) is no longer kept
-(kg_0021): nothing read it.
+(kg_0022): nothing read it.
 
 :func:`check` compares a connector's counters with a recount of its rows after each periodic verify (``net.verify_due``) and reports a difference; it changes nothing.
 """
