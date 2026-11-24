@@ -12,7 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -128,6 +128,22 @@ class IncompleteSyncError(RuntimeError):
 # Held by a sync for its whole run and by a user-link pass, so the two never overlap on one
 # connector. Keyed by id, not instance: a connector can be rebuilt between the two.
 _SYNC_LOCKS: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+# Strong references to the tasks request_sync starts: the loop keeps only weak ones.
+_SYNC_REQUESTS: "set[asyncio.Task[None]]" = set()
+
+# Syncs started per connector in this process. A reindex compares it, so a sync it overlapped is seen even when the
+# sync's status writes to the store failed.
+_SYNCS_STARTED: dict[str, int] = {}
+
+
+def note_sync_started(connector_id: str) -> None:
+    _SYNCS_STARTED[connector_id] = _SYNCS_STARTED.get(connector_id, 0) + 1
+
+
+def syncs_started(connector_id: str) -> int:
+    return _SYNCS_STARTED.get(connector_id, 0)
 
 
 def connector_sync_lock(connector_id: str) -> asyncio.Lock:
@@ -412,6 +428,61 @@ class BaseConnector(ABC):
     @abstractmethod
     def handle_webhook_notification(self, notification: Dict) -> None:
         raise NotImplementedError("This method is not supported")
+
+    def request_sync(self) -> "asyncio.Task[None]":
+        """Ask for a sync of this connector the way a schedule does, for a connector that learns of a change itself
+        (a webhook). Never call ``run_sync`` directly for that: only the sync start path takes the connector's lease and
+        lock and writes the status and start time a running reindex checks before it writes."""
+        from app.core.org_context import spawn_in_request
+
+        task = spawn_in_request(self._request_sync(), name=f"request_sync_{self.connector_id}")
+        _SYNC_REQUESTS.add(task)
+        task.add_done_callback(_SYNC_REQUESTS.discard)
+        return task
+
+    async def _request_sync(self) -> None:
+        from app.connectors.core.constants import ConnectorStateKeys
+        from app.connectors.core.sync.sync_dispatcher import (
+            SubmitResult,
+            SyncSpec,
+            get_dispatcher,
+        )
+        from app.core.org_context import (
+            MissingOrgContext,
+            SystemContextNotAllowed,
+            current,
+        )
+
+        dispatcher = get_dispatcher()
+        if dispatcher is None:
+            self.logger.warning(f"No sync dispatcher configured; cannot request a sync of {self.connector_id}")
+            return
+        org_id = self.data_entities_processor.org_id
+        if not org_id:
+            try:
+                org_id = current().org_id
+            except (MissingOrgContext, SystemContextNotAllowed):
+                org_id = None
+        if not org_id:
+            # The start handler refuses an event without an org, and its redelivery would hold the partition.
+            self.logger.error(f"No org for connector {self.connector_id}; its sync request is left to the next sync")
+            await self.data_store_provider.graph_provider.update_node(
+                self.connector_id, CollectionNames.APPS.value, {ConnectorStateKeys.PENDING_RESYNC: True},
+            )
+            return
+        spec = SyncSpec(connector_id=self.connector_id, connector_name=self.connector_name.value, org_id=org_id)
+        result = await dispatcher.submit(spec)
+        if result is SubmitResult.DECLINED_RUNNING:
+            # The running sync may have read the source before this change; its finalizer re-issues the request.
+            await self.data_store_provider.graph_provider.update_node(
+                self.connector_id, CollectionNames.APPS.value, {ConnectorStateKeys.PENDING_RESYNC: True},
+            )
+            # The finalizer reads the flag after it releases the lease: if that sync ended before the flag landed,
+            # nothing re-issues it, so ask again.
+            if not await dispatcher.is_running(self.connector_id):
+                result = await dispatcher.submit(spec)
+        if result is SubmitResult.FAILED:
+            self.logger.error(f"Could not request a sync of {self.connector_id}")
 
     # Names of the zero-argument steps of this connector's own sync that create the user,
     # group and app edges. Empty: the connector is not linked after a user is added (see

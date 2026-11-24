@@ -8,17 +8,26 @@ import { useTranslation } from 'react-i18next';
 import { MenuItem } from './menu-item';
 import { useGitHubStars } from './hooks/use-github-stars';
 import { useBrand } from '@/lib/branding';
+import { useFeedbackDialogStore } from '@/app/(main)/feedback/store';
+import { useSupportDialogStore } from '@/app/(main)/support/store';
+
+interface ExternalLinksSectionProps {
+  /** Closes the menu before a dialog opens over it. */
+  onDialogOpen: () => void;
+}
 
 /**
- * External links section of the workspace menu:
- *   Documentation, GitHub (with live star count)
+ * Help section of the workspace menu:
+ *   Documentation, Contact support, Send feedback, GitHub (with live star count)
  */
-export function ExternalLinksSection() {
+export function ExternalLinksSection({ onDialogOpen }: ExternalLinksSectionProps) {
   const stars = useGitHubStars();
   const { t } = useTranslation();
   const brand = useBrand();
   const docsUrl = brand.docsHref() ?? EXTERNAL_LINKS.documentation;
   const githubUrl = brand.githubUrl;
+  const openSupport = useSupportDialogStore((s) => s.open);
+  const openFeedback = useFeedbackDialogStore((s) => s.open);
 
   return (
     <Flex direction="column" gap="1">
@@ -44,6 +53,36 @@ export function ExternalLinksSection() {
         href={docsUrl}
       />
       ) : null}
+
+      <MenuItem
+        icon={
+          <MaterialIcon
+            name="support_agent"
+            size={ICON_SIZE_DEFAULT}
+            color="var(--slate-11)"
+          />
+        }
+        label={t('support.menuLabel')}
+        onClick={() => {
+          onDialogOpen();
+          openSupport();
+        }}
+      />
+
+      <MenuItem
+        icon={
+          <MaterialIcon
+            name="feedback"
+            size={ICON_SIZE_DEFAULT}
+            color="var(--slate-11)"
+          />
+        }
+        label={t('feedback.menuLabel')}
+        onClick={() => {
+          onDialogOpen();
+          openFeedback();
+        }}
+      />
 
       {githubUrl ? (
       <MenuItem

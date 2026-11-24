@@ -31,6 +31,7 @@ from app.services.messaging.error_classifier import (
     is_expected_outcome,
 )
 from app.services.parsing.interface import ParseResult, ParserProvider
+from tests.unit.attempt_start import attempt_start_via
 
 # ---------------------------------------------------------------------------
 # Factories
@@ -93,6 +94,7 @@ def _make_event_processor(
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
         graph_provider.batch_update_nodes = AsyncMock(return_value=True)
         graph_provider.update_node = AsyncMock(return_value=True)
+        graph_provider.write_attempt_start = attempt_start_via(graph_provider)
         graph_provider.find_duplicate_records = AsyncMock(return_value=[])
 
     if stage_ingress is None:
@@ -322,6 +324,8 @@ async def test_statuses_track_active_parse_and_index_phases() -> None:
 
     graph_provider.update_node = AsyncMock(side_effect=_capture_update)
 
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
+
     ep = _make_event_processor(
         parsing_client=parsing_client,
         extraction_client=extraction_client,
@@ -424,6 +428,8 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
     graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
     graph_provider.batch_update_nodes = AsyncMock(return_value=True)
     graph_provider.update_node = AsyncMock(return_value=True)
+    graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+    graph_provider.write_attempt_start = attempt_start_via(graph_provider)
     graph_provider.find_duplicate_records = AsyncMock(return_value=[{
         "_key": "rec-2",
         "virtualRecordId": "vr-existing",
@@ -787,6 +793,20 @@ async def test_service_pipeline_forwards_the_record_file_path() -> None:
         pass
 
     assert parsing_client.parse.await_args.kwargs["file_path"] == "docs/reports/test.pdf"
+
+
+@pytest.mark.asyncio
+async def test_the_service_path_ties_the_page_count_to_the_revision_of_the_bytes_it_parsed() -> None:
+    parsing_client = _service_parsing_client()
+    ep = _make_event_processor(parsing_client=parsing_client, extraction_client=MagicMock(), sink_orchestrator=_indexing_sink())
+    ep._persist_parsing_completed = AsyncMock()  # type: ignore[method-assign]
+
+    _ = [e async for e in ep._orchestrate_via_services(
+        record_id="rec-1", org_id="org-1", virtual_record_id="v-1", record_name="d.pdf", mime_type="application/pdf",
+        extension="pdf", event_type="newRecord", prev_virtual_record_id=None, file_content=b"%PDF", content_rev="rev-a",
+    )]
+
+    assert ep._persist_parsing_completed.await_args.args[2] == "rev-a"
 
 
 @pytest.mark.asyncio

@@ -181,9 +181,9 @@ jobs:
               python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 26 \
                 --expect-suite 'docstore-migrate: rollback and the reverse copy=26' ;;
             switchover)
-              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 37 \
+              python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" --min-tests 44 \
                 --expect-suite 'docstore-migrate: offline and online switch-over=22' \
-                --expect-suite 'docstore-migrate: follow, drain, reset and schema=15' ;;
+                --expect-suite 'docstore-migrate: follow, drain, reset and schema=22' ;;
             rest)
               python3 scripts/assert_no_skips.py "$T/docstore-migrate-junit.xml" "$T/docstore-fence-junit.xml" "$T/mongo-fence-single-junit.xml" --allow "timing" --min-tests 100 \
                 --expect-suite 'docstore-migrate: identity collections=8' \
@@ -191,7 +191,7 @@ jobs:
                 --expect-suite 'docstore-migrate: bulk copy=3' \
                 --expect-suite 'docstore-migrate: conversation collections=4' \
                 --expect-suite 'docstore-migrate: content mappings=2' \
-                --expect-suite 'docstore-migrate: content, OAuth and platform data=13' \
+                --expect-suite 'docstore-migrate: content, OAuth and platform data=14' \
                 --expect-suite 'docstore-migrate: collection coverage=7' \
                 --expect-suite 'docstore-migrate: table coverage=3' \
                 --expect-suite 'fence cutover waits for fenced writes=3' \

@@ -261,3 +261,33 @@ async def test_the_search_is_timed_as_a_vector_span() -> None:
     with collect_spans() as spans:
         await query_nearest_points_with_retry(service, "records", ["req"], logger=_LOGGER)
     assert len(spans["vector"]) == 1
+
+
+async def test_only_the_attempt_that_answered_reports_what_its_store_noted() -> None:
+    """A first attempt that noted a timeout and then failed is retried; the answer is the second attempt's, which ran in full, so nothing is reported."""
+    from app.modules.retrieval import degraded_notice
+
+    results = [[MagicMock()]]
+
+    def noting(reason: str | None, outcome: Any) -> Any:  # noqa: ANN401
+        async def run(**_k: object) -> Any:  # noqa: ANN401
+            if reason:
+                degraded_notice.note(reason)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return run
+
+    attempts = iter([noting("timeout", _TransientError("timed out")), noting(None, results)])
+    service = _service(None)
+    async def query(**k: object) -> Any:  # noqa: ANN401
+        return await next(attempts)(**k)
+    service.query_nearest_points = AsyncMock(side_effect=query)
+    with degraded_notice.tracking(), degraded_notice.collect() as noted:
+        assert await query_nearest_points_with_retry(service, "records", ["req"], logger=_LOGGER) is results
+        assert noted == [] and not degraded_notice.was_degraded()
+
+    attempts = iter([noting("overload", results)])
+    with degraded_notice.tracking(), degraded_notice.collect() as noted:
+        await query_nearest_points_with_retry(service, "records", ["req"], logger=_LOGGER)
+        assert noted == ["overload"] and degraded_notice.was_degraded()       # the attempt that answered is reported, to the search and the request

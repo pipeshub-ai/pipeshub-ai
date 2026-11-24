@@ -410,6 +410,7 @@ class ExtensionTypes(Enum):
     DOCM = "docm"
     DOTX = "dotx"
     POTX = "potx"
+    PPTM = "pptm"
 
 # Common file types PipesHub cannot index. Sync filters offer them so a user can
 # exclude them (Not in); they are kept out of ExtensionTypes because that enum
@@ -485,6 +486,7 @@ class MimeTypes(Enum):
     DOCM = "application/vnd.ms-word.document.macroEnabled.12"
     DOTX = "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
     POTX = "application/vnd.openxmlformats-officedocument.presentationml.template"
+    PPTM = "application/vnd.ms-powerpoint.presentation.macroEnabled.12"
     LOG = "text/x-log"
     CFG = "text/x-cfg"
 
@@ -682,6 +684,8 @@ class EntityRelations(Enum):
     FOR_ACCOUNT = "FOR_ACCOUNT"
     # Record -> an organisation its content names (KG-13 slice 3b, EXTRACTED).
     MENTIONS = "MENTIONS"
+    # Record -> a person the source says it is shared with (not the owner).
+    SHARED_WITH = "SHARED_WITH"
 
 
 class EntityOrigin(str, Enum):
@@ -711,6 +715,7 @@ class EventTypes(Enum):
     DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
     # The delayed second purge of a deleted record's stored model outputs.
     PURGE_PAID_RESULTS = "purgePaidResults"
+    PURGE_PAID_RESULTS_BATCH = "purgePaidResultsBatch"
     BUILD_CODE_EDGES = "buildCodeEdges"
 
 

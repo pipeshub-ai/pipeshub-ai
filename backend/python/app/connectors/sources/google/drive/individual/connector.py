@@ -63,7 +63,6 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.google.common.apps import GoogleDriveApp
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.google.common.connector_google_exceptions import (
-    DriveSyncIncomplete,
     GoogleDriveError,
 )
 from app.connectors.sources.google.drive.utils.checkpoint_hold import MAX_HELD_RUNS, hold_again, released
@@ -82,7 +81,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
 )
-from app.connectors.sources.google.common.drive_people import drive_file_people
+from app.connectors.sources.google.common.drive_people import drive_file_people, drive_shared_with, set_drive_people
 from app.connectors.sources.google.drive.utils.drive_export import (
     GoogleExportStreamer,
     drive_http_reasons,
@@ -96,6 +95,8 @@ from app.connectors.sources.google.drive.utils.drive_filters import (
 from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import (
     FullSyncLedger,
     delete_shared_drive_records,
+    incomplete_run_error,
+    keep_failed_items_linked,
     reconcile_unseen_records,
 )
 from app.connectors.sources.google.drive.utils.drive_mime import (
@@ -135,9 +136,11 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     is_retryable_403,
     is_unrecognised_403,
     pass_folder_filter,
+    settle_ancestor_level,
     adopt_shortcut_seed_target,
     probe_can_list_children,
     seeds_with_new_parent,
+    sharing_refused,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -317,6 +320,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         # Empty _tracked_folder_ids means no folder filter, so everything syncs.
         self._folder_seed_ids: set = set()
         self._tracked_folder_ids: set = set()
+        # Per folder, this run: its sharing, None when it cannot be read.
+        self._parent_grant_cache: dict[str, list[dict] | None] = {}
         self._blocked_folder_ids: set = set()
         # Selected folders this account cannot see at all: a wrong ID, deleted, or not shared.
         self._unseen_folder_ids: set = set()
@@ -561,7 +566,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             parent_external_record_id = (metadata.get("parents") or [None])[0]
 
-            people = drive_file_people(metadata)
+            # Drive omits `permissions` when this user cannot see the file's sharing.
+            grants = metadata.get("permissions") if "permissions" in metadata else None
+            people = drive_file_people(metadata, grants)
             # Create FileRecord directly
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -597,10 +604,20 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
-                authored_by=people.authored_by,
-                last_modified_by=people.last_modified_by,
-                owners=people.owners,
             )
+
+            if metadata.get("driveId"):
+                # Drive leaves `permissions` off shared-drive items; their own list says which grants were
+                # made on them, and carries the addresses Drive hid from the owner and the last modifier.
+                item_grants = await self._item_grants(metadata)
+                if item_grants is not None:
+                    people = drive_file_people(metadata, item_grants)
+                    file_record.shared_with = drive_shared_with(
+                        item_grants, owner_ids=set(), parent_grants=None, has_details=True
+                    )
+            elif grants is not None:
+                file_record.shared_with = await self._shared_with(metadata, grants, people.owners)
+            set_drive_people(file_record, people)
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
@@ -630,8 +647,73 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         except Exception as ex:
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
-            self._sync_ledger.fail_item()
+            self._sync_ledger.fail_item(metadata.get("id"))
             return None
+
+    async def _shared_with(self, metadata: dict, grants: list[dict], owners: list) -> list | None:
+        """The people a My Drive file was shared with directly; None when that cannot be told."""
+        # Decided by the owner only: a reader's view of the folder may differ from the owner's.
+        if not metadata.get("ownedByMe"):
+            return None
+        parent_id = (metadata.get("parents") or [None])[0]
+        if metadata.get("inheritedPermissionsDisabled") or not parent_id:
+            # A limited-access item inherits nothing: every grant it lists was made on it.
+            parent_grants: list[dict] | None = []
+        else:
+            parent_grants = await self._parent_grants(parent_id)
+        return drive_shared_with(
+            grants,
+            owner_ids={o.source_id for o in owners if o.source_id},
+            parent_grants=parent_grants,
+            has_details=False,
+        )
+
+    async def _item_grants(self, metadata: dict) -> list[dict] | None:
+        """A shared-drive item's whole permission list with its details; None when it cannot be read whole."""
+        # Viewers and Commenters cannot read detailed permissions; anyone who can edit or share the item can, a
+        # Content manager included where only Managers may share folders. Anyone else would spend a call on nothing.
+        capabilities = metadata.get("capabilities") or {}
+        if not (capabilities.get("canShare") or capabilities.get("canEdit")):
+            return None
+        file_id = str(metadata.get("id"))
+        grants: list[dict] = []
+        walk = DrivePageWalk()
+        try:
+            async for page in iter_drive_pages(
+                self.drive_data_source.permissions_list,
+                {"fileId": file_id, "supportsAllDrives": True, "pageSize": 100,
+                 "fields": "nextPageToken, permissions(id, type, role, emailAddress, displayName, deleted, view, "
+                           "permissionDetails)"},
+                "permissions", self.logger, walk,
+            ):
+                grants.extend(page)
+        except HttpError as e:
+            if not sharing_refused(e):
+                # Not an answer: the item fails, so its checkpoint holds and it is read again.
+                raise
+            self.logger.debug(f"Sharing of file {file_id} not readable: {e}")
+            return None
+        # A reader who cannot see sharing gets an empty list, and a list without details cannot tell direct grants.
+        if walk.incomplete or not any(g.get("permissionDetails") for g in grants):
+            return None
+        return grants
+
+    async def _parent_grants(self, parent_id: str) -> list[dict] | None:
+        if parent_id not in self._parent_grant_cache:
+            try:
+                folder = await self.drive_data_source.files_get(
+                    fileId=parent_id, supportsAllDrives=True,
+                    fields="id, permissions(id, type, role, emailAddress, deleted, view)",
+                )
+                grants = folder.get("permissions") if "permissions" in folder else None
+            except HttpError as e:
+                if not sharing_refused(e):
+                    # Not an answer: the item fails, so its checkpoint holds and it is read again.
+                    raise
+                self.logger.debug(f"Sharing of folder {parent_id} not readable: {e}")
+                grants = None
+            self._parent_grant_cache[parent_id] = grants
+        return self._parent_grant_cache[parent_id]
 
     async def _content_changed(self, existing: Record, metadata: dict, source: GoogleDriveDataSource) -> bool:
         """Whether a file whose Drive revision moved has new content. A native file's `version` also moves
@@ -1017,43 +1099,29 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 record.is_placeholder = False
                 backfills.append((record, permissions))
 
-            for stub in frontier:
-                if stub.external_record_id in metadata_by_id or not stub.is_placeholder:
-                    continue
-                # Source fetch failed (inaccessible/deleted). Re-submit the persisted
-                # stub anyway so its structural edges — record group (BELONGS_TO) and
-                # parent (PARENT_CHILD) — which a full sync deletes are still restored.
-                # Keeps it a stub; access fails closed (inherits the record group's perms).
-                stub.is_placeholder = True
-                backfills.append((stub, []))
-
             if backfills:
                 # Creates/updates the ancestors and, via _handle_parent_record, materializes
                 # the next level's parent stubs so we can pick them up below.
                 await self.data_entities_processor.on_new_records(backfills)
 
-            next_frontier: List[Record] = []
-            for record, _permissions in backfills:
-                parent_ext_id = record.parent_external_record_id
-                if not parent_ext_id or not record.parent_record_type:
-                    continue  # boundary: drive root
-                if parent_ext_id in visited:
-                    continue
-                visited.add(parent_ext_id)
-                parent_record = await self.data_entities_processor.get_record_by_external_id(
-                    self.connector_id, parent_ext_id
-                )
-                if parent_record is None:
-                    continue  # stub should exist after on_new_records; skip defensively
-                if not needs_backfill(parent_record):
-                    continue  # boundary: parent already synced this run — nothing to backfill
-                next_frontier.append(parent_record)
+            next_frontier = await settle_ancestor_level(
+                self.data_entities_processor, self.connector_id, frontier,
+                [record for record, _ in backfills], visited, needs_backfill, self._sync_ledger.keep_ancestor,
+            )
 
             total += len(frontier)
             if total > PLACEHOLDER_SWEEP_SAFETY_MAX:
                 self.logger.error(
                     f"Placeholder sweep exceeded safety bound ({PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
                 )
+                # Touched but not read: kept as stored. The ancestors above them were not even reached, so the run
+                # is incomplete: neither a full sync's unlink nor its cleanup may take what it did not see for gone.
+                self.data_entities_processor.note_kept_records(
+                    self.connector_id, [record.id for record in next_frontier if record.id]
+                )
+                for record in next_frontier:
+                    self._sync_ledger.keep_ancestor(record.external_record_id)
+                self._sync_ledger.note_incomplete()
                 break
             frontier = next_frontier
 
@@ -1243,8 +1311,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             hold = hold_again(stored_point) if self._sync_ledger.item_failures > failures_before else None
             if walk.incomplete or hold is not None:
                 # Files a partial listing left out are not changes, so the changes feed
-                # would never return them; only another full listing can. A failed item too.
-                self._sync_ledger.note_incomplete()
+                # would never return them; only another full listing can. A failed item too;
+                # the ledger already names it.
+                if walk.incomplete:
+                    self._sync_ledger.note_incomplete()
                 if holds.changes() or hold:
                     await self.drive_delta_sync_point.update_sync_point(
                         sync_point_key, {**holds.changes(), **(hold or {})}
@@ -2138,7 +2208,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         stored_point = await self.drive_delta_sync_point.read_sync_point(sync_key)
         hold = hold_again(stored_point) if self._sync_ledger.item_failures > failures_before else None
         if walk.incomplete or hold is not None:
-            self._sync_ledger.note_incomplete()
+            if walk.incomplete:  # a failed item is already in the ledger by id
+                self._sync_ledger.note_incomplete()
             if hold:
                 await self.drive_delta_sync_point.update_sync_point(sync_key, hold)
             self.logger.warning(
@@ -2282,6 +2353,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                                 sync_point=self.drive_delta_sync_point, logger=self.logger)
         try:
             await self._run_sync_steps()
+            await keep_failed_items_linked(
+                self.data_entities_processor, self.connector_id, self._sync_ledger, self.logger
+            )
         except Exception as e:
             report.note_failure(e)
             report.note_unreadable_folders(sorted(self._blocked_folder_ids | self._unseen_folder_ids))
@@ -2291,13 +2365,12 @@ class GoogleDriveIndividualConnector(BaseConnector):
         complete = not self._sync_ledger.has_gaps
         await report.finish(complete=complete)
         if not complete:
-            raise DriveSyncIncomplete(
-                "Part of Google Drive could not be read in this run; it is read again on the next run"
-            )
+            raise incomplete_run_error(self._sync_ledger)
 
     def full_sync_coverage(self) -> FullSyncCoverage:
-        """A run that left part of Drive unread must not have the links of what it did not see removed."""
-        return FullSyncCoverage(complete=not self._sync_ledger.has_gaps)
+        """A run that left part of Drive unread must not have the links of what it did not see removed. Items it
+        failed to read are kept as stored instead (keep_failed_items_linked)."""
+        return FullSyncCoverage(complete=self._sync_ledger.unlink_safe)
 
     async def _run_sync_steps(self) -> None:
 
@@ -2312,6 +2385,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         folder_ids_filter = self.sync_filters.get_value(SyncFilterKey.FOLDER_IDS)
         self._folder_seed_ids = set(folder_ids_filter or ())
         self._tracked_folder_ids = set(self._folder_seed_ids)
+        self._parent_grant_cache = {}
         self._blocked_folder_ids = set()
         self._unseen_folder_ids = set()
         self._sync_ledger = FullSyncLedger()
@@ -2379,6 +2453,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             # Files under a folder this user cannot list fail the folder filter
             # without being seen, so cleanup would read them as deleted.
             self._sync_ledger.note_incomplete()
+        self._sync_ledger.see_kept_ancestors()
         await reconcile_unseen_records(
             self.data_entities_processor,
             self.connector_id,
@@ -2444,6 +2519,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
     async def reindex_records(self, records: List[Record]) -> None:
         """Reindex records for Google Drive."""
         try:
+            # Folder sharing may have changed since an earlier call cached it.
+            self._parent_grant_cache = {}
             if not records:
                 self.logger.info("No records to reindex")
                 return

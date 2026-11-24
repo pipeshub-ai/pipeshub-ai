@@ -1,10 +1,10 @@
 import base64
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import Sequence
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
-from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.jinja_templates import compiled_template
 from app.utils.llm import get_llm_for_role
@@ -112,6 +112,38 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
 
 
 
+
+
+def unique_column_keys(headers: Sequence[Any], width: Optional[int] = None, *, fill_empty: bool = True) -> list[str]:
+    """One distinct key per column, so a repeated or empty header cannot drop a cell.
+
+    A repeated header gets a positional suffix (``At``, ``At (2)``). An empty header becomes
+    ``Column_{i+1}`` when ``fill_empty`` (otherwise it stays ``""``). Columns past the end of
+    ``headers`` up to ``width`` are named ``Column_{i+1}``. Headers that are already unique
+    come back unchanged, and a result passed in again is returned unchanged.
+    """
+    n = max(len(headers), width or 0)
+    texts = ["" if h is None else str(h) for h in headers]
+    # Every literal header is reserved first, so a generated name (``At (2)``, ``Column_3``)
+    # never takes the name of a column that really has it.
+    reserved = {t for t in texts if t}
+    keys: list[str] = []
+    used: set[str] = set()
+    for i in range(n):
+        base = texts[i] if i < len(texts) else ""
+        if not base and not fill_empty and i < len(texts):
+            keys.append("")
+            continue
+        literal = bool(base)
+        if not base:
+            base = f"Column_{i + 1}"
+        key, n_dup = base, 1
+        while key in used or (key in reserved and not (literal and key == base and n_dup == 1)):
+            n_dup += 1
+            key = f"{base} ({n_dup})"
+        used.add(key)
+        keys.append(key)
+    return keys
 
 
 def generate_simple_row_text(row_data: Dict[str, Any]) -> str:

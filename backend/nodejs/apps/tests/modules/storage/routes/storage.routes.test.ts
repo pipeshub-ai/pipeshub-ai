@@ -415,10 +415,10 @@ describe('Storage Routes', () => {
       const router = createStorageRouter(container)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
-// 36 service-token /internal routes (incl. move-tree, connector delete, its
+// 38 service-token /internal routes (incl. move-tree, connector delete, its
 // handover pair, missing, the three purges, the retire mark, the virtual-record document listing,
-// the flat-layout listing, the six artifact-set routes and the seven paid-result routes) + updateAppConfig
-      expect(routes.length).to.equal(37)
+// the flat-layout listing, the six artifact-set routes and the ten paid-result routes, purge-cutoff, purge-batch and delete-if-match among them) + updateAppConfig
+      expect(routes.length).to.equal(40)
     })
   })
 

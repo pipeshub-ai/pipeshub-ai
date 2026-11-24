@@ -17,6 +17,7 @@ import asyncio
 import json
 from typing import Optional
 
+from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
 from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     ChunkingError,
@@ -192,8 +193,8 @@ def format_exception_chain(exc: Exception) -> str:
 
 def is_source_refusal(exc: BaseException | None) -> bool:
     """Whether ``exc`` is a source refusing the item (the stream route's
-    ``SOURCE_REFUSAL_HEADER`` answer): an expected per-record outcome, logged as a
-    warning without a traceback, not a fault in PipesHub."""
+    ``SOURCE_REFUSAL_HEADER`` answer): an expected per-record outcome, not a fault in
+    PipesHub. The record's ``index.end`` says ``reason=source_refused`` at WARNING."""
     if exc is None:
         return False
     # The refusal must be what the chain ends in: a refusal re-raised from another
@@ -215,9 +216,9 @@ def is_record_deleted(exc: BaseException | None) -> bool:
 
 def is_expected_outcome(exc: BaseException | None) -> bool:
     """Whether ``exc`` ends a record the way nobody needs to act on (the source
-    refused it, or it was deleted while it was being indexed): logged once below
-    error level by the handler, not as a fault."""
-    return is_source_refusal(exc) or is_record_deleted(exc)
+    refused it, or it was deleted while it was being indexed): written once, on the
+    record's ``index.end``, below error level, not as a fault."""
+    return is_source_refusal(exc) or is_record_deleted(exc) or bool(getattr(exc, "expected_outcome", False))
 
 
 def _classify_aiohttp_transport_error(exc: Exception) -> Optional[str]:
@@ -290,6 +291,7 @@ class MessageErrorClassifier:
         0. Walk exception chain to find root cause (handles wrapped exceptions)
         0b2. ServiceAuthRefusedError = TRANSIENT (an internal service refused
             our service token: a deployment fault, not a document fault)
+        0c2. A parse worker killed under memory pressure, first time for its record = TRANSIENT
         0c. ParsingClientError(PARSE_BACKPRESSURE) = TRANSIENT (saturated, not
             failed); every other ParsingClientError code = TERMINAL
         1. Extract HTTP status code if available and classify by status
@@ -331,6 +333,11 @@ class MessageErrorClassifier:
         # document, whatever the store answered (a 4xx root would otherwise
         # mark an already searchable record FAILED on its first delivery).
         if any(isinstance(chain_exc, EntityLookupUnavailableError) for chain_exc in chain):
+            return MessageErrorType.TRANSIENT
+
+        # 0a3. The records schema was narrower than this process's and the transaction was aborted with nothing kept:
+        # the next delivery finds the schema wide. Its root is the store's 400, which would otherwise read as terminal.
+        if any(isinstance(chain_exc, RecordSchemaNarrowError) for chain_exc in chain):
             return MessageErrorType.TRANSIENT
 
         # 0b. Scan full chain for aiohttp transport errors before HTTP status rules.
@@ -385,6 +392,15 @@ class MessageErrorClassifier:
         if is_record_deleted(exc):
             return MessageErrorType.TERMINAL
 
+        # 0c2. A parse worker the kernel killed under memory pressure, the first time for this record: the file
+        # may not be what used the memory, so it is retried. It is wrapped by the processor's
+        # DocumentProcessingError, which rule 0d below would read as the file's fault. A second death of the
+        # record's worker carries no flag and is terminal as before. Explicit causes only, like 0c'.
+        from app.modules.parsers.worker_deaths import is_retrying_death
+
+        if is_retrying_death(exc):
+            return MessageErrorType.TRANSIENT
+
         # 0d. Scan full chain for terminal exception types before HTTP status rules.
         # Processing failures must win over incidental infrastructure errors deeper in the chain.
         # A wrapped DocumentProcessingError must be caught before an ApiCallError 500.
@@ -436,6 +452,17 @@ class MessageErrorClassifier:
             if isinstance(cause, UnicodeDecodeError):
                 return MessageErrorType.TERMINAL
             cause = cause.__cause__
+
+        # 0f. A provider account that is out of credit answers 429 like a rate
+        # limit (OpenAI's insufficient_quota), but no redelivery refills it: the
+        # record fails with that reason instead of spending its retries.
+        try:
+            from app.utils.embedding_retry import is_quota_exhausted
+
+            if is_quota_exhausted(exc):
+                return MessageErrorType.TERMINAL
+        except ImportError:
+            pass
 
         # 1. Check for HTTP status code in exception
         status_code = extract_status_code(root_exc)

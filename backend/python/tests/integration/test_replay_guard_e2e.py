@@ -6,7 +6,8 @@ was lost) is acknowledged. Before the decision moved ahead of the reconciliation
 vector store to delete or rewrite the record's points: wasted I/O on every replay, and a window in which a failure
 there left the event unacknowledged. The vector store is not asked anything now.
 
-A forced reindex of the same record still reconciles, so the guard does not turn a real reindex into a no-op.
+A forced reindex of the same record still runs (it is not acknowledged as a replay) and takes no point out of the
+vector store ahead of its work, so the guard does not turn a real reindex into a no-op.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml \
     -f deployment/docker-compose/docker-compose.integration.graph-db.yml \
@@ -180,17 +181,22 @@ async def test_replayed_reindex_leaves_points_untouched(world: _World, monkeypat
     assert delete_points.await_count == 0, "a replay deletes no point"
 
 
-async def test_a_forced_reindex_still_reconciles(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_forced_reindex_still_runs_and_takes_no_point_out_first(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
     set_payload = AsyncMock(wraps=world.qdrant.set_payload)
+    delete_points = AsyncMock(wraps=world.qdrant.delete_points)
     monkeypatch.setattr(world.qdrant, "set_payload", set_payload)
+    monkeypatch.setattr(world.qdrant, "delete_points", delete_points)
 
-    # The run goes on to download the file, which this world does not have; what matters is what it did first.
-    with contextlib.suppress(Exception):
+    # The run goes on to download the file, which this world cannot do: it fails there, which a replay
+    # (acknowledged with both completion events) never does.
+    with pytest.raises(Exception):  # noqa: B017
         _ = [
             e async for e in world.handler().process_event(
                 EventTypes.REINDEX_RECORD.value, world.payload(forceReindex=True)
             )
         ]
 
-    assert set_payload.await_count >= 1, "a forced reindex goes through the reconciliation"
-    assert await world.points() == CHUNKS, "the points of a referenced virtual record are kept"
+    assert set_payload.await_count == 0 and delete_points.await_count == 0, "nothing leaves the store ahead of the work"
+    assert await world.points() == CHUNKS, "the points of the record are kept"

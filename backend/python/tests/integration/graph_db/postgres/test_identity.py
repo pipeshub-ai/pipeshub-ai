@@ -71,6 +71,21 @@ async def test_users_listed_for_an_org_are_its_members_by_edge_and_active_unless
     assert await w.p.get_users(_org()) == []                                      # another org's id reads nothing
 
 
+async def test_a_failed_user_read_is_no_users_unless_asked_to_raise(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller that must not read a failure as an empty org (the org gate's cleanup, a connector's ACL targets) asks to raise."""
+    await member(w, "on", userId="a", isActive=True, email="on@x.com")
+    rows = w.p._id_rows
+
+    async def users_down(sql: str, *a: object, **k: object) -> list:
+        if "pipeshub:graph.get_users" in sql:
+            raise RuntimeError("store down")
+        return await rows(sql, *a, **k)
+    monkeypatch.setattr(w.p, "_id_rows", users_down)
+    assert await w.p.get_users(w.org) == []
+    with pytest.raises(RuntimeError):
+        await w.p.get_users(w.org, raise_on_error=True)
+
+
 async def test_organization_users_page_search_count_and_leave_out_service_accounts(w: World) -> None:
     for i, name in enumerate(["Cara", "Abe", "Bea", "Dan"]):
         await member(w, f"u{i}", userId=f"id{i}", fullName=name, email=f"{name.lower()}@x.com", isActive=True)
@@ -118,9 +133,10 @@ async def test_the_orgs_and_their_apps(w: World, org_ctx) -> None:
 
 async def test_graph_keys_by_user_ids_name_every_missing_user(w: World) -> None:
     await w.nodes("users", {"_key": "k1", "userId": "uid-1"})
-    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1"], chunk_size=10) == {"uid-1": "k1"}
+    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1"], w.org, chunk_size=10) == {"uid-1": "k1"}
     with pytest.raises(ValueError, match="uid-2"):
-        await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], chunk_size=10)
+        await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], w.org, chunk_size=10)
+    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], w.org, chunk_size=10, allow_missing=True) == {"uid-1": "k1"}
 
 
 async def test_the_people_behind_an_app_are_the_orgs_members_linked_to_it(w: World) -> None:
@@ -323,7 +339,7 @@ async def test_what_identity_writes_feeds_the_access_check(w: World) -> None:
 
 CALLS = [
     ("get_user_by_user_id", ("u",)), ("get_user_by_email", ("a@b.c",)), ("get_users_by_emails", (["a@b.c"],)), ("get_org_apps", ("o",)), ("get_account_type", ("o",)), ("get_users", ("o",)),
-    ("get_organization_users", ("o",)), ("find_users", ("o", "x")), ("get_graph_user_keys_by_mongo_user_ids", (["u"],)), ("get_user_by_source_id", ("s", "c")),
+    ("get_organization_users", ("o",)), ("find_users", ("o", "x")), ("get_graph_user_keys_by_mongo_user_ids", (["u"], "o")), ("get_user_by_source_id", ("s", "c")),
     ("get_app_users", ("o", "c")), ("get_app_user_links", ("o", "c")), ("batch_upsert_app_users", ([app_user("a@b.c", "k")],)), ("get_user_group_by_external_id", ("c", "e")),
     ("get_user_groups", ("c", "o")), ("get_user_directory_groups", ("u", "o")), ("get_app_role_by_external_id", ("c", "e")),
     ("batch_upsert_user_groups", ([AppUserGroup(app_name=Connectors.JIRA, connector_id="c", source_user_group_id="e", name="G")],)),
@@ -371,7 +387,9 @@ async def test_graph_keys_by_user_ids_only_name_users_of_the_org_asked(w: World)
     assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1"], w.org, chunk_size=10) == {"uid-1": "k1"}
     with pytest.raises(ValueError, match="uid-2"):
         await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], w.org, chunk_size=10)
-    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-2"], None, chunk_size=10) == {"uid-2": "k2"}      # no org asked: any user of this graph
+    for no_org in (None, ""):  # no org asked is refused, never "any user of this graph"
+        with pytest.raises(ValueError, match="org_id is required"):
+            await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-2"], no_org, chunk_size=10)
 
 
 async def test_an_address_is_lowered_by_the_database_alone_so_the_stored_and_the_asked_side_agree(w: World) -> None:
@@ -449,6 +467,45 @@ async def test_a_user_withdrawn_with_their_grants_reads_nothing_even_through_the
     assert await w.allowed("k", "kept") == {"kept"}
     targets = {(e["_to"]) for e in await w.p.get_edges_from_node("users/m", "permission")}
     assert targets == {"records/elsewhere", f"teams/all_{w.org}"}
+
+
+async def test_opening_the_app_to_the_org_team_first_takes_the_grants_left_on_unlinked_users(w: World) -> None:
+    """``open_app_to_org_team``: an org user the connector does not link loses the grants still naming them before
+    the All team passes the gate (they would read through it otherwise); a linked user keeps theirs; a grant left
+    on an unlinked user after the gate opened goes with the next call."""
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+
+    await member(w, "m", userId="um", email="m@x.com", isActive=True)
+    await member(w, "s", userId="us", email="s@x.com", isActive=True)
+    await w.nodes("records", rec("hers"), rec("left"))
+    await w.edge("permission", ("users", "m"), ("records", "hers"), type="USER", role="READER")
+    await w.edge("permission", ("users", "s"), ("records", "left"), type="USER", role="READER")
+    await w.nodes("teams", {"_key": f"all_{w.org}"})
+    for who in ("m", "s"):
+        await w.member(who, f"all_{w.org}", coll="teams")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    await processor.on_new_app_users([app_user("m@x.com", "m")])
+
+    await processor.open_app_to_org_team(APP)
+    assert await w.allowed("m", "hers") == {"hers"}
+    assert await w.allowed("s", "left") == set()                           # through the team, but the stale grant went
+    assert await w.p.get_edge(f"all_{w.org}", "teams", APP, "apps", "userAppRelation")
+
+    await w.edge("permission", ("users", "s"), ("records", "left"), type="USER", role="READER")
+    await processor.open_app_to_org_team(APP)                                # already open: the stale grant still goes
+    assert await w.allowed("s", "left") == set()
+    assert await w.allowed("m", "hers") == {"hers"}
+    await processor.withdraw_team_app_edge(APP)
+    assert not await w.p.get_edge(f"all_{w.org}", "teams", APP, "apps", "userAppRelation")
+    assert await w.allowed("m", "hers") == {"hers"}
 
 
 async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World) -> None:

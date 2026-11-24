@@ -218,9 +218,20 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             # Encrypt the value
             store_value = self.encryption_service.encrypt(value_json)
         else:
-            # Pass the JSON-serialized string so the underlying store
-            # stores valid JSON (not Python repr with single quotes).
-            store_value = value_json
+            # The underlying store serializes what it is given (Redis and
+            # PostgreSQL json.dumps it, etcd writes a str as-is and json.dumps
+            # anything else). So pass the decoded structure, never value_json:
+            # a pre-dumped string would be encoded a second time, and Node,
+            # which reads these keys with one JSON.parse, would get a string
+            # where it expects an object. Round-tripping through value_json
+            # keeps the datetime-safe encoding. A str stays a JSON string
+            # (value_json) so "123" or "true" reads back as the str that was
+            # written; None has no one-layer form either.
+            store_value = (
+                value_json
+                if isinstance(value, str) or value is None
+                else json.loads(value_json)
+            )
 
         self.logger.debug("Encrypted value for key %s", key)
 

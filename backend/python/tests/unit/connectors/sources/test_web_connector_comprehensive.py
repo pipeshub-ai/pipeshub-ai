@@ -1820,44 +1820,49 @@ class TestRetryAndOrchestrationHelpers:
 # Image / SVG / HTML processing
 # ===========================================================================
 class TestImageProcessingComprehensive:
-    def test_convert_svg_tag_success(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_tag_success(self):
         c = _make_connector()
         soup = BeautifulSoup(f"<html><body>{_MINIMAL_SVG.decode()}</body></html>", "html.parser")
         svg = soup.find("svg")
         fake_png = base64.b64encode(_TINY_PNG).decode()
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             return_value=fake_png,
         ):
-            assert c._convert_svg_tag_to_png(soup, svg) is True
+            assert await c._convert_svg_tag_to_png(soup, svg) is True
         assert soup.find("img") is not None
 
-    def test_convert_svg_tag_empty_png_decomposes(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_tag_empty_png_decomposes(self):
         c = _make_connector()
         soup = BeautifulSoup(f"<html><body>{_MINIMAL_SVG.decode()}</body></html>", "html.parser")
         svg = soup.find("svg")
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             return_value="valid",
         ), patch.object(c, "_clean_base64_string", return_value=""):
-            assert c._convert_svg_tag_to_png(soup, svg) is False
+            assert await c._convert_svg_tag_to_png(soup, svg) is False
         assert soup.find("svg") is None
 
-    def test_convert_svg_tag_failure_decomposes(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_tag_failure_decomposes(self):
         c = _make_connector()
         soup = BeautifulSoup(f"<html><body>{_MINIMAL_SVG.decode()}</body></html>", "html.parser")
         svg = soup.find("svg")
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             side_effect=RuntimeError("convert fail"),
         ):
-            assert c._convert_svg_tag_to_png(soup, svg) is False
+            assert await c._convert_svg_tag_to_png(soup, svg) is False
 
-    def test_process_svg_tags_iterates(self):
+    @pytest.mark.asyncio
+    async def test_process_svg_tags_iterates(self):
         c = _make_connector()
         soup = BeautifulSoup(f"<html><body>{_MINIMAL_SVG.decode()}</body></html>", "html.parser")
-        with patch.object(c, "_convert_svg_tag_to_png", return_value=True):
-            c._process_svg_tags(soup)
+        with patch.object(c, "_convert_svg_tag_to_png", return_value=True) as convert:
+            await c._process_svg_tags(soup)
+        convert.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_inline_svg_data_uri_base64_converted(self):
@@ -2152,21 +2157,23 @@ class TestImageProcessingComprehensive:
             resp.headers = {"content-type": "application/octet-stream"}
             assert c._determine_image_content_type(resp, f"https://x.com/a{path}") == expected
 
-    def test_convert_svg_bytes_returns_none_on_failure(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_bytes_returns_none_on_failure(self):
         c = _make_connector()
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             side_effect=RuntimeError("fail"),
         ):
-            assert c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "url") is None
+            assert await c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "url") is None
 
-    def test_convert_svg_bytes_empty_after_clean(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_bytes_empty_after_clean(self):
         c = _make_connector()
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             return_value="x",
         ), patch.object(c, "_clean_base64_string", return_value=""):
-            assert c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "url") is None
+            assert await c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "url") is None
 
     def test_convert_avif_bytes_via_pillow(self):
         c = _make_connector()
@@ -2981,14 +2988,15 @@ class TestWebConnectorRemainingCoverageGaps:
         resp.headers = {"content-type": "application/octet-stream"}
         assert c._determine_image_content_type(resp, "https://x.com/file.unknown") == "image/jpeg"
 
-    def test_convert_svg_bytes_success(self):
+    @pytest.mark.asyncio
+    async def test_convert_svg_bytes_success(self):
         c = _make_connector()
         fake_png = base64.b64encode(_TINY_PNG).decode()
         with patch(
-            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64",
+            "app.connectors.sources.web.connector.ImageParser.svg_base64_to_png_base64_async",
             return_value=fake_png,
         ):
-            result = c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "https://example.com/icon.svg")
+            result = await c._convert_svg_bytes_to_png_base64(_MINIMAL_SVG, "https://example.com/icon.svg")
         assert result == fake_png
 
     def test_convert_avif_bytes_empty_after_clean(self):

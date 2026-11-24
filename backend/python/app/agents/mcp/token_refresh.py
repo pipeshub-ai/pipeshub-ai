@@ -17,7 +17,7 @@ import time
 import uuid
 from collections import defaultdict
 from contextlib import AbstractContextManager, asynccontextmanager
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.agents.constants.mcp_server_constants import (
     get_mcp_credentials_path,
@@ -29,17 +29,25 @@ from app.agents.constants.mcp_server_constants import (
 )
 from app.agents.mcp import cimd
 from app.agents.mcp import oauth_client as oauth_client_module
-from app.agents.mcp.models import OAuthTokens
 from app.agents.mcp.url_guard import MCPUrlPolicy
 from app.config.configuration_service import ConfigurationService
 from app.utils.credential_refresh_log import (
+    EVENT_DEAUTHENTICATE_FAILED,
+    EVENT_STRIKE,
     Attempt,
     Kind,
     Trigger,
+    log_deauthenticated,
+    log_refresh_failure,
+    log_strike,
     refresh_attempt,
     refresh_scope,
 )
+from app.utils.logging_fields import log_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.agents.mcp.models import OAuthTokens
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +68,17 @@ __all__ = [
 # store; the asyncio lock only keeps one process from polling that key against itself.
 # Never evicted: one entry per instance/owner pair ever refreshed in this process.
 _refresh_locks: "defaultdict[tuple[str, str], asyncio.Lock]" = defaultdict(asyncio.Lock)
+
+# A refusal that says the sign-in can't be renewed (`MCPOAuthError.deauth_reason`) is a strike on the
+# credential record, whoever saw it; the third signs it out. One strike per window: the many callers and
+# replicas that hear one provider answer together count it once, so a sign-out spans 10 minutes at least
+# (the background service's 5-minute scan, three times). A run with no strike for a day (measured from its last
+# strike) is forgotten.
+MAX_REFRESH_REJECTIONS = 3
+STRIKE_SPACING_MS = 300_000
+STRIKE_MEMORY_MS = 86_400_000
+REJECTIONS_FIELD = "refreshRejections"
+LAST_REJECTED_AT_FIELD = "lastRejectedAt"
 
 # Longer than one refresh can take (the token request times out at 15s), so a live holder
 # never loses the lock; short enough that a crashed holder blocks refreshes only briefly.
@@ -294,9 +313,9 @@ async def _refresh_credential_record_locked(
     stored_access_token = tokens_dict.get("accessToken") or tokens_dict.get("access_token")
     if stale_access_token and stored_access_token and stored_access_token != stale_access_token:
         attempt.reason = "adopted"
-        return OAuthTokens.model_validate(tokens_dict)
+        return oauth_client_module.parse_tokens(tokens_dict)
 
-    refresh_token = tokens_dict.get("refreshToken") or tokens_dict.get("refresh_token")
+    refresh_token = _stored_refresh_token(tokens_dict)
     if not refresh_token:
         raise MCPTokenRefreshError(
             f"No refresh token available at {cred_path}; re-authentication is required", refresh_reason="no_refresh_token",
@@ -332,6 +351,8 @@ async def _refresh_credential_record_locked(
     if failure is not None:
         if failure.rejected_client:
             await retire_rejected_dcr_client(config_service, instance_id, owner_id, client_id)
+        if failure.deauth_reason:
+            await _count_rejection(config_service, cred_path, refresh_token, failure)
         raise failure
     new_tokens = new_tokens.model_copy(update={"client_id": client_id})
 
@@ -343,15 +364,87 @@ async def _refresh_credential_record_locked(
         raise MCPTokenRefreshError(
             f"The MCP credential at {cred_path} was removed while it was being refreshed", refresh_reason="credential_removed",
         )
-    current_tokens = current.get("oauthTokens") if isinstance(current.get("oauthTokens"), dict) else {}
-    if (current_tokens.get("refreshToken") or current_tokens.get("refresh_token")) != refresh_token:
+    current_tokens = _tokens_of(current)
+    if _stored_refresh_token(current_tokens) != refresh_token:
         attempt.reason = "superseded"
-        return OAuthTokens.model_validate(current_tokens)
+        return oauth_client_module.parse_tokens(current_tokens)
 
-    current["oauthTokens"] = new_tokens.model_dump(by_alias=True, mode="json")
-    current["updatedAt"] = get_epoch_timestamp_in_ms()
-    await _save_refreshed_record(config_service, cred_path, current)
+    # A success ends the run of strikes. A new dict: the config cache holds the one get_config returned, and a failed
+    # write must not change it.
+    updated = {key: value for key, value in current.items() if key not in (REJECTIONS_FIELD, LAST_REJECTED_AT_FIELD)}
+    updated["oauthTokens"] = new_tokens.model_dump(by_alias=True, mode="json")
+    updated["updatedAt"] = get_epoch_timestamp_in_ms()
+    await _save_refreshed_record(config_service, cred_path, updated)
     return new_tokens
+
+
+def _tokens_of(record: dict) -> dict:
+    tokens = record.get("oauthTokens")
+    return tokens if isinstance(tokens, dict) else {}
+
+
+def _stored_refresh_token(tokens: dict) -> Optional[str]:
+    return tokens.get("refreshToken") or tokens.get("refresh_token")
+
+
+def _non_negative_int(value: object) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+async def _count_rejection(
+    config_service: ConfigurationService, cred_path: str, refresh_token: str, failure: oauth_client_module.MCPOAuthError,
+) -> None:
+    """One strike for a sign-in its provider refused, under the refresh locks so every caller and process
+    adds to one count; the third signs it out with `deauthReason`. Never raises: the caller re-raises `failure`."""
+    strikes = 0
+    try:
+        record = await config_service.get_config(cred_path, default=None, use_cache=False)
+        if not isinstance(record, dict) or not record.get("isAuthenticated"):
+            return  # removed, or already signed out
+        prior = _non_negative_int(record.get(REJECTIONS_FIELD)) or 0
+        if _stored_refresh_token(_tokens_of(record)) != refresh_token:
+            # A new sign-in replaced the token the provider refused.
+            log_strike(logger, strike=prior, max_strikes=MAX_REFRESH_REJECTIONS, cause=failure, counted=False, reason="rotated")
+            return
+        now = get_epoch_timestamp_in_ms()
+        last = _non_negative_int(record.get(LAST_REJECTED_AT_FIELD))
+        if last is not None and last > now + STRIKE_SPACING_MS:
+            last = None  # written by a clock far ahead: stale, or it would hold every strike inside the window
+        if last is not None and now - last < STRIKE_SPACING_MS:  # a clock behind `last` counts as inside, too
+            log_strike(
+                logger, strike=prior, max_strikes=MAX_REFRESH_REJECTIONS, cause=failure, counted=False, reason="within_window",
+            )
+            return
+        strikes = (0 if last is None or now - last > STRIKE_MEMORY_MS else prior) + 1
+        # A new dict: the config cache holds the one get_config returned, and a failed write must not change it.
+        kept = {key: value for key, value in record.items() if key not in (REJECTIONS_FIELD, LAST_REJECTED_AT_FIELD)}
+        if strikes < MAX_REFRESH_REJECTIONS:
+            updated = {**kept, REJECTIONS_FIELD: strikes, LAST_REJECTED_AT_FIELD: now}
+        else:
+            updated = {**kept, "isAuthenticated": False, "deauthReason": failure.deauth_reason, "updatedAt": now}
+        saved = await config_service.set_config(cred_path, updated)
+    except Exception as e:
+        final = strikes >= MAX_REFRESH_REJECTIONS
+        log_refresh_failure(
+            logger, EVENT_DEAUTHENTICATE_FAILED if final else EVENT_STRIKE, e, level=logging.ERROR if final else None,
+            strike=f"{strikes}/{MAX_REFRESH_REJECTIONS}", counted=False,
+        )
+        return
+    _log_counted(failure, strikes, saved=saved)
+
+
+def _log_counted(failure: oauth_client_module.MCPOAuthError, strikes: int, *, saved: bool) -> None:
+    """After the write, so no line claims a strike or a sign-out the store doesn't hold."""
+    if not saved and strikes < MAX_REFRESH_REJECTIONS:
+        # Falls short of the count, the safe direction.
+        log_strike(logger, strike=strikes, max_strikes=MAX_REFRESH_REJECTIONS, cause=failure, counted=False, reason="not_saved")
+    elif not saved:
+        log_event(logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated",
+                  strike=f"{strikes}/{MAX_REFRESH_REJECTIONS}")
+    else:
+        log_strike(logger, strike=strikes, max_strikes=MAX_REFRESH_REJECTIONS, cause=failure)
+        if strikes >= MAX_REFRESH_REJECTIONS:
+            log_deauthenticated(logger, reason=failure.deauth_reason, strikes=strikes)
 
 
 async def _save_refreshed_record(config_service: ConfigurationService, cred_path: str, record: dict) -> None:

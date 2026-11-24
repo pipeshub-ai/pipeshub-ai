@@ -315,6 +315,28 @@ class TestFailedRefresh:
         assert not [r for r in caplog.records if "Traceback" in r.getMessage()]
         assert_no_secrets(caplog)
 
+    async def test_token_url_saved_without_a_scheme_is_one_misconfigured_error_and_never_quoted(
+        self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # The real aiohttp session: it refuses the URL before connecting, with the URL (query included) as its text.
+        query = "tenant=QRY-SEEDED-77"
+        _seed(config)
+        config.store[APPS] = [_app(tokenUrl=f"idp.example/oauth/token?{query}")]
+
+        await service._refresh_all_tokens()
+        await service._refresh_all_tokens()
+
+        ends = events(caplog, CR.EVENT_END)
+        assert [(fields(r)["error_class"], fields(r)["error_type"]) for r in ends] == [
+            ("misconfigured", "InvalidUrlClientError"), ("misconfigured", "InvalidUrlClientError"),
+        ]
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
+        assert _at_least(logging.ERROR, caplog) == [ends[0]]
+        for record in caplog.records:
+            rendered = JsonFormatter().format(record) + repr(fields(record)) + (record.exc_text or "")
+            assert query not in rendered, record.getMessage()
+        assert_no_secrets(caplog)
+
     async def test_revoked_grant_three_scans_strike_then_deauthenticate(
         self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, endpoint: FakeTokenEndpoint,
         caplog: pytest.LogCaptureFixture,
@@ -635,3 +657,99 @@ class TestDeauthentication:
 
         [line] = events(caplog, CR.EVENT_DEAUTHENTICATE_FAILED)
         assert (line.levelno, fields(line)["outcome"], fields(line)["reason"]) == (logging.ERROR, "failure", "not_found")
+
+
+MARKER = "FIELD-MARKER-31"
+
+
+def _answer(**fields: object) -> tuple[int, str]:
+    return 200, json.dumps({"access_token": "at-new", "refresh_token": "rt-new", "expires_in": 3600, **fields})
+
+
+def _assert_no_marker(caplog: pytest.LogCaptureFixture) -> None:
+    for record in caplog.records:
+        rendered = JsonFormatter().format(record) + repr(fields(record)) + (record.exc_text or "")
+        assert MARKER not in rendered, record.getMessage()
+
+
+class TestMalformedTokenField:
+    """F26c: a token field that cannot be parsed is named, never quoted, and is never saved over the sign-in."""
+
+    @pytest.mark.parametrize("answer", [_answer(created_at=MARKER), _answer(expires_in=MARKER), _answer(expires_in=float("nan"))],
+                             ids=["created_at", "expires_in", "expires_in_nan"])
+    async def test_a_malformed_answer_is_misconfigured_once_and_keeps_the_saved_token(
+        self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture, answer: tuple[int, str],
+    ) -> None:
+        endpoint.answers = [answer, answer]
+        _seed(config)
+        saved = config.store[PATH]["credentials"]
+
+        await service._refresh_all_tokens()
+        await service._refresh_all_tokens()
+
+        ends = events(caplog, CR.EVENT_END)
+        assert [(fields(r)["error_class"], fields(r)["reason"], fields(r)["error_type"]) for r in ends] == [
+            ("misconfigured", "malformed_token", "MalformedTokenError")] * 2
+        assert [r.levelno for r in ends] == [logging.ERROR, logging.DEBUG]
+        assert _at_least(logging.ERROR, caplog) == [ends[0]]  # nothing from scheduling: no int() or timedelta on a string
+        assert config.store[PATH]["credentials"] == saved
+        _assert_no_marker(caplog)
+        assert_no_secrets(caplog)
+
+    async def test_a_numeric_text_lifetime_is_saved_as_a_number(
+        self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        endpoint.answers = [_answer(expires_in="3599")]
+        _seed(config)
+
+        await service._refresh_all_tokens()
+
+        assert config.store[PATH]["credentials"]["expires_in"] == 3599
+        assert [r.getMessage() for r in _at_least(logging.INFO, caplog)] == [CR.EVENT_END, CR.EVENT_SCHEDULED]
+
+    async def test_a_bad_refresh_token_lifetime_is_dropped_and_the_refresh_succeeds(
+        self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, endpoint: FakeTokenEndpoint,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        endpoint.answers = [_answer(refresh_token_expires_in=MARKER)]
+        _seed(config)
+
+        await service._refresh_all_tokens()
+
+        [end] = events(caplog, CR.EVENT_END)
+        assert (end.levelno, fields(end)["outcome"]) == (logging.INFO, "success")
+        saved = config.store[PATH]["credentials"]
+        assert (saved["access_token"], saved["refresh_token_expires_in"]) == ("at-new", None)
+        assert [r.getMessage() for r in _at_least(logging.WARNING, caplog)] == ["oauth_token.field_ignored"]
+        _assert_no_marker(caplog)
+
+    async def test_a_saved_numeric_text_lifetime_schedules_a_refresh(
+        self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        record = _record(due=False)
+        record["credentials"]["expires_in"] = "3599"  # written before F26c
+        _seed(config, record)
+
+        await service._refresh_all_tokens()
+
+        assert [r.getMessage() for r in _at_least(logging.INFO, caplog)] == [CR.EVENT_SCHEDULED]
+        assert events(caplog, CR.EVENT_CHECK_FAILED) == []
+
+    async def test_a_saved_malformed_lifetime_is_misconfigured_without_its_value_and_the_scan_goes_on(
+        self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        bad = _record(due=False)
+        bad["credentials"]["expires_in"] = MARKER  # written before F26c
+        _seed(config, bad)
+        config.store[f"/services/toolsets/{INST2}/{OWNER}"] = _record(due=False, instance=INST2)
+
+        await service._refresh_all_tokens()
+
+        [failed] = events(caplog, CR.EVENT_CHECK_FAILED)
+        assert (failed.levelno, fields(failed)["error_class"], fields(failed)["reason"], fields(failed)["toolset_id"]) == (
+            logging.ERROR, "misconfigured", "malformed_token", INST)
+        [scheduled] = events(caplog, CR.EVENT_SCHEDULED)
+        assert fields(scheduled)["toolset_id"] == INST2
+        _assert_no_marker(caplog)

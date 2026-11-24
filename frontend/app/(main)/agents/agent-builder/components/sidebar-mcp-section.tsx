@@ -19,6 +19,7 @@ import { SidebarCategoryRow } from './sidebar-category-row';
 import { SidebarToolDragRow } from './sidebar-draggable-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 import { McpCredentialsDialog } from './agent-mcp-credentials-dialog';
+import { AgentBuilderMcpDiscovery } from './sidebar-mcp-discovery';
 import { isMcpOAuthSuccessMessageType } from '../../../workspace/mcp-servers/oauth/mcp-oauth-window-messages';
 
 export function AgentBuilderMcpSection(props: {
@@ -32,7 +33,11 @@ export function AgentBuilderMcpSection(props: {
   isServiceAccount?: boolean;
   /** Shared with the org (or a service account): only org servers can be attached. */
   agentShared?: boolean;
+  /** Admins add org servers from the catalog; everyone else adds their own. */
+  isAdmin?: boolean;
   onNotify: (message: string) => void;
+  /** A server was added from the catalog: the palette should show it. */
+  onServerAdded?: () => void;
   /** Viewer without edit: block MCP drags onto the canvas. */
   structureLocked?: boolean;
   onPaletteStructureDragBlocked?: () => void;
@@ -46,7 +51,9 @@ export function AgentBuilderMcpSection(props: {
     agentKey = null,
     isServiceAccount = false,
     agentShared = false,
+    isAdmin = false,
     onNotify,
+    onServerAdded,
     structureLocked = false,
     onPaletteStructureDragBlocked,
   } = props;
@@ -104,13 +111,31 @@ export function AgentBuilderMcpSection(props: {
     return <AgentBuilderPaletteSkeletonList count={3} />;
   }
 
+  // The catalog is offered here, so a missing server is never a dead end.
+  const discovery = (
+    <AgentBuilderMcpDiscovery
+      search={search}
+      mcpServers={mcpServers}
+      isAdmin={isAdmin}
+      agentShared={agentShared}
+      refreshMcpServers={refreshMcpServers}
+      onNotify={onNotify}
+      onServerAdded={onServerAdded}
+    />
+  );
+
   if (mcpServers.length === 0) {
     return (
-      <Text size="1" style={{ color: 'var(--slate-11)', fontStyle: 'italic', padding: '4px 8px' }}>
-        {t('agentBuilder.noMcpServersAvailable')}
-      </Text>
+      <Box>
+        <Text as="p" size="1" style={{ color: 'var(--slate-11)', padding: '4px 8px' }}>
+          {t('workspace.mcpServers.discover.emptyBuilder')}
+        </Text>
+        {discovery}
+      </Box>
     );
   }
+
+  const noneMatch = search.trim() !== '' && mcpServers.every((entry) => filterMcpServerTools(entry, search) === null);
 
   return (
     <Box>
@@ -188,6 +213,13 @@ export function AgentBuilderMcpSection(props: {
           </SidebarCategoryRow>
         );
       })}
+
+      {noneMatch && (
+        <Text as="p" size="1" style={{ color: 'var(--slate-11)', padding: '4px 8px' }}>
+          {t('workspace.mcpServers.discover.noAddedMatch')}
+        </Text>
+      )}
+      {discovery}
 
       {credentialsDialogInstance ? (
         <McpCredentialsDialog

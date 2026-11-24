@@ -135,6 +135,35 @@ def _resolve_cgroup_path(v1_controller: str, v1_filename: str, v2_filename: str 
     return None
 
 
+def _with_ancestors(path: Path | None, stop: Path) -> list[Path]:
+    """``path`` then the same-named file of every visible ancestor cgroup, nearest first, up to ``stop``.
+
+    A limit on an ancestor binds every process below it, so the effective limit is the tightest one on
+    the way up (``app.capacity.cgroup`` walks the same way, and the tests hold both to the same answer). Only
+    directories under the mount are visible: with just the container's own cgroup mounted this is the one
+    file. ``stop`` is the hierarchy root (the controller directory under v1).
+    """
+    if path is None:
+        return []
+    found = [path]
+    directory = path.parent
+    while directory != stop and stop in directory.parents:
+        directory = directory.parent
+        candidate = directory / path.name
+        if candidate.exists():
+            found.append(candidate)
+    return found
+
+
+def _tightest(levels: list[tuple[float, Path]]) -> tuple[float, Path] | None:
+    """The smallest limit and the file that holds it; on a tie the nearest level (the member's own)."""
+    best: tuple[float, Path] | None = None
+    for limit, file in levels:
+        if best is None or limit < best[0]:
+            best = (limit, file)
+    return best
+
+
 @functools.cache
 def memory_domain_id() -> str | None:
     """An opaque id shared by every process under this memory cgroup, and by no other.
@@ -179,21 +208,31 @@ def _cgroup_v2_memory() -> tuple[int | None, int | None]:
     supply a limit and working set together (corner case: ``memory.max ==
     "max"`` -> treated as no limit, falls through to host total).
     """
-    max_path = _resolve_cgroup_path("memory", "memory.max")
-    if max_path is None:
+    own_max = _resolve_cgroup_path("memory", "memory.max")
+    levels: list[tuple[float, Path]] = []
+    for file in _with_ancestors(own_max, _CGROUP_ROOT):
+        raw = _read_text(file)
+        if raw is None or raw == "max":
+            continue
+        try:
+            levels.append((int(raw), file))
+        except ValueError:
+            continue
+    tightest = _tightest(levels)
+    if tightest is None:
         return None, None
-    raw_max = _read_text(max_path)
-    if raw_max is None or raw_max == "max":
-        return None, None
-    try:
-        limit = int(raw_max)
-    except ValueError:
-        return None, None
+    limit, max_path = int(tightest[0]), tightest[1]
 
-    current_path = _resolve_cgroup_path("memory", "memory.current")
+    # The working set is read where the limit binds: under an ancestor's cap the siblings' memory counts too,
+    # and pairing the ancestor's limit with the member's own use would read the brake too far from the cap.
+    current_path = _resolve_cgroup_path("memory", "memory.current") if max_path == own_max else max_path.parent / "memory.current"
     current = _read_int(current_path) if current_path else None
+    if current is None and max_path != own_max:
+        max_path = own_max
+        current_path = _resolve_cgroup_path("memory", "memory.current")
+        current = _read_int(current_path) if current_path else None
 
-    stat_path = _resolve_cgroup_path("memory", "memory.stat")
+    stat_path = _resolve_cgroup_path("memory", "memory.stat") if max_path == own_max else max_path.parent / "memory.stat"
     # All page cache, not just the inactive half. The k8s "working set"
     # convention subtracts only ``inactive_file`` because it is predicting
     # OOM-kill risk and wants to be conservative. This governor is answering a
@@ -216,15 +255,26 @@ def _cgroup_v2_memory() -> tuple[int | None, int | None]:
 def _cgroup_v1_memory() -> tuple[int | None, int | None]:
     """Same "all or nothing" contract as :func:`_cgroup_v2_memory` — see its
     docstring."""
-    limit_path = _resolve_cgroup_path("memory", "memory.limit_in_bytes")
-    limit = _read_int(limit_path) if limit_path else None
-    if limit is None or limit >= _MEM_V1_NO_LIMIT_SENTINEL:
+    own_limit = _resolve_cgroup_path("memory", "memory.limit_in_bytes")
+    levels: list[tuple[float, Path]] = []
+    for file in _with_ancestors(own_limit, _CGROUP_ROOT / "memory"):
+        value = _read_int(file)
+        if value is not None and value < _MEM_V1_NO_LIMIT_SENTINEL:
+            levels.append((value, file))
+    tightest = _tightest(levels)
+    if tightest is None:
         return None, None
+    limit, limit_path = int(tightest[0]), tightest[1]
 
-    usage_path = _resolve_cgroup_path("memory", "memory.usage_in_bytes")
+    # Usage is read where the limit binds, as for v2.
+    usage_path = _resolve_cgroup_path("memory", "memory.usage_in_bytes") if limit_path == own_limit else limit_path.parent / "memory.usage_in_bytes"
     usage = _read_int(usage_path) if usage_path else None
+    if usage is None and limit_path != own_limit:
+        limit_path = own_limit
+        usage_path = _resolve_cgroup_path("memory", "memory.usage_in_bytes")
+        usage = _read_int(usage_path) if usage_path else None
 
-    stat_path = _resolve_cgroup_path("memory", "memory.stat")
+    stat_path = _resolve_cgroup_path("memory", "memory.stat") if limit_path == own_limit else limit_path.parent / "memory.stat"
     # ``total_cache`` is v1's spelling of all reclaimable page cache — see the
     # v2 path for why the whole of it is discounted, not just its inactive half.
     file_cache = _memory_stat_value(
@@ -447,9 +497,8 @@ class BaselineMemoryTracker:
 # ---------------------------------------------------------------------------
 
 
-def _cgroup_v2_cpu_quota() -> float | None:
-    path = _resolve_cgroup_path("cpu", "cpu.max")
-    text = _read_text(path) if path else None
+def _parse_cpu_max(path: Path) -> float | None:
+    text = _read_text(path)
     if not text:
         return None
     parts = text.split()
@@ -464,14 +513,30 @@ def _cgroup_v2_cpu_quota() -> float | None:
     return quota_us / period_us
 
 
+def _v2_cpu_binding() -> tuple[float, Path] | None:
+    """The tightest ``cpu.max`` quota (in CPUs) on the member's cgroup and its visible ancestors, with its file."""
+    levels = [(q, f) for f in _with_ancestors(_resolve_cgroup_path("cpu", "cpu.max"), _CGROUP_ROOT) if (q := _parse_cpu_max(f)) is not None]
+    return _tightest(levels)
+
+
+def _cgroup_v2_cpu_quota() -> float | None:
+    binding = _v2_cpu_binding()
+    return None if binding is None else binding[0]
+
+
+def _v1_cpu_binding() -> tuple[float, Path] | None:
+    """The tightest CFS quota (in CPUs) on the member's cgroup and its visible ancestors, with its quota file."""
+    levels: list[tuple[float, Path]] = []
+    for file in _with_ancestors(_resolve_cgroup_path("cpu", "cpu.cfs_quota_us"), _CGROUP_ROOT / "cpu"):
+        quota, period = _read_int(file), _read_int(file.parent / "cpu.cfs_period_us")
+        if quota is not None and period is not None and quota > 0 and period > 0:
+            levels.append((quota / period, file))
+    return _tightest(levels)
+
+
 def _cgroup_v1_cpu_quota() -> float | None:
-    quota_path = _resolve_cgroup_path("cpu", "cpu.cfs_quota_us")
-    period_path = _resolve_cgroup_path("cpu", "cpu.cfs_period_us")
-    quota = _read_int(quota_path) if quota_path else None
-    period = _read_int(period_path) if period_path else None
-    if quota is None or period is None or quota <= 0 or period <= 0:
-        return None
-    return quota / period
+    binding = _v1_cpu_binding()
+    return None if binding is None else binding[0]
 
 
 def _own_affinity_cpus() -> int | None:
@@ -660,6 +725,47 @@ def _resolve_cpu_usage_usec() -> tuple[int | None, str]:
     return None, "unknown"
 
 
+@dataclass(frozen=True)
+class _AncestorCpu:
+    """The cumulative CPU counters of an ancestor cgroup whose quota is tighter than the member's own."""
+
+    scope: str  # the ancestor's directory: counters of two scopes are not comparable
+    quota: float  # CPUs
+    usage_usec: int
+    throttled_usec: int | None
+
+
+def _ancestor_cpu() -> _AncestorCpu | None:
+    """The counters of the ancestor that binds the CPU quota, or ``None`` when the member's own level binds (or
+    nothing is limited, or the ancestor's counter cannot be read).
+
+    The ancestor's counter includes its other children, so it divides by the ancestor's quota, never by the member's
+    affinity; the member's own counter keeps dividing by what the member may use. The utilisation is the larger of the
+    two, so neither a busy sibling nor a member saturating its own CPUs goes unseen.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    v2 = _v2_cpu_binding()
+    if v2 is not None and v2[1] != _resolve_cgroup_path("cpu", "cpu.max"):
+        text = _read_text(v2[1].parent / "cpu.stat")
+        fields = dict(line.split()[:2] for line in (text or "").splitlines() if len(line.split()) >= 2)
+        try:
+            usage = int(fields["usage_usec"])
+        except (KeyError, ValueError):
+            return None
+        try:
+            throttled: int | None = int(fields["throttled_usec"])
+        except (KeyError, ValueError):
+            throttled = None
+        return _AncestorCpu(str(v2[1].parent), v2[0], usage, throttled)
+    v1 = _v1_cpu_binding()
+    if v1 is not None and v1[1] != _resolve_cgroup_path("cpu", "cpu.cfs_quota_us"):
+        nanos = _read_int(v1[1].parent / "cpuacct.usage")
+        if nanos is not None:
+            return _AncestorCpu(str(v1[1].parent), v1[0], nanos // 1000, None)
+    return None
+
+
 def _cgroup_v2_cpu_throttled_usec() -> int | None:
     if not sys.platform.startswith("linux"):
         return None
@@ -834,6 +940,7 @@ class SystemResourceProbe:
         self._lock = threading.Lock()
         self._prev_cpu_usec: int | None = None
         self._prev_cpu_source: str | None = None
+        self._prev_ancestor: _AncestorCpu | None = None
         self._prev_throttled_usec: int | None = None
         self._prev_time: float | None = None
         self._baseline_tracker = baseline_tracker or BaselineMemoryTracker()
@@ -863,6 +970,7 @@ class SystemResourceProbe:
             )
             cpu_usage_usec, cpu_source = _resolve_cpu_usage_usec()
             throttled_usec = _cgroup_v2_cpu_throttled_usec()
+            ancestor = _ancestor_cpu() if cpu_source in ("cgroup_v2", "cgroup_v1") else None
 
             cpu_utilisation: float | None = None
             cpu_throttled_ratio: float | None = None
@@ -903,8 +1011,21 @@ class SystemResourceProbe:
                         throttled_delta = throttled_usec - self._prev_throttled_usec
                         cpu_throttled_ratio = max(0.0, throttled_delta / (elapsed * 1_000_000))
 
+            prev_anc = self._prev_ancestor
+            if ancestor is not None and prev_anc is not None and prev_anc.scope == ancestor.scope and self._prev_time is not None:
+                # The cap is an ancestor's: its counter (siblings included) over its quota. A change of binding level
+                # between samples has another scope and gives no delta, as a change of source does.
+                elapsed = now - self._prev_time
+                if elapsed > 0 and ancestor.quota > 0:
+                    anc_util = max(0.0, (ancestor.usage_usec - prev_anc.usage_usec) / (elapsed * 1_000_000 * ancestor.quota))
+                    cpu_utilisation = anc_util if cpu_utilisation is None else max(cpu_utilisation, anc_util)
+                    if ancestor.throttled_usec is not None and prev_anc.throttled_usec is not None:
+                        anc_throttled = max(0.0, (ancestor.throttled_usec - prev_anc.throttled_usec) / (elapsed * 1_000_000))
+                        cpu_throttled_ratio = anc_throttled if cpu_throttled_ratio is None else max(cpu_throttled_ratio, anc_throttled)
+
             self._prev_cpu_usec = cpu_usage_usec
             self._prev_cpu_source = cpu_source
+            self._prev_ancestor = ancestor
             self._prev_throttled_usec = throttled_usec
             self._prev_time = now
 

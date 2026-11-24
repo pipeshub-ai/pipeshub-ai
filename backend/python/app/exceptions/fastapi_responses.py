@@ -17,6 +17,9 @@ class Status(Enum):
     # The vector store timed out or could not be reached, after a retry. Not
     # EMPTY_RESPONSE: nothing was searched, so nothing is known to be missing.
     SEARCH_INDEX_UNAVAILABLE = "search_index_unavailable"
+    # The embedding model's provider account has no credit left, so the query could not be embedded. Not ERROR: the
+    # reader is told what to fix, and trying again does not fix it.
+    EMBEDDING_OUT_OF_CREDIT = "embedding_out_of_credit"
     # The search ran past its deadline (SEARCH_DEADLINE_SECONDS) outside the
     # vector store, and was stopped so its caller hears why instead of timing out.
     SEARCH_TIMED_OUT = "search_timed_out"

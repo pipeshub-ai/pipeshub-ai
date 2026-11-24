@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import functools
 import json
-import logging
 import warnings
 from typing import (
     Any,
@@ -29,7 +29,7 @@ from langchain_core.utils.utils import (
 )
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from tenacity import (
-    before_sleep_log,
+    RetryCallState,
     retry,
     stop_after_attempt,
     wait_exponential,
@@ -41,6 +41,20 @@ from app.utils.threaded import to_thread_settled
 
 logger = create_logger("custom_embeddings")
 
+# (connect, read) seconds for a Jina request: a server that accepts the connection and never answers must not hold a thread
+# (and, through ``to_thread_settled``, a cancelled caller) for ever.
+JINA_REQUEST_TIMEOUT_S: tuple[float, float] = (10.0, 120.0)
+
+
+def _log_voyage_retry(retry_state: RetryCallState) -> None:
+    # The type only: the error's text is Voyage's whole response, which can echo the input.
+    error = retry_state.outcome.exception() if retry_state.outcome else None
+    logger.warning(
+        "Voyage embedding attempt %d failed; retrying in %.1fs",
+        retry_state.attempt_number, retry_state.upcoming_sleep,
+        extra={"error_type": type(error).__name__},
+    )
+
 
 def _create_retry_decorator(embeddings: VoyageEmbeddings) -> Callable[[Any], Any]:
     min_seconds = 4
@@ -51,7 +65,7 @@ def _create_retry_decorator(embeddings: VoyageEmbeddings) -> Callable[[Any], Any
         reraise=True,
         stop=stop_after_attempt(embeddings.max_retries),
         wait=wait_exponential(multiplier=1, min=min_seconds, max=max_seconds),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
+        before_sleep=_log_voyage_retry,
     )
 
 
@@ -530,3 +544,69 @@ class TogetherEmbeddings(BaseModel, Embeddings):
         if not isinstance(response, dict):
             response = response.model_dump()
         return response["data"][0]["embedding"]
+
+
+class JinaAPIError(VoyageAPIError):
+    """A Jina reply without embeddings; carries the status and the response for the retry decision."""
+
+
+@functools.cache
+def _build_jina_embeddings() -> type:
+    """Build the class on first use: importing langchain_community's Jina module costs time and warns of its deprecation."""
+    from langchain_community.embeddings.jina import JINA_API_URL
+    from langchain_community.embeddings.jina import (
+        JinaEmbeddings as CommunityJinaEmbeddings,
+    )
+
+    class JinaEmbeddings(CommunityJinaEmbeddings):
+        """Jina embeddings whose requests are admitted and counted like every other paid request.
+
+        The community class posts with a ``requests`` session, which has no hooks of its own: a stage job whose send allowance is
+        spent could still send, and a failed request was not counted. Each request is admitted against the allowance and counted in
+        the wire scope by hand (as ``embed_with_retry`` does for Voyage), and the async methods run in a thread that keeps the
+        context and is waited for when cancelled.
+        """
+
+        def _embed(self, input: Any) -> list[list[float]]:  # noqa: A002, ANN401 - the parent's signature
+            # Imported here: the gateway's wire module is a layer above this one.
+            from app.services.llm_gateway import wire
+
+            wire.admit_request()
+            wire.note_request_sent()
+            try:
+                response = self.session.post(
+                JINA_API_URL,
+                json={"input": input, "model": self.model_name},
+                timeout=JINA_REQUEST_TIMEOUT_S,
+            )
+            except requests.exceptions.RequestException as exc:
+                wire.note_error(type(exc).__name__)
+                raise
+            wire.note_response(response.status_code, wire.parse_retry_after(response.headers))
+            try:
+                payload = response.json()
+            except ValueError:  # an outage page is not JSON: the status still says what it was
+                payload = {"detail": (response.text or "")[:200]}
+            if not isinstance(payload, dict):  # `null`, a list or a string is no embedding reply either
+                payload = {"detail": json.dumps(payload)[:200]}
+            if "data" not in payload:
+                raise JinaAPIError(
+                    f"Jina API Error. Message: {payload.get('detail', json.dumps(payload))}",
+                    status_code=response.status_code,
+                    response=response,
+                )
+            return [item["embedding"] for item in sorted(payload["data"], key=lambda e: e["index"])]
+
+        async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+            return await to_thread_settled(lambda: self.embed_documents(texts))
+
+        async def aembed_query(self, text: str) -> list[float]:
+            return await to_thread_settled(lambda: self.embed_query(text))
+
+    return JinaEmbeddings
+
+
+def __getattr__(name: str) -> Any:  # noqa: ANN401
+    if name == "JinaEmbeddings":
+        return _build_jina_embeddings()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

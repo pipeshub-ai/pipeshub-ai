@@ -23,7 +23,7 @@ HIERARCHY = ("PARENT_CHILD", "ATTACHMENT")
 EDGE_COLLS = ("permission", "belongsTo", "nodeRelations", "inheritPermissions", "userAppRelation", "authenticatedAs")
 LINK_HIERARCHY, LINK_GROUP, LINK_PARENT_CHILD = 1, 2, 3     # kg.links.kind; 3 (kg_0014): every PARENT_CHILD parent, the primary one too
 UAR = "@uar"                                                 # gtype of a userAppRelation row in kg.scope_members (a permission edge's gtype is its type)
-CODE_EPOCH = 7                                               # kg.projection_state.code_epoch this code writes after a verified backfill
+CODE_EPOCH = 9                                               # kg.projection_state.code_epoch this code writes after a verified backfill
 
 Key = tuple[str, str]                                        # (collection, id)
 
@@ -167,7 +167,7 @@ def _rank_parent(snap: Snapshot, e: GEdge, app: str | None) -> tuple[int, int, i
 
 def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
     """The kg.records columns of a node (everything but the sk and the stamper's columns). ``w_records_upsert`` writes all but ``folder``, ``hide_children`` and ``alien``, which
-    ``w_listing_set`` writes; the verify compares them all."""
+    ``w_listing_set`` writes, and ``deleted_ms`` and ``delete_batch``, which ``w_trash_set`` writes; the verify compares them all."""
     coll, nid = k
     app = app_id_of(k, doc)
     # the name a listing shows and sorts by: ``name`` first, then the record's or the group's own
@@ -186,14 +186,17 @@ def record_row(k: Key, doc: dict, snap: Snapshot) -> dict:
         "created_ms": listing_ts(doc, "sourceCreatedAtTimestamp", "createdAtTimestamp"),
         "size_bytes": _ms(doc.get("sizeInBytes")), "record_type": _s(doc.get("recordType")), "origin": _s(doc.get("origin")),
         "external_id": _s(doc.get("externalRecordId")), "deleted": flag(doc.get("isDeleted")), "placeholder": flag(doc.get("isPlaceholder")), "granted": granted,
-        # a node of another organisation is no row of a listing (the walk reads its nodes by the viewer's orgId)
-        "alien": _stored_org(doc) != snap.org,
+        # a node of another organisation is no row of a listing (the walk reads its nodes by the viewer's orgId), nor is a group that carries access only
+        # (neo4j_provider._cypher_read_by_app): what hangs under it is listed under its other parents
+        "alien": _stored_org(doc) != snap.org or (coll == "recordGroups" and flag(doc.get("accessOnly"))),
         # the listing's order of names: a string by UTF-16 code unit (what the merge that pages the listing compares by), kept as the bytes of it
         "name_sort": name.lower().encode("utf-16-be", "surrogatepass") if name is not None else None,
         # the hub's node type 'folder': neo4j_provider._cypher_hub_type (mimeType in FOLDER_MIME_TYPES, or recordType FOLDER), of a record only
         "folder": coll == "records" and (doc.get("mimeType") in FOLDER_MIME_TYPES or str(doc.get("recordType") or "").upper() == "FOLDER"),
         # a record group that hides its children: neo4j_provider._kh_v3_hidden_above (RecordGroup, coalesce(hideChildren, false))
         "hide_children": coll == "recordGroups" and flag(doc.get("hideChildren")),
+        # what a trash listing pages by (w_trash_set): the delete time and batch as the walk reads them, ``(doc->>'deletedAtTimestamp')::bigint`` and ``doc->>'deleteBatchId'``
+        "deleted_ms": _ms(doc.get("deletedAtTimestamp")), "delete_batch": _s(doc.get("deleteBatchId")),
         "_parents": parents[1:], "_groups": groups[1:],
         # the parents by a PARENT_CHILD relation, which the move guards follow (ATTACHMENT is a hierarchy parent too, but not one a folder move may cycle through)
         "_parent_child": sorted({snap.sk[e.frm] for e in parent_edges if e.doc.get("relationshipType") == "PARENT_CHILD"}),

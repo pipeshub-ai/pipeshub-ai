@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncGenerator, Callable, Mapping
+from functools import cache
 from typing import (
     Any,
     TypeVar,
@@ -12,6 +13,7 @@ import aiohttp
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatBedrock, ChatBedrockConverse
+from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -22,6 +24,7 @@ from pydantic import BaseModel, ValidationError
 from app.agent_loop_lib.transport.provider_conflicts import (
     refused_cache_params,
 )
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.prompt_cache import (
     CacheStrategy,
     NoCacheStrategy,
@@ -34,8 +37,8 @@ from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
 )
 from app.exceptions.non_retryable import NonRetryableError
-from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.modules.retrieval import degraded_notice
+from app.services.ai_models.discovery.catalog import lookup_catalog
 from app.services.llm_gateway.gateway import Invocable, get_llm_gateway, provider_key
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.citations import (
@@ -43,7 +46,9 @@ from app.utils.citations import (
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,  # noqa: F401  # tests patch this module attribute
 )
+from app.utils.error_class import log_failure
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
+from app.utils.is_truncated import TruncatedReplyError, is_truncated
 from app.utils.llm import LLMUnavailableError
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
@@ -435,56 +440,53 @@ async def aiter_llm_stream(
         if all(cb is not opik_tracer for cb in callbacks):
             callbacks.append(opik_tracer)
         config = {"callbacks": callbacks}
-    try:
-        if hasattr(llm, "astream"):
-            # Fix #1710: Manual iteration to catch per-chunk ValidationError
-            # when providers like LiteLLM send role=None on non-first chunks
-            astream_iter = llm.astream(messages, config=config).__aiter__()
-            while True:
-                try:
-                    part = await astream_iter.__anext__()
-                except StopAsyncIteration:
-                    break
-                except ValidationError as e:
-                    # Only suppress the specific validation error related to 'role'
-                    if "role" in str(e).lower():
-                        logger.warning(
-                            f"Skipping chunk due to validation error "
-                            f"(likely role=None from provider): {e}"
-                        )
-                        continue
-                    # Re-raise other validation errors to avoid hiding unexpected issues.
-                    raise
-
-                if not part:
+    if hasattr(llm, "astream"):
+        # Fix #1710: Manual iteration to catch per-chunk ValidationError
+        # when providers like LiteLLM send role=None on non-first chunks
+        astream_iter = llm.astream(messages, config=config).__aiter__()
+        while True:
+            try:
+                part = await astream_iter.__anext__()
+            except StopAsyncIteration:
+                break
+            except ValidationError as e:
+                # Only suppress the specific validation error related to 'role'
+                if "role" in str(e).lower():
+                    # Type only: pydantic's text quotes the rejected chunk, the model's output.
+                    logger.warning(
+                        "Skipping chunk due to validation error (likely role=None from provider)",
+                        extra={"error_type": type(e).__name__},
+                    )
                     continue
-                parts.append(part)
+                # Re-raise other validation errors to avoid hiding unexpected issues.
+                raise
 
-                if isinstance(part, dict):
-                    yield part
-                    continue
-                else:
-                    content = getattr(part, "content", None)
-                text = _stringify_content(content)
-                if text:
-                    yield text
-        else:
-            logger.info("Using non-streaming mode")
-            response = await llm.ainvoke(messages, config=config)
-            content = getattr(response, "content", response)
-            parts.append(response)
+            if not part:
+                continue
+            parts.append(part)
 
-            if isinstance(content, dict):
-                yield content
+            if isinstance(part, dict):
+                yield part
+                continue
             else:
-                text = _stringify_content(content)
-                if text:
-                    yield text
-                else:
-                    logger.info("No content found in response")
-    except Exception as e:
-        logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
-        raise
+                content = getattr(part, "content", None)
+            text = _stringify_content(content)
+            if text:
+                yield text
+    else:
+        logger.info("Using non-streaming mode")
+        response = await llm.ainvoke(messages, config=config)
+        content = getattr(response, "content", response)
+        parts.append(response)
+
+        if isinstance(content, dict):
+            yield content
+        else:
+            text = _stringify_content(content)
+            if text:
+                yield text
+            else:
+                logger.info("No content found in response")
 
 # Configuration for Qdrant limits based on context length.
 VECTOR_DB_LIMIT_TIERS = [
@@ -1041,11 +1043,65 @@ async def call_aiter_llm_stream_simple(
             }),
         }
     except Exception as exc:
-        logger.error("Error in call_aiter_llm_stream_simple", exc_info=True)
-        yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
+        log_failure(logger, "llm_stream.failed", exc, include_error_text=False)
+        yield {"event": "error", "data": {"error": classify_exception(exc)[1]}}
         return
 
+_NUMBER_BOUNDS = ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf")
+
+
+#: Keys whose value maps names to schemas: a name there is a field, never a keyword.
+_SCHEMA_NAME_MAPS = ("properties", "$defs", "definitions", "patternProperties")
+
+
+def _drop_number_bounds(node: Any) -> None:  # noqa: ANN401 - any JSON schema node
+    """Removes number-bound keywords from every schema object in *node*, keeping field names."""
+    if isinstance(node, list):
+        for value in node:
+            _drop_number_bounds(value)
+        return
+    if not isinstance(node, dict):
+        return
+    for key in _NUMBER_BOUNDS:
+        if isinstance(node.get(key), (int, float)) and not isinstance(node.get(key), bool):
+            del node[key]
+    for key, value in node.items():
+        if key in _SCHEMA_NAME_MAPS and isinstance(value, dict):
+            for schema in value.values():
+                _drop_number_bounds(schema)
+        else:
+            _drop_number_bounds(value)
+
+
+@cache
+def _without_number_bounds(schema: type[BaseModel]) -> type[BaseModel]:
+    """*schema* as sent without numeric bounds; *schema* itself when it has none.
+
+    OpenAI refuses ``minimum``/``maximum`` in a strict schema for a fine-tuned model with a 400,
+    and neither an Azure deployment name nor an OpenAI-compatible server says which model is
+    behind it. The subclass validates exactly as *schema* does, so bounds the schema's own
+    validators enforce still hold on the reply.
+    """
+    sent = schema.model_json_schema()
+    _drop_number_bounds(sent)
+    if sent == schema.model_json_schema():
+        return schema
+
+    class _Unbounded(schema):  # type: ignore[valid-type, misc]
+        @classmethod
+        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+            result = super().model_json_schema(*args, **kwargs)
+            _drop_number_bounds(result)
+            return result
+
+    _Unbounded.__name__ = _Unbounded.__qualname__ = schema.__name__
+    _Unbounded.__doc__ = schema.__doc__
+    return _Unbounded
+
+
 def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
+    if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)) and isinstance(schema, type) and issubclass(schema, BaseModel):
+        schema = _without_number_bounds(schema)
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):
 
         additional_kwargs = {}
@@ -1102,6 +1158,190 @@ def cleanup_content(response_text: str) -> str:
     return response_text.strip()
 
 
+# An answer that does not fit the schema is the model's doing, not a bug of ours: a WARNING, as before.
+_ANSWER_PARSE_ERRORS = (ValidationError, OutputParserException)
+
+
+def _is_oversized_number(exc: BaseException) -> bool:
+    """A reply holding a number longer than Python converts (``sys.get_int_max_str_digits()``).
+
+    A model can run an integer field on until its output limit. The JSON parser behind
+    ``with_structured_output`` lets the resulting ``ValueError`` out as is, so without this
+    check the reply reads as a failed call. Pydantic's own JSON parser, which reads a plain
+    model's reply, reports the same number as ``json_invalid``: "number out of range".
+    """
+    if isinstance(exc, ValidationError):
+        try:
+            errors = exc.errors(include_input=False)
+        except Exception:  # an error list that cannot be read is not this reply
+            return False
+        return any(e.get("type") == "json_invalid" and "number out of range" in str(e.get("msg")) for e in errors)
+    return isinstance(exc, ValueError) and "integer string conversion" in str(exc)
+
+
+def _oversized_detail(exc: BaseException) -> str:
+    """What a log line may say of an oversized number: the digit count, never the reply."""
+    return "a JSON number out of range" if isinstance(exc, ValidationError) else str(exc)
+
+
+class OversizedNumberError(OutputParserException):
+    """A reply holding a number too long to read: a reply that ran away, not a failed call."""
+
+
+#: Output tokens added to a per-call cap for a model that may reason: its reasoning counts
+#: against the same limit, and many models reason without being asked (Gemini 2.5 and later,
+#: OpenAI's reasoning families), so without it the visible reply could be cut off early.
+REASONING_OUTPUT_RESERVE = 8192
+
+# Model families known not to reason: ``-chat`` variants (gpt-5.x-chat-latest, deepseek-chat)
+# and these prefixes. A name that says it reasons always gets the reserve; any other model
+# may reason, and gets it too.
+_NON_REASONING_PREFIXES = ("gpt-3.5", "gpt-4", "chatgpt-4o", "gemini-1.", "gemini-2.0")
+_REASONING_WORDS = ("thinking", "reasoning", "reasoner")
+
+# Our provider ids for the model catalog, by model class.
+_CATALOG_PROVIDER = (
+    (ChatGoogleGenerativeAI, "gemini"),
+    (AzureChatOpenAI, "azureOpenAI"),
+    (ChatOpenAI, "openAI"),
+    (ChatAnthropic, "anthropic"),
+    (ChatMistralAI, "mistral"),
+)
+
+
+def _model_name(llm: BaseChatModel) -> str:
+    name = getattr(llm, "model_name", None) or getattr(llm, "model", None) or ""
+    return str(name).lower().rsplit("/", 1)[-1]
+
+
+def _reasoning_reserve(llm: BaseChatModel) -> int:
+    """Output tokens to leave for reasoning on top of a cap; 0 only for a model known not to reason."""
+    thinking = getattr(llm, "thinking", None)
+    if isinstance(llm, ChatAnthropic):
+        # Claude reasons only when asked to. Anthropic requires max_tokens above the thinking budget.
+        if isinstance(thinking, Mapping) and thinking.get("type") not in (None, "disabled"):
+            budget = thinking.get("budget_tokens")
+            return budget if isinstance(budget, int) and budget > 0 else REASONING_OUTPUT_RESERVE
+        return REASONING_OUTPUT_RESERVE if getattr(llm, "reasoning_effort", None) else 0
+    if getattr(llm, "thinking_budget", None) == 0 or getattr(llm, "reasoning_effort", None) == "none":
+        return 0
+    name = _model_name(llm)
+    if any(word in name for word in _REASONING_WORDS):
+        return REASONING_OUTPUT_RESERVE
+    if "-chat" in name or name.startswith(_NON_REASONING_PREFIXES):
+        return 0
+    if isinstance(llm, ChatMistralAI) and "magistral" not in name:
+        return 0
+    return REASONING_OUTPUT_RESERVE
+
+
+def _known_output_limit(llm: BaseChatModel) -> int | None:
+    """The most output tokens the model accepts, when its profile or the model catalog says;
+    None when unknown, as for any model behind an OpenAI-compatible endpoint of its own."""
+    if isinstance(llm, ChatOpenAI) and not isinstance(llm, AzureChatOpenAI):
+        base = getattr(llm, "openai_api_base", None)
+        if base and "api.openai.com" not in str(base):
+            return None
+    profile = getattr(llm, "profile", None)
+    limit = profile.get("max_output_tokens") if isinstance(profile, Mapping) else None
+    if not (isinstance(limit, int) and limit > 0):
+        name = str(getattr(llm, "model_name", None) or getattr(llm, "model", None) or "").rsplit("/", 1)[-1]
+        provider = next((pid for cls, pid in _CATALOG_PROVIDER if isinstance(llm, cls)), None)
+        entry = lookup_catalog(provider, name) if provider and name else None
+        limit = entry.get("max_output_tokens") if entry else None
+    return limit if isinstance(limit, int) and limit > 0 else None
+
+
+def with_output_cap(llm: BaseChatModel, max_output_tokens: int | None) -> BaseChatModel | None:
+    """``llm`` with its replies capped at ``max_output_tokens`` plus a reasoning reserve, never
+    above the most the model accepts; or None for a model this does not know how to cap.
+
+    ``llm`` itself comes back, uncapped, when the model's own limit is already lower or when
+    the most it accepts is unknown (a cap above it is refused with a 400 on every call): the
+    caller still reads the raw reply and can tell a cut-off one. Bedrock is left alone: its
+    thinking budget lives in request fields that a cap here could fall below.
+    """
+    if not max_output_tokens or max_output_tokens <= 0:
+        return None
+    if isinstance(llm, ChatGoogleGenerativeAI):
+        field = "max_output_tokens"
+    elif isinstance(llm, (ChatOpenAI, AzureChatOpenAI, ChatAnthropic, ChatMistralAI)):
+        field = "max_tokens"
+    else:
+        return None
+    reserve = _reasoning_reserve(llm)
+    cap = max_output_tokens + reserve
+    current = getattr(llm, field, None)
+    if isinstance(current, int) and 0 < current <= cap:
+        return llm
+    limit = _known_output_limit(llm)
+    if limit is None:
+        return llm
+    cap = min(cap, limit)
+    if isinstance(llm, ChatAnthropic) and cap <= reserve:
+        # Anthropic refuses max_tokens at or below the thinking budget.
+        return llm
+    try:
+        return llm.model_copy(update={field: cap})
+    except Exception as exc:
+        logger.debug("Output cap not applied to %s: %s", type(llm).__name__, type(exc).__name__)
+        return llm
+
+
+_OUTPUT_LIMIT_REFUSAL = re.compile(
+    r"max_tokens|max_completion_tokens|max_output_tokens|maxoutputtokens|output tokens|completion tokens"
+    r"|context length|context window|maximum context",
+    re.IGNORECASE,
+)
+
+
+def _is_output_limit_refusal(exc: BaseException) -> bool:
+    """A 400 refusing the output-token limit the request carried."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    text = str(exc)
+    is_400 = status == 400 or (status is None and "400" in text)
+    return is_400 and bool(_OUTPUT_LIMIT_REFUSAL.search(text))
+
+
+def _capped_reply(result: Any, *, check_message: bool) -> Any:  # noqa: ANN401 - whatever the structured model returns
+    """Unwraps an ``include_raw`` result, raising for a cut-off reply or one that did not parse.
+
+    With ``check_message`` a plain message is checked too: a model the structured wrapper could
+    not be built for returns its message as is.
+    """
+    if not (isinstance(result, dict) and "raw" in result and "parsed" in result):
+        if check_message and isinstance(result, BaseMessage) and is_truncated(result):
+            _raise_oversized_number(result)
+            raise TruncatedReplyError("the reply reached its output-token limit")
+        return result
+    error = result.get("parsing_error")
+    # A runaway number often runs on until the cap: it is a runaway, not an ordinary cut-off.
+    if error is not None and _is_oversized_number(error):
+        raise error
+    if is_truncated(result.get("raw")):
+        raise TruncatedReplyError("the reply reached its output-token limit")
+    if error is not None:
+        raise error
+    parsed = result.get("parsed")
+    return parsed if parsed is not None else result.get("raw")
+
+
+def _raise_oversized_number(message: BaseMessage) -> None:
+    """Raises the parser's ``ValueError`` when a cut-off message's JSON stops inside a number too long to read."""
+    try:
+        json.loads(cleanup_content(coerce_message_content_to_text(message.content)))
+    except ValueError as exc:
+        if _is_oversized_number(exc):
+            raise
+    except Exception:  # any other failure is an ordinary cut-off reply
+        pass
+
+
+def answer_error_class(exc: BaseException) -> str | None:
+    """``bad_request`` for a model answer that did not fit the schema; None lets ``classify_error`` decide."""
+    return "bad_request" if isinstance(exc, _ANSWER_PARSE_ERRORS) or _is_oversized_number(exc) else None
+
+
 def _recover_structured_json_from_exception(
     error: Exception,
     schema: type[SchemaT],
@@ -1145,12 +1385,24 @@ async def invoke_with_structured_output_and_reflection(
     prompt_cache: CacheStrategy | None = None,
     on_cache_rejected: Callable[[frozenset[str]], None] | None = None,
     raise_unavailable: bool = False,
+    max_output_tokens: int | None = None,
+    raise_truncated: bool = False,
+    raise_oversized_number: bool = False,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
 
     With ``raise_unavailable`` a provider outage raises ``LLMUnavailableError`` instead of
     returning None, for callers that must tell an outage from output they cannot use.
+
+    With ``max_output_tokens`` each reply is capped (``with_output_cap``) and its stop reason
+    read. A reply cut off at its limit is not usable and is not asked for again (the same
+    request would stop at the same limit): the call returns None after one warning, or with
+    ``raise_truncated`` raises ``TruncatedReplyError`` for the caller to report.
+
+    A reply holding a number too long to read is not asked for again either: the call returns
+    None, or with ``raise_oversized_number`` raises ``OversizedNumberError``, for a caller that
+    would otherwise read None as "ask again".
 
     Args:
         llm: The LangChain chat model to use
@@ -1180,7 +1432,14 @@ async def invoke_with_structured_output_and_reflection(
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
     """
-    llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+    capped = with_output_cap(llm, max_output_tokens)
+    # The raw reply carries the stop reason, which tells a cut-off reply from a whole one.
+    llm_with_structured_output = (
+        _apply_structured_output(capped, schema=schema, include_raw=True)
+        if capped is not None
+        else _apply_structured_output(llm, schema=schema)
+    )
+    cap_sent = capped is not None and capped is not llm
     provider = provider_key(llm)
     # Use the base llm: structured-output wrappers drop constructor callbacks;
     # get_llm_invoke_config reattaches them with Opik.
@@ -1191,21 +1450,34 @@ async def invoke_with_structured_output_and_reflection(
     dropped: frozenset[str] = frozenset()
 
     async def _call(request: list) -> Any:  # noqa: ANN401 - whatever the structured model returns
-        nonlocal cache, dropped
+        nonlocal cache, dropped, llm_with_structured_output, cap_sent
         # Each refusal names a parameter this request still carries, and the
         # resend drops it, so the loop ends.
         while True:
             try:
-                return await _ainvoke_throttled(
+                return _capped_reply(await _ainvoke_throttled(
                     llm_with_structured_output, without_cache_markers(request, dropped) if dropped else request,
                     config=invoke_config, provider=provider, call_timeout=call_timeout,
                     call_kwargs={name: value for name, value in kwargs.items() if name not in dropped},
-                )
+                ), check_message=capped is not None)
             except Exception as exc:
+                if cap_sent and _is_output_limit_refusal(exc):
+                    # The model's real limit is below the one on record. Sent once more without
+                    # the cap, and every later call of this one too, so this happens once.
+                    logger.warning(
+                        "The %s request's output cap was refused; resending without it", schema.__name__,
+                        extra={"error_type": type(exc).__name__},
+                    )
+                    cap_sent = False
+                    llm_with_structured_output = _apply_structured_output(llm, schema=schema, include_raw=True)
+                    continue
                 refused = refused_cache_params(exc, sent - dropped)
                 if not refused:
                     raise
-                logger.warning("Prompt-cache parameters %s rejected; resending without them: %s", sorted(refused), exc)
+                logger.warning(
+                    "Prompt-cache parameters %s rejected; resending without them", sorted(refused),
+                    extra={"error_type": type(exc).__name__},
+                )
                 if on_cache_rejected is not None:
                     on_cache_rejected(refused)
                 else:
@@ -1225,9 +1497,28 @@ async def invoke_with_structured_output_and_reflection(
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
             return recovered
-        logger.error(f"LLM invocation failed: {type(e).__name__}: {e}")
+        if _is_oversized_number(e):
+            # A reply that does not fit the schema, not a failed call. It is not asked for
+            # again: there is no reply text to show the model, and a second runaway reply
+            # costs a full output limit again. The message names only the digit count.
+            logger.warning(
+                "The %s reply holds a number too long to read (%s); the reply is discarded",
+                schema.__name__, _oversized_detail(e),
+            )
+            if raise_oversized_number:
+                raise OversizedNumberError(f"the {schema.__name__} reply holds a number too long to read") from e
+            return None
+        if isinstance(e, TruncatedReplyError):
+            if raise_truncated:
+                raise
+            logger.warning("The %s reply was cut off at its output cap; the reply is discarded", schema.__name__)
+            return None
         if raise_call_errors:
             raise
+        log_failure(
+            logger, "structured_llm.failed", e, include_error_text=False,
+            error_class=answer_error_class(e), schema=schema.__name__, attempt=0,
+        )
         return None
 
     # Try to parse the response
@@ -1273,6 +1564,15 @@ async def invoke_with_structured_output_and_reflection(
         return parsed_response
 
     except Exception as parse_error:
+        if _is_oversized_number(parse_error):
+            # Not reflected: the reflection would resend the runaway digits and ask for them again.
+            logger.warning(
+                "The %s reply holds a number too long to read (%s); the reply is discarded",
+                schema.__name__, _oversized_detail(parse_error),
+            )
+            if raise_oversized_number:
+                raise OversizedNumberError(f"the {schema.__name__} reply holds a number too long to read") from parse_error
+            return None
         # Attempt reflection: ask LLM to correct its response
         logger.warning(f"Initial parse failed: {parse_error}. Attempting reflection...")
 
@@ -1329,20 +1629,33 @@ Respond only with valid JSON that matches the schema."""
             except Exception as reflection_error:
                 if raise_unavailable and isinstance(reflection_error, LLMUnavailableError):
                     raise
+                if raise_truncated and isinstance(reflection_error, TruncatedReplyError):
+                    raise
+                if isinstance(reflection_error, TruncatedReplyError) or _is_oversized_number(reflection_error):
+                    # Asking again would stop at the same cap, or run away again.
+                    logger.warning(
+                        "The %s reflection reply was cut off or holds a number too long to read; giving up",
+                        schema.__name__,
+                    )
+                    if raise_oversized_number and _is_oversized_number(reflection_error):
+                        raise OversizedNumberError(
+                            f"the {schema.__name__} reflection reply holds a number too long to read"
+                        ) from reflection_error
+                    return None
                 recovered = _recover_structured_json_from_exception(reflection_error, schema)
                 if recovered is not None:
                     logger.info(
                         "Recovered schema-valid structured output from reflection invocation error"
                     )
                     return recovered
-                logger.warning(
-                    f"Reflection attempt {attempt + 1} failed: "
-                    f"{type(reflection_error).__name__}: {reflection_error}"
-                )
                 # An earlier timeout still leaves a retry; one that ends the loop means the
                 # last word was a starved call, not a reply that did not fit the schema.
                 if raise_call_errors and isinstance(reflection_error, TimeoutError) and attempt == max_retries - 1:
                     raise
+                log_failure(
+                    logger, "structured_llm.failed", reflection_error, include_error_text=False,
+                    error_class=answer_error_class(reflection_error), schema=schema.__name__, attempt=attempt + 1,
+                )
                 # A call that failed outright left no reply to correct, and
                 # the pending request already asks for valid JSON.
                 if attempt < max_retries - 1 and reflection_content is not None:
@@ -1351,115 +1664,3 @@ Respond only with valid JSON that matches the schema."""
 
         logger.error("All reflection attempts failed")
         return None
-
-
-async def invoke_with_count_validation_and_reflection(
-    llm: BaseChatModel,
-    messages: list,
-    schema: type[SchemaT],
-    count_field: str,
-    expected_count: int,
-    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
-) -> SchemaT | None:
-    """
-    Invoke LLM with structured output and validate that a list field has the expected length.
-
-    If the LLM returns the wrong number of items, performs one reflection to correct it.
-
-    Args:
-        llm: The LangChain chat model to use
-        messages: List of messages to send to the LLM
-        schema: Pydantic model class to validate the response against
-        count_field: Name of the list field on *schema* whose length must match
-        expected_count: Expected length of that field
-        max_retries: Maximum number of reflection retries on parse failure (default: 2)
-
-    Returns:
-        Validated schema instance with correct count, or None if validation fails
-    """
-    # First, try to get a parsed response using the standard reflection function
-    parsed_response = await invoke_with_structured_output_and_reflection(
-        llm, messages, schema, max_retries
-    )
-
-    if parsed_response is None:
-        logger.warning(f"Failed to parse {schema.__name__} after initial attempts")
-        return None
-
-    # Validate the count matches expected
-    actual_count = len(getattr(parsed_response, count_field) or [])
-
-    if actual_count == expected_count:
-        logger.debug(f"Count validation passed: {actual_count} {count_field}")
-        return parsed_response
-
-    # Count mismatch detected - perform reflection to correct it
-    logger.warning(
-        f"Count mismatch: LLM returned {actual_count} {count_field} "
-        f"but {expected_count} were expected. Attempting reflection..."
-    )
-
-    # Build reflection messages
-    reflection_messages = list(messages)
-    reflection_messages.append(
-        AIMessage(content=json.dumps(parsed_response.model_dump()))
-    )
-
-    reflection_prompt = f"""Your previous response contained {actual_count} {count_field}, but exactly {expected_count} {count_field} are required.
-
-CRITICAL: You must provide EXACTLY {expected_count} {count_field} - one for each row, in the same order they were provided.
-
-Please correct your response to include exactly {expected_count} {count_field}. Do not skip any rows, do not combine rows, and do not split rows.
-
-Respond with a valid JSON object:
-{{
-    "{count_field}": [
-        "Description for row 1",
-        "Description for row 2",
-        ...
-        "Description for row {expected_count}"
-    ]
-}}"""
-
-    reflection_messages.append(HumanMessage(content=reflection_prompt))
-
-    # Try reflection once (per user preference: 1 reflection attempt for count mismatches)
-    try:
-        reflection_response = await invoke_with_structured_output_and_reflection(
-            llm, reflection_messages, schema, max_retries=1
-        )
-
-        if reflection_response is None:
-            logger.error("Reflection failed to parse response")
-            return None
-
-        # Validate the count again
-        reflection_count = len(getattr(reflection_response, count_field) or [])
-
-        if reflection_count == expected_count:
-            logger.info(
-                f"Reflection successful: corrected from {actual_count} to {reflection_count} {count_field}"
-            )
-            return reflection_response
-        else:
-            logger.error(
-                f"Reflection failed: still have {reflection_count} {count_field} "
-                f"instead of {expected_count}"
-            )
-            return None
-
-    except Exception as e:
-        logger.error(f"Reflection attempt failed with error: {e}")
-        return None
-
-
-async def invoke_with_row_descriptions_and_reflection(
-    llm: BaseChatModel,
-    messages: list,
-    expected_count: int,
-    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
-) -> RowDescriptions | None:
-    """Invoke LLM for row descriptions and validate the count matches expected."""
-    return await invoke_with_count_validation_and_reflection(
-        llm, messages, RowDescriptions, "descriptions", expected_count, max_retries
-    )

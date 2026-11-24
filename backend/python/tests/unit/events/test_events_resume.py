@@ -23,6 +23,7 @@ from app.modules.indexing.embed_resume import (
     end_attempt,
 )
 from app.modules.pipeline.fingerprint import content_revision
+from tests.unit.attempt_start import attempt_start_via
 from tests.unit.events.test_events import (
     DedupDecision,
     _drain,
@@ -253,6 +254,7 @@ class TestAMarkerDoesNotOutliveItsEvent:
         graph = handler.event_processor.graph_provider
         graph.get_document = AsyncMock(return_value={"_key": "rec-1", "extractionStatus": "NOT_STARTED"})
         graph.update_node = AsyncMock(return_value=True)
+        graph.write_attempt_start = attempt_start_via(graph)
 
         await handler._RecordEventHandler__update_document_status("rec-1", status, "NOT_STARTED")
 

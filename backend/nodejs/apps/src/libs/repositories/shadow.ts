@@ -17,6 +17,24 @@ export const shadowEnabled = (): boolean =>
   (process.env.DOC_STORE ?? '').trim().toLowerCase() === 'shadow';
 
 /**
+ * Every list in a JSON answer in one order: objects by `_id`, values by themselves. For the group reads, whose types promise no
+ * order for the groups or their members, so an order that differs between the stores is not reported as a difference.
+ */
+function unordered(v: unknown): unknown {
+  const key = (x: unknown): string =>
+    String(x !== null && typeof x === 'object' && '_id' in x ? x._id : x);
+  const walk = (x: unknown): unknown =>
+    Array.isArray(x)
+      ? x
+          .map(walk)
+          .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
+      : x !== null && typeof x === 'object'
+        ? Object.fromEntries(Object.entries(x).map(([k, y]) => [k, walk(y)]))
+        : x;
+  return v === undefined ? v : walk(JSON.parse(JSON.stringify(v)));
+}
+
+/**
  * The repository methods that only read, listed by name (a name prefix is not enough: `issueAccess` starts with "is" and writes).
  * A call not in the list is passed through untouched, so a new read method is shadowed only once it is added here; the shadow
  * test fails for a method of a repository interface that looks like a read and is missing.
@@ -31,6 +49,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'countSince',
   'countUsersByOrg',
   'counts',
+  'exists',
   'existsLiveEmail',
   'find',
   'findActiveByEmail',
@@ -90,6 +109,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'getOnboardingStatus',
   'getRoleSnapshot',
   'getServiceAccount',
+  'groupsOfUser',
   'hasRemovedAccount',
   'isAllowed',
   'list',
@@ -144,6 +164,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'listVisibleSummaries',
   'listWithGroups',
   'listWithLinkedKbForMember',
+  'memberIdsOfTypes',
   'pageByConnector',
   'pageFlatEnvelopes',
   'resolveClient',
@@ -153,6 +174,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'resolveToken',
   'searchArchived',
   'stats',
+  'summariesForUsers',
 ]);
 /**
  * What of an answer is compared, per `repo.method` or per method, applied to BOTH answers before the diff. The write counters and
@@ -160,6 +182,9 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
  * PostgreSQL keys a credential by its account and keeps no Mongoose version (credential/types.ts), so those two are not compared.
  */
 export const COMPARE_VIEW: Record<string, (v: unknown) => unknown> = {
+  groupsOfUser: unordered,
+  memberIdsOfTypes: unordered,
+  summariesForUsers: unordered,
   getWithFingerprintState: (v) => (v as { row?: unknown } | null)?.row ?? null,
   'identity.find': (v) => {
     if (v === null || typeof v !== 'object') return v;

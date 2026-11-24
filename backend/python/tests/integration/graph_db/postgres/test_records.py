@@ -51,7 +51,9 @@ CALLS = {
     "get_typed_records_batch": (["r"],), "get_virtual_record_ids_for_record_ids": (["r"],), "get_virtual_record_ids_in_use": (["v"],),
     "get_virtual_record_holders": (["v"], "o"),
     "batch_upsert_records": ([plain("o", "r")],), "create_record_relation": ("a", "b", "BOOKMARK"),
+    "write_attempt_start": ("r", {"indexingStatus": "IN_PROGRESS"}),
     "compare_and_set_indexing_status": (["r"], "QUEUED", "COMPLETED"), "update_indexing_status_for_record_ids": (["r"], "QUEUED"),
+    "update_record_fields_for_ids": (["r"], {"refreshIntentId": "i"}), "get_records_with_refresh_intent": ("org",),
     "has_records_indexed_since": ("c1", 0), "get_sync_point": ("k", "syncPoints"), "upsert_sync_point": ("k", {}, "syncPoints"),
     "remove_sync_point": ("k", "syncPoints"), "_delete_records_with_their_types": (["r"],),
     "page_record_ids_by_type": ("o", ["FILE"]),
@@ -80,6 +82,10 @@ async def test_a_record_is_written_with_its_type_document_and_read_back_typed(pg
     assert len(await p.get_edges_from_node("records/r1", "isOfType")) == 1 and await p.get_edges_from_node("records/r2", "isOfType") == []
     assert await p.get_record_by_id("r2") is None                      # no type document: Neo4j cannot build it either, and answers None
     assert await p.get_record_by_id("nope") is None
+    # Asked to raise, it gives the same answers: only a failed read raises, not a record that is missing or will not build.
+    assert isinstance(await p.get_record_by_id("r1", raise_on_error=True), CodeFileRecord)
+    assert await p.get_record_by_id("r2", raise_on_error=True) is None
+    assert await p.get_record_by_id("nope", raise_on_error=True) is None
     got = await p.get_typed_records_batch(["r1", "r2", "nope"])
     assert list(got) == ["r1"]                                          # what will not build is left out
 

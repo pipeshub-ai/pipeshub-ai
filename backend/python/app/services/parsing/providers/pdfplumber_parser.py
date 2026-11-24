@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.services.parsing.interface import (
     IParser,
@@ -11,6 +12,7 @@ from app.services.parsing.interface import (
     ParseResult,
     ParserProvider,
 )
+from app.services.paid_cache.orphan import RecordGone
 
 
 class PdfPlumberParser:
@@ -35,6 +37,9 @@ class PdfPlumberParser:
                 parsed_data,
                 skip_llm_enrichment=bool((config or {}).get("skip_table_enrichment")),
             )
+        except (NonRetryableError, RecordGone):
+            # A deliberate stop (a table model call refused for good, a record deleted mid-run) is not a file OCR could read better.
+            raise
         except Exception as e:
             # A ParseError lets SmartPDFParser fall back to OCR, as the in-process path does.
             raise ParseError(

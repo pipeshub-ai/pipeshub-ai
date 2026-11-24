@@ -17,6 +17,21 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('gitlab')).toBe('gitlab');
     expect(resolveConnectorType('GitLab')).toBe('gitlab');
     expect(resolveConnectorType('egnyte')).toBe('egnyte');
+    expect(resolveConnectorType('intercom')).toBe('intercom');
+    expect(resolveConnectorType('granola')).toBe('granola');
+    expect(resolveConnectorType('fireflies')).toBe('fireflies');
+    expect(resolveConnectorType('fathom')).toBe('fathom');
+    expect(resolveConnectorType('instantly')).toBe('instantly');
+    expect(resolveConnectorType('Instantly')).toBe('instantly');
+  });
+
+  it('matches Intercom, Granola, Fireflies, Fathom and Instantly as whole words only', () => {
+    expect(resolveConnectorType('Fathom MCP')).toBe('fathom');
+    expect(resolveConnectorType('Instantly MCP')).toBe('instantly');
+    expect(resolveConnectorType('my-fireflies-server')).toBe('fireflies');
+    expect(resolveConnectorType('my-instantly-server')).toBe('instantly');
+    expect(resolveConnectorType('Unfathomable Drive')).toBe('google-drive');
+    expect(resolveConnectorType('Intercomm')).toBe('generic');
   });
 
   it('maps the bare Google toolset slugs to their logos', () => {

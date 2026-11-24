@@ -104,7 +104,7 @@ async def listing(layer: GraphCheckLayer, world: World, viewer: str, filters: di
 
 def visible(reference: OracleLayer, world: World, viewer: str) -> dict[str, Any]:
     """The nodes the oracle lets the viewer list: groups and records that are live and not placeholders."""
-    nodes = {n.id: n for n in world.nodes if n.kind != "app" and not n.deleted and not n.placeholder}
+    nodes = {n.id: n for n in world.nodes if n.kind != "app" and not n.deleted and not n.placeholder and not n.access_only}
     verdicts = reference.explain(world, viewer, list(nodes))
     return {i: n for i, n in nodes.items() if verdicts[i].admitted}
 
@@ -188,7 +188,8 @@ def chain_tops(reference: OracleLayer, world: World, viewer: str, node: str) -> 
     granted = {reference._ns.local(i) for i in oracle.viewer(store, reference._ns.id(viewer), reference._ns.org).granted}
 
     def hier(n: Node) -> list[str]:
-        return [p.id for p in n.parents if p.rel in HIERARCHY]
+        # a group that carries access only is no parent a browse opens
+        return [p.id for p in n.parents if p.rel in HIERARCHY and not world.node(p.id).access_only]
 
     def own(n: Node) -> list[str]:
         return [g for g in (n.belongs if n.kind == "record" else hier(n)) if g != n.id and world.node(g).kind == "group"]
@@ -367,6 +368,35 @@ async def browse_pages(
     raise AssertionError("browse did not end")
 
 
+async def counts_from_the_second_page(
+    layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str, page_size: int,
+) -> tuple[list[Any], list[tuple[int, int, int, dict[str, int]]]]:
+    """Every page of opening ``node``, the first asked without counts and the rest with them: the rows, and for each later page the sum of its
+    counts by type, its ``counts.total``, its ``totalItems`` and its counts by type (by node type)."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+
+    labels = {"records": "record", "folders": "folder", "groups": "recordGroup", "apps": "app"}
+    ns = await layer._ns(world)
+    service = KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config())
+    args = {"user_id": ns.id(viewer), "org_id": ns.org, "parent_id": ns.id(node), "parent_type": parent_type, "limit": page_size,
+            "sort_by": "name", "sort_order": "asc"}
+    first = await service.get_nodes(**args)
+    assert first.success and first.counts is None, first.error
+    items, cursor, pages = list(first.items), first.pagination.nextCursor, []
+    for _ in range(MAX_PAGES):
+        if not cursor:
+            return items, pages
+        page = await service.get_nodes(**args, cursor=cursor, include=["counts"])
+        assert page.success, page.error
+        items += page.items
+        by_type = {labels[c.label]: c.count for c in page.counts.items}
+        pages.append((sum(by_type.values()), page.counts.total, page.pagination.totalItems, by_type))
+        cursor = page.pagination.nextCursor
+    raise AssertionError("browse did not end")
+
+
 async def _browse(
     layer: GraphCheckLayer, reference: OracleLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str,
 ) -> list[KhFinding]:
@@ -395,7 +425,8 @@ async def _browse(
         if node not in tops_of:
             tops_of[node] = chain_tops(reference, world, viewer, node)
         tops = tops_of[node]
-        return [n for n in world.nodes if not n.deleted and (n.id in tops or any(p.id == node and p.rel in HIERARCHY for p in n.parents))]
+        return [n for n in world.nodes if not n.deleted and not n.access_only
+                and (n.id in tops or any(p.id == node and p.rel in HIERARCHY for p in n.parents))]
 
     def past_the_sample(stub: str, below: dict[str, Any]) -> bool:
         """Whether a browse leaves the stub ``stub`` out only for the sample its listing asks the check about (`_KH_UNDECIDED_MAX`, the first by id

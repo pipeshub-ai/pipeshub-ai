@@ -38,6 +38,7 @@ from tests.unit.agents.mcp.refresh_failures import (
     TOKEN_HOST,
     lock_contention_error,
     token_endpoint_error,
+    token_request_error,
 )
 
 
@@ -814,6 +815,23 @@ class TestExecuteFailure:
             "Try again in a few minutes."
         )
         assert BODY_SECRET not in output.error and TOKEN_HOST not in output.error
+
+    @pytest.mark.parametrize(("raised", "error_class"), [
+        (httpx.ConnectError("All connection attempts failed"), "unavailable"),
+        (httpx.ReadTimeout("timed out"), "timeout"),
+    ], ids=["refused", "timed-out"])
+    async def test_a_provider_that_never_answered_the_refresh_asks_to_try_again(
+        self, raised: Exception, error_class: str,
+    ) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=await token_request_error(raised)))
+
+        output = await adapter.execute(query="PA")
+
+        assert output.error == (
+            "The sign-in to the Jira MCP MCP server couldn't be renewed: its sign-in provider is down or busy. "
+            "Try again in a few minutes."
+        )
+        assert output.end_fields == {"error_class": error_class, "mcp_reason": "unreachable", "status": None, "level": None}
 
     async def test_another_processs_refresh_asks_to_try_again(self) -> None:
         adapter = _make_adapter(_FakeSessionManager(exc=await lock_contention_error()))

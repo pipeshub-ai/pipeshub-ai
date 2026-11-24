@@ -1,94 +1,66 @@
 'use client';
 
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text } from '@radix-ui/themes';
+import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-
-// ========================================
-// Types
-// ========================================
+import { McpServerIcon } from '../../components/mcp-server-icon';
 
 interface McpServerCardProps {
   title: string;
   description: string;
   iconUrl?: string | null;
-  /** 'registry' shows "+ Setup". 'active' shows an instance-count badge + "+". */
-  variant: 'registry' | 'active';
-  instanceCount?: number;
-  /** Fired when "+ Setup" (registry) is clicked. */
-  onSetup?: () => void;
-  /** Fired when "+" (active — add another instance of this type) is clicked. */
-  onAddInstance?: () => void;
-  /** Fired when the badge / card body (active) is clicked to manage existing instance(s). */
-  onManage?: () => void;
-  /** Shown under the description, e.g. that the entry was replaced. */
-  notice?: string | null;
-  /** False hides "+" on an active card, for an entry that makes no new servers. */
-  canAddInstance?: boolean;
+  typeId?: string;
+  /** The category's translated name, under the title. */
+  categoryLabel?: string;
+  /** The capability a search matched; shown in place of the description to say why it's listed. */
+  matchedCapability?: string;
+  /** How many servers this person already has from this entry; they can still add another. */
+  addedCount?: number;
+  /** Opens the entry's details; the title becomes its link. */
+  onOpen?: () => void;
+  onSetup: () => void;
 }
 
-// ========================================
-// Component
-// ========================================
-
+/** A catalog entry that can be added. */
 export function McpServerCard({
   title,
   description,
   iconUrl,
-  variant,
-  instanceCount = 0,
+  typeId,
+  categoryLabel,
+  matchedCapability,
+  addedCount = 0,
+  onOpen,
   onSetup,
-  onAddInstance,
-  onManage,
-  notice,
-  canAddInstance = true,
 }: McpServerCardProps) {
-  const [isHovered, setIsHovered] = useState(false);
-
-  const isManageable = variant === 'active';
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
 
   return (
     <Flex
       direction="column"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      onClick={() => {
-        if (isManageable) onManage?.();
-      }}
-      role={isManageable ? 'button' : undefined}
-      tabIndex={isManageable ? 0 : undefined}
-      onKeyDown={
-        isManageable
-          ? (e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                onManage?.();
-              }
-            }
-          : undefined
-      }
+      gap="3"
+      data-testid="mcp-catalog-card"
+      onClick={onOpen}
       style={{
         width: '100%',
-        backgroundColor: isHovered ? 'var(--olive-3)' : 'var(--olive-2)',
+        height: '100%',
+        backgroundColor: 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
-        borderRadius: 'var(--radius-1)',
-        padding: 12,
-        gap: 24,
-        cursor: variant === 'active' ? 'pointer' : 'default',
-        transition: 'background-color 150ms ease',
+        borderRadius: 'var(--radius-2)',
+        padding: 'var(--space-3)',
+        cursor: onOpen ? 'pointer' : undefined,
       }}
     >
-      <Flex direction="column" gap="3" style={{ width: '100%', flex: 1 }}>
+      <Flex align="center" gap="2" style={{ minWidth: 0 }}>
         <Flex
           align="center"
           justify="center"
           style={{
-            width: 32,
-            height: 32,
-            padding: 8,
-            backgroundColor: 'var(--gray-a2)',
+            width: 28,
+            height: 28,
+            backgroundColor: 'var(--gray-a3)',
             borderRadius: 'var(--radius-1)',
             flexShrink: 0,
             overflow: 'hidden',
@@ -97,170 +69,88 @@ export function McpServerCard({
           {iconUrl ? (
             <img src={iconUrl} alt="" width={16} height={16} />
           ) : (
-            <MaterialIcon name="hub" size={16} color="var(--gray-10)" />
+            <McpServerIcon typeId={typeId} name={title} size={16} color="var(--gray-10)" />
           )}
         </Flex>
-
-        <Flex direction="column" gap="1" style={{ width: '100%' }}>
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {title}
-          </Text>
-          <Text
-            size="2"
-            style={{
-              color: 'var(--gray-11)',
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-              overflow: 'hidden',
-            }}
-          >
-            {description}
-          </Text>
-          {notice ? (
-            <Text size="1" style={{ color: 'var(--amber-11)' }}>
-              {notice}
+        <Flex direction="column" style={{ minWidth: 0 }}>
+          {onOpen ? (
+            // The title is the card's link, so the Add button isn't nested in another control.
+            <button
+              type="button"
+              role="link"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpen();
+              }}
+              className="mcp-card-title"
+              style={{ all: 'unset', cursor: 'pointer', minWidth: 0 }}
+            >
+              <Text size="2" weight="medium" truncate as="div" style={{ color: 'var(--gray-12)' }}>
+                {title}
+              </Text>
+            </button>
+          ) : (
+            <Text size="2" weight="medium" truncate style={{ color: 'var(--gray-12)' }}>
+              {title}
             </Text>
-          ) : null}
+          )}
+          {categoryLabel && (
+            <Text size="1" truncate style={{ color: 'var(--gray-10)' }}>
+              {categoryLabel}
+            </Text>
+          )}
         </Flex>
       </Flex>
 
-      {variant === 'registry' ? (
-        <SetupButton onClick={onSetup} />
+      {matchedCapability ? (
+        <Flex align="start" gap="1" data-testid="mcp-catalog-match">
+          <MaterialIcon name="check_circle" size={15} color="var(--accent-11)" />
+          <Text size="1" weight="medium" style={{ color: 'var(--accent-11)' }}>
+            {matchedCapability}
+          </Text>
+        </Flex>
       ) : (
-        <InstanceCountBar
-          count={instanceCount}
-          onAdd={canAddInstance ? onAddInstance : undefined}
-          onBadgeClick={onManage}
-        />
-      )}
-    </Flex>
-  );
-}
-
-// ========================================
-// Sub-components
-// ========================================
-
-function SetupButton({ onClick }: { onClick?: () => void }) {
-  const isMobile = useIsMobile();
-  const [isHovered, setIsHovered] = useState(false);
-  const { t } = useTranslation();
-
-  return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick?.();
-      }}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        appearance: 'none',
-        margin: 0,
-        font: 'inherit',
-        outline: 'none',
-        border: 'none',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-        width: '100%',
-        height: isMobile ? 44 : 32,
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: isHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
-        cursor: 'pointer',
-        transition: 'background-color 150ms ease',
-      }}
-    >
-      <MaterialIcon name="add" size={16} color="var(--gray-11)" />
-      <span style={{ fontSize: 14, fontWeight: 500, lineHeight: '20px', color: 'var(--gray-11)' }}>
-        {t('workspace.actions.cta.setup')}
-      </span>
-    </button>
-  );
-}
-
-/** Instance-count badge + "+" add button, mirrors connectors' `ActiveInstanceBar` (single count only). */
-function InstanceCountBar({
-  count,
-  onAdd,
-  onBadgeClick,
-}: {
-  count: number;
-  onAdd?: () => void;
-  onBadgeClick?: () => void;
-}) {
-  const isMobile = useIsMobile();
-  const [isAddHovered, setIsAddHovered] = useState(false);
-  const { t } = useTranslation();
-
-  return (
-    <Flex align="center" gap="2" style={{ width: '100%' }}>
-      <Flex
-        align="center"
-        justify="center"
-        onClick={(e) => {
-          e.stopPropagation();
-          onBadgeClick?.();
-        }}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            e.stopPropagation();
-            onBadgeClick?.();
-          }
-        }}
-        style={{
-          flex: 1,
-          height: isMobile ? 44 : 32, // same as the Set up and + buttons beside it
-          borderRadius: 'var(--radius-2)',
-          backgroundColor: 'var(--green-a3)',
-          padding: '0 8px',
-          cursor: 'pointer',
-        }}
-      >
-        <Text size="1" weight="medium" style={{ color: 'var(--green-a11)', whiteSpace: 'nowrap' }}>
-          {count === 1
-            ? t('workspace.actions.card.activeOne')
-            : t('workspace.actions.card.activeMany', { count })}
-        </Text>
-      </Flex>
-
-      {onAdd ? (
-        <button
-          type="button"
-          aria-label={t('workspace.mcpServers.details.addInstance')}
-          onClick={(e) => {
-            e.stopPropagation();
-            onAdd();
-          }}
-          onMouseEnter={() => setIsAddHovered(true)}
-          onMouseLeave={() => setIsAddHovered(false)}
+        <Text
+          size="1"
           style={{
-            appearance: 'none',
-            margin: 0,
-            padding: 0,
-            border: 'none',
-            outline: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: isMobile ? 44 : 32,
-            height: isMobile ? 44 : 32,
-            borderRadius: 'var(--radius-2)',
-            backgroundColor: isAddHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
-            cursor: 'pointer',
-            flexShrink: 0,
-            transition: 'background-color 150ms ease',
+            color: 'var(--gray-11)',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            minHeight: 32,
           }}
         >
+          {description}
+        </Text>
+      )}
+
+      <Flex align="center" justify="between" gap="2" wrap="wrap" style={{ marginTop: 'auto' }}>
+        <Flex align="center" gap="1">
+          {addedCount > 0 && (
+            <>
+              <MaterialIcon name="check" size={14} color="var(--gray-10)" />
+              <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                {t('workspace.mcpServers.catalog.added')}
+              </Text>
+            </>
+          )}
+        </Flex>
+        <Button
+          size={isMobile ? '3' : '2'}
+          variant="soft"
+          color="gray"
+          className="touch-hit"
+          onClick={(e) => {
+            e.stopPropagation();
+            onSetup();
+          }}
+          style={{ cursor: 'pointer' }}
+        >
           <MaterialIcon name="add" size={16} color="var(--gray-11)" />
-        </button>
-      ) : null}
+          {addedCount > 0 ? t('workspace.mcpServers.catalog.addAnother') : t('workspace.actions.cta.setup')}
+        </Button>
+      </Flex>
     </Flex>
   );
 }

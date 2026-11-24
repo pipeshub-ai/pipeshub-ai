@@ -22,6 +22,7 @@ vi.mock('@/config', async () => {
   const auth = await vi.importActual<typeof import('@/lib/store/auth-store')>('@/lib/store/auth-store');
   return {
     useAuthStore: auth.useAuthStore,
+    readStoredRefreshToken: auth.readStoredRefreshToken,
     logoutAndRedirect: () => {
       logoutAndRedirect();
       auth.useAuthStore.getState().logout();

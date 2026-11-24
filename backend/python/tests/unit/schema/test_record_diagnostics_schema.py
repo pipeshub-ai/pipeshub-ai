@@ -2,8 +2,8 @@
 
 `firstQueuedAt`, `failedAt`, `indexingAttempts` and `pageCount` are legal on every
 store (the Arango schema is strict, and Neo4j and PostgreSQL validate against the
-same registry) and are never returned by the record endpoint. Nothing writes them
-yet, so a record without them must stay valid everywhere.
+same registry) and are never returned by the record endpoint. The parse and the page limit write
+``pageCount``; nothing else writes them yet, so a record without them must stay valid everywhere.
 """
 
 from __future__ import annotations
@@ -144,8 +144,8 @@ class TestEntity:
         assert set(FIELDS) <= INTERNAL_RECORD_FIELDS
 
 
-# The writers come later (a separate change). Until then no application code may set the four
-# keys, or a record would carry them under a schema an older process rejects.
+# Only these files write the four keys (everything else goes through ``record_diagnostics``). A new writer is
+# added here on purpose and in the writer inventory (tests/unit/modules/indexing/status_writer_sites.py).
 _REPO = Path(__file__).resolve().parents[5]
 _APP = _REPO / "backend" / "python" / "app"
 _NODE_SRC = _REPO / "backend" / "nodejs" / "apps" / "src"
@@ -153,6 +153,20 @@ _ALLOWED = {
     _APP / "schema" / "arango" / "documents.py",
     _APP / "services" / "graph_db" / "common" / "utils.py",
     _APP / "models" / "entities.py",
+    _APP / "modules" / "indexing" / "record_diagnostics.py",
+    _APP / "modules" / "indexing" / "parse_now_marker.py",
+    _APP / "modules" / "transformers" / "sink_orchestrator.py",
+    _APP / "events" / "events.py",
+    _APP / "events" / "processor.py",
+    _APP / "api" / "routes" / "chatbot.py",
+    _APP / "services" / "messaging" / "kafka" / "handlers" / "record.py",
+    _APP / "connectors" / "core" / "base" / "data_processor" / "data_source_entities_processor.py",
+    _APP / "services" / "graph_db" / "arango" / "arango_http_provider.py",
+    _APP / "services" / "graph_db" / "neo4j" / "neo4j_provider.py",
+    _APP / "services" / "graph_db" / "postgres" / "trash.py",
+    # The page limit records the page count it took, and the start-up audit reads it back.
+    _APP / "modules" / "indexing" / "page_limit.py",
+    _APP / "modules" / "indexing" / "pdf_page_limit_audit.py",
 }
 _ENTITY_ATTRIBUTES = {"first_queued_at", "indexing_attempts"}
 #: The stored names and the entity names, in any string: a dict key, a subscript, a keyword
@@ -191,7 +205,7 @@ def _writers(source: str) -> list[int]:
     return hits
 
 
-def test_no_application_code_writes_the_fields_yet() -> None:
+def test_only_the_listed_files_write_the_fields() -> None:
     offenders = {
         str(path.relative_to(_APP)): lines
         for path in _APP.rglob("*.py")

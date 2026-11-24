@@ -31,6 +31,11 @@ services:
       # The record budgets the app applies (each parse request also carries its own): the same values as the app.
       - RECORD_PROCESSING_TIMEOUT=${RECORD_PROCESSING_TIMEOUT:-}
       - PDF_RECORD_PROCESSING_TIMEOUT=${PDF_RECORD_PROCESSING_TIMEOUT:-}
+      # The paid-result cache settings of the app: the same values (empty keeps the defaults).
+      - PAID_CACHE=${PAID_CACHE:-}
+      - PAID_CACHE_WRITE=${PAID_CACHE_WRITE:-}
+      # The same Docling table-structure mode as the app (this container runs Docling locally).
+      - PDF_DOCLING_TABLE_MODE=${PDF_DOCLING_TABLE_MODE:-accurate}
       # Model credentials and endpoints the parser may need when a saved model configuration omits them
       # (OCR and table summaries run here): the same values as the app.
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
@@ -62,6 +67,7 @@ services:
       # The same outbound-address policy as the app, for the model endpoints this service calls.
       - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_CACHE_URL=${REDIS_CACHE_URL:-}
       - ETCD_URL=http://etcd:2379
       - ETCD_HOST=etcd
       - LOG_LEVEL=${LOG_LEVEL:-info}

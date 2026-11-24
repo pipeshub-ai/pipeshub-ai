@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Final, Literal
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
 
-REGISTRY_VERSION: Final = 2
+REGISTRY_VERSION: Final = 4
 
 Tier = Literal["heavy", "light"]
 MimeRole = Literal["gate", "parse", "tier", "kind", "ext_hint", "code", "reconcile", "ooxml"]
@@ -247,7 +247,7 @@ _MIME_ROLES: dict[str, frozenset[MimeRole]] = {
     "application/x-rtf": _ALL,
     "text/x-log": _ALL,
     "text/x-cfg": _ALL,
-    "application/vnd.ms-powerpoint.presentation.macroEnabled.12": _OOXML,
+    "application/vnd.ms-powerpoint.presentation.macroEnabled.12": _roles("gate", "parse", "tier", "kind", "ooxml"),
 }
 
 # Mime -> extension hints that are not the owning type's first extension, keyed exactly as the
@@ -521,6 +521,11 @@ FILE_TYPES: tuple[FileType, ...] = (
     _new(key="potx", format="potx", password_check_by_name=False, extensions=("potx",), mimes=(f"{_PPTX_BASE}.template",),
          tier="heavy", mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx",
          route=Route.PPTX, prep=Prep.OOXML_SLIDES, ooxml_container=True, blocks_like="pptx"),
+    # Read as the pptx it is: python-pptx opens a macro-enabled deck, so nothing rewrites it first.
+    _new(key="pptm", format="pptx", extensions=("pptm",),
+         mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), tier="heavy",
+         mime_tier="heavy", kind="docling_docx", mime_kind="docling_docx", route=Route.PPTX,
+         ooxml_container=True, blocks_like="pptx", since=3, route_since=4),
     # Exclude-only, in filter order.
     _exclude("zip", "application/zip", file_mime_map=True),
     _exclude("7z", "application/x-7z-compressed"),
@@ -565,9 +570,6 @@ FILE_TYPES: tuple[FileType, ...] = (
                               "tf", "tfvars")),
     _repo_text("css", "text/css"),
     _repo_text("sql", "application/sql"),
-    # An Office container only the password check knows.
-    FileType(key="pptm", extensions=("pptm",),
-             mimes=("application/vnd.ms-powerpoint.presentation.macroEnabled.12",), ooxml_container=True),
     # PipesHub's own types: connectors write these mimes, no file carries them.
     _internal("gmail", "text/gmail_content", "application/vnd.google-apps.gmail", format="html",
               mime_indexable=True, mime_tier="light", route=Route.GMAIL),
@@ -849,6 +851,26 @@ _FORMAT_BY_MIME: Final = {
     **{normalize_mime(m): ft.format for m, ft in _spellings("parse") if ft.format},
     **{m: ft.format for m, ft in _routed_spellings("format").items()},
 }
+_TIER_BY_FORMAT: Final = {ft.format: ft.tier or ft.mime_tier for ft in FILE_TYPES if ft.format and (ft.tier or ft.mime_tier)}
+
+
+def _kind_by_format() -> dict[str, str]:
+    """The kind of each parse format: its own type's (`txt` is text, though code read as text shares it), else the one
+    kind every type of that format has. A format with no kind (an image, epub, blocks) is left out."""
+    kinds: dict[str, set[str]] = {}
+    for ft in FILE_TYPES:
+        if ft.format and (ft.kind or ft.mime_kind):
+            kinds.setdefault(ft.format, set()).add(ft.kind or ft.mime_kind)  # type: ignore[arg-type]
+    index: dict[str, str] = {}
+    for fmt, found in kinds.items():
+        own = _BY_EXTENSION.get(fmt)
+        own_kind = own.kind or own.mime_kind if own is not None else None
+        if own_kind or len(found) == 1:
+            index[fmt] = own_kind or next(iter(found))
+    return index
+
+
+_KIND_BY_FORMAT: Final = _kind_by_format()
 
 
 # The mimes the dispatch matched before the registry's second version, each as it matched it
@@ -901,14 +923,23 @@ def _extension_decides(ft: FileType, mime_type: object) -> bool:
     return not ft.ext_wins or _new_type_wins(ft, mime_type)
 
 
-def tier(extension: str | None, mime_type: str | None) -> Tier:
-    """Parse tier: by extension, else by mime, else heavy (the safe side for an unknown format).
+def _labels_reader(extension: str | None, mime_type: str | None) -> Dispatch | None:
+    """The reader the labels select; none for a malformed mime (not a string), which the old rule judges as before."""
+    return labels_route(extension, mime_type) if isinstance(mime_type, str) or not mime_type else None
 
-    The mime is lower-cased before the extension is looked at, so a malformed mime fails the
-    same way whatever the extension.
+
+def tier(extension: str | None, mime_type: str | None) -> Tier:
+    """Parse tier: the tier of the reader the labels select (`labels_route`); for labels that select none, by
+    extension, else by mime, else heavy (the safe side for an unknown format).
+
+    Both labels are normalised before anything is looked up, so a malformed one fails the same way whatever the other.
     """
     mime_key = (mime_type or "").lower()
-    ft = _BY_EXTENSION.get(normalize_extension(extension))
+    ext_key = normalize_extension(extension)
+    reader = read_tier(_labels_reader(extension, mime_type))
+    if reader is not None:
+        return reader
+    ft = _BY_EXTENSION.get(ext_key)
     if ft is not None and ft.tier and _extension_decides(ft, mime_type):
         return ft.tier
     ft = _TIER_BY_MIME.get(mime_key) or _TIER_BY_MIME.get(normalize_mime(mime_key))
@@ -918,8 +949,13 @@ def tier(extension: str | None, mime_type: str | None) -> Tier:
 
 
 def kind(extension: str | None, mime_type: str | None) -> str | None:
-    """Parse kind: by extension, else by mime, else None."""
-    ft = _BY_EXTENSION.get(normalize_extension(extension))
+    """Parse kind: the kind of the reader the labels select (`labels_route`); for labels that select none, or a reader
+    with no kind, by extension, else by mime, else None. A malformed extension fails before anything is looked up."""
+    ext_key = normalize_extension(extension)
+    reader = read_kind(_labels_reader(extension, mime_type))
+    if reader is not None:
+        return reader
+    ft = _BY_EXTENSION.get(ext_key)
     if ft is not None and ft.kind and (_extension_decides(ft, mime_type) or ft.key in _KIND_BY_EXTENSION_BEFORE):
         return ft.kind
     mime_key = (mime_type or "").lower()
@@ -962,6 +998,16 @@ def ext_wins(extension: str | None) -> bool:
     """Whether the extension alone decides how the file is read."""
     ft = _ext_type(extension)
     return ft is not None and ft.ext_wins
+
+
+def service_extension(mime_type: str | None, extension: str | None, record_name: str | None) -> str | None:
+    """The extension a request to the parsing service carries: the file's own, else the mime's, else the name's suffix."""
+    if extension:
+        return extension
+    derived = extension_for_mime(mime_type)
+    if not derived and record_name and "." in record_name:
+        derived = record_name.rsplit(".", 1)[-1]
+    return derived
 
 
 def parse_format(mime_type: str | None, extension: str | None) -> str | None:
@@ -1063,22 +1109,38 @@ def _widened_route(mime_type: object, extension: object) -> Dispatch | None:
     return found
 
 
+def code_extension(extension: object, file_path: object, record_name: object) -> object:
+    """The extension the dispatch reads a record by: its own, else its path's or its name's (lower case).
+
+    A CODE_FILE's mime is not trustworthy (repository walkers default it to text/plain) and a
+    connector does not always fill `extension`, so the path and the name stand in for it. The
+    record's own value stays intact for reconciliation, tier and generic dispatch.
+    """
+    if extension and extension != "unknown":
+        return extension
+    for label in (file_path, record_name):
+        base = label.rsplit("/", 1)[-1] if isinstance(label, str) else ""
+        if "." in base and base.rsplit(".", 1)[-1]:
+            return base.rsplit(".", 1)[-1].lower()
+    return extension
+
+
 def legacy_route(
     mime_type: str | None,
     extension: str | None,
     *,
-    code_extension: str | None,
+    code_ext: str | None,
     reads_as_code_file: bool,
     is_code_file_record: bool = False,
 ) -> Dispatch | None:
     """The in-process parser a file goes to, or None when there is none.
 
     Whatever the dispatch routed before keeps its route. A type the extension decides (from
-    *code_extension*, the extension with the file name as fallback) is read as itself where the
+    *code_ext*, the extension with the path and the file name as fallback) is read as itself where the
     mime named nothing read before, and a package stored as text/plain is read as itself, not as
     text. What still has no route is matched in any case, with parameters and alias spellings.
     """
-    winner = _ext_type(code_extension)
+    winner = _ext_type(code_ext)
     if (
         winner is not None
         and winner.ext_wins
@@ -1089,7 +1151,64 @@ def legacy_route(
     main = _main_route(mime_type, extension, reads_as_code_file=reads_as_code_file)
     if main is not None:
         return main
-    return _widened_route(mime_type, extension)
+    found = _widened_route(mime_type, extension)
+    if found is None and _names_nothing(mime_type):
+        # The name decides only where the mime says nothing about the bytes: the gate accepts a
+        # file by its name, and a specific mime, readable or not, is never overruled by it.
+        found = _widened_route(mime_type, code_ext)
+    return found
+
+
+def read_tier(dispatch: Dispatch | None) -> Tier | None:
+    """The parse tier of the in-process reader *dispatch* names (the code parser is light), or None for no reader.
+
+    A type with no tier of its own (a Google Docs export) is read as its parsing format (docx), so it has that one's.
+    """
+    if dispatch is None:
+        return None
+    ft = dispatch.file_type
+    if ft is None:
+        return "light"
+    return ft.tier or ft.mime_tier or format_tier(ft.format)
+
+
+def format_tier(format_key: str | None) -> Tier | None:
+    """The parse tier of the parsing service's reader for *format_key* (see `parse_format`), or None."""
+    return _TIER_BY_FORMAT.get(format_key) if format_key else None
+
+
+def kind_of_format(format_key: str | None) -> str | None:
+    """The parse kind of the reader for *format_key* (see `parse_format`), or None for a format with no kind."""
+    return _KIND_BY_FORMAT.get(format_key) if format_key else None
+
+
+def read_kind(dispatch: Dispatch | None) -> str | None:
+    """The parse kind of the in-process reader *dispatch* names (the code parser's is ``code``), or None.
+
+    A type with no kind of its own (a Google export, Gmail) is read as its parsing format, so it has that one's.
+    """
+    if dispatch is None:
+        return None
+    ft = dispatch.file_type
+    if ft is None:
+        return "code"
+    return ft.kind or ft.mime_kind or kind_of_format(ft.format)
+
+
+def labels_route(
+    extension: object, mime_type: object, *, file_path: object = None, record_name: object = None,
+) -> Dispatch | None:
+    """The in-process reader a record event's labels select, before the record handler has read the record (so no
+    record type). The path and the name stand in for a missing extension, as they do for the reader."""
+    mime = mime_type if isinstance(mime_type, str) and mime_type else "unknown"
+    ext = extension if isinstance(extension, str) and extension else "unknown"
+    code_ext = code_extension(ext, file_path, record_name)
+    return legacy_route(mime, ext, code_ext=code_ext, reads_as_code_file=reads_as_source(mime, code_ext))
+
+
+def _names_nothing(mime_type: object) -> bool:
+    """Whether a mime says nothing about the bytes: absent, or a placeholder (`_UNNAMED_MIMES`)."""
+    return mime_type is None or (isinstance(mime_type, str) and normalize_mime(mime_type) in _UNNAMED_MIMES)
 
 
 GateRefusal = Literal["type", "disabled", "too_large"]
@@ -1143,6 +1262,10 @@ class GateDecision:
     # The .log/.cfg extension the size limit applies under: the record's own, or its name's when
     # the record carries none. None for any other file.
     limited_as: str | None = None
+    # The reader for a CODE_FILE accepted only as repository text: the dispatch reads its mime,
+    # which the gate did not judge. None for anything else. It is the gate's judgement, not always
+    # the reader the dispatch picks, so the dispatch uses it only where its own labels name none.
+    route: Dispatch | None = None
 
 
 def gate_decision(
@@ -1152,6 +1275,7 @@ def gate_decision(
     record_name: str | None,
     is_code_file: bool,
     code_file_extension: str | None,
+    file_path: object = None,
     size_bytes: object = None,
     disabled: frozenset[str] = frozenset(),
 ) -> GateDecision:
@@ -1164,8 +1288,9 @@ def gate_decision(
     anything is downloaded.
     """
     # The size rule follows the file's name when the record has no extension of its own (an
-    # event may carry an empty one); the reader is still chosen by the mime, as before.
+    # event may carry an empty one); the reader is the dispatch's, judged below.
     unlabelled = extension is None or extension in ("", "unknown")
+    own_extension = extension  # what the dispatch reads; the guesses below only decide acceptance
     if (extension is None or extension == "unknown") and mime is not None and mime != "unknown":
         derived = extension_for_mime(mime)  # type: ignore[arg-type]
         if derived:
@@ -1182,39 +1307,53 @@ def gate_decision(
             by_ext is not None and by_ext.ext_indexable
         )
         decisive = by_ext
+        route = None if by_ext is not None and by_ext.ext_indexable else Dispatch(Route.CODE, None)
     else:
         judged = extension
+        route = None
         by_ext = _ext_type(extension)
         by_mime = _mime_type(mime)
         if by_mime is None and mime in GATE_MIMES:
             by_mime = _BY_MIME.get(normalize_mime(mime))  # type: ignore[arg-type]
         ext_ok = by_ext is not None and by_ext.ext_indexable
         if from_name and ext_ok and not by_ext.ext_wins and extension not in GATE_EXTENSIONS:
-            # The dispatch never sees an extension taken from the name, only the record's own:
-            # beyond the types the extension decides, the name is matched as it always was.
+            # Acceptance by the name's extension: beyond the types the extension decides, the name is
+            # matched as it always was.
             ext_ok = False
         supported = ext_ok or by_mime is not None
-        # The refusals below are for the reader the dispatch will pick, not for either label alone.
+        # The refusals below are for the reader the dispatch will pick, from the dispatch's own inputs:
+        # the extension guessed above from the hint or the name decides acceptance, never the reader.
+        code_ext = code_extension(own_extension, file_path, record_name)
         dispatch = legacy_route(
-            mime, extension, code_extension=extension,  # type: ignore[arg-type]
-            reads_as_code_file=reads_as_source(mime, extension),
+            mime, own_extension, code_ext=code_ext,  # type: ignore[arg-type]
+            reads_as_code_file=reads_as_source(mime, code_ext),
         )
         if dispatch is not None and dispatch.file_type is not None:
             decisive = dispatch.file_type
         elif dispatch is not None and dispatch.route is Route.CODE:
             # Read as source because one of its labels is a source type (`reads_as_source`): that
             # type is the reader, not the owner of the other label.
-            decisive = next((t for t in (by_ext, by_mime) if t is not None and t.route is Route.CODE), None)
+            decisive = next(
+                (t for t in (_ext_type(code_ext), by_mime) if t is not None and t.route is Route.CODE), None
+            )
         else:
             decisive = by_mime if by_mime is not None else (by_ext if ext_ok else None)
     limited_as = _limited_as(judged, record_name if unlabelled else None)
     if not supported:
         return GateDecision(False, judged, None, "type")
     if decisive is not None and decisive.key in disabled:
-        return GateDecision(False, judged, decisive, "disabled")
+        return GateDecision(False, _reported_as(judged, decisive), decisive, "disabled")
     if limited_as is not None and isinstance(size_bytes, int) and size_bytes > TEXT_LOG_HARD_LIMIT_BYTES:
         return GateDecision(False, judged, decisive, "too_large", limited_as)
-    return GateDecision(True, judged, decisive, None, limited_as)
+    return GateDecision(True, judged, decisive, None, limited_as, route)
+
+
+def _reported_as(judged: object, file_type: FileType) -> str | None:
+    """The extension a type turned off is refused under: the judged one when the type owns it, else
+    the type's own (None for a type no extension names), since another label may have decided it."""
+    if isinstance(judged, str) and normalize_extension(judged) in file_type.extensions:
+        return judged
+    return file_type.extensions[0] if file_type.extensions else None
 
 
 def _limited_as(judged: object, record_name: str | None) -> str | None:
@@ -1259,7 +1398,7 @@ def stored_mime_for_new_file(mime_type: str | None, name: str | None) -> str | N
     ft = _ext_type(extension)
     if ft is None or not ft.ext_wins or ft.wins_over_text_plain or ft.canonical_mime is None:
         return mime_type
-    if mime_type is None or (isinstance(mime_type, str) and normalize_mime(mime_type) in _UNNAMED_MIMES):
+    if _names_nothing(mime_type):
         return ft.canonical_mime
     return mime_type
 

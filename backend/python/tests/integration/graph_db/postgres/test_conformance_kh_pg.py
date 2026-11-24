@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import zlib
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -28,6 +29,7 @@ from tests.permissions.kh_layer import (
     browse_pages,
     check_world,
     children_of,
+    counts_from_the_second_page,
     cursor_in_the_clear,
     listing,
 )
@@ -37,7 +39,9 @@ from tests.permissions.kh_worlds import (
     CHAIN,
     CHAINLINK,
     DECLPAG,
+    FOLDERSTUB,
     KH_WORLDS,
+    LEVELS,
     OPENGRANT,
     OPENGRANTTEAM,
     PAGMEMBER,
@@ -348,6 +352,17 @@ async def test_a_page_that_ends_at_a_scan_bound_names_no_child_the_viewer_may_no
     assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], kh_layer.name
 
 
+async def test_counts_asked_for_from_the_second_page_on_describe_the_whole_folder(kh_layer) -> None:
+    """A first page asked without counts issues a cursor carrying the total alone; every later page that asks for counts gets counts by type that add
+    up to its total, as the rows of the whole folder do."""
+    await kh_layer.preload([FOLDERSTUB])
+    with bind(OrgContext((await kh_layer._ns(FOLDERSTUB)).org, None, "job", "job:test", "t")):
+        items, pages = await counts_from_the_second_page(kh_layer, FOLDERSTUB, "u", "f", "folder", 4)
+    by_type = dict(Counter(i.nodeType for i in items))
+    assert len(items) == 9 and len(pages) == 2, (kh_layer.name, len(items), pages)
+    assert all(p == (9, 9, 9, by_type) for p in pages), (kh_layer.name, pages, by_type)
+
+
 async def test_a_browse_lists_the_chain_tops_the_stores_place_under_it_and_their_arrows(kh_layer) -> None:
     """A granted record with no hierarchy parent the viewer may open is listed under its own group, else under the App (the placement rule Neo4j and
     ArangoDB share). APPCHAIN: opening h lists r, and h's arrow is on in All Records and under the App. CHAIN, CHAINLINK and STUBHELD have the same shape."""
@@ -486,6 +501,20 @@ async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(kh_layer) 
         assert await children_of(kh_layer, UNPLACED, "u", "A", "app") == {"open": True, "r1": False}, kh_layer.name
         assert await children_of(kh_layer, UNPLACED, "u", "open", "recordGroup") == {"r2": False}, kh_layer.name
     bad = _bad(await check(kh_layer, UNPLACED, "unplaced"))
+    assert not bad, _describe(bad)
+
+
+async def test_a_group_that_carries_access_only_is_no_row_and_each_record_under_it_is_listed_once(kh_layer) -> None:
+    """LEVELS (a Jira security level's group): as on Neo4j and ArangoDB, the group is never listed, every issue under it is listed once where it
+    is filed, and a granted record below it whose other parent the viewer cannot open is a chain-top of its own group."""
+    await kh_layer.preload([LEVELS])
+    with bind(OrgContext((await kh_layer._ns(LEVELS)).org, None, "job", "job:test", "t")):
+        assert await children_of(kh_layer, LEVELS, "u", "P", "recordGroup") == {"E": True, "E2": True, "t1": True, "t2": False}, kh_layer.name
+        assert await children_of(kh_layer, LEVELS, "u", "E", "record") == {"s1": False}, kh_layer.name
+        assert await children_of(kh_layer, LEVELS, "y", "P", "recordGroup") == {"E": True, "E2": True, "o": False, "t1": False, "t2": False}, kh_layer.name
+        assert await children_of(kh_layer, LEVELS, "w", "P", "recordGroup") == {"E": False, "t2": False}, kh_layer.name
+        assert "L" not in {r["id"] for r in (await listing(kh_layer, LEVELS, "u")).rows}, kh_layer.name
+    bad = _bad(await check(kh_layer, LEVELS, "levels"))
     assert not bad, _describe(bad)
 
 

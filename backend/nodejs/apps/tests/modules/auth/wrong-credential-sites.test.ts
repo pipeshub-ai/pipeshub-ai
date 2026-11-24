@@ -12,6 +12,7 @@ import path from 'path';
 const SOURCES = [
   'src/modules/auth/controller/userAccount.controller.ts',
   'src/modules/auth/utils/azureAdTokenValidation.ts',
+  'src/modules/auth/utils/googleIdTokenValidation.ts',
 ].map((file) => readFileSync(path.resolve(__dirname, '../../..', file), 'utf8'));
 
 const SUBMITTED_CREDENTIAL = [
@@ -20,10 +21,10 @@ const SUBMITTED_CREDENTIAL = [
   'SIGN_IN_ACCOUNT_CHANGED',
   'PROVIDER_SHARED_NO_EMAIL',
   'MICROSOFT_SIGN_IN_FAILED',
+  'GOOGLE_SIGN_IN_FAILED',
   'WRONG_ACCOUNT',
   "'Invalid CAPTCHA verification.",
   "'Current password is incorrect.'",
-  `"Sign-in with Google didn't complete.`,
   `"This Microsoft account doesn't match`,
   "'Your Microsoft sign-in expired.",
 ];

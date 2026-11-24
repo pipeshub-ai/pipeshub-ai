@@ -8,6 +8,7 @@ import {
   frameAGUI,
   aguiErrorCodeFromPayload,
   aguiRunErrorMetadata,
+  readRunFrame,
 } from '../../../../src/modules/enterprise_search/utils/agui'
 
 describe('AG-UI protocol utils', () => {
@@ -107,5 +108,79 @@ describe('AG-UI protocol utils', () => {
       expect(meta.get('type')).to.equal('RUN_ERROR')
       expect(meta.get('code')).to.equal('no_response')
     })
+  })
+})
+
+describe('readRunFrame', () => {
+  const finished = (data: unknown) => readRunFrame(AGUIEventType.RUN_FINISHED, JSON.stringify(data))
+  const failed = (data: unknown) => readRunFrame(AGUIEventType.RUN_ERROR, JSON.stringify(data))
+
+  it("takes the root run's RUN_FINISHED result as the answer", () => {
+    const result = { answer: 'Done.', citations: [] }
+    expect(finished({ type: 'RUN_FINISHED', runId: 'root', result })).to.deep.equal({ kind: 'answer', result })
+  })
+
+  it('passes a RUN_FINISHED whose result is missing or not an object', () => {
+    for (const result of [undefined, null, [], 'x', 0]) {
+      expect(finished({ runId: 'root', result }), JSON.stringify(result)).to.deep.equal({ kind: 'pass' })
+    }
+  })
+
+  it("passes a sub-agent's RUN_FINISHED, even one that carries a result", () => {
+    expect(finished({ runId: 'child', parentRunId: 'root' })).to.deep.equal({ kind: 'pass' })
+    expect(finished({ runId: 'child', parentRunId: 'root', result: { answer: 'x' } })).to.deep.equal({ kind: 'pass' })
+  })
+
+  it("passes a sub-agent's RUN_ERROR", () => {
+    expect(failed({ runId: 'child', parentRunId: 'root', message: 'boom', code: 'agent_error' })).to.deep.equal({ kind: 'pass' })
+  })
+
+  it("returns the root run's RUN_ERROR with its data", () => {
+    const data = { type: 'RUN_ERROR', message: 'Rate limited', code: 'rate_limited' }
+    expect(failed(data)).to.deep.equal({ kind: 'error', data })
+  })
+
+  it('reports a RUN_ERROR whose payload is not an object as a bad frame', () => {
+    for (const data of [null, [], 'x', 3]) {
+      expect(failed(data), JSON.stringify(data)).to.deep.equal({ kind: 'bad' })
+    }
+  })
+
+  it('reports a RUN_FINISHED whose payload is not an object as a bad frame', () => {
+    for (const data of [null, [], 'x', 3]) {
+      expect(finished(data), JSON.stringify(data)).to.deep.equal({ kind: 'bad' })
+    }
+  })
+
+  it('reports data that does not parse as a bad frame, for both types', () => {
+    expect(readRunFrame(AGUIEventType.RUN_FINISHED, '{invalid')).to.deep.equal({ kind: 'bad' })
+    expect(readRunFrame(AGUIEventType.RUN_ERROR, '{invalid')).to.deep.equal({ kind: 'bad' })
+  })
+
+  it('reports empty data as a bad frame, for both types', () => {
+    expect(readRunFrame(AGUIEventType.RUN_FINISHED, '')).to.deep.equal({ kind: 'bad' })
+    expect(readRunFrame(AGUIEventType.RUN_ERROR, '')).to.deep.equal({ kind: 'bad' })
+  })
+
+  it('takes a root result as the answer only when its citations are omitted or a list', () => {
+    for (const result of [{ answer: 'Done.' }, { answer: 'Done.', citations: [] }]) {
+      expect(finished({ runId: 'root', result }), JSON.stringify(result)).to.deep.equal({ kind: 'answer', result })
+    }
+    for (const result of [{ answer: 'Done.', citations: {} }, { answer: 'Done.', citations: null }, { answer: 'Done.', citations: 'x' }]) {
+      expect(finished({ runId: 'root', result }), JSON.stringify(result)).to.deep.equal({ kind: 'bad' })
+    }
+  })
+
+  it('takes a root result as the answer only when its answer is a string, empty included', () => {
+    const waiting = { answer: '', status: 'waiting_input', citations: [] }
+    expect(finished({ runId: 'root', result: waiting })).to.deep.equal({ kind: 'answer', result: waiting })
+    for (const result of [{ citations: [] }, { answer: null }, { answer: 5 }]) {
+      expect(finished({ runId: 'root', result }), JSON.stringify(result)).to.deep.equal({ kind: 'bad' })
+    }
+  })
+
+  it('treats an empty parentRunId as the root run, as the frontend does', () => {
+    expect(failed({ parentRunId: '', message: 'boom' })).to.deep.equal({ kind: 'error', data: { parentRunId: '', message: 'boom' } })
+    expect(finished({ parentRunId: '', result: { answer: 'a' } })).to.deep.equal({ kind: 'answer', result: { answer: 'a' } })
   })
 })

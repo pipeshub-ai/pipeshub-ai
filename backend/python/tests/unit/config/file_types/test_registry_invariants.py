@@ -87,6 +87,12 @@ def test_the_import_time_checks_pass() -> None:
     assert list(file_types._problems()) == []
 
 
+def test_the_registry_version_is_the_one_that_made_the_newest_type_indexable() -> None:
+    """A type made indexable or routed under a new version bumps REGISTRY_VERSION: the file-type
+    re-queue runs once per version, and is what takes back the records the gate refused before."""
+    assert max(max(ft.since, ft.route_since) for ft in _TYPES) == file_types.REGISTRY_VERSION
+
+
 def test_an_indexable_type_has_a_registered_parser_and_a_route() -> None:
     registered = _registered_formats()
     assert {"pdf", "docx", "code", "png", "heif"} <= registered

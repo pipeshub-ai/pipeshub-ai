@@ -170,6 +170,43 @@ async def test_every_tier_answers_the_same_nearest_points(store) -> None:
     assert [h.id for h in indexed] == [h.id for h in exact] == [pid(A, n) for n in range(1, 6)]
 
 
+async def test_the_vector_index_tests_membership_on_the_point_row_with_the_answers_of_the_membership_rows(store) -> None:
+    """The index tier tests a candidate's membership by the keys its row carries: no membership read per candidate (the probe's subplan
+    never runs), the same answers as the exact tier and as the probe, through a membership change and for a row whose keys are unknown."""
+    pts = [point(A, n, conn=[f"c{n % 3}"]) for n in range(1, 31)]
+    await store.upsert_points("records", pts)
+    member = {"connectorIds": ["c1"], "recordGroupIds": ["nothing"]}
+    [exact] = await store.query_nearest_points("records", [req(A, should=member, limit=8)])
+    assert [h.id for h in exact] == [pid(A, n) for n in range(1, 31) if n % 3 == 1][:8]
+    search = dataclasses.replace(store._cfg.search, n_e0=2, n_own=1)                                       # the vector-index tier from here on
+    store._cfg = dataclasses.replace(store._cfg, search=search)
+    store._sizer = dense.Sizer(store._db, search)
+    [indexed] = await store.query_nearest_points("records", [req(A, should=member, limit=8)])
+    assert [h.id for h in indexed] == [h.id for h in exact]
+    admin = await store.env.admin()
+    try:
+        space = await admin.fetchval("SELECT space_id FROM retrieval.org_spaces WHERE org_id = $1 AND role = 'active'", A)
+        from app.services.vector_db.pgvector.visibility import scope_of
+        q = dense.Query(A, 1, space, 4, "cosine", "[1,0,0,0]", scope_of(req(A, should=member).filter), 16)
+
+        async def plan() -> str:
+            await admin.execute(f"SET app.org_id = '{A}'")
+            return "\n".join(r[0] for r in await admin.fetch("EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) " + dense.index_sql(q), *q.args(16, 800)))
+        def probes(shown: str) -> list[str]:
+            return [line for line in shown.splitlines() if "Scan" in line and "group_members" in line]
+        shown = await plan()
+        assert probes(shown) and all("never executed" in line for line in probes(shown)), shown            # the per-candidate probe never runs
+        moved = dataclasses.replace(pts[0], payload={**pts[0].payload, "connectorIds": ["c2"]})              # point 1 leaves c1
+        await store.upsert_points("records", [moved])
+        await admin.execute("UPDATE retrieval.points SET member_keys = NULL WHERE org_id = $1 AND point_id = $2", A, pid(A, 4))   # keys unknown
+        shown = await plan()
+        assert probes(shown) and not any("never executed" in line for line in probes(shown)), shown       # that row is probed
+    finally:
+        await admin.close()
+    [after] = await store.query_nearest_points("records", [req(A, should=member, limit=8)])
+    assert [h.id for h in after] == [pid(A, n) for n in range(2, 31) if n % 3 == 1][:8]
+
+
 async def test_the_quantisation_check_stores_a_verdict_for_the_orgs_space(store) -> None:
     await store.upsert_points("records", [point(A, n) for n in range(1, 61)])
     assert await store.validate_space("records", C) is None                                               # an org with no space has nothing to check

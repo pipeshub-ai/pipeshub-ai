@@ -131,6 +131,27 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
     expect(missing).to.deep.equal([]);
   });
 
+  const g = (id: string, users?: string[]) => ({ _id: id, name: `n-${id}`, type: 'custom', ...(users && { users }) });
+  // [method, MongoDB answer, the same in another order, a real difference]
+  const groupReads: Array<[string, unknown, unknown, unknown]> = [
+    ['groupsOfUser', [g('g1'), g('g2')], [g('g2'), g('g1')], [g('g1'), { ...g('g2'), name: 'other' }]],
+    ['summariesForUsers', [g('g1', ['u1', 'u2']), g('g2', ['u3'])], [g('g2', ['u3']), g('g1', ['u2', 'u1'])], [g('g1', ['u1']), g('g2', ['u3'])]],
+    ['memberIdsOfTypes', ['u1', 'u2', 'u2'], ['u2', 'u1', 'u2'], ['u1', 'u2']],
+  ];
+  for (const [method, left, reordered, different] of groupReads) {
+    it(`${method} is compared in any order: the same answer reordered is equal, a real difference is reported`, async () => {
+      const read = (answer: unknown) =>
+        shadowWrap('group', { [method]: async () => left }, () => ({ [method]: async () => answer }), runPg)[method]!();
+      await read(reordered);
+      await wait(100);
+      expect(counts['group:equal'], 'reordered').to.equal(1);
+      expect(counts['group:diff'], 'reordered').to.equal(undefined);
+      await read(different);
+      await wait(100);
+      expect(counts['group:diff'], 'different').to.equal(1);
+    });
+  }
+
   it('keeps a synchronous method synchronous (isConnected is a boolean, not a promise)', () => {
     const repo = shadowWrap('thing', { isConnected: () => false }, () => ({ isConnected: () => true }), runPg);
     expect(isReadMethod('isConnected')).to.equal(false);

@@ -499,6 +499,24 @@ describe('projects/validators/project.validators', () => {
       expect(paths).to.include('body.members.0.role')
     })
 
+    it('reports a null member row as an issue on that row, not a throw', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [null, { principalId: VALID_OID, role: 'viewer' }] },
+      })
+      expect(result.success).to.equal(false)
+      expect(result.error?.issues.map((i) => i.path)).to.deep.equal([['body', 'members', 0]])
+    })
+
+    it('reports a non-object member row as an issue on that row, not a throw', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [5] },
+      })
+      expect(result.success).to.equal(false)
+      expect(result.error?.issues.map((i) => i.path)).to.deep.equal([['body', 'members', 0]])
+    })
+
     it('reports the same path on every parse', () => {
       const input = {
         params: { projectId: VALID_OID },

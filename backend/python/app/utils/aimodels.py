@@ -801,7 +801,8 @@ def _get_embedding_model_impl(
         )
 
     elif provider == EmbeddingProvider.JINA_AI.value:
-        from langchain_community.embeddings.jina import JinaEmbeddings
+        from app.utils.custom_embeddings import JinaEmbeddings
+
         return JinaEmbeddings(
             model_name=model_name,
             jina_api_key=configuration['apiKey'],

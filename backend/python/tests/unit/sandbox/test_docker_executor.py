@@ -836,6 +836,8 @@ class TestEnsureEgressNetworkErrors:
         # First list returns empty; create raises; second list finds it.
         raced = MagicMock()
         raced.name = "pipeshub_sandbox_egress"
+        raced.attrs = {"Options": {"com.docker.network.bridge.enable_icc": "false"}}
+        client.networks.get.return_value = raced
         # Create's own re-check, then the subnet lookup.
         client.networks.list.side_effect = [[], [raced], [raced]]
         client.networks.create.side_effect = RuntimeError("already exists")

@@ -1,7 +1,8 @@
 """`RecordContentResolver` — the single façade agent tools call.
 
 Resolution pipeline:
-1. `graph_provider.get_record_by_id(ref)` — direct record lookup.
+1. `graph_provider.get_record_by_id(ref)` — direct record lookup. A graph that
+   cannot be read raises `RecordContentUnavailableError`, never "not found".
 2. If `None` and `conversation_id` is set, fall back to
    `ArtifactRegistryService.resolve()` with logical-name support.
 3. `RecordNotFoundError` if still unresolved.
@@ -17,18 +18,19 @@ without monkey-patching.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from app.models.entities import RecordType
+from app.models.entities import Record, RecordType
 
 from .authorizer import TieredRecordAuthorizer
 from .models import (
+    GRAPH_CALLER_BUGS,
     RecordAccessDeniedError,
     RecordContentError,
     RecordNotFoundError,
+    graph_did_not_answer,
 )
 from .strategies import (
     BlobBackedContentStrategy,
@@ -38,8 +40,6 @@ from .strategies import (
 
 if TYPE_CHECKING:
     from app.services.artifact_registry.models import Actor
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["RecordContentResolver"]
 
@@ -93,7 +93,8 @@ class RecordContentResolver:
             RecordNotFoundError — ref cannot be mapped to any record.
             RecordAccessDeniedError — actor is not authorized.
             RecordTooLargeError — content exceeds `max_bytes`.
-            RecordContentUnavailableError — transport/connector failure.
+            RecordContentUnavailableError — transport/connector failure, or a
+                graph read that failed.
         """
         artifact_actor = artifact_actor or actor
         record = await self._lookup_record(ref, artifact_actor, conversation_id)
@@ -113,12 +114,7 @@ class RecordContentResolver:
         self, ref: str, artifact_actor: Actor, conversation_id: str | None
     ) -> Any:
         """Try graph lookup first, then artifact registry fallback (as `artifact_actor`)."""
-        try:
-            record = await self._graph.get_record_by_id(ref)
-        except Exception as exc:
-            logger.warning("get_record_by_id(%r) raised: %s", ref, exc)
-            record = None
-
+        record = await self._get_record(ref)
         if record is not None:
             return record
 
@@ -146,15 +142,21 @@ class RecordContentResolver:
 
         # Re-fetch the base `records` document so strategies see a full
         # Record with all fields (origin, externalRecordId, versions, etc.).
-        try:
-            record = await self._graph.get_record_by_id(metadata.artifact_id)
-        except Exception:
-            record = None
+        record = await self._get_record(metadata.artifact_id)
         if record is None:
             raise RecordNotFoundError(
                 f"Graph record missing for artifact: {metadata.artifact_id}"
             )
         return record
+
+    async def _get_record(self, record_id: str) -> Record | None:
+        """The record, or None when there is none. A graph that cannot be read is not a missing record."""
+        try:
+            return await self._graph.get_record_by_id(record_id, raise_on_error=True)
+        except GRAPH_CALLER_BUGS:
+            raise
+        except Exception as exc:
+            raise graph_did_not_answer(f"Could not look up record {record_id}") from exc
 
     async def _fetch(
         self,

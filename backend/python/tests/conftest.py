@@ -13,9 +13,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.hang_dump import pytest_exception_interact  # noqa: F401  (a hook: pytest finds it by name)
+
+# LiteLLM fetches its model price map from the network when it is imported, unless told to use the copy it ships with.
+# Set before anything imports litellm, and not with setdefault: a developer's own value must not bring the download back.
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
 from app.utils.process_hardening import disable_vendor_telemetry
 
+# Loaded before any test module is collected, so module-level sys.modules edits are checked too. Registered only here:
+# importing it directly as well would import it before pytest can rewrite its asserts.
+pytest_plugins = ("tests.support.sys_modules_guard",)
 # Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
 disable_vendor_telemetry()
 # The suite exercises the real metrics backend whatever the edition default.
@@ -31,6 +39,40 @@ _EMPTY_OPIK_CONFIG = os.path.join(tempfile.gettempdir(), f"pipeshub-tests-empty-
 with open(_EMPTY_OPIK_CONFIG, "w", encoding="utf-8") as _opik_config:
     _opik_config.write("[opik]\n")
 os.environ["OPIK_CONFIG_PATH"] = _EMPTY_OPIK_CONFIG
+
+# The code sandbox and Docker proxy settings in a checkout's `.env` (a developer's
+# local stack) must not reach the tests: their defaults are what the tests pin, and
+# a test that needs a value sets it itself. The app loads `.env` at import with
+# `load_dotenv()`, which only fills variables that are unset, so a blank value is not
+# an option here (several of these read an empty string as a value); instead the
+# loader drops these from what it adds. Values set in the shell that runs the tests
+# (such as SANDBOX_TEST_IMAGE) are kept.
+_DOTENV_DROPPED_PREFIXES = ("SANDBOX_", "DOCKER_PROXY_")
+
+
+def _install_dotenv_filter() -> None:
+    try:
+        import dotenv
+        import dotenv.main
+    except ImportError:  # pragma: no cover - python-dotenv is a dependency
+        return
+    real = dotenv.main.load_dotenv
+    if getattr(real, "_drops_sandbox_settings", False):
+        return
+
+    def load_dotenv(*args: object, **kwargs: object) -> bool:
+        before = {key for key in os.environ if key.startswith(_DOTENV_DROPPED_PREFIXES)}
+        loaded = real(*args, **kwargs)
+        for key in [k for k in os.environ if k.startswith(_DOTENV_DROPPED_PREFIXES) and k not in before]:
+            del os.environ[key]
+        return loaded
+
+    load_dotenv._drops_sandbox_settings = True  # type: ignore[attr-defined]
+    dotenv.load_dotenv = load_dotenv
+    dotenv.main.load_dotenv = load_dotenv
+
+
+_install_dotenv_filter()
 
 
 @pytest.fixture(autouse=True)
@@ -314,6 +356,16 @@ def _reset_narrow_access_memo() -> Iterator[None]:
     retrieval = sys.modules.get("app.modules.retrieval.retrieval_service")
     if retrieval is not None:
         retrieval.narrow_access_memo.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_log_once() -> Iterator[None]:
+    """``log_once`` remembers, per process, when each key last logged. A line throttled in one
+    test must not be silenced, or its flag left unset, in another."""
+    logging_fields = sys.modules.get("app.utils.logging_fields")
+    if logging_fields is not None:
+        logging_fields._log_once_last.clear()
+    yield
 
 
 @pytest.fixture(autouse=True)

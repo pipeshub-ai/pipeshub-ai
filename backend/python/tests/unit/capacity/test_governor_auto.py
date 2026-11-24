@@ -14,6 +14,7 @@ from app.capacity import runtime
 from app.capacity.member_budget import STATE_BYTES
 from app.services.resource_governor import container_link as cl
 from app.services.resource_governor.controller import ResourceGovernor
+from app.services.resource_governor.feedback import FeedbackWindow
 from app.services.resource_governor.models import (
     ControllerState,
     Limits,
@@ -294,40 +295,32 @@ def test_a_local_memory_incident_outlasts_the_shared_ramp(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_a_slow_ledger_step_does_not_stall_the_event_loop_or_an_incident_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The step (a ledger lock held by a slow process) does not return until an incident report has run to the end
+    meanwhile, which needs both the event loop and the state lock free during the step. Shown by order, not by the
+    loop's longest gap, which a busy runner stretches."""
     import asyncio
-    import time
+    import threading
 
     g = _governor(tmp_path, monkeypatch, auto=True)
     real_step = g._container.step
-    release = {"at": 0.0}
+    step_started, incident_done = threading.Event(), threading.Event()
+    seen: dict[str, bool] = {}
 
     def slow_step(**kw: object) -> object:
-        time.sleep(0.4)  # a ledger lock held by a slow process
-        release["at"] = time.monotonic()
+        step_started.set()
+        seen["incident during the step"] = incident_done.wait(10)
         return real_step(**kw)
 
     monkeypatch.setattr(g._container, "step", slow_step)
-    gaps: list[float] = []
-
-    async def ticker() -> None:
-        last = time.monotonic()
-        while not release["at"]:
-            await asyncio.sleep(0.01)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
-
-    incident_took: list[float] = []
 
     async def incident() -> None:
-        await asyncio.sleep(0.1)  # while the step runs
-        started = time.monotonic()
+        assert await asyncio.to_thread(step_started.wait, 10)
         await asyncio.to_thread(g.report_memory_incident, "test")
-        incident_took.append(time.monotonic() - started)
+        incident_done.set()
 
-    await asyncio.gather(g._sample_once(), ticker(), incident())
-    assert max(gaps) < 0.2, max(gaps)  # the loop kept running during the 0.4 s step
-    assert incident_took[0] < 0.2  # the state lock was not held across the step
+    await asyncio.wait_for(asyncio.gather(g._sample_once(), incident()), 30)
+    # False if the step ran on the loop (the incident could not run) or held the state lock (the report waited for it)
+    assert seen == {"incident during the step": True}
     # the incident's state stands after the step's result is applied
     assert g._state.get(Pool.HEAVY_PARSE).cooldown_until > 0
 
@@ -387,6 +380,25 @@ def test_a_local_index_latency_hold_outlasts_the_shared_ramp(tmp_path: Path) -> 
     assert limits.get(Pool.INDEX_LIGHT) > 10  # a pool that is not held follows the shared limit
 
 
+def test_a_local_sandbox_yield_holdoff_outlasts_the_shared_ramp(tmp_path: Path) -> None:
+    import dataclasses
+
+    from app.services.resource_governor.models import Ceilings
+
+    shared = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100})
+    link = _link_with_shared(tmp_path, shared)
+    initial = ControllerState.initial()
+    state = initial.with_update(
+        Pool.HEAVY_PARSE, dataclasses.replace(initial.get(Pool.HEAVY_PARSE), yield_holdoff=3)
+    ).with_update(Pool.INDEX_LIGHT, dataclasses.replace(initial.get(Pool.INDEX_LIGHT), yield_holdoff=3))
+    own = (Limits(values={Pool.HEAVY_PARSE: 2, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 10, Pool.INDEX_LIGHT: 10}), state)
+    limits = _step(link, own, Ceilings(112, 544, 224, 544))
+    # The shared ramp never hears of the code sandbox yield: the local holdoff keeps both pools down after the cooldown.
+    assert limits.get(Pool.HEAVY_PARSE) <= 2
+    assert limits.get(Pool.INDEX_LIGHT) <= 10
+    assert limits.get(Pool.INDEX_HEAVY) > 10  # no holdoff: it follows the shared limit
+
+
 def test_a_pool_this_process_runs_without_stays_without_when_the_shared_plan_has_it(tmp_path: Path) -> None:
     from app.services.resource_governor.models import Ceilings
 
@@ -395,3 +407,49 @@ def test_a_pool_this_process_runs_without_stays_without_when_the_shared_plan_has
     own = (Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 10, Pool.INDEX_LIGHT: 0}), ControllerState.initial())
     limits = _step(link, own, Ceilings(112, 544, 224, 0))  # the local index_light ceiling is zero (collapsed tier)
     assert limits.get(Pool.INDEX_LIGHT) == 0
+
+
+@pytest.mark.parametrize(
+    ("window", "light"),
+    [
+        (FeedbackWindow(unavailable={"DoclingService": 3}), 100),  # only heavy records call Docling
+        (FeedbackWindow(pool_exhaustions={"neo4j": 1}), 50),  # both tiers call neo4j
+    ],
+)
+def test_the_container_ramp_brakes_only_the_pools_whose_records_call_the_reporter(
+    tmp_path: Path, window: FeedbackWindow, light: int,
+) -> None:
+    from app.services.resource_governor.models import Ceilings
+
+    shared = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100})
+    link = _link_with_shared(tmp_path, shared)
+    limits, _ = link.step(
+        own=(shared, ControllerState.initial()), snap=snap(128), ceilings=Ceilings(112, 544, 224, 544), demand={},
+        now=100.0, interval=15.0, feedback=window, heavy_working_set_gb=1.5,
+    )
+    assert limits.get(Pool.INDEX_HEAVY) == 50
+    assert limits.get(Pool.INDEX_LIGHT) == light
+
+
+def test_the_recovery_after_a_sandbox_yield_stays_local_until_it_reaches_the_shared_limit(tmp_path: Path) -> None:
+    import dataclasses
+
+    from app.services.resource_governor.models import Ceilings
+
+    shared = Limits(values={Pool.HEAVY_PARSE: 8, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100})
+    link = _link_with_shared(tmp_path, shared)
+    initial = ControllerState.initial()
+    heavy = initial.get(Pool.HEAVY_PARSE)
+
+    def own(limit: int, **fields: object) -> tuple:
+        state = initial.with_update(Pool.HEAVY_PARSE, dataclasses.replace(heavy, **fields))
+        return Limits(values={Pool.HEAVY_PARSE: limit, Pool.LIGHT_PARSE: 8, Pool.INDEX_HEAVY: 100, Pool.INDEX_LIGHT: 100}), state
+
+    ceilings = Ceilings(112, 544, 224, 544)
+    assert _step(link, own(2, yield_holdoff=1), ceilings).get(Pool.HEAVY_PARSE) <= 2
+    # The last holdoff sample ran out (released now) and the local ramp starts from 2, not from the shared 8.
+    assert _step(link, own(2, yield_released_at=100.0), ceilings).get(Pool.HEAVY_PARSE) <= 2
+    assert _step(link, own(4, yield_released_at=90.0), ceilings).get(Pool.HEAVY_PARSE) <= 4
+    # Once the local ramp reaches the shared limit, the shared limit applies again.
+    assert _step(link, own(8, yield_released_at=90.0), ceilings).get(Pool.HEAVY_PARSE) == 8
+    assert _step(link, own(3, yield_released_at=90.0), ceilings).get(Pool.HEAVY_PARSE) == 8

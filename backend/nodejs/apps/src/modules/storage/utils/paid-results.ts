@@ -27,6 +27,19 @@ const LIST_PREFIX = new RegExp(
   `^(?:|${KIND}/|manifests/(?:[A-Za-z0-9_-]{1,64}/)?)$`,
 );
 
+/**
+ * The refresh marker: written by the purge-cutoff route before it takes the cutoff, so its own store timestamp says
+ * when the latest refresh of the record began. It sits outside the result and manifest folders, is never listed, and
+ * a cutoff purge never removes it. Readable (signed GET) like a result; never written through a signed URL.
+ */
+export const REFRESH_MARKER_FOLDER = 'refreshed';
+export const REFRESH_MARKER_PATH = `${REFRESH_MARKER_FOLDER}/marker.json`;
+export const isPaidResultMarkerPath = (p: string): boolean =>
+  p === REFRESH_MARKER_PATH;
+
+/** An ETag as the stores report it with the quotes dropped (a hex digest, `digest-N`, or a local synthetic hash). */
+export const ETAG_VALUE = /^[A-Za-z0-9._:+=-]{1,128}$/;
+
 export const RECORD_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** A result object: the only thing a `refresh` write may overwrite. */

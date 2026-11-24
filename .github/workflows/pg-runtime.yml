@@ -13,18 +13,32 @@ on:
     paths:
       - 'backend/db/**'
       - 'backend/python/app/core/**'
+      - 'backend/python/app/services/vector_db/collection_pin.py'
       - 'backend/python/app/services/pg_*.py'
       - 'backend/python/app/services/messaging/**'
+      # The window of the coalesced re-purge runs on the state tables in PostgreSQL mode (PgWindowStore).
+      - 'backend/python/app/services/paid_cache/**'
+      - 'backend/python/tests/support/repurge_window.py'
+      - 'backend/python/tests/support/plan_gate.py'
       - 'backend/python/app/services/redis/**'
       - 'backend/python/app/services/cache/**'
       - 'backend/python/app/config/**'
       - 'backend/python/tests/integration/db/**'
       - 'backend/python/tests/integration/pg_runtime/**'
       - 'backend/python/app/services/graph_db/postgres/**'
+      - 'backend/python/app/agents/agent_loop/skills/**'
+      - 'backend/python/app/agent_loop_lib/modules/providers/skills/**'
+      - 'backend/python/app/api/routes/skills.py'
+      - 'backend/python/app/modules/pipeline/parser_identity.py'
       - 'backend/python/app/services/graph_db/**'
       - 'backend/python/app/schema/**'
       - 'backend/python/app/modules/code_graph/**'
       - 'backend/python/app/modules/indexing/vector_membership_backfill.py'
+      # The page-limit un-index routine runs against the PostgreSQL graph in graph_db/postgres/test_unindex_record_pg.py.
+      - 'backend/python/app/modules/indexing/unindex.py'
+      - 'backend/python/app/modules/indexing/taxonomy_cleanup.py'
+      - 'backend/python/app/modules/transformers/graphdb.py'
+      - 'backend/python/tests/support/unindex_world.py'
       - 'backend/python/app/models/entities.py'
       - 'backend/python/app/exceptions/graph_db_exceptions.py'
       - 'backend/python/app/utils/time_conversion.py'
@@ -36,6 +50,15 @@ on:
       - 'backend/python/tests/integration/graph_db/test_accessible_containers_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
       - 'backend/python/tests/integration/graph_db/fresh_org_support.py'
+      # The shared drivers of the record diagnostics tests that run on every store (their PostgreSQL files are in postgres/).
+      - 'backend/python/tests/integration/graph_db/record_diagnostics_*.py'
+      - 'backend/python/app/modules/indexing/record_diagnostics.py'
+      - 'backend/python/app/modules/indexing/rate_limit_deferral.py'
+      - 'backend/python/app/scripts/record_diagnostics_contract.py'
+      - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
+      # publish_with_commit: record events written by the graph transaction (test_record_events_with_commit.py)
+      - 'backend/python/app/connectors/core/base/data_store/graph_data_store.py'
+      - 'backend/python/app/services/messaging/kafka/handlers/entity.py'
       - 'backend/python/tests/integration/real_graph.py'
       - 'backend/python/tests/permissions/**'
       - 'backend/python/tests/integration/graph_permissions/loaders.py'
@@ -56,6 +79,11 @@ on:
       - 'scripts/ensure_pg_cluster.sh'
       - 'scripts/assert_no_skips.py'
       - 'scripts/test_pg_runtime_shards.py'
+      # tests/integration/graph_db/postgres/test_jira_issue_security_pg.py runs these worlds through the Jira connector and the processor
+      - 'backend/python/tests/integration/graph_db/test_jira_issue_security_real_backends.py'
+      - 'backend/python/app/connectors/sources/atlassian/core/jira_issue_security.py'
+      - 'backend/python/app/connectors/sources/atlassian/jira_cloud/connector.py'
+      - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
       - '.github/workflows/pg-runtime.yml'
   workflow_dispatch:
 
@@ -77,11 +105,14 @@ jobs:
         pg: ['17', '18']
         # The graph suite took ~46 min in one job (over 60 on PostgreSQL 18), so it is split by measured time. graph_tests
         # are the pytest paths; graph_k splits one file by -k into sets that together hold each of its tests once. Shard 5 runs
-        # the folder minus what the others name, so a new test file runs there. scripts/test_pg_runtime_shards.py checks that
-        # every case runs exactly once; each shard checks its run against its own collection, so no count is written here.
-        shard: [1, 2, 3, 4, 5]
+        # the folder minus what the others name (--ignore for a file, --deselect for a test), so a new test file runs there.
+        # scripts/test_pg_runtime_shards.py checks that every case runs exactly once; each shard checks its run against its own
+        # collection, so no count is written here. The shards are sized to about 20 min of the 45 min limit (shard 1: 25-35 of
+        # 60); --durations in the graph step prints the per-test times to rebalance by.
+        shard: [1, 2, 3, 4, 5, 6, 7]
         include:
-          # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own
+          # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own, and the
+          # rest is split by the state of the copy
           - shard: 1
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
             graph_k: '[not_current-adversarial]'
@@ -91,7 +122,10 @@ jobs:
             graph_k: not [not_current-adversarial] and [current-adversarial]
           - shard: 3
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: not [not_current-adversarial] and not [current-adversarial]
+            graph_k: not [not_current-adversarial] and not [current-adversarial] and not_current
+          - shard: 6
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: not [not_current-adversarial] and not [current-adversarial] and not not_current
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4
@@ -104,6 +138,15 @@ jobs:
               tests/integration/graph_db/postgres/test_kh_listing_flat.py
               tests/integration/graph_db/postgres/test_robustness.py
               tests/integration/graph_db/postgres/test_role_batch.py
+          # from shard 5, by test: the corpus and generated worlds of three kg readers, which sit in its slowest stretches (7-8 min
+          # each). The rest of their files, plan gates included, stays in shard 5 behind the files it followed.
+          - shard: 7
+            graph_tests: >-
+              tests/integration/graph_db/postgres/test_kg_breadcrumbs.py::test_the_corpus_trail_from_kg_equals_the_walk
+              tests/integration/graph_db/postgres/test_kg_breadcrumbs.py::test_generated_worlds_trail_from_kg_equals_the_walk
+              tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_the_corpus_read_from_kg_equals_the_walk
+              tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_generated_worlds_read_from_kg_equal_the_walk
+              tests/integration/graph_db/postgres/test_kg_trash.py::test_after_every_mutation_the_trash_from_kg_equals_the_walk
           - shard: 5
             graph_tests: >-
               tests/integration/graph_db/postgres
@@ -116,6 +159,11 @@ jobs:
               --ignore=tests/integration/graph_db/postgres/test_kh_listing_flat.py
               --ignore=tests/integration/graph_db/postgres/test_robustness.py
               --ignore=tests/integration/graph_db/postgres/test_role_batch.py
+              --deselect=tests/integration/graph_db/postgres/test_kg_breadcrumbs.py::test_the_corpus_trail_from_kg_equals_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_breadcrumbs.py::test_generated_worlds_trail_from_kg_equals_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_the_corpus_read_from_kg_equals_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_hierarchy.py::test_generated_worlds_read_from_kg_equal_the_walk
+              --deselect=tests/integration/graph_db/postgres/test_kg_trash.py::test_after_every_mutation_the_trash_from_kg_equals_the_walk
     services:
       redis:
         image: redis:7.4-bookworm
@@ -199,6 +247,19 @@ jobs:
           # checked here, not in the job's last step: its node ids are the same as the shadow run's, so a set there would hide a missing run
           python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/py-runtime-enforce-junit.xml" --collected "$RUNNER_TEMP/py-runtime-enforce.collected"
 
+      - name: Python runtime window store as the indexing service, key-value access by prefix enforced
+        if: ${{ matrix.shard == 2 }}
+        working-directory: backend/python
+        run: |
+          # the coalesced re-purge window runs in the indexing service, whose login is not the connectors one the suite above uses
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
+          eval "$(PG_KV_ACCESS=enforce PG_RUNTIME_ROLE=indexing PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh" pipeshub_ci_kv_enforce_indexing)"
+          export PG_RUNTIME_TEST_SERVICE=indexing
+          args=(tests/integration/pg_runtime/test_repurge_window_pg.py -m "not chaos" -p no:cacheprovider)
+          python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-runtime-indexing.collected" "${args[@]}"
+          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-runtime-indexing-junit.xml"
+          python3 "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" "$RUNNER_TEMP/py-runtime-indexing-junit.xml" --collected "$RUNNER_TEMP/py-runtime-indexing.collected"
+
       - name: PostgreSQL graph provider (tests/integration/graph_db/postgres, shard ${{ matrix.shard }})
         working-directory: backend/python
         env:
@@ -211,11 +272,12 @@ jobs:
           args+=(-m integration -p no:cacheprovider)
           if [ -n "$GRAPH_K" ]; then args+=(-k "$GRAPH_K"); fi
           python "$GITHUB_WORKSPACE/scripts/assert_no_skips.py" --collect "$RUNNER_TEMP/py-graph.collected" "${args[@]}"
-          python -m pytest "${args[@]}" --timeout=600 --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
+          python -m pytest "${args[@]}" --timeout=600 --durations=30 --junitxml="$RUNNER_TEMP/py-graph-junit.xml"
 
-      # One job is enough: the split is the same in every job. Collecting the folder and the five shards takes a few minutes.
+      # One job is enough: the split is the same in every job. Collecting the folder and every shard takes a few minutes, so it
+      # runs in shard 4, the shortest.
       - name: Every graph case runs in exactly one shard
-        if: ${{ matrix.shard == 3 && matrix.pg == '17' }}
+        if: ${{ matrix.shard == 4 && matrix.pg == '17' }}
         run: python scripts/test_pg_runtime_shards.py --collect
 
       - name: PostgreSQL clusters (on failure)

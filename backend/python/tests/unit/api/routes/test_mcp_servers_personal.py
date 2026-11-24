@@ -7,6 +7,7 @@ resolver/service lookups against one in-memory store.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,6 +38,8 @@ from app.api.routes.mcp_servers import (
     update_instance,
     update_oauth_config,
 )
+from app.config.configuration_service import ConfigurationService
+from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
@@ -178,7 +181,7 @@ class TestCreate:
     async def test_an_admin_creates_org_instances_by_default_and_personal_on_request(self) -> None:
         store = FakeConfigService()
         org = await create_instance(_as(store, "admin-1"), _payload())
-        own = await create_instance(_as(store, "admin-1"), _payload(scope="personal"))
+        own = await create_instance(_as(store, "admin-1"), _payload(name="mine too", scope="personal"))
 
         assert org["scope"] == "org" and ORG_PATH.format(org["_id"]) in store.data
         assert own["scope"] == "personal" and USER_PATH.format("admin-1", own["_id"]) in store.data
@@ -216,6 +219,132 @@ class TestCreate:
         assert await _status(create_instance(_as(store, "u-alice"), _payload(url="http://100.64.0.9/mcp"))) == 400
         # An administrator's org instance may sit on the private network.
         assert (await create_instance(_as(store, "admin-1"), private))["scope"] == "org"
+
+
+class TestUniqueNames:
+    """No two servers in one list share a name, whatever their type; case and spacing don't count."""
+
+    async def _detail(self, coro: Any) -> tuple[int, str]:  # noqa: ANN401
+        with pytest.raises(HTTPException) as exc:
+            await coro
+        return exc.value.status_code, str(exc.value.detail)
+
+    async def test_an_org_server_cannot_take_an_org_servers_name(self) -> None:
+        store = _store()
+        status, detail = await self._detail(create_instance(_as(store, "admin-1"), _payload(name="  ORG-inst ")))
+
+        assert status == 409
+        assert detail == 'An MCP server named "ORG-inst" already exists. Choose another name.'
+        assert len(await mcp_service.load_org_instances(store, "org-1")) == 1
+
+    async def test_the_type_does_not_matter(self) -> None:
+        store = _store()
+        payload = _payload(name="Org-Inst", type_id="jira")
+        with patch.object(mcp_servers, "_validate_instance_config"), patch.object(mcp_servers, "_refuse_replaced_template"):
+            assert await _status(create_instance(_as(store, "admin-1"), payload)) == 409
+
+    async def test_a_personal_server_cannot_take_an_org_or_own_servers_name(self) -> None:
+        store = _store()
+        assert await _status(create_instance(_as(store, "u-alice"), _payload(name="org-inst"))) == 409
+        assert await _status(create_instance(_as(store, "u-alice"), _payload(name="Alice-Own"))) == 409
+
+    async def test_someone_elses_personal_server_does_not_block_a_name(self) -> None:
+        store = _store()
+        mine = await create_instance(_as(store, "u-alice"), _payload(name="bob-own"))
+        org = await create_instance(_as(store, "admin-1"), _payload(name="alice-own"))
+
+        assert mine["name"] == "bob-own" and org["name"] == "alice-own"
+
+    async def test_renaming_onto_a_taken_name_is_refused(self) -> None:
+        store = _store()
+        assert await _status(update_instance(_as(store, "u-alice"), "alice-own", _payload(name="ORG-INST"))) == 409
+        assert store.data[USER_PATH.format("u-alice", "alice-own")]["name"] == "alice-own"
+
+    async def test_a_server_that_already_shares_its_name_can_still_be_edited(self) -> None:
+        store = _store()
+        store.data[ORG_PATH.format("twin")] = {**_record("twin"), "name": "org-inst"}
+
+        updated = await update_instance(_as(store, "admin-1"), "twin", _payload(name="org-inst", description="kept"))
+
+        assert updated["description"] == "kept"
+
+    async def test_changing_only_the_case_of_its_own_name_is_allowed_even_beside_a_twin(self) -> None:
+        store = _store()
+        # A twin made before the rule, which a real rename onto the same name would hit.
+        store.data[ORG_PATH.format("twin")] = {**_record("twin"), "name": "alice-own"}
+
+        updated = await update_instance(_as(store, "u-alice"), "alice-own", _payload(name="ALICE-OWN"))
+
+        assert updated["name"] == "ALICE-OWN"
+
+    @pytest.mark.parametrize(("taken", "asked"), [("Straße", "STRASSE"), ("GitHub", "ＧｉｔＨｕｂ")])
+    async def test_look_alike_unicode_forms_are_the_same_name(self, taken: str, asked: str) -> None:
+        store = _store()
+        store.data[ORG_PATH.format("first")] = {**_record("first"), "name": taken}
+
+        assert await _status(create_instance(_as(store, "admin-1"), _payload(name=asked))) == 409
+
+    @pytest.mark.parametrize("failing", ["list", "read"])
+    async def test_a_name_is_not_accepted_when_the_servers_cant_all_be_read(self, failing: str) -> None:
+        class Flaky(FakeConfigService):
+            # Fails the way the real stores do: a read reports the failure only when asked to
+            # raise, so a check that doesn't ask would read the server as missing and pass.
+            down = True
+            outages = 0
+
+            async def list_keys_in_directory(self, prefix: str) -> list[str]:
+                if self.down and failing == "list" and prefix == "/services/mcp/instances/":
+                    self.outages += 1
+                    raise RuntimeError("store down")
+                return await super().list_keys_in_directory(prefix)
+
+            async def get_config(
+                self, key: str, default: object = None, use_cache: bool = False, *,
+                raise_on_error: bool = False, keep_in_cache: bool = True,
+            ) -> object:
+                if self.down and failing == "read" and key == ORG_PATH.format("org-inst"):
+                    if not raise_on_error:
+                        return default
+                    self.outages += 1
+                    raise RuntimeError("store down")
+                return await super().get_config(
+                    key, default, use_cache, raise_on_error=raise_on_error, keep_in_cache=keep_in_cache,
+                )
+
+        store = Flaky(_store().data)
+        before = dict(store.data)
+
+        assert await _status(create_instance(_as(store, "admin-1"), _payload(name="brand new"))) == 503
+        # The 503 came from the simulated outage, not from a call the fake couldn't take.
+        assert store.outages == 1
+        assert await _status(update_instance(_as(store, "u-alice"), "alice-own", _payload(name="renamed"))) == 503
+        assert store.outages == 2
+        assert store.data == before
+
+        # Control: once the store is back, the same fake lets both through.
+        store.down = False
+        assert (await create_instance(_as(store, "admin-1"), _payload(name="brand new")))["name"] == "brand new"
+        assert (await update_instance(_as(store, "u-alice"), "alice-own", _payload(name="renamed")))["name"] == "renamed"
+        assert store.outages == 2
+
+    async def test_a_failed_read_behind_the_configuration_service_is_not_read_as_no_server(self) -> None:
+        # The real service, over a store that reports one failed read the way the encrypted
+        # stores do: no value unless asked to raise. Read as "no server", the name would pass.
+        log = logging.getLogger("mcp-name-check")
+
+        class FailingRead(InMemoryKeyValueStore):
+            async def get_key(self, key: str, *, raise_on_error: bool = False) -> object:
+                if key == ORG_PATH.format("org-inst"):
+                    if raise_on_error:
+                        raise RuntimeError("store down")
+                    return None
+                return await super().get_key(key, raise_on_error=raise_on_error)
+
+        config = ConfigurationService(log, FailingRead(log))
+        await config.set_config(ORG_PATH.format("org-inst"), _record("org-inst"))
+
+        assert await _status(create_instance(_as(config, "admin-1"), _payload(name="org-inst"))) == 503
+        assert await config.list_keys_in_directory(ORG_PATH.format("")) == [ORG_PATH.format("org-inst")]
 
 
 class TestOwnerOnlyAccess:

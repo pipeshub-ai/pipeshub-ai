@@ -24,7 +24,11 @@ import {
   newSystemRoot,
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
-import { configureEnvelopeFromSecret } from './libs/context/envelope';
+import {
+  configureEnvelopeFromSecret,
+  configureInbox,
+} from './libs/context/envelope';
+import { PgInbox } from './libs/services/consumer-inbox';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { TtlSweeper } from './libs/services/ttl-sweeper.service';
@@ -57,6 +61,8 @@ import {
   createOrgAuthConfigRouter,
   MailServiceContainer,
   createMailServiceRouter,
+  createSupportRouter,
+  createFeedbackRouter,
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
@@ -75,6 +81,7 @@ import {
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
+  dynamicClientOrg,
 } from './config';
 import type { EditionContainers } from './libs/edition/edition-boot';
 import { NotificationContainer } from './modules/notification/container/notification.container';
@@ -84,6 +91,7 @@ import { MailSenderService } from './modules/mail/services/mail.sender.service';
 import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
 import { createOpenAIModelsRouter } from './modules/configuration_manager/routes/openai_models.routes';
+import { createOpenAICompatRouter } from './modules/openai_compat/routes/openai_compat.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -143,12 +151,15 @@ import {
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
+import { createAgentActivityRouter } from './modules/agent_activity/agent-activity.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 import { mcpJsonBodyParser } from './modules/mcp/middlewares/mcp-body.middleware';
+import { releaseOnClientClose } from './libs/utils/release-on-close';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
 import {
   RedisConnectionProviderFactory,
+  checkRedisEvictionPolicy,
   closeAllRedisProviders,
   getPreparedRedisProvider,
 } from './libs/services/redis/connectionProviderFactory';
@@ -228,7 +239,7 @@ export class Application {
       // services), so `prepare()` on the EE provider must prime a
       // process-level credential cache rather than per-instance state for
       // one call to cover both.
-      await getPreparedRedisProvider();
+      await checkRedisEvictionPolicy(await getPreparedRedisProvider());
 
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
@@ -372,9 +383,16 @@ export class Application {
       this.outboxDispatcher.start();
 
       // Mongo expires old notifications by itself; on PostgreSQL this does it (as the jobs role).
+      // The consumer inbox needs it too: it prunes the inbox past the replay window.
       if (docStore() === 'postgres' && process.env.PG_JOBS_URL) {
         this.ttlSweeper = new TtlSweeper(this.logger);
         this.ttlSweeper.start();
+        configureInbox(new PgInbox());
+      } else {
+        // shortcut: MESSAGE_BROKER=postgres or KV_STORE_TYPE=postgres with MongoDB documents has no jobs pool here, so no inbox; add one when that layout ships
+        this.logger.info(
+          'No consumer inbox (needs DOC_STORE=postgres and PG_JOBS_URL): a redelivered notification or mail event may be processed again',
+        );
       }
 
       this.notificationContainer
@@ -763,6 +781,11 @@ export class Application {
       '/v1',
       createOpenAIModelsRouter(this.configurationManagerContainer),
     );
+    // OpenAI-compatible chat (models = configured chat LLMs); base URL `{origin}/api/v1/openai`.
+    this.app.use(
+      '/api/v1/openai',
+      createOpenAICompatRouter(this.esAgentContainer),
+    );
     this.app.use(
       '/api/v1',
       createOpenAIModelsRouter(this.configurationManagerContainer),
@@ -815,6 +838,17 @@ export class Application {
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
+    );
+
+    // Contact support and Send feedback. Imported from `./config`: an edition
+    // can serve its own version of either form.
+    this.app.use(
+      '/api/v1/support',
+      createSupportRouter(this.mailServiceContainer),
+    );
+    this.app.use(
+      '/api/v1/feedback',
+      createFeedbackRouter(this.mailServiceContainer),
     );
 
     // crawling manager routes
@@ -874,6 +908,11 @@ export class Application {
     this.app.use(
       '/api/v1/service-account-delegations',
       createDelegationRouter(this.oauthProviderContainer),
+    );
+
+    this.app.use(
+      '/api/v1/agent-activity',
+      createAgentActivityRouter(this.oauthProviderContainer),
     );
 
     this.app.use(
@@ -950,11 +989,22 @@ export class Application {
 
   async start(): Promise<void> {
     try {
-      await new Promise<void>((resolve) => {
-        this.server.listen(this.port, () => {
+      await new Promise<void>((resolve, reject) => {
+        // listen reports a bind failure (port in use, address not available) as an 'error' event, not a throw.
+        const onError = (error: Error): void => {
+          this.server.off('error', onError);
+          reject(error);
+        };
+        const onListening = (): void => {
+          this.server.off('error', onError);
           this.logger.info(`Server started on port ${this.port}`);
           resolve();
-        });
+        };
+        this.server.once('error', onError);
+        // Every interface unless told otherwise (right inside a container); a process outside one sets loopback.
+        const host = process.env.PIPESHUB_BIND_HOST?.trim();
+        if (host) this.server.listen(this.port, host, onListening);
+        else this.server.listen(this.port, onListening);
       });
       await editionBoot.afterListen(this.logger, this.editionContainers());
     } catch (error) {
@@ -1152,7 +1202,11 @@ export class Application {
             });
           }, SCHEDULE_REPAIR_INTERVAL_MS);
           this.scheduleRepairTimer.unref();
-          await migrations.runMigration({ scheduler, appConfig });
+          await migrations.runMigration({
+            scheduler,
+            appConfig,
+            dynamicClientOrg: () => dynamicClientOrg(),
+          });
           this.logger.info('Migration completed successfully');
         } catch (error) {
           this.logger.error('Failed to run migration', {
@@ -1254,9 +1308,15 @@ export class Application {
             // pipe() leaves `res` open when the bot's answer is cut midway.
             proxyRes.on('error', fail);
             proxyRes.pipe(res);
+            // A client that leaves mid-answer must not leave the upstream read open.
+            releaseOnClientClose(res, proxyRes);
           },
         );
         proxyReq.on('error', fail);
+        // A client that leaves before the bot answers must not leave the upstream request open.
+        res.on('close', () => {
+          if (!res.writableFinished && !proxyReq.destroyed) proxyReq.destroy();
+        });
 
         req.pipe(proxyReq);
       },

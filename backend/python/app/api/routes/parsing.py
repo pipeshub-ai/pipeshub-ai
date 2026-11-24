@@ -32,18 +32,36 @@ from app.api.middlewares.auth import (
     require_service_token,
     service_token_org,
 )
+from app.config import file_types
 from app.config.constants.service import TokenScopes
 from app.exceptions.indexing_exceptions import (
     MultimodalModelNotConfiguredError,
     PasswordProtectedError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.pipeline.fingerprint import content_revision
+from app.services.docling.client import DoclingNotServing
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
+from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache import locks as lock_limits
-from app.services.paid_cache.access import abandon_run, complete_run, start_run
+from app.services.paid_cache.access import (
+    abandon_run,
+    ambient_identity,
+    claim_refresh,
+    complete_run,
+    start_run,
+)
+from app.services.paid_cache.orphan import (
+    OrphanFields,
+    RecordGone,
+    bind_guard,
+    guard_from_request,
+    orphan_check_enabled,
+)
 from app.services.parsing.interface import (
+    DOCLING_UNAVAILABLE_REASON,
     ParseError,
     ParseErrorCode,
     ParserProvider,
@@ -57,13 +75,13 @@ from app.services.parsing.registry import ParserRegistry
 from app.services.parsing.thread_work import ThreadWork, track
 from app.services.resource_governor import (
     acquire_gate_with_backpressure,
-    classify,
     gate_pool,
     parse_cost,
+    reader_tier,
 )
 from app.services.resource_governor.kinds import (
     EXCESS_WAIT_SECONDS,
-    classify_kind,
+    parse_format_kind,
     permit_excess_bytes,
 )
 from app.services.resource_governor.lanes import LaneWaitTimeout
@@ -76,6 +94,8 @@ from app.services.resource_governor.memory_domain import (
 from app.services.resource_governor.models import ParseTier
 from app.services.resource_governor.org_share import OrgShare, max_org_share
 from app.services.resource_governor.policy import INDEX_LIGHT_WORKING_SET_GB
+from app.utils.error_class import already_logged, classify_error, level_for, log_failure
+from app.utils.logging_fields import log_event
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
@@ -194,7 +214,14 @@ def _warn_if_budget_differs(sent: float | None, extension: str, mime_type: str |
     """One warning per pair when the caller's record budget is not this service's own (the settings drifted)."""
     from app.services.messaging.config import messaging_env
 
-    if sent is None:
+    raw = sent
+    sent = lock_limits.valid_record_budget(sent)
+    if sent is None:                       # absent or unusable: the service's own settings apply, nothing to compare
+        if isinstance(raw, int | float) and not isinstance(raw, bool) and raw == raw and raw > lock_limits.MAX_RECORD_BUDGET_S:
+            logger.warning(
+                "The caller's record budget (%.0f s) is above the %.0f s this service accepts (the open-manifest "
+                "protection window less a margin); this service's own settings apply.", raw, lock_limits.MAX_RECORD_BUDGET_S,
+            )
         return
     own = messaging_env.record_processing_timeout_for(extension, mime_type)
     if abs(own - sent) > 1.0 and (round(sent), round(own)) not in _budget_mismatch_logged:
@@ -261,6 +288,11 @@ async def parse_file(
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
     refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
     record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
+    refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
+    orphan_guard: Annotated[bool, Form(description="The caller sent the delete markers its run started under")] = False,  # noqa: FBT002
+    record_marker: Annotated[str, Form(description="The record's delete marker as the run saw it at its start")] = "",
+    org_marker: Annotated[str, Form(description="The org's delete marker as the run saw it at its start")] = "",
+    stop_disabled: Annotated[bool, Form(description="Do not refuse this parse for a changed delete marker")] = False,  # noqa: FBT002
 ) -> JSONResponse:
     """Count the request in, refuse it at once when ``PARSING_MAX_CONCURRENT`` is reached, else parse it."""
     load = parse_load()
@@ -270,7 +302,8 @@ async def parse_file(
     try:
         response = await _parse_file(
             request, file, claims, record_name, mime_type, extension, org_id,
-            provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s,
+            provider, skip_table_enrichment, file_path, refresh_paid_outputs, record_budget_s, refresh_token,
+            OrphanFields(orphan_guard, record_marker[:64], org_marker[:64], stop_disabled),
         )
     finally:
         load.leave()
@@ -293,6 +326,8 @@ async def _parse_file(
     file_path: Annotated[str | None, Form(description="Repo-relative path of the file")] = None,
     refresh_paid_outputs: Annotated[bool, Form(description="Bypass the stored model outputs for this run")] = False,  # noqa: FBT002
     record_budget_s: Annotated[float | None, Form(description="The caller's processing budget for the record, seconds")] = None,
+    refresh_token: Annotated[str | None, Form(description="Names the refresh this request belongs to, so a retry reuses")] = None,
+    orphan_fields: OrphanFields | None = None,
 ) -> JSONResponse:
     """Parse *file* into blocks, or a raw parsed document for Docling-backed providers.
 
@@ -356,7 +391,9 @@ async def _parse_file(
             })
 
     message_id = current_display_id()
-    tier = classify(extension, mime_type)
+    # The parser the registry resolves decides a heavy tier: a PDF labelled txt is parsed by the PDF parser.
+    fmt = file_types.parse_format(mime_type, extension)
+    tier = reader_tier(extension, mime_type, file_types.format_tier(fmt))
     cost = parse_cost(tier, len(content))
     logger.debug(
         "Received parse request: record='%s' format=%s provider=%s size_bytes=%d tier=%s cost=%d",
@@ -420,7 +457,7 @@ async def _parse_file(
         working_set = governor.heavy_working_set
         base_gb = working_set.gb if tier is ParseTier.HEAVY else INDEX_LIGHT_WORKING_SET_GB
         excess = permit_excess_bytes(
-            classify_kind(extension, mime_type), base_gb, working_set.source, len(content)
+            parse_format_kind(fmt, extension, mime_type), base_gb, working_set.source, len(content)
         )
         if excess:
             if not await governor.memory_budget.reserve(excess, EXCESS_WAIT_SECONDS):
@@ -455,9 +492,25 @@ async def _parse_file(
                 # and the service's own settings apply. A budget that differs from this service's is logged.
                 stage_limit = lock_limits.stage_deadline_for(record_budget_s)
                 _warn_if_budget_differs(record_budget_s, extension, mime_type)
+                # A refresh is claimed once: the client's own retry of the request reuses what the first paid for.
+                first_request = not refresh_paid_outputs or await claim_refresh(
+                    _config_service(request), (refresh_token or "")[:128], logger,
+                )
                 paid_run = start_run(
                     content_revision(content), "parse", refresh=refresh_paid_outputs, stage_deadline_s=stage_limit,
+                    reuse_prior_attempt=refresh_paid_outputs and not first_request,
                 )
+                # The caller's delete markers: a marker that changed since its run started refuses the parse (410), and
+                # the caller confirms with the graph. An older caller sends none: no check (fail open).
+                identity = ambient_identity()
+                if identity is not None and orphan_check_enabled() and orphan_fields is not None:
+                    orphan = guard_from_request(
+                        identity[0], identity[1], present=orphan_fields.present, record_marker=orphan_fields.record_marker,
+                        org_marker=orphan_fields.org_marker, stop_disabled=orphan_fields.stop_disabled,
+                    )
+                    if orphan is not None:
+                        orphan.backend_of = getattr(paid_cache_access.paid_cache_for(_config_service(request), logger), "_backend", None)
+                        bind_guard(orphan)
                 # Bounded server-side: a client that gave up does not stop a parse, and its paid calls must not
                 # outlive what the delayed re-purge after a delete covers. The bound is the longest record budget
                 # configured (never shorter than the client's own read timeout for the record), and only this
@@ -487,6 +540,16 @@ async def _parse_file(
                     "error": ParseError(
                         ParseErrorCode.PASSWORD_REQUIRED, exc.message, exc.details
                     ).to_dict(),
+                },
+            )
+        except RecordGone as exc:
+            # Not a fact about the file: the record's delete marker changed. The caller reads the record before it acts.
+            logger.info("Parse refused: record='%s' its delete marker changed", record_name)
+            return JSONResponse(
+                status_code=status.HTTP_410_GONE,
+                content={
+                    "success": False,
+                    "error": ParseError(ParseErrorCode.RECORD_GONE, exc.message, exc.details).to_dict(),
                 },
             )
         except MultimodalModelNotConfiguredError as exc:
@@ -524,6 +587,24 @@ async def _parse_file(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={"success": False, "error": exc.to_dict()},
             )
+        except NonRetryableError as exc:
+            # A deliberate stop (a model call refused for good, say): sending the file again gets the same answer.
+            # As a 500 the client retried it and counted it against the parsing circuit breaker.
+            logger.warning(
+                "Parse stopped: record='%s' provider=%s by %s, which a retry would repeat",
+                record_name, provider_enum.value, type(exc).__name__,
+            )
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_FAILED.value,
+                        "message": "Parsing was stopped by an error that a retry would repeat",
+                        "details": {"requestId": message_id, "error_type": type(exc).__name__},
+                    },
+                },
+            )
         except LaneWaitTimeout:
             # A local conversion found no CPU lane in time: retryable, like a full gate.
             logger.warning("Parse deferred: record='%s' waited too long for a CPU lane", record_name)
@@ -556,14 +637,36 @@ async def _parse_file(
                     },
                 },
             )
-        except Exception:  # noqa: BLE001
-            parse_ms = (time.monotonic() - parse_start) * 1000
-            logger.exception(
-                "Unexpected error parsing '%s' (provider=%s, parse_ms=%.0f)",
-                record_name, provider_enum.value, parse_ms,
+        except DoclingNotServing:
+            # Docling never received the file: the caller's record waits for it. 424, not 5xx, as extraction answers a
+            # provider outage: a 5xx is retried and counted by the caller's breaker, which then fails every parse type.
+            # PARSE_BACKPRESSURE, not a new code: an older client reads an unknown code as PARSE_FAILED, a verdict.
+            logger.info("Parse deferred: provider=%s Docling is not serving", provider_enum.value)
+            return JSONResponse(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
+                        "message": "Docling is not serving; retry later",
+                        "details": {"requestId": message_id, "reason": DOCLING_UNAVAILABLE_REASON},
+                    },
+                },
             )
-            # The exception and its type stay in the log above: the text can quote the
-            # document or a path, and the caller only needs to correlate.
+        except Exception as exc:  # noqa: BLE001
+            parse_ms = (time.monotonic() - parse_start) * 1000
+            # Class and frames only: the text can quote the document, a path, or (VLM OCR) the model
+            # provider's response body; the caller only needs to correlate.
+            fields = {"provider": provider_enum.value, "parse_ms": round(parse_ms)}
+            cls = classify_error(exc)
+            if already_logged(exc, level_for(cls)):
+                # VLM OCR re-raises the last page's error once every page failed: the 500 keeps its line, no second stack.
+                log_event(
+                    logger, "parse.failed", level=level_for(cls), outcome="failure", error_class=cls,
+                    error_type=type(exc).__name__, **fields,
+                )
+            else:
+                log_failure(logger, "parse.failed", exc, error_class=cls, include_error_text=False, **fields)
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={

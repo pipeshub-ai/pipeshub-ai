@@ -262,8 +262,12 @@ class TestExecuteHappyPath:
             await sandbox.execute(CodeRequest(code="print(1)", language="python"))
 
         _, kwargs = fake_client.containers.create.call_args
-        assert kwargs["command"] == ["sh", "-c", "python3 main.py"]
+        # Wrapped in the in-container deadline, which carries ceil(timeout).
+        assert kwargs["command"][:2] == ["sh", "-c"]
+        assert kwargs["command"][3:5] == ["sandbox-deadline", "30"]
+        assert kwargs["command"][5:] == ["sh", "-c", "python3 main.py"]
         assert kwargs["network_mode"] == "none"
+        assert kwargs["oom_score_adj"] == 1000
         assert kwargs["network_disabled"] is True
 
 
@@ -380,7 +384,8 @@ class TestNetworkAccess:
         assert kwargs["network_disabled"] is False
         assert "network_mode" not in kwargs
         # Firewall first, then the program as `sandbox` with nothing left.
-        assert kwargs["command"][4:] == ["sh", "-c", "python3 main.py"]
+        assert kwargs["command"][4:8] == ["sh", "-c", kwargs["command"][6], "sandbox-deadline"]
+        assert kwargs["command"][9:] == ["sh", "-c", "python3 main.py"]
         assert kwargs["user"] == "0"
         assert kwargs["cap_drop"] == ["ALL"]
         script = kwargs["command"][2]
@@ -409,6 +414,29 @@ class TestNetworkAccess:
 
         assert f"({_TOKEN})" in fake_client.containers.create.call_args_list[0].kwargs["command"][2]
 
+        kwargs = fake_client.containers.create.call_args.kwargs
+        assert kwargs["network_mode"] == "none"
+        assert "network" not in kwargs
+        assert result.exit_code == 0
+        assert result.stdout == "1\n"
+        assert "Network access is unavailable" in result.stderr
+
+    async def test_unsafe_egress_network_runs_offline(self, tmp_path) -> None:
+        """An egress bridge that allows inter-container traffic and cannot be
+        replaced keeps the run off it, but the run itself still goes ahead
+        with no network, as when the bridge's subnets can't be read."""
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"), allow_network=True, egress_network="my-egress")
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = _fake_container(exit_code=0, stdout=b"1\n")
+        _with_egress_network(fake_client, "my-egress")
+        network = fake_client.networks.get.return_value
+        network.attrs["Options"] = {}
+        network.attrs["Containers"] = {"c" * 64: {}}
+
+        with patch("docker.from_env", return_value=fake_client):
+            result = await sandbox.execute(CodeRequest(code="print(1)", language="python", allow_network=True))
+
+        network.remove.assert_not_called()
         kwargs = fake_client.containers.create.call_args.kwargs
         assert kwargs["network_mode"] == "none"
         assert "network" not in kwargs
@@ -575,7 +603,8 @@ class TestInstallPackagesIdempotency:
             assert fake_client.containers.create.call_count == 1
             kwargs = fake_client.containers.create.call_args.kwargs
             assert kwargs["network"] == "sandbox_egress"
-            assert "pip install" in kwargs["command"][6]
+            assert kwargs["command"][7:9] == ["sandbox-deadline", "300"]
+            assert "pip install" in kwargs["command"][11]
             assert "-d 169.254.0.0/16 -j REJECT" in kwargs["command"][2]
 
             second = await sandbox.install_packages(["pandas"], "python")
@@ -603,6 +632,7 @@ class TestInstallFailsClosed:
         assert "Package install refused" in result.stderr
         fake_client.containers.create.assert_called_once()
         assert fake_client.containers.create.call_args.kwargs["user"] == "0"
+        assert fake_client.containers.create.call_args.kwargs["oom_score_adj"] == 1000
 
     async def test_unreadable_bridge_subnet_refuses_the_install(self, tmp_path) -> None:
         sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
@@ -860,3 +890,325 @@ class TestConfigWiring:
         _, backend = await control_plane.sandbox_manager.get_or_create(SandboxType.CODING)
         assert isinstance(backend, DockerCodingSandbox)
         await control_plane.sandbox_manager.destroy_all()
+
+
+def _exit_state(*, oom: bool = False, started: str = "2026-01-01T00:00:00.123456789Z",
+                finished: str = "2026-01-01T00:00:02.5Z") -> dict:
+    return {"State": {"OOMKilled": oom, "StartedAt": started, "FinishedAt": finished}}
+
+
+class TestOutOfMemory:
+    async def _run(self, tmp_path, container) -> object:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        with patch("docker.from_env", return_value=fake_client):
+            return await sandbox.execute(CodeRequest(code="x = 'a' * (1024**3)", language="python"))
+
+    async def test_oom_killed_run_is_out_of_memory_with_a_note(self, tmp_path) -> None:
+        container = _fake_container(exit_code=137)
+        container.attrs = _exit_state(oom=True)
+        result = await self._run(tmp_path, container)
+
+        container.reload.assert_called_once()
+        assert result.exit_code == 137
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+        assert result.stderr.startswith("[sandbox] The program was killed because it ran out of memory")
+        assert "512 MB per run" in result.stderr
+        assert "the server itself was short of memory" in result.stderr
+        assert "512 MB limit" in result.error_analysis.message
+
+    async def test_oom_flag_with_exit_zero_stays_a_success_with_the_note(self, tmp_path) -> None:
+        container = _fake_container(exit_code=0, stdout=b"done\n")
+        container.attrs = _exit_state(oom=True)
+        result = await self._run(tmp_path, container)
+
+        assert result.success is True
+        assert result.error_analysis is None
+        assert result.stderr.startswith("[sandbox] The program was killed because it ran out of memory")
+
+    async def test_unreadable_attrs_are_not_oom(self, tmp_path) -> None:
+        # MagicMock attrs are truthy everywhere; they must not read as OOMKilled.
+        result = await self._run(tmp_path, _fake_container(exit_code=1, stderr=b"ValueError: boom\n"))
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.RUNTIME
+        assert "[sandbox]" not in result.stderr
+
+    async def test_failed_inspect_falls_back_to_reflection(self, tmp_path) -> None:
+        container = _fake_container(exit_code=137)
+        container.reload.side_effect = RuntimeError("daemon gone")
+        result = await self._run(tmp_path, container)
+
+        assert result.error_analysis is not None
+        assert result.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+        assert result.error_analysis.message.startswith("The run was killed (SIGKILL)")
+        assert "[sandbox]" not in result.stderr
+
+    async def test_install_oom_fails_with_a_note(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        container = _fake_container(exit_code=137, stderr=b"Killed\n")
+        container.attrs = _exit_state(oom=True)
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        _with_egress_network(fake_client, "sandbox_egress")
+        with patch("docker.from_env", return_value=fake_client):
+            result = await sandbox.install_packages(["torch"], "python")
+
+        assert result.success is False
+        assert result.stderr.startswith(
+            "[sandbox] Package installation ran out of memory (limit 512 MB)."
+        )
+
+
+class TestDockerTime:
+    def test_nanosecond_timestamps_parse(self) -> None:
+        from app.agent_loop_lib.sandbox.coding.docker import _parse_docker_time
+
+        start = _parse_docker_time("2026-01-01T00:00:00.123456789Z")
+        end = _parse_docker_time("2026-01-01T00:00:02.5Z")
+        assert start is not None and end is not None
+        assert abs((end - start) - 2.376544) < 1e-5
+
+    def test_zero_time_and_garbage_are_none(self) -> None:
+        from app.agent_loop_lib.sandbox.coding.docker import _parse_docker_time
+
+        assert _parse_docker_time("0001-01-01T00:00:00Z") is None
+        assert _parse_docker_time("not a time") is None
+        assert _parse_docker_time(None) is None
+
+
+class _BlockingRun:
+    """A fake client whose container's `wait` (or another chosen call)
+    blocks until the container is force-removed, like a real long run."""
+
+    def __init__(self, *, block_in: str = "wait", exit_code: int = 137) -> None:
+        import threading
+
+        self.removed = threading.Event()
+        self.entered = threading.Event()
+        self.thread_done = threading.Event()
+        self.container = _fake_container(exit_code=exit_code)
+        self.container.id = "c0ffee000000aaaa"
+        self.client = MagicMock()
+        self.client.containers.create.return_value = self.container
+        self.client.api.remove_container.side_effect = lambda *a, **k: self.removed.set()
+        self.container.remove.side_effect = lambda *a, **k: self.removed.set()
+
+        def _block(*_a: object, **_k: object) -> dict:
+            self.entered.set()
+            self.removed.wait(10)
+            return {"StatusCode": exit_code}
+
+        getattr(self.container, block_in).side_effect = _block
+
+    async def wait_entered(self) -> None:
+        import asyncio
+
+        for _ in range(200):
+            if self.entered.is_set():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("the run never reached the blocking call")
+
+
+class TestCancelRemovesTheContainerFirst:
+    async def _start(self, tmp_path, run: _BlockingRun, *, install: bool = False) -> object:
+        import asyncio
+
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        _with_egress_network(run.client, "sandbox_egress")
+        if install:
+            coro = sandbox.install_packages(["pandas"], "python")
+        else:
+            coro = sandbox.execute(CodeRequest(code="while True: pass", language="python", timeout=120))
+        task = asyncio.ensure_future(coro)
+        await run.wait_entered()
+        return task
+
+    async def test_cancel_raises_after_the_container_is_removed(self, tmp_path) -> None:
+        import asyncio
+
+        run = _BlockingRun()
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run.client.api.remove_container.assert_called_once_with(run.container.id, force=True)
+        assert run.removed.is_set()
+        # The thread went straight to its own cleanup: no logs, no extraction.
+        run.container.logs.assert_not_called()
+        run.container.get_archive.assert_not_called()
+
+    async def test_cancel_before_start_never_starts_the_container(self, tmp_path) -> None:
+        import asyncio
+
+        run = _BlockingRun(block_in="put_archive")
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run.container.start.assert_not_called()
+        assert run.removed.is_set()
+
+    async def test_cancel_while_the_container_is_created(self, tmp_path) -> None:
+        import asyncio
+        import threading
+
+        run = _BlockingRun()
+        gate = threading.Event()
+
+        def _slow_create(**_kwargs: object) -> MagicMock:
+            run.entered.set()
+            gate.wait(5)
+            return run.container
+
+        run.client.containers.create.side_effect = _slow_create
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            gate.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run.container.start.assert_not_called()
+        run.container.remove.assert_called_with(force=True)
+
+    async def test_host_timeout_still_returns_the_timeout_result(self, tmp_path) -> None:
+        run = _BlockingRun()
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        with patch("docker.from_env", return_value=run.client), patch(
+            "app.agent_loop_lib.sandbox.coding.docker.asyncio.wait_for",
+            side_effect=_immediate_timeout,
+        ):
+            result = await sandbox.execute(CodeRequest(code="while True: pass", language="python", timeout=1))
+
+        assert result.exit_code == -1
+        assert "timed out" in result.stderr.lower()
+        assert result.error_analysis.category == ErrorCategory.TIMEOUT
+        assert run.removed.is_set()
+
+    async def test_second_cancel_during_cleanup_still_waits_for_the_thread(self, tmp_path) -> None:
+        import asyncio
+
+        run = _BlockingRun()
+        # The remove does not unblock the run on its own; it is let go later.
+        run.client.api.remove_container.side_effect = None
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done()
+            run.removed.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    async def test_cleanup_bound_logs_and_raises(self, tmp_path, caplog, monkeypatch) -> None:
+        import asyncio
+        import logging
+
+        from app.agent_loop_lib.sandbox.coding import docker as docker_mod
+
+        monkeypatch.setattr(docker_mod, "_CANCEL_CLEANUP_S", 0.1)
+        run = _BlockingRun()
+        run.client.api.remove_container.side_effect = None  # a hung daemon
+        try:
+            with patch("docker.from_env", return_value=run.client), caplog.at_level(logging.WARNING):
+                task = await self._start(tmp_path, run)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            assert "did not stop within 0.1s of cancel" in caplog.text
+        finally:
+            run.removed.set()
+
+    async def test_install_cancel_removes_the_container(self, tmp_path) -> None:
+        import asyncio
+
+        run = _BlockingRun()
+        with patch("docker.from_env", return_value=run.client):
+            task = await self._start(tmp_path, run, install=True)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        run.client.api.remove_container.assert_called_once_with(run.container.id, force=True)
+
+
+async def _immediate_timeout(awaitable: object, timeout: float) -> None:
+    """`asyncio.wait_for` stand-in that times out at once, without waiting
+    `timeout + 30` seconds; the shielded run keeps going."""
+    import asyncio
+
+    inner = asyncio.ensure_future(awaitable)
+    await asyncio.sleep(0.05)
+    inner.cancel()
+    raise asyncio.TimeoutError
+
+
+class TestInContainerDeadline:
+    async def _run(self, tmp_path, container, timeout: float = 30) -> object:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        with patch("docker.from_env", return_value=fake_client):
+            return await sandbox.execute(CodeRequest(code="while True: pass", language="python", timeout=timeout))
+
+    async def test_host_waits_past_the_in_container_deadline(self, tmp_path) -> None:
+        container = _fake_container(exit_code=0)
+        await self._run(tmp_path, container, timeout=30)
+        container.wait.assert_called_once_with(timeout=40)
+
+    async def test_a_kill_after_the_whole_timeout_is_a_timeout(self, tmp_path) -> None:
+        container = _fake_container(exit_code=137)
+        container.attrs = _exit_state(started="2026-01-01T00:00:00Z", finished="2026-01-01T00:00:30.2Z")
+        result = await self._run(tmp_path, container, timeout=30)
+
+        assert result.exit_code == -1
+        assert result.stderr.startswith("Execution timed out after 30")
+        assert result.error_analysis.category == ErrorCategory.TIMEOUT
+
+    async def test_an_early_kill_without_the_oom_flag_is_a_hedged_out_of_memory(self, tmp_path) -> None:
+        container = _fake_container(exit_code=137)
+        container.attrs = _exit_state(started="2026-01-01T00:00:00Z", finished="2026-01-01T00:00:02Z")
+        result = await self._run(tmp_path, container, timeout=30)
+
+        assert result.exit_code == 137
+        assert result.error_analysis.category == ErrorCategory.OUT_OF_MEMORY
+        assert result.error_analysis.message.startswith("The run was killed (SIGKILL)")
+
+    async def test_install_past_its_deadline_says_so(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        container = _fake_container(exit_code=137)
+        container.attrs = _exit_state(started="2026-01-01T00:00:00Z", finished="2026-01-01T00:05:00.5Z")
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        _with_egress_network(fake_client, "sandbox_egress")
+        with patch("docker.from_env", return_value=fake_client):
+            result = await sandbox.install_packages(["pandas"], "python")
+
+        container.wait.assert_called_once_with(timeout=310)
+        assert result.success is False
+        assert result.stderr.startswith("[sandbox] Package installation timed out after 300s.")
+
+    async def test_install_host_wait_timeout_is_not_a_raw_read_timeout(self, tmp_path) -> None:
+        sandbox = DockerCodingSandbox(working_dir=str(tmp_path / "wd"))
+        container = _fake_container(exit_code=0)
+        container.wait.side_effect = TimeoutError("UnixHTTPConnectionPool: Read timed out.")
+        fake_client = MagicMock()
+        fake_client.containers.create.return_value = container
+        _with_egress_network(fake_client, "sandbox_egress")
+        with patch("docker.from_env", return_value=fake_client):
+            result = await sandbox.install_packages(["pandas"], "python")
+
+        assert result.success is False
+        assert result.stderr.startswith("[sandbox] Package installation timed out after 300s.")
+        assert "UnixHTTPConnectionPool" not in result.stderr
+        container.kill.assert_called_once()

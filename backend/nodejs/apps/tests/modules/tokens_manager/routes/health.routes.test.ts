@@ -225,6 +225,49 @@ describe('tokens_manager/routes/health.routes', () => {
       })
     })
 
+    describe('weight-precision warning', () => {
+      const PRECISION_KEY = '/services/vectordb/precision_verdict'
+      let savedReplicas: string | undefined
+      beforeEach(() => {
+        savedReplicas = process.env.PIPESHUB_APP_MAX_REPLICAS
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '1'
+      })
+      afterEach(() => {
+        if (savedReplicas === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+        else process.env.PIPESHUB_APP_MAX_REPLICAS = savedReplicas
+      })
+
+      it('warns, naming the setting to restore, while indexing waits for the precision to match', async () => {
+        mockKV.get = sinon.stub().callsFake(async (key: string) =>
+          key === PRECISION_KEY ? { mismatch: true, holds: ['fp32'] } : null)
+        sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+        const res = mockRes()
+        await findHandler('/', 'get')({}, res, sinon.stub())
+        const body = res.json.firstCall.args[0]
+        expect(body.status).to.equal('healthy')
+        expect(body.warnings).to.have.length(1)
+        expect(body.warnings[0]).to.contain('EMBEDDING_SERVER_PRECISION=fp32')
+      })
+
+      it('answers without the warning when the precision read stalls', async () => {
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          mockKV.get = sinon.stub().callsFake((key: string) =>
+            key === PRECISION_KEY ? new Promise(() => undefined) : Promise.resolve(null))
+          sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+          const res = mockRes()
+          const answered = findHandler('/', 'get')({}, res, sinon.stub())
+          await clock.tickAsync(2000)
+          await answered
+          const body = res.json.firstCall.args[0]
+          expect(body.status).to.equal('healthy')
+          expect(body.warnings).to.equal(undefined)
+        } finally {
+          clock.restore()
+        }
+      })
+    })
+
     it('should include deployment info in response', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()
@@ -833,6 +876,7 @@ describe('tokens_manager/routes/health.routes', () => {
 
       const timeoutErr: any = new Error('timeout of 5000ms exceeded')
       timeoutErr.code = 'ECONNABORTED'
+      timeoutErr.request = {} // as axios sets it: the request was sent, no answer came
 
       const axiosModule = require('axios')
       sinon.stub(axiosModule, 'get').callsFake((url: string) => {
@@ -843,20 +887,17 @@ describe('tokens_manager/routes/health.routes', () => {
       })
 
       const LoggerModule = require('../../../../src/libs/services/logger.service')
-      const errorStub = sinon.stub(
-        LoggerModule.Logger.getInstance({ service: 'HealthStatus' }),
-        'error',
-      )
+      // The router's logger is the one its module got at load: stub the class, not one instance.
+      const warnStub = sinon.stub(LoggerModule.Logger.prototype, 'warn')
 
       await handler({}, res, next)
 
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.services.graphDb).to.equal('unhealthy')
-      expect(
-        errorStub.getCalls().some(
-          (c: any) => c.args[0] === 'graph-db health check timed out',
-        ),
-      ).to.equal(true)
+      const changed = warnStub.getCalls().filter((c: any) => c.args[0] === 'health.check.changed')
+      expect(changed.map((c: any) => [c.args[1].check, c.args[1].state, c.args[1].reason, c.args[1].error_class])).to.deep.equal([
+        ['graph_db', 'unhealthy', 'timeout', 'timeout'],
+      ])
     })
 
     it('should mark graphDb unhealthy when connector /health/graph-db returns non-200 (neo4j or arangodb)', async () => {
@@ -1024,13 +1065,14 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.deployment).to.have.property('redisMode')
     })
 
-    it('should call next() on unexpected top-level exception', async () => {
+    it('passes an unexpected top-level exception to the error middleware', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()
-      res.json = sinon.stub().throws(new Error('unexpected serialization error'))
+      const failure = new Error('unexpected serialization error')
+      res.json = sinon.stub().throws(failure)
       const next = sinon.stub()
       await handler({}, res, next)
-      expect(next.calledOnce).to.be.true
+      expect(next.calledOnceWithExactly(failure)).to.be.true
     })
 
     it('should report healthy overall when only vectorDb is unhealthy', async () => {

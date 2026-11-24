@@ -52,10 +52,6 @@ PINNED = {
     "pipeshub_parse_admission_unscoped_total": ("counter", (), False),
     "pipeshub_parse_documents_total": ("counter", ("outcome",), False),
     "pipeshub_stage_schema_guard": ("gauge", ("state",), False),
-    "pipeshub_queue_pending": ("gauge", ("queue", "class"), True),
-    "pipeshub_queue_in_flight": ("gauge", ("queue", "class"), True),
-    "pipeshub_queue_oldest_age_seconds": ("gauge", ("queue", "class"), True),
-    "pipeshub_queue_pending_cost_units": ("gauge", ("queue", "class"), True),
     "pipeshub_load_state": ("gauge", ("kind", "state"), True),
     "pipeshub_load_notifications_total": ("counter", ("kind", "edge"), True),
     "pipeshub_load_evaluator_last_tick_timestamp_seconds": ("gauge", (), True),
@@ -183,12 +179,12 @@ def test_cardinality_budget(tmp_path: Path) -> None:
             "pipeshub_downstream_events_total": [[["indexing", f"org-{i}", "throttle"], 1] for i in range(50)],
             "pipeshub_parse_units_total": [[["small", f"o{rng.random()}"], 1], [["small"], 1]],
             "not_a_series": [[[], 1]],
-            "pipeshub_queue_pending": [[["parse", "small"], 9]],  # a fleet series from a process: refused
+            "pipeshub_load_state": [[["saturation", "ok"], 1]],  # a fleet series from a process: refused
         })
     text = _text(_collector(tmp_path))
     samples = [line for line in text.splitlines() if line and not line.startswith("#")]
     assert len(samples) <= ox.MAX_SERIES
-    assert "not_a_series" not in text and "pipeshub_queue_pending" not in text
+    assert "not_a_series" not in text and "pipeshub_load_state" not in text
     assert "org-" not in text and "org-123" not in text
     for line in samples:
         labels = line[line.find("{") + 1 : line.find("}")] if "{" in line else ""
@@ -204,21 +200,27 @@ def test_every_series_label_is_a_closed_set_or_the_service() -> None:
 
 
 def test_fleet_series_come_only_from_the_fleet_source(tmp_path: Path) -> None:
-    assert "pipeshub_queue_pending" not in _text(_collector(tmp_path))
+    assert "pipeshub_load_state" not in _text(_collector(tmp_path))
     fleet = lambda: [  # noqa: E731
-        ("pipeshub_queue_pending", ("parse", "small"), 12.0),
+        ("pipeshub_load_state", ("saturation", "ok"), 1.0),
         ("pipeshub_governor_pool_limit", ("indexing", "heavy_parse"), 9.0),  # not a fleet series: refused
-        ("pipeshub_queue_pending", ("parse", "org-9"), 1.0),  # open label: refused
+        ("pipeshub_load_state", ("org-9", "ok"), 1.0),  # open label: refused
     ]
     text = _text(_collector(tmp_path, fleet=fleet))
-    assert _value(text, 'pipeshub_queue_pending{class="small",queue="parse"}') == 12
+    assert _value(text, 'pipeshub_load_state{kind="saturation",state="ok"}') == 1
     assert "pool_limit" not in text and "org-9" not in text
-    assert "pipeshub_queue_pending" not in _text(_collector(tmp_path, fleet=lambda: None))
+    assert "pipeshub_load_state" not in _text(_collector(tmp_path, fleet=lambda: None))
 
     def broken():  # noqa: ANN202
         raise RuntimeError("state store down")
 
     assert _text(_collector(tmp_path, fleet=broken)) == ""
+
+
+def test_no_backlog_series_are_exported() -> None:
+    """The exporter carries the process and load-state health series only; queue backlog is not exported."""
+    assert not [n for n in ox.SERIES if "queue" in n]
+    assert "queue" not in ox.CLOSED_LABELS
 
 
 def test_run_dir_unwritable_serves_only_the_fleet_series(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -229,8 +231,8 @@ def test_run_dir_unwritable_serves_only_the_fleet_series(tmp_path: Path, caplog:
     with caplog.at_level("WARNING"):
         assert writer.write() is False and writer.write() is False
     assert len([r for r in caplog.records if "cannot write the snapshot" in r.message]) == 1
-    text = _text(ox.SignalCollector(run, fleet_source=lambda: [("pipeshub_queue_pending", ("parse", "small"), 1.0)]))
-    assert text.count("pipeshub_queue_pending{") == 1 and "governor" not in text
+    text = _text(ox.SignalCollector(run, fleet_source=lambda: [("pipeshub_load_state", ("saturation", "ok"), 1.0)]))
+    assert text.count("pipeshub_load_state{") == 1 and "governor" not in text
 
 
 def test_gc_bound_under_a_crash_loop(tmp_path: Path) -> None:
@@ -489,7 +491,7 @@ def test_the_restart_of_every_process_with_a_kept_run_dir_does_not_double_count(
 # The most series one service of a container can ever serve: every series times every value of every
 # label it is allowed to carry. It is a literal on purpose: raising it is a deliberate edit that must
 # also raise MAX_SERIES in the exporter, which the docs and the Helm values promise.
-FULL_PRODUCT_PER_SERVICE = 295
+FULL_PRODUCT_PER_SERVICE = 271
 MAX_SERIES_PROMISED = 300
 
 
@@ -537,16 +539,16 @@ def test_what_is_cut_first_when_a_container_runs_more_services_than_the_budget_h
             axes = [[service] if label == "service" else sorted(ox.allowed_values(spec, label) or ()) for label in spec.labels]
             metrics[name] = [[list(c), 1.0] for c in itertools.product(*axes)]
         _snapshot(tmp_path, pid, metrics, service=service)
-    fleet = lambda: [("pipeshub_queue_pending", ("parse", "small"), 1.0)]  # noqa: E731
+    fleet = lambda: [("pipeshub_load_state", ("saturation", "ok"), 1.0)]  # noqa: E731
     collector = ox.SignalCollector(tmp_path, clock=lambda: 1000.0, is_alive=lambda *_: True, fleet_source=fleet, cache_ttl=0)
     with caplog.at_level("WARNING"):
         text = _text(collector)
     samples = [ln for ln in text.splitlines() if ln and not ln.startswith("#")]
     assert len(samples) == ox.MAX_SERIES
     assert "pipeshub_governor_pool_limit" in text and "pipeshub_cgroup_oom_kills_total" in text  # the head is kept
-    assert "pipeshub_queue_pending" not in text  # the fleet tail goes first
+    assert "pipeshub_load_state" not in text  # the fleet tail goes first
     warned = [r.message for r in caplog.records if "were cut" in r.message]
-    assert len(warned) == 1 and "pipeshub_queue_pending" in warned[0]
+    assert len(warned) == 1 and "pipeshub_load_state" in warned[0]
 
 
 def test_under_the_budget_nothing_is_cut_and_nothing_is_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
