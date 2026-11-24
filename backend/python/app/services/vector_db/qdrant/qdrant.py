@@ -87,7 +87,6 @@ from app.services.vector_db.qdrant.memory_sizing import assess_memory, parse_mem
 from app.services.vector_db.qdrant.utils import (
     MAX_HNSW_EF_CONSTRUCT,
     MAX_TIE_READ,
-    TIE_READ_ROUNDS,
     QdrantUtils,
     env_number,
 )
@@ -941,12 +940,14 @@ class QdrantService(IVectorDBService):
 
         Each leg asks for its depth and a margin. When the margin is all tied with
         the point at the cut, Qdrant chose which of the tied points to return, and
-        another call could choose others. The leg is asked again for twice as many,
-        up to ``MAX_TIE_READ``, until the tie ends inside the answer. Rare: equal
-        scores that many are mostly keyword matches on the same words.
+        another call could choose others. The leg is asked again for twice as many
+        until the tie ends inside the answer, or it has read ``MAX_TIE_READ`` points:
+        a tie larger than that is still Qdrant's choice. Rare: equal scores that many
+        are mostly keyword matches on the same words.
         """
         depths = [req.limit * 2 for req, request_legs in zip(requests, legs) for _ in request_legs]
-        for _ in range(TIE_READ_ROUNDS):
+        # Each round at least doubles a leg's read, so this ends by MAX_TIE_READ.
+        while True:
             deeper = [
                 i for i, points in enumerate(answers)
                 if flat[i].limit < MAX_TIE_READ and QdrantUtils.tie_at_cut(points, depths[i], flat[i].limit)

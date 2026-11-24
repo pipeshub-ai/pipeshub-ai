@@ -194,6 +194,18 @@ async def test_a_tie_past_the_margin_is_read_until_it_ends_so_any_subset_gives_o
 
 
 @pytest.mark.asyncio
+async def test_a_tie_larger_than_the_cap_stops_at_the_cap() -> None:
+    from app.services.vector_db.qdrant.utils import MAX_TIE_READ
+
+    svc = _service()
+    leg = _TiedLeg([f"p{i:05d}" for i in range(MAX_TIE_READ * 2)])
+    svc.client.query_batch_points = AsyncMock(side_effect=leg.__call__)
+    svc.client.retrieve.side_effect = lambda **kw: [MagicMock(id=i, payload={}) for i in kw["ids"]]
+    await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=1)])
+    assert leg.limits == [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
+
+
+@pytest.mark.asyncio
 async def test_a_tie_that_ends_inside_the_answer_is_not_read_again() -> None:
     svc = _service()
     svc.client.query_batch_points = AsyncMock(
