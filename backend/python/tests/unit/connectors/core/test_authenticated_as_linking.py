@@ -11,7 +11,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, Connectors
-from app.connectors.core.base.connector.source_user_listing import Presence, SourceUserListing
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     AuthenticatorLink,
     AuthenticatorLinkResult,

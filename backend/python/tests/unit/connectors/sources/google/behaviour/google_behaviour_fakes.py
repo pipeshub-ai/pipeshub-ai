@@ -20,7 +20,7 @@ import copy
 import itertools
 import json
 import re
-from collections.abc import AsyncIterator, Callable, Collection
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace

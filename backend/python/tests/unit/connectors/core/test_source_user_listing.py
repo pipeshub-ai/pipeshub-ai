@@ -10,7 +10,10 @@ from collections.abc import Callable
 
 import pytest
 
-from app.connectors.core.base.connector.source_user_listing import Presence, SourceUserListing
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 
 CREATOR = "Creator@Corp.com"
 
