@@ -122,18 +122,23 @@ class ConfigService:
         self.connector_id = connector_id
         self.config = config
         self.platform: dict[str, Any] = {}
+        # Every other key written, kept across syncs and restarts as the product's store keeps it (the
+        # listed-authenticators marker).
+        self.kv: dict[str, Any] = {}
 
     async def get_config(self, path: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
             return json.loads(json.dumps(self.config))
         if path == "/services/platform/settings":
             return self.platform or default
-        return default
+        return json.loads(json.dumps(self.kv[path])) if path in self.kv else default
 
     async def set_config(self, path: str, value: Any, **_: Any) -> bool:  # noqa: ANN401
         if path == f"/services/connectors/{self.connector_id}/config":
             self.config.clear()
             self.config.update(value)
+        elif path != "/services/platform/settings":
+            self.kv[path] = json.loads(json.dumps(value))
         return True
 
 
@@ -465,6 +470,24 @@ class World:
                 return u
         return None
 
+    def creator_listed(self) -> bool:
+        """Whether the member listing of the scoped project names the creator under their own GitLab
+        account, one that is not the token's: a member whose profile shows the creator's email."""
+        p, creator = self.scoped(), self.gl_user(self.creator_email)
+        token_user = self.gl.sync_token.user if self.gl.sync_token else None
+        return (p is not None and creator is not None and creator is not token_user
+                and creator.public_email.lower() == self.creator_email.lower()
+                and creator.id in self.gl.project_member_rows(p))
+
+    def creator_proved_absent(self) -> bool:
+        """Whether that listing names every member by email and the creator is none of them: one whose profile
+        shows no email may be the creator."""
+        p = self.scoped()
+        if p is None or self.creator_listed():
+            return False
+        rows = self.gl.project_member_rows(p)
+        return bool(rows) and all(self.gl.users[uid].public_email for uid in rows)
+
     def scoped(self) -> Project | None:
         p = self.gl.projects.get(self.scope) if self.scope else None
         return p if p and not p.deleted else None
@@ -552,12 +575,14 @@ class World:
             # (A full sync unlinks what it did not see; an unlinked node is reachable by nobody.)
             if self._truth(token_user, doc) is None and external_id in reachable:
                 out.stale.append(f"{doc.get('recordType')}:{doc.get('recordName', external_id)}")
+        creator_absent = self.creator_proved_absent()
         for email in emails or list(self.users):
             seen = seen_by[email]
             viewer = self.gl_user(email)
             # The PipesHub user who connected the connector also reads what its GitLab
-            # account reads (the product's authenticatedAs link), whatever their email.
-            linked = token_user if email == self.creator_email else None
+            # account reads (the product's authenticatedAs link), whatever their email,
+            # when the member listing proves they have no GitLab account of their own.
+            linked = token_user if email == self.creator_email and creator_absent else None
             for external_id, doc in docs.items():
                 truth = bool(self._truth(viewer, doc)) or (linked is not None and bool(self._truth(linked, doc)))
                 name = f"{doc.get('recordType')}:{doc.get('recordName', external_id)}"

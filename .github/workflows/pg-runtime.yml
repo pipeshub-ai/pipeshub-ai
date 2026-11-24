@@ -55,6 +55,8 @@ on:
       - 'backend/python/tests/integration/graph_db/test_accessible_containers_real_backends.py'
       - 'backend/python/tests/integration/graph_db/test_stage_states_it.py'
       - 'backend/python/tests/integration/graph_db/fresh_org_support.py'
+      # The authenticator link cases postgres/test_authenticator_link_pg.py runs.
+      - 'backend/python/tests/integration/graph_db/authenticator_link_support.py'
       # The shared drivers of the record diagnostics tests that run on every store (their PostgreSQL files are in postgres/).
       - 'backend/python/tests/integration/graph_db/record_diagnostics_*.py'
       - 'backend/python/app/modules/indexing/record_diagnostics.py'
