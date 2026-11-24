@@ -160,7 +160,7 @@ _PENDING_RUN_STATS: contextvars.ContextVar[SyncRunStats | None] = contextvars.Co
 LISTED_AUTHENTICATORS_KEY = "/services/connectors/{connector_id}/listedAuthenticators"
 
 
-def _listed_authenticator_keys(stored: object) -> list[str]:
+def listed_authenticator_keys(stored: object) -> list[str]:
     """The user keys a stored listed-authenticators marker holds; nothing stored is none. Raises on
     anything else, an entry that is not a non-empty string included: coerced, ``[None]`` would read
     as a key nobody has and let a listed authenticator be linked."""
@@ -5924,7 +5924,7 @@ class DataSourceEntitiesProcessor:
         marker_read = True
         if check_listing:
             try:
-                marker = _listed_authenticator_keys(
+                marker = listed_authenticator_keys(
                     await self.config_service.get_config(marker_key, use_cache=False, raise_on_error=True)
                 )
             except Exception as e:

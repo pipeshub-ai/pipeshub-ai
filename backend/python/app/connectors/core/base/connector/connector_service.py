@@ -15,9 +15,11 @@ from app.config.configuration_service import ConfigurationService, delete_config
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     AUTHENTICATOR_GRANT_KEY,
+    LISTED_AUTHENTICATORS_KEY,
     AuthenticatorLink,
     AuthenticatorLinkResult,
     DataSourceEntitiesProcessor,
+    listed_authenticator_keys,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
@@ -857,11 +859,22 @@ class BaseConnector(ABC):
             recipient_user_ids=[result.authenticator_user_id],
         )
 
+    async def decide_authenticator_grant(self, email: str, *, listing_complete: bool, listed: bool) -> bool:
+        """Whether the authenticator gets the connector account's view this sync, and the decision
+        stored for later syncs. A listing that names them, complete or not, withholds it and stores
+        that; a complete listing that does not grants it and stores that. An incomplete listing that
+        does not name them cannot decide: the stored decision stands (authenticator_grant_kept)."""
+        if listed or listing_complete:
+            await self.remember_authenticator_grant(email, granted=not listed)
+            return not listed
+        return await self.authenticator_grant_kept(email)
+
     async def authenticator_grant_kept(self, email: str) -> bool:
         """Whether the last complete user listing left this authenticator the connector account's
         view. A sync whose listing is incomplete cannot decide it again, so it keeps this one; a
         fresh instance (a restart, another replica) reads it here. False when nothing is stored for
-        this authenticator or the record cannot be read: no new grant. Never raises."""
+        this authenticator, when the listed-authenticators marker holds them, or when either cannot
+        be read: no new grant. Never raises."""
         key = AUTHENTICATOR_GRANT_KEY.format(connector_id=self.connector_id)
         try:
             stored = await self.config_service.get_config(key, use_cache=False, raise_on_error=True)
@@ -883,7 +896,26 @@ class BaseConnector(ABC):
             # Another authenticator's record: replaced, so a later switch back cannot revive it.
             await self.remember_authenticator_grant(email, granted=False)
             return False
-        return stored["granted"]
+        return stored["granted"] and not await self._marker_may_list(email)
+
+    async def _marker_may_list(self, email: str) -> bool:
+        """Whether the listed-authenticators marker holds this authenticator, or cannot be checked."""
+        try:
+            keys = listed_authenticator_keys(await self.config_service.get_config(
+                LISTED_AUTHENTICATORS_KEY.format(connector_id=self.connector_id), use_cache=False, raise_on_error=True,
+            ))
+            if not keys:
+                return False
+            user = await self.data_entities_processor.get_app_authenticator_user(self.connector_id, self.created_by)
+        except Exception as e:
+            self.logger.warning(
+                "Connector %s: could not check the listed-authenticators marker; granting nothing new: %s",
+                self.connector_id, e,
+            )
+            return True
+        if (user.get("email") or "").strip().lower() != email.strip().lower():
+            return False
+        return (user.get("_key") or user.get("id")) in keys
 
     async def remember_authenticator_grant(self, email: str, *, granted: bool) -> None:
         """Store the decision a complete user listing made, for authenticator_grant_kept. Never raises.

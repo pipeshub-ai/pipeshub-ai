@@ -609,18 +609,39 @@ class TestAuthenticatorGrantRecord:
 
     def _connector(
         self, stored: object = None, error: Exception | None = None, config_service: object = None,
+        *, marker: object = None, marker_error: Exception | None = None,
+        authenticator: dict | None = None, authenticator_error: Exception | None = None,
     ) -> MagicMock:
         from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        async def get_config(key: str, **_: object) -> object:
+            failure, value = (error, stored) if key == GRANT_KEY else (marker_error, marker)
+            if failure:
+                raise failure
+            return value
 
         conn = MagicMock(spec=BaseConnector)
         conn.logger = MagicMock()
         conn.connector_id = CONNECTOR
+        conn.created_by = CREATED_BY
         conn.config_service = config_service or MagicMock(
-            get_config=AsyncMock(return_value=stored, side_effect=error), set_config=AsyncMock(return_value=True),
+            get_config=AsyncMock(side_effect=get_config), set_config=AsyncMock(return_value=True),
             delete_config=AsyncMock(return_value=True),
         )
-        conn.remember_authenticator_grant = partial(BaseConnector.remember_authenticator_grant, conn)
+        conn.data_entities_processor = MagicMock(get_app_authenticator_user=AsyncMock(
+            return_value={"_key": "creator-key", "email": "admin@corp.com"} if authenticator is None else authenticator,
+            side_effect=authenticator_error,
+        ))
+        for name in ("remember_authenticator_grant", "authenticator_grant_kept", "_marker_may_list"):
+            setattr(conn, name, partial(getattr(BaseConnector, name), conn))
         return conn
+
+    async def _decide(self, conn: MagicMock, *, complete: bool, listed: bool) -> bool:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        return await BaseConnector.decide_authenticator_grant(
+            conn, "Admin@Corp.com", listing_complete=complete, listed=listed,
+        )
 
     async def _kept(self, conn: MagicMock, email: str = "Admin@Corp.com") -> bool:
         from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -636,8 +657,65 @@ class TestAuthenticatorGrantRecord:
         conn = self._connector({"email": "admin@corp.com", "granted": True})
 
         assert await self._kept(conn) is True
-        conn.config_service.get_config.assert_awaited_once_with(GRANT_KEY, use_cache=False, raise_on_error=True)
+        conn.config_service.get_config.assert_any_await(GRANT_KEY, use_cache=False, raise_on_error=True)
+        conn.config_service.get_config.assert_any_await(LISTED_KEY, use_cache=False, raise_on_error=True)
         conn.config_service.set_config.assert_not_awaited()
+
+    async def test_a_stored_grant_is_not_kept_for_an_authenticator_the_marker_lists(self) -> None:
+        conn = self._connector({"email": "admin@corp.com", "granted": True}, marker=["other-key", "creator-key"])
+
+        assert await self._kept(conn) is False
+
+    async def test_the_marker_of_another_authenticator_does_not_withhold_the_stored_grant(self) -> None:
+        conn = self._connector({"email": "admin@corp.com", "granted": True}, marker=["creator-key"],
+                               authenticator={"_key": "creator-key", "email": "someone.else@corp.com"})
+
+        assert await self._kept(conn) is True
+
+    @pytest.mark.parametrize("unreadable", [
+        {"marker_error": RuntimeError("kv down")},
+        {"marker": [None]},
+        {"marker": "creator-key"},
+        {"marker": ["creator-key"], "authenticator_error": RuntimeError("graph down")},
+    ], ids=["marker-read-fails", "marker-entry-null", "marker-not-a-list", "authenticator-read-fails"])
+    async def test_a_stored_grant_is_not_kept_when_the_marker_cannot_be_checked(self, unreadable: dict) -> None:
+        conn = self._connector({"email": "admin@corp.com", "granted": True}, **unreadable)
+
+        assert await self._kept(conn) is False
+        conn.logger.warning.assert_called_once()
+
+    @pytest.mark.parametrize("complete", [True, False])
+    async def test_a_listing_that_names_the_authenticator_withholds_and_stores_no_grant(self, complete: bool) -> None:
+        conn = self._connector({"email": "admin@corp.com", "granted": True})
+
+        assert await self._decide(conn, complete=complete, listed=True) is False
+        conn.config_service.set_config.assert_awaited_once_with(GRANT_KEY, {"email": "admin@corp.com", "granted": False})
+
+    async def test_a_complete_listing_without_the_authenticator_grants_and_stores_it(self) -> None:
+        conn = self._connector()
+
+        assert await self._decide(conn, complete=True, listed=False) is True
+        conn.config_service.set_config.assert_awaited_once_with(GRANT_KEY, {"email": "admin@corp.com", "granted": True})
+
+    @pytest.mark.parametrize(("stored", "granted"), [
+        ({"email": "admin@corp.com", "granted": True}, True),
+        ({"email": "admin@corp.com", "granted": False}, False),
+        (None, False),
+    ])
+    async def test_an_incomplete_listing_without_the_authenticator_follows_the_stored_record(
+        self, stored: object, granted: bool,
+    ) -> None:
+        conn = self._connector(stored)
+
+        assert await self._decide(conn, complete=False, listed=False) is granted
+        conn.config_service.set_config.assert_not_awaited()
+
+    async def test_two_incomplete_listings_the_first_naming_the_authenticator_both_withhold(self) -> None:
+        kv = _DictConfig({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
+        conn = self._connector(config_service=kv)
+
+        assert await self._decide(conn, complete=False, listed=True) is False
+        assert await self._decide(conn, complete=False, listed=False) is False
 
     @pytest.mark.parametrize("stored", [None, {"email": "admin@corp.com", "granted": False}])
     async def test_no_stored_grant_for_this_authenticator_grants_nothing(self, stored: object) -> None:
