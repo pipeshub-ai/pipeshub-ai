@@ -558,7 +558,7 @@ class SlackConnector(BaseConnector):
         self._cache_rebuild_event:         Optional[asyncio.Event]   = None
         # Set each run_sync by _authenticator_grant(); added to every channel's grants.
         self._authenticator_permission:    Permission | None         = None
-        # The authenticator a user listing named this sync: their grant from the token's view goes.
+        # An authenticator whose earlier grant from the token's view is taken back this sync.
         self._withheld_authenticator_email: str | None = None
         # Until a sync has read the user listing, it counts as cut.
         self._users_listing_cut:           bool                      = True
@@ -1489,20 +1489,20 @@ class SlackConnector(BaseConnector):
                 f"read; they will only see the channels their own email is a member of"
             )
             return None
-        listed = email.lower() in self._listed_user_emails
-        if listed:
-            self._withheld_authenticator_email = email
-        granted = await self.decide_authenticator_grant(
+        decision = await self.decide_authenticator_grant(
             email,
             listing_complete=not (getattr(self, "_users_read_failed", True) or self._users_listing_cut),
-            listed=listed,
+            listed=email.lower() in self._listed_user_emails,
         )
-        return Permission(email=email, entity_type=EntityType.USER, type=PermissionType.READ) if granted else None
+        if decision.withdraw:
+            self._withheld_authenticator_email = email
+        return Permission(email=email, entity_type=EntityType.USER, type=PermissionType.READ) if decision.granted else None
 
     async def _withdraw_withheld_authenticator(self, channel_ids: list[str]) -> None:
-        """Take the token's view away from a listed authenticator on channels whose members could not
-        be read. Their other grants there stay as stored; a channel whose members are read again gives
-        them back their own. Non-fatal: the next sync tries again."""
+        """On the sync that takes back the token's view from an authenticator the user list names, take
+        its grant off channels whose members could not be read: the stored grants there are kept, the
+        token's one among them. Only once: an authenticator who is a member of such a channel holds
+        the same grant through their membership, and later syncs have nothing left to take. Non-fatal."""
         email = getattr(self, "_withheld_authenticator_email", None)
         if not email or not channel_ids:
             return

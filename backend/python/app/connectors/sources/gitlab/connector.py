@@ -293,7 +293,7 @@ class GitLabConnector(BaseConnector):
         self._token_account_email: str | None = None
         # Whether the creator gets the token's view this run (_decide_creator_token_view).
         self._creator_token_view = False
-        # The creator a listing named this run: the token's view is taken away from them where kept.
+        # The creator whose earlier token view is taken back this run, where stored grants are kept.
         self._withheld_creator_email: str | None = None
         # GitLab ids of each project's members at Guest or above, from this run's member read.
         self._project_reader_ids: dict[int, set[int]] = {}
@@ -618,12 +618,12 @@ class GitLabConnector(BaseConnector):
             if self._users_listing_complete:
                 await self.remember_authenticator_grant(creator, granted=True)
         else:
-            listed = creator in self._listed_user_emails
-            if listed:
-                self._withheld_creator_email = creator
-            self._creator_token_view = await self.decide_authenticator_grant(
-                creator, listing_complete=self._users_listing_complete, listed=listed,
+            decision = await self.decide_authenticator_grant(
+                creator, listing_complete=self._users_listing_complete, listed=creator in self._listed_user_emails,
             )
+            self._creator_token_view = decision.granted
+            if decision.withdraw:
+                self._withheld_creator_email = creator
 
     def creator_token_view_permission(self) -> Permission | None:
         """The creator's OWNER permission where they get the token's view, else None."""

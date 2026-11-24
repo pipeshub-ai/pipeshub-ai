@@ -3,6 +3,7 @@ import asyncio
 from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 import copy
+from dataclasses import dataclass
 import json
 from logging import Logger
 from typing import Any, Dict, List, Literal, Optional
@@ -43,6 +44,16 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 DEFAULT_CONNECTOR_NOTIFICATION_LINK = "workspace/connectors/"
 INITIAL_NOTIFICATION_BACKOFF = 3600 * 1000 # 1 hour in ms
 MAX_NOTIFICATION_BACKOFF = 604800 * 1000 # 7 days in ms
+
+
+@dataclass(frozen=True)
+class AuthenticatorGrant:
+    """What decide_authenticator_grant decided. ``withdraw``: the token's view was given on an
+    earlier sync and is taken away on this one, so its grants left where the source cannot be read
+    go now; on later syncs the stored "no grant" says nothing is left to take."""
+
+    granted: bool
+    withdraw: bool = False
 
 
 class ConnectorInitError(Exception):
@@ -859,15 +870,43 @@ class BaseConnector(ABC):
             recipient_user_ids=[result.authenticator_user_id],
         )
 
-    async def decide_authenticator_grant(self, email: str, *, listing_complete: bool, listed: bool) -> bool:
+    async def decide_authenticator_grant(
+        self, email: str, *, listing_complete: bool, listed: bool,
+    ) -> AuthenticatorGrant:
         """Whether the authenticator gets the connector account's view this sync, and the decision
         stored for later syncs. A listing that names them, complete or not, withholds it and stores
         that; a complete listing that does not grants it and stores that. An incomplete listing that
-        does not name them cannot decide: the stored decision stands (authenticator_grant_kept)."""
-        if listed or listing_complete:
-            await self.remember_authenticator_grant(email, granted=not listed)
-            return not listed
-        return await self.authenticator_grant_kept(email)
+        does not name them cannot decide: the stored decision stands (authenticator_grant_kept).
+
+        ``withdraw`` is set only on the sync that takes back a grant the stored record shows was
+        given; a record that cannot be read withdraws nothing."""
+        if listed:
+            try:
+                stored = await self._read_grant_record()
+            except Exception as e:
+                self.logger.warning(
+                    "Connector %s: could not read the authenticator's last grant; nothing is withdrawn: %s",
+                    self.connector_id, e,
+                )
+                stored = None
+            given = bool(stored and stored["granted"] and stored.get("email") == email.strip().lower())
+            await self.remember_authenticator_grant(email, granted=False)
+            return AuthenticatorGrant(granted=False, withdraw=given)
+        if listing_complete:
+            await self.remember_authenticator_grant(email, granted=True)
+            return AuthenticatorGrant(granted=True)
+        return AuthenticatorGrant(granted=await self.authenticator_grant_kept(email))
+
+    async def _read_grant_record(self) -> dict | None:
+        """The stored grant record, None when there is none. Raises when it cannot be read or is malformed."""
+        stored = await self.config_service.get_config(
+            AUTHENTICATOR_GRANT_KEY.format(connector_id=self.connector_id), use_cache=False, raise_on_error=True,
+        )
+        if stored is None:
+            return None
+        if not isinstance(stored, dict) or not isinstance(stored.get("granted"), bool):
+            raise ValueError(f"the authenticator's last grant is unreadable ({stored!r})")
+        return {**stored, "email": str(stored.get("email") or "").lower()}
 
     async def authenticator_grant_kept(self, email: str) -> bool:
         """Whether the last complete user listing left this authenticator the connector account's
@@ -875,9 +914,8 @@ class BaseConnector(ABC):
         fresh instance (a restart, another replica) reads it here. False when nothing is stored for
         this authenticator, when the listed-authenticators marker holds them, or when either cannot
         be read: no new grant. Never raises."""
-        key = AUTHENTICATOR_GRANT_KEY.format(connector_id=self.connector_id)
         try:
-            stored = await self.config_service.get_config(key, use_cache=False, raise_on_error=True)
+            stored = await self._read_grant_record()
         except Exception as e:
             self.logger.warning(
                 "Connector %s: could not read the authenticator's last grant; granting nothing new: %s",
@@ -886,13 +924,7 @@ class BaseConnector(ABC):
             return False
         if stored is None:
             return False
-        if not isinstance(stored, dict) or not isinstance(stored.get("granted"), bool):
-            self.logger.warning(
-                "Connector %s: the authenticator's last grant is unreadable (%r); granting nothing new",
-                self.connector_id, stored,
-            )
-            return False
-        if str(stored.get("email") or "").lower() != email.strip().lower():
+        if stored["email"] != email.strip().lower():
             # Another authenticator's record: replaced, so a later switch back cannot revive it.
             await self.remember_authenticator_grant(email, granted=False)
             return False

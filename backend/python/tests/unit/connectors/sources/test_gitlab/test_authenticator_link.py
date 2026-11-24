@@ -334,6 +334,7 @@ def _with_creator_gate(c: MagicMock, kv: _Kv | None = None) -> MagicMock:
     c.creator_token_view_permission = partial(GitLabConnector.creator_token_view_permission, c)
     for name in (
         "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_may_list",
+        "_read_grant_record",
     ):
         setattr(c, name, partial(getattr(BaseConnector, name), c))
     c.data_entities_processor.get_app_authenticator_user = AsyncMock(
@@ -352,6 +353,11 @@ async def _decided(
     c._token_account_email = CREATOR if token_holder else "bot@corp.com"
     await GitLabConnector._decide_creator_token_view(c)
     return c
+
+
+def _given() -> _Kv:
+    """The store after an earlier sync gave the creator the token's view."""
+    return _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}})
 
 
 def _readable_group(c: MagicMock) -> MagicMock:
@@ -449,7 +455,7 @@ class TestCreatorTokenViewOnFallbacks:
     @pytest.mark.parametrize("case", list(_CASES))
     async def test_a_project_whose_members_cannot_be_read_and_whose_grants_are_kept(self, case: str) -> None:
         listed, token_holder, granted = _CASES[case]
-        c = await _decided(listed=listed, token_holder=token_holder)
+        c = await _decided(listed=listed, token_holder=token_holder, kv=_given())
         c._gitlab_included_group_paths = None
         c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
         c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
@@ -467,7 +473,7 @@ class TestCreatorTokenViewOnFallbacks:
     @pytest.mark.parametrize("case", list(_CASES))
     async def test_an_unreadable_group_whose_grants_are_kept(self, case: str) -> None:
         listed, token_holder, granted = _CASES[case]
-        c = await _decided(listed=listed, token_holder=token_holder)
+        c = await _decided(listed=listed, token_holder=token_holder, kv=_given())
         c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
         c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
 
@@ -482,7 +488,7 @@ class TestCreatorTokenViewOnFallbacks:
     @pytest.mark.parametrize("case", list(_CASES))
     async def test_a_group_whose_members_cannot_be_read(self, case: str) -> None:
         listed, token_holder, granted = _CASES[case]
-        c = await _decided(listed=listed, token_holder=token_holder)
+        c = await _decided(listed=listed, token_holder=token_holder, kv=_given())
         group = SimpleNamespace(full_path="eng", name="Eng", web_url=None)
 
         async def ds_call(fn: object, *_a: object, **_k: object) -> MagicMock:
@@ -497,6 +503,31 @@ class TestCreatorTokenViewOnFallbacks:
             withdraw.assert_not_awaited()
         else:
             withdraw.assert_awaited_once_with(c.connector_id, ["eng"], CREATOR)
+
+    @pytest.mark.parametrize("stored", [None, {"email": CREATOR, "granted": False}])
+    async def test_nothing_is_withdrawn_from_a_creator_never_given_the_token_view(self, stored: object) -> None:
+        c = await _decided(listed=_LISTED, kv=_Kv({GRANT_KEY: stored}))
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
+        c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
+
+        await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"])
+
+        c.data_entities_processor.remove_user_grant_from_record_groups.assert_not_awaited()
+
+    async def test_the_withdrawal_happens_on_one_sync_only(self) -> None:
+        kv = _given()
+        first = await _decided(listed=_LISTED, kv=kv)
+        second = await _decided(listed=_LISTED, kv=kv)
+
+        assert first._withheld_creator_email == CREATOR
+        assert second._withheld_creator_email is None
+        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
+
+    async def test_an_unreadable_earlier_grant_withdraws_nothing(self) -> None:
+        c = await _decided(listed=_LISTED, kv=_Kv(error=RuntimeError("kv down")))
+
+        assert c._withheld_creator_email is None
+        c.logger.warning.assert_called()
 
     @pytest.mark.parametrize("case", list(_CASES))
     async def test_the_creator_only_project_fallback(self, case: str) -> None:

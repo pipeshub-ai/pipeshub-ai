@@ -97,6 +97,25 @@ class TestBotToken:
 
         assert grants_for(store, PARTNERS, ADMIN) == [], "the token's view goes"
         assert store.access_emails(PARTNERS) == {"alice@acme.com", "carol@partner.com"}, "the stored members stay"
+        store.events.clear()
+
+        await connector.run_sync()
+
+        assert not [e for e in store.events if e[0] == "remove_user_grant_from_record_groups"], "only once"
+
+    async def test_a_member_authenticator_who_never_had_the_token_view_keeps_a_channel_whose_members_cannot_be_read(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = "bob@acme.com"
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        workspace.channels[SECRET]["is_archived"] = True
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == SECRET)
+
+        await connector.run_sync()
+
+        assert len(grants_for(store, SECRET, "bob@acme.com")) == 1
 
     async def test_an_unlisted_authenticator_still_gets_every_channel(self, workspace, store, checkpoints) -> None:
         store.authenticator_email = ADMIN

@@ -744,6 +744,7 @@ def _with_grant_record(conn: MagicMock, kv: _Kv) -> MagicMock:
     conn.config_service = kv
     for name in (
         "decide_authenticator_grant", "authenticator_grant_kept", "remember_authenticator_grant", "_marker_may_list",
+        "_read_grant_record",
     ):
         setattr(conn, name, partial(getattr(BaseConnector, name), conn))
     return conn
@@ -888,16 +889,33 @@ class TestSlackWorkspace:
 
         assert await SlackConnector._authenticator_grant(conn) is None
 
-    @pytest.mark.parametrize(("listed", "withheld"), [({"admin@corp.com"}, "admin@corp.com"), (set(), None)])
-    async def test_the_authenticator_a_listing_names_is_kept_for_the_channel_writes(
-        self, listed: set[str], withheld: str | None,
+    @pytest.mark.parametrize(("listed", "stored", "withheld"), [
+        ({"admin@corp.com"}, {"email": "admin@corp.com", "granted": True}, "admin@corp.com"),
+        ({"admin@corp.com"}, {"email": "admin@corp.com", "granted": False}, None),
+        ({"admin@corp.com"}, None, None),
+        (set(), {"email": "admin@corp.com", "granted": True}, None),
+    ], ids=["grant-taken-back", "no-earlier-grant", "nothing-stored", "not-listed"])
+    async def test_only_the_sync_that_takes_back_a_given_grant_withdraws_it(
+        self, listed: set[str], stored: object, withheld: str | None,
     ) -> None:
-        conn = self._conn(authenticator="admin@corp.com")
+        kv = _Kv({GRANT_KEY: stored})
+        conn = self._conn(authenticator="admin@corp.com", kv=kv)
         conn._listed_user_emails = listed
 
         await SlackConnector._authenticator_grant(conn)
-
         assert conn._withheld_authenticator_email == withheld
+
+        await SlackConnector._authenticator_grant(conn)
+        assert conn._withheld_authenticator_email is None, "the next sync has nothing left to take"
+
+    async def test_an_unreadable_earlier_grant_withdraws_nothing(self) -> None:
+        conn = self._conn(authenticator="admin@corp.com", kv=_Kv(error=RuntimeError("kv down")))
+        conn._listed_user_emails = {"admin@corp.com"}
+
+        await SlackConnector._authenticator_grant(conn)
+
+        assert conn._withheld_authenticator_email is None
+        conn.logger.warning.assert_called()
 
     async def test_a_failed_read_of_the_stored_grant_grants_nothing(self) -> None:
         conn = self._conn(authenticator="admin@corp.com", kv=_Kv(error=RuntimeError("kv down")))
