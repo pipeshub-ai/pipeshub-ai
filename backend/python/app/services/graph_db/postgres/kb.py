@@ -368,14 +368,6 @@ class KbMixin(PgBase):
         except Exception:
             return None
 
-    async def _fetch_record_name(self, record_id: str) -> str | None:
-        org = current_org_id()
-        try:
-            return await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.fetch_record_name */ SELECT r.doc->>'recordName' FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2",
-                                                      org, record_id), None)
-        except Exception:
-            return None
-
     async def _kb_writer(self, kb_id: str, user_id: str) -> dict:
         """The user and their role when they may write to the knowledge base, else the refusal. A user with no role at all reads as 404 (existence is hidden)."""
         user = await self.get_user_by_user_id(user_id=user_id)
@@ -386,10 +378,10 @@ class KbMixin(PgBase):
             self.logger.error(f"❌ User record for {user_id} has no 'id' or '_key' field — keys present: {list(user.keys())}")
             return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
         if not await self.kb_exists(kb_id):
-            return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
+            return {"valid": False, "success": False, "code": 404, "reason": "Knowledge base not found"}
         role = await self.get_user_kb_permission(kb_id, user_key)
         if role is None:
-            return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
+            return {"valid": False, "success": False, "code": 404, "reason": "Knowledge base not found"}
         if role not in ("OWNER", "WRITER"):
             name = await self._fetch_kb_name(kb_id)
             label = f"'{name}' ({kb_id})" if name else kb_id
@@ -417,10 +409,9 @@ class KbMixin(PgBase):
                 return {**ok, "upload_target": "kb_root"}
             parent = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
             if not parent:
-                kb_name, folder_name = await self._fetch_kb_name(kb_id), await self._fetch_record_name(parent_folder_id)
+                kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
-                folder_label = f"'{folder_name}' ({parent_folder_id})" if folder_name else parent_folder_id
-                return {"valid": False, "success": False, "code": 404, "reason": f"Folder {folder_label} was not found in knowledge base {kb_label}. "
+                return {"valid": False, "success": False, "code": 404, "reason": f"The folder was not found in knowledge base {kb_label}. "
                         "The folder may not exist or may belong to a different knowledge base."}
             if not is_live_record(parent):
                 return {"valid": False, "success": False, "code": 409, "reason": folder_in_trash(parent.get("recordName"), "upload files to it")}

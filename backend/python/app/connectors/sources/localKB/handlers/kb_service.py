@@ -1548,7 +1548,7 @@ class KnowledgeBaseService:
                     kb_id,
                     parent_folder_id,
                     "create a folder in it",
-                    f"Parent folder {parent_folder_id} not found in KB {kb_id}",
+                    "The parent folder was not found in this knowledge base.",
                 )
 
             if await self._exceeds_folder_depth(parent_folder_id, 1):
@@ -3656,7 +3656,7 @@ class KnowledgeBaseService:
                 return {
                     "success": False,
                     "code": 404,
-                    "reason": f"Record {record_id} not found in KB {kb_id}",
+                    "reason": "The record was not found in this knowledge base.",
                 }
             self.logger.info(f"KB context: {kb_context}")
 

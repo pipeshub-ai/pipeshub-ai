@@ -1,6 +1,6 @@
 """kg: what a knowledge base's folder listing and its trash's single-file view filter and order by (kg.records indexing_status, connector_name, doc_created_ms, doc_updated_ms,
 file_size, file_kind, kb_odd) and their vetted writer; the capture logs a change of a record's indexing status or connector name, of its isOfType edges and of the file document they
-point at; the writers of stamps and fences and those that take work off the change log or the restamp queue refuse projection code below epoch 11, which wrote none of them"""
+point at; the writers of stamps and fences and those that take work off the change log or the restamp queue refuse projection code below epoch 12, which wrote none of them"""
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -9,22 +9,22 @@ from alembic import op
 from db.lib.run_sql import run_sql
 from db.lib.vetted import Fn, load, render, run_vetted
 
-revision = "kg_0025"
-down_revision = "kg_0024"
+revision = "kg_0026"
+down_revision = "kg_0025"
 branch_labels = None
 depends_on = None
-# A contract, as kg_0024: code of an older release writes a record without these columns and acknowledges a status change without projecting it, so a listing read from
+# A contract, as kg_0025: code of an older release writes a record without these columns and acknowledges a status change without projecting it, so a listing read from
 # them would keep a record under a status, a size or a kind it no longer has.
-min_code_epoch = 25
+min_code_epoch = 26
 
 WRITERS = ("w_kb_listing_set",)
 EPOCH_WRITERS = ("w_stamps_set", "w_fence_rows", "w_queue_touch", "w_queue_done", "w_changes_ack", "w_changes_delete")
-OLD_FLOOR = 10
+OLD_FLOOR = 11
 COLUMNS = ("indexing_status", "connector_name", "doc_created_ms", "doc_updated_ms", "file_size", "file_kind", "kb_odd")
 
-# A copy labelled epoch 11 or later cannot have these columns filled when this revision adds them (a downgrade dropped them and an upgrade brings them back empty): it is labelled
-# epoch 10 so that the bootstrap fills it in place (kg.backfill.fill_kb_listing) before it is served or verified. The downgrade does the same, so the code of kg_0024 serves it again.
-RELABEL = "UPDATE kg.projection_state SET code_epoch = 10 WHERE code_epoch >= 11"
+# A copy labelled epoch 12 or later cannot have these columns filled when this revision adds them (a downgrade dropped them and an upgrade brings them back empty): it is labelled
+# epoch 11 so that the bootstrap fills it in place (kg.backfill.fill_kb_listing) before it is served or verified. The downgrade does the same, so the code of kg_0025 serves it again.
+RELABEL = "UPDATE kg.projection_state SET code_epoch = 11 WHERE code_epoch >= 12"
 
 _DIR = Path(__file__).parent
 # What the downgrade puts back: kg_0021's capture, kg_0019's projected part of a node and kg_0003's ends of an edge.
@@ -48,7 +48,7 @@ def _mine() -> list[Fn]:
 
 
 def as_before(fn: Fn) -> Fn:
-    """The writer as kg_0024 left it: the epoch floor at 10."""
+    """The writer as kg_0025 left it: the epoch floor at 11."""
     return replace(fn, args=tuple(replace(a, range=(OLD_FLOOR, a.range[1])) if a.name == "p_projector_epoch" else a for a in fn.args))
 
 
@@ -68,7 +68,7 @@ def upgrade():
 
 
 def downgrade():
-    # The floor goes back to 10 (only the writers that are there, as kg_0019), then the writer, the capture, the helpers and the columns go.
+    # The floor goes back to 11 (only the writers that are there, as kg_0019), then the writer, the capture, the helpers and the columns go.
     cur = op.get_bind().connection.cursor()
     fns = [f for f in _mine() if cur.execute("SELECT to_regprocedure(%s) IS NOT NULL", (f.signature,)).fetchone()[0]]
     _drop(fns)

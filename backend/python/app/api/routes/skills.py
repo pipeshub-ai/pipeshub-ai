@@ -236,10 +236,17 @@ def _build_content(payload: SkillWriteRequest, *, name: str, existing: SkillMeta
     return render_skill_md(skill)
 
 
+# A store miss quotes the name or path the client sent, which matched nothing: the detail says what was missing instead.
+_NOT_FOUND_DETAILS = (("Version ", "Skill version not found."), ("Resource ", "Resource not found for this skill."),
+                      ("Candidate ", "Candidate not found."))
+
+
 def _handle_registry_error(e: RegistryError) -> HTTPException:
     message = str(e)
-    status_code = 404 if "not found" in message.lower() else 409
-    return HTTPException(status_code=status_code, detail=message)
+    if "not found" not in message.lower():
+        return HTTPException(status_code=409, detail=message)
+    detail = next((d for prefix, d in _NOT_FOUND_DETAILS if message.startswith(prefix)), "Skill not found.")
+    return HTTPException(status_code=404, detail=detail)
 
 
 def _handle_conflict_error(e: SkillConflictError) -> HTTPException:
@@ -601,7 +608,7 @@ async def deprecate_skill(request: Request, name: str, payload: DeprecateRequest
     await _reject_if_builtin_skill(manager, name)
     ok = await manager.deprecate(name, payload.reason, payload.replaced_by)
     if not ok:
-        raise HTTPException(status_code=404, detail=f"Skill {name!r} not found.")
+        raise HTTPException(status_code=404, detail="Skill not found.")
     return JSONResponse(status_code=200, content={"status": "success"})
 
 
@@ -675,7 +682,7 @@ async def delete_skill(request: Request, name: str, detach: Annotated[bool, Quer
     except SkillInUseError as e:
         raise _handle_in_use_error(e) from e
     if not ok:
-        raise HTTPException(status_code=404, detail=f"Skill {name!r} not found.")
+        raise HTTPException(status_code=404, detail="Skill not found.")
     return JSONResponse(status_code=200, content={"status": "success"})
 
 
@@ -707,7 +714,7 @@ async def get_version(request: Request, name: str, version: str) -> JSONResponse
     except RegistryError as e:
         raise _handle_registry_error(e) from e
     if skill is None:
-        raise HTTPException(status_code=404, detail=f"Version {version!r} of skill {name!r} not found.")
+        raise HTTPException(status_code=404, detail="Skill version not found.")
     return JSONResponse(status_code=200, content=_skill_to_dict(skill))
 
 
@@ -745,7 +752,7 @@ async def write_resource(request: Request, name: str, payload: ResourceWriteRequ
     except SkillFormatError as e:
         raise _handle_format_error(e) from e
     if not ok:
-        raise HTTPException(status_code=404, detail=f"Skill {name!r} not found.")
+        raise HTTPException(status_code=404, detail="Skill not found.")
     return JSONResponse(status_code=200, content={"status": "success"})
 
 
@@ -755,7 +762,7 @@ async def remove_resource(request: Request, name: str, path: str = Query(..., mi
     await _reject_if_builtin_skill(manager, name)
     ok = await manager.remove_resource(name, path)
     if not ok:
-        raise HTTPException(status_code=404, detail=f"Resource {path!r} not found for skill {name!r}.")
+        raise HTTPException(status_code=404, detail="Resource not found for this skill.")
     return JSONResponse(status_code=200, content={"status": "success"})
 
 

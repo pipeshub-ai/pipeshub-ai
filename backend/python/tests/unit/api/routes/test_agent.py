@@ -174,7 +174,7 @@ class TestExceptions:
         from app.api.routes.agent import AgentTemplateNotFoundError
         e = AgentTemplateNotFoundError("t1")
         assert e.status_code == 404
-        assert "t1" in e.detail
+        assert e.detail == "Agent template not found or you don't have access to it"
 
     def test_permission_denied(self) -> None:
         from app.api.routes.agent import PermissionDeniedError

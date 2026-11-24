@@ -330,6 +330,9 @@ async def test_a_fill_page_reads_at_most_a_page_of_rows_and_relabels_on_the_last
         assert await pg_db.run(epoch) == bf.TOPS_FROM
     assert await bf.fill_pc_tops(pg_db, org, KB, page=2, after=more) == ("enforce", None)
     with ctx(org):
+        assert await pg_db.run(epoch) == bf.MARKS_FROM      # the grants' marks are filled next (``fill_grant_marks``)
+    assert await bf.fill_grant_marks(pg_db, org, KB) == ("enforce", None)
+    with ctx(org):
         assert await pg_db.run(epoch) == bf.LISTING_FROM                          # the knowledge-base listing's fill takes it on from there
     assert await bf.fill_kb_listing(pg_db, org, KB, page=2) == ("enforce", None)
     with ctx(org):
@@ -428,10 +431,10 @@ async def test_the_root_is_answered_by_index_searches(pg_provider, pg_db) -> Non
         assert next(f for f in got["folders"] if f["id"] == "plan-1")["counts"]["totalItems"] == 99
 
 
-# ---- a folder and the trash from kg's knowledge-base listing columns (kg_0025) ------------------------------------------------------------------------------------------------------
+# ---- a folder and the trash from kg's knowledge-base listing columns (kg_0026) ------------------------------------------------------------------------------------------------------
 
 async def test_a_status_or_a_file_change_writes_the_listing_columns_of_that_record_alone(pg_provider, pg_db, monkeypatch) -> None:
-    """A status flip is a change of the record now (before kg_0025 it logged nothing): its projection writes the record's listing columns and nothing more; a write that changes
+    """A status flip is a change of the record now (before kg_0026 it logged nothing): its projection writes the record's listing columns and nothing more; a write that changes
     none of them (a rename) writes none; a resize of the file it is typed as writes that record's."""
     from app.services.graph_db.postgres.kg import writers
     org = new_org()
@@ -461,9 +464,11 @@ async def test_a_status_or_a_file_change_writes_the_listing_columns_of_that_reco
     assert [(r["id"], r["indexingStatus"], r["fileRecord"]["sizeInBytes"]) for r in page["records"]] == [("c", "FAILED", 77)]
 
 
-async def test_a_copy_of_epoch_10_code_is_filled_in_place_by_the_bootstrap_and_stays_enforced_and_served(pg_provider, pg_db, tally, caplog) -> None:
-    """The upgrade path of kg_0025: a connector copied, verified and enforced by epoch 10 code holds no listing columns. The bootstrap fills them from the graph and relabels the
-    copy: still enforced, never copied again, and a folder and the trash are kg's and the walk's. Until then the connector is not served."""
+@pytest.mark.parametrize("older", [11, 10])
+async def test_a_copy_of_older_code_is_filled_in_place_by_the_bootstrap_and_stays_enforced_and_served(pg_provider, pg_db, tally, caplog, older) -> None:
+    """The upgrade path of kg_0026: a connector copied, verified and enforced by epoch 11 code holds no listing columns, and one of epoch 10 code no grant marks either. The bootstrap
+    fills what the copy lacks in place, in order (the grant marks, then the listing columns from the graph) and relabels the copy: still enforced, never copied again, and a
+    folder and the trash are kg's and the walk's. Until then the connector is not served."""
     import logging
 
     from app.services.graph_db.postgres.kg import bootstrap
@@ -476,12 +481,16 @@ async def test_a_copy_of_epoch_10_code_is_filled_in_place_by_the_bootstrap_and_s
     async def cols(tx: Any) -> dict:  # noqa: ANN401
         return {r["id"]: tuple(r)[1:] for r in await tx.fetch("""SELECT id, indexing_status, connector_name, doc_created_ms, doc_updated_ms, file_size, file_kind, kb_odd
             FROM kg.records WHERE org_id = $1 ORDER BY id""", org)}
+    async def marks(tx: Any) -> list:  # noqa: ANN401
+        return [tuple(r) for r in await tx.fetch("SELECT principal_sk, node_sk, gtype, parent_held, node_group FROM kg.scope_members WHERE org_id = $1 ORDER BY 1, 2, 3", org)]
     with ctx(org):
-        derived = await pg_db.run(cols)
+        derived, marked = await pg_db.run(cols), await pg_db.run(marks)
     assert derived["e"][5] == 1 and derived["a"][5] == 0 and derived[KB][5] is None
     await _admin("""UPDATE kg.records SET indexing_status = NULL, connector_name = NULL, doc_created_ms = NULL, doc_updated_ms = NULL, file_size = NULL, file_kind = NULL, kb_odd = false
-        WHERE org_id = $1""", org)                                                                     # what epoch 10 code copied
-    await _admin("UPDATE kg.projection_state SET code_epoch = 10 WHERE org_id = $1 AND app_sk <> 0", org)
+        WHERE org_id = $1""", org)                                                                     # what epoch 11 code copied
+    if older == 10:                                                                                    # and epoch 10 code: no grant marks
+        await _admin("UPDATE kg.scope_members SET parent_held = false, node_group = NULL WHERE org_id = $1", org)
+    await _admin("UPDATE kg.projection_state SET code_epoch = $2 WHERE org_id = $1 AND app_sk <> 0", org, older)
     tally.c.clear()
     with ctx(org):
         assert _ids(await pg_provider.get_folder_children(KB, "a", 0, 50)) == ["b"]
@@ -489,7 +498,7 @@ async def test_a_copy_of_epoch_10_code_is_filled_in_place_by_the_bootstrap_and_s
     caplog.set_level(logging.WARNING, logger=bootstrap.logger.name)
     await bootstrap.bring_to_enforce(pg_db, org, {})
     with ctx(org):
-        assert await pg_db.run(cols) == derived
+        assert await pg_db.run(cols) == derived and await pg_db.run(marks) == marked
         state = await pg_db.run(lambda tx: tx.fetch("""SELECT k.id, s.mode, s.code_epoch FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
             AND k.coll = 1 WHERE s.org_id = $1 ORDER BY k.id""", org))
     assert [tuple(r) for r in state] == [(KB, "enforce", CODE_EPOCH), ("kb2", "enforce", CODE_EPOCH)]

@@ -47,7 +47,7 @@ async def test_the_collection_codes_are_the_same_in_sql_and_in_python(pg_db) -> 
 async def test_the_projected_part_of_a_node_document_is_only_what_the_projection_reads(pg_db) -> None:
     doc = '{"recordName": "n", "indexingStatus": "DONE", "generation": 3, "isDeleted": null, "accessRule": "OPEN", "extra": {"x": 1}, "orgId": "o", "isFile": true, "sizeInBytes": 4}'
     rows = await fetch(pg_db, "SELECT kg.proj_doc('records', $1::jsonb)::text AS d, kg.proj_doc('users', $1::jsonb)::text AS u, kg.proj_doc('files', $1::jsonb)::text AS f", doc)
-    # the status is projected (a knowledge-base listing filters by it, kg_0025); a generation and an unknown field are not, a null flag is absent
+    # the status is projected (a knowledge-base listing filters by it, kg_0026); a generation and an unknown field are not, a null flag is absent
     assert json.loads(rows[0]["d"]) == {"recordName": "n", "indexingStatus": "DONE", "accessRule": "OPEN", "orgId": "o", "sizeInBytes": 4}
     assert rows[0]["u"] is None                                                                  # a principal's document is not projected at all
     assert json.loads(rows[0]["f"]) == {"isFile": True, "sizeInBytes": 4}                        # what the listing reads of the file a record is typed as

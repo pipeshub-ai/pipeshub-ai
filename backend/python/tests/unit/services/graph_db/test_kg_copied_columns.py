@@ -37,6 +37,9 @@ ALLOWED = {
     *((KB_FOLDER, c) for c in ("record_type", "origin", "external_id")),           # a knowledge-base folder's filters and search: a connector kg serves only, its own children only
     ("python/app/services/graph_db/postgres/kg/verify.py", "*"),                    # the verify compares the whole row with the graph: what must see the difference
     ("db/versions/kg/0015_counts.sql", "*"),                                        # the counter trigger takes each changed row whole; its facet keys are read as the line above says
+    # a grant's parent_held and the chain-top rows read the rule: both are read for a connector kg serves only (a row written without its rule takes the connector off the
+    # readers), and the projection that writes the rule again refreshes the marks below it, which the verify compares with the rows
+    ("python/app/services/graph_db/postgres/kg/grant_marks.py", "rule"),
 }
 # (source, tag or start of the statement): statements that name kg.records and that sqlglot does not parse, with the reason they need no reading
 UNPARSED: dict[tuple[str, str], str] = {}

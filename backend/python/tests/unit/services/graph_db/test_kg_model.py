@@ -124,7 +124,7 @@ def test_a_node_that_is_gone_is_reported_and_derives_no_row() -> None:
     ("permission", ("users", "u"), ("blocks", "b"), {}, {("users", "u")}),
     ("userAppRelation", ("users", "u"), ("apps", "a"), {}, {("apps", "a")}),
     ("authenticatedAs", ("users", "u"), ("users", "acct"), {}, {("users", "u")}),
-    ("isOfType", ("records", "r"), ("files", "r"), {}, {("records", "r")}),       # the file a record is typed as: its listing columns (kg_0025)
+    ("isOfType", ("records", "r"), ("files", "r"), {}, {("records", "r")}),       # the file a record is typed as: its listing columns (kg_0026)
     ("isOfType", ("records", "r"), ("mails", "r"), {}, set()),
 ])
 def test_the_ends_an_edge_changes(coll: str, frm: tuple, to: tuple, doc: dict, ends: set) -> None:
@@ -305,7 +305,7 @@ def test_the_name_sort_orders_names_by_utf16_code_unit_not_by_code_point() -> No
 
 
 def test_the_knowledge_base_listing_columns_are_what_the_walk_orders_and_filters_by() -> None:
-    """A record's status, connector name and own created/updated times, and the kind and size of the file it is typed as (kg_0025), from the documents a snapshot loads."""
+    """A record's status, connector name and own created/updated times, and the kind and size of the file it is typed as (kg_0026), from the documents a snapshot loads."""
     doc = {"connectorId": "a", "recordName": "R", "indexingStatus": "COMPLETED", "connectorName": "KB", "createdAtTimestamp": 5, "updatedAtTimestamp": 7.0,
            "sourceCreatedAtTimestamp": 1}
     nodes = {APP: {}, REC: doc, CHILD: {"connectorId": "a", "recordName": "Kid"}}

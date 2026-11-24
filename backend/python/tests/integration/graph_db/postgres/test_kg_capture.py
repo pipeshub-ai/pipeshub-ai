@@ -78,7 +78,7 @@ async def test_an_update_of_what_the_projection_does_not_read_logs_nothing_and_o
 
 
 async def test_a_status_change_is_logged_as_a_change_of_the_record(pg_db) -> None:
-    """kg_0025: a knowledge-base listing filters by the indexing status and the connector name, so a write of either is a change of the record (before, a status flip logged nothing)."""
+    """kg_0026: a knowledge-base listing filters by the indexing status and the connector name, so a write of either is a change of the record (before, a status flip logged nothing)."""
     p, org = prov(pg_db), new_org()
     await world(p, org)
     with ctx(org):
@@ -89,7 +89,7 @@ async def test_a_status_change_is_logged_as_a_change_of_the_record(pg_db) -> Non
 
 
 async def test_a_file_document_is_logged_as_a_change_of_the_records_typed_by_it(pg_db) -> None:
-    """kg_0025: the record's listing reads the file it is typed as (isOfType to 'files'): the edge logs the record, and a change of what the listing reads of the file (isFile,
+    """kg_0026: the record's listing reads the file it is typed as (isOfType to 'files'): the edge logs the record, and a change of what the listing reads of the file (isFile,
     sizeInBytes), its insert and its delete log every record typed by it, under the record's connector. A change of anything else of the file, a file nothing is typed as and
     an isOfType edge to another collection log nothing."""
     p, org = prov(pg_db), new_org()
