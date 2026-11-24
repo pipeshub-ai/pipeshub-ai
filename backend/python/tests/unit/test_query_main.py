@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -540,7 +540,7 @@ class TestLifespan:
 
         org_lists: list[list[str]] = []
 
-        async def _loop(config_service: object, _logger: object, *, org_ids) -> None:  # noqa: ANN001
+        async def _loop(config_service: object, _logger: object, *, org_ids: Callable[[], Awaitable[list[str]]]) -> None:
             assert config_service is mock_config_service
             org_lists.append(await org_ids())       # the recipients of a signed alert: the graph's orgs
             started.set()
