@@ -9,7 +9,10 @@ from typing import Any
 
 import pytest
 
-from app.migrations.workspace_admin_link_migration import WorkspaceAdminLinkMigrationService
+from app.migrations.workspace_admin_link_migration import (
+    WorkspaceAdminLinkMigrationService,
+)
+
 from . import test_permitted_entity_records_differential as d
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
@@ -60,7 +63,7 @@ async def test_migration_drops_only_the_admin_grant(d_seeded, monkeypatch, conf_
     auth = {r["id"] for r in records if r["grant"] == "auth_same"}
     assert auth & set(before), "the world must have a record only the link admits"
 
-    async def one_org(**_kw):
+    async def one_org(**_kw: object) -> list[dict[str, str]]:
         return [{"_key": org}]
 
     monkeypatch.setattr(provider, "get_all_orgs", one_org)

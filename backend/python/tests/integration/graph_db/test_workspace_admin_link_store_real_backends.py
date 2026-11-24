@@ -243,7 +243,6 @@ async def test_arango_concurrent_reauth_keeps_one_link(arango_provider) -> None:
             await p.execute_query("INSERT {_key: @u, orgId: @o} INTO users", bind_vars={"u": u, "o": org})
         await p.execute_query("INSERT {_from: @f, _to: @to, connectorId: @c, orgId: @o} INTO authenticatedAs",
                               bind_vars={"f": f"users/c-{t}", "to": f"users/{targets[0]}", "c": c, "o": org})
-        out = await asyncio.gather(*[p.upsert_authenticated_as(f"c-{t}", s, c, org) for s in targets], return_exceptions=True)
-        errors = [type(o).__name__ + ":" + str(o)[:120] for o in out if isinstance(o, Exception)]
+        await asyncio.gather(*[p.upsert_authenticated_as(f"c-{t}", s, c, org) for s in targets], return_exceptions=True)
         links = await p.execute_query("FOR l IN authenticatedAs FILTER l.connectorId == @c RETURN {k: l._key, to: l._to}", bind_vars={"c": c})
         assert len(links) == 1, f"round {rnd}: {links}"

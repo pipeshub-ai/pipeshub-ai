@@ -9,10 +9,13 @@ from typing import Any
 
 import pytest
 
-from app.migrations.workspace_admin_link_migration import WorkspaceAdminLinkMigrationService
+from app.migrations.workspace_admin_link_migration import (
+    WorkspaceAdminLinkMigrationService,
+)
 
 from .test_connector_entities import arango_provider, neo4j_provider  # noqa: F401
 from .test_workspace_admin_link_store_real_backends import _ensure_arango_collections
+
 
 async def _ensure_relation_collection(p) -> None:
     import aiohttp
@@ -39,7 +42,7 @@ class _Config:
 
 
 async def _race(p, org, apps, links, monkeypatch) -> None:
-    async def one(**_kw):
+    async def one(**_kw: object) -> list[dict[str, str]]:
         return [{"_key": org}]
     monkeypatch.setattr(p, "get_all_orgs", one)
     jobs = [WorkspaceAdminLinkMigrationService(p, _Config(), logging.getLogger("wsleak-it")).migrate() for _ in range(3)]
@@ -67,7 +70,7 @@ async def test_arango_race(arango_provider, monkeypatch) -> None:  # noqa: F811
         await p.execute_query("INSERT {_from: @f, _to: @t, sourceUserId: 'src'} INTO userAppRelation", bind_vars={"f": f"users/c-{t}", "t": f"apps/{a}"})
         await p.upsert_authenticated_as(f"c-{t}", f"a-{t}", a, org)
 
-    async def links():
+    async def links() -> list:
         return await p.execute_query("FOR l IN authenticatedAs FILTER l.connectorId IN @a RETURN l._key", bind_vars={"a": apps})
     await _race(p, org, apps, links, monkeypatch)
 
@@ -86,6 +89,6 @@ async def test_neo4j_race(neo4j_provider, monkeypatch) -> None:  # noqa: F811
         await q("MATCH (u:User {id: $u}), (x:App {id: $a}) CREATE (u)-[:USER_APP_RELATION {sourceUserId: 'src'}]->(x)", parameters={"u": f"c-{t}", "a": a})
         await p.upsert_authenticated_as(f"c-{t}", f"a-{t}", a, org)
 
-    async def links():
+    async def links() -> list:
         return await q("MATCH ()-[r:AUTHENTICATED_AS]->() WHERE r.connectorId IN $a RETURN r.connectorId AS c", parameters={"a": apps})
     await _race(p, org, apps, links, monkeypatch)

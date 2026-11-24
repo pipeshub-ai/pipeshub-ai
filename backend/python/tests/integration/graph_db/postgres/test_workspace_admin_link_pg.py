@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from app.core.org_context import system
-from app.migrations.workspace_admin_link_migration import WorkspaceAdminLinkMigrationService
+from app.migrations.workspace_admin_link_migration import (
+    WorkspaceAdminLinkMigrationService,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 
@@ -62,7 +67,7 @@ async def _allowed(p, org_ctx, org: str, keys: list[str]) -> set[str]:
 
 
 @pytest.fixture
-async def orgs(pg_provider, pg_db, org_ctx, monkeypatch):
+async def orgs(pg_provider, pg_db, org_ctx, monkeypatch) -> AsyncIterator[tuple[str, str]]:
     a, b = uuid.uuid4().hex[:24], uuid.uuid4().hex[:24]
     try:
         await _seed(pg_provider, org_ctx, a, TYPES)
@@ -70,7 +75,7 @@ async def orgs(pg_provider, pg_db, org_ctx, monkeypatch):
         await _seed(pg_provider, org_ctx, b, {"gm": "Jira", "dr": "Dropbox Personal", "db": "Gmail Workspace", "dbp": "Drive Workspace", "jira": "Dropbox"})
         real = pg_provider.get_all_orgs
 
-        async def these(**kw):
+        async def these(**kw: object) -> list[dict]:
             return [o for o in await real(**kw) if (o.get("_key") or o.get("id")) in (a, b)]
 
         monkeypatch.setattr(pg_provider, "get_all_orgs", these)
@@ -165,7 +170,7 @@ async def test_pg_startup_cost_grows_linearly_with_the_orgs(pg_provider, org_ctx
                     await pg_provider.upsert_authenticated_as("creator", "admin", f"a{j}-{org}", org)
         real = pg_provider.get_all_orgs
 
-        async def these(**kw):
+        async def these(**kw: object) -> list[dict]:
             return [o for o in await real(**kw) if (o.get("_key") or o.get("id")) in set(orgs)]
 
         monkeypatch.setattr(pg_provider, "get_all_orgs", these)
@@ -219,13 +224,13 @@ async def test_pg_inactive_and_external_orgs_are_covered_and_a_failing_org_keeps
         real_orgs = pg_provider.get_all_orgs
         mine = {a, inactive, external, bad}
 
-        async def these(**kw):
+        async def these(**kw: object) -> list[dict]:
             return [o for o in await real_orgs(**kw) if (o.get("_key") or o.get("id")) in mine]
 
         monkeypatch.setattr(pg_provider, "get_all_orgs", these)
         real_q = pg_provider._q
 
-        async def flaky(fn, tx, **kw):
+        async def flaky(fn, tx, **kw) -> object:
             if current_org_id() == bad and kw.get("write"):
                 raise RuntimeError("injected")
             return await real_q(fn, tx, **kw)
@@ -233,7 +238,7 @@ async def test_pg_inactive_and_external_orgs_are_covered_and_a_failing_org_keeps
         monkeypatch.setattr(pg_provider, "_q", flaky)
         dropped: list[tuple] = []
 
-        async def spy(connector_id, org=None):
+        async def spy(connector_id, org=None) -> None:
             dropped.append((connector_id, org))
 
         monkeypatch.setattr(mig, "notify_connector_sync_completed", spy)

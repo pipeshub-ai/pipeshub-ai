@@ -76,7 +76,12 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
-from app.core.org_context import MissingOrgContext, require_system, spawn_detached, spawn_in_request
+from app.core.org_context import (
+    MissingOrgContext,
+    require_system,
+    spawn_detached,
+    spawn_in_request,
+)
 from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,

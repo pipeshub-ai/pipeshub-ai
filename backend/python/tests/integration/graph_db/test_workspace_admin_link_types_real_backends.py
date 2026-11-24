@@ -13,6 +13,7 @@ from app.core.org_context import system
 from .test_connector_entities import arango_provider, neo4j_provider  # noqa: F401
 from .test_workspace_admin_link_store_real_backends import _ensure_arango_collections
 
+
 async def _ensure_relation_collection(p) -> None:
     import aiohttp
 

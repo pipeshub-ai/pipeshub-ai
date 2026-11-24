@@ -5,7 +5,6 @@ from typing import Any
 
 import pytest
 
-from app.config.constants.arangodb import CollectionNames
 from app.migrations.workspace_admin_link_migration import (
     WorkspaceAdminLinkMigrationService,
 )
@@ -28,10 +27,10 @@ class FakeGraph:
 
     async def remove_listed_authenticator_links(self, app_types: list[str]) -> tuple[list[dict], list[str]]:
         self.passes.append(list(app_types))
-        out = []
-        for app in self.apps:
-            if app["type"] in app_types and app["creator_listed"] and self.links.pop(app["_key"], None) is not None:
-                out.append({"connectorId": app["_key"], "org": app["orgId"]})
+        out = [
+            {"connectorId": app["_key"], "org": app["orgId"]} for app in self.apps
+            if app["type"] in app_types and app["creator_listed"] and self.links.pop(app["_key"], None) is not None
+        ]
         return out, list(self.failed_orgs)
 
     failed_orgs: tuple[str, ...] = ()
@@ -150,7 +149,7 @@ async def test_the_removal_runs_in_a_system_context() -> None:
     seen: list[str | None] = []
 
     class Spy(FakeGraph):
-        async def remove_listed_authenticator_links(self, app_types):
+        async def remove_listed_authenticator_links(self, app_types: list[str]) -> tuple[list[dict], list[str]]:
             ctx = peek()
             seen.append(ctx.kind if ctx else None)
             return await super().remove_listed_authenticator_links(app_types)
