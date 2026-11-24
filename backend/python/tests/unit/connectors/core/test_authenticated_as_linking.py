@@ -805,6 +805,52 @@ class TestAuthenticatorGrantRecord:
         assert "stale" in conn.logger.warning.call_args.args[0]
 
 
+class TestRemoveUserGrantFromRecordGroups:
+    """The connector's own grant (the authenticator's view of the connector account) leaves a
+    record group whose source grants are kept as stored, and only that user's direct edge goes."""
+
+    async def test_only_the_users_own_edge_on_those_groups_goes(self, monkeypatch) -> None:
+        changed = AsyncMock()
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_processor.data_source_entities_processor."
+            "notify_connector_permissions_changed", changed,
+        )
+        tx = _tx_store()
+        tx.get_user_by_email = AsyncMock(return_value=_user("u-key", "admin@corp.com"))
+        groups = {"C1": MagicMock(id="rg-1"), "C2": None}
+        tx.get_record_group_by_external_id = AsyncMock(
+            side_effect=lambda *, connector_id, external_id: groups[external_id]
+        )
+        tx.batch_delete_edges = AsyncMock(return_value=1)
+        proc = _processor(tx)
+
+        removed = await proc.remove_user_grant_from_record_groups(CONNECTOR, ["C1", "C2", "C1"], "admin@corp.com")
+
+        assert removed == 1
+        tx.batch_delete_edges.assert_awaited_once_with(
+            [{"from_id": "u-key", "from_collection": CollectionNames.USERS.value,
+              "to_id": "rg-1", "to_collection": CollectionNames.RECORD_GROUPS.value}],
+            collection=CollectionNames.PERMISSION.value,
+        )
+        changed.assert_awaited_once_with(CONNECTOR, "org-1")
+
+    @pytest.mark.parametrize("user", [None, _user("", "admin@corp.com")])
+    async def test_an_unknown_user_removes_nothing(self, user: object) -> None:
+        tx = _tx_store()
+        tx.get_user_by_email = AsyncMock(return_value=user)
+        proc = _processor(tx)
+
+        assert await proc.remove_user_grant_from_record_groups(CONNECTOR, ["C1"], "admin@corp.com") == 0
+        tx.batch_delete_edges.assert_not_called()
+
+    async def test_nothing_to_remove_reads_nothing(self) -> None:
+        tx = _tx_store()
+        proc = _processor(tx)
+
+        assert await proc.remove_user_grant_from_record_groups(CONNECTOR, [], "admin@corp.com") == 0
+        tx.get_user_by_email.assert_not_called()
+
+
 class _DictConfig:
     """ConfigurationService as a dict: set_config answers False when writes fail, as the real one does."""
 

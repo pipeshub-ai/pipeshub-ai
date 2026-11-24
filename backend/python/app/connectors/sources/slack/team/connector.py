@@ -558,6 +558,8 @@ class SlackConnector(BaseConnector):
         self._cache_rebuild_event:         Optional[asyncio.Event]   = None
         # Set each run_sync by _authenticator_grant(); added to every channel's grants.
         self._authenticator_permission:    Permission | None         = None
+        # The authenticator a user listing named this sync: their grant from the token's view goes.
+        self._withheld_authenticator_email: str | None = None
         # Until a sync has read the user listing, it counts as cut.
         self._users_listing_cut:           bool                      = True
         self._listed_user_emails:          set[str]                  = set()
@@ -1406,6 +1408,7 @@ class SlackConnector(BaseConnector):
             )
 
             batch: list[tuple[RecordGroup, list[Permission] | None]] = []
+            members_unknown: list[str] = []
             for (rg, cd), perms in zip(page_items, perms_results):
                 if isinstance(perms, Exception):
                     # Written with no permissions, the channel would lose every
@@ -1417,9 +1420,13 @@ class SlackConnector(BaseConnector):
                         f"❌ Permission resolution failed for "
                         f"{cd.get('name')}: {perms}; channel left unchanged"
                     )
+                    if rg.external_group_id:
+                        members_unknown.append(rg.external_group_id)
                     continue
                 # None: the grants are unknown, so the processor keeps the stored ones.
                 batch.append((rg, None if perms is None else self._with_authenticator(perms)))
+                if perms is None and rg.external_group_id:
+                    members_unknown.append(rg.external_group_id)
                 record_groups.append(rg)
                 total += 1
 
@@ -1430,6 +1437,7 @@ class SlackConnector(BaseConnector):
                     if ext_id and rg_item.id:
                         self.channel_groups_cache[ext_id] = rg_item.id
                 self.logger.info(f"Synced batch of {len(batch)} channels")
+            await self._withdraw_withheld_authenticator(members_unknown)
 
             cursor = data.get("response_metadata", {}).get("next_cursor", "")
             if not cursor:
@@ -1471,9 +1479,9 @@ class SlackConnector(BaseConnector):
         token has no Slack account to link them to, so this grant is how they reach it.
 
         Not for a user the workspace lists: they have their own account and see their own
-        channels through their membership, not the token's view. A complete user list decides
-        it and the decision is stored; when the list was not read in full that is unknown, so
-        nobody is newly granted and the stored decision stands (authenticator_grant_kept)."""
+        channels through their membership, not the token's view. The decision and what is
+        stored follow decide_authenticator_grant."""
+        self._withheld_authenticator_email = None
         email = await self.authenticator_email()
         if not email:
             self.logger.warning(
@@ -1482,12 +1490,31 @@ class SlackConnector(BaseConnector):
             )
             return None
         listed = email.lower() in self._listed_user_emails
-        if getattr(self, "_users_read_failed", True) or self._users_listing_cut:
-            granted = not listed and await self.authenticator_grant_kept(email)
-        else:
-            granted = not listed
-            await self.remember_authenticator_grant(email, granted=granted)
+        if listed:
+            self._withheld_authenticator_email = email
+        granted = await self.decide_authenticator_grant(
+            email,
+            listing_complete=not (getattr(self, "_users_read_failed", True) or self._users_listing_cut),
+            listed=listed,
+        )
         return Permission(email=email, entity_type=EntityType.USER, type=PermissionType.READ) if granted else None
+
+    async def _withdraw_withheld_authenticator(self, channel_ids: list[str]) -> None:
+        """Take the token's view away from a listed authenticator on channels whose members could not
+        be read. Their other grants there stay as stored; a channel whose members are read again gives
+        them back their own. Non-fatal: the next sync tries again."""
+        email = getattr(self, "_withheld_authenticator_email", None)
+        if not email or not channel_ids:
+            return
+        try:
+            await self.data_entities_processor.remove_user_grant_from_record_groups(
+                self.connector_id, channel_ids, email,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                f"Connector {self.connector_id}: could not take the connector account's view away from "
+                f"the authenticator on {len(channel_ids)} channel(s) whose members could not be read: {exc}"
+            )
 
     def _with_authenticator(self, perms: list[Permission]) -> list[Permission]:
         """The channel's grants plus the authenticator's, unless they are already a member."""

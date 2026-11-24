@@ -475,6 +475,10 @@ class FakeSlackStore:
             return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
         if not may_link or not email or not source_user_id:
             return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+        if creator and email.strip().lower() == creator:
+            # Their own account: nothing to link, and a link to another account goes.
+            had, self.stored_link = self.stored_link, None
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
         self.links.append((email, source_user_id))
         self.stored_link = (email, source_user_id)
         return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
@@ -518,6 +522,23 @@ class FakeSlackStore:
             self.record_groups[group.external_group_id] = group
             if permissions is not None:  # None: the grants are unknown and the stored ones stay
                 self.group_access[group.external_group_id] = list(permissions)
+
+    async def remove_user_grant_from_record_groups(
+        self, connector_id: str, external_group_ids: Collection[str], user_email: str,
+    ) -> int:
+        """Only this user's own grant on these groups goes; the rest stay as stored, as the processor's."""
+        self.events.append(("remove_user_grant_from_record_groups", tuple(sorted(external_group_ids))))
+        removed = 0
+        for external_id in external_group_ids:
+            if external_id not in self.group_access:
+                continue
+            kept = [
+                p for p in self.group_access[external_id]
+                if not (p.entity_type == EntityType.USER and (p.email or "").lower() == user_email.lower())
+            ]
+            removed += len(self.group_access[external_id]) - len(kept)
+            self.group_access[external_id] = kept
+        return removed
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return self.record_groups.get(external_id)

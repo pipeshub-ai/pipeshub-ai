@@ -11,7 +11,7 @@ collaborator gets, and it goes with them.
 """
 
 import pytest
-from slack_behaviour_fakes import BOT_TOKEN, USER_TOKEN, SlackWorkspace
+from slack_behaviour_fakes import BOT_TOKEN, USER_TOKEN, SlackError, SlackWorkspace
 from slack_behaviour_setup import (
     ALICE,
     BOB,
@@ -80,6 +80,23 @@ class TestBotToken:
 
         assert grants_for(store, PARTNERS, "bob@acme.com") == []
         assert len(grants_for(store, SECRET, "bob@acme.com")) == 1, "their own membership still shows their channels"
+
+    async def test_an_authenticator_the_workspace_now_lists_loses_the_grant_where_members_cannot_be_read(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        assert len(grants_for(store, PARTNERS, ADMIN)) == 1
+        workspace.add_user("U0ADMIN", ADMIN, "Admin")
+        workspace.channels[PARTNERS]["is_archived"] = True
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == PARTNERS)
+
+        await connector.run_sync()
+
+        assert grants_for(store, PARTNERS, ADMIN) == [], "the token's view goes"
+        assert store.access_emails(PARTNERS) == {"alice@acme.com", "carol@partner.com"}, "the stored members stay"
 
     async def test_an_unlisted_authenticator_still_gets_every_channel(self, workspace, store, checkpoints) -> None:
         store.authenticator_email = ADMIN

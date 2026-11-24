@@ -7951,6 +7951,36 @@ class DataSourceEntitiesProcessor:
             )
 
     @retry_on_deadlock()
+    async def remove_user_grant_from_record_groups(
+        self, connector_id: str, external_group_ids: Collection[str], user_email: str,
+    ) -> int:
+        """Delete the permission edge this user holds directly on these record groups of the connector,
+        and no other grant on them. For a grant the connector made itself (the user who authenticated it
+        given the connector account's view) on groups whose source grants are unknown and kept as stored.
+        Returns how many edges went. A failed read raises."""
+        if not external_group_ids:
+            return 0
+        async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
+            user = await tx_store.get_user_by_email(user_email, raise_on_error=True, org_id=self.org_id)
+            if user is None or not user.id:
+                return 0
+            edges: list[dict] = []
+            for external_id in sorted(set(external_group_ids)):
+                group = await tx_store.get_record_group_by_external_id(
+                    connector_id=connector_id, external_id=external_id,
+                )
+                if group is not None and group.id:
+                    edges.append({
+                        "from_id": user.id,
+                        "from_collection": CollectionNames.USERS.value,
+                        "to_id": group.id,
+                        "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    })
+            if not edges:
+                return 0
+            return await tx_store.batch_delete_edges(edges, collection=CollectionNames.PERMISSION.value)
+
+    @retry_on_deadlock()
     async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
         """Take away everything the user was granted directly on this connector's content and groups, for a
         person the source no longer lets in. Returns how many grants were removed (0 for an unknown user)."""
