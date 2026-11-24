@@ -47,7 +47,12 @@ for s in postgres pgbouncer pipeshub-migrate pipeshub-placement pipeshub-fold pi
   check "$s renders with every profile on" "$(echo "$services" | grep -cx "$s")" 1
   check "$s renders with no profile on" "$(echo "$bare" | grep -cx "$s")" 1
 done
-check "the metrics exporters start only with their own profile" "$(echo "$bare" | grep -cE '^(postgres|pgbouncer)-exporter$' || true)" 0
+# The exporters keep their opt-in profile in the overlay: rendered without the test stub (which leaves them out of the run),
+# they are absent with no profile on and present with postgres-metrics.
+overlay() { $DOCKER compose --env-file "$env_file" -p "$proj" -f docker-compose.yml -f docker-compose.postgres-only.yml ${EXTRA_COMPOSE_FILE:+-f "$EXTRA_COMPOSE_FILE"} "$@"; }
+exporters='^(postgres|pgbouncer)-exporter$'
+check "the metrics exporters do not render with no profile on" "$(COMPOSE_PROFILES= overlay config --services | grep -cE "$exporters" || true)" 0
+check "the metrics exporters render with postgres-metrics" "$(COMPOSE_PROFILES=postgres-metrics overlay config --services | grep -cE "$exporters" || true)" 2
 envs="$(dc config --format json | python3 -c 'import json,sys; e=json.load(sys.stdin)["services"]["pipeshub-ai"]["environment"]; print(" ".join(k+"="+str(e.get(k)) for k in ("DOC_STORE","DATA_STORE","VECTOR_DB_TYPE","KV_STORE_TYPE","MESSAGE_BROKER","REDIS_MODE","CRAWL_SCHEDULER")))')"
 check "the app selects PostgreSQL for every store" "$envs" \
   "DOC_STORE=postgres DATA_STORE=postgres VECTOR_DB_TYPE=pgvector KV_STORE_TYPE=postgres MESSAGE_BROKER=postgres REDIS_MODE=postgres CRAWL_SCHEDULER=postgres"
