@@ -111,7 +111,7 @@ async def test_rows_the_drain_cannot_read_are_left_aside_counted_and_removed_onl
     p, org = prov(pg_db), new_org()
     await world2(p, org)
 
-    await _admin("INSERT INTO kg.graph_changes (org_id, ends, txid) VALUES ($1, ARRAY['x'], '1'::xid8), ($1, ARRAY['9:a'], '1'::xid8), "      # no service can log them (kg_0021)
+    await _admin("INSERT INTO kg.graph_changes (org_id, ends, txid) VALUES ($1, ARRAY['x'], '1'::xid8), ($1, ARRAY['9:a'], '1'::xid8), "      # no service can log them (kg_0022)
                  "($1, ARRAY['3:' || repeat('a', 300)], '1'::xid8), ($1, ARRAY['3:r1', 'nope'], '1'::xid8)", org)
     await drain_org(pg_db, org)
     assert await lag(pg_db, org) == 0                          # the readable rows were projected

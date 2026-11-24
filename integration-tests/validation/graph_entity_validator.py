@@ -81,6 +81,8 @@ _RECORD_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
     "id", "org_id", "indexing_status", "extraction_status", "parsing_status", "queued_at",
     "processing_started_at",
     "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type",
+    # Store-minted life id (RECORD_INCARNATION_WRITE); expected records do not set it.
+    "incarnation_id",
     # Write-time permission hints (Record model), never persisted on the node.
     "inherit_permissions_from_group", "rewrite_permissions",
 })

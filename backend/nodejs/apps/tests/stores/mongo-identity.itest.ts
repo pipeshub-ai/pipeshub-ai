@@ -95,6 +95,49 @@ describe('Identity repositories against a real MongoDB', function () {
     },
   });
 
+  it('markDeleted removes a person who holds a reserved service-account address from before that rule', async () => {
+    const org = await Org.create({
+      registeredName: 'Legacy Org',
+      domain: `${randomUUID().slice(0, 8)}.example.com`,
+      contactEmail: `owner-${randomUUID().slice(0, 8)}@example.com`,
+      accountType: 'business',
+      onBoardingStatus: 'configured',
+    });
+    // Written past the schema, as such rows were: the rule now refuses to create them.
+    const { insertedId } = await Users.collection.insertOne({
+      orgId: org._id,
+      email: `svc-legacy-${randomUUID().slice(0, 8)}@service.pipeshub.internal`,
+      fullName: 'Invited Before The Rule',
+      slug: `user-legacy-${randomUUID().slice(0, 8)}`,
+      role: 'member',
+      isDeleted: false,
+    });
+    const removed = await new MongoUserRepository().markDeleted(String(org._id), String(insertedId), { onlyMember: true });
+    expect(removed).to.include({ isDeleted: true });
+  });
+
+  it('markDeleted with onlyMember matches a row removed before the role backfill (no role: a member), so a retried delete finishes', async () => {
+    const org = await Org.create({
+      registeredName: 'Legacy Org',
+      domain: `${randomUUID().slice(0, 8)}.example.com`,
+      contactEmail: `owner-${randomUUID().slice(0, 8)}@example.com`,
+      accountType: 'business',
+      onBoardingStatus: 'configured',
+    });
+    // The role migration backfilled live rows only, so a person removed before it has no role field.
+    const { insertedId } = await Users.collection.insertOne({
+      orgId: org._id,
+      email: `legacy-${randomUUID().slice(0, 8)}@example.com`,
+      fullName: 'Removed Before The Backfill',
+      slug: `user-legacy-${randomUUID().slice(0, 8)}`,
+      isDeleted: true,
+    });
+    const users = new MongoUserRepository();
+    expect((await users.getAny(String(org._id), String(insertedId)))?.role).to.equal('member');
+    const removed = await users.markDeleted(String(org._id), String(insertedId), { signedOut: true, onlyMember: true });
+    expect(removed).to.include({ isDeleted: true, hasLoggedIn: false });
+  });
+
   it('oldestOrgId reads one organisation, not all of them', async () => {
     await Org.create({
       registeredName: 'Oldest Org',

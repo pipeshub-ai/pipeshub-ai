@@ -2,7 +2,6 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import nock from 'nock'
-import winston from 'winston'
 import {
   ADMIN,
   Harness,
@@ -18,6 +17,7 @@ import { ConfigService } from '../../../../src/modules/tokens_manager/services/c
 import { EntitiesEventProducer, EventType } from '../../../../src/modules/tokens_manager/services/entity_event.service'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import * as buildInfoUtils from '../../../../src/libs/utils/build-info.utils'
+import { captureLogRecords, inRequestContext, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 /**
  * The legacy Google routes, the health probe, the stored-config fallbacks and the entity-event producer:
@@ -42,20 +42,19 @@ const level = (r: Row): string => {
 describe('Legacy routes, health probe and stored config: one line per failure', function () {
   this.timeout(30000)
   let records: Row[]
+  // The request (or call) under test; a line from any other context is not this test's.
+  let requestId: string
 
   beforeEach(() => {
-    records = []
-    // Every winston logger, whichever root a module got at load, at every level.
-    sinon.stub(winston.Logger.prototype, 'isLevelEnabled').returns(true)
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Row) {
-      records.push(info)
-      return this
-    } as any)
+    records = captureLogRecords()
+    requestId = newRequestId('legacy-and-health')
   })
   afterEach(() => sinon.restore())
 
-  const byMessage = (message: string): Row[] => records.filter((r) => r.message === message)
-  const errors = (): Row[] => records.filter((r) => level(r) === 'error')
+  const mine = (): Row[] => recordsOf(records, requestId)
+  const byMessage = (message: string): Row[] => mine().filter((r) => r.message === message)
+  const errors = (): Row[] => mine().filter((r) => level(r) === 'error')
+  const ours = (): Record<string, string> => ({ 'x-request-id': requestId })
 
   describe('legacy Google Workspace routes', () => {
     let h: Harness
@@ -82,7 +81,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
     }
     const refresh = async (): Promise<number> => {
       records.length = 0
-      return (await call(h, 'POST', '/internal/refreshIndividualConnectorToken', fetchConfigToken(h, ADMIN))).status
+      return (await call(h, 'POST', '/internal/refreshIndividualConnectorToken', fetchConfigToken(h, ADMIN), undefined, ours())).status
     }
 
     for (const [name, status, body] of [
@@ -95,10 +94,10 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
 
         expect(await refresh()).to.equal(500)
 
-        // How many POSTs is a behaviour of the route and of the shared axios-retry, not of this logging.
+        // How many POSTs is a behaviour of the route, not of this logging.
         expect(google.isDone()).to.equal(true)
         expect(errors().map((r) => r.message)).to.deep.equal(['http.request.error'])
-        expect(records.filter((r) => String(r.message).startsWith('Error refreshing'))).to.deep.equal([])
+        expect(mine().filter((r) => String(r.message).startsWith('Error refreshing'))).to.deep.equal([])
         expect(JSON.stringify(records)).to.not.include('stored-refresh-do-not-log')
         expect(JSON.stringify(records)).to.not.include('google-secret-do-not-log')
       })
@@ -111,7 +110,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
 
       expect(await refresh()).to.equal(200)
 
-      expect(records.filter((r) => ['info', 'warn', 'error'].includes(level(r))).map((r) => r.message)).to.deep.equal([
+      expect(mine().filter((r) => ['info', 'warn', 'error'].includes(level(r))).map((r) => r.message)).to.deep.equal([
         'Access token refreshed successfully',
       ])
       expect(JSON.stringify(records)).to.not.include('fresh-access-do-not-log')
@@ -120,7 +119,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
     it('the configuration manager failing (5xx) is upstream_5xx at WARN, without its body', async () => {
       h.backend.on('GET', CM_OAUTH_CONFIG, { status: 500, body: { detail: CM_SECRET_BODY, owner: 'ada@acme.test' } })
 
-      const r = await call(h, 'POST', '/getTokenFromCode', sessionToken(h, ADMIN), { tempCode: 'consent-code' })
+      const r = await call(h, 'POST', '/getTokenFromCode', sessionToken(h, ADMIN), { tempCode: 'consent-code' }, ours())
 
       expect(r.status).to.equal(500)
       expect(byMessage('http.request.error').map((x) => [level(x), x.error_class])).to.deep.equal([['warn', 'upstream_5xx']])
@@ -133,7 +132,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
       it(`the configuration manager refusing (${status}) stays our 500, internal, without its body`, async () => {
         h.backend.on('GET', CM_OAUTH_CONFIG, { status, body: { detail: CM_SECRET_BODY } })
 
-        const r = await call(h, 'POST', '/getTokenFromCode', sessionToken(h, ADMIN), { tempCode: 'consent-code' })
+        const r = await call(h, 'POST', '/getTokenFromCode', sessionToken(h, ADMIN), { tempCode: 'consent-code' }, ours())
 
         expect(r.status).to.equal(500)
         expect(byMessage('http.request.error').map((x) => [level(x), x.error_class])).to.deep.equal([['error', 'internal']])
@@ -144,7 +143,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
     it('the configuration manager answering 502 is upstream_5xx at WARN', async () => {
       h.backend.on('GET', CM_OAUTH_CONFIG, { status: 502, body: { detail: CM_SECRET_BODY } })
 
-      const r = await call(h, 'POST', '/getTokenFromCode', sessionToken(h, ADMIN), { tempCode: 'consent-code' })
+      const r = await call(h, 'POST', '/getTokenFromCode', sessionToken(h, ADMIN), { tempCode: 'consent-code' }, ours())
 
       expect(r.status).to.equal(500)
       expect(byMessage('http.request.error').map((x) => [level(x), x.error_class])).to.deep.equal([['warn', 'upstream_5xx']])
@@ -167,7 +166,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
         const google = nock(GOOGLE).post('/token').reply(200, {})
 
         const token = route === '/getTokenFromCode' ? sessionToken(h, ADMIN) : fetchConfigToken(h, ADMIN)
-        const r = await call(h, 'POST', route, token, route === '/getTokenFromCode' ? { tempCode: 'consent-code' } : undefined)
+        const r = await call(h, 'POST', route, token, route === '/getTokenFromCode' ? { tempCode: 'consent-code' } : undefined, ours())
 
         expect(r.status).to.equal(500)
         expect(errorMessage(r)).to.equal('Google Workspace client id or secret is not configured')
@@ -186,9 +185,9 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
     const event = { eventType: EventType.AppEnabledEvent, timestamp: 1, payload: { orgId: 'o', appGroup: 'g', appGroupId: 'id', apps: [] } } as any
 
     it('a published event is one DEBUG line with event_type and topic', async () => {
-      await producerOver(async () => undefined).publishEvent(event)
+      await inRequestContext(requestId, () => producerOver(async () => undefined).publishEvent(event))
 
-      expect(records.map((r) => [level(r), r.message, r.metadata?.event_type, r.metadata?.topic])).to.deep.equal([
+      expect(mine().map((r) => [level(r), r.message, r.metadata?.event_type, r.metadata?.topic])).to.deep.equal([
         ['debug', 'broker.event.published', 'appEnabled', 'entity-events'],
       ])
     })
@@ -197,15 +196,17 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
       const failure = new Error('Connection is closed.')
       let raised: unknown
       try {
-        await producerOver(async () => {
-          throw failure
-        }).publishEvent(event)
+        await inRequestContext(requestId, () =>
+          producerOver(async () => {
+            throw failure
+          }).publishEvent(event),
+        )
       } catch (error) {
         raised = error
       }
 
       expect(raised).to.equal(failure)
-      expect(records).to.deep.equal([])
+      expect(mine()).to.deep.equal([])
     })
   })
 
@@ -244,7 +245,9 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
     }
     const probe = async (): Promise<sinon.SinonStub> => {
       const next = sinon.stub()
-      await handler({}, { status: sinon.stub().returnsThis(), json: sinon.stub().returnsThis() }, next)
+      await inRequestContext(requestId, () =>
+        handler({}, { status: sinon.stub().returnsThis(), json: sinon.stub().returnsThis() }, next),
+      )
       return next
     }
     const changes = (): Array<[string, string, string, string]> =>
@@ -273,7 +276,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
       answer({ status: 200 })
       await probe()
 
-      expect(records.filter((r) => level(r) !== 'debug')).to.deep.equal([])
+      expect(mine().filter((r) => level(r) !== 'debug')).to.deep.equal([])
     })
 
     it('a timed-out graph check is WARN reason=timeout; a refused connection is WARN state=unknown', async () => {
@@ -302,7 +305,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
       answer({ status: 200 })
       await probe()
 
-      expect(records.filter((r) => level(r) !== 'debug')).to.deep.equal([])
+      expect(mine().filter((r) => level(r) !== 'debug')).to.deep.equal([])
     })
 
     it('a deployment record that cannot be read answers from the boot config, with one WARN that does not quote it', async () => {
@@ -321,10 +324,12 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
       answer({ status: 200 })
       const failure = new Error('unexpected serialization error')
       const next = sinon.stub()
-      await handler({}, { status: sinon.stub().returnsThis(), json: sinon.stub().throws(failure) }, next)
+      await inRequestContext(requestId, () =>
+        handler({}, { status: sinon.stub().returnsThis(), json: sinon.stub().throws(failure) }, next),
+      )
 
       expect(next.calledOnceWithExactly(failure)).to.equal(true)
-      expect(records.filter((r) => level(r) !== 'debug')).to.deep.equal([])
+      expect(mine().filter((r) => level(r) !== 'debug')).to.deep.equal([])
     })
   })
 
@@ -344,9 +349,11 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
       kv.get.resolves('stored')
       service.encryptionService.decrypt.throws(new Error('Unsupported state or unable to authenticate data'))
 
-      expect(await service.getEncryptedConfig('/services/kafka', { brokers: ['env'] })).to.deep.equal({ brokers: ['env'] })
+      expect(await inRequestContext(requestId, () => service.getEncryptedConfig('/services/kafka', { brokers: ['env'] }))).to.deep.equal({
+        brokers: ['env'],
+      })
 
-      expect(records.map((r) => [level(r), r.message, r.metadata?.path])).to.deep.equal([
+      expect(mine().map((r) => [level(r), r.message, r.metadata?.path])).to.deep.equal([
         ['warn', 'Stored config unreadable; using the environment defaults', '/services/kafka'],
       ])
     })
@@ -355,7 +362,7 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
       kv.get.resolves('stored')
       service.encryptionService.decrypt.returns(`{"uri":${DECRYPTED_MARKER}-42}`)
 
-      await service.getEncryptedConfig('/services/kafka', {})
+      await inRequestContext(requestId, () => service.getEncryptedConfig('/services/kafka', {}))
 
       expect(byMessage('Stored config unreadable; using the environment defaults')).to.have.length(1)
       expect(JSON.stringify(records)).to.not.include(DECRYPTED_MARKER)
@@ -364,10 +371,10 @@ describe('Legacy routes, health probe and stored config: one line per failure', 
     it('an unreadable deployment record is rewritten with one WARN, without quoting it', async () => {
       kv.get.resolves(`{"dataStoreType":${DECRYPTED_MARKER}}`)
 
-      const config = await service.getDeploymentConfig()
+      const config = await inRequestContext(requestId, () => service.getDeploymentConfig())
 
       expect(Object.keys(config).sort()).to.deep.equal(['kvStoreType', 'messageBrokerType'])
-      expect(records.map((r) => [level(r), r.message])).to.deep.equal([
+      expect(mine().map((r) => [level(r), r.message])).to.deep.equal([
         ['warn', 'Deployment config unreadable; rewriting it with the Node-owned keys only'],
       ])
       expect(JSON.stringify(records)).to.not.include(DECRYPTED_MARKER)

@@ -406,6 +406,13 @@ record_schema = {
             # When (ms) a record was first handed back for a model provider's rate limit, set once and never moved:
             # ``RATE_LIMIT_MAX_WAIT_S`` of wall time since then ends the record. Cleared when the record ends.
             "rateLimitedSinceMs": {"type": ["number", "null"]},
+            # A Force reindex requested for the record and not yet served by a refresh run: its id, and when it was made
+            # (ms). Read by every record event and the intent sweep (app/modules/indexing/refresh_intent.py).
+            "refreshIntentId": {"type": ["string", "null"]},
+            "refreshIntentAtMs": {"type": ["number", "null"]},
+            # The id of the newest Force reindex request whose refresh ran on the record, written in the statement that clears the request: every
+            # replica sees that it was served (identity, never wall time: the hosts' clocks differ).
+            "refreshDoneId": {"type": ["string", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {
                 "type": "string",
@@ -439,6 +446,8 @@ record_schema = {
             "entityExtractorVersion": {"type": ["string", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
+            # Names the life of the vertex: minted at insert, changed only by a restore from the trash.
+            "incarnationId": {"type": ["string", "null"]},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
             "isShared": {"type": ["boolean", "null"], "default": False},
             "isDependentNode": {"type": "boolean", "default": False},
@@ -466,6 +475,13 @@ record_schema = {
             "rowCount": {"type": ["number", "null"]},
             # sha256(source bytes)[:16] of the revision being processed; stage status writes CAS on it.
             "contentRev": {"type": ["string", "null"]},
+            # The parser that built the indexed copy ("inproc:txt@1"), the lastIndexTimestamp and virtualRecordId it was written
+            # with (it describes the copy only while both still match) and where the label came from (parsed, adopted, twin).
+            # Accepted by this release; written only with RECORD_PARSER_IDENTITY_WRITE, which is off by default.
+            "indexedParser": {"type": ["string", "null"]},
+            "indexedParserAt": {"type": ["number", "null"]},
+            "indexedParserVrid": {"type": ["string", "null"]},
+            "indexedParserSource": {"type": ["string", "null"]},
             # Typed property values projected for filtering (record properties); written by indexing.
             "recordProps": {"type": ["object", "null"]},
             # 16-hex hash of the property names projected, the schema generation that
@@ -515,7 +531,7 @@ record_schema = {
 # Raised by one with every change to ``record_schema``. A process applies its own schema only while the live
 # collection's generation is lower, so an older image cannot narrow a newer one without being re-widened.
 # tests/unit/schema/test_record_schema_generation.py pins a hash of the rule to this number.
-RECORD_SCHEMA_GENERATION = 3
+RECORD_SCHEMA_GENERATION = 6
 record_schema["rule"]["$comment"] = f"pipeshub-record-schema gen={RECORD_SCHEMA_GENERATION}"
 
 

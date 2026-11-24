@@ -877,7 +877,7 @@ export class PgUserRepository implements UserRepository, Importable {
   async markDeleted(
     orgId: string,
     id: string,
-    extra?: { signedOut?: boolean; deletedBy?: string },
+    extra?: { signedOut?: boolean; deletedBy?: string; onlyMember?: boolean },
   ): Promise<UserDto | null> {
     const oid = oidOf(id);
     if (oid === undefined) return null;
@@ -895,7 +895,7 @@ export class PgUserRepository implements UserRepository, Importable {
         sets.push(`deleted_by = $${String(values.length)}`);
       }
       const { rows } = await k.query<UserRow>(
-        `/* pipeshub:identity.user_mark_deleted */ UPDATE identity.users u SET ${sets.join(', ')} WHERE u.org_id = $1 AND u.id = $2::text RETURNING ${COLS}`,
+        `/* pipeshub:identity.user_mark_deleted */ UPDATE identity.users u SET ${sets.join(', ')} WHERE u.org_id = $1 AND u.id = $2::text${extra?.onlyMember ? " AND u.role <> 'admin'" : ''} RETURNING ${COLS}`,
         values,
       );
       return rows[0] ? dto(rows[0]) : null;
@@ -912,7 +912,7 @@ export class PgUserRepository implements UserRepository, Importable {
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       await k.query(
-        '/* pipeshub:identity.user_restore */ UPDATE identity.users u SET is_deleted = false, updated_at = $3 WHERE u.org_id = $1 AND u.email = ANY($2::text[]) AND u.is_deleted',
+        "/* pipeshub:identity.user_restore */ UPDATE identity.users u SET is_deleted = false, role = 'member', updated_at = $3 WHERE u.org_id = $1 AND u.email = ANY($2::text[]) AND u.is_deleted",
         [k.orgId, list, new Date()],
       );
       const { rows } = await k.query<UserRow>(

@@ -19,7 +19,6 @@ import { createHash } from 'node:crypto';
 import { Container } from 'inversify';
 import { z } from 'zod';
 import axios from 'axios';
-import axiosRetry, { retryAfter } from 'axios-retry';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
@@ -103,6 +102,7 @@ import {
 } from '../consts/constants';
 import {
   getGoogleWorkspaceConfig,
+  getGoogleWorkspaceIndividualCredentials,
   setGoogleWorkspaceIndividualCredentials,
   getRefreshTokenCredentials,
   getRefreshTokenConfig,
@@ -161,28 +161,61 @@ const failedCall = (
     ? withCause(new InternalServerError(message), { status: response.statusCode })
     : new InternalServerError(message);
 
-// A 429 whose Retry-After is longer than this goes straight back to the caller
-// with its Retry-After: waiting it out would hold the request open (a preview
-// would hang for the length of a source's rate limit).
-const MAX_RETRY_AFTER_MS = 5000;
+/** No refresh token from Google and none usable stored: only a new grant brings one. The app is the org's own Google client. */
+export const NO_REFRESH_TOKEN_MESSAGE =
+  "Google didn't send a refresh token, and PipesHub has no usable one saved for you. Remove this app's access in your Google account's third-party access settings (https://myaccount.google.com/permissions; it is listed under your organisation's Google app name), then connect Google Workspace again.";
 
-// Configure axios retry logic
-axiosRetry(axios, {
-  retries: 3,
-  retryDelay: axiosRetry.exponentialDelay,
-  retryCondition: (error) => {
-    if (
-      error.response?.status === 429 &&
-      retryAfter(error) > MAX_RETRY_AFTER_MS
-    ) {
-      return false;
-    }
-    return !!(
-      axiosRetry.isNetworkOrIdempotentRequestError(error) ||
-      (error.response && error.response.status >= 500)
+/**
+ * The refresh token to store with this consent's access token. Google sends one only on the first offline consent
+ * for this client, so a repeat consent keeps the one stored for this PipesHub user, unless it has expired.
+ */
+const refreshTokenFor = async (
+  req: AuthenticatedUserRequest,
+  tokenData: { refresh_token?: string; refresh_token_expires_in?: number },
+  config: AppConfig,
+): Promise<{ refreshToken: string; refreshTokenExpiry?: number }> => {
+  // Google's lifetime describes the grant's refresh token: the new one, or the stored one it did not resend.
+  const googleExpiry = tokenData.refresh_token_expires_in
+    ? tokenData.refresh_token_expires_in * 1000 + Date.now()
+    : undefined;
+  if (tokenData.refresh_token) {
+    return {
+      refreshToken: tokenData.refresh_token,
+      refreshTokenExpiry: googleExpiry,
+    };
+  }
+  const stored = await getGoogleWorkspaceIndividualCredentials(
+    req,
+    config.cmBackend,
+    config.scopedJwtSecret,
+  );
+  if (stored.statusCode !== 200) {
+    throw failedCall(
+      'Error reading the stored Google Workspace credentials',
+      stored,
     );
-  },
-});
+  }
+  const {
+    refresh_token: storedToken,
+    refresh_token_expiry_time: storedExpiry,
+  } = (stored.data ?? {}) as {
+    refresh_token?: string;
+    refresh_token_expiry_time?: unknown;
+  };
+  // Only an absent expiry means "does not expire"; 0, NaN or a non-number is not a time still ahead.
+  const expiryAhead =
+    typeof storedExpiry === 'number' && storedExpiry > Date.now();
+  const expiryAbsent = storedExpiry === undefined || storedExpiry === null;
+  if (!storedToken || !(expiryAbsent || expiryAhead)) {
+    throw new BadRequestError(NO_REFRESH_TOKEN_MESSAGE);
+  }
+  logger.info('Google sent no refresh token; keeping the stored one');
+  return {
+    refreshToken: storedToken,
+    refreshTokenExpiry:
+      googleExpiry ?? (expiryAhead ? storedExpiry : undefined),
+  };
+};
 
 // ============================================================================
 // Validation Schemas
@@ -1428,10 +1461,11 @@ export function createConnectorRouter(
         // Verify ID token
         verifyGoogleWorkspaceToken(req, tokenData?.id_token);
 
-        // Calculate refresh token expiry
-        const refreshTokenExpiryDate = tokenData.refresh_token_expires_in
-          ? tokenData.refresh_token_expires_in * 1000 + Date.now()
-          : undefined;
+        const { refreshToken, refreshTokenExpiry } = await refreshTokenFor(
+          req,
+          tokenData,
+          config,
+        );
 
         // Store credentials
         const credentialsResponse = await setGoogleWorkspaceIndividualCredentials(
@@ -1439,9 +1473,9 @@ export function createConnectorRouter(
           config.cmBackend,
           config.scopedJwtSecret,
           tokenData.access_token,
-          tokenData.refresh_token,
+          refreshToken,
           tokenData.expires_in * 1000 + Date.now(),
-          refreshTokenExpiryDate,
+          refreshTokenExpiry,
           enableRealTimeUpdates,
           topicName,
         );

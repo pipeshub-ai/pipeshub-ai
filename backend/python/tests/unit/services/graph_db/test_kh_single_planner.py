@@ -139,6 +139,19 @@ async def test_inside_a_transaction_the_statement_runs_as_before() -> None:
     assert client.calls == [{"query": "RETURN 1", "txn_id": "txn-1", "plain": True}]
 
 
+@pytest.mark.asyncio
+async def test_a_listing_statement_keeps_its_plan_unless_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    client.release.set()
+    p = provider(client)
+    await p._kh_query("MATCH (a:App) RETURN a")  # planned
+    await p._kh_query("MATCH (a:App) RETURN a")  # run
+    assert [c["query"] for c in client.calls] == ["CYPHER replan=skip MATCH (a:App) RETURN a"] * 2
+    monkeypatch.setattr(Neo4jProvider, "_KH_KEEP_PLANS", False)
+    await p._kh_query("MATCH (a:App) RETURN a")
+    assert client.calls[-1]["query"] == "MATCH (a:App) RETURN a"
+
+
 def _coded(code: str) -> Exception:
     error = RuntimeError(code)
     error.code = code  # type: ignore[attr-defined]

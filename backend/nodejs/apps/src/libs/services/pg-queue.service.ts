@@ -513,8 +513,11 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
         message.headers = JSON.parse(r.headers) as Record<string, string>;
       try {
         await runWithRequestContext(contextFromEnvelope(message.value), () =>
-          runWithEnvelope(r.topic, message.value, (value) =>
-            handler({ ...message, value }),
+          runWithEnvelope(
+            r.topic,
+            message.value,
+            (value) => handler({ ...message, value }),
+            this.groupId,
           ),
         );
       } catch (error) {

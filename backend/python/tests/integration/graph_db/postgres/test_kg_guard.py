@@ -205,7 +205,7 @@ async def log_rows(p, org: str) -> int:
 
 
 async def other_roles_rows(org: str, n: int = 20) -> None:
-    """Rows a unit of another service would leave (committed, by an earlier transaction). No service may insert a row itself (kg_0021), so the administrator plants them."""
+    """Rows a unit of another service would leave (committed, by an earlier transaction). No service may insert a row itself (kg_0022), so the administrator plants them."""
     await _admin("INSERT INTO kg.graph_changes (org_id, ends) SELECT $1, ARRAY['3:f1'] FROM generate_series(1, $2)", org, n)
 
 

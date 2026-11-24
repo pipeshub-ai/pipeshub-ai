@@ -55,10 +55,12 @@ class TestClassify:
         direction."""
         assert classify(None, mime) is ParseTier.HEAVY
 
-    def test_extension_takes_priority_over_mime(self) -> None:
-        # The labels alone: `classify` lets the extension win. Admission raises this to the heavy reader's tier
-        # (`reader_tier`, TestReaderTier below), since the PDF reader is what parses it.
-        assert classify("txt", "application/pdf") is ParseTier.LIGHT
+    def test_the_reader_the_labels_select_decides(self) -> None:
+        """Was test_extension_takes_priority_over_mime: a PDF labelled txt is read by the PDF reader, so it is heavy. The
+        extension still decides over a generic mime."""
+        assert classify("txt", "application/pdf") is ParseTier.HEAVY
+        assert classify("pdf", "application/octet-stream") is ParseTier.HEAVY
+        assert classify("txt", "application/octet-stream") is ParseTier.LIGHT
 
     def test_unknown_defaults_to_heavy(self) -> None:
         assert classify("xyz-unknown", "application/x-unknown") is ParseTier.HEAVY
@@ -102,8 +104,9 @@ def _service_reader(extension: str, mime_type: str) -> file_types.Tier | None:
 
 class TestReaderTier:
     @pytest.mark.parametrize(("reader", "raised_cells", "raised_extensions"), [
-        (_in_process_reader, 196, _LIGHT_TEXT | _SOURCE),
-        (_service_reader, 196, _LIGHT_TEXT | {"bash", "sh"}),
+        # In-process `classify` already is the labels' reader; the service reads 72 label pairs heavier.
+        (_in_process_reader, 0, set()),
+        (_service_reader, 72, _LIGHT_TEXT - {"htm"} | {"bash", "sh"}),
     ], ids=["in-process", "service"])
     def test_every_cell_is_heavy_exactly_when_its_labels_or_its_reader_are(
         self, reader, raised_cells: int, raised_extensions: set[str],
@@ -140,14 +143,15 @@ class TestReaderTier:
     @pytest.mark.parametrize("mime", _GOOGLE)
     @pytest.mark.parametrize("reader", [_in_process_reader, _service_reader], ids=["in-process", "service"])
     def test_a_google_export_labelled_txt_is_admitted_heavy(self, reader, mime: str) -> None:
-        """The Google readers have no tier of their own; they parse as docx, pptx or xlsx."""
-        assert classify("txt", mime) is ParseTier.LIGHT
+        """The Google readers have no tier of their own; they parse as docx, pptx or xlsx, and the labels' tier is theirs."""
+        assert classify("txt", mime) is ParseTier.HEAVY
         assert reader("txt", mime) == "heavy"
         assert reader_tier("txt", mime, reader("txt", mime)) is ParseTier.HEAVY
 
     def test_no_reader_leaves_the_labels_tier(self) -> None:
-        assert reader_tier("txt", "application/pdf", None) is ParseTier.LIGHT
+        assert reader_tier("txt", "text/plain", None) is ParseTier.LIGHT
         assert reader_tier("pdf", None, None) is ParseTier.HEAVY
+        assert reader_tier("xyz", "application/x-unknown", None) is ParseTier.HEAVY
 
     def test_a_light_reader_never_lowers_a_heavy_label(self) -> None:
         assert reader_tier("pdf", "application/pdf", "light") is ParseTier.HEAVY

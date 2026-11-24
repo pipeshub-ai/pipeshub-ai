@@ -2,8 +2,8 @@
 from alembic import op
 from db.lib.run_sql import run_sql
 
-revision = "kg_0021"
-down_revision = "kg_0020"
+revision = "kg_0022"
+down_revision = "kg_0021"
 branch_labels = None
 depends_on = None
 older_code_compatible = ("replaces the body of the change log's stamp trigger; older code writes the log only through the capture triggers and the demotion request, "

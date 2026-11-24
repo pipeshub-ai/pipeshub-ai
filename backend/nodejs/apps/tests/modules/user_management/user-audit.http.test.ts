@@ -25,7 +25,7 @@ import { Container } from 'inversify';
 import { createUserRouter } from '../../../src/modules/user_management/routes/users.routes';
 import { createUserGroupRouter } from '../../../src/modules/user_management/routes/userGroups.routes';
 import { createOrgRouter } from '../../../src/modules/user_management/routes/org.routes';
-import { UserController } from '../../../src/modules/user_management/controller/users.controller';
+import { USER_PROMOTED_DURING_DELETE, UserController } from '../../../src/modules/user_management/controller/users.controller';
 import { UserGroupController } from '../../../src/modules/user_management/controller/userGroups.controller';
 import { OrgController } from '../../../src/modules/user_management/controller/org.controller';
 import { MailService } from '../../../src/modules/user_management/services/mail.service';
@@ -56,9 +56,6 @@ const SCOPED_SECRET = 'user-audit-scoped-secret';
 const CM = 'http://cm.user-audit.test';
 const COMM = 'http://comm.user-audit.test';
 const oid = () => new mongoose.Types.ObjectId().toHexString();
-// connectors.routes installs axios-retry (3 retries on a 5xx) on the global axios when a worker loads it, so a
-// failing mail interceptor must outlast the retries; an unmatched retry's nock error would quote the request body.
-const MAIL_TRIES = 4;
 const orgId = oid();
 /** Every request this file makes carries a request id with this prefix; only those lines are captured. */
 const OUR_REQUESTS = 'n4btest';
@@ -84,7 +81,11 @@ describe('user and group audit lines (HTTP)', function () {
   let orgCount: number;
   let activityFails: boolean;
   let everyoneWriteFails: boolean;
+  /** The role another admin gives the new account before a failed create's undo runs. */
+  let roleSetDuringCreate: string | undefined;
+  let softRemovalFails: boolean;
   let clearPasswordFails: boolean;
+  let promotedDuringDelete: boolean;
   let publishFails: boolean;
   let mailQueueFails: boolean;
   let published: number;
@@ -148,7 +149,10 @@ describe('user and group audit lines (HTTP)', function () {
     orgCount = 1;
     activityFails = false;
     everyoneWriteFails = false;
+    roleSetDuringCreate = undefined;
+    softRemovalFails = false;
     clearPasswordFails = false;
+    promotedDuringDelete = false;
     publishFails = false;
     mailQueueFails = false;
     published = 0;
@@ -195,10 +199,13 @@ describe('user and group audit lines (HTTP)', function () {
       deleteById: async (id: string) => { users = users.filter((u) => u._id !== id); },
       updateProfile: async (o: string, id: string, f: Row) => { const u = live(o, id); if (!u) return null; Object.assign(u, f); return { ...u }; },
       emailTakenByOther: async (_o: string, e: string, id: string) => users.some((u) => u.email === e && u._id !== id && !u.isDeleted),
+      hasRemovedAccount: async (o: string, e: string) => users.some((u) => u.orgId === o && u.email === e && u.isDeleted),
       listLiveMembershipsByEmail: async (e: string) => users.filter((u) => u.email === e && !u.isDeleted),
-      markDeleted: async (o: string, id: string) => { const u = live(o, id); if (u) u.isDeleted = true; },
+      // Like both stores: matched on org and id (a removed row too), and on the role when asked.
+      markDeleted: async (o: string, id: string, extra?: Row) => { if (softRemovalFails) throw new Error('user store down'); const u = users.find((x) => x._id === id && x.orgId === o); if (!u || (extra?.onlyMember && u.role !== 'member')) return null; u.isDeleted = true; return { ...u }; },
       listByEmails: async (o: string, es: string[]) => users.filter((u) => u.orgId === o && es.includes(u.email)).map((u) => ({ ...u })),
-      restoreByEmails: async (o: string, es: string[]) => users.filter((u) => u.orgId === o && es.includes(u.email) && u.isDeleted).map((u) => { u.isDeleted = false; return { ...u }; }),
+      // Like both stores: restores the removed rows as members, then returns every live row at the addresses.
+      restoreByEmails: async (o: string, es: string[]) => { for (const u of users) if (u.orgId === o && es.includes(u.email) && u.isDeleted) Object.assign(u, { isDeleted: false, role: 'member' }); return users.filter((u) => u.orgId === o && es.includes(u.email) && !u.isDeleted).map((u) => ({ ...u })); },
       promoteToAdmin: async (_o: string, ids: string[]) => { for (const u of users) if (ids.includes(u._id)) u.role = 'admin'; },
       countActiveAdmins: async (o: string) => users.filter((u) => u.orgId === o && !u.isDeleted && u.role === 'admin').length,
       setRole: async (o: string, id: string, role: string) => { const u = live(o, id); if (u) u.role = role; },
@@ -207,7 +214,14 @@ describe('user and group audit lines (HTTP)', function () {
       withAdminLease: async (_o: string, fn: (lease: { confirm(): Promise<boolean> }) => Promise<unknown>) => fn({ confirm: async () => true }),
     }));
     sinon.stub(groupRepo, 'getGroupRepository').returns(fake('group', {
-      addToEveryone: async (o: string, id: string) => { if (everyoneWriteFails) throw new Error('group store down'); if (o === orgId && !everyone.users.includes(id)) everyone.users.push(id); },
+      addToEveryone: async (o: string, id: string) => {
+        if (everyoneWriteFails) {
+          const u = roleSetDuringCreate ? users.find((x) => x._id === id) : undefined;
+          if (u) u.role = roleSetDuringCreate;
+          throw new Error('group store down');
+        }
+        if (o === orgId && !everyone.users.includes(id)) everyone.users.push(id);
+      },
       removeFromEveryone: async () => undefined,
       removeFromAll: async (o: string, id: string) => { for (const g of groups) if (g.orgId === o) g.users = g.users.filter((x: string) => x !== id); },
       addMemberToGroups: async (_o: string, gids: string[], id: string) => { for (const g of groups) if (gids.includes(g._id) && !g.users.includes(id)) g.users.push(id); },
@@ -224,7 +238,12 @@ describe('user and group audit lines (HTTP)', function () {
     sinon.stub(credentialRepo, 'getCredentialRepository').returns(fake('credential', {
       unblock: async (id: string) => blocked.delete(id),
       blockedUserIds: async () => [],
-      clearPassword: async () => { if (clearPasswordFails) throw new Error('credential store down'); },
+      clearPassword: async (id: string) => {
+        if (clearPasswordFails) throw new Error('credential store down');
+        // The last step before the removal: another admin promotes the person meanwhile.
+        const u = promotedDuringDelete ? users.find((x) => x._id === id) : undefined;
+        if (u) u.role = 'admin';
+      },
       createWithPassword: async () => undefined,
       discardForUser: async () => undefined,
       deleteForUser: async () => undefined,
@@ -483,6 +502,32 @@ describe('user and group audit lines (HTTP)', function () {
       expectNoPrivateData();
     });
 
+    it('T1m a failed create whose account was made an admin meanwhile → kept, 500, user.create partial kept_after_failure', async () => {
+      everyoneWriteFails = true;
+      roleSetDuringCreate = 'admin';
+      expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED })).status).to.equal(500);
+      const cora = users.find((u) => u.email === CREATED);
+      expect(cora).to.include({ role: 'admin', isDeleted: false });
+      expect(audits()).to.deep.equal([
+        { event: 'user.create', outcome: 'partial', reason: 'kept_after_failure', actor: ada._id, target: cora!._id },
+      ]);
+      expectNoPrivateData();
+    });
+
+    it('T1n a failed admin create someone already demoted, whose removal then fails → kept, user.create partial and no new_admin', async () => {
+      everyoneWriteFails = true;
+      // Its own demotion is then refused as the last admin's, though the account is a member.
+      roleSetDuringCreate = 'member';
+      softRemovalFails = true;
+      expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED, role: 'admin' })).status).to.equal(500);
+      const cora = users.find((u) => u.email === CREATED);
+      expect(cora).to.include({ role: 'member', isDeleted: false });
+      expect(audits()).to.deep.equal([
+        { event: 'user.create', outcome: 'partial', reason: 'kept_after_failure', actor: ada._id, target: cora!._id },
+      ]);
+      expectNoPrivateData();
+    });
+
     it('T3b a starting password for a real address → user.create failure password_not_allowed', async () => {
       expect((await call('POST', U, ada, { fullName: 'Cora Created', email: CREATED, password: PASSWORD })).status).to.equal(400);
       expect(audits()).to.deep.equal([{ event: 'user.create', outcome: 'failure', reason: 'password_not_allowed', actor: ada._id }]);
@@ -522,6 +567,31 @@ describe('user and group audit lines (HTTP)', function () {
       expect((await call('POST', `${U}/bulk/invite`, ada, { emails: [dan.email] })).status).to.equal(200);
       expect(audits()).to.deep.equal([{ event: 'user.restore', outcome: 'success', reason: 'invite', actor: ada._id, target: dan._id }]);
       expectNoPrivateData();
+    });
+
+    it('T5c a member invites a removed admin → user.restore invite only, and the account is back as a member', async () => {
+      dan.role = 'admin';
+      fillAdminsTo(MAX_ORG_ADMINS);
+      expect((await call('POST', `${U}/bulk/invite`, max, { emails: [dan.email] })).status).to.equal(200);
+      expect(audits()).to.deep.equal([{ event: 'user.restore', outcome: 'success', reason: 'invite', actor: max._id, target: dan._id }]);
+      expect([dan.isDeleted, dan.role, adminCount()]).to.deep.equal([false, 'member', MAX_ORG_ADMINS]);
+    });
+
+    it('T5d invite a removed admin as admin → user.restore invite, then user.role.change promote', async () => {
+      dan.role = 'admin';
+      expect((await call('POST', `${U}/bulk/invite`, ada, { emails: [dan.email], role: 'admin' })).status).to.equal(200);
+      expect(audits()).to.deep.equal([
+        { event: 'user.restore', outcome: 'success', reason: 'invite', actor: ada._id, target: dan._id },
+        { event: 'user.role.change', outcome: 'success', reason: 'promote', actor: ada._id, target: dan._id },
+      ]);
+    });
+
+    it('T5e an admin invite whose removed account another admin invite restored and promoted first → no second promote', async () => {
+      const seenRemoved = { ...dan };
+      Object.assign(dan, { isDeleted: false, role: 'admin' });
+      sinon.stub(userRepo.getUserRepository(), 'listByEmails').resolves([seenRemoved] as never);
+      expect((await call('POST', `${U}/bulk/invite`, ada, { emails: [dan.email], role: 'admin' })).status).to.equal(200);
+      expect(audits().filter((a) => a.event === 'user.role.change')).to.deep.equal([]);
     });
 
     it('T6 invite a pending account as admin → user.invite reinvite, then user.role.change promote', async () => {
@@ -714,7 +784,7 @@ describe('user and group audit lines (HTTP)', function () {
     });
 
     it('T10 resend fails at the mail service → no audit line, one failure line, no address', async () => {
-      nock(COMM).post(/sendEmail/).times(MAIL_TRIES).reply(500, { error: { message: `mailbox ${mia.email} unavailable` } });
+      nock(COMM).post(/sendEmail/).reply(500, { error: { message: `mailbox ${mia.email} unavailable` } });
       expect((await call('POST', `${U}/${mia._id}/resend-invite`, ada)).status).to.equal(500);
       expect(audits()).to.deep.equal([]);
       // The mail service's own line keeps the upstream cause (status, no body); the controller adds none.
@@ -831,7 +901,7 @@ describe('user and group audit lines (HTTP)', function () {
     });
 
     it('T20c [guard] email change through PUT whose mail fails → 200 with status failed, no request line', async () => {
-      nock(COMM).post(/sendEmail/).times(MAIL_TRIES).reply(500, { error: { message: 'smtp down' } });
+      nock(COMM).post(/sendEmail/).reply(500, { error: { message: 'smtp down' } });
       const res = await call('PUT', `${U}/${mia._id}`, mia, { email: 'mia.new@acme.test' });
       expect(res.status).to.equal(200);
       expect(res.body.meta.emailChangeMailStatus).to.equal('failed');
@@ -847,6 +917,17 @@ describe('user and group audit lines (HTTP)', function () {
     it('T22 delete an admin → user.delete failure not_member', async () => {
       expect((await call('DELETE', `${U}/${ada._id}`, ada)).status).to.equal(400);
       expect(audits()).to.deep.equal([{ event: 'user.delete', outcome: 'failure', reason: 'not_member', actor: ada._id, target: ada._id }]);
+    });
+
+    it('T22b promoted to admin while being deleted → kept as an admin, user.delete failure not_member, no event', async () => {
+      promotedDuringDelete = true;
+      const res = await call('DELETE', `${U}/${max._id}`, ada);
+      expect(res.status).to.equal(400);
+      expect(res.body.error.message).to.equal(USER_PROMOTED_DURING_DELETE);
+      expect(audits()).to.deep.equal([{ event: 'user.delete', outcome: 'failure', reason: 'not_member', actor: ada._id, target: max._id }]);
+      expect(max).to.include({ role: 'admin', isDeleted: false });
+      expect(published).to.equal(0);
+      expectNoPrivateData();
     });
 
     it('T21b [guard] deletion fails after the activity row → no user.delete line', async () => {

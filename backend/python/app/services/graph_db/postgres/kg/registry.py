@@ -59,6 +59,8 @@ WRITERS: dict[str, tuple[str, str]] = {
     "stage_states_delete_unheld_revisions": (NO_PROJECTION, "stage states of the indexing pipeline"),
     "sweep_deleted_connector_writes": (NO_PROJECTION, "blocks, stage states and code links, written after a connector's delete"),
     "update_indexing_status_for_record_ids": (NO_PROJECTION, _STATUS),
+    "update_queued_duplicates_status": (NO_PROJECTION, _STATUS),
+    "update_record_fields_for_ids": (NO_PROJECTION, "the Force reindex request of a record (refreshIntentId, refreshIntentAtMs): not an access field"),
     "update_knowledge_base": (PROJECTED, ""),
     "update_node": (PROJECTED, ""),
     "update_node_fields_if": (PROJECTED, ""),

@@ -17,6 +17,10 @@ PERMANENT_GRANT_ERROR_CODES = frozenset({
 # new registration's fix, not the user's grant.
 CLIENT_REJECTED_ERROR_CODES = frozenset({"invalid_client", "unauthorized_client", "incorrect_client_credentials"})
 
+# A code exchange's refusal of the code itself (Slack's ok=false, GitHub's form `error`): the user's code was wrong, expired
+# or used, which RFC 6749 providers say with invalid_grant. A refresh never sends a code, so it never sees these.
+CODE_REFUSED_ERROR_CODES = frozenset({"invalid_code", "code_already_used", "bad_verification_code"})
+
 # A token lifetime past this is malformed: created_at + timedelta(seconds=v) must stay inside datetime's range
 # (10**12 s already overflows), and no provider issues a token for a century.
 MAX_TOKEN_LIFETIME_S = 100 * 365 * 24 * 3600

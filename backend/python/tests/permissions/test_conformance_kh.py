@@ -27,6 +27,7 @@ from .kh_layer import (
     check_world,
     check_worlds,
     children_of,
+    counts_from_the_second_page,
     cursor_in_the_clear,
     on_every_store,
     refused_by_cap,
@@ -196,6 +197,20 @@ async def test_a_folder_lists_each_stub_once_over_its_pages(graph_layers) -> Non
             assert set(totals) == set(counted) == {9}, (layer.name, totals, counted)
             bad = _bad(await check_world(layer, FOLDERSTUB, "folderstub"))
             assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([FOLDERSTUB])
+
+
+async def test_counts_asked_for_from_the_second_page_on_describe_the_whole_folder(graph_layers) -> None:
+    """A first page asked without counts issues a cursor carrying the total alone; every later page that asks for counts gets counts by type that add
+    up to its total, as the rows of the whole folder do (they came back empty beside a total until the carried total aged out)."""
+    for layer in graph_layers:
+        await layer.preload([FOLDERSTUB])
+        try:
+            items, pages = await counts_from_the_second_page(layer, FOLDERSTUB, "u", "f", "folder", 4)
+            assert len(items) == 9 and len(pages) == 2, (layer.name, len(items), pages)
+            by_type = dict(Counter(i.nodeType for i in items))
+            assert all(p == (9, 9, 9, by_type) for p in pages), (layer.name, pages, by_type)
         finally:
             await layer.release([FOLDERSTUB])
 

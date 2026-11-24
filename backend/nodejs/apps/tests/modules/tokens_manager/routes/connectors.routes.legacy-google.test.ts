@@ -19,6 +19,8 @@ import {
 import * as tokensConfig from '../../../../src/modules/tokens_manager/config/config'
 import { ConnectorsConfig } from '../../../../src/modules/configuration_manager/schema/connectors.schema'
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
+import { NO_REFRESH_TOKEN_MESSAGE } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
+import { LogRecord, captureLogRecords, newRequestId, recordsOf } from '../../../helpers/log-capture'
 
 const admin = ADMIN
 const member = MEMBER
@@ -33,6 +35,13 @@ const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
 const oauthConfig = { clientId: 'google-client', clientSecret: 'google-secret', enableRealTimeUpdates: true, topicName: 'projects/p/topics/t' }
 
 const idTokenFor = (email: string): string => jwt.sign({ email, sub: 'google-sub' }, 'google-signs-this')
+
+// 2100-01-01: far enough that the stored token never expires while this suite is in use.
+const FAR_FUTURE = 4_102_444_800_000
+const level = (r: LogRecord): string => {
+  const l = String(r.level).toLowerCase()
+  return l === 'warning' ? 'warn' : l
+}
 
 describe('Connector routes: legacy Google Workspace endpoints', () => {
   let h: Harness
@@ -115,6 +124,8 @@ describe('Connector routes: legacy Google Workspace endpoints', () => {
       })
       expect(body.access_token_expiry_time).to.be.within(before + 3600_000, Date.now() + 3600_000)
       expect(body.refresh_token_expiry_time).to.be.within(before + 7200_000, Date.now() + 7200_000)
+      // Google's new refresh token wins: the stored one is not even read.
+      expect(h.backend.callsTo('GET', CM_INDIVIDUAL_CREDENTIALS)).to.have.length(0)
 
       expect(findOne.firstCall.args[0]).to.deep.equal({ name: 'Google Workspace', orgId: ORG_A })
       expect(save.calledOnce).to.equal(true)
@@ -217,6 +228,171 @@ describe('Connector routes: legacy Google Workspace endpoints', () => {
       expect(r.status).to.equal(500)
       expect(findOne.called).to.equal(false)
       expect(h.entityEvents.published).to.have.length(0)
+    })
+
+    describe('a repeat consent: Google sends no refresh token', () => {
+      let records: LogRecord[]
+      let requestId: string
+
+      beforeEach(() => {
+        records = captureLogRecords()
+        requestId = newRequestId('repeat-consent')
+        h.backend.on('GET', CM_OAUTH_CONFIG, { status: 200, body: oauthConfig })
+        h.backend.on('POST', CM_CREDENTIALS, { status: 200, body: { ok: true } })
+      })
+
+      const googleRepeats = (extra: Record<string, unknown> = {}, email = admin.email) =>
+        nock(GOOGLE)
+          .post('/token')
+          .reply(200, {
+            access_token: 'google-access',
+            expires_in: 3600,
+            scope: `${DRIVE_SCOPE} openid`,
+            id_token: idTokenFor(email),
+            ...extra,
+          })
+      const storedCredentials = (body: Record<string, unknown>) =>
+        h.backend.on('GET', CM_INDIVIDUAL_CREDENTIALS, { status: 200, body: { ...body, ...oauthConfig } })
+      const exchange = () =>
+        call(h, 'POST', '/getTokenFromCode', sessionToken(h, admin), { tempCode: 'consent-code' }, { 'x-request-id': requestId })
+      const mine = () => recordsOf(records, requestId)
+      const requestErrors = () =>
+        mine()
+          .filter((r) => r.message === 'http.request.error')
+          .map((r) => [level(r), r.error_class])
+      const existingConnector = () => {
+        const existing = { _id: 'cfg-7', name: 'Google Workspace', orgId: ORG_A, isEnabled: false, lastUpdatedBy: 'x', save: sinon.stub().resolves() }
+        sinon.stub(ConnectorsConfig, 'findOne').resolves(existing as never)
+        return existing
+      }
+
+      it('reconnect keeps the stored refresh token and its expiry, stores the new access token and answers 200', async () => {
+        storedCredentials({ refresh_token: 'stored-refresh', refresh_token_expiry_time: FAR_FUTURE, access_token: 'old-access' })
+        googleRepeats()
+        const existing = existingConnector()
+        const before = Date.now()
+
+        const r = await exchange()
+
+        expect(r.status).to.equal(200)
+        const read = single(h.backend.callsTo('GET', CM_INDIVIDUAL_CREDENTIALS))
+        const claims = await h.tokens.verifyScopedToken(String(read.headers.authorization).replace('Bearer ', ''), TokenScopes.FETCH_CONFIG)
+        expect(claims).to.include({ userId: ADMIN_ID, orgId: ORG_A })
+        const body = single(h.backend.callsTo('POST', CM_CREDENTIALS)).body as Record<string, unknown>
+        expect(body).to.include({ access_token: 'google-access', refresh_token: 'stored-refresh', refresh_token_expiry_time: FAR_FUTURE })
+        expect(body.access_token_expiry_time).to.be.within(before + 3600_000, Date.now() + 3600_000)
+        expect(existing.isEnabled).to.equal(true)
+        expect(h.entityEvents.published).to.have.length(1)
+        expect(mine().filter((x) => x.message === 'Google sent no refresh token; keeping the stored one').map(level)).to.deep.equal(['info'])
+        const logged = JSON.stringify(records)
+        expect(logged).to.not.include('stored-refresh')
+        expect(logged).to.not.include('google-access')
+      })
+
+      it('first connect keeps the stored refresh token and creates the connector enabled (201)', async () => {
+        storedCredentials({ refresh_token: 'stored-refresh', refresh_token_expiry_time: FAR_FUTURE })
+        googleRepeats()
+        const findOne = sinon.stub(ConnectorsConfig, 'findOne')
+        findOne.onFirstCall().resolves(null)
+        findOne.onSecondCall().resolves({ _id: 'cfg-1', name: 'Google Workspace', orgId: ORG_A } as never)
+        const save = sinon.stub(ConnectorsConfig.prototype, 'save').resolves()
+
+        const r = await exchange()
+
+        expect(r.status).to.equal(201)
+        expect(single(h.backend.callsTo('POST', CM_CREDENTIALS)).body).to.include({ refresh_token: 'stored-refresh' })
+        expect((save.firstCall.thisValue as { isEnabled: boolean }).isEnabled).to.equal(true)
+        expect(h.entityEvents.published).to.have.length(1)
+      })
+
+      // Only an absent expiry (missing or null) means the stored token does not expire.
+      const noExpiry: Array<[string, Record<string, unknown>]> = [
+        ['missing', { refresh_token: 'stored-refresh' }],
+        ['null', { refresh_token: 'stored-refresh', refresh_token_expiry_time: null }],
+      ]
+      for (const [how, stored] of noExpiry) {
+        it(`a stored token whose expiry is ${how} is kept and stored without one`, async () => {
+          storedCredentials(stored)
+          googleRepeats()
+          existingConnector()
+
+          const r = await exchange()
+
+          expect(r.status).to.equal(200)
+          const body = single(h.backend.callsTo('POST', CM_CREDENTIALS)).body as Record<string, unknown>
+          expect(body.refresh_token).to.equal('stored-refresh')
+          expect(body).to.not.have.property('refresh_token_expiry_time')
+        })
+      }
+
+      it("takes the kept token's expiry from Google when Google sends a lifetime", async () => {
+        storedCredentials({ refresh_token: 'stored-refresh', refresh_token_expiry_time: FAR_FUTURE })
+        googleRepeats({ refresh_token_expires_in: 7200 })
+        existingConnector()
+        const before = Date.now()
+
+        expect((await exchange()).status).to.equal(200)
+
+        const body = single(h.backend.callsTo('POST', CM_CREDENTIALS)).body as Record<string, unknown>
+        expect(body.refresh_token).to.equal('stored-refresh')
+        expect(body.refresh_token_expiry_time).to.be.within(before + 7200_000, Date.now() + 7200_000)
+      })
+
+      const nothingUsable: Array<[string, Record<string, unknown>]> = [
+        ['none is stored', {}],
+        ['the stored one has expired', { refresh_token: 'stored-refresh', refresh_token_expiry_time: Date.now() - 1000 }],
+        ['the stored expiry is 0', { refresh_token: 'stored-refresh', refresh_token_expiry_time: 0 }],
+        ['the stored expiry is not a number', { refresh_token: 'stored-refresh', refresh_token_expiry_time: String(FAR_FUTURE) }],
+      ]
+      for (const [why, stored] of nothingUsable) {
+        it(`${why}: 400 that says what to do, logged once at WARN; nothing stored, enabled or published`, async () => {
+          storedCredentials(stored)
+          googleRepeats()
+          const findOne = sinon.stub(ConnectorsConfig, 'findOne').resolves(null)
+
+          const r = await exchange()
+
+          expect(r.status).to.equal(400)
+          expect(errorMessage(r)).to.equal(NO_REFRESH_TOKEN_MESSAGE)
+          expect(h.backend.callsTo('POST', CM_CREDENTIALS)).to.have.length(0)
+          expect(findOne.called).to.equal(false)
+          expect(h.entityEvents.published).to.have.length(0)
+          expect(requestErrors()).to.deep.equal([['warn', 'bad_request']])
+          expect(mine().filter((x) => level(x) === 'error')).to.have.length(0)
+        })
+      }
+
+      const readFailures: Array<[number, string, string]> = [
+        [502, 'warn', 'upstream_5xx'],
+        [404, 'error', 'internal'],
+      ]
+      for (const [status, lvl, errorClass] of readFailures) {
+        it(`the stored credentials cannot be read (${status}): our 500, ${errorClass}, nothing stored, the answer not logged`, async () => {
+          h.backend.on('GET', CM_INDIVIDUAL_CREDENTIALS, { status, body: { refresh_token: 'r', topicName: 'stored-marker-do-not-log' } })
+          googleRepeats()
+          const findOne = sinon.stub(ConnectorsConfig, 'findOne').resolves(null)
+
+          const r = await exchange()
+
+          expect(r.status).to.equal(500)
+          expect(h.backend.callsTo('POST', CM_CREDENTIALS)).to.have.length(0)
+          expect(findOne.called).to.equal(false)
+          expect(requestErrors()).to.deep.equal([[lvl, errorClass]])
+          expect(JSON.stringify(records)).to.not.include('stored-marker-do-not-log')
+        })
+      }
+
+      it('consent from a different Google account is refused before the stored token is read', async () => {
+        storedCredentials({ refresh_token: 'stored-refresh', refresh_token_expiry_time: FAR_FUTURE })
+        googleRepeats({}, 'someone.else@gmail.test')
+
+        const r = await exchange()
+
+        expect(r.status).to.equal(400)
+        expect(errorMessage(r)).to.equal('Account email is different from the consent-giving mail.')
+        expect(h.backend.callsTo('GET', CM_INDIVIDUAL_CREDENTIALS)).to.have.length(0)
+        expect(h.backend.callsTo('POST', CM_CREDENTIALS)).to.have.length(0)
+      })
     })
   })
 

@@ -111,14 +111,46 @@ vi.mock('../api', async () => {
 });
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
+// @/config imports the collection views itself, so views loaded while the partial mock below
+// resolves bind to the real permission hook; mock the collection hook they read it through.
+vi.mock('../hooks/use-collection-group-permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/use-collection-group-permissions')>()),
+  useCollectionGroupPermissions: () => ({
+    canEdit: !permissions.denied.has('editCollection'),
+    canDelete: !permissions.denied.has('deleteCollection'),
+    canManageSync: !permissions.denied.has('manageConnectorSync'),
+  }),
+}));
+// Records what the page hands to the extension slots, so the tests can check the wiring.
+const slots = vi.hoisted(() => ({
+  hookArgs: [] as Array<string | null>,
+  extras: {
+    panel: null as unknown,
+    onUploadStart: undefined as undefined | (() => void),
+    onFileSucceeded: undefined as undefined | ((recordId: string) => void),
+    onUploadEnd: undefined as undefined | (() => void),
+  },
+  selection: { props: null as null | { selectedItems: Array<{ id: string }>; onChanged?: () => void } },
+}));
 vi.mock('@/config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/config')>();
   return {
     ...actual,
+    // The page reaches the extension slots through this module, so they are replaced here.
+    useKbUploadExtras: (kbId: string | null) => {
+      slots.hookArgs.push(kbId);
+      return slots.extras;
+    },
+    SelectionActionBar: (props: React.ComponentProps<typeof actual.SelectionActionBar>) => {
+      slots.selection.props =
+        props.selectedCount > 0 ? { selectedItems: (props.selectedItems ?? []) as Array<{ id: string }>, onChanged: props.onChanged } : null;
+      return <actual.SelectionActionBar {...props} />;
+    },
     // Keep the real collection views, but do not wire the real auth client.
     // A live client calls /api/v1/connectors with no token, toasts that failure,
     // and the reindex "Try again" test then clicks the wrong error toast.
-    useAuthStore: undefined,
+    // The store is state, not the auth client; chat state reads the signed-in user through it.
+    useAuthStore: (await import('@/lib/store/auth-store')).useAuthStore,
     logoutAndRedirect: undefined,
     logoutFromWorkspaceMenu: undefined,
     apiClient: undefined,
@@ -219,6 +251,9 @@ let replaceState: { mockRestore: () => void } | null = null;
 
 beforeEach(() => {
   installBrowserShims();
+  slots.hookArgs.length = 0;
+  slots.extras = { panel: null, onUploadStart: undefined, onFileSucceeded: undefined, onUploadEnd: undefined };
+  slots.selection.props = null;
   usePendingChatStore.setState({ pending: null });
   nav.current = createNavigation();
   router.push.mockImplementation((url: string) => nav.current!.setUrl(url));
@@ -1493,6 +1528,85 @@ describe('Knowledge base page — working with files', () => {
     expect(api.hub.loadFolderData).toHaveBeenLastCalledWith(
       'app', 'kb-eng', expect.objectContaining({ cursor: pageCursor(2) }), expect.anything(),
     );
+  });
+});
+
+describe('Knowledge base page — extension slots', () => {
+  it('hands the ticked rows and the list refresh to the selection bar', async () => {
+    await openEngineering();
+    fireEvent.click(within(row('spec.pdf')).getByRole('checkbox'));
+    await waitFor(() => expect(slots.selection.props).not.toBeNull());
+
+    expect(slots.selection.props?.selectedItems.map((i) => i.id)).toEqual(['rec-spec']);
+    api.hub.loadFolderData.mockClear();
+    await act(async () => slots.selection.props?.onChanged?.());
+    await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalled());
+  });
+
+  it('asks the upload hook about the open collection and calls its callbacks around an upload', async () => {
+    await openEngineering();
+    expect(slots.hookArgs).toContain('kb-eng');
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onFileSucceeded = (id) => order.push(`ok:${id}`);
+    slots.extras.onUploadEnd = () => order.push('end');
+    const file = new File(['x'], 'readme.txt', { type: 'text/plain' });
+    upload.items = [{ id: 'u1', name: file.name, size: 1, type: 'file', file }];
+    api.kb.streamUpload.mockImplementation(
+      async (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { onEvent: (e: { event: string; data?: unknown }) => void }) => {
+        opts.onEvent({ event: 'file:succeeded', data: { filePath: 'readme.txt', recordId: 'rec-new' } });
+        opts.onEvent({ event: 'done' });
+      },
+    );
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'ok:rec-new', 'end']));
+  });
+
+  it('calls the end callback when every picked file is over the size limit and nothing is sent', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    const huge = new File(['x'], 'dump.bin', { type: 'application/octet-stream' });
+    Object.defineProperty(huge, 'size', { value: 50 * 1024 * 1024 });
+    upload.items = [{ id: 'u1', name: huge.name, size: huge.size, type: 'file', file: huge }];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
+    expect(api.kb.streamUpload).not.toHaveBeenCalled();
+  });
+
+  it('calls the end callback when there are no files to upload', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    upload.items = [];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
+  });
+
+  it('uploads normally when the hook provides no callbacks', async () => {
+    await openEngineering();
+    const file = new File(['x'], 'readme.txt', { type: 'text/plain' });
+    upload.items = [{ id: 'u1', name: file.name, size: 1, type: 'file', file }];
+    api.kb.streamUpload.mockImplementation(
+      async (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { onEvent: (e: { event: string; data?: unknown }) => void }) => {
+        opts.onEvent({ event: 'file:succeeded', data: { filePath: 'readme.txt' } });
+        opts.onEvent({ event: 'done' });
+      },
+    );
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+    await waitFor(() => expect(api.kb.streamUpload).toHaveBeenCalledTimes(1));
   });
 });
 

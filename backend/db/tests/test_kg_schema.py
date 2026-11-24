@@ -56,7 +56,7 @@ def test_the_change_log_refuses_an_entry_that_names_no_node(rdb):
 
 @pytest.mark.parametrize("role", READERS)
 def test_a_service_logs_a_change_only_through_the_capture_trigger(rdb, role):
-    """kg_0021: the INSERT the services hold on the change log is for the capture trigger alone. A row a service inserts itself names keys the worker would re-project
+    """kg_0022: the INSERT the services hold on the change log is for the capture trigger alone. A row a service inserts itself names keys the worker would re-project
     (or a whole connector as pending), so it is refused; a write of the graph still logs its keys, and the demotion request (one constant key) is still taken."""
     from .rls_fixture import ORG_A
     from .test_vetted_pins import unit

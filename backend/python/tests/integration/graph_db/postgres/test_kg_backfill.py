@@ -479,7 +479,7 @@ async def test_a_connector_is_current_only_when_verified_and_nothing_waits_that_
     await drain_org(pg_db, org)
     assert await is_current(pg_db, org, "app1")
 
-    await _admin("INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['nope'])", org)      # no service can log it (kg_0021): the administrator plants it
+    await _admin("INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['nope'])", org)      # no service can log it (kg_0022): the administrator plants it
     assert not await is_current(pg_db, org, "app1")                           # a row that cannot be read may name anything
 
 

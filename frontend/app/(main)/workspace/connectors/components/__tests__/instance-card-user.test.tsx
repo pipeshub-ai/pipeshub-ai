@@ -5,7 +5,11 @@ import '@/lib/__tests__/test-i18n';
 import type { User } from '@/app/(main)/workspace/users/types';
 
 vi.mock('../../api', () => ({ ConnectorsApi: {} }));
-vi.mock('@/config', () => ({ PermissionLockIcon: () => null }));
+const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
+vi.mock('@/config', () => ({
+  PermissionLockIcon: () => <span data-testid="permission-lock" />,
+  useUserPermission: (key: string) => !permissions.denied.has(key),
+}));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/ConnectorIcon', () => ({
   ConnectorIcon: ({ type }: { type: string }) => <span data-testid="connector-logo">{type}</span>,
@@ -31,6 +35,7 @@ const PICTURE = 'data:image/png;base64,AAAA';
 
 beforeEach(() => {
   installDomShims();
+  permissions.denied = new Set();
   directory.asked = [];
   directory.user = {
     id: 'u1',
@@ -75,3 +80,34 @@ describe('InstanceCard: who enabled it', () => {
     expect(screen.getAllByTestId('avatar')).toHaveLength(1);
   });
 });
+
+describe('InstanceCard: group permission locks', () => {
+  it('lets the name be renamed and the sync switch be used when both permissions are on', () => {
+    renderInTheme(<InstanceCard instance={makeInstance({ supportsSync: true })} onToggleSyncActive={vi.fn()} />);
+
+    expect(screen.queryByTestId('permission-lock')).toBeNull();
+    expect(screen.getByRole('switch').hasAttribute('disabled')).toBe(false);
+  });
+
+  it('shows the name with a lock and opens no editor without configureConnector', () => {
+    permissions.denied = new Set(['configureConnector']);
+    renderInTheme(<InstanceCard instance={makeInstance({ supportsSync: true })} onToggleSyncActive={vi.fn()} />);
+
+    expect(screen.getAllByTestId('permission-lock')).toHaveLength(1);
+    screen.getByText('Jira (Engineering)').click();
+    expect(screen.queryByRole('textbox')).toBeNull();
+  });
+
+  it('disables the sync switch with a lock without manageConnectorSync', () => {
+    permissions.denied = new Set(['manageConnectorSync']);
+    const onToggle = vi.fn();
+    renderInTheme(<InstanceCard instance={makeInstance({ supportsSync: true })} onToggleSyncActive={onToggle} />);
+
+    const toggle = screen.getByRole('switch');
+    expect(toggle.hasAttribute('disabled')).toBe(true);
+    expect(screen.getAllByTestId('permission-lock')).toHaveLength(1);
+    toggle.click();
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+});
+

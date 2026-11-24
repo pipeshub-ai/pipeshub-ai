@@ -13,8 +13,6 @@ from bs4 import BeautifulSoup
 from app.config import file_types
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    CODE_FILE_EXTENSION_VALUES,
-    CODE_FILE_MIME_TYPE_VALUES,
     CollectionNames,
     EventTypes,
     ExtensionTypes,
@@ -22,7 +20,6 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordTypes,
     get_mime_type_for_extension,
-    normalize_file_extension,
 )
 from app.config.file_types import Route
 from app.events.dedup import (
@@ -82,13 +79,13 @@ from app.modules.parse_engine.inspection import (
     inspect_facts,
     wants_inspection,
 )
-from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.file_prep import bound_text, needs_preparing, prepare_file
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.parsers.worker_verdict import worker_gave_up_on
+from app.modules.pipeline import parser_identity
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
 from app.modules.transformers.pipeline import IndexingPipeline
@@ -111,6 +108,7 @@ from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
 )
+from app.services.graph_db.conditions import EQ, IS_NULL, Cond
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
@@ -139,6 +137,11 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.error_class import log_failure
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import note, stage
+from app.utils.table_row_memory import (
+    PreviousRows,
+    end_previous_rows,
+    offer_previous_rows,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import RETRY_SCHEDULED, binary_text_file
 
@@ -167,14 +170,30 @@ def _is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
     us a code blob without one; every site that decides "is this code" reads this
     so the dispatch and the projection cannot drift apart.
     """
-    return (
-        mime_type in CODE_FILE_MIME_TYPE_VALUES
-        or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
-    )
+    return parser_identity.is_code_file(mime_type, code_ext)
 
 
 # Storage cleanups of abandoned virtual record ids still running in the background.
 _ABANDONED_VRID_CLEANUPS: set[asyncio.Task] = set()
+
+def keeps_stored_row_text(
+    event_type: str | None, event_data: dict[str, Any], stored_vrid: str | None, org_id: str | None, *, store_only: bool,
+) -> bool:
+    """Whether this delivery's tables keep the row text the stored version already has (``table_row_memory``).
+
+    Only a content update (an update or a reindex of a record that has a stored version) does. A new record has none, a forced
+    reindex (``forceReindex``, or a refresh of paid outputs) asks for every row again, and a store-only run describes nothing.
+    """
+    paid_run = current_paid_run()
+    return bool(
+        event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value)
+        and stored_vrid
+        and org_id
+        and not store_only
+        and not event_data.get("forceReindex")
+        and not (paid_run is not None and paid_run.refresh)
+    )
+
 
 class EventProcessor:
     def __init__(
@@ -268,6 +287,109 @@ class EventProcessor:
             and bool(content_rev)
             and record.get("contentRev") == content_rev
         )
+
+    def _pipeline_label(self) -> str:
+        return (
+            parser_identity.PIPELINE_SERVICE if self._use_service_pipeline() else parser_identity.PIPELINE_IN_PROCESS
+        )
+
+    async def _files_document(self, record_key: str) -> dict[str, Any] | None:
+        """The ``files`` document of a record: the graph keeps the file's extension there, not on the ``records`` node."""
+        return await self.graph_provider.get_document(record_key, CollectionNames.FILES.value, raise_on_error=True)
+
+    async def _parser_gate(
+        self, record: Mapping[str, Any], record_id: str, *, event_labels: tuple[Any, ...] | None = None,
+    ) -> tuple[bool, str | None]:
+        """``(skip allowed, identity to adopt)`` for a same-bytes update, from the parser that built the indexed copy.
+
+        The record is judged as the graph holds it now (never by the event's payload, which can be older), through the same
+        derivation that stored the identity. An identity that is not tracked on the graph side, or a record with no identity
+        while the identity is not being written (the setting off), skips as it always did whatever is stored. An absent identity skips and is adopted. A stale one
+        (the copy was rebuilt or moved by a writer that stored none) runs in full, as does a known one of another parser.
+        A graph read that fails runs in full.
+        """
+        if not parser_identity.identity_write_enabled():
+            # Off: no identity is written, so a stored one cannot be kept current (a run that rebuilds the copy leaves it stale and
+            # nothing re-stamps it). Stored identities are ignored: the skip is the one the same bytes alone give.
+            return True, None
+        if event_labels is not None and parser_identity.path_decides(*event_labels, service=self._use_service_pipeline()):
+            # The event's file path decides the parser and the graph holds no path: the copy cannot be judged from the record,
+            # so the update runs in full, and no identity is adopted.
+            return False, None
+        stored = record.get(parser_identity.IDENTITY_FIELD)
+        has_stored = isinstance(stored, str) and bool(stored)
+        try:
+            file_doc = await self._files_document(record_id)
+            key = parser_identity.graph_parser_key(record, file_doc, service=self._use_service_pipeline())
+        except Exception as exc:
+            self.logger.warning(
+                "Record %s: the parser of its indexed copy could not be checked (%s); running it in full",
+                record_id, type(exc).__name__,
+            )
+            return False, None
+        if key is None:
+            # Not tracked now: nothing to adopt. A copy a tracked parser built (an identity is stored) is not this one's.
+            if not has_stored:
+                return True, None
+            known = parser_identity.known_identity(record)
+            # It is skipped only against a copy the same untracked parser built: the stored key names its parser.
+            untracked = parser_identity.graph_untracked_key(record, file_doc, service=self._use_service_pipeline())
+            return (known is not None and parser_identity.key_of(known) == untracked), None
+        if not has_stored:
+            return True, f"{self._pipeline_label()}:{key}"
+        known = parser_identity.known_identity(record)
+        return (known is not None and parser_identity.key_of(known) == key), None
+
+    async def _adopt_parser_identity(self, record: Mapping[str, Any], record_id: str, identity: str) -> None:
+        """Label an unlabelled copy with the parser the record reads as now, once, only while nothing has moved."""
+        indexed_at, vrid, rev = record.get("lastIndexTimestamp"), record.get("virtualRecordId"), record.get("contentRev")
+        fields = parser_identity.indexed_parser_fields(
+            identity, parser_identity.SOURCE_ADOPTED, at=indexed_at if isinstance(indexed_at, int) else 0, vrid=vrid,
+        )
+        if not fields or isinstance(indexed_at, bool) or not isinstance(indexed_at, int) or not rev:
+            return
+        try:
+            adopted = await self.graph_provider.update_node_fields_if(
+                record_id, CollectionNames.RECORDS.value, fields,
+                [
+                    Cond("contentRev", EQ, rev), Cond("lastIndexTimestamp", EQ, indexed_at),
+                    Cond("virtualRecordId", EQ, vrid), Cond(parser_identity.IDENTITY_FIELD, IS_NULL),
+                ],
+            )
+        except Exception as exc:
+            self.logger.warning("Record %s: parser identity not adopted (%s)", record_id, type(exc).__name__)
+            return
+        if not adopted:
+            self.logger.info("Record %s moved while its parser identity was adopted; left as it is", record_id)
+
+    async def _twin_shares_parser(self, doc: Mapping[str, Any], twin: Mapping[str, Any]) -> bool:
+        """Whether this record may take a twin's copy (or wait behind a twin still building it), by the parser.
+
+        Judged only while the identity is written. A known twin identity is compared with the record's graph type; an
+        unknown or in-flight twin by its own graph type. A graph read that fails raises (the event is retried).
+        """
+        if not parser_identity.identity_write_enabled():
+            return True
+        if parser_identity.run_path_decided():
+            # This record's own file path decides its parser and the graph holds no path: the graph keys cannot say whether
+            # the copy is the same parser's, whatever they are.
+            return False
+        record_key = parser_identity.graph_parser_key(
+            doc, await self._files_document(_record_key(doc)), service=self._use_service_pipeline(),
+        )
+        if record_key is None:
+            return False
+        twin_key = None
+        if parser_identity.known_identity(twin) is None:
+            twin_key = parser_identity.graph_parser_key(
+                twin, await self._files_document(_record_key(twin)), service=self._use_service_pipeline(),
+            )
+        shares = parser_identity.twin_may_share(record_key, twin, twin_key)
+        if not shares:
+            self.logger.info(
+                "Duplicate %s is read by another parser than %s; indexing it itself", _record_key(twin), _record_key(doc),
+            )
+        return shares
 
     async def _skip_same_bytes(self, record: Mapping[str, Any], record_id: str) -> bool:
         """Settle a same-bytes update without parsing or embedding; False when it must run in full.
@@ -674,11 +796,7 @@ class EventProcessor:
         (``package-lock.json`` would reach the JSON parser): that method caps
         the first and skips the second.
         """
-        if _is_code_file(mime_type, code_ext):
-            return True
-        return record_type == RecordTypes.CODE_FILE.value and (
-            mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
-        )
+        return parser_identity.reads_as_code_file(record_type, mime_type, code_ext, record_name)
 
     @staticmethod
     def _read_plan(
@@ -750,7 +868,7 @@ class EventProcessor:
             self.parsing_client is not None
             and self.extraction_client is not None
             and self.sink_orchestrator is not None
-            and os.environ.get("USE_PARSING_SERVICE", "false").lower() == "true"
+            and parser_identity.service_pipeline_configured()
         )
 
     async def _orchestrate_via_services(
@@ -1379,6 +1497,9 @@ class EventProcessor:
             # empty.
             return DedupDecision()
 
+        if not await self._twin_shares_parser(doc, match.record):
+            return DedupDecision()
+
         self.logger.info(
             f"Duplicate record {_record_key(match.record)} is being processed "
             "into the same collection, changing status to QUEUED."
@@ -1504,6 +1625,9 @@ class EventProcessor:
                 rebuild_shared_vrid=doc.get("virtualRecordId") == attached_vrid
             )
 
+        if match.same_collection and not await self._twin_shares_parser(doc, match.record):
+            return DedupDecision()
+
         if match.same_collection:
             # The vectors this record needs already exist.
             if before_reusing_status is not None:
@@ -1617,16 +1741,19 @@ class EventProcessor:
             # shares carry only the twin's connectorId/recordGroupId. The handler acknowledges a redelivered event
             # for a COMPLETED record, so a flip handed back after the status was written would never run this again.
             await self._sync_entities_for_attached_copy(doc)
+            indexed_at = get_epoch_timestamp_in_ms()
             self._require_persisted(
                 await self.update_record_fields(
                     doc,
                     {
+                        # The twin's identity travels with its copy; a twin with none leaves this record's own fields as they are.
+                        **parser_identity.copied_identity_fields(twin, at=indexed_at, vrid=vrid),
                         "isDirty": False,
                         "indexingStatus": twin.get("indexingStatus"),
                         **indexed_copy_fields(twin.get("indexingStatus")),
                         **_parsed_like(twin),
                         "processingStartedAt": None,
-                        "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
+                        "lastIndexTimestamp": indexed_at,
                         # EMPTY duplicates never ran extraction, so this can be
                         # missing/None on the source record — don't propagate None.
                         "extractionStatus": (
@@ -1755,6 +1882,8 @@ class EventProcessor:
             raise
         finally:
             await inner.aclose()
+            # The run's parser identity belongs to this event: a context built later in the task for another record must not read it.
+            parser_identity.end_run_identity()
 
     async def _dispatch_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         """
@@ -1881,6 +2010,11 @@ class EventProcessor:
             )
             self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
             record_type = doc.get("recordType")
+            # What this run's parse will be recorded as: the type the event carries now, never the graph's at write time.
+            parser_identity.begin_run_identity(None, path_decided=parser_identity.path_decides(
+                mime_type, extension, record_name, record_type, event_data.get("filePath"),
+                service=self._use_service_pipeline(),
+            ))
             dispatch, code_ext, reads_as_code_file = self._read_plan(
                 record_type, mime_type, extension, event_data.get("filePath"), record_name, gate_route
             )
@@ -1897,7 +2031,14 @@ class EventProcessor:
                 is_code=is_code or reads_as_code_file or record_type == RecordTypes.CODE_FILE.value,
                 is_sql=mime_type in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value)
                 or (dispatch is not None and dispatch.route in (Route.SQL_TABLE, Route.SQL_VIEW)),
-            ) and await self._skip_same_bytes(record, record_id):
+            ) and (parser_ok := await self._parser_gate(
+                record, record_id,
+                event_labels=(mime_type, extension, record_name, record_type, event_data.get("filePath")),
+            ))[0] and await self._skip_same_bytes(
+                record, record_id
+            ):
+                if parser_ok[1]:
+                    await self._adopt_parser_identity(record, record_id, parser_ok[1])
                 await self._restore_indexed_fields(record, record_id, file_content, content_rev)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -2007,6 +2148,12 @@ class EventProcessor:
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 return
+
+            if not store_only:
+                parser_identity.begin_run_identity(parser_identity.parser_identity(
+                    mime_type, extension, record_name, record_type, pipeline=self._pipeline_label(),
+                    file_path=event_data.get("filePath"),
+                ))
 
             if self._use_service_pipeline():
                 # The parsing and extraction services act for the org named in
@@ -2247,6 +2394,14 @@ class EventProcessor:
                         "Failed to clear the embedding marker of record",
                         doc,
                     )
+            stored_vrid = record.get("virtualRecordId")
+            if keeps_stored_row_text(event_type, event_data, stored_vrid, org_id, store_only=store_only):
+                # Read only if a table asks.
+                offer_previous_rows(PreviousRows(
+                    lambda: self.processor.load_stored_blocks(stored_vrid, org_id), self.logger, record_id,
+                ))
+            else:
+                end_previous_rows()
             if checkpoint is not None:
                 # No parse permit is taken: the START_DOWNLOAD reservation already covers this record's
                 # size until INDEXING_COMPLETE, and the loaded blocks are the parse output it was sized for.

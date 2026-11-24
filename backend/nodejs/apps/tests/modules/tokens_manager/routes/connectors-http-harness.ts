@@ -10,6 +10,7 @@ import { createConnectorRouter } from '../../../../src/modules/tokens_manager/ro
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
+import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
@@ -260,6 +261,8 @@ export const startHarness = async ({
     .callsFake((() => query(null)) as unknown as typeof UserActivities.findOne)
 
   const app = express()
+  // As app.ts: every request runs in its own context, so a test can tell its lines from another's (x-request-id).
+  app.use(requestContextMiddleware)
   app.use(express.json())
   app.use('/api/v1/connectors', createRouter(container, crawlingContainer))
   for (const extra of extraRouters) app.use(extra.mountPath, extra.create(container))
@@ -320,8 +323,9 @@ export const call = async (
   path: string,
   token?: string,
   body?: unknown,
+  extraHeaders: Record<string, string> = {},
 ): Promise<ApiResponse> => {
-  const headers: Record<string, string> = {}
+  const headers: Record<string, string> = { ...extraHeaders }
   if (token) headers.authorization = `Bearer ${token}`
   if (body !== undefined) headers['content-type'] = 'application/json'
   const res = await fetch(`${h.baseUrl}${path}`, {
