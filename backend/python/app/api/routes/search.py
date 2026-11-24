@@ -40,6 +40,7 @@ from app.config.constants.service import OAuthScopes
 from app.core.org_context import current_org_id, spawn_in_request
 from app.edition_config import resolve_llm_for_search
 from app.exceptions.fastapi_responses import Status
+from app.models.blocks import BlockSubType, BlockType
 from app.modules.demo_data.chat import demo_exclusions_for_run
 from app.modules.retrieval.entity_permissions import (
     SEARCH_DEADLINE_SECONDS as ENTITY_SEARCH_DEADLINE_SECONDS,
@@ -158,6 +159,14 @@ class RetrieveQuery(BaseModel):
     rewriteQuery: bool = False
 
     _validate_filters = field_validator("filters")(validate_request_filters)
+
+    @field_validator("query")
+    @classmethod
+    def _query_has_text(cls, query: str) -> str:
+        # Spaces alone would run a search for nothing; refused like an empty query.
+        if not query.strip():
+            raise ValueError("Query is required.")
+        return query
 
 
 # The parser names the assistant tool's parameters; this route receives the
@@ -731,6 +740,150 @@ _EMPTY_RETRIEVAL_STATUSES = {
 }
 
 
+# A passage that is one Markdown heading and nothing else, e.g. "# New Hire Guide".
+_HEADING_ONLY = re.compile(r"#{1,6}[ \t]+\S[^\n]*")
+
+
+def _is_heading_only(hit: dict[str, Any]) -> bool:
+    """A heading block of its document, or a passage that is one Markdown heading line."""
+    text = hit.get("content")
+    if not isinstance(text, str) or "\n" in text.strip():
+        return False
+    return hit.get("block_sub_type") == BlockSubType.HEADING.value or _HEADING_ONLY.fullmatch(text.strip()) is not None
+
+
+def _chunk_id(hit: dict[str, Any], md: dict[str, Any]) -> str:
+    """``<virtual record id>:<block>``, stable across calls for the same indexed block."""
+    block = hit.get("block_index")
+    if block is None:
+        # A record's summary is not one block of the record, so it has no index.
+        block = "summary" if hit.get("block_type") == BlockType.RECORD_SUMMARY.value else "record"
+    return f"{hit.get('virtual_record_id') or md.get('virtualRecordId')}:{block}"
+
+
+def _block_key(hit: dict[str, Any]) -> tuple[str, int] | None:
+    vid = hit.get("virtual_record_id") or (hit.get("metadata") or {}).get("virtualRecordId")
+    block = hit.get("block_index")
+    if not vid or not isinstance(block, int) or isinstance(block, bool):
+        return None
+    return str(vid), block
+
+
+def _fold_headings(hits: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str, Any]]:
+    """``(hit, text, score)`` per passage, in rank order, with heading-only passages folded forward.
+
+    A passage that is only a heading answers nothing and takes a slot. When the
+    passage after it in the same record is in the result too, the heading is put
+    at the start of that passage instead, which then ranks where the better of
+    the two ranked. A heading whose next passage is not in the result is kept.
+    """
+    by_block: dict[tuple[str, int], dict[str, Any]] = {}
+    for hit in hits:
+        key = _block_key(hit)
+        if key is not None:
+            by_block.setdefault(key, hit)
+    # Last block first, so a run of headings ends at the passage they head.
+    target: dict[tuple[str, int], tuple[str, int]] = {}
+    for key in sorted(by_block, key=lambda k: (k[0], -k[1])):
+        after = (key[0], key[1] + 1)
+        target[key] = target[after] if after in by_block and _is_heading_only(by_block[key]) else key
+    texts: dict[tuple[str, int], list[str]] = {}
+    for key in sorted(by_block):
+        texts.setdefault(target[key], []).append(by_block[key]["content"])
+
+    entries: list[tuple[int, dict[str, Any], str, Any]] = []
+    placed: dict[tuple[str, int], int] = {}
+    for position, hit in enumerate(hits):
+        key = _block_key(hit)
+        if key is None or by_block[key] is not hit:
+            # Not an indexed block, or a repeat of one: passed on as it is.
+            entries.append((position, hit, hit["content"], hit.get("score")))
+            continue
+        final = target[key]
+        if final in placed:
+            continue
+        placed[final] = len(entries)
+        # Hits are in rank order, so the first member seen holds the best rank and score.
+        entries.append((position, by_block[final], "\n\n".join(texts[final]), hit.get("score")))
+    return [(hit, text, score) for _, hit, text, score in entries]
+
+
+# How many blocks after a lone heading are read to give it its section's opening text.
+_HEADING_FOLLOW_BLOCKS = 3
+
+
+def _block_text(block: Any) -> str | None:  # noqa: ANN401
+    """A text block's text, or a table row's sentence; None for any other block."""
+    if not isinstance(block, dict):
+        return None
+    data = block.get("data")
+    if block.get("type") == BlockType.TABLE_ROW.value and isinstance(data, dict):
+        data = data.get("row_natural_language_text")
+    elif block.get("type") != BlockType.TEXT.value:
+        return None
+    return data.strip() if isinstance(data, str) and data.strip() else None
+
+
+def _section_opening(blocks: list[Any], index: int) -> list[str]:
+    """The text after the heading at ``index``: any sub-headings, then the first text
+    block under them or the first rows of a table. Nothing when no such text follows."""
+    texts: list[str] = []
+    in_rows = False
+    for block in blocks[index + 1 : index + 1 + _HEADING_FOLLOW_BLOCKS]:
+        text = _block_text(block)
+        is_row = isinstance(block, dict) and block.get("type") == BlockType.TABLE_ROW.value
+        if text is None or (in_rows and not is_row):
+            break
+        texts.append(text)
+        if is_row:
+            in_rows = True
+        elif block.get("sub_type") != BlockSubType.HEADING.value:
+            return texts
+    # Rows are content; sub-headings alone are not.
+    return texts if in_rows else []
+
+
+async def _complete_lone_headings(
+    results: dict[str, Any], blob_store: Any, org_id: str | None, logger: "Logger",  # noqa: ANN401
+) -> dict[str, Any]:
+    """Give a heading that matched alone the opening text of its section.
+
+    ``_fold_headings`` joins a heading to the passage after it when that passage
+    is in the result too. When it is not, the heading is all the chunk would hold:
+    the passage after it in the stored record is read and added, so the chunk
+    answers something. The heading keeps its id and citation. A record that cannot
+    be read leaves the heading as it is.
+    """
+    hits = [h for h in results.get("searchResults") or [] if isinstance(h, dict)]
+    present = {key for h in hits if (key := _block_key(h)) is not None}
+    lone = [
+        h for h in hits
+        if (key := _block_key(h)) is not None and (key[0], key[1] + 1) not in present and _is_heading_only(h)
+    ]
+    if not lone or not org_id:
+        return results
+
+    async def blocks_of(vid: str) -> list[Any]:
+        try:
+            record = await blob_store.get_record_from_storage(vid, org_id)
+            return list(((record or {}).get("block_containers") or {}).get("blocks") or [])
+        except Exception as exc:
+            logger.debug("Retrieve: could not read a record to complete a heading (%s)", type(exc).__name__)
+            return []
+
+    vids = sorted({key[0] for h in lone if (key := _block_key(h)) is not None})
+    blocks_by_vid = dict(zip(vids, await asyncio.gather(*(blocks_of(v) for v in vids)), strict=True))
+    completed: dict[int, dict[str, Any]] = {}
+    for hit in lone:
+        vid, index = _block_key(hit)  # type: ignore[misc]
+        opening = _section_opening(blocks_by_vid.get(vid, []), index)
+        if opening:
+            completed[id(hit)] = {**hit, "content": "\n\n".join([hit["content"].strip(), *opening])}
+    if not completed:
+        return results
+    return {**results, "searchResults": [completed.get(id(h), h) for h in results.get("searchResults") or []]}
+
+
 def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> list[dict[str, Any]]:
     """The search response as a flat, ranked chunk list with a citation each."""
     records = {r.get("_key"): r for r in results.get("records") or [] if isinstance(r, dict)}
@@ -740,14 +893,15 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
     # document order; the passage that matched (distanceFromMatch 0) goes first
     # so a per-record cap keeps it over its neighbours.
     hits = sorted(
-        results.get("searchResults") or [],
+        (
+            h for h in results.get("searchResults") or []
+            if (h.get("metadata") or {}).get("recordId") and h.get("content")
+        ),
         key=lambda h: (-(h.get("score") or 0.0), h.get("distanceFromMatch") or 0),
     )
-    for hit in hits:
+    for hit, text, score in _fold_headings(hits):
         md = hit.get("metadata") or {}
         record_id = md.get("recordId")
-        if not record_id or not hit.get("content"):
-            continue
         if max_per_record is not None and per_record.get(record_id, 0) >= max_per_record:
             continue
         per_record[record_id] = per_record.get(record_id, 0) + 1
@@ -762,9 +916,9 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
         pages = [p for p in (pages if isinstance(pages, list) else [pages]) if p is not None] or None
         chunks.append({
             # Stable across calls for the same indexed block, so callers can dedupe and cache.
-            "id": f"{hit.get('virtual_record_id') or md.get('virtualRecordId')}:{hit.get('block_index')}",
-            "text": hit["content"],
-            "score": hit.get("score"),
+            "id": _chunk_id(hit, md),
+            "text": text,
+            "score": score,
             "record": {
                 "recordId": record_id,
                 "name": doc.get("recordName") or md.get("recordName"),
@@ -783,6 +937,18 @@ def _retrieve_chunks(results: dict[str, Any], max_per_record: int | None) -> lis
     return chunks
 
 
+# Said, in place of "nothing is indexed yet", when the caller's own filters
+# leave nothing to search: the filters are what to check.
+FILTERS_MATCH_NOTHING_MESSAGE = (
+    "No documents you can access match these filters. Check the ids in filters, "
+    "or search without them."
+)
+
+
+def _has_filters(filters: dict[str, Any] | None) -> bool:
+    return any(bool(values) for values in (filters or {}).values())
+
+
 @router.post("/retrieve", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
 @inject
 async def retrieve(
@@ -798,60 +964,91 @@ async def retrieve(
     time_range = _search_time_range(body)
     user = request.state.user
     fetch_limit = _retrieve_fetch_limit(body.limit, body.maxChunksPerRecord)
+    timer = StageTimer()
+    # The same bound as /search: a slow call answers within it, with what was
+    # found or a 503 that says to retry, instead of holding the caller open.
+    deadline = search_deadline_seconds()
+    guard = asyncio.timeout(deadline)
+    stages: dict[str, list[float]] = {}
     try:
-        async with call_scope(
-            principal_from_request_user(user),
-            Workload.SEARCH,
-            config_service=container.config_service(),
-            container=container,
-        ):
-            if body.rewriteQuery:
-                queries = await _rewritten_queries(request, retrieval_service, body.query, logger)
-            else:
-                queries = _queries_for_search(body.query, None, None)
-            results = await retrieval_service.search_with_filters(
-                queries=queries,
-                org_id=user.get("orgId"),
-                user_id=user.get("userId"),
-                limit=fetch_limit,
-                filter_groups=within_connection(body.filters, connection_limit(user)),
-                knowledge_search=True,
-                time_range=time_range,
-            )
-            if body.maxChunksPerRecord is None:
-                results = _apply_result_limit(results, body.limit, body.query)
-            # With a cap, nothing is cut here: _retrieve_chunks caps each record
-            # over every candidate, then the page is cut to `limit`. Cutting first
-            # lets one expanded section fill the window and leaves the page short.
-            await hide_record_parents_outside_connection(
-                request, graph_provider, user.get("orgId"), user.get("userId"), results,
-            )
-            hide_record_source_paths(request, results)
-            status_code = results.get("status_code", 500)
-            record_event("retrieve_performed", {
-                "orgId": user.get("orgId"),
-                "userId": user.get("userId"),
-                "domain": domain_from_email(user.get("email")),
-                "status_code": status_code,
-                "num_queries": len(queries),
-            })
-            if not results.get("searchResults"):
-                # Nothing matched, nothing accessible, nothing indexed yet: still an
-                # answer. A failure (index or permission check down, bad filter) is not.
-                if status_code == 200 or results.get("status") in _EMPTY_RETRIEVAL_STATUSES:
-                    return JSONResponse(status_code=200, content={
-                        "chunks": [],
-                        # A source that did not run makes "nothing found" unreliable.
-                        "incomplete": bool(results.get("searchIncomplete")),
-                        "message": results.get("message"),
-                    })
-                return JSONResponse(status_code=status_code, content={"message": results.get("message")})
-            return JSONResponse(status_code=200, content={
-                "chunks": _retrieve_chunks(results, body.maxChunksPerRecord)[: body.limit],
-                "incomplete": bool(results.get("searchIncomplete")),
-            })
+        with collect_spans() as stages, deadline_after(deadline):
+            async with guard, call_scope(
+                principal_from_request_user(user),
+                Workload.SEARCH,
+                config_service=container.config_service(),
+                container=container,
+            ):
+                if body.rewriteQuery:
+                    queries = await _rewritten_queries(request, retrieval_service, body.query, logger)
+                else:
+                    queries = _queries_for_search(body.query, None, None)
+                timer.mark("query_transform")
+                results = await retrieval_service.search_with_filters(
+                    queries=queries,
+                    org_id=user.get("orgId"),
+                    user_id=user.get("userId"),
+                    limit=fetch_limit,
+                    filter_groups=within_connection(body.filters, connection_limit(user)),
+                    knowledge_search=True,
+                    time_range=time_range,
+                )
+                if body.maxChunksPerRecord is None:
+                    results = _apply_result_limit(results, body.limit, body.query)
+                # With a cap, nothing is cut here: _retrieve_chunks caps each record
+                # over every candidate, then the page is cut to `limit`. Cutting first
+                # lets one expanded section fill the window and leaves the page short.
+                await hide_record_parents_outside_connection(
+                    request, graph_provider, user.get("orgId"), user.get("userId"), results,
+                )
+                hide_record_source_paths(request, results)
+                results = await _complete_lone_headings(
+                    results, getattr(retrieval_service, "blob_store", None), user.get("orgId"), logger,
+                )
+                timer.mark("retrieval")
+                timer.emit(
+                    logger, "retrieve", detail=format_spans(stages),
+                    rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
+                )
+                status_code = results.get("status_code", 500)
+                record_event("retrieve_performed", {
+                    "orgId": user.get("orgId"),
+                    "userId": user.get("userId"),
+                    "domain": domain_from_email(user.get("email")),
+                    "status_code": status_code,
+                    "num_queries": len(queries),
+                })
+                if not results.get("searchResults"):
+                    # Nothing matched, nothing accessible, nothing indexed yet: still an
+                    # answer. A failure (index or permission check down, bad filter) is not.
+                    if status_code == 200 or results.get("status") in _EMPTY_RETRIEVAL_STATUSES:
+                        message = results.get("message")
+                        if (
+                            results.get("status") == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+                            and _has_filters(body.filters)
+                        ):
+                            message = FILTERS_MATCH_NOTHING_MESSAGE
+                        return JSONResponse(status_code=200, content={
+                            "chunks": [],
+                            # A source that did not run makes "nothing found" unreliable.
+                            "incomplete": bool(results.get("searchIncomplete")),
+                            "message": message,
+                        })
+                    return JSONResponse(status_code=status_code, content={"message": results.get("message")})
+                return JSONResponse(status_code=200, content={
+                    "chunks": _retrieve_chunks(results, body.maxChunksPerRecord)[: body.limit],
+                    "incomplete": bool(results.get("searchIncomplete")),
+                })
     except HTTPException:
         raise
+    except TimeoutError as e:
+        if deadline is None or not guard.expired():
+            # Not this route's deadline: a step's own timeout that got out.
+            logger.error("Retrieve failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=500, detail=action_failed("retrieve passages")) from e
+        timer.mark("retrieval")
+        timer.emit(logger, "retrieve", detail=format_spans(stages), timed_out=f"{deadline:g}s")
+        logger.warning("Retrieve stopped at its %gs deadline", deadline)
+        return JSONResponse(status_code=503, content={"message": SEARCH_TIMED_OUT_MESSAGE})
     except Exception as e:
         logger.error("Retrieve failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("retrieve passages")) from e

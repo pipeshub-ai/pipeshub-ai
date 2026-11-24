@@ -60,6 +60,67 @@ describe('retrieve controller', () => {
     expect(save.called).to.be.false
   })
 
+  describe('record page links', () => {
+    const answer = async (frontendUrl: string | undefined, citation: Record<string, unknown>) => {
+      sinon.restore()
+      arm(200, { chunks: [{ id: 'v1:0', text: 't', citation }], incomplete: false })
+      const res = createMockResponse()
+      await retrieve({ ...appConfig, frontendUrl })(
+        createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+        res,
+        createMockNext(),
+      )
+      return res.json.firstCall.args[0].chunks[0].citation
+    }
+
+    it('turns a record page path into a full web app URL', async () => {
+      const citation = await answer('https://pipeshub.example.com', {
+        url: '/record/r1', recordUrl: '/record/r1', pageNum: null, blockIndex: 0,
+      })
+      expect(citation).to.deep.equal({
+        url: 'https://pipeshub.example.com/record/r1',
+        recordUrl: 'https://pipeshub.example.com/record/r1',
+        pageNum: null,
+        blockIndex: 0,
+      })
+    })
+
+    it('keeps a web app served under a path, and a trailing slash adds none', async () => {
+      const citation = await answer('https://example.com/pipeshub/', { url: '/record/r1', recordUrl: '/record/r1' })
+      expect(citation.url).to.equal('https://example.com/pipeshub/record/r1')
+    })
+
+    it('leaves a source URL as it is', async () => {
+      const url = 'https://acme.atlassian.net/browse/PP-1#:~:text=x'
+      const citation = await answer('https://pipeshub.example.com', { url, recordUrl: 'https://acme.atlassian.net/browse/PP-1' })
+      expect(citation.url).to.equal(url)
+      expect(citation.recordUrl).to.equal('https://acme.atlassian.net/browse/PP-1')
+    })
+
+    it('never turns a protocol-relative link into one on the web app', async () => {
+      const citation = await answer('https://pipeshub.example.com', { url: '//evil.example/x', recordUrl: null })
+      expect(citation).to.deep.equal({ url: '//evil.example/x', recordUrl: null })
+    })
+
+    it('leaves the path when no web app URL is configured', async () => {
+      for (const frontendUrl of [undefined, '', 'not a url']) {
+        const citation = await answer(frontendUrl as string, { url: '/record/r1', recordUrl: '/record/r1' })
+        expect(citation.url).to.equal('/record/r1')
+      }
+    })
+
+    it('passes an answer without chunks on as it is', async () => {
+      arm(200, { chunks: [], incomplete: false, message: 'none' })
+      const res = createMockResponse()
+      await retrieve({ ...appConfig, frontendUrl: 'https://x.test' })(
+        createMockRequest({ body: { query: 'q' }, user: { userId: 'u1', orgId: 'o1' } }),
+        res,
+        createMockNext(),
+      )
+      expect(res.json.firstCall.args[0]).to.deep.include({ chunks: [], incomplete: false, message: 'none' })
+    })
+  })
+
   it('logs a 402 refusal as a warning, not an error', async () => {
     arm(402, { detail: { code: 'PAYMENT_REQUIRED', message: 'Payment required by the upstream service' } })
     const error = sinon.stub(Logger.prototype, 'error')

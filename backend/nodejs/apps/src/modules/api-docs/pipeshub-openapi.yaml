@@ -16,7 +16,7 @@ info:
     ## Behaviour common to every route
     App-level middleware runs before any router, so the following applies to every operation below, before authentication, unless an exception is named.
 
-    **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST`. The message names where the value was, for example `HTML tags, scripts, and XSS content are not allowed in the field "name".` or `... in the query parameter "search".` (a field name that is not a plain identifier path reads `the request`), and says what counted: text in angle brackets such as `<id>` counts as an HTML tag, an encoded script tag counts, or script content such as `onclick=`, `javascript:` or `data:text/html` counts. A string over 100,000 characters is refused as too long to check instead: `The value of the field "name" is longer than 100,000 characters, which is too long to check for HTML tags and scripts. Please shorten it and try again.` It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/`, `/connectors` and `/api-toolsets`, and POST, PUT and PATCH under `/skills`, skip the filter. So does the question of a search: the `query` string of a JSON body sent to `POST /search` or `POST /retrieve` is neither checked nor rewritten, unless it is longer than 100,000 characters. On `POST /mcp`, the same holds for the free-text argument of a chat or search tool call and for each `citations[].quote` of a `pipeshub_show_citations` call, which is text copied from a record (a Slack message's `<!here>` included).
+    **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST`. The message names where the value was, for example `HTML tags, scripts, and XSS content are not allowed in the field "name".` or `... in the query parameter "search".` (a field name that is not a plain identifier path reads `the request`), and says what counted: text in angle brackets such as `<id>` counts as an HTML tag, an encoded script tag counts, or script content such as `onclick=`, `javascript:` or `data:text/html` counts. A string over 100,000 characters is refused as too long instead: `The value of the field "name" is too long: it has more than 100,000 characters, the most a value may have. Please shorten it and try again.` It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/`, `/connectors` and `/api-toolsets`, and POST, PUT and PATCH under `/skills`, skip the filter. So does the question of a search: the `query` string of a JSON body sent to `POST /search` or `POST /retrieve` is neither checked nor rewritten, unless it is longer than 100,000 characters. On `POST /mcp`, the same holds for the free-text argument of a chat or search tool call and for each `citations[].quote` of a `pipeshub_show_citations` call, which is text copied from a record (a Slack message's `<!here>` included).
 
     **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse or whose top level is not an object or an array (a bare string, number, `true`, `false` or `null`), or a body shorter or longer than its `Content-Length`, is answered `400 HTTP_BAD_REQUEST` (`The request body is not valid JSON.`, `The request body does not match its Content-Length.`), a body past these limits `413 HTTP_PAYLOAD_TOO_LARGE`, and an unsupported content encoding or character set `415 HTTP_UNSUPPORTED_MEDIA_TYPE`; a JSON body over 5 MB on `/mcp` gets its `413` as a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
 
@@ -12956,12 +12956,17 @@ components:
     RetrieveRequest:
       type: object
       required: [query]
+      additionalProperties: false
+      description: |
+        A field not listed here is refused with `400 VALIDATION_ERROR` naming it
+        (`These fields aren't accepted here: maxChunkPerRecord.`), so a misspelt
+        option does not go unnoticed.
       properties:
         query:
           type: string
           minLength: 1
           maxLength: 100000
-          description: What to find. This text is always searched.
+          description: What to find. This text is always searched. A query of only spaces is refused as an empty one is.
         limit:
           type: integer
           minimum: 1
@@ -13011,12 +13016,26 @@ components:
       properties:
         id:
           type: string
-          description: Stable for the same indexed block, for deduplication and caching.
+          description: |
+            `<virtual record id>:<block index>`, stable for the same indexed block, for
+            deduplication and caching. A record's summary, which is not one block of the
+            record, ends in `:summary`.
         text:
           type: string
+          description: |
+            The passage. A passage that is only a heading (`# Onboarding`) is put at the
+            start of the passage after it when both are in the result, instead of taking a
+            chunk of its own; the chunk then has that passage's `id` and citation.
         score:
           type: number
           nullable: true
+          description: |
+            Reciprocal-rank fusion of the semantic and keyword matches. Higher is better.
+            Scores order the chunks of one response and are not comparable across queries.
+            Repeating a query within a few minutes, on an unchanged index, gives the same
+            chunks and scores (the query's embedding is reused and equal scores are broken
+            by id); after a re-index, or once the embedding is computed again, they can
+            differ slightly.
         record:
           type: object
           properties:
@@ -13042,11 +13061,14 @@ components:
             url:
               type: string
               nullable: true
-              description: Deep link to the passage (a `#:~:text=` fragment where the source supports one).
+              description: |
+                Deep link to the passage (a `#:~:text=` fragment where the source supports one),
+                as a full URL. An uploaded file, or a record whose source link is not shown,
+                links to its page in the web app (`<web app URL>/record/<recordId>`).
             recordUrl:
               type: string
               nullable: true
-              description: Link to the record itself.
+              description: Link to the record itself, as a full URL; as `url` for uploaded files.
             pageNum:
               type: array
               nullable: true
@@ -13438,6 +13460,11 @@ components:
           description: |
             Block type for this hit. Common values: `text`, `image`, `table_row`, `table`,
             `record_summary` (whole-record semantic summary — `block_index` is `null` for these hits).
+        block_sub_type:
+          type: string
+          description: |
+            What a text block is within its document, when the parser recorded it: `heading`,
+            `paragraph`, `list_item`, `quote`, `code`... Absent when it did not.
         block_index:
           type: integer
           nullable: true
@@ -53516,7 +53543,20 @@ paths:
         model's rewritten and expanded versions.
 
         Nothing to find (no match, no accessible records, nothing indexed
-        yet) is a `200` with an empty `chunks` list.
+        yet) is a `200` with an empty `chunks` list and a `message` saying
+        why. When `filters` leave nothing the caller can read, the message
+        says so ("No documents you can access match these filters. ..."), so
+        a wrong id is not mistaken for an empty workspace.
+
+        `limit` is the most chunks returned. Fewer come back when fewer
+        passages match, or when a heading is joined to the passage after it
+        (see `RetrieveChunk.text`).
+
+        A search that takes longer than the server's search deadline (50
+        seconds by default) is stopped and answered `503`; see that response.
+        Every response, an error included, carries the request's id in the
+        `X-Request-Id` header: the one the caller sent in `X-Request-ID`, or a
+        new one. Quote it when reporting a problem.
       operationId: retrieve
       x-pipeshub-sdk: true
       x-speakeasy-usage-example:
@@ -53553,19 +53593,22 @@ paths:
                 $ref: '#/components/schemas/RetrieveResponse'
         '400':
           description: |
-            Invalid request. `VALIDATION_ERROR` when `query` is missing, empty, not text or longer than
-            100,000 characters, `limit` or `maxChunksPerRecord` is not a whole number from 1 to 50 (a
+            Invalid request. `VALIDATION_ERROR` when `query` is missing, empty, only spaces, not text or
+            longer than 100,000 characters (`Query is required.` for the first three), `limit` or `maxChunksPerRecord` is not a whole number from 1 to 50 (a
             numeric string such as `"8"` is refused too: unlike `POST /search`, these are not read as
             numbers), `filters` is not an object or holds a key the `Filters` schema does not list (the
             message names it and lists the allowed keys), an entry of `filters.apps`, `filters.kb`,
-            `filters.recordGroups`, `filters.records` or `filters.recordsExact` is not a UUID, more than 200
-            ids are sent across those keys, `filters.where` is sent at all, `rewriteQuery` is not a
-            boolean, or a date bound is empty or longer than 64 characters (`A date filter cannot be
-            empty`, `A date filter must be at most 64 characters`).
+            `filters.recordGroups`, `filters.records` or `filters.recordsExact` is not a UUID (the message
+            names the key and the id it takes, e.g. `Each id in filters.apps must be a connector instance
+            id (a UUID), not a connector type such as "JIRA". GET /api/v1/connectors/active lists them`),
+            more than 200 ids are sent across those keys, `filters.where` is sent at all, `rewriteQuery` is
+            not a boolean, a date bound is empty or longer than 64 characters (`A date filter cannot be
+            empty`, `A date filter must be at most 64 characters`), or the body has a field the request
+            does not take (`These fields aren't accepted here: foo.`).
             `HTTP_BAD_REQUEST` when the query contains a format specifier (`retrieve query contains
             potentially dangerous format specifiers. ...`), or from the search service when a date bound
             is not a date it accepts. Markup in `query` is not refused: the app-wide markup filter skips
-            this one field. Unknown body fields are dropped, not refused.
+            this one field.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -53617,7 +53660,10 @@ paths:
           description: |
             The AI search service could not be reached (for example, it is
             still starting), or the search index or the permission check is
-            temporarily unavailable.
+            temporarily unavailable. Also returned when the search ran past the
+            server's search deadline (`SEARCH_DEADLINE_SECONDS`, 50 by default)
+            and was stopped ("This search took too long, so it was stopped and
+            no results are shown. ..."): try again, or narrow it with filters.
           content:
             application/json:
               schema:
@@ -53721,7 +53767,8 @@ paths:
             an object, `filters` holds a key the `Filters` schema does not list (the message
             names it and lists the allowed keys), an
             entry of `filters.apps`, `filters.kb`, `filters.recordGroups`, `filters.records` or
-            `filters.recordsExact` is not a UUID (`Must be a valid UUID`), more than 200 ids are
+            `filters.recordsExact` is not a UUID (`Each id in filters.<key> must be ...`, naming the key
+            and the id it takes), more than 200 ids are
             sent across those keys (`At most 200 ids may be selected in one request`),
             `filters.entityFilters` is unusable, `filters.where` is sent at all
             (`filters.where is not supported yet`), `rewriteQuery` is not a boolean,

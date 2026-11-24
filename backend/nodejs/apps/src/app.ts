@@ -575,6 +575,7 @@ export class Application {
         credentials: true,
         exposedHeaders: [
           'x-session-token',
+          'x-request-id',
           'content-disposition',
           'etag',
           'accept-ranges',
