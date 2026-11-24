@@ -41,7 +41,10 @@ from app.models.entities import Record
 from app.models.record_convert import (
     convert_record_dict_to_record,  # re-exported for existing importers
 )
-from app.modules.artifacts.reader import LegacyRecordArtifactReader
+from app.modules.artifacts.reader import (
+    LegacyRecordArtifactReader,
+    record_artifact_reader,
+)
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
@@ -218,6 +221,16 @@ class Processor:
             )
             return None
         return container, semantic
+
+    async def load_stored_blocks(self, virtual_record_id: str, org_id: str) -> BlocksContainer | None:
+        """The blocks stored for ``virtual_record_id``, whatever revision wrote them; ``None`` when nothing is stored.
+
+        For the row texts an update keeps (``table_row_memory``), which a stored record of any revision can give. Raises on a
+        read that fails; the caller treats that as no rows.
+        """
+        blob = await record_artifact_reader(self.sink_orchestrator.blob_storage).read_record(virtual_record_id, org_id)
+        containers = blob.get("block_containers") if isinstance(blob, dict) else None
+        return BlocksContainer.model_validate(containers) if isinstance(containers, dict) else None
 
     async def resume_from_checkpoint(
         self,

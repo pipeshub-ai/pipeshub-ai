@@ -254,10 +254,6 @@ CALLBACK_CASES = {
                   logging.WARNING, "upstream_5xx", "server_error", None, "i1", None),
     "token-endpoint-down": (_token_endpoint(0, raises=_connect_error), {**_CODE, "state": _state()},
                             logging.WARNING, "unavailable", "server_error", None, "i1", None),
-    # F26c: the field is named in the exception, never its value (the route drops the text anyway).
-    "token-malformed-created-at": (_token_endpoint(200, '{"access_token": "at", "created_at": "' + SENTINEL + '"}'),
-                                   {**_CODE, "state": _state()},
-                                   logging.ERROR, "internal", "server_error", None, "i1", None),
     "instances-unreadable": (_instances_unreadable, {**_CODE, "state": _state()},
                              logging.WARNING, "unavailable", "auth_failed", None, "i1", None),
     "other-users-state": (_nothing, {**_CODE, "state": _state(user_id="65f0a1b2c3d4e5f6a7b8c9ff")},
@@ -314,6 +310,37 @@ def test_each_toolset_callback_failure_is_one_line_with_its_class_and_no_provide
     assert "error_message" not in fields
     for logged in (r for r in caplog.records if r.name.startswith("app.")):
         assert "SENTINEL" not in _text(logged) and "alice@" not in _text(logged) and "://" not in _text(logged)
+
+
+# (token answer, level, error_class, error_type): the class a refresh gives the same answer, except a refused code.
+TOKEN_ANSWERS = {
+    # F26c: the field is named in the exception, never its value (the route drops the text anyway).
+    "malformed-created-at": ('{"access_token": "at", "created_at": "' + SENTINEL + '"}',
+                             logging.ERROR, "misconfigured", "MalformedTokenError"),
+    "no-access-token": ('{"token_type": "bearer", "error_description": "' + SENTINEL + '"}',
+                        logging.ERROR, "misconfigured", "TokenResponseError"),
+    "slack-other-code": ('{"ok": false, "error": "bad_redirect_uri"}', logging.ERROR, "misconfigured", "OAuthTokenRequestError"),
+    "slack-invalid-code": ('{"ok": false, "error": "invalid_code"}', logging.WARNING, "bad_request", "OAuthTokenRequestError"),
+}
+
+
+@pytest.mark.parametrize("case", list(TOKEN_ANSWERS))
+def test_a_token_answer_on_the_callback_is_classed_as_its_refresh_classes_it(
+    client: TestClient, store: _Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: str,
+) -> None:
+    body, level, cls, error_type = TOKEN_ANSWERS[case]
+    _token_endpoint(200, body)(monkeypatch, store)
+
+    response = client.get(f"{PREFIX}/oauth/callback", params={**_CODE, "state": _state()})
+
+    assert response.json()["error"] == "server_error"  # the body is unchanged
+    record, fields = _end(caplog)
+    assert _loud(caplog) == [record]
+    assert (record.levelno, fields["error_class"], fields["error_type"], fields["reason"]) == (
+        level, cls, error_type, "server_error")
+    assert "error_message" not in fields
+    for logged in (r for r in caplog.records if r.name.startswith("app.")):
+        assert "SENTINEL" not in _text(logged) and "://" not in _text(logged)
 
 
 # --- pattern D: a step the route swallows ----------------------------------------------------------------------------

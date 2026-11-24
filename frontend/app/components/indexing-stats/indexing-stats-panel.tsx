@@ -19,6 +19,7 @@ import {
 import type { ConnectorStatsResponse } from '@/app/(main)/workspace/connectors/types';
 import type { IndexingStatus } from '@/app/(main)/knowledge-base/types';
 import { formatSnakeCaseTitle } from '@/lib/utils/formatters';
+import { PermissionLockIcon, useUserPermission } from '@/config';
 
 export interface IndexingStatsPanelProps {
   stats?: ConnectorStatsResponse['data'] | null;
@@ -73,6 +74,8 @@ export function IndexingStatsPanel({
   isRetryEntitiesBusy = false,
 }: IndexingStatsPanelProps) {
   const { t } = useTranslation();
+  // Sync, stop, reindex and retry all go through routes that check the connector sync permission.
+  const syncLocked = !useUserPermission('manageConnectorSync');
   const showStatsShimmer = loading || isRefreshBusy;
   const reindexActionsBusy =
     isReindexFailedBusy || isManualIndexBusy || isRetryClassificationBusy || isRetryEntitiesBusy;
@@ -139,6 +142,7 @@ export function IndexingStatsPanel({
                     onClick={() => void onStop()}
                     disabled={isStopBusy}
                     loading={isStopBusy}
+                    locked={syncLocked}
                   />
                 ) : (
                   onSync && (
@@ -148,6 +152,7 @@ export function IndexingStatsPanel({
                       onClick={() => void onSync()}
                       disabled={isSyncBusy || reindexActionsBusy}
                       loading={isSyncBusy}
+                      locked={syncLocked}
                     />
                   )
                 )}
@@ -170,6 +175,7 @@ export function IndexingStatsPanel({
                       onClick={() => void onReindexFailed()}
                       disabled={reindexActionsBusy || isSyncBusy}
                       loading={isReindexFailedBusy}
+                      locked={syncLocked}
                     />
                   )}
                   {showManualIndexAction && onManualIndex && (
@@ -181,6 +187,7 @@ export function IndexingStatsPanel({
                       onClick={() => void onManualIndex()}
                       disabled={reindexActionsBusy || isSyncBusy}
                       loading={isManualIndexBusy}
+                      locked={syncLocked}
                     />
                   )}
                 </Flex>
@@ -283,6 +290,7 @@ export function IndexingStatsPanel({
             isRetryClassificationBusy={isRetryClassificationBusy}
             isRetryEntitiesBusy={isRetryEntitiesBusy}
             retryDisabled={reindexActionsBusy || isSyncBusy}
+            retryLocked={syncLocked}
           />
         ) : null}
       </Flex>
@@ -342,15 +350,18 @@ function StatusActionButton({
   onClick,
   disabled,
   loading,
+  locked = false,
 }: {
   label: string;
   icon: string;
   onClick?: () => void;
   disabled?: boolean;
   loading?: boolean;
+  /** The caller's group permissions do not allow this action: disabled, with a lock. */
+  locked?: boolean;
 }) {
   const [isHovered, setIsHovered] = React.useState(false);
-  const isDisabled = disabled || loading;
+  const isDisabled = disabled || loading || locked;
 
   return (
     <button
@@ -383,6 +394,7 @@ function StatusActionButton({
     >
       <MaterialIcon name={icon} size={12} color="var(--gray-11)" />
       {label}
+      {locked && <PermissionLockIcon />}
     </button>
   );
 }

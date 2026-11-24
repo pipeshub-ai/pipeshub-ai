@@ -14,6 +14,7 @@ values at rest exactly like the toolsets/connectors credential paths.
 """
 import asyncio
 import logging
+import unicodedata
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -353,6 +354,49 @@ def _max_personal_instances() -> int:
     return env_int(MAX_PERSONAL_INSTANCES_ENV, DEFAULT_MAX_PERSONAL_INSTANCES, lo=0)
 
 
+def _name_key(name: object) -> str:
+    """How two names compare: case, runs of spaces and look-alike Unicode forms (full-width
+    letters, ligatures) don't tell servers apart to a reader. The form mirrors this in
+    `server-names.ts`."""
+    return " ".join(unicodedata.normalize("NFKC", str(name or "")).split()).casefold()
+
+
+async def _refuse_taken_name(
+    config_service: ConfigurationService,
+    name: str,
+    *,
+    scope: str,
+    org_id: str,
+    user_id: str,
+    instance_id: Optional[str] = None,
+) -> None:
+    """People pick servers by name, so no two in one list share a name, whatever their type.
+
+    A personal server is checked against what its owner sees (the org's servers and their own);
+    an org server against the org's only, since administrators never see personal servers.
+    shortcut: check-then-write, so two saves at the same instant can both pass; closing that
+    needs a unique key in the store.
+    """
+    # Every record or none: a list missing the one that holds the name would let it through.
+    try:
+        if scope == mcp_service.SCOPE_PERSONAL:
+            seen = await mcp_service.load_visible_instances(config_service, org_id, user_id, strict=True)
+        else:
+            seen = await mcp_service.load_org_instances(config_service, org_id, strict=True)
+    except Exception as exc:
+        logger.warning("Couldn't read the MCP servers to check a name", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail="Couldn't check whether another MCP server already has this name. Try again.",
+        ) from exc
+    key = _name_key(name)
+    if key and any(i.get("_id") != instance_id and _name_key(i.get("name")) == key for i in seen):
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=f'An MCP server named "{" ".join(name.split())}" already exists. Choose another name.',
+        )
+
+
 async def _require_manage_access(
     instance: dict[str, Any],
     user_context: dict[str, Any],
@@ -616,6 +660,7 @@ async def create_instance(
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
+    org_id = user_context["org_id"]
     if payload.scope not in (None, mcp_service.SCOPE_ORG, mcp_service.SCOPE_PERSONAL):
         raise _bad_request("scope must be 'org' or 'personal'.")
     # Only administrators create org-wide instances; everyone else's are their own. A request
@@ -632,16 +677,19 @@ async def create_instance(
     _refuse_replaced_template(payload, registry)
     if scope == mcp_service.SCOPE_PERSONAL:
         _validate_personal_instance(payload)
-        existing = await mcp_service.load_user_instances(config_service, user_context["org_id"], user_context["user_id"])
+        existing = await mcp_service.load_user_instances(config_service, org_id, user_context["user_id"])
         if len(existing) >= _max_personal_instances():
             raise HTTPException(
                 status_code=HttpStatusCode.CONFLICT.value,
                 detail=f"You can have at most {_max_personal_instances()} personal MCP servers. Remove one first.",
             )
+    await _refuse_taken_name(
+        config_service, payload.name, scope=scope, org_id=org_id, user_id=user_context["user_id"],
+    )
 
     instance_id = str(uuid.uuid4())
     record = _build_instance_record(
-        payload, instance_id, user_context["org_id"], user_context["user_id"], registry, scope=scope,
+        payload, instance_id, org_id, user_context["user_id"], registry, scope=scope,
     )
     _assert_instance_urls_allowed(record)
 
@@ -678,7 +726,8 @@ async def update_instance(
 ) -> dict[str, Any]:
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
-    existing = await _get_org_instance(instance_id, config_service, user_context["org_id"], user_context["user_id"])
+    org_id = user_context["org_id"]
+    existing = await _get_org_instance(instance_id, config_service, org_id, user_context["user_id"])
     if not existing:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
     await _require_manage_access(existing, user_context, request, config_service, "update")
@@ -693,8 +742,14 @@ async def update_instance(
     scope = mcp_service.instance_scope(existing)
     if scope == mcp_service.SCOPE_PERSONAL:
         _validate_personal_instance(payload)
+    # Only a new name is checked, so a server that already shares its name can still be edited.
+    if _name_key(payload.name) != _name_key(existing.get("name")):
+        await _refuse_taken_name(
+            config_service, payload.name, scope=scope,
+            org_id=org_id, user_id=user_context["user_id"], instance_id=instance_id,
+        )
     record = _build_instance_record(
-        payload, instance_id, user_context["org_id"], user_context["user_id"], registry, existing=existing, scope=scope,
+        payload, instance_id, org_id, user_context["user_id"], registry, existing=existing, scope=scope,
     )
     _assert_instance_urls_allowed(record)
 

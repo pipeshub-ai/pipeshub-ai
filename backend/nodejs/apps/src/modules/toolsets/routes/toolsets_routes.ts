@@ -55,7 +55,10 @@ import {
   reauthenticateAgentToolset,
   getAgentToolsetOAuthUrl,
 } from '../controller/toolsets_controller';
-import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import {
+  bindPathLogFields,
+  guardPathParams,
+} from '../../../libs/middlewares/safe-path-params.middleware';
 import { messageForUnknownOption } from '../../../libs/utils/validation.utils';
 import { integerCheck } from '../../../libs/utils/zod-formats';
 
@@ -292,6 +295,8 @@ export function createToolsetsRouter(container: Container): Router {
     'oauthConfigId',
     'agentKey',
   );
+  // `toolsetId` (the legacy routes) is not the instance id Python logs as `toolset_id`.
+  bindPathLogFields(router, { instanceId: 'toolset_id', agentKey: 'agent_id' });
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 

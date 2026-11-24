@@ -6557,11 +6557,12 @@ class DataSourceEntitiesProcessor:
     ) -> list[Record]:
         """Return all child records whose parent_external_record_id matches.
 
-        Used to check whether a folder record is empty before deleting it.
-        Delegates to ``tx_store.get_records_by_parent`` which queries
-        ``PARENT_CHILD`` edges in ArangoDB. Live children only by default, so a
-        folder whose children are all in the trash reads as empty; a walk that
-        collects what a delete must remove passes ``RecordVisibility.ALL``.
+        Used to check whether a folder record is empty before deleting it, and to
+        find the records to link under a parent again. Every store matches on the
+        child's stored ``externalParentId``, not on ``PARENT_CHILD`` edges, so it
+        also finds children whose edges a full sync removed. Live children only by
+        default, so a folder whose children are all in the trash reads as empty; a
+        walk that collects what a delete must remove passes ``RecordVisibility.ALL``.
         """
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_records_by_parent(

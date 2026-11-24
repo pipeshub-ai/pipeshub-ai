@@ -57,6 +57,7 @@ services:
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
+      - SUPPORT_EMAIL=${SUPPORT_EMAIL:-}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
 
@@ -479,7 +480,7 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: ${NEO4J_MEMORY_LIMIT:-3G}
+          memory: ${NEO4J_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
           memory: ${NEO4J_MEMORY_RESERVATION:-2G}

@@ -42,9 +42,10 @@ from app.utils.table_enrichment import (
     enrich_table_grid,
     enrich_tables,
 )
+from app.utils.table_row_memory import with_row_digest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from app.config.configuration_service import ConfigurationService
 
@@ -178,9 +179,13 @@ def _plain_row_texts(raw_headers: list[str], data_rows: list[list]) -> list[str]
 
 
 def _table_row_blocks(
-    row_texts: list[str], first_index: int, parent_index: int, citation: CitationMetadata
+    row_texts: list[str],
+    first_index: int,
+    parent_index: int,
+    citation: CitationMetadata,
+    row_digests: Sequence[Optional[str]] = (),
 ) -> list[Block]:
-    """One TABLE_ROW block per non-empty row text, indexed from ``first_index``."""
+    """One TABLE_ROW block per non-empty row text, indexed from ``first_index``, with the row's digest when it has one."""
     out: list[Block] = []
     for i, row_text in enumerate(row_texts):
         if not row_text:
@@ -193,10 +198,10 @@ def _table_row_blocks(
                 format=DataFormat.JSON,
                 comments=[],
                 parent_index=parent_index,
-                data={
+                data=with_row_digest({
                     "row_natural_language_text": row_text,
                     "row_number": i + 1,
-                },
+                }, row_digests, i),
                 citation_metadata=citation,
             )
         )
@@ -405,6 +410,7 @@ class PDFPlumberOpenCVProcessor:
             table_rows_text = await _run_sized(
                 _plain_row_texts, len(data_rows), raw_headers, data_rows
             )
+            row_digests: list[Optional[str]] = []
         else:
             if enrichment is None:
                 # The pre-pass and this walk are meant to visit the same table
@@ -423,6 +429,7 @@ class PDFPlumberOpenCVProcessor:
             table_summary = enrichment.summary
             column_headers = enrichment.headers
             table_rows_text = enrichment.descriptions
+            row_digests = enrichment.row_digests
 
         num_rows = len(grid)
         num_cols = len(grid[0]) if grid else 0
@@ -450,7 +457,7 @@ class PDFPlumberOpenCVProcessor:
         )
 
         row_blocks = await _run_sized(
-            _table_row_blocks, len(table_rows_text), table_rows_text, len(blocks), bg.index, citation
+            _table_row_blocks, len(table_rows_text), table_rows_text, len(blocks), bg.index, citation, row_digests
         )
         row_indices = [b.index for b in row_blocks]
         blocks.extend(row_blocks)

@@ -149,6 +149,14 @@ tags:
         are requested; `GET /personal-access-tokens/scopes` lists what's
         available.
 
+      **What a token can see**
+      - `knowledgeLimit` on create limits the token to the sources, record
+        groups, folders and records it names; omit it for everything the
+        owner can see.
+      - `PATCH /personal-access-tokens/{tokenId}` changes it later. The token
+        and its secret stay the same, and the new limit applies from the
+        token's next request.
+
       **Admin visibility**
       - Regular members only ever see and revoke their own tokens.
       - Org admins can list and revoke *any* member's token via
@@ -448,6 +456,8 @@ tags:
       in the body, not in the HTTP status.
   - name: Mail
     description: Internal service-to-service endpoints of the mail service — send a templated email through the configured SMTP server and reload the SMTP configuration. They accept scoped service tokens only, never a user session token.
+  - name: Support
+    description: Contact support and Send feedback from the app. Both are emailed to `SUPPORT_EMAIL` (else the product's support address) through the instance's SMTP; nothing is stored.
   - name: API Documentation
     description: |
       The built-in API reference: the HTML documentation UI served at `/api/v1/docs`, the JSON
@@ -586,6 +596,11 @@ x-pipeshub-nav:
         description: Service-to-service email sending and SMTP setup
         tags:
           - Mail
+      - name: Support
+        icon: mail
+        description: Contact support and Send feedback
+        tags:
+          - Support
       - name: Health
         icon: activity
         description: Health of the deployment, and the build that it runs
@@ -868,6 +883,9 @@ components:
           type: string
           enum: [token, oauth]
           description: '`token` when the user pasted a token, `oauth` when they signed in with the source.'
+        viaConnector:
+          type: boolean
+          description: 'True when the user is connected through the connector''s own OAuth sign-in, which they completed, rather than one of their own.'
     ConnectorUserConnectionStatus:
       type: object
       required: [connected, connection, signInAvailable]
@@ -3479,7 +3497,10 @@ components:
         token's by its owner. Search, chat, agent chat and every record read by
         id stay inside it, and inside the connecting user's own permissions.
         Omit it for everything the user can see. Sent, it must name at least one id and at
-        most 50 in all, since it is signed into every token the app gets.
+        most 50 in all, since it is signed into every token the app gets. A
+        personal access token's owner can change its limit later with
+        `PATCH /personal-access-tokens/{tokenId}`; the stored limit, not the
+        signed one, is then what the token can reach.
       properties:
         apps:
           type: array
@@ -3942,6 +3963,8 @@ components:
             - `unsupported_grant_type` - Grant type not supported
             - `invalid_scope` - Requested scope is invalid or exceeds allowed
             - `access_denied` - User denied authorization
+            - `server_error` - PipesHub's own failure, never a refusal (status `500`)
+            - `temporarily_unavailable` - PipesHub could not revoke or check a token now; retry (status `503`)
             - `invalid_target` - The requested subject cannot be acted as
               (RFC 8693). Returned by the token-exchange grant for every
               refusal about the person asked for, with one wording, so a
@@ -3959,6 +3982,7 @@ components:
             - invalid_scope
             - access_denied
             - server_error
+            - temporarily_unavailable
             - authorization_pending
             - slow_down
             - expired_token
@@ -4946,6 +4970,49 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PatListItem'
+    UpdatePatKnowledgeLimitRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        Request body for `PATCH /personal-access-tokens/{tokenId}`.
+        `knowledgeLimit` is required, so a body that leaves it out is refused
+        rather than read as "everything".
+      required:
+        - knowledgeLimit
+      properties:
+        knowledgeLimit:
+          # The same shape as KnowledgeLimit, written out because OpenAPI 3.0
+          # does not carry `nullable` into an allOf/$ref branch, so a composed
+          # schema would refuse the documented `null`.
+          description: |
+            What the token may see from now on, the same shape as
+            `KnowledgeLimit`, or `null` for everything its owner can see
+            (including sources added later). Sent, it must name at least one
+            id and at most 50 in all.
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            apps:
+              type: array
+              items: { type: string, format: uuid }
+              description: Whole connectors and collections.
+            recordGroups:
+              type: array
+              items: { type: string, format: uuid }
+              description: Record groups (a drive, space or project), with the groups nested in them.
+            records:
+              type: array
+              items: { type: string, format: uuid }
+              description: Folders or records, with everything under them.
+    UpdatePatKnowledgeLimitResponse:
+      type: object
+      description: Response body for `PATCH /personal-access-tokens/{tokenId}` (`updateKnowledgeLimit`).
+      required:
+        - token
+      properties:
+        token:
+          $ref: '#/components/schemas/PatListItem'
     RevokePatRequest:
       type: object
       description: |
@@ -28847,7 +28914,10 @@ paths:
         - consent page data (`requiresConsent: true`) when the request can go ahead;
         - `{redirectUrl}` carrying `error`, `error_description` and `state` when a requested
           scope is unknown or none of them is allowed for the app (`invalid_scope`), or a public
-          client sent no `code_challenge` (`invalid_request`).
+          client sent no `code_challenge` (`invalid_request`);
+        - `{redirectUrl}` carrying `error=server_error`, the fixed `error_description` "The
+          authorization server could not complete the request" and `state` when PipesHub itself
+          fails after the redirect URI is checked (for example, its store does not answer).
 
         Requested scopes the app does not allow are dropped rather than refused: the consent page
         lists them under `consentData.notGrantedScopes` and the code never carries them.
@@ -28975,7 +29045,8 @@ paths:
           description: |
             Either the data for the consent page, or a redirect URL carrying an OAuth error
             (an unknown scope or none allowed for the app, or a public client without
-            `code_challenge`).
+            `code_challenge`; or `server_error` with a fixed description when PipesHub itself
+            fails after the redirect URI is checked).
           content:
             application/json:
               schema:
@@ -29731,13 +29802,13 @@ paths:
               another resource than the one its grant was for
             - `invalid_target`, `invalid_request`, `invalid_grant`, `invalid_scope`,
               `unsupported_grant_type` - a refusal from the token-exchange grant (see above)
-            - `server_error` - any other failure, also with status `400`. This includes an unknown or
-              revoked `refresh_token` ("Invalid refresh token") and a `client_credentials` request
-              without `client_secret`, whose `error_description` is the Node `TypeError` text
-              (`The "data" argument must be of type string ... Received undefined`). A
-              `client_credentials` grant whose identity is gone, disabled or being restored is also
-              refused this way ("The identity this application acts as no longer exists", "... is
+            - `invalid_grant` also for an unknown, revoked, expired or already rotated `refresh_token`
+              ("Refresh token not found", "Refresh token has expired"): drop it and sign in again.
+            - `invalid_request` - a `client_credentials` grant whose identity is gone, disabled or
+              being restored ("The identity this application acts as no longer exists", "... is
               disabled", "... is being restored. Try again once that has finished.").
+
+            A refusal is never `server_error`: that code is only PipesHub's own failure, answered `500`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -29750,13 +29821,27 @@ paths:
           description: |
             Client authentication failed (`invalid_client`): no `client_id` in the body or the Basic
             header, an unknown or inactive client, a wrong `client_secret`, or a confidential client
-            using `authorization_code`, `refresh_token` or `device_code` without `client_secret`.
+            using `authorization_code`, `refresh_token` or `device_code` without `client_secret`. Also
+            a `client_credentials` request without `client_secret` ("client_secret is required").
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
         '500':
-          $ref: '#/components/responses/BodyParserFailure'
+          description: |
+            PipesHub could not complete the request (for example, its store did not answer, or a stored
+            client secret no longer decrypts): the flat OAuth body `{ "error": "server_error",
+            "error_description": "The authorization server could not complete the request" }`. The
+            description is always that text; the cause is in PipesHub's log. Retry later.
+
+            The standard error envelope (`INTERNAL_ERROR`) instead when the failure happens before the
+            endpoint (see Body parsers in the introduction).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OAuthErrorResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded
           content:
@@ -29802,6 +29887,7 @@ paths:
         '200':
           description: |
             Token revoked, or it was unknown, already revoked or issued to another client. No body.
+            Never answered when PipesHub failed to revoke it (that is a `503`).
         '400':
           description: |
             The body fails validation (`VALIDATION_ERROR`)
@@ -29819,6 +29905,15 @@ paths:
             (`Invalid client_id`), a confidential client without `client_secret` (`client_secret required
             for confidential clients`), or a wrong `client_secret`. Also returned when `client_id` is
             missing and `token` is not an agent credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        '503':
+          description: |
+            PipesHub could not revoke the token now (RFC 7009 Section 2.2.1): treat the token as still
+            valid and retry. Flat OAuth body `{ "error": "temporarily_unavailable", "error_description":
+            "The authorization server could not complete the request" }`.
           content:
             application/json:
               schema:
@@ -29864,8 +29959,9 @@ paths:
         '200':
           description: |
             Token introspection result. `{active: false}` alone when the token is unknown, expired,
-            revoked, issued to another client, or when `client_secret` is missing (even for a live
-            token). `username` is present only for a token that acts as a user.
+            revoked or issued to another client, and also when PipesHub could not read the token
+            (it fails closed; the cause is in PipesHub's log). `username` is present only for a token
+            that acts as a user.
           content:
             application/json:
               schema:
@@ -29897,7 +29993,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Client authentication failed (`invalid_client`) - unknown or inactive client, or wrong `client_secret`
+          description: Client authentication failed (`invalid_client`) - unknown or inactive client, a missing or wrong `client_secret`
           content:
             application/json:
               schema:
@@ -29991,6 +30087,14 @@ paths:
                 error: insufficient_scope
                 error_description: "Required scopes: openid"
                 scope: openid
+        '503':
+          description: |
+            PipesHub could not check the token now (its store did not answer): the token may be fine, so
+            keep it and retry. Flat OAuth body, `error` is `temporarily_unavailable`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
         '500':
           description: |
             The scope check failed unexpectedly (OAuth body, `error` is `server_error`).
@@ -31324,6 +31428,96 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthClientManagementRateLimitError'
   /personal-access-tokens/{tokenId}:
+    patch:
+      tags:
+        - Personal Access Tokens
+      summary: Change what one of your own personal access tokens can see
+      description: |
+        Replaces the token's knowledge limit, scoped to
+        `{tokenId, clientId, callerUserId}`: a caller can only change their own
+        live (not revoked, not expired) token. The token and its secret stay
+        the same, so nothing that uses it needs updating. The new limit applies
+        from the token's next request, and never reaches more than the owner
+        can see. Send `null` to let the token see everything its owner can.
+
+        Session only, like every `/personal-access-tokens/*` route: a token can
+        never change its own limit.
+      operationId: updatePersonalAccessTokenKnowledgeLimit
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tokenId
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+          description: Personal access token ID
+      requestBody:
+        description: The token's new knowledge limit, or null for everything you can see
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePatKnowledgeLimitRequest'
+            examples:
+              onlyPicked:
+                summary: Limit the token to one source and one folder
+                value:
+                  knowledgeLimit:
+                    apps: ['3f1c2a4e-9b7d-4c1a-8e2f-5a6b7c8d9e0f']
+                    recordGroups: []
+                    records: ['8a7b6c5d-4e3f-4a1b-9c8d-7e6f5a4b3c2d']
+      responses:
+        '200':
+          description: The token, with its new limit (`knowledgeLimit` absent means everything its owner can see)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdatePatKnowledgeLimitResponse'
+        '400':
+          description: |
+            `tokenId` is not a 24-character hex id, `knowledgeLimit` is missing, or the limit names no ids, more than 50, or an id that is not a UUID (`VALIDATION_ERROR`)
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token, a personal access token (`phpat_`) or a service token (`phsvc_`) rather than an interactive user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Token not found, revoked, expired, not owned by the caller, or the org has no PAT app yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many token management requests from this user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Internal server error.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     delete:
       tags:
         - Personal Access Tokens
@@ -33856,6 +34050,7 @@ paths:
 
             - Invalid user ID format (Zod validation)
             - Target user's role is not `member` (`User cannot be deleted. Please demote the user from admin first.`)
+            - Target user is an admin at the moment the account is removed, because they were made an admin while the deletion was running (`This user was made an admin while being deleted, so the account was kept. Cleanup that had already run is not undone.`). The account stays, as an admin. Cleanup the deletion had already done is not undone: the group and project memberships it removed, the OAuth hand-over to the deleting admin, the cleared password and the sessions ended by the deletion record. A user who was promoted and then demoted again before that moment is a member again, so the account is removed.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -34400,8 +34595,9 @@ paths:
 
         1. **New emails** — creates a `Users` document, publishes `NewUserEvent`, and sends an
            invitation email.
-        2. **Previously deleted accounts** — restores the account (`isDeleted: false`) and sends a
-           re-invite email.
+        2. **Previously deleted accounts** — restores the account (`isDeleted: false`) as a
+           `member`, whatever role it had before, and sends a re-invite email. An `admin` invite
+           then promotes it within the 5-admin limit.
         3. **Active accounts with `hasLoggedIn: false`** (pending, not blocked) — resends the
            invitation email.
         4. **Active accounts already logged in** — skipped and counted in `alreadyActive`.
@@ -44036,8 +44232,8 @@ paths:
                 $ref: '#/components/schemas/StreamRecordErrorResponse'
         '500':
           description: |
-            Internal streaming failure, downstream conversion failure, or connector/backend
-            error proxied by the gateway.
+            Internal streaming failure, downstream conversion failure, or a 500 answered by the
+            connector service and relayed by the gateway.
 
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
@@ -44060,6 +44256,16 @@ paths:
             The record, its organization or its connector could not be read because the database
             was unreachable. The record may well exist. The response carries `Retry-After` (seconds,
             usually 5); retry after that long.
+
+            Also answered, without `Retry-After`, when the connector service gave no answer
+            (unreachable or the connection dropped): `{"error": "Failed to retrieve record data"}`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamRecordErrorResponse'
+        '504':
+          description: |
+            The connector service did not answer in time: `{"error": "Failed to retrieve record data"}`.
           content:
             application/json:
               schema:
@@ -54896,7 +55102,14 @@ paths:
         bound to a service account (`serviceAccountUserId`). A conversion
         may turn on `shareWithOrg` in the same request without `can_share`.
         Resending `isServiceAccount: true` for an agent that is already a
-        service-account agent needs no extra permission.
+        service-account agent needs no extra permission. Changing the
+        `knowledge` of a service-account agent that has no
+        `serviceAccountUserId` is also limited to its owner or an
+        administrator, because it searches with its creator's access. What
+        counts is what the agent can search: resending the same sources with
+        the same record-group and record limits, in any order or spelling, is
+        not a change, while adding or removing a source or changing its
+        limits, including narrowing one, is.
 
         **Success response**
 
@@ -54943,8 +55156,10 @@ paths:
             organization) but is not its owner, so may not edit it. Also returned
             when an editor without `can_share` turns on `shareWithOrg`, when an
             editor who is neither the owner nor an administrator converts a
-            regular agent by setting `isServiceAccount: true`, and when someone
-            other than an administrator changes `serviceAccountUserId`.
+            regular agent by setting `isServiceAccount: true` or changes the
+            `knowledge` of a service-account agent with no
+            `serviceAccountUserId`, and when someone other than an
+            administrator changes `serviceAccountUserId`.
           content:
             application/json:
               schema:
@@ -54986,7 +55201,8 @@ paths:
         '503':
           description: |
             The change needs the caller's organization role (converting a
-            regular agent by setting `isServiceAccount: true` as a non-owner, or
+            regular agent by setting `isServiceAccount: true` or changing an
+            unbound service-account agent's `knowledge` as a non-owner, or
             changing `serviceAccountUserId`) and the role could not be confirmed just
             now, or the knowledge of a service-account agent could not be checked.
             Nothing was saved; retry.
@@ -59189,9 +59405,10 @@ paths:
       summary: Connect your own account to a per-user connector
       description: |
         Stores the caller's own credential for the connector's source (for Notion, a personal
-        access token). It is accepted only when it belongs to the same workspace as the connector
-        and to an account whose email is the caller's PipesHub email, and when no other user has
-        connected that account. A sync is requested so the caller's content appears soon.
+        access token). It is accepted only when it belongs to the same workspace as the connector,
+        no other user has connected that account, and the account's email is not another PipesHub
+        user's. The account's email may differ from the caller's own. A sync is requested so the
+        caller's content appears soon.
       operationId: connectMyConnectorAccount
       security:
         - bearerAuth: []
@@ -59217,7 +59434,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConnectorUserConnectionStatus'
         '400':
-          description: The credential cannot be connected (another workspace or person, not a personal credential, or refused by the source)
+          description: The credential cannot be connected (another workspace, not a personal credential, no email shared by the source, or refused by the source)
           content:
             application/json:
               schema:
@@ -59229,7 +59446,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Another user has already connected this source account
+          description: Another user has already connected this source account, or its email is another PipesHub user's
           content:
             application/json:
               schema:
@@ -62105,7 +62322,8 @@ paths:
         <li>Retrieves Google Workspace OAuth config (client ID/secret)</li>
         <li>Exchanges the authorization code for tokens via Google's token endpoint</li>
         <li>Verifies the ID token</li>
-        <li>Stores access and refresh tokens in configuration manager</li>
+        <li>Stores access and refresh tokens in configuration manager. When Google sends no refresh token
+        (a repeat consent), the user's stored refresh token is kept</li>
         <li>Creates or enables the Google Workspace connector</li>
         <li>Publishes an AppEnabledEvent for the sync service</li>
         </ol>
@@ -62197,7 +62415,11 @@ paths:
                         type: string
                         format: date-time
         '400':
-          description: Error exchanging authorization code
+          description: |
+            Error exchanging authorization code, or the consent came from a different Google account.
+            Also when Google sent no refresh token (a repeat consent) and the user has no usable one
+            stored (none, or an expired one): the user removes the app's access in their Google account's
+            third-party access settings and connects again. Nothing is stored.
           content:
             application/json:
               schema:
@@ -62216,8 +62438,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            The Google Workspace configuration could not be read, or the
-            credentials could not be stored. Also when Google Workspace OAuth is
+            The Google Workspace configuration or the user's stored credentials
+            could not be read, or the credentials could not be stored. Also when Google Workspace OAuth is
             not configured for the organization (client ID or secret missing):
             that is checked before `tempCode` is read, so a body without
             `tempCode` gets this answer too.
@@ -65917,7 +66139,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: The caller already has the maximum number of personal servers
+          description: |
+            The caller already has the maximum number of personal servers, or another server in the
+            same list already has this name (compared without case or extra spaces, whatever the type).
+            An organization server is checked against the organization's servers; a personal server
+            against those and the caller's own.
           content:
             application/json:
               schema:
@@ -66069,6 +66295,14 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The new name is already used by another server in the same list (compared without case or
+            extra spaces, whatever the type). Keeping the current name never conflicts.
           content:
             application/json:
               schema:
@@ -78778,7 +79012,20 @@ paths:
                 error: invalid_client
                 error_description: Invalid client_id
         '500':
-          $ref: '#/components/responses/BodyParserFailure'
+          description: |
+            PipesHub could not complete the request (for example, its store did not answer, or a stored
+            client secret no longer decrypts): the flat OAuth body `{ "error": "server_error",
+            "error_description": "The authorization server could not complete the request" }`. The
+            description is always that text; the cause is in PipesHub's log. Retry later.
+
+            The standard error envelope (`INTERNAL_ERROR`) instead when the failure happens before the
+            endpoint (see Body parsers in the introduction).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/OAuthErrorResponse'
+                  - $ref: '#/components/schemas/ErrorResponse'
         '429':
           description: Rate limit exceeded
           content:
@@ -81939,6 +82186,258 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== SUPPORT ====================
+  /support/context:
+    get:
+      tags:
+        - Support
+      summary: What the Contact support form shows the signed-in user
+      description: |
+        Whether this instance can send email (SMTP is set up and turned on), the address requests
+        go to (`SUPPORT_EMAIL`, else the product's support address), the workspace name, and the
+        details the form lists as sent with every request. Returns no secrets.
+      operationId: getSupportContext
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Form context
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - smtpConfigured
+                  - supportEmail
+                  - workspaceName
+                  - details
+                properties:
+                  smtpConfigured:
+                    type: boolean
+                  supportEmail:
+                    type: string
+                    format: email
+                  workspaceName:
+                    type: string
+                    description: Empty when the workspace has no name.
+                  details:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - label
+                        - value
+                      properties:
+                        label:
+                          type: string
+                          example: Signed in as
+                        value:
+                          type: string
+                          example: Ada Lovelace (ada@example.com)
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /support:
+    post:
+      tags:
+        - Support
+      summary: Send a support request
+      description: |
+        Emails the request to `SUPPORT_EMAIL` with a Reply-To of the requester, then sends the
+        requester a copy built only from what the form showed them. Attachments go in one zip
+        (`support-<reference>.zip`) with the email, and the copy carries the same zip; nothing is
+        stored. Only an interactive user
+        session can send, not an OAuth or personal access token. The organization and user come from the token.
+
+        The same `requestKey` sent again within an hour answers with the first result instead of
+        sending a second email. Each user may send 5 requests an hour.
+
+        The response waits up to 15 seconds for the mail server. `outcome` is `sent`; `pending`
+        (the mail server had not answered yet; the requester's copy is not sent); `failed`; or
+        `no_smtp` (email is not set up, nothing was sent). On `failed` and `no_smtp` the form
+        offers the requester a ready-made email to send from their own mail app.
+      operationId: createSupportRequest
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        description: The request, its recent browser errors and up to 5 attachments.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - area
+                - description
+                - requestKey
+              properties:
+                area:
+                  type: string
+                  enum:
+                    - connectors
+                    - chat
+                    - agents
+                    - files
+                    - access
+                    - people
+                    - other
+                description:
+                  type: string
+                  minLength: 10
+                  maxLength: 5000
+                requestKey:
+                  type: string
+                  format: uuid
+                  description: One per form opening, so a retry never sends twice.
+                recentErrors:
+                  type: string
+                  description: |
+                    JSON array of up to 5 failed requests from the browser, each with `method`,
+                    `path` (no query string), `status`, an optional `requestId`, and `at`.
+                attachments:
+                  type: array
+                  maxItems: 5
+                  description: JPEG, PNG, WebP, GIF, PDF, text, log or CSV files; 5 MB each, 8 MB in total.
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '201':
+          description: Request handled; `outcome` says whether the email went out
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - reference
+                  - outcome
+                  - supportEmail
+                properties:
+                  reference:
+                    type: string
+                    example: SUP-7K3M9Q
+                  outcome:
+                    type: string
+                    enum:
+                      - sent
+                      - pending
+                      - failed
+                      - no_smtp
+                  supportEmail:
+                    type: string
+                    format: email
+        '400':
+          description: Validation error, an unsupported file type, or attachments over the size limits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token or a personal access token rather than an interactive user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: More than 5 requests from this user in the last hour
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
+  /feedback:
+    post:
+      tags:
+        - Support
+      summary: Send product feedback or a feature request
+      description: |
+        Emails the feedback to `SUPPORT_EMAIL` with a Reply-To of the sender. Once that email is
+        sent, the sender gets a copy with the same zip. Attachments go in one zip
+        (`feedback-<reference>.zip`) and nothing is stored. Only an interactive user session can
+        send, not an OAuth or personal access token. Each user may
+        send 5 an hour. `outcome` is `sent`, `pending`, `failed` or `no_smtp`, as for a support
+        request.
+      operationId: createFeedback
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        description: The feedback and up to 5 attachments.
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - kind
+                - description
+              properties:
+                kind:
+                  type: string
+                  description: '`issue` is general feedback; `feedback` is a feature request.'
+                  enum:
+                    - issue
+                    - feedback
+                description:
+                  type: string
+                  minLength: 10
+                  maxLength: 5000
+                attachments:
+                  type: array
+                  maxItems: 5
+                  description: JPEG, PNG, WebP, GIF, PDF, text, log or CSV files; 5 MB each, 8 MB in total.
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        '201':
+          description: Feedback handled; `outcome` says whether the email went out
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - outcome
+                properties:
+                  outcome:
+                    type: string
+                    enum:
+                      - sent
+                      - pending
+                      - failed
+                      - no_smtp
+        '400':
+          description: Validation error, an unsupported file type, or attachments over the size limits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The bearer token is an OAuth access token or a personal access token rather than an interactive user session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: More than 5 from this user in the last hour
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
 
   # ==================== HEALTH ====================
   /health/services:

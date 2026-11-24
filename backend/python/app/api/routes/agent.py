@@ -70,6 +70,7 @@ from app.modules.agents.knowledge_scope import (
     read_source_limit,
     resolve_agent_filters,
     service_account_knowledge,
+    source_reach,
 )
 from app.modules.agents.qna.router import (
     RouteDecision,  # noqa: F401 - re-exported for backward-compat imports (see below)
@@ -3318,7 +3319,12 @@ async def get_model_usage(request: Request, model_key: str) -> JSONResponse:
         raise _route_failure(request, e, "check where this model is used") from e
 
 
-@router.get("/{agent_id}", dependencies=[_AGENT_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_READ))])
+# agent:write is admitted too: the gateway may read the agent, as the caller, to decide which
+# permission an update or delete needs, and a token allowed to change an agent may read it.
+@router.get(
+    "/{agent_id}",
+    dependencies=[_AGENT_ID_LOG, Depends(require_scopes(OAuthScopes.AGENT_READ, OAuthScopes.AGENT_WRITE))],
+)
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""
     try:
@@ -3561,6 +3567,25 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         # A conversion shares the agent as a matter of course and is checked above.
         if final_shared and not agent.get("shareWithOrg") and not converting and not perm.get("can_share", False):
             raise PermissionDeniedError("share this agent with the organisation")
+        # An unbound service agent searches as its creator, so its sources are
+        # searched with the owner's access: changing what it reaches is the
+        # owner's or an administrator's call, like converting it.
+        if (
+            "knowledge" in body
+            and agent.get("isServiceAccount")
+            and not agent.get("serviceAccountUserId")
+            and perm.get("user_role") != "OWNER"
+            and source_reach(_parse_knowledge_sources(body.get("knowledge", [])).values())
+            != source_reach(agent.get("knowledge") or [])
+        ):
+            await _only_an_administrator_may_bind(
+                request,
+                services["config_service"],
+                detail=(
+                    "Only the agent's owner or an administrator can change the knowledge "
+                    "of a service agent that searches as its creator."
+                ),
+            )
 
         if "serviceAccountUserId" in body:
             body["serviceAccountUserId"] = await _checked_service_account_binding(

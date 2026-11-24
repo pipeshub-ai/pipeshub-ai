@@ -22,6 +22,15 @@ const orgEmailVerificationTemplate = loadTemplate('src/modules/mail/views/layout
 const sandboxCapacityAlertTemplate = loadTemplate(
   'src/modules/mail/views/layouts/system/sandboxCapacityAlert.hbs',
 );
+const supportRequestTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/support/supportRequest.hbs',
+);
+const feedbackReceivedTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/support/feedbackReceived.hbs',
+);
+const feedbackCopyTemplate = loadTemplate(
+  'src/modules/mail/views/layouts/support/feedbackCopy.hbs',
+);
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
 const footerTemplate = loadTemplate('src/modules/mail/views/partials/footer.hbs');
 const headTemplate = loadTemplate('src/modules/mail/views/partials/head.hbs');
@@ -181,3 +190,10 @@ export const sandboxCapacityAlert = (
 export const connectorAccountConnect = (
   templateData: Record<string, unknown>,
 ): string => compileTemplate(connectorAccountConnectTemplate, templateData);
+export const supportRequest = (templateData: Record<string, unknown>): string =>
+  compileTemplate(supportRequestTemplate, templateData);
+export const feedbackReceived = (
+  templateData: Record<string, unknown>,
+): string => compileTemplate(feedbackReceivedTemplate, templateData);
+export const feedbackCopy = (templateData: Record<string, unknown>): string =>
+  compileTemplate(feedbackCopyTemplate, templateData);
