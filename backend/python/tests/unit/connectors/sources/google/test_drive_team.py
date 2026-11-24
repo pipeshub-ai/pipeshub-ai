@@ -1382,7 +1382,6 @@ class TestForeignSharedDrive:
         connector._foreign_drives_written = set()
         connector._foreign_drive_confirmed = {}
         connector._leaver_cleanup_failed = set()
-        connector._foreign_group_reach = {}
 
     def test_a_member_only_grant_on_a_shared_drive_item_is_not_stored_on_the_item(self) -> None:
         """Why the files were unreachable: their members' access is meant to come from the drive's group."""
@@ -1896,41 +1895,6 @@ class TestForeignSharedDrive:
 
         dep.delete_permission_from_record.assert_awaited_once_with("gone-1", "a@example.com", connector.connector_id)
 
-    def _chain(self, connector, records: dict, inherits: set) -> None:
-        dep = connector.data_entities_processor
-        dep.get_record_by_external_id = AsyncMock(
-            side_effect=lambda connector_id=None, external_record_id=None, **_: records.get(external_record_id)
-        )
-        dep.inheritance_when_unreadable = AsyncMock(side_effect=lambda _c, record_id: record_id in inherits)
-
-    @pytest.mark.parametrize(("parents", "folders", "inherits", "expected"), [
-        (["0APG"], {}, set(), True),
-        (["folder-F"], {"folder-F": ("rec-F", None)}, {"rec-F"}, True),
-        (["folder-F"], {"folder-F": ("rec-F", "folder-L"), "folder-L": ("rec-L", None)}, {"rec-F"}, False),
-        (["folder-new"], {}, set(), False),
-        (None, {}, set(), False),
-    ], ids=["at-the-root", "below-an-inheriting-folder", "below-a-limited-folder", "below-an-unstored-folder",
-            "parent-hidden"])
-    async def test_a_foreign_drives_file_inherits_only_through_a_known_reaching_parent(
-        self, connector, parents, folders, inherits, expected
-    ) -> None:
-        """Hung off the group with a hidden or cut-off parent, every member would reach a file below a limited
-        folder. The viewer keeps their own grant either way."""
-        self._store(connector)
-        await connector._note_foreign_drives_reached(self._user("viewer@example.com"), [self.FOREIGN])
-        metadata = self._viewer_item(connector, parents=parents or ["x"], records={})
-        if parents is None:
-            del metadata["parents"]
-        records = {k: MagicMock(id=rid, parent_external_record_id=parent) for k, (rid, parent) in folders.items()}
-        self._chain(connector, records, inherits)
-
-        result = await connector._process_drive_item(
-            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
-        )
-
-        assert result.record.inherit_permissions is expected
-        connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
-
     async def test_a_foreign_folder_turning_limited_is_queued_for_its_members_check(self, connector) -> None:
         self._store(connector)
         existing = MagicMock(id="rec-F", external_record_group_id="0APG", parent_external_record_id=None)
@@ -2051,38 +2015,6 @@ class TestForeignSharedDrive:
         assert order.index("foreign_limited_subtrees") < order.index("stop")
         assert json.loads(state["foreign_limited_subtrees"]["folders"]) == [["0APG", "folder-F"]]
 
-    async def test_a_file_written_before_its_folder_gets_the_drives_group_once_the_folder_is(self, connector) -> None:
-        self._store(connector)
-        dep = connector.data_entities_processor
-        record = MagicMock(id="rec-1", parent_external_record_id="folder-F")
-        folder = MagicMock(id="rec-F", parent_external_record_id=None)
-        dep.get_record_by_external_id = AsyncMock(
-            side_effect=lambda connector_id=None, external_record_id=None, **_: {"file-1": record, "folder-F": folder}.get(external_record_id)
-        )
-        dep.inheritance_when_unreadable = AsyncMock(side_effect=lambda _c, record_id: record_id == "rec-F")
-        dep.resume_inheriting_permissions = AsyncMock()
-        connector._foreign_inherit_waiting = {("file-1", "0APG", "folder-F")}
-
-        await connector._settle_foreign_inherit_waiting()
-
-        dep.resume_inheriting_permissions.assert_awaited_once_with("rec-1", connector.connector_id, parent_record_id="rec-F")
-
-    async def test_a_file_whose_folder_is_still_not_stored_keeps_waiting(self, connector) -> None:
-        state = self._store(connector)
-        dep = connector.data_entities_processor
-        record = MagicMock(id="rec-1", parent_external_record_id="folder-F")
-        dep.get_record_by_external_id = AsyncMock(
-            side_effect=lambda connector_id=None, external_record_id=None, **_: {"file-1": record}.get(external_record_id)
-        )
-        dep.inheritance_when_unreadable = AsyncMock(return_value=False)
-        dep.resume_inheriting_permissions = AsyncMock()
-        connector._foreign_inherit_waiting = {("file-1", "0APG", "folder-F")}
-
-        await connector._settle_foreign_inherit_waiting()
-
-        dep.resume_inheriting_permissions.assert_not_awaited()
-        assert json.loads(state["foreign_inherit_waiting"]["items"]) == [["file-1", "0APG", "folder-F", 1]]
-
     async def test_a_rejoining_member_loses_their_old_cleanup_cursor(self, connector) -> None:
         state = self._store(connector)
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
@@ -2097,6 +2029,56 @@ class TestForeignSharedDrive:
 
         assert "cursors" not in _drives(state)["0APG"]
         assert _drives(state)["0APG"]["members"] == ["a@example.com"]
+
+    async def test_an_item_moved_to_another_drive_does_not_reuse_the_old_drives_inheritance(self, connector) -> None:
+        """Hung off the new drive's group with a hidden parent, every member there would reach it."""
+        self._store(connector)
+        item = MagicMock(id="rec-1", external_record_group_id="0OLD", parent_external_record_id="old-folder",
+                         parent_record_type=RecordType.FILE, record_name="test.txt")
+        metadata = self._viewer_item(connector, parents=["x"], records={"file-1": item})
+        del metadata["parents"]
+        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=True)
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
+        )
+
+        assert result.record.inherit_permissions is False
+
+    async def test_a_new_file_a_foreign_drives_viewer_cannot_read_the_sharing_of_inherits_nothing(self, connector) -> None:
+        """Its access is each opener's own grant, until a member who reads its sharing writes where it sits."""
+        self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("viewer@example.com"), [self.FOREIGN])
+        metadata = self._viewer_item(connector, parents=["folder-F"], records={})
+        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
+        )
+
+        assert result.record.inherit_permissions is False
+        assert [p.email for p in result.new_permissions] == ["viewer@example.com"]
+
+    async def test_a_failed_removal_does_not_stop_the_other_members_check(self, connector) -> None:
+        state = self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        await connector._note_foreign_drives_reached(self._user("b@example.com"), [self.FOREIGN])
+        dep = self._limited_tree(connector)
+        connector._sync_ledger = MagicMock()
+        connector._leaver_still_opens = AsyncMock(return_value=False)
+
+        async def delete(record_id: str, email: str, _connector_id: str) -> None:
+            if email == "a@example.com":
+                raise RuntimeError("graph down")
+
+        dep.delete_permission_from_record = AsyncMock(side_effect=delete)
+        connector._foreign_limited_folders = {("0APG", "folder-F")}
+
+        await connector._check_foreign_limited_subtrees()
+
+        tried = sorted(c.args[:2] for c in dep.delete_permission_from_record.await_args_list)
+        assert ("rec-1", "b@example.com") in tried and ("rec-F", "b@example.com") in tried
+        assert json.loads(state["foreign_limited_subtrees"]["folders"]) == [["0APG", "folder-F"]]
 
     async def test_an_item_moved_to_another_drive_with_its_parent_hidden_drops_the_old_folder(self, connector) -> None:
         self._store(connector)
