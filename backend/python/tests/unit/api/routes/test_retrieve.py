@@ -16,6 +16,7 @@ from app.api.routes.search import (
     RetrieveQuery,
     retrieve,
 )
+from app.core.org_context import OrgContext, bind
 from app.exceptions.fastapi_responses import Status
 
 
@@ -67,7 +68,10 @@ async def _retrieve(
     retrieval.blob_store.get_record_from_storage = (
         AsyncMock(side_effect=stored) if isinstance(stored, Exception) else AsyncMock(return_value=stored)
     )
-    with patch("app.api.routes.search.setup_query_transformation") as setup:
+    # The org the request is bound to, as the auth middleware binds it.
+    with patch("app.api.routes.search.setup_query_transformation") as setup, bind(
+        OrgContext("org1", "user1", "user", "jwt", "req-1"),
+    ):
         response = await retrieve(
             request=_request(), body=body, retrieval_service=retrieval, graph_provider=MagicMock(),
         )
@@ -387,6 +391,20 @@ class TestHeadingOnlyPassages:
         ]}}
         _, body, _, _ = await _retrieve(RetrieveQuery(query="q"), _results(heading), stored=stored)
         assert [c["text"] for c in body["chunks"]] == ["Budgets\n\nRow one"]
+
+    @pytest.mark.asyncio
+    async def test_the_section_is_read_for_the_org_the_request_is_bound_to(self) -> None:
+        heading = _hit("r1", 0, "Budgets", 0.9)
+        heading["block_sub_type"] = "heading"
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value=_results(heading))
+        retrieval.blob_store.get_record_from_storage = AsyncMock(return_value=None)
+        with patch("app.api.routes.search.setup_query_transformation"), bind(
+            OrgContext("org-bound", "user1", "user", "jwt", "req-1"),
+        ):
+            await retrieve(request=_request(), body=RetrieveQuery(query="q"), retrieval_service=retrieval,
+                           graph_provider=MagicMock())
+        retrieval.blob_store.get_record_from_storage.assert_awaited_once_with("v-r1", "org-bound")
 
     @pytest.mark.asyncio
     async def test_no_record_is_read_when_nothing_is_a_lone_heading(self) -> None:
