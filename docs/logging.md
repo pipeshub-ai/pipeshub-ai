@@ -1005,9 +1005,11 @@ Settings the connector service saves (Node proxies the request to it) are writte
 Node read the service's 2xx answer: `config.<section>.create`, `config.<section>.update` or `config.<section>.delete`, with
 `target` the object's id and `reason` saying which part changed. The handler writes the line, not a middleware on the
 response, so a save whose browser left before the answer still has its line. The object's id is also on every line of the
-request (`connector_id`); `target` is it only when it is a PipesHub id (otherwise `target` is null and `reason` is
-`invalid_id`). The connector routes are open to members for their own connectors (a personal connector), so
-`config.connector.*` lines include a member's own connectors; Node cannot tell personal from org-wide, and `actor` says who.
+request (`connector_id`, `toolset_id`, `mcp_server_id`); `target` is it only when it is a PipesHub id (otherwise `target`
+is null and `reason` is `invalid_id`). An API toolset's id is not one, so its lines have no `target` and name it only in
+`toolset_id`. The connector, toolset and MCP server routes are open to members for their own (a personal connector,
+toolset or MCP server), so `config.connector.*`, `config.toolset.*` and `config.mcp_server.*` lines include a member's own;
+Node cannot tell personal from org-wide, and `actor` says who.
 
 | Event | Route | `reason` | `target` |
 | --- | --- | --- | --- |
@@ -1022,15 +1024,31 @@ request (`connector_id`); `target` is it only when it is a PipesHub id (otherwis
 | `config.connector_oauth_app.create` | `POST /api/v1/oauth/:connectorType` | | the new OAuth app's id, from the service's answer |
 | `config.connector_oauth_app.update` | `PUT /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
 | `config.connector_oauth_app.delete` | `DELETE /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
+| `config.toolset.create` | `POST /api/v1/toolsets/instances` | | the new toolset's id, from the service's answer |
+| `config.toolset.update` | `PUT /api/v1/toolsets/instances/:instanceId` | `settings` | the toolset |
+| `config.toolset.update` | `PUT /api/v1/toolsets/instances/:instanceId/tool-rules` | `tool_rules` | the toolset |
+| `config.toolset.delete` | `DELETE /api/v1/toolsets/instances/:instanceId` | | the toolset |
+| `config.toolset_oauth_app.update` | `PUT /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId` | | the OAuth app |
+| `config.toolset_oauth_app.delete` | `DELETE /api/v1/toolsets/oauth-configs/:toolsetType/:oauthConfigId` | | the OAuth app |
+| `config.mcp_server.create` | `POST /api/v1/mcp-servers/instances` | | the new MCP server's id, from the service's answer |
+| `config.mcp_server.update` | `PUT /api/v1/mcp-servers/instances/:instanceId` | `settings` | the MCP server |
+| `config.mcp_server.update` | `PUT`, `DELETE /api/v1/mcp-servers/instances/:instanceId/logo` | `logo` | the MCP server |
+| `config.mcp_server.update` | `PUT /api/v1/mcp-servers/instances/:instanceId/oauth-config` | `oauth_app` | the MCP server |
+| `config.mcp_server.delete` | `DELETE /api/v1/mcp-servers/instances/:instanceId` | | the MCP server |
+| `config.api_toolset.create` | `POST /api/v1/api-toolsets/instances` | | none |
+| `config.api_toolset.update` | `PUT /api/v1/api-toolsets/instances/:instanceId` | `settings` | none (`toolset_id`) |
+| `config.api_toolset.update` | `PUT /api/v1/api-toolsets/instances/:instanceId/shared-credentials` | `shared_credential_set` | none (`toolset_id`) |
+| `config.api_toolset.update` | `DELETE /api/v1/api-toolsets/instances/:instanceId/shared-credentials` | `shared_credential_removed` | none (`toolset_id`) |
+| `config.api_toolset.delete` | `DELETE /api/v1/api-toolsets/instances/:instanceId` | | none (`toolset_id`) |
 
 The line means Node read the service's 2xx. A save the service made whose answer Node did not get (a timeout, a connection
 cut after the service committed, a 2xx whose body does not parse) has no audit line; its error and access lines, and the
 connector service's own line with the same `request_id`, record the attempt. A create resent after a cut connection (the
-connector and OAuth app creates are sent up to three times) may have been made twice with one line.
+connector, connector OAuth app and toolset creates are sent up to three times) may have been made twice with one line.
 
 Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
 validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
-migrations, and settings saved through other routers (OAuth clients, toolsets, MCP servers).
+migrations, and settings saved through other routers (OAuth clients).
 
 ## Upstream calls (Node)
 
