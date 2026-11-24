@@ -6443,12 +6443,13 @@
     "connector": {
       "affected": "Se limitará",
       "affectedTooltip": "Este conector copia los accesos de su origen, lo que requiere una clave de licencia. Sin ella, a partir del {{date}} solo la persona que lo creó podrá ver su contenido. No se elimina nada.",
+      "affectedTooltipKeyLater": "Tu clave de licencia empieza el {{start}}, después de que termine el periodo de gracia de la actualización el {{date}}. Entre ambas fechas, solo la persona que creó este conector podrá ver su contenido. No se elimina nada.",
       "limited": "Limitado",
       "limitedTooltip": "Ninguna clave de licencia permite la sincronización de permisos, así que solo la persona que creó este conector puede ver su contenido. Instala una clave para restaurar el acceso. No se ha eliminado nada.",
       "restoring": "Restaurando el acceso",
       "restoringTooltip": "Hay una clave de licencia instalada. El acceso volverá cuando termine la sincronización completa de este conector."
     },
-    "graceKeyStartsLater": "Tu clave de licencia empieza el {{start}}. Hasta entonces, el periodo de gracia de la actualización mantiene a los conectores de toda la empresa copiando los accesos de sus orígenes, hasta el {{date}}.",
+    "graceKeyStartsLater": "Tu clave de licencia empieza el {{start}}. El periodo de gracia de la actualización mantiene a los conectores de toda la empresa copiando los accesos de sus orígenes hasta el {{date}}. Si el periodo de gracia termina antes, solo las personas que los crearon podrán ver su contenido hasta que empiece la clave.",
     "graceKeyEnded": "Tu clave de licencia terminó el {{ended}}. El periodo de gracia de la actualización mantiene a los conectores de toda la empresa copiando los accesos de sus orígenes hasta el {{date}}. Después, sin una clave nueva, quedarán limitados a las personas que los crearon. No se elimina nada.",
     "openLicensePage": "Abrir la configuración de la licencia",
     "seatsOver": "Tu instalación tiene {{used}} usuarios activos; tu licencia cubre {{seats}}. Puedes añadir usuarios nuevos hasta el {{date}}.",

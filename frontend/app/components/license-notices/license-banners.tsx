@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Box, Callout, Flex, IconButton, Link, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
-import { daysUntil, reminderStep, useLicenseNotice, type ConnectorNotice } from './use-license-notice';
+import { daysUntil, formatDay, reminderStep, useLicenseNotice, type ConnectorNotice } from './use-license-notice';
 
 const LICENSE_PAGE = '/workspace/license/';
 const DISMISSED_KEY = 'pipeshub.license.graceReminderDismissed';
@@ -75,7 +75,7 @@ export function LicenseBanners() {
   const graceEnd = notice.upgradeGrace?.endsAt;
   const graceKey = notice.upgradeGrace?.key ?? 'missing';
   const keyDate = notice.upgradeGrace?.keyDate ?? '';
-  const day = (iso: string) => (iso ? new Date(iso).toLocaleDateString(i18n.language, { dateStyle: 'medium' }) : '');
+  const day = (iso: string) => formatDay(iso, i18n.language);
   const daysLeft = graceEnd ? daysUntil(graceEnd) : 0;
   const reminder = graceEnd ? `${graceEnd}|${reminderStep(daysLeft)}` : null;
   const showGrace = isAdmin && reminder !== null && dismissed !== reminder;
