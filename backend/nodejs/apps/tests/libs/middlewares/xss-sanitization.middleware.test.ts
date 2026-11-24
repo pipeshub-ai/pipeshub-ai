@@ -1161,7 +1161,7 @@ describe('XSS Sanitization Middleware', () => {
 
         expect(status).to.equal(400)
         expect(body.error.message).to.include(field)
-        expect(body.error.message).to.include('longer than 100,000 characters')
+        expect(body.error.message).to.include('more than 100,000 characters')
       }
     })
 
@@ -1268,7 +1268,10 @@ describe('XSS Sanitization Middleware', () => {
         }))
 
         expect(status).to.equal(400)
-        expect(body.error.message).to.include('too long to check')
+        expect(body.error.message).to.include('too long')
+        expect(body.error.message).to.include('more than 100,000 characters')
+        // A long quote holds no markup: the refusal does not say it was checked for some.
+        expect(body.error.message).not.to.include('HTML')
       })
 
       it('still checks a quote on any other tool', async () => {

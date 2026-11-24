@@ -3440,6 +3440,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
 
         block_type = block.get("type")
         result["block_type"] = block_type
+        # What a text block is within its document (heading, paragraph, list item...),
+        # when the parser said: /retrieve joins a lone heading to the passage it heads.
+        if block.get("sub_type"):
+            result["block_sub_type"] = block["sub_type"]
 
         # Fragment block: split from a container due to inline images inside a group.
         # Route through the container's parent group rather than treating as standalone.
@@ -3906,6 +3910,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         block = blocks[index]
         block_type = block.get("type")
         result["block_type"] = block_type
+        # What a text block is within its document (heading, paragraph, list item...),
+        # when the parser said: /retrieve joins a lone heading to the passage it heads.
+        if block.get("sub_type"):
+            result["block_sub_type"] = block["sub_type"]
         result["virtual_record_id"] = virtual_record_id
         result["block_index"] = index
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
