@@ -74,6 +74,7 @@ def _make_connector():
     c._unreadable_channels = []
     c._archived_channel_ids = set()
     c._kept_channel_ids = set()
+    c._kept_channel_read_from = {}
     c._channel_list_failed = False
     c._resilience_loaded = True
     c._resilience = None
@@ -3171,7 +3172,7 @@ class TestProcessThreadInternals:
             patch.object(SlackConnector, "_create_thread_record_group", return_value=rg),
             patch.object(SlackConnector, "_fetch_thread_replies_raw", new_callable=AsyncMock, return_value=([], True)),
         ):
-            assert await c._process_thread(parent, ctx, "rg") is True
+            assert await c._process_thread(parent, ctx, "rg") is None
 
         c.data_entities_processor.on_new_records.assert_not_awaited()
         c.data_entities_processor.get_records_in_record_group.assert_not_awaited()
@@ -3196,7 +3197,7 @@ class TestProcessThreadInternals:
             patch.object(SlackConnector, "_create_thread_record_group", return_value=rg),
             patch.object(SlackConnector, "_fetch_thread_replies_raw", new_callable=AsyncMock, return_value=([], True)),
         ):
-            assert await c._process_thread(parent, ctx, "rg") is True
+            assert await c._process_thread(parent, ctx, "rg") is None
 
         proc.on_new_records.assert_not_awaited()
         assert [call.args for call in proc.get_records_in_record_group.await_args_list] == [
@@ -3207,6 +3208,18 @@ class TestProcessThreadInternals:
                    for call in proc.get_records_in_record_group.await_args_list)
         kept = [rid for call in proc.note_kept_records.call_args_list for rid in call.args[1]]
         assert kept == [r.id for r in first + last]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_keep_of_an_unreadable_thread_marks_the_read_incomplete(self) -> None:
+        """Phase 5 only logs a thread that raises, so the keep itself marks the read incomplete."""
+        c, _ = self._unreadable_thread_connector(True)
+        c._full_sync_read_failed = False
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError):
+            await c._keep_unread_thread("thread_C1_1.0")
+
+        assert c._full_sync_read_failed is True
 
     @pytest.mark.asyncio
     async def test_a_thread_whose_replies_were_all_deleted_is_rewritten_in_a_full_sync(self) -> None:
@@ -10110,7 +10123,8 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         c.messages_sync_point.update_sync_point.assert_awaited_once()
         _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
         assert payload == {"last_sync_time": "5.0"}
-        c.audit_log_sync_point.update_sync_point.assert_awaited_once()
+        # Its replies were not read, so the thread's own sync point stays unwritten.
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
 
 
 class TestFullSyncCoverage:
@@ -10145,6 +10159,23 @@ class TestFullSyncCoverage:
             await c.sync_channel_messages("C1")
 
         assert c.full_sync_coverage().complete is False
+
+    def test_a_stored_record_without_start_ts_is_judged_by_its_creation_time(self) -> None:
+        """A record with no start_ts (a file, a link) counts as read from its creation time."""
+        from types import SimpleNamespace
+
+        c = _make_connector()
+        c._kept_channel_read_from = {"C1": "100.5"}
+
+        def record(created_ms: int | None) -> SimpleNamespace:
+            return SimpleNamespace(external_record_group_id="C1", start_ts=None, source_created_at=created_ms)
+
+        assert c._read_this_run(record(100_500)) is True
+        assert c._read_this_run(record(100_499)) is False
+        assert c._read_this_run(record(None)) is False
+        # A burst whose first message is the oldest one read was rewritten from the read pages.
+        burst = SimpleNamespace(external_record_group_id="C1", start_ts="100.5", source_created_at=None)
+        assert c._read_this_run(burst) is True
 
     @pytest.mark.asyncio
     async def test_a_channel_read_to_the_end_leaves_it_complete(self) -> None:

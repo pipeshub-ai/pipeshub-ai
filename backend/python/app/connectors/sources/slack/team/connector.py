@@ -514,6 +514,8 @@ class SlackConnector(BaseConnector):
         self._archived_channel_ids: set[str] = set()
         # Listed channels whose history Slack refused this run; their stored records are kept.
         self._kept_channel_ids: set[str] = set()
+        # Of those, the oldest message ts read before Slack refused a later page.
+        self._kept_channel_read_from: dict[str, str] = {}
         self._channel_list_failed = False
         # Set once Slack refuses the token in a run; parallel channel syncs see it too.
         self._token_refused = False
@@ -849,6 +851,7 @@ class SlackConnector(BaseConnector):
             self._unreadable_channels = []
             self._unreadable_archived_channels = []
             self._kept_channel_ids = set()
+            self._kept_channel_read_from = {}
             self._channel_list_failed = False
             self._token_refused = False
 
@@ -1746,6 +1749,7 @@ class SlackConnector(BaseConnector):
 
         cursor:     Optional[str] = None
         newest_ts:  Optional[str] = None   # newest across ALL pages (Slack newest-first)
+        oldest_read: Optional[str] = None
         total_msgs = 0
         all_deferred_threads: list[DeferredThread] = []
         # Set when a page fails for a reason that is not a permanent skip
@@ -1833,6 +1837,7 @@ class SlackConnector(BaseConnector):
             # Slack returns newest-first; first message of the first page is the global newest
             if newest_ts is None:
                 newest_ts = msgs[0].get("ts")
+            oldest_read = msgs[-1].get("ts") or oldest_read
 
             records, deferred_threads = await self._process_message_batch(msgs, ctx)
 
@@ -1909,6 +1914,9 @@ class SlackConnector(BaseConnector):
                         replies_complete = await self._process_thread(
                             dt.msg, dt.ctx, dt.rg_id
                         )
+                        if replies_complete is None:
+                            # Kept, not read: no sync point, so a later sync reads it again.
+                            continue
                     else:
                         self.logger.info(
                             f"[DeferredThread] Processing thread parent ts={ts}, "
@@ -1940,6 +1948,8 @@ class SlackConnector(BaseConnector):
 
         if history_error or incomplete_threads:
             self._full_sync_read_failed = True
+        if oldest_read and channel_id in self._kept_channel_ids:
+            self._kept_channel_read_from[channel_id] = oldest_read
 
         # Persist checkpoint ONLY after all pages succeed
         if history_error:
@@ -2439,12 +2449,14 @@ class SlackConnector(BaseConnector):
         parent_msg: dict[str, Any],
         ctx: ProcessingContext,
         rg_id: Optional[str],
-    ) -> bool:
+    ) -> Optional[bool]:
         """
         Full thread processing for a thread-parent message.
 
-        Returns False when the replies could only be partly fetched, so the
-        caller must not write the thread's sync point.
+        Returns True when every reply was read, False when the replies could
+        only be partly fetched (the read is incomplete), and None when Slack
+        refused them and the stored records were kept instead. Only True lets
+        the caller write the thread's sync point.
 
         Creates:
           1. SLACK_THREAD RecordGroup
@@ -2492,7 +2504,7 @@ class SlackConnector(BaseConnector):
             # Slack refused the replies: a parent-only burst would get a new id and
             # leave the stored thread bursts unseen, so keep those instead.
             await self._keep_unread_thread(thread_rg.external_group_id)
-            return True
+            return None
         all_msgs = [parent_msg] + replies
         self.logger.info(
             f"[ThreadProcess] Fetched {len(replies)} replies for thread ts={ts}"
@@ -3517,6 +3529,7 @@ class SlackConnector(BaseConnector):
                 kept = [
                     r for r in page
                     if r.external_record_group_id and self._channel_ext_id(r.external_record_group_id) in held
+                    and not self._read_this_run(r)
                 ]
                 processor.note_kept_records(self.connector_id, [r.id for r in kept])
                 thread_groups.update(
@@ -3534,9 +3547,30 @@ class SlackConnector(BaseConnector):
                 f"{sorted(self._kept_channel_ids)}: {exc}"
             )
 
+    def _read_this_run(self, record: Record) -> bool:
+        """Whether the pages read before Slack refused a channel part-way cover a stored
+        record of it in full. Those pages rewrote it, perhaps under another burst id, so
+        the stored copy is obsolete. A record that reaches onto the refused pages is kept,
+        though its newer messages may now also sit in a record written this run."""
+        group = record.external_record_group_id or ""
+        read_from = self._kept_channel_read_from.get(self._channel_ext_id(group))
+        if not read_from:
+            return False
+        if group.startswith("thread_"):
+            # The parent's ts: a parent on the read pages had its thread processed.
+            ts = group.rsplit("_", 1)[-1]
+        else:
+            # Its oldest message: bursts and singles set start_ts, other records only the time.
+            ts = getattr(record, "start_ts", None)
+            if not ts:
+                if record.source_created_at is None:
+                    return False
+                return record.source_created_at >= float(read_from) * 1000
+        return float(ts) >= float(read_from)
+
     async def _keep_unread_thread(self, thread_ext_group_id: str) -> None:
         """Note the stored records of a thread whose replies Slack refused as kept by the
-        full sync in progress. A failed lookup propagates, so the thread is incomplete."""
+        full sync in progress. A failed lookup marks the read incomplete and propagates."""
         self.logger.warning(
             f"Replies of {thread_ext_group_id} could not be read; its stored records are kept"
         )
@@ -3545,15 +3579,20 @@ class SlackConnector(BaseConnector):
             return
         page_size = 1000
         after_key: Optional[str] = None
-        while True:
-            page = await processor.get_records_in_record_group(
-                self.connector_id, thread_ext_group_id, page_size, after_key,
-                visibility=RecordVisibility.ALL,
-            )
-            processor.note_kept_records(self.connector_id, [r.id for r in page])
-            if len(page) < page_size:
-                break
-            after_key = page[-1].id
+        try:
+            while True:
+                page = await processor.get_records_in_record_group(
+                    self.connector_id, thread_ext_group_id, page_size, after_key,
+                    visibility=RecordVisibility.ALL,
+                )
+                processor.note_kept_records(self.connector_id, [r.id for r in page])
+                if len(page) < page_size:
+                    break
+                after_key = page[-1].id
+        except Exception:
+            # Phase 5 callers only log a failed thread, so mark the read incomplete here.
+            self._full_sync_read_failed = True
+            raise
 
     # =========================================================================
     # 7.  Phase 5 — Thread-growth detection (lightweight incremental)
@@ -4346,6 +4385,9 @@ class SlackConnector(BaseConnector):
                 f"reply_count={md.get('reply_count')}, channel_rg_id={rg_id}"
             )
             replies_complete = await self._process_thread(md, ctx, rg_id)
+            if replies_complete is None:
+                # Kept, not read: holding the scan checkpoint keeps the parent in range.
+                return False
             if not replies_complete:
                 self.logger.warning(
                     f"[ThreadGrowth] Thread checkpoint NOT updated for ts={ts}, "

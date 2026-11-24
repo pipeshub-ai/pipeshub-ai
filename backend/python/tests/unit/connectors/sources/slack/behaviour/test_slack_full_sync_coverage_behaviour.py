@@ -379,6 +379,29 @@ class TestUnreadableChannels:
         assert {r.external_record_id for r in store.records.values()
                 if r.external_record_group_id == f"thread_{GENERAL}_{parent}"} == thread
 
+    async def test_a_thread_kept_for_refused_replies_is_read_once_slack_answers(self, workspace, store, checkpoints) -> None:
+        workspace.post(GENERAL, ts_minutes_ago(300), ALICE, "morning")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        parent = ts_minutes_ago(200)
+        workspace.post(GENERAL, parent, BOB, "question?")
+        workspace.reply(GENERAL, parent, ts_minutes_ago(199), ALICE, "answer")
+        group = f"thread_{GENERAL}_{parent}"
+        refused = True
+        workspace.fail("conversations.replies", SlackError("thread_not_found"), times=None, when=lambda p: refused)
+
+        result = await full_sync(connector, store, checkpoints)
+
+        assert result.complete
+        assert checkpoints.value(f"slack_thread/{GENERAL}_{parent}") is None
+        assert checkpoints.value(f"slack_messages/{GENERAL}") is not None
+        assert not any(r.external_record_group_id == group for r in store.records.values())
+
+        refused = False
+        await connector.run_sync()
+
+        assert any(r.external_record_group_id == group for r in store.records.values())
+
     async def test_a_thread_deleted_from_slack_loses_its_links(self, workspace, store, checkpoints) -> None:
         parent, reply = ts_minutes_ago(200), ts_minutes_ago(199)
         workspace.post(GENERAL, parent, BOB, "question?")
@@ -517,6 +540,67 @@ class TestUnreadableChannels:
         assert result.complete
         assert result.unlinked == {gone}
         assert checkpoints.value(f"slack_messages/{GENERAL}") is None
+
+    async def test_a_burst_split_by_a_refused_page_is_kept_beside_its_rewritten_half(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        """A and B were one burst; B is read again on page 1 and page 2 (A) is refused. The
+        stored A+B burst is kept so A stays searchable; B is in it and in its own record
+        until a full sync reads the channel to the end."""
+        parent, a, b, c = (ts_minutes_ago(m) for m in (90, 60, 59, 30))
+        workspace.post(GENERAL, parent, BOB, "question?")
+        workspace.reply(GENERAL, parent, ts_minutes_ago(25), ALICE, "late answer")
+        workspace.post(GENERAL, a, ALICE, "first half")
+        workspace.post(GENERAL, b, BOB, "second half")
+        workspace.post(GENERAL, c, ALICE, "later")
+        gone = ts_minutes_ago(20)
+        workspace.post(SECRET, gone, ALICE, "secret note")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        (a_and_b,) = [r.external_record_id for r in store.records.values()
+                      if r.external_record_group_id == GENERAL and r.start_ts == a and r.end_ts == b]
+        thread = {r.external_record_id for r in store.records.values()
+                  if r.external_record_group_id == f"thread_{GENERAL}_{parent}"}
+        assert len(thread) == 2
+
+        workspace.page_size["conversations.history"] = 2
+        workspace.fail("conversations.history", SlackError("channel_not_found"), times=None,
+                       when=lambda p: p.get("channel") == GENERAL and bool(p.get("cursor")))
+        delete_message(workspace, SECRET, gone)
+        result = await full_sync(connector, store, checkpoints)
+
+        assert result.complete
+        assert result.unlinked == {gone}
+        assert a_and_b in store.records
+        assert b in store.records
+
+    async def test_a_burst_wholly_on_the_read_pages_is_not_kept_beside_its_rewrite(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        """A and B were one burst; now B ends page 1 and A starts page 2, both read, and page
+        3 is refused. Each is rewritten on its own, so the stored A+B burst is obsolete."""
+        older, q, a, b, e = (ts_minutes_ago(m) for m in (150, 80, 60, 59, 10))
+        workspace.post(GENERAL, older, BOB, "long ago")
+        workspace.post(GENERAL, q, BOB, "earlier")
+        workspace.post(GENERAL, a, ALICE, "first half")
+        workspace.post(GENERAL, b, BOB, "second half")
+        workspace.post(GENERAL, e, ALICE, "later")
+        gone = ts_minutes_ago(20)
+        workspace.post(SECRET, gone, ALICE, "secret note")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        (a_and_b,) = [r.external_record_id for r in store.records.values()
+                      if r.external_record_group_id == GENERAL and r.start_ts == a and r.end_ts == b]
+
+        workspace.page_size["conversations.history"] = 2
+        workspace.fail("conversations.history", SlackError("channel_not_found"), times=None,
+                       when=lambda p: p.get("channel") == GENERAL and p.get("cursor") == "page:4")
+        delete_message(workspace, SECRET, gone)
+        result = await full_sync(connector, store, checkpoints)
+
+        assert result.complete
+        assert result.unlinked == {gone, a_and_b}
+        assert {a, b, older} <= set(store.records)
 
     async def test_an_unreadable_channel_with_nothing_stored_is_not_scanned(self, workspace, store, checkpoints) -> None:
         workspace.channels[PARTNERS].update(is_archived=True, is_member=False)
