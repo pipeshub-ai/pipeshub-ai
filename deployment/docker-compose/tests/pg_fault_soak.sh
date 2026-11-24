@@ -9,13 +9,20 @@
 #   SOAK_HOURS=6 OUT=/tmp/soak.jsonl PYTHON=<python with backend/python's dependencies> deployment/docker-compose/tests/pg_fault_soak.sh
 #
 # PG_MAJOR (default 17), PG_IMAGE_<major> (default: built here from ./postgres as pmcompose/postgres:<major>-pmc), MIGRATE_IMAGE (default:
-# built from backend/db/Dockerfile as pmcompose/migrate:pmc), PROJECT (default pgres-soak; containers are named <PROJECT>-<service>-1),
+# built from backend/db/Dockerfile as pmcompose/migrate:pmc), PROJECT (default pgres-soak-<pid>-<random>, printed; containers are named
+# <PROJECT>-<service>-1; a project that already has containers or volumes is refused, as the cleanup removes its volumes),
 # CYCLE_MIN (default 15), KEEP=1 leaves the project up.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DOCKER="${DOCKER:-docker}"
 major="${PG_MAJOR:-17}"
-proj="${PROJECT:-pgres-soak}"
+proj="${PROJECT:-pgres-soak-$$-$RANDOM}"
+# before the cleanup trap: its down -v would remove the volumes of a run that is still going or was kept
+label="label=com.docker.compose.project=$proj"
+if [ -n "$($DOCKER ps -aq --filter "$label")$($DOCKER volume ls -q --filter "$label")" ]; then
+  echo "the Compose project $proj already exists; name another with PROJECT" >&2; exit 1
+fi
+echo "Compose project: $proj"
 out="$(realpath -m "${OUT:?OUT names the JSON lines file}")"
 py="${PYTHON:-python3}"
 work="$(mktemp -d)"

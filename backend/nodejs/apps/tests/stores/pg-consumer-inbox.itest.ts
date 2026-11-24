@@ -193,24 +193,27 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         }
       })();
       try {
-        const producer = new Producer(logger);
-        for (const event of events) {
-          // a send that failed may have committed: send the same event again until one returns, as a retrying producer does
-          for (;;) {
-            try {
-              await producer.publish(topic, { key: 'k', value: event as never });
-              break;
-            } catch {
-              await sleep(50);
+        try {
+          const producer = new Producer(logger);
+          // bounded, so a publish that never recovers fails the test and still stops the cuts and the consumer
+          const deadline = Date.now() + 45_000;
+          for (const event of events) {
+            // a send that failed may have committed: send the same event again until one returns, as a retrying producer does
+            for (;;) {
+              try {
+                await producer.publish(topic, { key: 'k', value: event as never });
+                break;
+              } catch (error) {
+                if (Date.now() > deadline) throw error;
+                await sleep(50);
+              }
             }
           }
+          await sleep(2_000);
+        } finally {
+          cutting = false;
+          await cut;
         }
-        await sleep(2_000);
-      } finally {
-        cutting = false;
-        await cut;
-      }
-      try {
         await until(async () => (await sql('SELECT count(*)::int AS n FROM platform.queue_deliveries WHERE topic = $1', [topic]))[0].n === 0, 60_000);
         const rows = await sql('SELECT title, count(*)::int AS n FROM platform.notifications WHERE org_id = $1 AND type = $2 GROUP BY title', [B, 'inbox.cut']);
         expect(cuts).to.be.greaterThan(0);

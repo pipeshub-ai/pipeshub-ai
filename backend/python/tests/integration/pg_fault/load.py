@@ -116,12 +116,17 @@ class Component:
         self._tasks: list[asyncio.Task] = []
         self.running = False
         self.errors: collections.Counter[str] = collections.Counter()      # what the load saw fail (expected during a fault)
+        self.done: collections.Counter[str] = collections.Counter()        # operations that succeeded, by kind
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         self._tasks.append(org_context.spawn_detached(coro, name=f"pg-fault-{self.name}"))
 
     def _failed(self, e: BaseException) -> None:
         self.errors[type(e).__name__] += 1
+
+    def stalled_since(self, before: collections.Counter[str]) -> list[str]:
+        """The kinds of operation that succeeded before ``before`` was taken and have not succeeded since."""
+        return [kind for kind in before if self.done[kind] <= before[kind]]
 
     async def start(self) -> None:
         self.running = True
@@ -186,6 +191,7 @@ class RecordWrites(Component):
                 with self._ctx():
                     await self.processor.on_new_records([(self._record(rid), [])])
                 self.outcome[rid] = True
+                self.done["write"] += 1
             except Exception as e:
                 self.outcome[rid] = False
                 self._failed(e)
@@ -223,6 +229,7 @@ class InboxConsumer(Component):
     producer does, so the inbox sees duplicates; a handler runs again only after an inbox read or record of that event failed."""
 
     name = "inbox-consumer"
+    SEND_GRACE_S = 30.0
 
     def __init__(self, stack: Stack) -> None:
         super().__init__()
@@ -234,6 +241,7 @@ class InboxConsumer(Component):
         # acknowledges it unrecorded): at least once, as documented in app.services.messaging.inbox.
         self.inbox_failures: collections.Counter[str] = collections.Counter()
         self.event_ids: dict[int, str] = {}
+        self.abandoned: list[int] = []                   # events whose send still failed SEND_GRACE_S after the load stopped
         self.consumer: Any = None
         self.producer = PgMessagingProducer(log, queue=PgQueue())
         self._inbox: tuple[Any, Any] | None = None
@@ -264,6 +272,7 @@ class InboxConsumer(Component):
             async with (await rt.db()).runtime_uow() as tx:       # handlers read the database: a fault fails them too
                 await tx.fetchval("SELECT 1")
             self.runs[m.payload["i"]] += 1
+            self.done["handle"] += 1
             return True
         cfg = RedisStreamsConfig(topics=[self.topic], group_id=self.group, client_id="c1", batch_size=5, block_ms=500, claim_min_idle_ms=0)
         self.consumer = MessagingFactory.create_consumer(log, cfg, broker_type=MessageBrokerType.POSTGRES)
@@ -277,14 +286,21 @@ class InboxConsumer(Component):
             i += 1
             wire = envelope.sign(KEY, self.topic, {"orgId": self.org, "i": i}, OrgContext(self.org, None, "service", "jwt", "r"), event_type="orgUpdated")
             self.event_ids[i] = wire["ctx"]["eventId"]
+            give_up_at = None
             while True:                                # the same event until a send returns: a failed send may have committed
                 try:
                     await self.producer.send_message(self.topic, wire)
                     self.sent[i] = self.sent.get(i, 0) + 1
+                    self.done["send"] += 1
                     break
                 except Exception as e:
                     self._failed(e)
                     self.sent.setdefault(i, 0)
+                    if not self.running:                # stopping: a database that never came back must not hold up the teardown
+                        give_up_at = give_up_at or time.monotonic() + self.SEND_GRACE_S
+                        if time.monotonic() > give_up_at:
+                            self.abandoned.append(i)
+                            return
                     await asyncio.sleep(0.2)
             await asyncio.sleep(0.02)
 
@@ -298,7 +314,8 @@ class InboxConsumer(Component):
         await until(done, seconds)
 
     async def check(self) -> list[str]:
-        bad = [f"event {i} was sent and never handled" for i in self.sent if i not in self.runs]
+        bad = [f"event {i}: no send returned within {self.SEND_GRACE_S:g}s of the load stopping" for i in self.abandoned]
+        bad += [f"event {i} was sent and never handled" for i in self.sent if i not in self.runs and i not in self.abandoned]
         bad += [f"event {i} handled {n} times, {self.inbox_failures[self.event_ids[i]]} inbox read(s) or record(s) failed"
                 for i, n in self.runs.items() if n > 1 + self.inbox_failures[self.event_ids[i]]]
         if (b := await self._open()).get("ready") or b.get("claimed") or b.get("dead"):
@@ -349,6 +366,7 @@ class KgLoad(Component):
         while self.running:
             try:
                 await rnd.choice(OPS)(self.provider, self.org)
+                self.done["change"] += 1
             except Exception as e:
                 self._failed(e)
                 await asyncio.sleep(0.1)
@@ -421,6 +439,7 @@ class ConfigLoad(Component):
             try:
                 if await self.a.set_config(self.key, {"v": self.tried}):
                     self.acked = self.tried
+                    self.done["write"] += 1
                 else:
                     self._failed(RuntimeError("set_config returned False"))
             except Exception as e:
@@ -431,6 +450,7 @@ class ConfigLoad(Component):
         while self.running:
             try:
                 await self.b.get_config(self.key, use_cache=True)
+                self.done["read"] += 1
             except Exception as e:
                 self._failed(e)
             await asyncio.sleep(0.05)
@@ -565,6 +585,7 @@ class Search(Component):
             try:
                 await self.writer.upsert_points("records", [self._point(self.orgs[0], n, "live")])
                 self.acked.add(n)
+                self.done["write"] += 1
             except Exception as e:
                 self._failed(e)
                 await asyncio.sleep(0.1)
@@ -582,6 +603,7 @@ class Search(Component):
                 try:
                     got = await self._ids(org, "seed")
                     self.runs += 1
+                    self.done["search"] += 1
                     if wrong := self._wrong(org, got):
                         self.wrong.append(wrong)
                 except Exception as e:
@@ -717,6 +739,7 @@ class Reads(Component):
                 try:
                     self.wrong += await ask()
                     self.runs += 1
+                    self.done["read"] += 1
                 except Exception as e:
                     self._failed(e)
                     await asyncio.sleep(0.1)
