@@ -35,8 +35,10 @@ class FakeProvider:
         self.check_calls: list[tuple] = []
         self.hint_calls = 0
         self.fail = False
+        self.user_lookups: list[tuple] = []
 
-    async def get_user_by_user_id(self, user_id, *, raise_on_error=False) -> object:
+    async def get_user_by_user_id(self, user_id, *, raise_on_error=False, org_id=None) -> object:
+        self.user_lookups.append((user_id, org_id))
         return {"id": f"key-of-{user_id}", "userId": user_id}
 
     async def _ref_link_rows(self, ids) -> object:
@@ -66,6 +68,12 @@ class TestGraphAccess:
     async def test_readable_linking_record_grants(self) -> None:
         p = FakeProvider([row("d1", "r1")], readable={"r1"})
         assert await access(p, ["d1"]) == RefAccess(frozenset({"d1"}), frozenset({"d1"}))
+
+    async def test_the_caller_is_looked_up_in_their_own_org(self) -> None:
+        # The same userId can exist in two orgs; the lookup must be bound to the org asking.
+        p = FakeProvider([row("d1", "r1")], readable={"r1"})
+        await access(p, ["d1"])
+        assert p.user_lookups == [(USER, "org1")]
 
     async def test_linked_but_unreadable_is_linked_not_readable(self) -> None:
         p = FakeProvider([row("d1", "r1")])

@@ -47,16 +47,20 @@ def caller_node_ensurer() -> Callable[[str, str], Awaitable[bool]] | None:
 
 
 async def get_caller_user(
-    graph_provider: IGraphDBProvider, user_id: str | None, *, raise_on_error: bool = False
+    graph_provider: IGraphDBProvider, user_id: str | None, *, raise_on_error: bool = False, org_id: str | None = None
 ) -> dict[str, Any] | None:
     """The user's graph record, read once more after the caller's own record is written when it is missing.
 
     A brand-new account calls before the userAdded event that writes its graph user has been consumed. Only the user
     the request's verified token names, in that token's org, is written, from their live identity record; anyone
     else, a service or job, or an account that is deleted or disabled, stays None.
+
+    ``org_id``, when the caller knows its organisation, binds both reads to it.
     """
     # Passed only when asked for, so each call site keeps the call it made before.
     read = {"raise_on_error": True} if raise_on_error else {}
+    if org_id is not None:
+        read.update(org_id=org_id)
     user = await graph_provider.get_user_by_user_id(user_id, **read)
     if user or not user_id:
         return user

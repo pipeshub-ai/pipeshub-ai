@@ -252,7 +252,7 @@ async def admit_caller_project_collections(
     if not candidates or not caller_user_id:
         return []
     try:
-        caller = await get_caller_user(graph_provider, caller_user_id)
+        caller = await get_caller_user(graph_provider, caller_user_id, org_id=org_id)
         caller_key = (caller or {}).get("_key") or (caller or {}).get("id")
         if not caller_key:
             return []

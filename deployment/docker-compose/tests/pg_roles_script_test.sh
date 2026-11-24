@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # postgres/pg-roles.sh with a stand-in psql and verifier script (no Docker): if any one of the nine verifiers cannot be computed, or comes out
 # empty, the script fails before it sends anything to the server, so no role is created or changed with an empty password; with all nine it
-# sends them, and the verifier file is written last and only then.
+# sends them, and the verifier file is written last and only then. The extra vetted-owner list is validated the same way.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
@@ -46,4 +46,30 @@ check "with PG_MONITOR_PASSWORD the monitoring login's verifier is sent too" "$c
 # the postgres service, where pg-roles.sh runs, receives the optional password (Compose passes a container only what its environment lists)
 pg_env="$(awk '/^  postgres:$/{g=1; next} g && /^  [a-z]/{exit} g' docker-compose.yml)"
 check "the postgres service gets PG_MONITOR_PASSWORD" "$(grep -c -- '- PG_MONITOR_PASSWORD=${PG_MONITOR_PASSWORD:-}' <<<"$pg_env")" 1
+
+# The vetted owners of the extra migration modules (extra-vetted-schemas): the names reach the server as one variable, and a missing file or a
+# bad name stops the script before anything is sent, so a registered module is never left without its owner role.
+printf '# comment\nalpha\n  beta_2   # trailing comment\n\n' >"$work/extra-ok"
+run env "PG_EXTRA_VETTED_FILE=$work/extra-ok"
+check "the schemas of the extra file are sent as one variable" "$code $(grep -c -- '-v extra=alpha,beta_2 ' "$work/psql.log")" "0 1"
+run env
+shipped="$(sed -e 's/#.*//' -e 's/[[:space:]]//g' postgres/extra-vetted-schemas | grep -v '^$' | paste -sd, - || true)"
+check "the shipped extra-vetted-schemas file is the one the script reads by default" "$(grep -o -- '-v extra=[^ ]*' "$work/psql.log")" "-v extra=$shipped"
+for bad in 'Bad' '1x' 'a;b' "a'b" 'a-b' 'x y' $'a\ta b'; do
+  printf '%s\n' "$bad" >"$work/extra-bad"
+  run env "PG_EXTRA_VETTED_FILE=$work/extra-bad"
+  check "the name '$bad' stops the script" "$code" 1
+  check "and nothing reached the server for '$bad'" "$(wc -c <"$work/psql.log" | tr -d ' ')" 0
+done
+printf 'alpha\nbeta\nalpha\n' >"$work/extra-dup"
+run env "PG_EXTRA_VETTED_FILE=$work/extra-dup"
+check "a name listed twice stops the script" "$code" 1
+check "and nothing reached the server for the duplicate" "$(wc -c <"$work/psql.log" | tr -d ' ')" 0
+check "and the message names the duplicate" "$(grep -c 'alpha is listed twice' "$work/out.txt")" 1
+printf '  alpha  \n\tbeta\t# c\r\n' >"$work/extra-trim"
+run env "PG_EXTRA_VETTED_FILE=$work/extra-trim"
+check "spaces and tabs around a name are trimmed" "$code $(grep -c -- '-v extra=alpha,beta ' "$work/psql.log")" "0 1"
+run env "PG_EXTRA_VETTED_FILE=$work/no-such-file"
+check "a missing extra file stops the script" "$code" 1
+check "and nothing reached the server for the missing file" "$(wc -c <"$work/psql.log" | tr -d ' ')" 0
 exit $fail

@@ -6287,9 +6287,12 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_users(self.org_id, active=True, raise_on_error=raise_on_error)
 
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> User | None:
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None
+    ) -> User | None:
+        scope = {} if org_id is None else {"org_id": org_id}
         async with self.data_store_provider.transaction() as tx_store:
-            raw = await tx_store.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
+            raw = await tx_store.get_user_by_user_id(user_id, raise_on_error=raise_on_error, **scope)
         if not raw:
             return None
         return User.from_arango_user(raw) if isinstance(raw, dict) else raw

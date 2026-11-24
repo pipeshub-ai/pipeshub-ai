@@ -41,7 +41,7 @@ def _graph(records: dict, owned: set, users: dict, readers: frozenset = frozense
         return {"role": "READER"} if (from_id, to_id) in readers else None
 
     graph.get_edge = AsyncMock(side_effect=edge)
-    graph.get_user_by_user_id = AsyncMock(side_effect=lambda uid: users.get(uid))
+    graph.get_user_by_user_id = AsyncMock(side_effect=lambda uid, **_: users.get(uid))
     return graph
 
 

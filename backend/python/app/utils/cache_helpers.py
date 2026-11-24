@@ -55,7 +55,7 @@ async def get_cached_user_info(
     # Use asyncio.gather for parallel fetching
     try:
         user_info, org_info = await asyncio.gather(
-            graph_provider.get_user_by_user_id(user_id),
+            graph_provider.get_user_by_user_id(user_id, org_id=org_id),
             graph_provider.get_document(org_id, CollectionNames.ORGS.value),
             return_exceptions=True
         )

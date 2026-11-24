@@ -20,6 +20,7 @@ from app.models.entities import Record
 from app.schema.arango.documents import record_schema
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 from app.services.graph_db.common.utils import INTERNAL_RECORD_FIELDS, api_record
+from tests.support.edition_defaults import record_diagnostic_exemptions_extra
 from tests.unit.models.test_entities import _record_kwargs
 
 RECORDS = CollectionNames.RECORDS.value
@@ -217,10 +218,11 @@ def test_only_the_listed_files_write_the_fields() -> None:
 def test_no_node_code_names_the_fields_yet() -> None:
     names = re.compile(r"\b(?:firstQueuedAt|failedAt|indexingAttempts|pageCount)\b")
     allowed = {"internal-record-fields.ts"}
+    exempt = record_diagnostic_exemptions_extra()
     offenders = {
         str(path.relative_to(_NODE_SRC)): [n for n, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1) if names.search(line)]
         for path in _NODE_SRC.rglob("*.ts")
-        if path.name not in allowed
+        if path.name not in allowed and path.relative_to(_NODE_SRC).as_posix() not in exempt
     }
     offenders = {name: lines for name, lines in offenders.items() if lines}
     assert offenders == {}, "these files name a record processing diagnostic: " + repr(offenders)

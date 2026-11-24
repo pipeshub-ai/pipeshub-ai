@@ -19577,6 +19577,15 @@ components:
           type: string
           description: Current application version for metrics tagging.
           example: "1.0.0"
+        telemetryEnabled:
+          type: boolean
+          readOnly: true
+          description: |
+            Whether this deployment allows telemetry at all (the `TELEMETRY_COLLECTION_FLAG`
+            environment variable, or the build's default when it is unset). Sent by the
+            `GET` route only. While it is `false` nothing is collected whatever the switch
+            says, and `enableMetricCollection` is returned as `"false"`.
+          example: true
       example:
         enableMetricCollection: "true"
         pushIntervalMs: "60000"
@@ -76091,9 +76100,12 @@ paths:
         - Server URL configuration
         - Instance identification
 
-        The stored object is returned decrypted and as it is: every value is a string (the
-        write routes store the switch and the interval in their string form), and `{}` is
-        returned when nothing has been stored. The query string is not read.
+        The stored object is returned decrypted: every stored value is a string (the write
+        routes store the switch and the interval in their string form), and only
+        `telemetryEnabled` is added, a boolean saying whether the deployment allows telemetry.
+        Without stored values the body is just `{ "telemetryEnabled": ... }`, plus
+        `"enableMetricCollection": "false"` while the deployment does not allow telemetry. The
+        query string is not read.
 
         **Admin Access Required:** This endpoint requires administrator privileges.
       operationId: getMetricsCollection
@@ -76113,6 +76125,7 @@ paths:
                 serverUrl: "https://metrics-collector.example.com/collect-metrics"
                 apiKey: "54523f794e23d96e"
                 appVersion: "1.0.0"
+                telemetryEnabled: true
         '400':
           $ref: '#/components/responses/XssRejected'
         '401':

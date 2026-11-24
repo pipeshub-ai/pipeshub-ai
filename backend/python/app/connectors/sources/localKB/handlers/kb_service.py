@@ -503,11 +503,17 @@ class KnowledgeBaseService:
         self,
         user_ids: List[str],
         requester_id: str,
+        org_id: Optional[str] = None,
     ) -> tuple[Optional[List[str]], Optional[Dict]]:
-        """Resolve Mongo userIds to graph user _keys for KB permission graph ops."""
+        """Resolve Mongo userIds to graph user _keys for KB permission graph ops.
+
+        ``org_id``, when the caller knows it, binds the requester lookup to that organisation;
+        otherwise the organisation is the one the requester's user belongs to.
+        """
         if not user_ids:
             return [], None
-        requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
+        scope = {} if org_id is None else {"org_id": org_id}
+        requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id, **scope)
         org_id = requester.get("orgId") if requester else None
         try:
             mapping = await self.graph_provider.get_graph_user_keys_by_mongo_user_ids(
@@ -531,11 +537,13 @@ class KnowledgeBaseService:
         self,
         team_ids: list[str],
         requester_id: str,
+        org_id: Optional[str] = None,
     ) -> Optional[dict]:
         """Error dict unless every team exists in the requester's org."""
         if not team_ids:
             return None
-        requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id)
+        scope = {} if org_id is None else {"org_id": org_id}
+        requester = await self.graph_provider.get_user_by_user_id(user_id=requester_id, **scope)
         org_id = requester.get("orgId") if requester else None
         teams = await self.graph_provider.get_nodes_by_field_in(
             CollectionNames.TEAMS.value, "id", team_ids, ["id", "orgId"]
@@ -663,7 +671,7 @@ class KnowledgeBaseService:
                 return {"success": False, "code": 400, "reason": reason}
 
             # Step 1: Look up user
-            user = await get_caller_user(self.graph_provider, user_id)
+            user = await get_caller_user(self.graph_provider, user_id, org_id=org_id)
             if not user:
                 self.logger.warning(f"⚠️ User not found: {user_id}")
                 return {
@@ -679,7 +687,7 @@ class KnowledgeBaseService:
             created_by = user_id
             owner_key = requester_key
             if owner_user_id and owner_user_id != user_id:
-                owner = await self.graph_provider.get_user_by_user_id(user_id=owner_user_id)
+                owner = await self.graph_provider.get_user_by_user_id(user_id=owner_user_id, org_id=org_id)
                 if not owner:
                     self.logger.warning(f"⚠️ Owner not found in org {org_id}: {owner_user_id}")
                     return {
@@ -690,7 +698,7 @@ class KnowledgeBaseService:
                 # Same-org check goes through the existing grant resolver so
                 # this file does not grow another direct orgId payload read.
                 _, owner_err = await self._resolve_user_ids_to_graph_keys(
-                    [owner_user_id], user_id,
+                    [owner_user_id], user_id, org_id=org_id,
                 )
                 if owner_err:
                     self.logger.warning(f"⚠️ Owner not found in org {org_id}: {owner_user_id}")
@@ -712,7 +720,7 @@ class KnowledgeBaseService:
 
             if extra_writers or extra_readers or extra_teams:
                 grant_error = await self._validate_hidden_member_grants(
-                    created_by, extra_writers, extra_readers, extra_teams,
+                    created_by, extra_writers, extra_readers, extra_teams, org_id=org_id,
                 )
                 if grant_error:
                     return grant_error
@@ -863,16 +871,17 @@ class KnowledgeBaseService:
         writer_user_ids: list[str],
         reader_user_ids: list[str],
         team_ids: list[str],
+        org_id: str | None = None,
     ) -> dict | None:
         """Refuse create before the write when a grant principal is gone."""
         grant_users = list(dict.fromkeys([*writer_user_ids, *reader_user_ids]))
         if grant_users:
             _, resolve_err = await self._resolve_user_ids_to_graph_keys(
-                grant_users, owner_user_id,
+                grant_users, owner_user_id, org_id=org_id,
             )
             if resolve_err:
                 return resolve_err
-        return await self._teams_not_in_requester_org(team_ids, owner_user_id)
+        return await self._teams_not_in_requester_org(team_ids, owner_user_id, org_id=org_id)
 
     async def _share_hidden_kb_as_owner(
         self,
@@ -953,7 +962,7 @@ class KnowledgeBaseService:
             self.logger.info(f" Listing knowledge bases for user {user_id}")
 
             self.logger.info(f"Looking up user by user_id: {user_id}")
-            user = await get_caller_user(self.graph_provider, user_id)
+            user = await get_caller_user(self.graph_provider, user_id, org_id=org_id)
 
             if not user:
                 self.logger.warning(f"⚠️ User not found for user_id: {user_id}")

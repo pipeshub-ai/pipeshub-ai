@@ -229,14 +229,14 @@ class TestSyncFailuresRaise:
         with patch.object(event_service.EventService, "_handle_start_sync", AsyncMock(side_effect=NOT_FOUND)):
             handler = await _sync_handler()
             with pytest.raises(ApiCallError):
-                await handler(StreamMessage(eventType="jira.start", payload={"connectorId": "c1"}))
+                await handler(StreamMessage(eventType="jira.start", payload={"connectorId": "c1", "orgId": ORG}))
 
     async def test_a_sync_handler_asking_for_redelivery_still_gets_it(self) -> None:
         from app.connectors.services import event_service
 
         with patch.object(event_service.EventService, "_handle_start_sync", AsyncMock(return_value=False)):
             handler = await _sync_handler()
-            assert await handler(StreamMessage(eventType="jira.start", payload={"connectorId": "c1"})) is False
+            assert await handler(StreamMessage(eventType="jira.start", payload={"connectorId": "c1", "orgId": ORG})) is False
 
 
 # --- AI-config wrapper + AiConfigEventService ----------------------------------------------------------------------

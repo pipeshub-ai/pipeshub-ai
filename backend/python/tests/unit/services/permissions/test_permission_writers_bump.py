@@ -17,8 +17,11 @@ import fakeredis
 from app.services.cache import invalidation_hooks as hooks
 from app.services.messaging.kafka.handlers import entity as entity_events
 from app.services.permissions.cache import ViewerScopeCache
+from tests.support.edition_defaults import graph_provider_dirs_extra
 
 APP = Path(__file__).resolve().parents[4] / "app"
+# The graph providers hold the edge writers themselves; the guard is about the code outside them.
+PROVIDER_DIRS = ("services/graph_db/", *graph_provider_dirs_extra())
 BUMPS = {"notify_principals_changed", "notify_connector_permissions_changed", "notify_connector_sync_completed",
          "notify_kb_records_changed"}
 # The processor's own helpers that call `notify_connector_permissions_changed` (checked by the test of `_access_changed`),
@@ -196,7 +199,7 @@ def _flagged_delete_functions() -> dict[str, bool]:
     flagged: dict[str, bool] = {}
     for path in APP.rglob("*.py"):
         rel = str(path.relative_to(APP))
-        if rel.startswith("services/graph_db/"):
+        if rel.startswith(PROVIDER_DIRS):
             continue
         source = path.read_text(encoding="utf-8-sig")
         if not any(name in source for name in (*DELETE_CALLS, *COMPOUND_DELETES, "delete_nodes_and_edges")):
@@ -236,7 +239,7 @@ def _flagged_create_functions() -> dict[str, bool]:
     flagged: dict[str, bool] = {}
     for path in APP.rglob("*.py"):
         rel = str(path.relative_to(APP))
-        if rel.startswith("services/graph_db/") or not any(name in (source := path.read_text(encoding="utf-8-sig")) for name in CREATE_CALLS):
+        if rel.startswith(PROVIDER_DIRS) or not any(name in (source := path.read_text(encoding="utf-8-sig")) for name in CREATE_CALLS):
             continue
         for fn in _enclosing_functions(ast.parse(source)):
             for call in (n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):

@@ -193,7 +193,7 @@ class ArtifactGalleryService:
         return detail.versions
 
     async def _resolve_user_key(self, actor: Actor) -> str:
-        user = await get_caller_user(self._graph, actor.user_id)
+        user = await get_caller_user(self._graph, actor.user_id, org_id=actor.org_id)
         if not user:
             raise ArtifactNotFoundError("User not found")
         user_key = user.get("_key") or user.get("id")

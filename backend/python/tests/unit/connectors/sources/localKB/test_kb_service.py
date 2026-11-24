@@ -282,6 +282,32 @@ class TestCreateKnowledgeBase:
         assert service.create_kb_permissions.await_args_list[2].args[3] == ["team-1"]
 
     @pytest.mark.asyncio
+    async def test_every_user_lookup_of_a_hidden_create_is_bound_to_the_org(self, service) -> None:
+        """Owner, grants and teams are all resolved in the organisation the KB is created in."""
+        users = {
+            "editor-1": {"id": "ek1", "_key": "ek1", "fullName": "Ed", "orgId": "org1"},
+            "owner-1": {"id": "ok1", "_key": "ok1", "fullName": "Ow", "orgId": "org1"},
+        }
+        service.graph_provider.get_user_by_user_id = AsyncMock(side_effect=lambda user_id, **_: users.get(user_id))
+        service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(side_effect=_mock_mongo_to_graph)
+        service.graph_provider.get_nodes_by_field_in = AsyncMock(side_effect=_teams_in_org({"org1": ["team-1"]}))
+        service.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
+        service.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        service.graph_provider.batch_create_edges = AsyncMock(return_value=True)
+        service.graph_provider.commit_transaction = AsyncMock()
+        service.create_kb_permissions = AsyncMock(return_value={"success": True, "grantedCount": 1})
+
+        result = await service.create_knowledge_base(
+            "editor-1", "org1", "project:x", is_hidden=True, owner_user_id="owner-1",
+            writer_user_ids=["w-1"], reader_user_ids=["r-1"], team_ids=["team-1"],
+        )
+
+        assert result["success"] is True
+        lookups = service.graph_provider.get_user_by_user_id.await_args_list
+        assert len(lookups) >= 4  # requester, owner, and the grant and team validation
+        assert [call.kwargs.get("org_id") for call in lookups] == ["org1"] * len(lookups)
+
+    @pytest.mark.asyncio
     async def test_hidden_create_does_not_demote_the_requester_via_reader_grants(
         self, service,
     ) -> None:

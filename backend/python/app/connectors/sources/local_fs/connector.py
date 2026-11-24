@@ -1364,7 +1364,9 @@ class LocalFsConnector(BaseConnector):
     ) -> tuple[User, str]:
         owner_id = self.created_by
 
-        owner = await self.data_entities_processor.get_user_by_user_id(user_id=owner_id)
+        owner = await self.data_entities_processor.get_user_by_user_id(
+            user_id=owner_id, org_id=self.data_entities_processor.org_id
+        )
         if not owner:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,

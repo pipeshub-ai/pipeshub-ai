@@ -82,9 +82,18 @@ class TestChecks:
 
     @staticmethod
     def _admin(described: list[Any]) -> MagicMock:
+        """Answers one described response per call, and fails a call for two or more groups the way aiokafka 0.14 does."""
         admin = MagicMock()
         admin.start, admin.close = AsyncMock(), AsyncMock()
-        admin.describe_consumer_groups = AsyncMock(return_value=described)
+        calls = iter(range(len(described) * 100))
+
+        async def describe(groups: list[str]) -> list[Any]:
+            if len(groups) > 1:
+                raise RuntimeError("Buffer underrun decoding string")
+            # one response per call; a list that holds fewer than the groups asked for repeats its last response
+            return [described[min(next(calls), len(described) - 1)]]
+
+        admin.describe_consumer_groups = AsyncMock(side_effect=describe)
         return admin
 
     @pytest.mark.asyncio
@@ -97,6 +106,32 @@ class TestChecks:
         ])
 
         assert await m.kafka_untagged(lambda: admin, ["g1", "g2"]) == ["indexing", "older-pod-1"]
+        admin.close.assert_awaited_once()
+        assert [c.args[0] for c in admin.describe_consumer_groups.await_args_list] == [["g1"], ["g2"]]
+
+    @pytest.mark.asyncio
+    async def test_kafka_one_failing_group_among_several_fails_the_check(self) -> None:
+        """Any failure still holds the readers: a later group's error is not lost behind a clean first one."""
+        admin = self._admin([self._described(1, (0, "g1", [])), self._described(1, (15, "g2", []))])
+        with pytest.raises(RuntimeError, match="g2"):
+            await m.kafka_untagged(lambda: admin, ["g1", "g2"])
+        admin.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_kafka_a_describe_call_that_raises_for_a_later_group_fails_the_check(self) -> None:
+        """aiokafka 0.14 reports a broken describe by raising, not by an error code: no group's answer may stand in for it."""
+        admin = MagicMock()
+        admin.start, admin.close = AsyncMock(), AsyncMock()
+        first = self._described(1, (0, "g1", ["indexing"]))
+
+        async def describe(groups: list[str]) -> list[Any]:
+            if groups == ["g2"]:
+                raise ConnectionError("connection closed")
+            return [first]
+
+        admin.describe_consumer_groups = AsyncMock(side_effect=describe)
+        with pytest.raises(ConnectionError):
+            await m.kafka_untagged(lambda: admin, ["g1", "g2"])
         admin.close.assert_awaited_once()
 
     @pytest.mark.asyncio

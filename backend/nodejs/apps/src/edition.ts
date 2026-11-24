@@ -48,3 +48,6 @@ export const EXTRA_AI_PUBLIC_CONFIG_KEYS: readonly string[] = [];
 export function checkStartup(): void {
   return;
 }
+
+// The admin's Data Collection switch before an admin has set it.
+export const METRICS_CONSENT_DEFAULT = true;

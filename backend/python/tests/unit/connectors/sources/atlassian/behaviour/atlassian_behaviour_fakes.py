@@ -163,7 +163,7 @@ class FakeRecordsDb:
         self.fail_group_listing = False
         self.fail_note_kept_group = False
 
-    async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
+    async def get_user_by_user_id(self, user_id: str, *, org_id: str | None = None) -> Optional[SimpleNamespace]:
         if not self.creator_email:
             return None
         return SimpleNamespace(email=self.creator_email, id=user_id)

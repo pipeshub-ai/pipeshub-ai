@@ -122,6 +122,29 @@ WRITERS: dict[str, tuple[str, str]] = {
     "stamp_external_org_parents": (NO_PROJECTION, "parentOrgId of an external organization: kg holds that an organization exists, no field of its document"),
 }
 
+#: Writers a build adds on top of ``WRITERS``; empty unless the build calls :func:`register_writers`. ``guard.check`` accepts a method found in either.
+EXTRA_WRITERS: dict[str, tuple[str, str]] = {}
+
+
+def register_writers(mapping: dict[str, tuple[str, str]]) -> None:
+    """Classify provider methods that a build adds.
+
+    Refuses, and adds nothing: a name already in ``WRITERS`` or in ``EXTRA_WRITERS``, an empty or non-string name, and a classification that is not
+    ``(PROJECTED, "")`` or ``(NO_PROJECTION, <reason>)``. The mapping is process-wide state: register in every process that writes.
+    """
+    for name, entry in mapping.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"a writer name must be a non-empty string, got {name!r}")
+        if not isinstance(entry, tuple) or len(entry) != 2 or not all(isinstance(x, str) for x in entry):
+            raise ValueError(f"{name}: a classification is a (kind, reason) pair of strings")
+        kind, reason = entry
+        if kind not in (PROJECTED, NO_PROJECTION) or bool(reason) != (kind == NO_PROJECTION):
+            raise ValueError(f"{name}: kind must be {PROJECTED!r} with no reason or {NO_PROJECTION!r} with one")
+    taken = sorted(n for n in mapping if n in WRITERS or n in EXTRA_WRITERS)
+    if taken:
+        raise ValueError(f"already classified: {', '.join(taken)}")
+    EXTRA_WRITERS.update(mapping)
+
 
 class UnclassifiedProviderWrite(RuntimeError):
     """A provider method wrote graph.nodes or graph.edges and the projection registry does not list it."""

@@ -225,7 +225,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> Optional[User]:
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, org_id: str | None = None
+    ) -> Optional[User]:
+        """With ``org_id``, only a user of that organisation."""
         pass
 
     @abstractmethod

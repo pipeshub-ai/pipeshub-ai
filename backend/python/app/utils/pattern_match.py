@@ -2285,7 +2285,7 @@ async def merge_pattern_match_results(
     try:
         scopes: list[SelectionScope] = []
         if has_selection(filters) or allowed_filters(filters):
-            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            user = await graph_provider.get_user_by_user_id(user_id=user_id, org_id=org_id)
             user_key = (user.get("_key") or user.get("id")) if user else None
             if not user_key:
                 return []

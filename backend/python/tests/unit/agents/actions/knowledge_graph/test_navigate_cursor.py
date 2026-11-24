@@ -220,7 +220,9 @@ def _request(user_id: str = "u1") -> MagicMock:
     user = {"userId": user_id, "orgId": "o1"}
     request.state.user = MagicMock()
     request.state.user.get = lambda key, default=None: user.get(key, default)
-    request.app.container.config_service = MagicMock(return_value=_config())
+    config = _config()
+    config.get_raw_service = MagicMock(return_value=config)
+    request.app.container.config_service = MagicMock(return_value=config)
     return request
 
 

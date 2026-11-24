@@ -132,6 +132,12 @@ class TestGalleryList:
         assert page.total_count == 3
 
 
+class TestGalleryUserLookup:
+    async def test_the_user_is_looked_up_in_the_actors_org(self, graph) -> None:
+        assert await _service(graph)._resolve_user_key(_actor()) == "user-key-1"
+        graph.get_user_by_user_id.assert_awaited_once_with("auth-user-1", org_id="org-1")
+
+
 class TestGalleryGet:
     @pytest.mark.asyncio
     async def test_happy_path(self, graph):

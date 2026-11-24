@@ -11,9 +11,23 @@ user="${POSTGRES_USER:-postgres}"; db="${POSTGRES_DB:-pipeshub}"
 auth_dir="${PG_AUTH_DIR:-/pgbouncer-auth}"
 verifier() { perl "${PG_SCRAM_VERIFIER:-/usr/local/bin/scram-verifier.pl}" "$1"; }
 
+# Vetted owners of the extra migration modules the build registers (backend/python/app/edition.py, EXTRA_VETTED_SCHEMAS): one schema
+# name per line in extra-vetted-schemas next to this script, '#' starts a comment. A missing file, a bad name or a name listed twice stops the script before
+# anything is sent to the server, so a module is never left without its owner role.
+extra_file="${PG_EXTRA_VETTED_FILE:-$(dirname "$0")/extra-vetted-schemas}"
+[ -f "$extra_file" ] || { echo "pg-roles: $extra_file is missing; no role was created or changed" >&2; exit 1; }
+extra=""
+while IFS= read -r line || [ -n "$line" ]; do
+  line="${line%%#*}"; line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"     # trim the ends only
+  [ -n "$line" ] || continue
+  [[ "$line" =~ ^[a-z][a-z0-9_]*$ ]] || { echo "pg-roles: not a schema name in $extra_file: $line; no role was created or changed" >&2; exit 1; }
+  case ",$extra," in *",$line,"*) echo "pg-roles: $line is listed twice in $extra_file; no role was created or changed" >&2; exit 1 ;; esac
+  extra+="${extra:+,}$line"
+done < "$extra_file"
+
 # Each verifier is computed on its own and checked, before anything is sent to the server: one that fails or comes out empty stops the
 # whole script, so no role is ever created with an empty password.
-args=(-v db="$db")
+args=(-v db="$db" -v extra="$extra")
 for entry in node:PG_NODE_PASSWORD conn:PG_CONNECTORS_PASSWORD idx:PG_INDEXING_PASSWORD qry:PG_QUERY_PASSWORD jobs:PG_JOBS_PASSWORD \
              mig:PG_MIGRATE_PASSWORD bak:PG_BACKUP_PASSWORD kv:PG_KV_PASSWORD; do
   name="${entry%%:*}"; var="${entry#*:}"
@@ -49,6 +63,9 @@ DO $$ DECLARE r text; BEGIN
     CREATE ROLE pipeshub_ro LOGIN;   -- no password: unusable until an operator sets one
   END IF;
 END $$;
+-- the vetted owners of the registered extra modules (:'extra' is a comma list, possibly empty)
+SELECT format('CREATE ROLE %I NOLOGIN', v.n) FROM (SELECT format('pipeshub_vetted_%s', s) AS n FROM unnest(string_to_array(:'extra', ',')) AS s
+  WHERE s <> '') AS v WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v.n) \gexec
 -- one login per service, a member of its own role only; it holds no privileges until the unit of work switches role, which the
 -- PgBouncer reset undoes between clients
 SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', r.n, r.v)
@@ -69,6 +86,8 @@ GRANT pipeshub_kv TO pipeshub_kv_login WITH INHERIT FALSE, SET TRUE;
 GRANT pipeshub_vetted_kernel, pipeshub_vetted_identity, pipeshub_vetted_platform, pipeshub_vetted_retrieval,
       pipeshub_vetted_graph, pipeshub_vetted_kg TO pipeshub_owner
   WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
+SELECT format('GRANT %I TO pipeshub_owner WITH ADMIN TRUE, INHERIT FALSE, SET FALSE', format('pipeshub_vetted_%s', s))
+  FROM unnest(string_to_array(:'extra', ',')) AS s WHERE s <> '' \gexec
 -- the monitoring login: pg_monitor only (statistics, settings, monitoring functions), no privilege on anything of ours
 \if :{?mon}
 SELECT format('CREATE ROLE pipeshub_monitor LOGIN PASSWORD %L', :'mon')

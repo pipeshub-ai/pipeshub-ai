@@ -596,7 +596,7 @@ async def _resolve_service_account_binding(
     # raise_on_error, so a database that is down surfaces as a failure rather
     # than as "no such account" — an administrator told the wrong one of those
     # goes looking for a problem that is not there.
-    account = await graph_provider.get_user_by_user_id(wanted, raise_on_error=True)
+    account = await graph_provider.get_user_by_user_id(wanted, raise_on_error=True, org_id=caller_org_id)
     caller_org = str(caller_org_id or "").strip()
     account_org = str((account or {}).get("orgId") or "").strip()
 
@@ -5171,7 +5171,7 @@ async def get_assistant_agent(
 
     try:
         # Get active connector instances accessible to the user
-        user = user_doc or await get_caller_user(graph_provider, user_id)
+        user = user_doc or await get_caller_user(graph_provider, user_id, org_id=org_id)
         if not user:
             logger.error(f"User not found: {user_id}")
             return {}, toolset_auth_by_instance

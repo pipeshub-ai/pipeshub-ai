@@ -523,7 +523,7 @@ async def test_a_user_lookup_that_finds_the_memory_pool_spent_is_busy_not_an_unk
 
     assert (result.success, result.errorCode) == (False, 503)
     assert result.error != "User not found"
-    assert provider.get_user_by_user_id.call_args.kwargs == {"raise_on_error": True}
+    assert provider.get_user_by_user_id.call_args.kwargs == {"raise_on_error": True, "org_id": "o1"}
     provider.get_knowledge_hub_root_nodes_v2.assert_not_called()
 
 

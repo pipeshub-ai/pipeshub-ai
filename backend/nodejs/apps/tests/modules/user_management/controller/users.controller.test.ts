@@ -4065,6 +4065,40 @@ describe('UserController', () => {
       expect(res.json.calledOnce).to.be.true;
     });
 
+    for (const [hide, shown] of [['true', false], ['false', true]] as const) {
+      it(`graph list ${shown ? 'keeps' : 'leaves out'} each email when HIDE_EMAIL is ${hide}`, async () => {
+        const saved = process.env.HIDE_EMAIL;
+        process.env.HIDE_EMAIL = hide;
+        try {
+          req.user = {
+            _id: '507f1f77bcf86cd799439011',
+            userId: '507f1f77bcf86cd799439011',
+            orgId: '507f1f77bcf86cd799439012',
+          };
+          req.query = {};
+          req.context = { requestId: 'test-request' };
+          const { AIServiceCommand } = require('../../../../src/libs/commands/ai_service/ai.service.command');
+          sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+            statusCode: 200,
+            data: {
+              users: [{ _id: 'u1', fullName: 'Ada', email: 'ada@test.com' }],
+              pagination: { page: 1 },
+            },
+          });
+
+          await controller.listUsers(req, res, next);
+
+          const body = res.json.firstCall.args[0];
+          expect(body.pagination).to.deep.equal({ page: 1 });
+          expect(body.users[0].fullName).to.equal('Ada');
+          expect(Object.prototype.hasOwnProperty.call(body.users[0], 'email')).to.equal(shown);
+        } finally {
+          if (saved === undefined) delete process.env.HIDE_EMAIL;
+          else process.env.HIDE_EMAIL = saved;
+        }
+      });
+    }
+
     it('should call next when AI service returns non-200', async () => {
       req.user = {
         _id: '507f1f77bcf86cd799439011',

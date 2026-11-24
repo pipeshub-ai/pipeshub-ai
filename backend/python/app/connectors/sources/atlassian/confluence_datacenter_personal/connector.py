@@ -447,7 +447,7 @@ class ConfluenceDataCenterPersonalConnector(ConfluenceDataCenterRemovalMixin, Ba
             if not self.creator_email and self.created_by:
                 try:
                     creator = await self.data_entities_processor.get_user_by_user_id(
-                        self.created_by
+                        self.created_by, org_id=org_id
                     )
                     if creator and getattr(creator, "email", None):
                         self.creator_email = creator.email

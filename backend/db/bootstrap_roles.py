@@ -1,4 +1,5 @@
 """Create the role layout the migrations and the catalog check expect: ``python -m db.bootstrap_roles [--vetted a,b]``.
+The vetted owners of the extra migration modules the edition file registers (``EXTRA_VETTED_SCHEMAS``) are created as well; ``--vetted`` adds more.
 
 Idempotent and additive: a missing role is created, a missing membership is granted, an existing role is never
 altered (passwords included). Needs an administrative credential (``PG_ADMIN_URL``: CREATEROLE, and database
@@ -19,6 +20,8 @@ from collections.abc import Iterable, Mapping
 
 import psycopg
 from psycopg import sql
+
+from db.locations import extra_vetted_schemas
 
 SERVICES = ("node", "connectors", "indexing", "query", "kv")   # kv: key-value table only, for the processes that just read configuration
 PASSWORD_VARS = {"pipeshub_migrate": "PG_MIGRATE_PASSWORD", "pipeshub_jobs": "PG_JOBS_PASSWORD",
@@ -62,9 +65,12 @@ def bootstrap(conn: psycopg.Connection, vetted_schemas: Iterable[str] = (), pass
 
     ``allow_no_password=False`` (what the command line passes unless waived) refuses to create a password-less login."""
     passwords = passwords or {}
-    vetted = [f"pipeshub_vetted_{s}" for s in dict.fromkeys([*SHIPPED_VETTED, *vetted_schemas])]   # the shipped schemas' functions need theirs
-    if bad := [s for s in vetted_schemas if not _SCHEMA.match(s)]:
+    if isinstance(vetted_schemas, str):
+        raise TypeError("vetted_schemas must be a list of schema names, not a string")
+    registered = extra_vetted_schemas()          # EXTRA_VETTED_SCHEMAS of the edition file: its registered modules need theirs, with no flag
+    if bad := [s for s in [*vetted_schemas, *registered] if not (isinstance(s, str) and _SCHEMA.fullmatch(s))]:
         raise ValueError(f"not a schema name: {bad}")
+    vetted = [f"pipeshub_vetted_{s}" for s in dict.fromkeys([*SHIPPED_VETTED, *registered, *vetted_schemas])]   # the shipped schemas' functions need theirs
     existing = {r[0] for r in conn.execute("SELECT rolname FROM pg_roles")}
     if not allow_no_password and (bare := [v for r, v in PASSWORD_VARS.items() if r not in existing and not passwords.get(r)]):
         raise MissingPassword(
@@ -105,7 +111,7 @@ def bootstrap(conn: psycopg.Connection, vetted_schemas: Iterable[str] = (), pass
     with contextlib.suppress(psycopg.errors.InsufficientPrivilege):
         conn.execute(LARGE_OBJECTS_SQL)       # needs the owner of the system functions; the catalog check reports it otherwise
     if extensions := list(extensions):
-        if bad := [e for e in extensions if not _SCHEMA.match(e)]:
+        if bad := [e for e in extensions if not _SCHEMA.fullmatch(e)]:
             raise ValueError(f"not an extension name: {bad}")
         conn.execute("CREATE SCHEMA IF NOT EXISTS ext AUTHORIZATION pipeshub_owner")
         for ext in extensions:
