@@ -907,11 +907,14 @@ def test_pg_kv_access_sets_the_mode_and_unset_keeps_it(db):
         with connect(cluster, name) as c:
             return c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0]
 
-    assert run_migrate(url).returncode == 0 and mode() is False                   # shadow by default
-    r = run_migrate(url, PG_KV_ACCESS="enforce")
-    assert r.returncode == 0 and "key-value access by prefix: enforce" in r.stdout and mode() is True
-    assert run_migrate(url).returncode == 0 and mode() is True                    # unset keeps what the operator chose
-    assert run_migrate(url, PG_KV_ACCESS="shadow").returncode == 0 and mode() is False
+    r = run_migrate(url)
+    assert r.returncode == 0 and mode() is True and "shadow mode" not in r.stdout   # enforce by default (platform_0013)
+    r = run_migrate(url, PG_KV_ACCESS="shadow")
+    assert r.returncode == 0 and "key-value access by prefix: shadow" in r.stdout and mode() is False
+    assert "WARNING key-value access by prefix is in shadow mode" in r.stdout, r.stdout
+    r = run_migrate(url)
+    assert r.returncode == 0 and mode() is False and "WARNING" in r.stdout        # unset keeps what the operator chose, and warns again
+    assert run_migrate(url, PG_KV_ACCESS="enforce").returncode == 0 and mode() is True
     with connect(cluster, name, "pipeshub_query_login") as c:                     # no service role can switch it
         c.execute("SET ROLE pipeshub_query")
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -1059,6 +1062,7 @@ def test_in_enforce_a_new_key_outside_the_prefixes_is_refused_and_a_dead_row_is_
 
 def test_in_shadow_every_access_is_admitted_and_one_outside_the_prefixes_is_logged_without_its_value(kv_db):
     cluster, name = kv_db
+    _set_mode(cluster, name, False)
     for role, key, may_read, may_write in KV_MATRIX:
         notes = []
         with _as(cluster, name, role) as c:
@@ -1070,8 +1074,6 @@ def test_in_shadow_every_access_is_admitted_and_one_outside_the_prefixes_is_logg
         outside = [n for n in notes if "outside the role's prefixes (shadow)" in n]
         assert bool(outside) is not (may_read and may_write), (role, key, notes)
         assert all(f"role pipeshub_{role}" in n and "secret-value" not in n and n.count("/") <= 3 for n in outside), outside
-    with connect(cluster, name) as c:
-        assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is False
 
 
 def _python_constant(rel_path, name):
@@ -1168,6 +1170,24 @@ def test_platform_0011_downgrades_to_the_matrix_of_platform_0010_and_upgrades_ag
         c.rollback()
 
 
+def test_platform_0013_turns_enforce_on_for_an_upgraded_install_unless_the_operator_keeps_shadow(kv_db):
+    cluster, name = kv_db
+    url = cluster.url(name, MIGRATE)
+
+    def mode():
+        with connect(cluster, name) as c:
+            return c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0]
+
+    assert run_migrate(url, "downgrade", "platform_0012", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0 and mode() is False
+    assert run_migrate(url).returncode == 0 and mode() is True                     # an install upgraded with nothing set: enforce
+    with _as(cluster, name, "query") as c:                                       # refused outside the prefixes, not only logged
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute(UPSERT, ("/services/smtp",))
+    assert run_migrate(url, "downgrade", "platform_0012", PG_MIGRATE_ALLOW_DOWNGRADE="1").returncode == 0
+    r = run_migrate(url, PG_KV_ACCESS="shadow")                                  # the escape hatch is applied after the upgrade
+    assert r.returncode == 0 and mode() is False and "WARNING key-value access by prefix is in shadow mode" in r.stdout, r.stdout
+
+
 def test_a_service_role_cannot_create_anything_a_policy_function_could_resolve_to(kv_db):
     """kv_may has no search_path of its own (so it is inlined): its names must not be shadowable by a caller."""
     cluster, name = kv_db
@@ -1194,14 +1214,14 @@ def test_pg_kv_access_is_applied_when_the_database_is_ahead_and_compatible(db):
     assert run_migrate(url).returncode == 0
     _as_newer_build(cluster, name)
     with connect(cluster, name) as c:
+        assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is True
+    r = run_migrate(url, PG_KV_ACCESS="shadow")
+    assert r.returncode == 0 and "database is ahead of this build" in r.stdout and "shadow mode" in r.stdout, r.stdout
+    with connect(cluster, name) as c:
         assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is False
-    r = run_migrate(url, PG_KV_ACCESS="enforce")
-    assert r.returncode == 0 and "database is ahead of this build" in r.stdout, r.stdout
+    assert run_migrate(url, PG_KV_ACCESS="enforce").returncode == 0
     with connect(cluster, name) as c:
         assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is True
-    assert run_migrate(url, PG_KV_ACCESS="shadow").returncode == 0
-    with connect(cluster, name) as c:
-        assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is False
 
 
 def test_moving_an_internal_policy_expression_between_using_and_with_check_is_detected(db):

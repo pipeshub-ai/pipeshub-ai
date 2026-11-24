@@ -109,7 +109,7 @@ def _ensure_kernel_schema(conn: psycopg.Connection) -> None:
 
 
 def kv_access_mode() -> str | None:
-    """``PG_KV_ACCESS``: ``shadow`` logs key-value access outside a service role's prefixes, ``enforce`` refuses it; unset keeps the stored mode."""
+    """``PG_KV_ACCESS``: ``enforce`` (the default since platform_0013) refuses key-value access outside a service role's prefixes, ``shadow`` only logs it; unset keeps the stored mode."""
     raw = os.environ.get("PG_KV_ACCESS", "").strip()
     if raw not in ("", "shadow", "enforce"):
         raise RunnerError(EXIT_CONFIG, f"PG_KV_ACCESS must be shadow or enforce (or unset to keep the stored mode), got {raw!r}")
@@ -124,6 +124,17 @@ def _set_kv_access(conn: psycopg.Connection, mode: str) -> None:
     finally:
         conn.execute("RESET ROLE")
     log(f"key-value access by prefix: {mode}")
+
+
+def _warn_kv_shadow(conn: psycopg.Connection) -> None:
+    conn.execute(f"SET ROLE {OWNER_ROLE}")
+    try:
+        enforce = conn.execute("SELECT enforce FROM platform.kv_access").fetchone()[0]
+    finally:
+        conn.execute("RESET ROLE")
+    if enforce is False:
+        log("WARNING key-value access by prefix is in shadow mode: each service role may read and write every key, and access outside "
+            "its prefixes is only logged; set PG_KV_ACCESS=enforce and run this job again to refuse it")
 
 
 def alembic_config(url: str) -> Config:
@@ -407,6 +418,7 @@ def run(argv: list[str]) -> None:
                 log(ahead)
                 if kv_mode:            # the newer schema is compatible (checked above), and it holds the mode table this build knows
                     _set_kv_access(conn, kv_mode)
+                _warn_kv_shadow(conn)
                 return
             engine = _online(url, memory)
             try:
@@ -441,6 +453,7 @@ def run(argv: list[str]) -> None:
                 engine.dispose()
             if kv_mode:
                 _set_kv_access(conn, kv_mode)
+            _warn_kv_shadow(conn)
         elif cmd == "current":
             command.current(cfg, verbose=True)
         elif cmd == "downgrade" and len(argv) == 2:
