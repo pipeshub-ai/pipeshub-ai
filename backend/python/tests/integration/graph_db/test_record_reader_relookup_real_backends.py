@@ -51,7 +51,7 @@ class _World:
         self.blob._get_auth_and_config = AsyncMock(return_value=({}, "http://node", "local"))
         self.blob._cached_signed_url = AsyncMock(return_value=None)
 
-        async def fetch(session, url, headers, vrid) -> dict:
+        async def fetch(session, url, headers, vrid, decode=None) -> dict:
             doc = url.split("/internal/")[1].split("/")[0]
             if doc not in self.live:
                 raise StorageDocumentNotFoundError(doc)

@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { PermissionLockIcon } from '@/config';
 
 const INDEX_ACTION_ICON_SIZE = 16;
 
@@ -14,6 +15,7 @@ export function IndexActionButton({
   onClick,
   disabled,
   loading,
+  locked = false,
 }: {
   label: string;
   /** Fuller name for screen readers; it should start with the visible label. */
@@ -24,9 +26,11 @@ export function IndexActionButton({
   onClick?: () => void;
   disabled?: boolean;
   loading?: boolean;
+  /** The caller's group permissions do not allow this action: disabled, with a lock. */
+  locked?: boolean;
 }) {
   const [isHovered, setIsHovered] = React.useState(false);
-  const isBusy = disabled || loading;
+  const isBusy = disabled || loading || locked;
   const backgroundColor =
     color === 'orange'
       ? isHovered && !isBusy
@@ -65,8 +69,8 @@ export function IndexActionButton({
         maxWidth: '100%',
         flexShrink: 0,
         whiteSpace: 'nowrap',
-        cursor: loading ? 'wait' : disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled && !loading ? 0.6 : 1,
+        cursor: loading ? 'wait' : disabled || locked ? 'not-allowed' : 'pointer',
+        opacity: (disabled || locked) && !loading ? 0.6 : 1,
         transition: 'background-color 150ms ease',
       }}
     >
@@ -75,6 +79,7 @@ export function IndexActionButton({
         <MaterialIcon name={icon} size={INDEX_ACTION_ICON_SIZE} color={iconColor} />
       </span>
       {label}
+      {locked && <PermissionLockIcon />}
     </button>
   );
 }

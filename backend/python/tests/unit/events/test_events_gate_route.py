@@ -104,3 +104,25 @@ def test_the_read_plan_takes_the_gate_route_only_where_the_labels_name_none() ->
     # The code extension still comes from the path, then the name, when the record has none.
     assert EventProcessor._read_plan("CODE_FILE", "text/plain", None, "src/a.py", "a", None)[1] == "py"
     assert EventProcessor._read_plan("CODE_FILE", "text/plain", "unknown", None, "dir/b.rs", None)[1] == "rs"
+
+
+@pytest.mark.parametrize(("ext", "mime", "name", "record_type", "parser"), [
+    ("unknown", None, "Report.docx", "FILE", "process_docx_document"),
+    ("unknown", "application/octet-stream", "Report.xlsx", "FILE", "process_excel_document"),
+    (None, "application/octet-stream", "report.pdf", "CODE_FILE", "_dispatch_pdf_binary"),
+])
+async def test_a_file_accepted_by_its_name_is_read_by_it(
+    ext: str | None, mime: str | None, name: str, record_type: str, parser: str,
+) -> None:
+    processor, _ = await _dispatch(ext, mime, name, record_type, None)
+    assert processor.routed[:1] == [parser]
+
+
+@pytest.mark.parametrize(("mime", "name"), [("application/zip", "Report.docx"), ("video/mpeg", "Report.pdf")])
+async def test_a_specific_mime_is_not_read_by_the_name(mime: str, name: str) -> None:
+    with pytest.raises(UnsupportedFormatError):
+        await _dispatch("unknown", mime, name, "FILE", None)
+
+
+def test_the_read_plan_reads_the_name_where_a_path_is_not_a_string() -> None:
+    assert EventProcessor._read_plan("FILE", "application/octet-stream", None, ["x"], "a.pdf", None)[1] == "pdf"

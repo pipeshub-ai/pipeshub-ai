@@ -64,16 +64,14 @@ from app.agent_loop_lib.hooks.middleware.context import (
     ToolCallContext,
     ToolResultContext,
 )
-from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+from app.agent_loop_lib.sandbox.coding.base import CodingSandboxBackend, SandboxContext
+from app.agent_loop_lib.sandbox.coding.output_limits import ExtractLimits
 from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
 from app.agent_loop_lib.sandbox.coding.settings import (
     EnvSandboxSettingsLoader,
     SharedSandboxConfig,
 )
-from app.agent_loop_lib.sandbox.governor import (
-    GovernorLimits,
-    get_default_governor,
-)
+from app.agent_loop_lib.sandbox.governor import get_default_governor
 from app.agent_loop_lib.sandbox.manager import (
     SandboxLimits,
     SandboxManager,
@@ -102,8 +100,13 @@ from app.sandbox.package_policy import (
     get_allowlist,
 )
 from app.sandbox.redact import redact_sandbox_paths
-from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
+from app.services.artifact_registry import MAX_ARTIFACT_BYTES
+from app.services.artifact_registry.access import (
+    AccessDeniedError,
+    ArtifactNotFoundError,
+)
 from app.utils.conversation_tasks import register_task
+from app.utils.log_redaction import redact_secrets_in_text
 
 # run_code's ONE user-facing deliverable directory, backed by $OUTPUT_DIR
 # (see `sanitized_subprocess_env()` / DockerCodingSandbox's container env) on
@@ -113,6 +116,8 @@ from app.utils.conversation_tasks import register_task
 _OUTPUT_DIR_NAME = "output"
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agents.agent_loop.context import AgentContext
@@ -205,6 +210,26 @@ def _curated_package_allowlist() -> list[str]:
     return sorted(get_allowlist(SandboxLanguage.PYTHON) | get_allowlist(SandboxLanguage.TYPESCRIPT))
 
 
+_SLOT_WAIT_MESSAGE = "waiting in queue"
+
+
+def _slot_wait_notice(ctx: "AgentContext | None") -> "Callable[..., Awaitable[None]] | None":
+    """Shows a generic "waiting" note on the chat's activity row while a
+    sandbox call waits for a free slot, and clears it once the slot is granted."""
+    sink = getattr(ctx, "event_sink", None) if ctx is not None else None
+    if sink is None:
+        return None
+
+    async def notice(tool: str, *, waiting: bool) -> None:
+        for event in ctx.formatter.tool_progress(
+            ctx, tool=tool, progress=0, total=None,
+            message=_SLOT_WAIT_MESSAGE if waiting else None,
+        ):
+            await sink.write(event)
+
+    return notice
+
+
 async def build_coding_sandbox_manager(
     *,
     max_concurrent: int | None = None,
@@ -217,8 +242,9 @@ async def build_coding_sandbox_manager(
 
     The manager is per request; the *governor* it is given is not. Per-request
     limits bound one chat, but nothing stops N concurrent chats from each
-    spinning up their own quota — so the process-wide ceiling comes from
-    ``get_default_governor()``, shared by every request in this process.
+    spinning up their own quota — so the ceiling comes from
+    ``get_default_governor()``, whose slots every worker of the container
+    counts. It reads ``SANDBOX_MAX_TOTAL`` and ``SANDBOX_MAX_PER_ORG`` itself.
 
     ``max_concurrent``, ``max_lifetime_s`` and ``allow_network`` fall back to
     the loaded ``SandboxSettings`` when omitted, so the corresponding env vars
@@ -229,7 +255,10 @@ async def build_coding_sandbox_manager(
     ``ctx`` is the PipesHub ``AgentContext``. Its ids reach the backend as a
     ``SandboxContext``: the governor needs ``org_id`` for the per-org cap, and
     remote backends tag the provider-side resource with it so an orphaned
-    sandbox can be traced back to an org after this process is gone.
+    sandbox can be traced back to an org after this process is gone. Its
+    ``cancellation_token`` is the run's Stop signal: a running ``run_code`` or
+    ``install_packages`` call (of this agent or any sub-agent sharing the
+    manager) is interrupted when it is set.
     """
     sandbox_ctx = SandboxContext(
         org_id=ctx.org_id if ctx else None,
@@ -248,10 +277,15 @@ async def build_coding_sandbox_manager(
     if allow_network is None:
         allow_network = settings.allow_network
 
-    manager = SandboxManager(governor=get_default_governor(GovernorLimits(
-        max_total_sandboxes=settings.governor.max_total_sandboxes,
-        max_per_org=settings.governor.max_per_org,
-    )))
+    manager = SandboxManager(
+        governor=get_default_governor(),
+        slot_wait_s=settings.slot_wait_s,
+        on_slot_wait=_slot_wait_notice(ctx),
+        stop_token=getattr(ctx, "cancellation_token", None),
+        # One manager per chat request, shared by its sub-agents, so the
+        # per-request limit (SANDBOX_MAX_PER_REQUEST) bounds one chat.
+        max_slots_per_request="env",
+    )
 
     network_enabled = allow_network
     allowlist = _curated_package_allowlist()
@@ -303,6 +337,7 @@ async def build_coding_sandbox_manager(
             max_concurrent=max_concurrent,
             max_lifetime_s=max_lifetime_s,
             provision_timeout_s=settings.provision_timeout_s,
+            max_run_timeout_s=settings.max_run_timeout_s,
         ),
         ctx=sandbox_ctx,
     )
@@ -1101,16 +1136,7 @@ async def _register_run_code_artifacts(
         )
         return
 
-    fetched: list[tuple[str, bytes]] = []
-    for rel_path in deliverable_paths:
-        try:
-            content = await backend.download_file(rel_path)
-        except Exception:
-            logger.warning(
-                "artifact download failed for %r in sandbox %s", rel_path, sandbox_id, exc_info=True,
-            )
-            continue
-        fetched.append((rel_path, content))
+    fetched, oversized = await _fetch_within_cap(backend, deliverable_paths, registry, sandbox_id)
 
     if not fetched:
         logger.warning(
@@ -1118,6 +1144,7 @@ async def _register_run_code_artifacts(
             deliverable_paths, sandbox_id,
         )
         data["artifacts"] = []
+        _add_artifact_errors(data, oversized)
         return
 
     names = _artifact_names_for(fetched)
@@ -1126,6 +1153,101 @@ async def _register_run_code_artifacts(
         source_tool=source_tool, code_artifact_id=code_artifact_id,
         code_artifact_version=code_artifact_version,
     )
+    _add_artifact_errors(data, oversized)
+
+
+def _artifact_cap(registry: object) -> int:
+    cap = getattr(registry, "_max_bytes", None)
+    return cap if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0 else MAX_ARTIFACT_BYTES
+
+
+async def _fetch_within_cap(
+    backend: CodingSandboxBackend, rel_paths: list[str], registry: object, sandbox_id: str,
+) -> tuple[list[tuple[str, bytes]], list[dict[str, str]]]:
+    """Download each path whose size is within the artifact cap. A file
+    over the cap is never read whole (its size is checked first, or when the
+    backend cannot tell, at most one byte past the cap is read), so a huge
+    or sparse output file cannot fill this process's memory; it is reported
+    in the second list instead, in the `artifact_errors` shape.
+
+    The files held together are bounded too, by the run output total
+    (`SANDBOX_OUTPUT_MAX_TOTAL_BYTES`): they are all held until they are
+    registered, and a backend does not bound how many a run leaves. Files
+    past that total are reported the same way."""
+    cap = _artifact_cap(registry)
+    total_cap = ExtractLimits.for_output().max_total_bytes
+    total = 0
+    fetched: list[tuple[str, bytes]] = []
+    oversized: list[dict[str, str]] = []
+
+    def _over_total(rel_path: str) -> None:
+        logger.warning(
+            "artifact %r in sandbox %s is past the run's %d-byte artifact total; not collected",
+            rel_path, sandbox_id, total_cap,
+        )
+        oversized.append({
+            "file": redact_sandbox_paths(os.path.basename(rel_path)),
+            "error": f"FileTooLarge: this run's files together exceed the {total_cap}-byte total; not collected",
+        })
+
+    for rel_path in rel_paths:
+        try:
+            size = await backend.file_size(rel_path) if hasattr(backend, "file_size") else None
+        except Exception:
+            size = None
+        if isinstance(size, int) and not isinstance(size, bool) and size > cap:
+            logger.warning(
+                "artifact %r in sandbox %s is %d bytes, over the %d-byte cap; not collected",
+                rel_path, sandbox_id, size, cap,
+            )
+            oversized.append({
+                "file": redact_sandbox_paths(os.path.basename(rel_path)),
+                "error": f"FileTooLarge: {size} bytes exceeds the {cap}-byte cap; not collected",
+            })
+            continue
+        if isinstance(size, int) and not isinstance(size, bool) and total + size > total_cap:
+            _over_total(rel_path)
+            continue
+        try:
+            read_head = getattr(backend, "read_file_head", None)
+            if read_head is None:
+                content = await backend.download_file(rel_path)
+            else:
+                # Read at most one byte past the cap even when the size was
+                # known: the file may have grown since it was checked.
+                content, more = await read_head(rel_path, cap)
+                if more:
+                    logger.warning(
+                        "artifact %r in sandbox %s is over the %d-byte cap; not collected",
+                        rel_path, sandbox_id, cap,
+                    )
+                    oversized.append({
+                        "file": redact_sandbox_paths(os.path.basename(rel_path)),
+                        "error": f"FileTooLarge: larger than the {cap}-byte cap; not collected",
+                    })
+                    continue
+        except Exception:
+            logger.warning(
+                "artifact download failed for %r in sandbox %s", rel_path, sandbox_id, exc_info=True,
+            )
+            continue
+        if total + len(content) > total_cap:
+            _over_total(rel_path)
+            continue
+        total += len(content)
+        fetched.append((rel_path, content))
+    return fetched, oversized
+
+
+def _add_artifact_errors(data: dict[str, Any], errors: list[dict[str, str]]) -> None:
+    if not errors:
+        return
+    data["artifact_errors"] = [*(data.get("artifact_errors") or []), *errors]
+    data.setdefault("artifact_errors_note", (
+        "These files were produced but are over the artifact size limits, so they "
+        "were NOT saved and are NOT downloadable. Do NOT tell the user the file is ready. "
+        "Write a smaller file (split, compress, or keep only what is needed) and run again."
+    ))
 
 
 async def _register_and_deliver(
@@ -1175,7 +1297,9 @@ async def _register_and_deliver(
             )
         except Exception as exc:
             logger.exception("coding sandbox artifact registration failed for %s", rel_path)
-            failures.append({"file": file_name, "error": f"{type(exc).__name__}: {exc}"})
+            # A successful run result carries it, which the executor does not mask: a storage driver's error can quote a
+            # signed URL or a DSN.
+            failures.append({"file": file_name, "error": redact_secrets_in_text(f"{type(exc).__name__}: {exc}")})
             continue
 
         if code_artifact_id:
@@ -1313,16 +1437,7 @@ async def _rescue_scratch_files(
             )
             continue
 
-        fetched: list[tuple[str, bytes]] = []
-        for rel_path in call["paths"]:
-            try:
-                content = await backend.download_file(rel_path)
-            except Exception:
-                logger.warning(
-                    "scratch rescue: download failed for %r in sandbox %s", rel_path, sandbox_id, exc_info=True,
-                )
-                continue
-            fetched.append((rel_path, content))
+        fetched, _oversized = await _fetch_within_cap(backend, call["paths"], registry, sandbox_id)
         if not fetched:
             continue
 

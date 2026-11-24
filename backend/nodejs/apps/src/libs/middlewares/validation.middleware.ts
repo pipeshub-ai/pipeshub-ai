@@ -68,11 +68,6 @@ export class ValidationMiddleware {
               value: '',
             },
           ];
-          this.logger.error('Validation failed', {
-            path: req.path,
-            method: req.method,
-            errors,
-          });
           next(
             new ValidationError(
               ValidationUtils.formatValidationErrorMessage(errors),
@@ -125,11 +120,6 @@ export class ValidationMiddleware {
               value: '',
             },
           ];
-          this.logger.error('Validation failed', {
-            path: req.path,
-            method: req.method,
-            errors,
-          });
           next(
             new ValidationError(
               ValidationUtils.formatValidationErrorMessage(errors),
@@ -144,13 +134,6 @@ export class ValidationMiddleware {
             ValidationUtils.formatValidationErrorMessage(errors),
             errors,
           );
-
-          this.logger.error('Validation failed', {
-            path: req.path,
-            method: req.method,
-            errors,
-          });
-
           next(validationError);
         } else {
           next(error);

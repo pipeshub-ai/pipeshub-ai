@@ -67,6 +67,7 @@ services:
       # The same outbound-address policy as the app, for the model endpoints this service calls.
       - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      - REDIS_CACHE_URL=${REDIS_CACHE_URL:-}
       - ETCD_URL=http://etcd:2379
       - ETCD_HOST=etcd
       - LOG_LEVEL=${LOG_LEVEL:-info}

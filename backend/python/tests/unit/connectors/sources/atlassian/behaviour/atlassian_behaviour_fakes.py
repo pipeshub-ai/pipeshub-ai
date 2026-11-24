@@ -304,6 +304,13 @@ class FakeRecordsDb:
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, permissions))
+        # The stored grants are replaced, and the record inherits from its parent if it says so.
+        self.record_permissions[record.external_record_id] = list(permissions)
+        stored = self.records.get(record.external_record_id)
+        if stored is not None:
+            self.records[record.external_record_id] = stored.model_copy(
+                update={"inherit_permissions": record.inherit_permissions}
+            )
 
     async def reindex_existing_records(self, records: list[Any]) -> None:
         # The real one builds the indexing event from each record; a base Record raises here.

@@ -32,6 +32,7 @@ from app.exceptions.indexing_exceptions import (
     VectorStoreError,
 )
 from app.exceptions.storage_exceptions import StorageRequestRejectedError
+from app.modules.parsers.worker_deaths import is_retrying_death
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
 from app.utils.api_call import ApiCallError
@@ -153,6 +154,21 @@ PARSE_WORKER_OUT_OF_MEMORY = (
     "into smaller files and sync or upload them again; if it keeps failing, ask your admin "
     "to give PipesHub more memory."
 )
+PARSE_WORKER_KILLED_RETRYING = (
+    "The process reading this file was stopped because the server was short of memory, "
+    "which is not a problem with the file. PipesHub will retry it automatically."
+)
+
+
+def retry_reason(exc: BaseException | None) -> str:
+    """The reason to store on a record that failed this time and is queued to run again.
+
+    A parse worker killed under memory pressure says so: the next delivery usually succeeds once the
+    other work has eased, and nobody needs to split the file yet. Any other failure is the generic text.
+    """
+    if is_retrying_death(exc):
+        return PARSE_WORKER_KILLED_RETRYING
+    return RETRY_SCHEDULED
 
 
 # Written for people by the code that raised them, and more specific than any
@@ -191,6 +207,21 @@ def file_too_large_to_read(extension: str | None) -> str:
         f"This {what} is too large to index (over {_size_label(TEXT_LOG_HARD_LIMIT_BYTES)}). "
         "It can still be found by its name."
     )
+
+
+MAX_INDEXED_PDF_PAGES = 500
+
+_EDITION_TEXT = "Supported in Enterprise Edition."
+
+
+def pdf_over_page_limit(pages: int) -> str:
+    return f"This PDF has {pages:,} pages; PDFs over {MAX_INDEXED_PDF_PAGES} pages are not indexed. {_EDITION_TEXT}"
+
+
+PDF_PAGE_LIMIT_NOTE = (
+    f"Indexed before the {MAX_INDEXED_PDF_PAGES}-page limit; it stays indexed until a change to its bytes is detected. "
+    f"PDFs over {MAX_INDEXED_PDF_PAGES} pages: {_EDITION_TEXT}"
+)
 
 
 # The record field for a note on how a record was indexed (shown on a COMPLETED record), kept apart
@@ -743,6 +774,11 @@ def _reason(exc: BaseException | None) -> str:
     if exc is None:
         return GENERIC_FAILURE
     chain = list(_chain(exc))
+
+    # The final text of a record whose worker was killed: the retry promised while it waited did not come, so this
+    # is the second death (or the last attempt) and the advice is to make the file smaller.
+    if is_retrying_death(exc):
+        return PARSE_WORKER_OUT_OF_MEMORY
 
     for e in chain:
         # The source refused the item, and the connector said why in its own words.

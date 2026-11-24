@@ -3920,7 +3920,7 @@ class TestConvertImageBlocksToBase64Conversion:
     async def test_image_svg_conversion(self, mock_parser_cls):
         conn = _make_connector_fullcov()
         mock_parser_instance = MagicMock()
-        mock_parser_instance.svg_base64_to_png_base64.return_value = "cG5nZGF0YQ=="
+        mock_parser_instance.svg_base64_to_png_base64_async = AsyncMock(return_value="cG5nZGF0YQ==")
         mock_parser_cls.return_value = mock_parser_instance
 
         conn._fetch_image = AsyncMock(return_value=PublicFetchResponse(

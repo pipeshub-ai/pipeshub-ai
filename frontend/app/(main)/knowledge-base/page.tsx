@@ -26,7 +26,7 @@ import {
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionStatsPanel } from './components/collection-stats-panel';
 import type { UploadFileItem } from './components';
-import { SelectionActionBar } from '@/config';
+import { SelectionActionBar, useKbUploadExtras } from '@/config';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
 import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
@@ -302,6 +302,8 @@ function KnowledgeBasePageContent() {
       ? Infinity
       : Math.max(maxFolderDepth - folderDepthOf(tableData?.breadcrumbs, selectedKbId), 0);
   const canAddFolderHere = remainingFolderLevels > 0;
+  // At the root this creates a collection; inside one it creates a folder, which is an edit of that collection.
+  const canCreateHere = tableData?.currentNode ? canEditCollection : canCreateCollection;
 
   // Get table items directly from API response (no client-side filtering)
   const tableItems = useMemo(() => {
@@ -1561,7 +1563,7 @@ function KnowledgeBasePageContent() {
 
   // Handle create folder - context-aware
   const handleCreateFolder = useCallback(() => {
-    if (!canCreateCollection) return;
+    if (!canCreateHere) return;
     const currentNode = tableData?.currentNode;
 
     if (currentNode?.nodeType === 'app') {
@@ -1596,7 +1598,7 @@ function KnowledgeBasePageContent() {
         description: `A folder cannot be created inside "${currentNode.name}" (${currentNode.nodeType}).`,
       });
     }
-  }, [tableData, canCreateCollection]);
+  }, [tableData, canCreateHere]);
 
   const validateCreateName = useCallback(
     (name: string) =>
@@ -1704,8 +1706,11 @@ function KnowledgeBasePageContent() {
     setIsUploadSidebarOpen(true);
   }, [canEditCollection]);
 
-  // Handle upload save - add items to upload store and start uploading
-  const handleUploadSave = useCallback(
+  const uploadExtras = useKbUploadExtras(selectedKbId);
+  const { onUploadStart, onFileSucceeded, onUploadEnd } = uploadExtras;
+
+  // Add items to the upload store and upload them
+  const uploadFiles = useCallback(
     async (items: UploadFileItem[]) => {
       if (!selectedKbId) return;
 
@@ -1870,6 +1875,7 @@ function KnowledgeBasePageContent() {
                 const id = findStoreId(data);
                 if (id) completeUpload(id);
                 anySuccess = true;
+                if (typeof data?.recordId === 'string') onFileSucceeded?.(data.recordId);
               } else if (evt.event === 'file:failed') {
                 const id = findStoreId(data);
                 if (id) {
@@ -2054,7 +2060,21 @@ function KnowledgeBasePageContent() {
         await refreshData();
       }
     },
-    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t]
+    [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t, onFileSucceeded]
+  );
+
+  // Handle upload save. The hook's start and end callbacks bracket every exit, early returns and errors included.
+  const handleUploadSave = useCallback(
+    async (items: UploadFileItem[]) => {
+      if (!selectedKbId) return;
+      onUploadStart?.();
+      try {
+        await uploadFiles(items);
+      } finally {
+        onUploadEnd?.();
+      }
+    },
+    [selectedKbId, uploadFiles, onUploadStart, onUploadEnd]
   );
 
   // Returns false so the upload panel keeps the picked files when there is
@@ -3226,8 +3246,9 @@ function KnowledgeBasePageContent() {
               onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
               onUpload={isAllRecordsMode || !selectedKbId ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
-              createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
-              folderPermissionDenied={!isAllRecordsMode && !canCreateCollection}
+              // Locked only when nothing it offers is allowed: no create here, and no upload (which needs an open collection).
+              createPermissionDenied={!isAllRecordsMode && !canCreateHere && (!selectedKbId || !canEditCollection)}
+              folderPermissionDenied={!isAllRecordsMode && !canCreateHere}
               uploadPermissionDenied={!isAllRecordsMode && !canEditCollection}
               sharePermissionDenied={Boolean(shareAdapter && isSelectedKbOwner && !canShareCollection)}
               sharedMembers={sharedMembers}
@@ -3333,7 +3354,7 @@ function KnowledgeBasePageContent() {
           onMove={!isAllRecordsMode ? handleMoveClick : undefined}
           onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
-          onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
+          onCreateFolder={!isAllRecordsMode && canCreateHere && canAddFolderHere ? handleCreateFolder : undefined}
           onUpload={!isAllRecordsMode && canEditCollection && selectedKbId ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
@@ -3355,6 +3376,8 @@ function KnowledgeBasePageContent() {
           onDelete={!isAllRecordsMode && !bulkDeleteNeedsCollection ? handleBulkDeleteClick : undefined}
           deletePermissionDenied={bulkDeleteDenied}
           pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+          selectedItems={tickedRows}
+          onChanged={refreshData}
         />
 
         {selectedCount === 0 && (
@@ -3475,6 +3498,7 @@ function KnowledgeBasePageContent() {
             isSaving={isUploading}
             remainingFolderLevels={remainingFolderLevels}
             maxFolderDepth={maxFolderDepth}
+            extras={uploadExtras.panel}
           />
 
           {/* Replace File Dialog */}

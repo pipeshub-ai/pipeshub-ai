@@ -3,6 +3,7 @@
 A template's ``can_edit`` / ``can_delete`` in the list and in ``get_template`` say what ``update_agent_template`` / ``delete_agent_template``
 will do: both need the user's own OWNER grant, so a direct writer and a team owner are told no. And an agent's permission check before an
 edit or a delete reads the grants as the caller's transaction sees them: a grant written earlier in it counts, one removed in it does not.
+The agent-usage reads that guard a model or web search provider delete raise when the store cannot be read.
 The PostgreSQL provider runs the same cases in ``postgres/test_kb_listings.py`` and ``postgres/test_agents.py``.
 
 Runs in backend-matrix on both graph jobs. Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
@@ -126,3 +127,35 @@ async def test_an_agents_permission_update_checks_the_owner_in_the_callers_trans
         assert refused == {"success": False, "reason": "Agent not found or no permission"}               # and one removed in it does not
     finally:
         await graph.rollback_transaction(txn)
+
+
+async def _down(*_: object, **__: object) -> None:
+    raise ConnectionError("store down")
+
+
+async def test_a_failed_agent_usage_read_raises_and_the_same_read_answers_once_the_store_is_back(
+    world: tuple[IGraphDBProvider, dict[str, str]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A delete of a model or web search provider is refused on this answer, so a failed read must never read as no agents.
+    graph, ids = world
+    now = get_epoch_timestamp_in_ms()
+    assert await graph.update_node(ids["agent"], AGENTS, {"models": ["k1_gpt-4o"], "webSearch": "serper"})
+    assert await graph.batch_create_edges([
+        {"from_id": ids["owner"], "from_collection": USERS, "to_id": ids["org"], "to_collection": ORGS, "entityType": "ORGANIZATION",
+         "createdAtTimestamp": now, "updatedAtTimestamp": now},
+    ], CollectionNames.BELONGS_TO.value)
+    assert await graph.batch_create_edges([_edge(USERS, ids["owner"], AGENTS, ids["agent"], "USER", "OWNER")], PERMISSION)
+
+    async def usage() -> tuple[list[str], list[str]]:
+        return ([a["_key"] for a in await graph.get_agents_by_model_key(ids["org"], "k1")],
+                [a["_key"] for a in await graph.get_agents_by_web_search_provider(ids["org"], "serper")])
+
+    assert await usage() == ([ids["agent"]], [ids["agent"]])
+    with monkeypatch.context() as down:
+        reads = (graph.http_client, "execute_aql") if hasattr(graph, "http_client") else (graph.client, "execute_query")
+        down.setattr(*reads, _down)
+        with pytest.raises(ConnectionError):
+            await graph.get_agents_by_model_key(ids["org"], "k1")
+        with pytest.raises(ConnectionError):
+            await graph.get_agents_by_web_search_provider(ids["org"], "serper")
+    assert await usage() == ([ids["agent"]], [ids["agent"]])

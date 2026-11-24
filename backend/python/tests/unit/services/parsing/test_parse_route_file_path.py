@@ -10,6 +10,7 @@ from app.api.routes.parsing import router as parsing_router
 from app.models.blocks import BlocksContainer
 from app.services.parsing.interface import ParseResult, ParserProvider
 from app.services.parsing.registry import ParserRegistry
+from app.services.resource_governor.models import Pool
 
 
 async def _authenticated_as_indexing(request: Request) -> Request:
@@ -67,7 +68,7 @@ def test_an_org_past_its_share_is_backpressured_while_another_org_waits() -> Non
 
     client, parser = _client_and_parser()
     share = parsing.OrgShare(0.5)
-    pool = parsing.gate_pool(parsing.classify("py", "text/x-python")).value
+    pool = Pool.LIGHT_PARSE.value
     share.arrive(pool, "org-123")
     share.hold(pool, "org-123", 3)
     share.arrive(pool, "other-org")

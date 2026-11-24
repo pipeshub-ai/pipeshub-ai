@@ -17,7 +17,59 @@ export const MAX_COMPARE_MODELS = 2;
 /** Short enough that a Labs toggle applies almost at once. */
 const CACHE_TTL_MS = 5_000;
 
-let cached: { value: boolean; at: number } | null = null;
+/** Enough for every workspace one process serves; past it the oldest answer goes first. */
+const CACHE_MAX_KEYS = 10_000;
+
+const cached = new Map<string, { value: boolean; at: number }>();
+
+function remember(cacheKey: string, value: boolean): void {
+  // Deleting first moves the key to the newest end of the Map's insertion order.
+  cached.delete(cacheKey);
+  if (cached.size >= CACHE_MAX_KEYS) {
+    const now = Date.now();
+    for (const [key, entry] of cached) {
+      if (now - entry.at >= CACHE_TTL_MS) cached.delete(key);
+    }
+    if (cached.size >= CACHE_MAX_KEYS) {
+      const oldest = cached.keys().next().value;
+      if (oldest !== undefined) cached.delete(oldest);
+    }
+  }
+  cached.set(cacheKey, { value, at: Date.now() });
+}
+
+/**
+ * The cache slot this request's answer goes in, and the store to read it
+ * from on a miss; null while no store can be read yet. The default reads the
+ * one settings document. A build that keeps settings per workspace supplies
+ * its own at boot, so each workspace's Labs switch decides for that workspace;
+ * the store is resolved only on a miss because finding it can cost reads.
+ */
+export type ChatCompareSettingsSource = () => {
+  cacheKey: string;
+  store: () => Promise<Pick<KeyValueStoreService, 'get'>>;
+} | null;
+
+const readSettingsDocument: ChatCompareSettingsSource = () => {
+  const store = ChatCompareFeature.settingsStore();
+  return store.isConnected()
+    ? { cacheKey: '', store: () => Promise.resolve(store) }
+    : null;
+};
+
+let resolveSource: ChatCompareSettingsSource = readSettingsDocument;
+
+// A read that began before a source swap or a cache reset must not write its answer afterwards.
+let generation = 0;
+
+/** Replaces where the Compare models flag is read from; no argument restores the default. */
+export function setChatCompareSettingsSource(
+  fn: ChatCompareSettingsSource = readSettingsDocument,
+): void {
+  resolveSource = fn;
+  generation += 1;
+  cached.clear();
+}
 
 /**
  * Whether the ENABLE_CHAT_COMPARE Labs flag is on. Unlike Projects this fails
@@ -31,13 +83,17 @@ export const ChatCompareFeature = {
   async isEnabled(): Promise<boolean> {
     // The PostgreSQL document store has no columns for branches yet.
     if (docStore() === 'postgres') return false;
-    if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value;
     try {
-      const store = ChatCompareFeature.settingsStore();
-      if (!store.isConnected()) return false;
-      const { featureFlags } = await getPlatformSettingsFromStore(store);
+      const source = resolveSource();
+      if (!source) return false;
+      const hit = cached.get(source.cacheKey);
+      if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
+      const startedAt = generation;
+      const { featureFlags } = await getPlatformSettingsFromStore(
+        await source.store(),
+      );
       const value = featureFlags.ENABLE_CHAT_COMPARE === true;
-      cached = { value, at: Date.now() };
+      if (startedAt === generation) remember(source.cacheKey, value);
       return value;
     } catch (error) {
       logger.warn('Could not read the Compare models flag; leaving it off', {
@@ -55,7 +111,8 @@ export const ChatCompareFeature = {
   },
 
   resetCache(): void {
-    cached = null;
+    generation += 1;
+    cached.clear();
   },
 };
 

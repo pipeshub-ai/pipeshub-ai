@@ -10,6 +10,7 @@ import { KeyValueStoreService } from '../../libs/services/keyValueStore.service'
 import { storageEtcdPaths } from './constants/constants';
 import { storageTypes } from '../configuration_manager/constants/constants';
 import { Logger } from '../../libs/services/logger.service';
+import { parseKvObject } from '../../libs/utils/kv-object.utils';
 import AzureBlobStorageAdapter from './providers/azure.provider';
 import { StorageServiceAdapter } from './adapter/base-storage.adapter';
 import { DefaultStorageConfig } from '../tokens_manager/services/cm.service';
@@ -23,9 +24,7 @@ export class StorageService {
     @inject('KeyValueStoreService')
     private readonly keyValueStoreService: KeyValueStoreService,
     private readonly config:
-      | S3StorageConfig
-      | AzureBlobStorageConfig
-      | LocalStorageConfig,
+      S3StorageConfig | AzureBlobStorageConfig | LocalStorageConfig,
     private readonly defaultConfig: DefaultStorageConfig,
   ) {}
 
@@ -35,7 +34,8 @@ export class StorageService {
         const storageConfig =
           (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
           '{}';
-        const { storageType } = JSON.parse(storageConfig) || storageTypes.LOCAL;
+        const { storageType } =
+          parseKvObject(storageConfig) || storageTypes.LOCAL;
         this.adapter = await this.initializeStorageAdapter(storageType);
         this.isInitialized = true;
       } catch (error) {

@@ -169,7 +169,9 @@ export class AgentRegistrationService {
       purgeAt: expiresAt,
     });
     const registrationId = REGISTRATION_ID_PREFIX + reg._id;
-    this.logger.info('registration.created', { registrationId });
+    this.logger.info('registration.created', {
+      registration_id: registrationId,
+    });
 
     return {
       registration_id: registrationId,
@@ -281,7 +283,7 @@ export class AgentRegistrationService {
         throw fail('invalid_request', 'this claim link is no longer valid');
       }
       this.logger.info('claim.denied', {
-        registrationId: REGISTRATION_ID_PREFIX + reg._id,
+        registration_id: REGISTRATION_ID_PREFIX + reg._id,
       });
       return 'revoked';
     }
@@ -325,9 +327,9 @@ export class AgentRegistrationService {
       throw fail('invalid_request', 'this claim link is no longer valid');
     }
     this.logger.info('claim.confirmed', {
-      registrationId: REGISTRATION_ID_PREFIX + reg._id,
-      userId: user.userId,
-      orgId: user.orgId,
+      registration_id: REGISTRATION_ID_PREFIX + reg._id,
+      user_id: user.userId,
+      org_id: user.orgId,
     });
     return 'claimed';
   }
@@ -381,7 +383,10 @@ export class AgentRegistrationService {
     const tokens = await this.issue(taken, 'access_denied');
     const { assertion, expiresAt } =
       this.oauthTokenService.signAgentAssertion(registrationId);
-    this.logger.info('token.issued', { registrationId, grant: 'claim' });
+    this.logger.info('token.issued', {
+      registration_id: registrationId,
+      grant: 'claim',
+    });
     return {
       ...tokens,
       identity_assertion: assertion,
@@ -401,7 +406,10 @@ export class AgentRegistrationService {
       );
     }
     const tokens = await this.issue(reg, 'invalid_grant');
-    this.logger.info('token.issued', { registrationId, grant: 'jwt-bearer' });
+    this.logger.info('token.issued', {
+      registration_id: registrationId,
+      grant: 'jwt-bearer',
+    });
     return tokens;
   }
 
@@ -436,8 +444,8 @@ export class AgentRegistrationService {
     );
     if (!revoked) throw new NotFoundError('Registration not found');
     this.logger.info('registration.revoked', {
-      registrationId: id,
-      userId: user.userId,
+      registration_id: id,
+      user_id: user.userId,
     });
     return { ok: true };
   }

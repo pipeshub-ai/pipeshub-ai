@@ -1363,7 +1363,7 @@ class KnowledgeGraph:
                 type=ParameterType.ARRAY,
                 description=(
                     "Optional roles: assignee, reporter, creator, author (a mail's sender, a comment's "
-                    "writer), owner, editor (who last changed a file or page), reviewer, recipient (to/cc of a "
+                    "writer), owner, editor (who last changed a file or page), shared_with (a file's sharees), reviewer, recipient (to/cc of a "
                     "mail), lead, mentioned, involved. "
                     "Omit for all."
                 ),
@@ -1371,7 +1371,7 @@ class KnowledgeGraph:
                 items={
                     "type": "string",
                     "enum": [
-                        "assignee", "reporter", "creator", "author", "owner", "editor", "reviewer",
+                        "assignee", "reporter", "creator", "author", "owner", "editor", "shared_with", "reviewer",
                         "recipient", "lead", "mentioned", "involved",
                     ],
                 },

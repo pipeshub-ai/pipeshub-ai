@@ -27,6 +27,7 @@ import {
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { bindConnectorLogFields } from '../utils/connector.utils';
 import { integerCheck } from '../../../libs/utils/zod-formats';
 
 // ============================================================================
@@ -135,6 +136,7 @@ const updateOAuthConfigSchema = z.object({
 export function createOAuthRouter(container: Container): Router {
   const router = Router();
   guardPathParams(router, 'connectorType', 'configId');
+  bindConnectorLogFields(router);
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 

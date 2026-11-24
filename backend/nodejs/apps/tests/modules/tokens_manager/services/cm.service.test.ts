@@ -910,6 +910,38 @@ describe('tokens_manager/services/cm.service', () => {
       })
     })
 
+    describe('endpoints stored as a JSON string of JSON (older Python writer)', () => {
+      const endpoints = {
+        frontend: { publicEndpoint: 'http://stored-frontend:3000' },
+        storage: { endpoint: 'http://storage:3000' },
+        nodejs: { endpoint: 'http://localhost:3001' },
+      }
+      const doubled = JSON.stringify(JSON.stringify(endpoints))
+
+      it('getFrontendUrl resolves and rewrites the key as a single JSON layer', async () => {
+        delete process.env.FRONTEND_PUBLIC_URL
+        mockKvStore.get.resolves(doubled)
+        const result = await configService.getFrontendUrl()
+        expect(result).to.equal('http://stored-frontend:3000')
+        const [key, written] = mockKvStore.set.lastCall.args
+        expect(key).to.equal('/services/endpoints')
+        expect(JSON.parse(written)).to.deep.equal(endpoints)
+      })
+
+      it('getFrontendUrl on a single-layer value is unchanged', async () => {
+        delete process.env.FRONTEND_PUBLIC_URL
+        mockKvStore.get.resolves(JSON.stringify(endpoints))
+        const result = await configService.getFrontendUrl()
+        expect(result).to.equal('http://stored-frontend:3000')
+        expect(JSON.parse(mockKvStore.set.lastCall.args[1])).to.deep.equal(endpoints)
+      })
+
+      it('getStorageBackendUrl reads the doubled value', async () => {
+        mockKvStore.get.resolves(doubled)
+        expect(await configService.getStorageBackendUrl()).to.equal('http://storage:3000')
+      })
+    })
+
     describe('getAiBackendUrl', () => {
       it('should return AI backend URL from env var', async () => {
         process.env.QUERY_BACKEND = 'http://query:8000'

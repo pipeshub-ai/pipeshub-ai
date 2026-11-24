@@ -17,6 +17,7 @@ import pytest
 
 from app.services.graph_db.postgres.kg import hierarchy as kg_hier
 from app.services.graph_db.postgres.kg import trash as kg_trash
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from tests.support import plan_gate
 
 from .pg_support import new_org
@@ -229,7 +230,7 @@ async def test_a_copy_of_epoch_7_code_is_filled_in_place_by_the_bootstrap_and_st
         assert await pg_db.run(columns) == derived
         state = await pg_db.run(lambda tx: tx.fetch("""SELECT k.id, s.mode, s.code_epoch FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
             AND k.coll = 1 WHERE s.org_id = $1 ORDER BY k.id""", org))
-    assert [tuple(r) for r in state] == [(KB, "enforce", 8), ("kb2", "enforce", 8)]
+    assert [tuple(r) for r in state] == [(KB, "enforce", CODE_EPOCH), ("kb2", "enforce", CODE_EPOCH)]
     assert not [r for r in caplog.records if r.name == bootstrap.logger.name], [r.getMessage() for r in caplog.records]
     tally.c.clear()
     walk, got = await _both(pg_provider, org)
@@ -254,7 +255,7 @@ async def test_a_fill_page_reads_at_most_a_page_of_records_even_when_none_carrie
         assert await pg_db.run(epoch) == 7
     assert await bf.fill_trash(pg_db, org, KB, page=2, after="b") == ("enforce", None)
     with ctx(org):
-        assert await pg_db.run(epoch) == 8
+        assert await pg_db.run(epoch) == CODE_EPOCH
 
 
 def _relabel_sql() -> str:

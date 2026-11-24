@@ -281,6 +281,39 @@ class TestGetDocument:
         fields = log_record_fields(records[0])
         assert fields["code"] == 1203 and fields["error_class"] == "internal"
 
+    @pytest.mark.parametrize(("body", "code"), [
+        (_body(404, 1203), 1203), ("<html><body>404 Not Found</body></html>", None), ({"error": True, "code": 404}, None),
+    ], ids=["missing_collection", "html_page", "json_without_error_num"])
+    async def test_a_404_that_is_no_absent_document_raises_when_asked(self, capture, body: object, code: int | None) -> None:
+        logger, records = capture
+        client = _client(logger)
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=_session(get=Resp(404, body))):
+            with pytest.raises(GraphQueryError, match="ArangoDB answered 404") as raised:
+                await client.get_document("no_such", "k", raise_on_error=True)
+        (record,) = records  # logged once, here; the provider re-raises before its own line
+        assert log_record_fields(record).get("code") == code
+        assert raised.value.__cause__ is None and "collection" not in str(raised.value)  # not the server's text
+
+    # As ArangoDB 3.12.4 answers: a missing key is 404/1202, a key no document can have ("%") is 400/1205.
+    @pytest.mark.parametrize(("status", "body"), [(404, _body(404, 1202)), (404, ""), (400, _body(400, 1205)), (400, _body(400, 1221))],
+                             ids=["document_not_found", "empty_body", "illegal_handle", "illegal_key"])
+    async def test_an_absent_document_is_none_when_asked_to_raise(self, capture, status: int, body: object) -> None:
+        logger, records = capture
+        client = _client(logger)
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=_session(get=Resp(status, body))):
+            assert await client.get_document("people", "k", raise_on_error=True) is None
+        assert records == []  # an answer, and not slow
+
+    @pytest.mark.parametrize("key", ["", None])
+    async def test_an_empty_key_is_absent_without_a_request(self, capture, key: str | None) -> None:
+        logger, records = capture
+        client = _client(logger)
+        session = _session(get=Resp(404, _body(404, 1203)))  # what ArangoDB answers for the path `people/`
+        with patch.object(client, "_get_session", new_callable=AsyncMock, return_value=session):
+            assert await client.get_document("people", key, raise_on_error=True) is None  # type: ignore[arg-type]
+        session.get.assert_not_called()
+        assert records == []
+
     @pytest.mark.parametrize(("status", "body"), [(200, {"_key": "k"}), (404, _body(404, 1202))])
     @pytest.mark.parametrize(("elapsed", "slow"), [(0.6, True), (0.1, False)])
     async def test_a_lookup_writes_a_slow_record_only_when_slow(self, capture, monkeypatch: pytest.MonkeyPatch,

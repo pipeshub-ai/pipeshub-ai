@@ -22,9 +22,13 @@ import {
 } from '../repositories/oauth-app';
 import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
-import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
+import {
+  isPatClientId,
+  stripTokenDisplayPrefix,
+} from '../../modules/oauth_provider/constants/constants';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 import { setContextIdentity } from '../context/request-context';
+import { recordAgentCall } from './agent-call-recorder';
 import { MCP_PATH } from './rate-limit.middleware';
 import {
   auditAuthRefusal,
@@ -71,7 +75,7 @@ export class AuthMiddleware {
 
   async authenticate(
     req: AuthenticatedUserRequest,
-    _res: Response,
+    res: Response,
     next: NextFunction,
   ) {
     try {
@@ -93,6 +97,8 @@ export class AuthMiddleware {
         // authenticate oauth token
         await this.authenticateOAuthToken(token, req);
       }
+
+      recordAgentCall(req, res);
 
       // Bind the verified token's org for the rest of the request (never a client field).
       const orgId = req.user?.orgId as string | undefined;
@@ -336,9 +342,17 @@ export class AuthMiddleware {
       accountType,
       role,
       isOAuth: true,
+      tokenId: payload.tokenRowId,
+      delegatedBy,
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
       oauthAudience: payload.aud,
+      // The Python services take a personal access token's limit from here,
+      // via /api/v1/users/me/role, because its owner can change it after the
+      // token was signed. null: everything the owner can see.
+      ...(isPatClientId(payload.client_id)
+        ? { knowledgeLimit: payload.knowledgeLimit ?? null }
+        : {}),
     };
     setContextIdentity({ orgId, userId });
     // The web app's client name lets an agent run wait for a person to approve a tool call.

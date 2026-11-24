@@ -16,6 +16,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [Secrets and configuration](#secrets-and-configuration)
 - [OAuth dynamic registration and device grant](#oauth-dynamic-registration-and-device-grant)
 - [Runtime tuning (workers and query-service flags)](#runtime-tuning-workers-and-query-service-flags)
+- [Code sandbox capacity](#code-sandbox-capacity)
 - [Container outbound connectivity](#container-outbound-connectivity)
 - [Developer / local build](#developer--local-build)
 - [Soak-testing adaptive concurrency](#soak-testing-adaptive-concurrency)
@@ -171,6 +172,47 @@ docker compose -p pipeshub-ai logs -f pipeshub-ai
 
 The installer prints this when it detects the old pinned names.
 
+### Legacy compose file: secrets are required
+
+`docker-compose.prod-legacy.yml` no longer falls back to built-in values for `SECRET_KEY`, `MONGO_PASSWORD`, `ARANGO_PASSWORD` and `QDRANT_API_KEY`. It refuses to start until each one is set in `.env`.
+
+Your existing data was written with whatever values the stack ran with. Do not generate new ones yet: a new `SECRET_KEY` cannot decrypt the credentials already stored, and a new database password does not change the one already in the existing database volume.
+
+1. **Recover the values your stack uses** and put them in `.env`. Look, in this order, in:
+   - your current `.env` and any `.env.bak.*` the installer left next to it;
+   - wherever you keep this deployment's secrets (a secret manager, or the shell or CI environment you start Compose from);
+   - the running containers, before you pull the new compose file:
+
+     ```bash
+     docker inspect pipeshub-ai --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(SECRET_KEY|ARANGO_PASSWORD|QDRANT_API_KEY)='
+     docker inspect mongodb --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^MONGO_INITDB_ROOT_(USERNAME|PASSWORD)='
+     ```
+
+     `MONGO_INITDB_ROOT_USERNAME` goes into `.env` as `MONGO_USERNAME` and `MONGO_INITDB_ROOT_PASSWORD` as `MONGO_PASSWORD`.
+
+   Use the defaults from the previous release's `docker-compose.prod-legacy.yml` only if you know this stack ran with none of these variables set, neither in `.env` nor in the environment. If you can't recover a value, don't guess: a wrong `SECRET_KEY` leaves the stored credentials unreadable, and a wrong database password fails against the existing volume.
+2. **Start the stack** with those values in `.env` and check that it is healthy.
+3. **Rotate the database passwords and the Qdrant key.** The old built-in values are public, so replace them. Change each password in the database first, then in `.env`. The commands below read the passwords from variables, so they don't end up in your shell history or in the process list:
+
+   ```bash
+   read -rs CURRENT_MONGO_PW && read -rs CURRENT_ARANGO_PW   # type the current passwords
+   NEW_MONGO_PW=$(openssl rand -hex 32) NEW_ARANGO_PW=$(openssl rand -hex 32)
+   MONGO_USERNAME=$(sed -n 's/^MONGO_USERNAME=//p' .env); MONGO_USERNAME=${MONGO_USERNAME:-admin}   # from step 1
+   export MONGO_USERNAME CURRENT_MONGO_PW NEW_MONGO_PW NEW_ARANGO_PW
+
+   # MongoDB
+   docker exec -e MONGO_USERNAME -e CURRENT_MONGO_PW -e NEW_MONGO_PW mongodb mongosh --quiet --nodb \
+     --eval "const a = connect('mongodb://localhost:27017/admin'); a.auth(process.env.MONGO_USERNAME, process.env.CURRENT_MONGO_PW); a.changeUserPassword(process.env.MONGO_USERNAME, process.env.NEW_MONGO_PW)"
+
+   # ArangoDB (arangosh reads the current password from its prompt)
+   printf '%s\n' "$CURRENT_ARANGO_PW" | docker exec -i -e NEW_ARANGO_PW arango arangosh \
+     --server.endpoint tcp://localhost:8529 \
+     --javascript.execute-string "require('@arangodb/users').update('root', require('internal').env.NEW_ARANGO_PW)"
+   ```
+
+   Then put `NEW_MONGO_PW` in `.env` as `MONGO_PASSWORD`, `NEW_ARANGO_PW` as `ARANGO_PASSWORD`, set a new `QDRANT_API_KEY` (`openssl rand -hex 32`), and run `docker compose -f docker-compose.prod-legacy.yml up -d`. Qdrant keeps no copy of its key, so changing `.env` is enough for it.
+4. **Keep `SECRET_KEY`.** PipesHub cannot re-encrypt stored credentials with a new key, so changing it on an existing install makes the saved connector and model credentials unreadable. Treat it as a secret: keep `.env` readable only by the user that runs Compose.
+
 ---
 
 ## A second instance on the same host
@@ -194,6 +236,8 @@ PIPESHUB_PROJECT=pipeshub-eval PIPESHUB_PORT=3200 PIPESHUB_DEPLOY_TYPE=slim \
 The installer writes `COMPOSE_PROJECT_NAME` into `.env`. `--stop` and `--uninstall` in that directory read it, so they tear down **this** copy only.
 
 Exec and logs use the service name with `-p` set to that project (see [Upgrading an existing Compose install](#upgrading-an-existing-compose-install)).
+
+Both copies run their code sandboxes on the same Docker host, and each sizes its sandbox cap from the whole host. Give each copy its own `SANDBOX_MAX_TOTAL` and its own `SANDBOX_EGRESS_NETWORK` in its `.env` (see [Code sandbox capacity](#code-sandbox-capacity)).
 
 ---
 
@@ -372,8 +416,10 @@ because the name and logo come from the client.
 
 ## Runtime tuning (workers and query-service flags)
 
-These live in `.env` alongside the rest of your configuration. Every default below
-reproduces current behaviour, so an upgrade changes nothing until you opt in.
+These live in `.env` alongside the rest of your configuration. The defaults below keep
+the earlier behaviour except two: the stored-record cache is on (up to 512 MiB per query
+worker; `PIPESHUB_RECORD_CACHE_BYTES=0` turns it off and restores the earlier memory use),
+and storage search runs ripgrep on up to half the container's CPUs (`GREP_THREADS`).
 
 Compose forwards **only** the variables it enumerates, so a name that is not listed in
 the compose file never reaches the container. All of these are wired; setting them in
@@ -418,11 +464,33 @@ not documented here.
 | `PIPESHUB_ACCESSIBLE_RECORDS_CACHE` | blank (on) \| a disabled value | on |
 | `PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL` | seconds | `300` |
 | `PIPESHUB_SIGNED_URL_CACHE_SECONDS` | seconds, `0` disables, capped at `3000` | `0` |
+| `PIPESHUB_RECORD_CACHE_BACKEND` | `memory` \| `redis` | `memory` |
+| `PIPESHUB_RECORD_CACHE_BYTES` | bytes per worker, capped at 512 MiB; `0` turns the cache off (`redis` too) | 512 MiB |
+| `GREP_THREADS` | threads per search, capped at half the container's CPUs | half the CPUs |
 | `PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS` | characters, `0` removes the limit | `1000000` |
 
 `direct` calls model providers without the LangChain layer. A provider with no direct
 transport, or with credentials it cannot use, falls back to LangChain for that turn
 rather than failing it; an unrecognised value logs a warning and falls back too.
+
+The stored-record cache keeps recently read records for 60 seconds. `memory` keeps them
+decoded in each query worker, so it uses up to `PIPESHUB_RECORD_CACHE_BYTES` per worker.
+`redis` keeps the stored JSON in Redis instead, shared by all workers and with nothing held
+in the process; it is a little slower because each hit is decoded again. The bundled Redis
+also holds the configuration and the event queue and has no memory limit, so before choosing
+`redis` give Redis a `maxmemory` with the `volatile-ttl` (or `volatile-lru`) policy, which
+evicts only keys that expire, such as these cache entries. Or set `REDIS_CACHE_URL` to a
+second Redis: the caches go there and it may use `allkeys-lru`, while the main Redis stays on
+`noeviction` (services refuse to start when the main Redis uses an `allkeys-*` policy). Records written with
+append-only persistence on also go to its file on disk. Only records the storage service
+returns inline (local storage) are cached by either backend; reads through signed URLs (S3,
+Azure Blob) are not. If Redis cannot be reached when a worker first needs it, that worker
+reads records from storage without a cache until it restarts.
+
+Storage search runs grep through ripgrep when the image has it and the command can be
+reproduced exactly; otherwise it runs GNU grep. `GREP_THREADS` sets ripgrep's threads per
+search. It is capped at half the CPUs the container may use, so concurrent searches leave
+CPU for answering, and defaults to that cap.
 
 `PIPESHUB_SIGNED_URL_CACHE_SECONDS` is clamped to 3000 in code, keeping it under the
 3600-second signing lifetime so a URL handed out at the end of its cached life still has
@@ -452,7 +520,108 @@ the table says.
 > **Naming note.** The `PIPESHUB_*` variables in
 > [Environment overrides for CI / scripted installs](#environment-overrides-for-ci--scripted-installs)
 > are read by `install.sh` *before* `.env` is written and control the installer itself.
-> The four above are read by the running service. They share a prefix but not a purpose.
+> The `PIPESHUB_*` variables above are read by the running service. They share a prefix but not a purpose.
+
+---
+
+## Code sandbox capacity
+
+Code the agent runs (`run_code`, `install_packages`) gets a throwaway container per run. The app counts how many run at once for the **whole app container**: every query worker (`QUERY_UVICORN_WORKERS`) shares one count, kept in lock files under the container's `/tmp`. A run that finds every sandbox busy waits up to `SANDBOX_SLOT_WAIT_S` (120 s) and shows "waiting in queue", then is refused with a message the model can act on.
+
+The cap is sized from the Docker host when the app starts (the app asks the Docker proxy, which answers a filtered `/info`). It is the smallest of:
+
+| Term | Formula (defaults) |
+| --- | --- |
+| Memory | `SANDBOX_MEMORY_SHARE` (0.25) × host memory ÷ 512 MB per run |
+| CPU | `SANDBOX_CPU_FACTOR` (0.75) × host CPUs ÷ 0.5 CPU per run |
+| Processes | 25 % of the kernel's process limit ÷ 256 per run |
+
+It is never below `SANDBOX_MIN_TOTAL` (2). A 16 GB / 4 CPU host gets 6, 64 GB / 16 CPU gets 24, 192 GB / 48 CPU gets 72. The query log shows the result as one `sandbox capacity:` line. If Docker does not answer at startup, the app uses the minimum and retries (after 5 s, 15 s, 30 s, then every minute).
+
+Sandboxes are marked first to be killed if the host runs out of memory, ahead of the databases and the app.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SANDBOX_MAX_TOTAL` | sized | Replaces the computed cap (up to 1024; 0 or less means 1024). |
+| `SANDBOX_MAX_PER_ORG` | none | The most sandboxes one org may hold at once. |
+| `SANDBOX_MAX_PER_REQUEST` | 2 | The most sandboxes one request (a chat turn and its sub-agents) runs at once; its other calls wait for one of them, as above, without holding a sandbox. Never above the cap; 0 or unset means 2. Applies to chat requests; the agent library's own `ControlPlane` server shares one sandbox manager across its requests and is bounded by the cap only. |
+| `SANDBOX_MIN_TOTAL` | 2 | The floor, and the cap until the host has been read. Once it has, a value above what the host supports is lowered to that (with a warning). |
+| `SANDBOX_MEMORY_SHARE` | 0.25 | Share of host memory sandboxes may claim (0.05–0.95). |
+| `SANDBOX_CPU_FACTOR` | 0.75 | Share of host CPUs sandboxes may claim (0.1–2.0). |
+| `SANDBOX_SLOT_WAIT_S` | 120 | How long a run waits for a free sandbox. |
+| `SANDBOX_HOST_MEMORY_BYTES`, `SANDBOX_HOST_CPU_MILLIS` | unset | The host's size, when it cannot be read (set both). |
+| `SANDBOX_MAX_RUN_TIMEOUT_S` | 300 | The most seconds one run may take (10–3600). The Docker proxy gets the same value: it removes this stack's sandbox containers older than it (at least 300 s) plus 120 s. |
+| `DOCKER_PROXY_INSTANCE` | the Compose project | Names this stack on its sandbox containers; the proxy acts only on its own. |
+| `DOCKER_PROXY_REAP_UNLABELED` | false | Also remove sandbox containers with no stack name (left by a proxy from before stack names) once past the same age. Leave it off while another stack on the Docker host may still run an older version; the proxy logs how many there are, at most once an hour. |
+
+The Docker proxy has no client authentication of its own. It listens on 127.0.0.1 unless `DOCKER_PROXY_HOST` is set; the Compose files set `0.0.0.0` because the proxy publishes no port and sits only on the internal `sandbox-control` network. If you run it yourself (`python -m app.docker_proxy_main`), keep it off any network a user can reach. Stacks sharing one Docker daemon do not see each other through it: its network list and inspect show only the sandbox network and this stack's containers on it, and it removes only networks it created itself. It also bounds what a client can send, through variables you set on the `docker-socket-proxy` service: `DOCKER_PROXY_MAX_UPLOAD_MB` (default 10240, the largest file upload into a sandbox: a run's inputs or its installed packages), `DOCKER_PROXY_BODY_IDLE_TIMEOUT_S` (120) and `DOCKER_PROXY_BODY_TIMEOUT_S` (1800) for a stalled or slow upload, and `DOCKER_PROXY_MAX_CONNECTIONS_PER_CLIENT` (512).
+
+Without the Docker proxy (the Docker socket mounted straight into the app), nothing removes a sandbox container left behind by a killed worker; find such leftovers with `docker ps -a --filter label=ai.pipeshub.sandbox` (the `ai.pipeshub.sandbox.state-id` label holds `SANDBOX_STATE_ID` when it is set) and remove them yourself.
+
+The memory share comes on top of the app container's own limit ([App container memory](#app-container-memory)): on a small host lower `SANDBOX_MEMORY_SHARE` or set `SANDBOX_MAX_TOTAL`.
+
+**Several stacks on one Docker host.** Each stack sizes itself from the whole host, so together they would run several times the cap. Give each stack its own `SANDBOX_MAX_TOTAL` that together fit the host, and its own `SANDBOX_EGRESS_NETWORK`: every stack defaults to the same `pipeshub_sandbox_egress` network, and one stack re-creating it can break another stack's networked runs. Stacks whose services run directly on the host as one user (not in containers, e.g. several source checkouts) also share one `/tmp`; give each its own `SANDBOX_STATE_ID` (the same value for its query and indexing processes), or they share one count.
+
+**Network egress.** With `SANDBOX_ALLOW_NETWORK=true`, a sandbox on the egress network reaches public addresses only. Before its code starts, the container rejects link-local and cloud metadata addresses, Azure's `168.63.129.16`, the sandbox bridge, its gateway, and private, CGNAT and reserved ranges. `SANDBOX_EGRESS_ALLOW_CIDRS` (comma-separated IPv4) opens private ranges, for example an internal package mirror, but never the addresses before them in that list. DNS stays open on port 53 only (UDP and TCP) to the container's gateway, to the resolvers the Docker daemon forwards to from inside the container (its `dns` setting), and to the Azure, AWS and GCP resolvers (`168.63.129.16`, `169.254.169.253`, `169.254.169.254`). Every other port on those addresses stays closed. If name resolution still fails in networked runs, add your resolver to `SANDBOX_EGRESS_DNS_SERVERS` (comma-separated IPv4 addresses).
+
+**Where the shared state lives.** The query and indexing workers share their sandbox counts, live limit, indexing back-off and load records through files in a private directory, `$TMPDIR/pipeshub-sandbox[-<id>]-<uid>` (`/tmp` unless `TMPDIR` is set). When `TMPDIR` can be changed by another user, because it is writable by everyone without the sticky bit (a Kubernetes `emptyDir` mounted at `/tmp`, or a 0777 bind mount) or is owned by another user, the directory goes to `~/.cache/` under `$HOME` instead, or under the account's home when `$HOME` is open to others too, and the log shows one WARNING naming both paths. Every process of the same user with the same environment picks the same place. `SANDBOX_STATE_DIR` (an absolute path, owned by the app's user or root and not open to every user) chooses the place outright. Only when no safe place exists does each worker count on its own, which the log reports with one ERROR. In the Compose files `/tmp` is the image's own (mode 1777) and the app runs as uid 1000 with `HOME=/root`, so the state is in `/tmp/pipeshub-sandbox-1000`. The Helm chart does not mount `/tmp` either, so the state is in `/tmp/pipeshub-sandbox-1000` there as well; its `HOME` (`/home/user`) is an `emptyDir` open to every user, so if you mount an `emptyDir` at `/tmp` through `extraVolumeMounts`, the state moves to the image's account home (`/root/.cache/pipeshub-sandbox-1000`), unless you set `SANDBOX_STATE_DIR`.
+
+**Disk.** Each sandbox may write 10 GB (`SANDBOX_DISK_QUOTA`, a Docker size such as `10g`; `off` turns it off). The Docker daemon enforces this itself only on overlay2 over xfs with the `pquota` mount option, or on btrfs/zfs. Other setups, including the containerd image store (storage driver `overlayfs`), accept the setting and ignore it. On those the app checks each run's writable layer every second (`SizeRw`) and stops the run once it is past the quota; the model is told why. A fast writer can go a little past the quota between two checks, so for a hard limit use overlay2 over xfs with `pquota`. The app decides this at the first run, from the storage driver the daemon reports, and logs a warning once when it falls back to checking. `SANDBOX_DISK_WATCHDOG` (`auto`) can be set to `on` (always check) or `off` (never check). Each check has 10 s (`SANDBOX_DISK_WATCH_CHECK_TIMEOUT_S`); a check slower than that, or 3 failed checks in a row (`SANDBOX_DISK_WATCH_MAX_FAILURES`), stops the run, because a run with millions of files makes the check itself slow. Sandbox containers use Docker's `local` log driver, rotated at `10m` × 3 files (`SANDBOX_LOG_MAX_SIZE`, `SANDBOX_LOG_MAX_FILES`), so a run's output cannot fill the daemon's disk through its logs.
+
+What a run hands back to the app is bounded as well. Of stdout and stderr the app keeps the first 192 KiB and the last 64 KiB each (`SANDBOX_STDIO_HEAD_BYTES`, `SANDBOX_STDIO_TAIL_BYTES`) and replaces the middle with a `[... N bytes truncated ...]` line. From the run's output and working directories it collects at most 25 MiB per file (`SANDBOX_OUTPUT_MAX_FILE_BYTES`, the artifact size limit), 100 MiB in total (`SANDBOX_OUTPUT_MAX_TOTAL_BYTES`) and 2000 files (`SANDBOX_OUTPUT_MAX_FILES`). Larger files are left out and the model is told which. Across all the runs of one sandbox the app keeps at most 200 MiB (`SANDBOX_OUTPUT_MAX_SANDBOX_BYTES`) and 5000 files (`SANDBOX_OUTPUT_MAX_SANDBOX_FILES`) of output; past that, new files are not kept and the model is told. A file's full size counts, so a sparse file cannot expand past the limits. A package install may hand back up to 2 GiB (`SANDBOX_DEPS_MAX_TOTAL_BYTES`). Values are in bytes.
+
+### Live limit
+
+Below that cap, the app also holds new runs back while the Docker host is short of memory or CPU. Every 15 s (`SANDBOX_LIVE_INTERVAL_S`) one query worker reads the host's memory and CPU through the app container's `/proc`, once the Docker daemon has been shown to run on the same machine, and moves a **live limit** between `SANDBOX_MIN_TOTAL` and the cap. Every query worker shares it. In local mode it reads the app container's own cgroup instead. Running code is never stopped; a run held back waits as above.
+
+- **Soft line.** The limit shrinks toward the runs that fit in free memory above a soft line (`SANDBOX_HOST_MEM_SOFT_MB`; default 15 % of memory, 2–24 GB), each counted at its full 512 MB. Right after it grew, it shrinks toward the soft line only once two samples in a row are below it.
+- **Hard floor.** When free memory falls below a floor (`SANDBOX_HOST_MEM_FLOOR_MB`; default 5 %, 1–8 GB) plus one run, or on memory pressure, it halves. Each run also checks free memory itself before it starts: one that would leave less than the floor gives its slot back and waits. That check is the only thing that holds back the minimum's runs.
+- **CPU.** It drops by one per sample after two samples above 90 % CPU (`SANDBOX_HOST_CPU_BRAKE`) or CPU pressure above 0.75 (`SANDBOX_HOST_CPU_PSI_BRAKE`). Indexing brakes on CPU earlier (85 % / 0.60), so it yields CPU first.
+- **Growth.** It grows back, by doubling steps up to what memory holds, only while runs wait for it.
+- **Indexing slows down first for memory.** When a run has waited 3 s for memory, query asks indexing to slow down: indexing takes a quarter off its in-flight records and one heavy parse per sample, down to its floor, and once runs stop waiting (`SANDBOX_YIELD_TTL_S`, 20 s) waits 60 s before it grows back one step per sample. Heavy parse waits twice as long each time runs start waiting again within 4 minutes of it growing back, up to 16 minutes. Records already in flight are never cancelled. With several indexing workers, their heavy parses together are held to what one worker would keep until that wait is over. A CPU-only hold does not slow indexing. `SANDBOX_YIELD_INDEXING=off` turns this off.
+
+**Minimum host size.** In a simulation of the live limit and indexing together (not a measurement), a 4 GB host running a sync never had the hard floor plus one run free, so code runs waited until indexing was idle and timed out while it ran. A 16 GB host served chat with a p95 wait of a few seconds during a sync. For code runs while indexing is busy, plan on 8–16 GB or more. A `SANDBOX_HOST_MEM_FLOOR_MB` that leaves no room for one run below the host's memory is logged once as an error.
+
+The query log shows each change as `sandbox live limit` and `asking indexing to slow down` / `indexing back-off released`; the indexing log shows `limits changed: … yield=on`. `SANDBOX_LIVE_LIMIT=off` turns the live limit off and keeps the fixed cap. A daemon on another machine (`DOCKER_HOST` remote) gets no live limit. The docker proxy proves the daemon shares the app's machine through `/_pipeshub/host`; with an older proxy image that lacks it, or no proxy, the app falls back to comparing the daemon's memory total and kernel version with its own, which two identical machines would also pass, so set `SANDBOX_LIVE_LIMIT=off` (or upgrade the proxy) when the daemon may be on another machine.
+
+**Over-commit** is off by default. `SANDBOX_MEMORY_OVERCOMMIT=N` (up to 4) counts each run at 1/N of its 512 MB for the cap and the live limit, which raises a memory-bound cap. It applies only while the live limit reads the Docker host. Each run's own check before it starts still counts its full 512 MB, so a burst of runs that use all of it cannot take free memory below the hard floor.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SANDBOX_LIVE_LIMIT` | auto | `off` keeps the fixed cap. |
+| `SANDBOX_LIVE_INTERVAL_S` | 15 | Seconds between samples (5–60). |
+| `SANDBOX_HOST_MEM_FLOOR_MB` | 5 % (1–8 GB) | Free memory a new run must leave. |
+| `SANDBOX_HOST_MEM_SOFT_MB` | 15 % (2–24 GB) | Free memory the limit keeps above. |
+| `SANDBOX_HOST_CPU_BRAKE` | 0.90 | Host CPU use that brakes. |
+| `SANDBOX_HOST_CPU_PSI_BRAKE` | 0.75 | Host CPU pressure (PSI some avg10) that brakes. |
+| `SANDBOX_MEMORY_OVERCOMMIT` | 1.0 (off) | Count each run at 1/N of its memory for the cap (1.0–4.0); the per-run check uses its full memory. |
+| `SANDBOX_YIELD_INDEXING` | on | Runs waiting for memory slow indexing down. |
+| `SANDBOX_YIELD_TTL_S` | 20 | How long one request lasts once runs stop waiting (10–120). |
+
+### Load alerts
+
+When code runs in chat keep waiting for a sandbox, or are refused, the admins get a notification in the app, and an email if mail (SMTP) is set up. One query worker checks the last 30 minutes (`SANDBOX_ALERT_WINDOW_S`) every minute:
+
+- **Warning** ("Code runs are waiting for capacity"): runs were held back during at least 60 % of the window, and at least 30 runs waited.
+- **Critical** ("Code runs are being refused"): at least 10 runs were refused after waiting `SANDBOX_SLOT_WAIT_S`, and they are at least 5 % of all runs.
+
+Not counted: waits for one organisation's own share of sandboxes (a bigger machine would not help), runs cancelled while waiting, and memory waits before indexing has slowed down for them (slowing indexing may still free the memory). CPU and full-slot waits count at once. The alert says why runs were held back (memory, CPU, or all slots in use) and what to do about it. An overload is not alerted again while it lasts. Once neither level has held for a full window, admins get an in-app "Code runs are no longer held back" notice, without email; a new overload after that notice is alerted in the app again, every time. The email for each level is sent at most once a day, and a critical email also counts for the warning. The query log shows `sandbox load alert fired level=…`. E2B installs never alert.
+
+The cooldown is kept in the configuration store, so restarts do not resend. `SANDBOX_ALERT_SCOPE` names the machine whose sandboxes are counted; leave it unset in Compose. Stacks whose services run directly on one host as one user need their own `SANDBOX_STATE_ID` (above), or they share one evaluator.
+
+Delivery limits: the in-app notification is sent every time an alert fires; the email is sent at most once a day per level (the cooldown above). The Node service that delivers alerts also caps them per hour, as a guard against floods: at most 30 alerts of one type and 4 alert emails of one level per host, and 120 alerts of a type and 12 emails of a level across all hosts. Later alerts are dropped, and later emails are skipped while the in-app notification is still sent. Only delivered alerts count; an alert that fails to store, or has no recipients, does not. These limits are kept in memory per Node process, so a restart clears them and each replica applies its own. Alert events are not signed. When envelope signing is enforced (`ENVELOPE_CTX_REQUIRED=true`, or `ENVELOPE_SIGN=true` with `ORG_CONTEXT_MODE=enforce`), alerts are dropped and Node and the query service each log one error at startup; this lasts until alerts can be signed without an organisation.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SANDBOX_ALERTS` | true | `false` turns the alerts off (runs are still recorded). |
+| `SANDBOX_ALERT_WINDOW_S` | 1800 | Window both levels look at (120–3600). |
+| `SANDBOX_ALERT_EVAL_S` | 60 | Seconds between checks (10–600). |
+| `SANDBOX_ALERT_WARN_BUSY_PCT` | 60 | Share of the window with runs held back, for a warning (1–100). |
+| `SANDBOX_ALERT_WARN_MIN_WAITED` | 30 | Runs that waited, for a warning. |
+| `SANDBOX_ALERT_CRIT_MIN_REFUSED` | 10 | Runs refused, for a critical alert. |
+| `SANDBOX_ALERT_CRIT_REFUSED_PCT` | 5 | Refused runs as a share of all runs, for a critical alert (0–100). |
+| `SANDBOX_ALERT_COOLDOWN_S` | 86400 | Each level is sent at most once in this time, unless the back-to-normal notice was sent since (60–604800). |
+| `SANDBOX_ALERT_SCOPE` | install | Names the cooldown; one per machine whose sandboxes are counted. |
 
 ---
 

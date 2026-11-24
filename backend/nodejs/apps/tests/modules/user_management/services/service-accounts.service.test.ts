@@ -7,12 +7,6 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 
 function makeService() {
-  const logger = {
-    info: sinon.stub(),
-    debug: sinon.stub(),
-    warn: sinon.stub(),
-    error: sinon.stub(),
-  };
   const events = {
     start: sinon.stub().resolves(),
     stop: sinon.stub().resolves(),
@@ -22,7 +16,7 @@ function makeService() {
     revokeAllForServiceAccount: sinon.stub().resolves(),
     revokeDelegatedTokensForServiceAccount: sinon.stub().resolves(),
   };
-  const service = new ServiceAccountsService(logger as any, events as any);
+  const service = new ServiceAccountsService(events as any);
   service.setTokenRevoker(revoker as any);
   return { service, events, revoker };
 }
@@ -281,12 +275,6 @@ describe('ServiceAccountsService', () => {
     });
 
     it('refuses to restore at all when no revoker is wired', async () => {
-      const logger = {
-        info: sinon.stub(),
-        debug: sinon.stub(),
-        warn: sinon.stub(),
-        error: sinon.stub(),
-      };
       const events = {
         start: sinon.stub().resolves(),
         stop: sinon.stub().resolves(),
@@ -294,7 +282,7 @@ describe('ServiceAccountsService', () => {
       };
       // Deliberately no setTokenRevoker: its absence means something is wrong
       // at startup, not that there is nothing to revoke.
-      const bare = new ServiceAccountsService(logger as any, events as any);
+      const bare = new ServiceAccountsService(events as any);
       sinon.stub(Users, 'findOne').returns({
         exec: sinon.stub().resolves({
           _id: id,
@@ -489,18 +477,20 @@ describe('ServiceAccountsService', () => {
         orgId,
         email: `svc-x-${orgId}@service.pipeshub.internal`,
         isDeleted: false,
-        save: sinon.stub().resolvesThis(),
       };
-      // Read both with `.exec()` (the lookup) and by awaiting (the repository's save path).
-      sinon.stub(Users, 'findOne').callsFake((() =>
-        Object.assign(Promise.resolve(account), {
-          exec: () => Promise.resolve(account),
-        })) as any);
+      sinon.stub(Users, 'findOne').returns({
+        exec: () => Promise.resolve(account),
+      } as any);
+      const remove = sinon.stub(Users, 'findOneAndUpdate').returns({
+        exec: () => Promise.resolve({ ...account, isDeleted: true }),
+      } as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
 
       await service.remove(orgId, id);
 
-      expect(account.isDeleted).to.equal(true);
+      const [filter, update] = remove.firstCall.args as any[];
+      expect(filter).to.deep.equal({ orgId, _id: id });
+      expect(update).to.deep.equal({ $set: { isDeleted: true } });
       expect(revoker.revokeAllForServiceAccount.calledOnce).to.equal(true);
     });
   });

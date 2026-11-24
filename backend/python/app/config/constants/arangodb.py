@@ -410,6 +410,7 @@ class ExtensionTypes(Enum):
     DOCM = "docm"
     DOTX = "dotx"
     POTX = "potx"
+    PPTM = "pptm"
 
 # Common file types PipesHub cannot index. Sync filters offer them so a user can
 # exclude them (Not in); they are kept out of ExtensionTypes because that enum
@@ -683,6 +684,8 @@ class EntityRelations(Enum):
     FOR_ACCOUNT = "FOR_ACCOUNT"
     # Record -> an organisation its content names (KG-13 slice 3b, EXTRACTED).
     MENTIONS = "MENTIONS"
+    # Record -> a person the source says it is shared with (not the owner).
+    SHARED_WITH = "SHARED_WITH"
 
 
 class EntityOrigin(str, Enum):
