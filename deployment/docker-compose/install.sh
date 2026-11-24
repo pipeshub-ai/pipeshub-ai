@@ -46,7 +46,10 @@ if [[ $EUID -ne 0 ]] && \
    [[ -S /var/run/docker.sock ]] && \
    ! docker info >/dev/null 2>&1; then
   if command -v sudo >/dev/null 2>&1; then
-    exec sudo "${BASH_SOURCE[0]}" "$@"
+    # sudo starts from a clean environment, so PIPESHUB_EXTRA_PROFILES goes in as
+    # an argument. Only when it is set: unset means "use the saved value", and set
+    # but empty means "clear it". Quoted, so a list with spaces stays one argument.
+    exec sudo ${PIPESHUB_EXTRA_PROFILES+env "PIPESHUB_EXTRA_PROFILES=$PIPESHUB_EXTRA_PROFILES"} "${BASH_SOURCE[0]}" "$@"
   fi
   # sudo not available — fall through; the pre-flight check will give a clear error
 fi
@@ -81,6 +84,29 @@ COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 _saved_env_val() { [[ -f "$ENV_FILE" ]] && grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true; }
 PIPESHUB_IMAGE="${PIPESHUB_IMAGE:-$(_saved_env_val PIPESHUB_IMAGE)}"
 PIPESHUB_COMPOSE_OVERRIDES="${PIPESHUB_COMPOSE_OVERRIDES:-$(_saved_env_val PIPESHUB_COMPOSE_OVERRIDES)}"
+# PIPESHUB_EXTRA_PROFILES: compose profiles to switch on besides the ones the
+# selections bring (comma-separated), for services an override file adds. Saved
+# in .env as well; set but empty clears the saved value. Kept in EXTRA_PROFILES,
+# a name .env does not hold, so sourcing .env later cannot put the old value back.
+# SAVED_EXTRA_PROFILES is the value as this run found it, read before anything rewrites .env.
+SAVED_EXTRA_PROFILES="$(_saved_env_val PIPESHUB_EXTRA_PROFILES)"
+SAVED_EXTRA_PROFILES="${SAVED_EXTRA_PROFILES//[[:space:]]/}"
+EXTRA_PROFILES="${PIPESHUB_EXTRA_PROFILES-$SAVED_EXTRA_PROFILES}"
+EXTRA_PROFILES="${EXTRA_PROFILES//[[:space:]]/}"
+# The value goes into .env, which this script sources: profile names and nothing else.
+_profile_list='^([A-Za-z0-9][A-Za-z0-9_.-]*(,[A-Za-z0-9][A-Za-z0-9_.-]*)*)?$'
+[[ "$EXTRA_PROFILES" =~ $_profile_list ]] \
+  || die "PIPESHUB_EXTRA_PROFILES: expected compose profile names separated by commas, got '${EXTRA_PROFILES}'"
+# A name given twice is saved once, as it is switched on once.
+if [[ -n "$EXTRA_PROFILES" ]]; then
+  _extra_once=""
+  _extra_ifs="$IFS"; IFS=','
+  for _extra_name in $EXTRA_PROFILES; do
+    [[ ",${_extra_once}," == *",${_extra_name},"* ]] || _extra_once+="${_extra_once:+,}${_extra_name}"
+  done
+  IFS="$_extra_ifs"
+  EXTRA_PROFILES="$_extra_once"
+fi
 
 # Every compose call reads docker-compose.yml plus the files listed in
 # PIPESHUB_COMPOSE_OVERRIDES (colon-separated; relative paths start here).
@@ -159,6 +185,8 @@ Environment overrides (bypass prompts in CI):
   PIPESHUB_IMAGE         app image repository (default: pipeshubai/pipeshub-ai)
   PIPESHUB_COMPOSE_OVERRIDES  extra compose files, colon-separated, layered over docker-compose.yml
                          (relative paths start in this directory; saved in .env with PIPESHUB_IMAGE)
+  PIPESHUB_EXTRA_PROFILES  extra compose profiles, comma-separated, for services those files add
+                         (saved in .env; set it empty to clear the saved value)
   PIPESHUB_ENV_EXTRA     file whose lines are appended to a newly written .env (no keys the
                          installer writes itself; relative paths start in this directory)
   PIPESHUB_PUBLIC_URL    public HTTPS URL (e.g. https://pipeshub.yourdomain.com)
@@ -269,14 +297,46 @@ optional_env_line() {
   fi
 }
 
+# A value the operator typed into .env, written so that this script can source it and Compose reads the same
+# value: as it is when it is plain, otherwise in single quotes, where neither expands anything. Fails, printing
+# nothing, for a value that cannot be written that way: one with a quote, a $ or a backtick inside, a
+# backslash between double quotes, or a trailing comment.
+sourceable_env_value() {
+  local v="$1"
+  if [[ ${#v} -ge 2 && "$v" == \'*\' ]]; then
+    v="${v:1:${#v}-2}"
+  elif [[ ${#v} -ge 2 && "$v" == \"*\" ]]; then
+    v="${v:1:${#v}-2}"
+    [[ "$v" != *\\* ]] || return 1
+  else
+    [[ "$v" != *" #"* ]] || return 1
+    v="${v%"${v##*[![:space:]]}"}"
+  fi
+  [[ "$v" != *[\'\"\$\`]* ]] || return 1
+  if [[ "$v" =~ ^[A-Za-z0-9_.:/@%+=,-]*$ ]]; then printf '%s' "$v"; else printf "'%s'" "$v"; fi
+}
+
 # The opt-in PostgreSQL profiles are not derived from a selector: keep the ones already set (in the shell or in the saved .env), and
 # postgres and postgres-migrate whenever the document-store override is in use, since it depends on services of both.
+# PIPESHUB_EXTRA_PROFILES come last. A profile the selections decide (graph, broker, key-value store, sandbox) is not taken from
+# there: the selections stay the one place that turns those on.
+# A PostgreSQL profile named there counts as already set. One it named until this run, and names no longer, counts as not
+# set: without this the "already set" rule would keep it for good. The override still brings its own.
 opt_in_profiles() {
   local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)"
+  local seen=",graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox," was=",${SAVED_EXTRA_PROFILES:-}," now=",${EXTRA_PROFILES:-},"
   for o in postgres postgres-migrate postgres-metrics; do
+    seen+="${o},"
+    if [[ "$now" == *",${o},"* ]]; then have+=",${o}"
+    elif [[ "$was" == *",${o},"* ]]; then have=",${have},"; have="${have//",${o},"/,}"; have="${have//",${o},"/,}"; fi
     if [[ ",${have}," == *",${o},"* || ( "$o" != postgres-metrics && "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ) ]]; then
       echo "$o"
     fi
+  done
+  local IFS=','
+  for o in ${EXTRA_PROFILES:-}; do
+    [[ -z "$o" || "$seen" == *",${o},"* ]] && continue
+    echo "$o"; seen+="${o},"
   done
 }
 
@@ -680,8 +740,10 @@ if $FLAG_STOP; then
   # .env currently selects. Otherwise a container started under a different
   # profile stays attached to the network and blocks its removal
   # ("Resource is still in use"). --remove-orphans clears containers left by a
-  # previously-active profile too.
+  # previously-active profile too. PIPESHUB_EXTRA_PROFILES are named as well:
+  # a service of an inactive profile is not an orphan, so `down` would leave it.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,postgres-metrics"
+  if [[ -n "$EXTRA_PROFILES" ]]; then COMPOSE_PROFILES+=",${EXTRA_PROFILES}"; fi
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
@@ -703,8 +765,9 @@ if $FLAG_UNINSTALL; then
   # volume (ArangoDB, Neo4j, etcd, Kafka/Zookeeper) regardless of which
   # profile was active for this deployment.  Without this, volumes from a
   # previously-used profile (e.g. arango_data after switching to neo4j) would
-  # be silently left behind.
+  # be silently left behind. The same goes for PIPESHUB_EXTRA_PROFILES.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,postgres-metrics"
+  if [[ -n "$EXTRA_PROFILES" ]]; then COMPOSE_PROFILES+=",${EXTRA_PROFILES}"; fi
   # `down -v` with the postgres profile would delete the database with everything else: keep it unless asked.
   _keep_pg=false
   _pg_vol=""
@@ -1263,6 +1326,10 @@ if ! ${SKIP_WIZARD:-false}; then
   NEO4J_MEMORY_LIMIT="$(get_existing_val NEO4J_MEMORY_LIMIT "")"
   NEO4J_MEMORY_RESERVATION="$(get_existing_val NEO4J_MEMORY_RESERVATION "")"
   QDRANT_MEMORY_RESERVATION="$(get_existing_val QDRANT_MEMORY_RESERVATION "")"
+  # The web readers' credentials (env.template): set by hand, never asked here. Without them a rewrite
+  # leaves the search-searxng and fetch-crawl4ai services, which PIPESHUB_EXTRA_PROFILES keeps on, unable to start.
+  _saved_searxng_secret="$(_saved_env_val SEARXNG_SECRET)"
+  _saved_crawl4ai_token="$(_saved_env_val CRAWL4AI_API_TOKEN)"
   # Qdrant's memory limit decides search speed once the index grows
   # (docs/deployment/vector-db-sizing.md); keep an operator's value.
   QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "${QDRANT_MEMORY_LIMIT:-}")"
@@ -1525,6 +1592,23 @@ ENVFILE
   if [[ -n "${PIPESHUB_COMPOSE_OVERRIDES:-}" ]]; then
     printf 'PIPESHUB_COMPOSE_OVERRIDES=%s\n' "$PIPESHUB_COMPOSE_OVERRIDES" >> "$ENV_FILE"
   fi
+  if [[ -n "$EXTRA_PROFILES" ]]; then
+    printf 'PIPESHUB_EXTRA_PROFILES=%s\n' "$EXTRA_PROFILES" >> "$ENV_FILE"
+  fi
+  # The web readers' credentials as they were saved, unless PIPESHUB_ENV_EXTRA sets them for this .env.
+  # This script sources .env, and these two are typed by hand: a value with a space or a $ written back as it
+  # was would run as a command there. So each goes in as sourceable_env_value gives it, or is left out with a warning.
+  for _kept in "SEARXNG_SECRET=${_saved_searxng_secret}" "CRAWL4AI_API_TOKEN=${_saved_crawl4ai_token}"; do
+    _kept_key="${_kept%%=*}"
+    [[ -n "${_kept#*=}" ]] || continue
+    if [[ -n "${PIPESHUB_ENV_EXTRA:-}" && -f "$PIPESHUB_ENV_EXTRA" ]] && grep -qE "^${_kept_key}=" "$PIPESHUB_ENV_EXTRA"; then continue; fi
+    if _kept_val="$(sourceable_env_value "${_kept#*=}")"; then
+      [[ -z "$_kept_val" ]] || printf '%s=%s\n' "$_kept_key" "$_kept_val" >> "$ENV_FILE"
+    else
+      warn "${_kept_key} was not carried over: its value has a quote, a \$, a backtick or a comment in it, which .env cannot hold safely here."
+      warn "  It is in $(basename "${_backup:-the .env backup}"). Use a value without those, and add it to .env by hand."
+    fi
+  done
   if [[ -n "${PIPESHUB_ENV_EXTRA:-}" ]]; then
     [[ -f "$PIPESHUB_ENV_EXTRA" ]] || die "PIPESHUB_ENV_EXTRA: $PIPESHUB_ENV_EXTRA not found"
     # A key the installer already wrote would appear twice and be read back wrong.
@@ -1678,11 +1762,22 @@ fi
 # this, reusing an .env written by an older installer (or hand-edited) can start
 # the app while leaving its graph DB / broker container down, so the health
 # check can never pass. Derive the correct set, fix it in memory, and persist it.
+#
+# A PIPESHUB_EXTRA_PROFILES given for this run replaces the saved one first. The
+# list then follows it without the warning, which is for a list that went stale.
+_extra_profiles_changed=false
+if [[ "$EXTRA_PROFILES" != "$(_saved_env_val PIPESHUB_EXTRA_PROFILES)" ]]; then
+  persist_env_var "PIPESHUB_EXTRA_PROFILES" "$EXTRA_PROFILES"
+  info "Extra compose profiles: ${EXTRA_PROFILES:-(none)}"
+  _extra_profiles_changed=true
+fi
 _EXPECTED_PROFILES="$(derive_compose_profiles)"
 if [[ "${COMPOSE_PROFILES:-}" != "$_EXPECTED_PROFILES" ]]; then
-  warn "COMPOSE_PROFILES in .env ('${COMPOSE_PROFILES:-}') does not match the configured services"
-  warn "  (DATA_STORE=${DATA_STORE:-unset}, MESSAGE_BROKER=${MESSAGE_BROKER:-unset}, KV_STORE_TYPE=${KV_STORE_TYPE:-unset})."
-  warn "Repairing to '${_EXPECTED_PROFILES:-(none)}' so the required containers start."
+  if ! $_extra_profiles_changed; then
+    warn "COMPOSE_PROFILES in .env ('${COMPOSE_PROFILES:-}') does not match the configured services"
+    warn "  (DATA_STORE=${DATA_STORE:-unset}, MESSAGE_BROKER=${MESSAGE_BROKER:-unset}, KV_STORE_TYPE=${KV_STORE_TYPE:-unset})."
+    warn "Repairing to '${_EXPECTED_PROFILES:-(none)}' so the required containers start."
+  fi
   COMPOSE_PROFILES="$_EXPECTED_PROFILES"
   persist_env_var "COMPOSE_PROFILES" "$COMPOSE_PROFILES"
 fi
