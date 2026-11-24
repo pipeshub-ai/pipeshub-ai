@@ -86,7 +86,10 @@ def _build(conn: Connection, table: str, schema: str, idx: str, cols: str, u: st
     if _scalar(conn, "SELECT relkind = 'p' FROM pg_class WHERE oid = %s::regclass", table):
         run(f"CREATE {u}INDEX IF NOT EXISTS {idx} ON ONLY {table} {using}({cols}){w}")
         for child in children:
-            child_idx = f"{child.split('.')[-1]}_{idx}"
+            # A partition created or attached while this index was invalid (a stopped run) got an index of its own, attached under a name the
+            # server chose: that one is completed, not a second one built beside it, which ATTACH would refuse.
+            child_idx = _scalar(conn, "SELECT quote_ident(c.relname) FROM pg_inherits i JOIN pg_index x ON x.indexrelid = i.inhrelid JOIN pg_class c ON c.oid = i.inhrelid "
+                                "WHERE i.inhparent = to_regclass(%s) AND x.indrelid = %s::regclass", f"{schema}.{idx}", child) or f"{child.split('.')[-1]}_{idx}"
             _build(conn, child, schema, child_idx, cols, u, w, blocking=blocking, using=using)
             attached = _scalar(conn, "SELECT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = %s::regclass "
                                "AND inhparent = %s::regclass)", f"{schema}.{child_idx}", f"{schema}.{idx}")

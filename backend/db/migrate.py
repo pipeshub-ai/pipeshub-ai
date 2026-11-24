@@ -155,7 +155,7 @@ def build_memory() -> str | None:
     raw = os.environ.get("PG_INDEX_BUILD_MEMORY_MB", "").strip()
     if not raw:
         return None
-    if not raw.isdigit() or not 1 <= int(raw) <= 2_000_000:
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= 2_000_000:     # "²" is a digit to isdigit(), not to int()
         raise RunnerError(EXIT_CONFIG, f"PG_INDEX_BUILD_MEMORY_MB must be a whole number of megabytes from 1, got {raw!r}")
     return f"{int(raw)}MB"
 
@@ -194,7 +194,7 @@ def _progress(c: Connection, qname: str) -> Iterator[None]:
                 while not stop.wait(PROGRESS_EVERY_S):
                     row = p.exec_driver_sql("SELECT phase, blocks_done, blocks_total, partitions_done, partitions_total "
                                             "FROM pg_stat_progress_create_index WHERE pid = %s", (pid,)).first()
-                    if row:
+                    if row and not stop.is_set():          # a poll that outlived the join may read the next index's build on the same pid
                         log(f"index {qname}: {row[0]}, blocks {row[1]}/{row[2]}, partitions {row[3]}/{row[4]}")
         except Exception as exc:                        # progress is only reported: the build goes on without it
             log(f"index {qname}: no progress report ({type(exc).__name__})")
@@ -214,7 +214,7 @@ def _build_online(c: Connection, modules: list, started: list[str]) -> None:
     that got an index with an expression key is analyzed once at the end: the planner has no statistics for an expression until then."""
     analyze: list[str] = []
     for ix in (ix for m in modules for ix in getattr(m, "ONLINE_INDEXES", ())):
-        schema = ix["table"].split(".")[0]
+        schema = ix["table"].split(".")[0] if "." in ix["table"] else "public"      # where ddl puts it
         qname = f"{schema}.{ix['name']}"
         if c.exec_driver_sql("SELECT to_regclass(%s) IS NULL", (ix["table"],)).scalar():
             continue
@@ -253,20 +253,21 @@ def drop_online(c: Connection, qname: str) -> None:
     ``nodes_def_<name>``) cannot be dropped CONCURRENTLY: its drop is a catalog change of a moment, under ddl._retry's 2 s lock_timeout. A
     leaf's index is dropped CONCURRENTLY."""
     schema, name = ddl._ident(qname).split(".")
-    tree: list[str] = []
+    tree: list[tuple[str, str | None]] = []           # (index, the partition it must be on)
 
     def walk(table: str, idx: str) -> None:
         for child in c.exec_driver_sql("SELECT inhrelid::regclass::text FROM pg_inherits WHERE inhparent = %s::regclass ORDER BY 1", (table,)).scalars().all():
             child_idx = f"{child.split('.')[-1]}_{idx}"
-            tree.append(f"{schema}.{child_idx}")
+            tree.append((f"{schema}.{child_idx}", child))
             walk(child, child_idx)
     table = c.exec_driver_sql("SELECT indrelid::regclass::text FROM pg_index WHERE indexrelid = to_regclass(%s)", (qname,)).scalar()
     if table:
         walk(table, name)
-    for q in [*reversed(tree), qname]:                  # the leaves before their parents
-        row = c.exec_driver_sql("SELECT c.relkind, EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid) FROM pg_class c "
-                                "WHERE c.oid = to_regclass(%s) AND c.relkind IN ('i', 'I')", (q,)).first()
-        if row is None or (row[1] and q != qname):     # not there, or attached: it goes with its parent
+    for q, on in [*reversed(tree), (qname, None)]:    # the leaves before their parents
+        row = c.exec_driver_sql("SELECT c.relkind, EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = c.oid), "
+                                "x.indrelid = to_regclass(%s) FROM pg_class c JOIN pg_index x ON x.indexrelid = c.oid "
+                                "WHERE c.oid = to_regclass(%s) AND c.relkind IN ('i', 'I')", (on, q)).first()
+        if row is None or (row[1] and q != qname) or row[2] is False:     # not there, attached (it goes with its parent), or another table's
             continue
         if row[0] == "I":
             ddl._retry(c, lambda q=q: c.exec_driver_sql(f"DROP INDEX IF EXISTS {q}"), attempts=5)

@@ -204,9 +204,9 @@ def _call_name(f: ast.expr) -> str:
     return ""
 
 
-def _static(node: ast.expr, env: dict[str, ast.expr], depth: int = 0) -> str:
+def _static(node: ast.expr, env: dict[str, list[ast.expr]], depth: int = 0) -> str:
     """The text of a SQL argument with each part built at run time as ``\x00``: f-strings, ``+``, ``%`` and ``.format`` on a literal, and a name
-    assigned in the same function."""
+    assigned in the same function (every value it is assigned, one per line: which one a call sees is not followed)."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.JoinedStr):
@@ -218,7 +218,7 @@ def _static(node: ast.expr, env: dict[str, ast.expr], depth: int = 0) -> str:
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
         return re.sub(r"\{[^}]*\}", "\x00", _static(node.func.value, env, depth))
     if isinstance(node, ast.Name) and node.id in env and depth < 5:
-        return _static(env[node.id], env, depth + 1)
+        return "\n".join(_static(v, env, depth + 1) for v in env[node.id])
     return "\x00"
 
 
@@ -237,7 +237,10 @@ def _upgrade_sql(py_text: str, runtime: list[str] | None = None) -> tuple[list[s
         nodes = list(ast.walk(fn))
         alias = {t.id for n in nodes if isinstance(n, ast.Assign) and _call_name(n.value) in _EXEC_CALLS
                  for t in n.targets if isinstance(t, ast.Name)}                   # run = conn.exec_driver_sql
-        env = {t.id: n.value for n in nodes if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+        env: dict[str, list[ast.expr]] = {}
+        for n in (n for n in nodes if isinstance(n, ast.Assign)):
+            for t in (t for t in n.targets if isinstance(t, ast.Name)):
+                env.setdefault(t.id, []).append(n.value)
         for call in (n for n in nodes if isinstance(n, ast.Call)):
             name = _call_name(call.func)
             if name in funcs and isinstance(call.func, ast.Name):
@@ -422,10 +425,12 @@ def _released() -> dict[str, int]:
     return json.loads((Path(__file__).parent / "released_heads.json").read_text())["epochs"]
 
 
-def _online_names(text: str) -> set[str | None]:
+def _online_indexes(text: str) -> set[tuple[str, str]]:
+    """(table, name) of each entry of ``ONLINE_INDEXES`` written as literals."""
     online = _module_assign(text, "ONLINE_INDEXES")
-    return {_const_str(v) for d in (online.elts if isinstance(online, ast.List) else []) if isinstance(d, ast.Dict)
-            for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant) and k.value == "name"}
+    entries = [{k.value: _const_str(v) for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant)}
+               for d in (online.elts if isinstance(online, ast.List) else []) if isinstance(d, ast.Dict)]
+    return {(_key(e["table"]), e["name"]) for e in entries if e.get("table") and e.get("name")}
 
 
 def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
@@ -444,25 +449,28 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
     sql_file = py.with_suffix(".sql")
     runtime: list[str] = []
     const_sql, _ = _upgrade_sql(text, runtime)
-    created = {_key(m.group(1)) for s in [sql_file.read_text(encoding="utf-8") if sql_file.is_file() else "", *const_sql]
-               for m in re.finditer(rf"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(?:IF NOT EXISTS\s+)?({_N})", s, re.I)}
+    earlier = _earlier_tables(sql_file)
+    created = {_key(m.group(2)) for s in [sql_file.read_text(encoding="utf-8") if sql_file.is_file() else "", *const_sql]
+               for m in re.finditer(rf"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(IF NOT EXISTS\s+)?({_N})", s, re.I)
+               if not (m.group(1) and _key(m.group(2)) in earlier)}
     # a later revision of the branch is pending whenever this one is, so the online step builds its ONLINE_INDEXES ahead of this one's call too
     later = [f.read_text(encoding="utf-8") for f in py.parent.glob("[0-9]*.py") if f.name[:4].isdigit() and int(f.name[:4]) > int(epoch)]
-    online_names = {n for t in (text, *later) for n in _online_names(t)}
+    online = {ix for t in (text, *later) for ix in _online_indexes(t)}
     why = _module_assign(text, "blocking_index_ok")
     waived = isinstance(why, ast.Constant) and isinstance(why.value, str) and len(why.value.split()) >= 4
     tree = ast.parse(text)
     nodes = [n for f in tree.body if not (isinstance(f, ast.FunctionDef) and f.name == "downgrade") for n in ast.walk(f)]
-    from_online = {n.target.id for n in nodes if isinstance(n, ast.For) and isinstance(n.target, ast.Name)
-                   and isinstance(n.iter, ast.Name) and n.iter.id == "ONLINE_INDEXES"}
+    from_online = {id(c) for f in nodes if isinstance(f, ast.For) and isinstance(f.target, ast.Name) and isinstance(f.iter, ast.Name)
+                   and f.iter.id == "ONLINE_INDEXES" for c in ast.walk(f) if isinstance(c, ast.Call)
+                   and any(k.arg is None and isinstance(k.value, ast.Name) and k.value.id == f.target.id for k in c.keywords)}
     bad = []
     for call in (n for n in nodes if isinstance(n, ast.Call) and _call_name(n.func) == "ensure_partitioned_index"):
         if not any(k.arg == "blocking" and isinstance(k.value, ast.Constant) and k.value.value is True for k in call.keywords):
             continue
-        if any(k.arg is None and isinstance(k.value, ast.Name) and k.value.id in from_online for k in call.keywords):
+        if id(call) in from_online:
             continue
         table, name = (_const_str(n) if (n := _arg(call, i, kw)) is not None else None for i, kw in ((1, "table"), (2, "name")))
-        if (table and _key(table) in created) or (name and name in online_names) or waived:
+        if (table and _key(table) in created) or (table and name and (_key(table), name) in online) or waived:
             continue
         bad.append(f"{py.name}: index {name or '<built at run time>'} on {table or '<built at run time>'} is built inside the upgrade's transaction "
                    "(blocking=True): list it in ONLINE_INDEXES, or set blocking_index_ok = \"<why it cannot be built ahead>\"")
@@ -483,7 +491,9 @@ def retiring_violations() -> list[str]:
 
 def main(argv: list[str]) -> int:
     files = [Path(a) for a in argv] or sorted(f for d in version_locations() for g in ("*.sql", "vetted/*.sql") for f in Path(d).glob(g))
-    bad = [msg for f in files if f.suffix != ".py" for msg in lint_file(f)]
+    sql_files = [f for f in files if f.suffix != ".py"]
+    sql_files += [s for f in files if f.suffix == ".py" and (s := f.with_suffix(".sql")).is_file() and s not in sql_files]   # its upgrade()'s constant SQL
+    bad = [msg for f in sql_files for msg in lint_file(f)]
     revisions = [f for f in files if f.suffix == ".py"] if argv else sorted(f for d in version_locations() for f in Path(d).glob("[0-9]*.py"))
     released = _released()
     bad += [msg for f in revisions for msg in lint_revision(f, released)]

@@ -1967,3 +1967,75 @@ def test_a_long_online_build_logs_its_progress(db, monkeypatch, capsys):
     assert re.search(rf"index graph\.{ix['name']}: waiting for writers before build, blocks \d+/\d+, partitions \d+/\d+", out), out
     with connect(cluster, name) as c:
         assert _whole_and_valid(c, ix["name"])
+
+
+def _autocommit(cluster, name):
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import NullPool
+    return create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{cluster.port}/{name}", poolclass=NullPool, isolation_level="AUTOCOMMIT")
+
+
+def test_a_partition_made_while_the_parent_index_was_invalid_keeps_the_index_the_server_gave_it(db):
+    """A run stopped after the ON ONLY parent: a partition created before the next run gets an index of the parent's from the server, attached
+    under a name the server chose. The next run completes that one instead of building a second index that ATTACH would refuse."""
+    from db.lib import ddl
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1)")
+        c.execute("INSERT INTO public.rt VALUES (1)")
+        c.execute("CREATE INDEX rt_k ON ONLY public.rt (k)")                     # the stopped run
+        c.execute("CREATE TABLE public.rt_2 PARTITION OF public.rt FOR VALUES IN (2)")
+        assert c.execute("SELECT count(*) FROM pg_inherits WHERE inhparent = 'public.rt_k'::regclass").fetchone()[0] == 1
+    engine = _autocommit(cluster, name)
+    try:
+        with engine.connect() as c:
+            ddl.ensure_partitioned_index(c, "public.rt", "rt_k", "k", blocking=False)
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.rt_k'::regclass").fetchone()[0] is True
+        assert c.execute("SELECT count(*) FROM pg_index WHERE indrelid IN ('public.rt_1'::regclass, 'public.rt_2'::regclass)").fetchone()[0] == 2
+
+
+def test_dropping_an_online_index_leaves_a_same_named_index_of_another_table(db):
+    """The indexes of a build's tree are found by their names, built from the partitions' names: an index of another table that has such a
+    name is not part of the tree and stays."""
+    from db import migrate
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1)")
+        c.execute("CREATE INDEX rt_k ON ONLY public.rt (k)")
+        c.execute("CREATE TABLE public.other (k int)")
+        c.execute("CREATE INDEX rt_1_rt_k ON public.other (k)")                  # the name a leaf index of rt_k would have
+    engine = _autocommit(cluster, name)
+    try:
+        with engine.connect() as c:
+            migrate.drop_online(c, "public.rt_k")
+    finally:
+        engine.dispose()
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT to_regclass('public.rt_k') IS NULL, to_regclass('public.rt_1_rt_k') IS NOT NULL").fetchone() == (True, True)
+
+
+def test_an_online_index_on_an_unqualified_table_is_named_in_public(db):
+    """ddl puts the index of an unqualified table in public: the step records and checks it there, so a failed upgrade drops it and an
+    expression key gets its table analyzed."""
+    from types import SimpleNamespace
+
+    from db import migrate
+    cluster, name = db
+    with connect(cluster, name) as c:
+        c.execute("CREATE TABLE public.rt (k int) PARTITION BY LIST (k)")
+        c.execute("CREATE TABLE public.rt_1 PARTITION OF public.rt FOR VALUES IN (1) WITH (autovacuum_enabled = off)")
+        c.execute("INSERT INTO public.rt SELECT 1 FROM generate_series(1, 1000)")
+    engine, started = _autocommit(cluster, name), []
+    try:
+        with engine.connect() as c:
+            migrate._build_online(c, [SimpleNamespace(ONLINE_INDEXES=[{"table": "rt", "name": "rt_k1", "cols": "(k + 1)"}])], started)
+    finally:
+        engine.dispose()
+    assert started == ["public.rt_k1"]
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT count(*) FROM pg_statistic WHERE starelid = 'public.rt_1'::regclass").fetchone()[0] == 1

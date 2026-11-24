@@ -366,7 +366,7 @@ def test_lint_a_revision_that_retires_indexes_says_whether_older_code_needs_them
         assert "set min_code_epoch (older code plans with them) or older_code_compatible" in lint.retiring_violations()[0]
 
 
-@pytest.mark.parametrize("raw,want", [("", None), (" ", None), ("512", "512MB"), ("0", 2), ("-1", 2), ("1.5", 2), ("1GB", 2), ("9999999", 2)])
+@pytest.mark.parametrize("raw,want", [("", None), (" ", None), ("512", "512MB"), ("0", 2), ("-1", 2), ("1.5", 2), ("1GB", 2), ("9999999", 2), ("\u00b2", 2)])
 def test_the_index_build_memory_is_a_whole_number_of_megabytes(monkeypatch, raw, want):
     monkeypatch.setenv("PG_INDEX_BUILD_MEMORY_MB", raw)
     if want == 2:
@@ -640,12 +640,17 @@ _BUILD = 'def upgrade():\n    ensure_partitioned_index(op.get_bind(), "graph.nod
     ("blocking on an existing table", _BUILD, None, True),
     ("its name is one of ONLINE_INDEXES", 'ONLINE_INDEXES = [{"table": "graph.nodes", "name": "nodes_x", "cols": "org_id"}]\n' + _BUILD, None, False),
     ("another name is", 'ONLINE_INDEXES = [{"table": "graph.nodes", "name": "nodes_y", "cols": "org_id"}]\n' + _BUILD, None, True),
+    ("the name on another table is", 'ONLINE_INDEXES = [{"table": "kg.records", "name": "nodes_x", "cols": "org_id"}]\n' + _BUILD, None, True),
     ("built from ONLINE_INDEXES", 'ONLINE_INDEXES = []\n\n\ndef upgrade():\n    for ix in ONLINE_INDEXES:\n'
                                   '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, False),
     ("built from another list", 'INDEXES = []\n\n\ndef upgrade():\n    for ix in INDEXES:\n'
                                 '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, True),
+    ("the loop name reused for another list", 'ONLINE_INDEXES = []\nINDEXES = []\n\n\ndef upgrade():\n    for ix in ONLINE_INDEXES:\n'
+                                              '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n    for ix in INDEXES:\n'
+                                              '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, True),
     ("names built at run time", 'def upgrade():\n    for t, n in X:\n        ensure_partitioned_index(op.get_bind(), t, n, "c", blocking=True)\n', None, True),
     ("its table is created by the revision's .sql", _BUILD, "CREATE TABLE graph.nodes (org_id text)", False),
+    ("IF NOT EXISTS of a table an earlier revision creates", _BUILD, "CREATE TABLE IF NOT EXISTS graph.nodes (org_id text)", True),
     ("a reasoned waiver", 'blocking_index_ok = "the index keys a column this revision adds"\n' + _BUILD, None, False),
     ("a waiver without a reason", 'blocking_index_ok = "ok"\n' + _BUILD, None, True),
     ("online, not blocking", _BUILD.replace("blocking=True", "blocking=False"), None, False),
@@ -677,6 +682,8 @@ def test_lint_takes_an_index_a_later_revision_lists_online_as_built_ahead(tmp_pa
     ("concatenated", 'def upgrade():\n    op.execute("DROP INDEX " + n)\n', True),
     ("its kind built at run time", 'def upgrade():\n    op.execute(f"DROP {kind} graph.x")\n', True),
     ("through a name", 'def upgrade():\n    sql = "drop index %s" % n\n    op.execute(sql)\n', True),
+    ("through a name assigned again after it ran", 'def upgrade():\n    sql = "DROP INDEX graph.x"\n    op.execute(sql)\n'
+                                                    '    sql = "SELECT 1"\n    op.execute(sql)\n', True),
     (".format", 'def upgrade():\n    op.get_bind().exec_driver_sql("DROP INDEX {}".format(n))\n', True),
     ("a literal in a revision without .sql", 'def upgrade():\n    op.execute("DROP INDEX graph.x")\n', True),
     ("a waiver does not clear it", 'older_code_compatible = "older code never reads that index at all"\n'
@@ -699,4 +706,11 @@ def test_lint_leaves_released_revisions_alone(tmp_path):
     assert lint.lint_revision(py, {"graph": 3}) == []
     assert lint.main([str(py)]) == 0                                # graph_0003 is in released_heads.json
     py.write_text(py.read_text().replace("graph_0003", "graph_9999"))
+    assert lint.main([str(py)]) == 1
+
+
+def test_lint_of_a_revision_py_reads_the_constant_sql_of_its_upgrade_when_it_has_a_sql_file(tmp_path):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_9999"\n\n\ndef upgrade():\n    op.execute("DROP INDEX graph.x")\n')
+    py.with_suffix(".sql").write_text("SELECT 1;\n")
     assert lint.main([str(py)]) == 1
