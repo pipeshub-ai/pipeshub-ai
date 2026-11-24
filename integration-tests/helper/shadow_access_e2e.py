@@ -302,13 +302,14 @@ async def verify_listed_authenticator_has_no_link(
             )
         listed = _listed_among(session, connector_id, set(ids), "for the listed authenticator")
         assert not listed, f"the knowledge hub listed {len(listed)} of them to {session.email}: {sorted(listed)[:10]}"
-        records = await _live_records(graph_provider, connector_id)
+        # A miss on a record not yet indexed proves nothing: wait until search can return each one.
+        records = await _wait_until_indexed(graph_provider, connector_id, set(ids), timeout=SEARCH_SETTLE_TIMEOUT_SEC)
         shared = Counter(r.get("virtualRecordId") for r in records.values())
         for rid in ids:
-            record = records.get(rid) or {}
-            virtual_id, name = record.get("virtualRecordId"), (record.get("recordName") or "").strip()
+            record = records[rid]
+            virtual_id, name = record["virtualRecordId"], (record.get("recordName") or "").strip()
             # A virtual id another record shares could come back through that record
-            if not virtual_id or shared[virtual_id] > 1 or len(name) < 3:
+            if shared[virtual_id] > 1 or len(name) < 3:
                 continue
             refused, seen = _poll_search(
                 session, connector_id, SearchCandidate(rid, virtual_id, (name,)), want_found=False,
@@ -412,6 +413,26 @@ def _creator_session(client: PipeshubClient, link: Link) -> SecondUser:
         base_url=client.base_url,
         timeout=client.timeout_seconds,
     )
+
+
+async def _wait_until_indexed(
+    graph_provider: GraphProviderProtocol, connector_id: str, record_ids: set[str], *, timeout: float,
+) -> dict[str, dict[str, Any]]:
+    """The connector's live records once every one of ``record_ids`` is indexed (COMPLETED, with a
+    virtualRecordId); fails the test if any is not within ``timeout``."""
+    deadline = time.monotonic() + timeout
+    while True:
+        records = await _live_records(graph_provider, connector_id)
+        pending = sorted(
+            rid for rid in record_ids
+            if (records.get(rid) or {}).get("indexingStatus") != "COMPLETED"
+            or not (records.get(rid) or {}).get("virtualRecordId")
+        )
+        if not pending:
+            return records
+        if time.monotonic() >= deadline:
+            pytest.fail(f"{len(pending)} record(s) not indexed after {timeout}s: {pending[:10]}")
+        await asyncio.sleep(SEARCH_POLL_SEC)
 
 
 async def _live_records(

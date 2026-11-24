@@ -164,6 +164,9 @@ class TestGmailWorkspaceShadowLink:
         owner = await graph_provider.get_user_by_user_id(owner_id)
         admin = await graph_provider.graph_find_user_by_email(env.admin_email)
         assert owner and admin, "the owner and the admin are users of the graph"
+        # As on the first sync after an upgrade: earlier runs left the owner in the marker, which
+        # would remove the link without the listing being read for them
+        await config_service.set_config(LISTED_AUTHENTICATORS_KEY.format(connector_id=cid), [])
         # Written as a sync that did not check the listing wrote it
         await graph_provider.upsert_authenticated_as(
             owner.get("_key") or owner.get("id"), admin.get("_key") or admin.get("id"), cid,
