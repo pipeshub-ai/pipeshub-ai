@@ -5563,17 +5563,17 @@ class GoogleDriveTeamConnector(BaseConnector):
                     self._limited_subtrees.setdefault(item_drive_id, set()).add(file_id)
                     await self._queue_limited_subtree(item_drive_id, file_id)
                 elif (
-                    item_drive_id and existing_record is not None
-                    and item_drive_id not in self._listed_shared_drive_ids
-                    and metadata.get("mimeType") == MimeTypes.GOOGLE_DRIVE_FOLDER.value
-                ):
                     # Another organization's folder that turned limited: no Manager of it lists the members it now
                     # cuts out, so each member's own grant below it is checked with Google once the run is written.
                     # Its stored inheritance cannot tell (a folder only Viewers wrote has none), so the folders known
                     # to be limited are stored: one newly limited is queued, before its inheritance changes, so a run
                     # that stops first leaves the check to the next one; a failed save fails the item.
-                    if await self._note_foreign_folder_limited(item_drive_id, str(file_id), limited=limited_access):
-                        self._foreign_limited_folders.add((item_drive_id, str(file_id)))
+                    item_drive_id and existing_record is not None
+                    and item_drive_id not in self._listed_shared_drive_ids
+                    and metadata.get("mimeType") == MimeTypes.GOOGLE_DRIVE_FOLDER.value
+                    and await self._note_foreign_folder_limited(item_drive_id, str(file_id), limited=limited_access)
+                ):
+                    self._foreign_limited_folders.add((item_drive_id, str(file_id)))
                 read_as = {
                     "inherited_permissions_disabled": limited_access,
                     "inherits_from_drive": not item_drive_id or file_record.external_record_group_id == item_drive_id,
