@@ -2350,6 +2350,7 @@ class ServiceNowConnector(BaseConnector):
                 sysparm_query=f"{ServiceNowFields.EMAIL}LIKE{email.replace('^', '^^')}",
                 sysparm_fields=CommonStrings.COMMA.join([ServiceNowFields.SYS_ID, ServiceNowFields.EMAIL]),
                 sysparm_limit=str(_AUTHENTICATOR_LOOKUP_LIMIT),
+                sysparm_no_count=None,  # X-Total-Count counts the matching rows before ACLs remove any
             )
         except Exception as e:
             self.logger.warning("Could not look up the authenticator among the ServiceNow users: %s", e)
@@ -2358,8 +2359,13 @@ class ServiceNowConnector(BaseConnector):
         if any((r.get(ServiceNowFields.EMAIL) or "").strip().lower() == wanted for r in rows):
             self._listed_user_emails.add(wanted)
             return True
-        # A full page of near matches may hide the exact one beyond it.
-        return len(rows) < _AUTHENTICATOR_LOOKUP_LIMIT
+        # Absent only when every matching row shows, with its email: a row an ACL hid, a hidden email
+        # field, or a full page of near matches may be the authenticator.
+        total = response.total_count
+        return (
+            isinstance(total, int) and total == len(rows) < _AUTHENTICATOR_LOOKUP_LIMIT
+            and all((r.get(ServiceNowFields.EMAIL) or "").strip() for r in rows)
+        )
 
     async def _users_gone(self, stored: set[str]) -> set[str]:
         """The ``stored`` user sys_ids that are no active user with an email at the source (nor the guest): deleted,

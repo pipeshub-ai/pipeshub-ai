@@ -57,10 +57,19 @@ async def test_an_empty_full_listing_is_incomplete(servicenow_connector) -> None
     assert sc._users_listing_complete is False
 
 
-def _lookup(sc, rows: list | None = None, error: Exception | None = None, email: str | None = "creator@corp.com") -> AsyncMock:
+_VISIBLE = object()
+
+
+def _lookup(
+    sc, rows: list | None = None, error: Exception | None = None, email: str | None = "creator@corp.com",
+    total: object = _VISIBLE,
+) -> AsyncMock:
+    """The authenticator's lookup answers ``rows``, counted ``total`` before ACLs (by default, every row shows)."""
     sc.authenticator_email = AsyncMock(return_value=email)
     listing_get = sc._table_get
-    lookup = AsyncMock(side_effect=error, return_value=MagicMock(result=rows or []))
+    rows = rows or []
+    lookup = AsyncMock(side_effect=error, return_value=MagicMock(
+        result=rows, total_count=len(rows) if total is _VISIBLE else total))
 
     async def table_get(table: str, **kwargs: object) -> object:
         if str(kwargs.get("sysparm_query", "")).startswith("emailLIKE"):
@@ -93,6 +102,33 @@ async def test_a_delta_whose_lookup_finds_nothing_is_complete(servicenow_connect
 
     assert sc._users_listing_complete is True
     assert sc._listed_user_emails == set()
+
+
+async def test_the_lookup_asks_for_the_count_before_acls(servicenow_connector) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [], delta=True)
+    table_get = _lookup(sc, [])
+
+    await sc._sync_users()
+
+    assert "sysparm_no_count" in table_get.await_args.kwargs
+    assert table_get.await_args.kwargs["sysparm_no_count"] is None
+
+
+@pytest.mark.parametrize(("rows", "total"), [
+    ([], 1),  # an ACL hid a matching row: it may be the authenticator
+    ([TableAPIRecord(sys_id="a2", email="creator@corp.com.au")], 2),
+    ([], None),  # no count: nothing says a row was not hidden
+    ([TableAPIRecord(sys_id="a3", email="")], 1),  # the row's email field is hidden
+])
+async def test_a_delta_whose_lookup_may_hide_the_authenticator_is_incomplete(servicenow_connector, rows, total) -> None:
+    sc = servicenow_connector
+    _wire_users(sc, [], delta=True)
+    _lookup(sc, rows, total=total)
+
+    await sc._sync_users()
+
+    assert sc._users_listing_complete is False
 
 
 async def test_a_delta_whose_lookup_fails_is_incomplete(servicenow_connector) -> None:
