@@ -266,8 +266,13 @@ describe('Mongo store fence', () => {
 
   describe('consumers pause while the store is moved (F3)', () => {
     // the fence a consumer reads: the same collection API the wrapped driver reads it through
+    // the module stays cached for later suites in this worker: leave no instance pointing a consumer at a frozen fence
+    const opened: Array<ReturnType<typeof fresh>> = []
+    afterEach(() => { for (const f of opened.splice(0)) f.setConsumerPauseDb(undefined) })
+    after(() => { delete require.cache[require.resolve('../../../src/libs/repositories/fence')] })
     const armed = (state: { fence: Fence; log: unknown[][] }) => {
       const f = fresh()
+      opened.push(f)
       f.setFenceTrustMsForTests(0)
       f.installMongoFence(makeCollectionClass(state))
       f.setConsumerPauseDb(new (makeCollectionClass(state))('x').s.db as never)
@@ -283,6 +288,7 @@ describe('Mongo store fence', () => {
 
     it('does not hold off when the fence is off in this process, or when the fence cannot be read (writes are refused then anyway)', async () => {
       const off = fresh()
+      opened.push(off)
       off.setConsumerPauseDb(new (makeCollectionClass({ fence: { mode: 'readonly' }, log: [] }))('x').s.db as never)
       expect(await off.mongoStoreMoving()).to.equal(false)
       expect(await armed({ fence: new Error('down'), log: [] }).mongoStoreMoving()).to.equal(false)

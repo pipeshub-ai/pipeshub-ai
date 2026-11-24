@@ -9,14 +9,25 @@ import { DocStoreReadOnlyError } from '../../../src/libs/repositories/errors';
  * not active. Each module is required afresh with the fence module that is in the cache now, so the stubs below are the ones it calls.
  */
 const FENCE = '../../../src/libs/repositories/fence';
+// the cached module is put back after each test: later suites in this worker stub the instance their code imported
+const saved = new Map<string, NodeModule | undefined>();
 const fresh = (path: string): unknown => {
-  delete require.cache[require.resolve(path)];
+  const key = require.resolve(path);
+  if (!saved.has(key)) saved.set(key, require.cache[key]);
+  delete require.cache[key];
   return require(path);
 };
 const fence = (): typeof import('../../../src/libs/repositories/fence') => require(FENCE);
 
 describe('background writers pause while the document store is moved (F3)', () => {
-  afterEach(() => sinon.restore());
+  afterEach(() => {
+    sinon.restore();
+    for (const [key, mod] of saved) {
+      if (mod) require.cache[key] = mod;
+      else delete require.cache[key];
+    }
+    saved.clear();
+  });
 
   it('Kafka: pauses the partition, keeps the offset (throws a retryable error) and resumes once the store is writable', async () => {
     const f = fence();
