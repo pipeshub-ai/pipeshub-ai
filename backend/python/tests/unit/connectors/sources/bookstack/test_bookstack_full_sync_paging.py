@@ -26,6 +26,7 @@ def connector() -> BookStackConnector:
     processor = MagicMock(org_id="org")
     processor.on_new_records = AsyncMock()
     processor.on_record_group_deleted = AsyncMock(return_value=True)
+    processor.get_records_by_status = AsyncMock(return_value=[])
     with patch("app.connectors.sources.bookstack.connector.BookStackApp"):
         conn = BookStackConnector(logging.getLogger("bookstack-paging"), processor, AsyncMock(), AsyncMock(),
                                   "bs-paging", "team", "admin")
@@ -192,3 +193,174 @@ async def test_a_failed_group_lookup_logs_its_status_and_error(connector, caplog
     message = caplog.records[-1].getMessage()
     assert "book ID 9 (HTTP 503): Down at [url]" in message
     assert "bs.example" not in message
+
+
+_UNAVAILABLE = BookStackResponse(success=False, data={"error": {"code": 503, "message": "down"}}, status_code=503)
+
+
+def _store(connector: BookStackConnector, parents: dict[str, str | None],
+           records: dict[str, tuple[str, str]]) -> None:
+    """Back the processor with stored groups (id -> parent) and page records (id -> (group, record id)); a group
+    removal takes its stored child groups with every record in them (enough for two-level trees), as with soft delete off."""
+    processor = connector.data_entities_processor
+    processor.get_nodes_by_filters = AsyncMock(side_effect=lambda *a, **k: [
+        {"externalGroupId": gid, "parentExternalGroupId": parent} for gid, parent in parents.items()])
+
+    async def write_groups(batch: list) -> None:
+        for group, _ in batch:
+            parents[group.external_group_id] = group.parent_external_group_id
+
+    async def delete(external_id: str, connector_id: str) -> bool:
+        if external_id not in parents:
+            return False
+        subtree = {external_id} | {gid for gid, parent in parents.items() if parent == external_id}
+        for gid in subtree:
+            parents.pop(gid)
+        for page in [page for page, (group, _) in records.items() if group in subtree]:
+            records.pop(page)
+        return True
+
+    async def scan(*args: object, **kwargs: object) -> list:
+        return [MagicMock(id=rid, external_record_id=page, external_record_group_id=group)
+                for page, (group, rid) in records.items()]
+
+    async def write_pages(batch: list) -> None:
+        # The processor keeps the id of a stored record; a page with none gets a new one.
+        for record, _ in batch:
+            records[record.external_record_id] = (
+                record.external_record_group_id, records.get(record.external_record_id, (None, "new-id"))[1])
+
+    processor.on_new_record_groups = AsyncMock(side_effect=write_groups)
+    processor.on_record_group_deleted = AsyncMock(side_effect=delete)
+    processor.get_records_by_status = AsyncMock(side_effect=scan)
+    processor.on_new_records = AsyncMock(side_effect=write_pages)
+    connector._page_record = AsyncMock(side_effect=lambda page: (MagicMock(
+        external_record_id=f"page/{page['id']}", external_record_group_id=f"book/{page['book_id']}"), []))
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_book_whose_chapter_lookup_fails_is_kept_with_the_chapter(connector) -> None:
+    """Book 9 answers 404 and its stored chapter 13 answers 503: removing the book would take the chapter and its
+    pages, so the book is kept too and the run is incomplete."""
+    parents = {"book/9": None, "chapter/13": "book/9"}
+    records = {"page/5": ("chapter/13", "record-5")}
+    _store(connector, parents, records)
+    connector.data_source.get_chapter = AsyncMock(return_value=_UNAVAILABLE)
+
+    assert await connector._remove_groups_not_listed(set()) is False
+    connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert parents == {"book/9": None, "chapter/13": "book/9"}
+    assert records == {"page/5": ("chapter/13", "record-5")}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("listed", "unwritten"), [(set(), ()), ({"chapter/13"}, {"chapter/13"})],
+                         ids=["missed-by-listing", "listed"])
+async def test_a_deleted_book_is_kept_while_a_chapter_moved_out_of_it_could_not_be_written(
+        connector, listed, unwritten) -> None:
+    """Chapter 13 moved from deleted book 9 to book 2, but its access cannot be read, so it is not written and
+    is still stored under book 9: the book is kept with it."""
+    parents = {"book/9": None, "chapter/13": "book/9"}
+    records = {"page/5": ("chapter/13", "record-5")}
+    _store(connector, parents, records)
+    connector.data_source.get_chapter = AsyncMock(return_value=BookStackResponse(
+        success=True, data={"id": 13, "name": "c", "book_id": 2}, status_code=200))
+    connector._access = AsyncMock(return_value=None)
+
+    assert await connector._remove_groups_not_listed(listed, unwritten) is False
+    connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert parents == {"book/9": None, "chapter/13": "book/9"}
+    assert records == {"page/5": ("chapter/13", "record-5")}
+
+
+@pytest.mark.asyncio
+async def test_a_page_moved_out_of_a_deleted_book_keeps_its_record(connector) -> None:
+    """Page 5 moved from book 9 to book 2 before book 9 was deleted: it is written under book 2 before the book
+    goes, so it keeps its record id; page 6, gone with the book, is removed with it."""
+    parents = {"book/9": None, "book/2": None}
+    records = {"page/5": ("book/9", "record-5"), "page/6": ("book/9", "record-6")}
+    _store(connector, parents, records)
+    rows = {"5": [{"id": 5, "name": "p", "book_id": 2}], "6": []}
+    connector.data_source.list_pages = AsyncMock(side_effect=lambda **kw: _pages(rows[kw["filter"]["id"]], 1))
+
+    assert await connector._remove_groups_not_listed({"book/2"}) is True
+    connector.data_entities_processor.on_record_group_deleted.assert_awaited_once_with("book/9", "bs-paging")
+    assert parents == {"book/2": None}
+    assert records == {"page/5": ("book/2", "record-5")}
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_book_is_kept_while_a_page_lookup_fails(connector) -> None:
+    parents = {"book/9": None}
+    records = {"page/5": ("book/9", "record-5")}
+    _store(connector, parents, records)
+    connector.data_source.list_pages = AsyncMock(return_value=_UNAVAILABLE)
+
+    assert await connector._remove_groups_not_listed(set()) is False
+    connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert records == {"page/5": ("book/9", "record-5")}
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_book_is_kept_while_a_page_lookup_fails_in_its_deleted_chapter(connector) -> None:
+    """Book 9 and its chapter 13 both answer 404, and the lookup of page 5 in the chapter fails: removing the book
+    would take the chapter and the page, so the book is kept too."""
+    parents = {"book/9": None, "chapter/13": "book/9"}
+    records = {"page/5": ("chapter/13", "record-5")}
+    _store(connector, parents, records)
+    connector.data_source.list_pages = AsyncMock(return_value=_UNAVAILABLE)
+
+    assert await connector._remove_groups_not_listed(set()) is False
+    connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert parents == {"book/9": None, "chapter/13": "book/9"}
+    assert records == {"page/5": ("chapter/13", "record-5")}
+
+
+@pytest.mark.asyncio
+async def test_a_full_sync_keeps_a_deleted_book_while_a_chapter_listed_under_another_book_is_not_written(
+        connector) -> None:
+    """The listings return book 2 and chapter 13 under it, but the chapter's access cannot be read, so it stays
+    stored under deleted book 9: the book is kept with it and the run fails."""
+    parents = {"book/2": None, "book/9": None, "chapter/13": "book/9"}
+    records = {"page/5": ("chapter/13", "record-5")}
+    _store(connector, parents, records)
+    connector.data_source.list_books = AsyncMock(return_value=BookStackResponse(
+        success=True, data={"data": [{"id": 2, "name": "b"}], "total": 1}))
+    connector.data_source.list_chapters = AsyncMock(return_value=BookStackResponse(
+        success=True, data={"data": [{"id": 13, "name": "c", "book_id": 2}], "total": 1}))
+    connector._access = AsyncMock(side_effect=lambda kind, item: None if kind == "chapter" else MagicMock(permissions=[]))
+
+    await connector._sync_groups_full()
+
+    connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert parents == {"book/2": None, "book/9": None, "chapter/13": "book/9"}
+    assert records == {"page/5": ("chapter/13", "record-5")}
+    assert not connector._health.ok
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_book_is_kept_while_the_page_records_cannot_be_read(connector) -> None:
+    parents = {"book/9": None}
+    records = {"page/5": ("book/9", "record-5")}
+    _store(connector, parents, records)
+    connector.data_entities_processor.get_records_by_status = AsyncMock(side_effect=RuntimeError("db down"))
+
+    assert await connector._remove_groups_not_listed(set()) is False
+    connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert parents == {"book/9": None}
+    assert records == {"page/5": ("book/9", "record-5")}
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_book_is_kept_while_a_page_moved_out_of_it_has_no_readable_access(connector) -> None:
+    parents = {"book/9": None, "book/2": None}
+    records = {"page/5": ("book/9", "record-5")}
+    _store(connector, parents, records)
+    connector.data_source.list_pages = AsyncMock(return_value=_pages([{"id": 5, "name": "p", "book_id": 2}], 1))
+    connector._page_record = AsyncMock(return_value=None)
+
+    assert await connector._remove_groups_not_listed({"book/2"}) is False
+    connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+    assert parents == {"book/9": None, "book/2": None}
+    assert records == {"page/5": ("book/9", "record-5")}
+    assert connector._kept_unnoted_access

@@ -30,6 +30,7 @@ def connector() -> BookStackConnector:
     processor.on_new_record_groups = AsyncMock()
     processor.on_record_group_deleted = AsyncMock(return_value=True)
     processor.get_record_group_by_external_id = AsyncMock(return_value=None)
+    processor.get_records_by_status = AsyncMock(return_value=[])
     processor.get_nodes_by_filters = AsyncMock(return_value=[
         {"externalGroupId": "bookshelf/3"}, {"externalGroupId": "book/1"}, {"externalGroupId": "book/9"},
         {"externalGroupId": "chapter/2"},

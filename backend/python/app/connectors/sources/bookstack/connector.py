@@ -2,7 +2,7 @@ import asyncio
 import json
 import sys
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from datetime import datetime, timezone
 from enum import Enum
 from logging import Logger
@@ -213,6 +213,22 @@ def _answered(response: object) -> bool:
 def _gone(response: object) -> bool:
     """BookStack says the item no longer exists: a definite answer, not a failed read."""
     return getattr(response, "status_code", None) == HttpStatusCode.NOT_FOUND.value
+
+
+def _page_parent(page: dict) -> str:
+    """The external id of the group a page sits in: its chapter, or its book when it has no chapter."""
+    return f"chapter/{page['chapter_id']}" if page.get("chapter_id") else f"book/{page.get('book_id')}"
+
+
+def _with_ancestors(groups: Iterable[str | None], parent_of: dict[str, str | None]) -> set[str]:
+    """The groups with every group above them, by ``parent_of``."""
+    found: set[str] = set()
+    for group in groups:
+        current = group
+        while current and current not in found:
+            found.add(current)
+            current = parent_of.get(current)
+    return found
 
 
 @ConnectorBuilder("BookStack")\
@@ -1035,6 +1051,7 @@ class BookStackConnector(BaseConnector):
 
     async def _sync_groups_full(self) -> None:
         listed: Set[str] = set()
+        unwritten: set[str] = set()
         complete = True
         batch: List[Tuple[RecordGroup, Optional[List[Permission]]]] = []
         books_in_scope: Set[int] = set()
@@ -1054,12 +1071,13 @@ class BookStackConnector(BaseConnector):
                 access = await self._access(kind, item)
                 if access is None:
                     self._kept_unnoted_access = True
+                    unwritten.add(f"{kind}/{item['id']}")
                     continue
                 batch.append((self._group_for(kind, item), access.permissions))
         if batch:
             await self.data_entities_processor.on_new_record_groups(batch)
         if complete:
-            if not await self._remove_groups_not_listed(listed):
+            if not await self._remove_groups_not_listed(listed, unwritten):
                 self._health.fail("removing books and chapters BookStack no longer has")
 
     async def _upsert_group(self, kind: str, item_id: int, item: Optional[Dict] = None) -> None:
@@ -1088,25 +1106,34 @@ class BookStackConnector(BaseConnector):
             return
         await self.data_entities_processor.on_new_record_groups([(self._group_for(kind, item), access.permissions)])
 
-    async def _remove_groups_not_listed(self, listed: Set[str]) -> bool:
+    async def _remove_groups_not_listed(self, listed: set[str], unwritten: Iterable[str] = ()) -> bool:
         """Remove the books and chapters complete listings no longer return (gone, or now outside the book
         filter), with what is under them, and any shelf an older version stored. The listings page by offset,
         so each book or chapter is looked up by id first, and written again if BookStack still has it within
-        the book filter, or kept if the lookup fails."""
+        the book filter, or kept if the lookup fails. ``unwritten`` names the listed groups not written this run.
+
+        A removal takes the group's whole stored subtree, so a group is kept while a group or page stored under
+        it is kept: a child whose lookup failed or that was not written keeps its stored parent. The stored pages
+        of a group about to go that BookStack still has elsewhere are written under their new parent first, so
+        they keep their records."""
         try:
             stored = await self.data_entities_processor.get_nodes_by_filters(
                 CollectionNames.RECORD_GROUPS.value, {"connectorId": self.connector_id},
-                return_fields=["externalGroupId"], raise_on_error=True,
+                return_fields=["externalGroupId", "parentExternalGroupId"], raise_on_error=True,
             )
         except Exception as e:
             self.logger.error(f"Could not list the stored BookStack groups, so none are removed: {e}")
             return False
         done = True
+        # Each group's stored parent: a group kept this run keeps every group above it.
+        parent_of: dict[str, str | None] = {}
+        kept: set[str] = set(unwritten)
         # Every lookup and rewrite comes before any removal: a chapter moved out of a deleted book is written
         # under its new book first, or the book's removal would take it and its pages with it.
         remove: list[str] = []
         for node in stored:
             external_id = node.get("externalGroupId") or ""
+            parent_of[external_id] = node.get("parentExternalGroupId")
             kind, _, raw = external_id.partition("/")
             if not raw.isdigit() or external_id in listed or (kind not in _GROUP_TYPES and kind != _SHELF):
                 continue
@@ -1115,18 +1142,28 @@ class BookStackConnector(BaseConnector):
                 if not answered:
                     self.logger.warning(f"Keeping {external_id}; it is tried again next sync")
                     done = False
+                    kept.add(external_id)
                     continue
                 if item is not None and self._book_in_scope(int(raw) if kind == "book" else item.get("book_id")):
                     self.logger.info(f"{external_id} was missed by the listing but is still in BookStack; writing it again")
                     access = await self._access(kind, item)
                     if access is None:
                         self._kept_unnoted_access = True
+                        kept.add(external_id)
                     else:
                         await self.data_entities_processor.on_new_record_groups(
                             [(self._group_for(kind, item), access.permissions)])
                     continue
             remove.append(external_id)
+        held = _with_ancestors(kept, parent_of)
+        if any(external_id not in held for external_id in remove):
+            unsettled = await self._write_pages_moved_out({e for e in remove if e not in held})
+            held |= _with_ancestors(unsettled, parent_of) if unsettled is not None else set(remove)
         for external_id in remove:
+            if external_id in held:
+                self.logger.warning(f"Keeping {external_id} while something under it is kept; it is tried again next sync")
+                done = False
+                continue
             self.logger.info(f"{external_id} is no longer in BookStack or in the sync's scope; removing it")
             # The processor reports a failed removal as False, not as an exception, and also says False for a
             # group already gone: a chapter goes with its book, which may come first in this loop.
@@ -1136,6 +1173,39 @@ class BookStackConnector(BaseConnector):
                 self.logger.warning(f"Could not remove {external_id}; it is tried again next sync")
                 done = False
         return done
+
+    async def _write_pages_moved_out(self, groups: set[str]) -> set[str] | None:
+        """Write again, under their current parent, the stored pages of ``groups`` that BookStack still has
+        elsewhere, so the groups' removal does not take their records. Returns the groups holding a page whose
+        lookup or access failed, or None when the stored page records could not be read."""
+        try:
+            records = await self._stored_page_records(lambda r: r.external_record_group_id in groups)
+        except Exception as e:
+            self.logger.error(f"Could not read the synced page records, so no book or chapter is removed: {e}")
+            return None
+        book_ids, book_ids_operator = self._get_book_id_filter()
+        date_filters = self._get_date_filters()
+        unsettled: set[str] = set()
+        for record in records:
+            raw = record.external_record_id.split("/", 1)[1]
+            if not raw.isdigit():
+                continue
+            answered, page = await self._fetch_page(int(raw))
+            if not answered:
+                unsettled.add(record.external_record_group_id)
+                continue
+            # A page gone, out of scope, or still under a group that goes, goes with its group.
+            if (page is None or not self._page_passes_filters(page, book_ids, book_ids_operator, date_filters)
+                    or _page_parent(page) in groups):
+                continue
+            self.logger.info(f"Page {raw} moved out of {record.external_record_group_id}; writing it under its new parent")
+            prepared = await self._page_record(page)
+            if prepared is None:
+                self._kept_unnoted_access = True
+                unsettled.add(record.external_record_group_id)
+                continue
+            await self.data_entities_processor.on_new_records([prepared])
+        return unsettled
 
     async def _group_still_stored(self, external_id: str) -> bool:
         """Whether a record group is still stored; True when the lookup fails, so nothing counts as removed."""
@@ -1218,7 +1288,7 @@ class BookStackConnector(BaseConnector):
         if access is None:
             return None
         existing = await self.data_entities_processor.get_record_by_external_id(self.connector_id, f"page/{page_id}")
-        parent = f"chapter/{page['chapter_id']}" if page.get("chapter_id") else f"book/{page.get('book_id')}"
+        parent = _page_parent(page)
         updated_ms = self._parse_timestamp(page.get("updated_at"))
         created_ms = self._parse_timestamp(page.get("created_at"))
         record = FileRecord(
@@ -1756,23 +1826,8 @@ class BookStackConnector(BaseConnector):
         has it within the filters, or kept if the lookup fails. Returns False
         when any page was kept for want of an answer, or its delete failed.
         """
-        stale: list[Record] = []
-        after_key: str | None = None
         try:
-            while True:
-                # Trash included: a trashed page BookStack no longer has is removed too.
-                batch = await self.data_entities_processor.get_records_by_status(
-                    self.connector_id, None, limit=_RECORD_SCAN_PAGE_SIZE, after_key=after_key,
-                    visibility=RecordVisibility.ALL,
-                )
-                stale.extend(
-                    r for r in batch
-                    if (r.external_record_id or "").startswith("page/")
-                    and r.external_record_id not in listed
-                )
-                if len(batch) < _RECORD_SCAN_PAGE_SIZE:
-                    break
-                after_key = batch[-1].id
+            stale = await self._stored_page_records(lambda r: r.external_record_id not in listed)
         except Exception as e:
             self.logger.error(f"Could not read the synced page records, so none are removed: {e}")
             return False
@@ -1801,6 +1856,21 @@ class BookStackConnector(BaseConnector):
                 continue
             all_done = await self._delete_page_record(record, page_id) and all_done
         return all_done
+
+    async def _stored_page_records(self, keep: Callable[[Record], bool]) -> list[Record]:
+        """The stored page records ``keep`` accepts, in the trash too: a trashed page BookStack no longer has is
+        removed as well. Raises when they cannot be read."""
+        found: list[Record] = []
+        after_key: str | None = None
+        while True:
+            batch = await self.data_entities_processor.get_records_by_status(
+                self.connector_id, None, limit=_RECORD_SCAN_PAGE_SIZE, after_key=after_key,
+                visibility=RecordVisibility.ALL,
+            )
+            found.extend(r for r in batch if (r.external_record_id or "").startswith("page/") and keep(r))
+            if len(batch) < _RECORD_SCAN_PAGE_SIZE:
+                return found
+            after_key = batch[-1].id
 
     def _page_passes_filters(
         self,
