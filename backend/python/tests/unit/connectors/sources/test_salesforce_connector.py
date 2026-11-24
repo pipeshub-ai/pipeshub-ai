@@ -10091,6 +10091,20 @@ class TestAuthenticatorLink:
         assert connector._listed_user_emails == set()
 
     @pytest.mark.asyncio
+    async def test_a_delta_whose_lookup_was_cut_before_any_record_is_incomplete(self) -> None:
+        connector = self._delta()
+
+        async def cut_lookup(**_: object) -> None:
+            connector._soql_cut = True  # "more" with no URL to continue: no record arrived
+
+        connector._fetch_first_record = AsyncMock(side_effect=cut_lookup)
+
+        await self._run(connector)
+
+        assert connector._users_listing_complete is False
+        assert connector._listed_user_emails == set()
+
+    @pytest.mark.asyncio
     async def test_a_delta_whose_lookup_fails_is_incomplete(self) -> None:
         connector = self._delta(error=RuntimeError("down"))
 

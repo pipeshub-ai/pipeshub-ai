@@ -3464,6 +3464,7 @@ class SalesforceConnector(BaseConnector):
         if not email:
             return False
         quoted = email.replace("\\", "\\\\").replace("'", "\\'")
+        cut_before, self._soql_cut = self._soql_cut, False
         try:
             found = await self._fetch_first_record(
                 api_version=api_version, soql=f"SELECT Id FROM User WHERE Email = '{quoted}' LIMIT 1",
@@ -3471,9 +3472,13 @@ class SalesforceConnector(BaseConnector):
         except Exception as e:
             self.logger.warning("Could not look up the authenticator among the Salesforce users: %s", e)
             return False
+        finally:
+            lookup_cut, self._soql_cut = self._soql_cut, cut_before or self._soql_cut
         if found:
             self._listed_user_emails.add(email.lower())
-        return True
+            return True
+        # A lookup cut before any record arrived did not show the authenticator is absent.
+        return not lookup_cut
 
     async def _withdraw_ineligible_users(self, api_version: str, inactive_user_ids: set[str]) -> None:
         """Take the connector away from users who cannot sign in to Salesforce: inactive and
