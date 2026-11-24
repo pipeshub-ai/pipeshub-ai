@@ -1,5 +1,6 @@
 """Linking the user who authenticated a connector to its source account (processor + BaseConnector hook)."""
 
+from functools import partial
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -551,15 +552,19 @@ class TestAuthenticatorGrantRecord:
     connector account's view. It outlives the instance, so a restart or another replica whose first
     listing is incomplete keeps it instead of starting from no grant."""
 
-    def _connector(self, stored: object = None, error: Exception | None = None) -> MagicMock:
+    def _connector(
+        self, stored: object = None, error: Exception | None = None, config_service: object = None,
+    ) -> MagicMock:
         from app.connectors.core.base.connector.connector_service import BaseConnector
 
         conn = MagicMock(spec=BaseConnector)
         conn.logger = MagicMock()
         conn.connector_id = CONNECTOR
-        conn.config_service = MagicMock(
-            get_config=AsyncMock(return_value=stored, side_effect=error), set_config=AsyncMock(),
+        conn.config_service = config_service or MagicMock(
+            get_config=AsyncMock(return_value=stored, side_effect=error), set_config=AsyncMock(return_value=True),
+            delete_config=AsyncMock(return_value=True),
         )
+        conn.remember_authenticator_grant = partial(BaseConnector.remember_authenticator_grant, conn)
         return conn
 
     async def _kept(self, conn: MagicMock, email: str = "Admin@Corp.com") -> bool:
@@ -567,19 +572,41 @@ class TestAuthenticatorGrantRecord:
 
         return await BaseConnector.authenticator_grant_kept(conn, email)
 
+    async def _remember(self, conn: MagicMock, email: str, *, granted: bool) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        await BaseConnector.remember_authenticator_grant(conn, email, granted=granted)
+
     async def test_a_stored_grant_for_the_same_authenticator_is_kept(self) -> None:
         conn = self._connector({"email": "admin@corp.com", "granted": True})
 
         assert await self._kept(conn) is True
         conn.config_service.get_config.assert_awaited_once_with(GRANT_KEY, use_cache=False, raise_on_error=True)
+        conn.config_service.set_config.assert_not_awaited()
 
-    @pytest.mark.parametrize("stored", [
-        None,
-        {"email": "admin@corp.com", "granted": False},
-        {"email": "someone.else@corp.com", "granted": True},
-    ])
+    @pytest.mark.parametrize("stored", [None, {"email": "admin@corp.com", "granted": False}])
     async def test_no_stored_grant_for_this_authenticator_grants_nothing(self, stored: object) -> None:
-        assert await self._kept(self._connector(stored)) is False
+        conn = self._connector(stored)
+
+        assert await self._kept(conn) is False
+        conn.config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.parametrize("granted", [True, False])
+    async def test_a_record_for_another_authenticator_is_replaced_by_no_grant(self, granted: bool) -> None:
+        conn = self._connector({"email": "someone.else@corp.com", "granted": granted})
+
+        assert await self._kept(conn) is False
+        conn.config_service.set_config.assert_awaited_once_with(
+            GRANT_KEY, {"email": "admin@corp.com", "granted": False},
+        )
+
+    async def test_an_old_authenticators_grant_does_not_come_back_after_a_swap(self) -> None:
+        kv = _DictConfig({GRANT_KEY: {"email": "a@corp.com", "granted": True}})
+        conn = self._connector(config_service=kv)
+
+        assert await self._kept(conn, "b@corp.com") is False
+        assert await self._kept(conn, "a@corp.com") is False
+        assert kv.values[GRANT_KEY] == {"email": "a@corp.com", "granted": False}
 
     @pytest.mark.parametrize("stored", [True, "admin@corp.com", ["admin@corp.com"], {"granted": "yes"}])
     async def test_a_malformed_record_grants_nothing_and_warns(self, stored: object) -> None:
@@ -606,14 +633,65 @@ class TestAuthenticatorGrantRecord:
             GRANT_KEY, {"email": "admin@corp.com", "granted": granted},
         )
 
-    async def test_a_failed_write_never_aborts_the_sync(self) -> None:
-        from app.connectors.core.base.connector.connector_service import BaseConnector
-
+    @pytest.mark.parametrize("failure", [{"return_value": False}, {"side_effect": RuntimeError("kv down")}])
+    async def test_a_failed_grant_write_warns_and_never_aborts_the_sync(self, failure: dict) -> None:
         conn = self._connector()
-        conn.config_service.set_config.side_effect = RuntimeError("kv down")
+        conn.config_service.set_config = AsyncMock(**failure)
 
-        assert await BaseConnector.remember_authenticator_grant(conn, "admin@corp.com", granted=True) is None
+        await self._remember(conn, "admin@corp.com", granted=True)
+
         conn.logger.warning.assert_called_once()
+        conn.config_service.delete_config.assert_not_awaited()
+
+    @pytest.mark.parametrize("failure", [{"return_value": False}, {"side_effect": RuntimeError("kv down")}])
+    async def test_a_failed_no_grant_write_removes_the_record(self, failure: dict) -> None:
+        conn = self._connector()
+        conn.config_service.set_config = AsyncMock(**failure)
+
+        await self._remember(conn, "admin@corp.com", granted=False)
+
+        conn.config_service.delete_config.assert_awaited_once_with(GRANT_KEY)
+        conn.logger.warning.assert_called_once()
+
+    async def test_a_stale_grant_the_listing_withdrew_is_not_kept_when_the_write_fails(self) -> None:
+        kv = _DictConfig({GRANT_KEY: {"email": "admin@corp.com", "granted": True}}, writes_fail=True)
+        conn = self._connector(config_service=kv)
+
+        await self._remember(conn, "admin@corp.com", granted=False)
+
+        assert GRANT_KEY not in kv.values
+        assert await self._kept(conn) is False
+
+    async def test_a_record_that_cannot_be_removed_either_warns_that_a_stale_grant_may_remain(self) -> None:
+        kv = _DictConfig({GRANT_KEY: {"email": "admin@corp.com", "granted": True}}, writes_fail=True, deletes_fail=True)
+        conn = self._connector(config_service=kv)
+
+        await self._remember(conn, "admin@corp.com", granted=False)
+
+        assert conn.logger.warning.call_count == 2
+        assert "stale" in conn.logger.warning.call_args.args[0]
+
+
+class _DictConfig:
+    """ConfigurationService as a dict: set_config answers False when writes fail, as the real one does."""
+
+    def __init__(self, values: dict, *, writes_fail: bool = False, deletes_fail: bool = False) -> None:
+        self.values = dict(values)
+        self.writes_fail, self.deletes_fail = writes_fail, deletes_fail
+
+    async def get_config(self, key: str, **_: object) -> object:
+        return self.values.get(key)
+
+    async def set_config(self, key: str, value: object) -> bool:
+        if self.writes_fail:
+            return False
+        self.values[key] = value
+        return True
+
+    async def delete_config(self, key: str) -> bool:
+        if self.deletes_fail:
+            return False
+        return self.values.pop(key, None) is not None
 
 
 class TestAuthenticatorUser:

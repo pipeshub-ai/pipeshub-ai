@@ -713,17 +713,27 @@ class TestGoogleWorkspaceListing:
 class _Kv:
     """The configuration store as a dict, shared by connector instances like the real one."""
 
-    def __init__(self, values: dict | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self, values: dict | None = None, error: Exception | None = None, *, writes_fail: bool = False,
+    ) -> None:
         self.values = dict(values or {})
         self.error = error
+        self.writes_fail = writes_fail
 
     async def get_config(self, key: str, **_: object) -> object:
         if self.error:
             raise self.error
         return self.values.get(key)
 
-    async def set_config(self, key: str, value: object) -> None:
+    async def set_config(self, key: str, value: object) -> bool:
+        # The real service answers False on a store error instead of raising.
+        if self.writes_fail:
+            return False
         self.values[key] = value
+        return True
+
+    async def delete_config(self, key: str) -> bool:
+        return self.values.pop(key, None) is not None
 
 
 GRANT_KEY = "/services/connectors/connector-1/authenticatorGrant"
@@ -830,6 +840,16 @@ class TestSlackWorkspace:
         conn._users_listing_cut = True
 
         assert await SlackConnector._authenticator_grant(conn) is None
+
+    async def test_a_withdrawn_grant_whose_write_fails_is_not_revived_by_an_incomplete_listing(self) -> None:
+        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}}, writes_fail=True)
+        conn = self._conn(authenticator="admin@corp.com", kv=kv)
+        conn._listed_user_emails = {"admin@corp.com"}
+        await SlackConnector._authenticator_grant(conn)
+        fresh = self._conn(authenticator="admin@corp.com", kv=kv)
+        fresh._users_listing_cut = True
+
+        assert await SlackConnector._authenticator_grant(fresh) is None
 
     async def test_an_incomplete_listing_changes_no_stored_decision(self) -> None:
         kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})

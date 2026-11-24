@@ -252,17 +252,27 @@ async def test_a_creator_listed_under_their_own_account_is_not_the_token_holder(
 class _Kv:
     """The configuration store as a dict, shared by connector instances like the real one."""
 
-    def __init__(self, values: dict | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self, values: dict | None = None, error: Exception | None = None, *, writes_fail: bool = False,
+    ) -> None:
         self.values = dict(values or {})
         self.error = error
+        self.writes_fail = writes_fail
 
     async def get_config(self, key: str, **_: object) -> object:
         if self.error:
             raise self.error
         return self.values.get(key)
 
-    async def set_config(self, key: str, value: object) -> None:
+    async def set_config(self, key: str, value: object) -> bool:
+        # The real service answers False on a store error instead of raising.
+        if self.writes_fail:
+            return False
         self.values[key] = value
+        return True
+
+    async def delete_config(self, key: str) -> bool:
+        return self.values.pop(key, None) is not None
 
 
 GRANT_KEY = "/services/connectors/gitlab-conn-1/authenticatorGrant"
@@ -422,6 +432,22 @@ class TestCreatorTokenViewRecord:
         c = await _decided(listed=_UNLISTED, complete=False, kv=_Kv({GRANT_KEY: stored}))
 
         assert await _group_grantees(c) == set()
+
+    async def test_a_withdrawn_grant_whose_write_fails_is_not_revived_by_an_incomplete_listing(self) -> None:
+        kv = _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}}, writes_fail=True)
+        await _decided(listed=_LISTED, kv=kv)
+
+        fresh = await _decided(listed=_UNLISTED, complete=False, kv=kv)
+
+        assert await _group_grantees(fresh) == set()
+
+    async def test_an_old_creators_grant_does_not_come_back_after_a_creator_swap(self) -> None:
+        kv = _Kv({GRANT_KEY: {"email": "previous@corp.com", "granted": True}})
+
+        c = await _decided(listed=_UNLISTED, complete=False, kv=kv)
+
+        assert await _group_grantees(c) == set()
+        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
 
     async def test_an_incomplete_listing_changes_no_stored_decision(self) -> None:
         kv = _Kv({GRANT_KEY: {"email": CREATOR, "granted": True}})

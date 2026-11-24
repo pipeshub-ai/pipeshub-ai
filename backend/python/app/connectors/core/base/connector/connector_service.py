@@ -11,7 +11,7 @@ import weakref
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.config.configuration_service import ConfigurationService
+from app.config.configuration_service import ConfigurationService, delete_config_confirmed
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     AUTHENTICATOR_GRANT_KEY,
@@ -879,16 +879,41 @@ class BaseConnector(ABC):
                 self.connector_id, stored,
             )
             return False
-        return stored["granted"] and str(stored.get("email") or "").lower() == email.strip().lower()
+        if str(stored.get("email") or "").lower() != email.strip().lower():
+            # Another authenticator's record: replaced, so a later switch back cannot revive it.
+            await self.remember_authenticator_grant(email, granted=False)
+            return False
+        return stored["granted"]
 
     async def remember_authenticator_grant(self, email: str, *, granted: bool) -> None:
-        """Store the decision a complete user listing made, for authenticator_grant_kept. Never raises."""
+        """Store the decision a complete user listing made, for authenticator_grant_kept. Never raises.
+
+        set_config answers False on a store error rather than raising. When a "no grant" cannot be
+        written the record is removed instead: an earlier grant left in place would be kept by the
+        next incomplete listing."""
         key = AUTHENTICATOR_GRANT_KEY.format(connector_id=self.connector_id)
         try:
-            await self.config_service.set_config(key, {"email": email.strip().lower(), "granted": granted})
+            written = await self.config_service.set_config(key, {"email": email.strip().lower(), "granted": granted})
+            error = None
         except Exception as e:
+            written, error = False, e
+        if written:
+            return
+        self.logger.warning(
+            "Connector %s: could not store the authenticator's grant (granted=%s): %s",
+            self.connector_id, granted, error or "the store refused the write",
+        )
+        if granted:
+            return
+        try:
+            removed = await delete_config_confirmed(self.config_service, key)
+        except Exception:
+            removed = False
+        if not removed:
             self.logger.warning(
-                "Connector %s: could not store the authenticator's grant: %s", self.connector_id, e,
+                "Connector %s: could not remove the authenticator's earlier grant either; a stale grant "
+                "may remain until a complete user listing is stored",
+                self.connector_id,
             )
 
     async def drop_authenticator_link_if_listed(self) -> None:
