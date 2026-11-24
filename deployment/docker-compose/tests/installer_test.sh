@@ -1078,7 +1078,7 @@ check_exact "the document-store override keeps both whatever the setting says" "
 
   # The installer sources .env. A value with a space written back as typed would run its second word as a command
   # there, on this run and on every --stop and --upgrade after it. It is written in single quotes instead.
-  sourced() { ( set -a; . "$work/.env" >/dev/null 2>&1; eval "printf '%s' \"\${$1-}\"" ); }
+  sourced() { ( cd "$work"; set -a; . ./.env >/dev/null 2>&1; eval "printf '%s' \"\${$1-}\"" ); }
   set_line() { grep -v "^$1=" "$work/.env" >"$work/.env.tmp"; printf '%s=%s\n' "$1" "$2" >>"$work/.env.tmp"; mv "$work/.env.tmp" "$work/.env"; }
   set_line CRAWL4AI_API_TOKEN 'hello world'
   set_line SEARXNG_SECRET '"two words; and more"'

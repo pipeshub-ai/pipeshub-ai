@@ -320,17 +320,18 @@ sourceable_env_value() {
 # postgres and postgres-migrate whenever the document-store override is in use, since it depends on services of both.
 # PIPESHUB_EXTRA_PROFILES come last. A profile the selections decide (graph, broker, key-value store, sandbox) is not taken from
 # there: the selections stay the one place that turns those on.
-# A PostgreSQL profile that PIPESHUB_EXTRA_PROFILES named until this run, and names no longer, is off again: without this the
-# "already set" rule would keep it for good. The document-store override still brings its two.
+# A PostgreSQL profile named there counts as already set. One it named until this run, and names no longer, counts as not
+# set: without this the "already set" rule would keep it for good. The override still brings its own.
 opt_in_profiles() {
-  local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)" seen=",graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,"
-  local was=",${SAVED_EXTRA_PROFILES:-}," now=",${EXTRA_PROFILES:-},"
+  local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)"
+  local seen=",graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox," was=",${SAVED_EXTRA_PROFILES:-}," now=",${EXTRA_PROFILES:-},"
   for o in postgres postgres-migrate postgres-metrics; do
-    if [[ "$o" == postgres-metrics || "${PIPESHUB_COMPOSE_OVERRIDES:-}" != *docker-compose.postgres-docstore.yml* ]]; then
-      [[ ",${have}," == *",${o},"* ]] || continue
-      if [[ "$was" == *",${o},"* && "$now" != *",${o},"* ]]; then continue; fi
+    seen+="${o},"
+    if [[ "$now" == *",${o},"* ]]; then have+=",${o}"
+    elif [[ "$was" == *",${o},"* ]]; then have=",${have},"; have="${have//",${o},"/,}"; have="${have//",${o},"/,}"; fi
+    if [[ ",${have}," == *",${o},"* || ( "$o" != postgres-metrics && "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ) ]]; then
+      echo "$o"
     fi
-    echo "$o"; seen+="${o},"
   done
   local IFS=','
   for o in ${EXTRA_PROFILES:-}; do
