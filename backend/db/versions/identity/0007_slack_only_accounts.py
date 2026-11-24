@@ -2,13 +2,13 @@
 from alembic import op
 from db.lib.run_sql import run_sql
 
-revision = "identity_0006"
-down_revision = "identity_0005"
+revision = "identity_0007"
+down_revision = "identity_0006"
 branch_labels = None
 depends_on = None
 # a contract: older code reads kind 'slack' as an ordinary person (listed, invitable, able to sign in through SSO), so it must not run
 # against a database that may hold such accounts
-min_code_epoch = 6
+min_code_epoch = 7
 
 
 def upgrade():

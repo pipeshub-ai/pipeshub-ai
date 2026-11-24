@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import { FLAGS, HELP, UsageError, VALUE_FLAGS, checkFlags, numFlag, parse, runCli, strFlag } from '../../../src/scripts/docstore-migrate/cli'
 import { MAPPINGS } from '../../../src/scripts/docstore-migrate/mapping'
+import { Logger } from '../../../src/libs/services/logger.service'
 
 const flag = (...argv: string[]) => parse(['drain', ...argv])
 
@@ -172,5 +173,28 @@ describe('flags the command line does not have, and words that do not go togethe
       process.stdout.write = w
       process.stderr.write = e
     }
+  })
+})
+
+describe('standard output carries only the report', () => {
+  // the reports are JSON on stdout; a log line there (a pool warning, say) would make it unparseable
+  it('log lines written while a command runs go to stderr', async () => {
+    const out: string[] = []
+    const err: string[] = []
+    const w = process.stdout.write
+    const e = process.stderr.write
+    process.stdout.write = ((s: unknown) => (out.push(String(s)), true)) as never
+    process.stderr.write = ((s: unknown) => (err.push(String(s)), true)) as never
+    try {
+      expect(await runCli(['help'], {})).to.equal(0)
+      Logger.getInstance({ service: 'PgPool' }).warn('pool warning from the command')
+      await new Promise((r) => setTimeout(r, 50))
+    } finally {
+      process.stdout.write = w
+      process.stderr.write = e
+    }
+    expect(out.join('')).to.include('commands:')
+    expect(out.join('')).to.not.include('pool warning from the command')
+    expect(err.join('')).to.include('pool warning from the command')
   })
 })

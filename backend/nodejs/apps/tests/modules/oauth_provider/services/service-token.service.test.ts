@@ -13,6 +13,7 @@ import {
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
 import { SERVICE_TOKEN_PREFIX } from '../../../../src/modules/oauth_provider/constants/constants';
+import { createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger';
 
 const MCP_SCOPES = [
   'openid',
@@ -23,6 +24,9 @@ const MCP_SCOPES = [
   'agent:execute',
 ];
 
+// Every logger a test builds, for the snake_case check after it.
+const madeLoggers: Record<'info' | 'debug' | 'warn' | 'error', sinon.SinonStub>[] = [];
+
 function makeService(overrides: { mcpScopes?: string[] } = {}) {
   const logger = {
     info: sinon.stub(),
@@ -30,6 +34,7 @@ function makeService(overrides: { mcpScopes?: string[] } = {}) {
     warn: sinon.stub(),
     error: sinon.stub(),
   };
+  madeLoggers.push(logger);
   const encryption = { encrypt: sinon.stub().returns('encrypted') };
   const config = {
     getMcpScopes: sinon.stub().resolves(overrides.mcpScopes ?? MCP_SCOPES),
@@ -60,6 +65,7 @@ function makeService(overrides: { mcpScopes?: string[] } = {}) {
       scopeValidator as any,
       delegations as any,
     ),
+    logger,
     tokens,
     scopeValidator,
     delegations,
@@ -79,7 +85,12 @@ describe('ServiceTokenService', () => {
   const adminId = new mongoose.Types.ObjectId().toString();
   const accountId = new mongoose.Types.ObjectId().toString();
 
-  afterEach(() => sinon.restore());
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard();
+  after(() => snakeCaseKeys.report());
+  afterEach(function () {
+    snakeCaseKeys.check(this, ...madeLoggers.splice(0));
+    sinon.restore();
+  });
 
   describe('getAvailableScopes', () => {
     it('offers the instance scopes without the ones version one refuses', async () => {
@@ -298,6 +309,32 @@ describe('ServiceTokenService', () => {
       );
     });
 
+    it('logs how many acting clients and delegated tokens it reached, as numbers', async () => {
+      const { service, tokens, logger } = makeService();
+      sinon.stub(OAuthApp, 'find').returns({
+        select: () => ({
+          lean: () => ({
+            exec: async () => [{ clientId: 'app-a' }, { clientId: 'app-b' }],
+          }),
+        }),
+      } as any);
+      tokens.revokeDelegatedTokensForActor.resolves(4);
+
+      await service.revokeAllForServiceAccount(orgId, accountId);
+
+      expect(logger.info.args).to.deep.equal([
+        [
+          'Revoked every token held by a service account',
+          {
+            org_id: orgId,
+            service_account_id: accountId,
+            acting_client_count: 2,
+            delegated_tokens_revoked: 4,
+          },
+        ],
+      ]);
+    });
+
     it('reaches client_credentials tokens, which are stored against no user at all', async () => {
       // Those are minted with no userId — the identity is resolved per
       // request from the application's tokenIdentityUserId — so revoking by
@@ -336,6 +373,31 @@ describe('ServiceTokenService', () => {
       // Keyed on the user alone: no clientId narrows it.
       expect(tokens.revokeEveryTokenForUser.firstCall.args).to.have.length(1);
       expect(tokens.revokeAllTokensForUser.called).to.equal(false);
+    });
+  });
+
+  describe('revokeDelegatedTokensForServiceAccount', () => {
+    it('logs how many delegated tokens it revoked, with snake_case ids', async () => {
+      const { service, tokens, logger } = makeService();
+      tokens.revokeDelegatedTokensForActor.resolves(3);
+
+      await service.revokeDelegatedTokensForServiceAccount(orgId, accountId);
+
+      expect(tokens.revokeDelegatedTokensForActor.firstCall.args).to.deep.equal([accountId]);
+      expect(logger.info.args).to.deep.equal([
+        [
+          'Revoked a service account’s delegated tokens',
+          { org_id: orgId, service_account_id: accountId, revoked: 3 },
+        ],
+      ]);
+    });
+
+    it('logs nothing when the account held no delegated tokens', async () => {
+      const { service, logger } = makeService();
+
+      await service.revokeDelegatedTokensForServiceAccount(orgId, accountId);
+
+      expect(logger.info.called).to.equal(false);
     });
   });
 

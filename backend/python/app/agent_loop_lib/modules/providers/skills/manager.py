@@ -438,6 +438,9 @@ class SkillManager:
         return metadata
 
     async def reject_candidate(self, candidate_id: str) -> None:
+        # Resolved through the same lookup as approve, so an id that is not this caller's answers as a missing id.
+        if await self._find_candidate(candidate_id) is None:
+            raise RegistryError(f"Candidate {candidate_id!r} not found")
         await self._remove_candidate(candidate_id)
 
     async def _find_candidate(self, candidate_id: str) -> SkillCandidate | None:

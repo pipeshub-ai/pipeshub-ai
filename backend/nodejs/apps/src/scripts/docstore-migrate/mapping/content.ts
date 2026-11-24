@@ -261,6 +261,8 @@ const outbox: CollectionMapping = {
   sourceKey: (doc) => String(doc._id),
   orgPath: '__org',
   orgCol: 'org_id',
+  // delivered events stay a week (the TTL sweeper); like a published document in MongoDB they are history, not part of the copy
+  countWhere: "t.status <> 'published'",
   versionCol: 'version',
   fields: [
     { col: 'org_id', path: '__org', type: 'oid' },

@@ -956,6 +956,19 @@ class _TransientContainers(Exception):
         self.result = result
 
 
+def _cypher_expectations(expected: dict[str, Any], parameters: dict[str, Any], node: str = "n") -> list[str]:
+    """One predicate per expected field (``None`` means absent), its names and values bound in ``parameters``."""
+    conditions = []
+    for i, (field, value) in enumerate(expected.items()):
+        parameters[f"f{i}"] = field
+        if value is None:
+            conditions.append(f"{node}[$f{i}] IS NULL")
+        else:
+            parameters[f"v{i}"] = value
+            conditions.append(f"{node}[$f{i}] = $v{i}")
+    return conditions
+
+
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     Neo4j implementation of IGraphDBProvider.
@@ -3571,6 +3584,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception:
             raise
+
+    async def delete_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        expected: dict[str, Any],
+        graph_name: str = "knowledgeGraph",
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.delete_node_if_match`. One statement that takes the
+        node's write lock before it reads the expectation, as ``update_node_fields_if_match``."""
+        if not expected:
+            raise ValueError("delete_node_if_match needs an expectation")
+        if collection == CollectionNames.RECORDS.value:
+            raise ValueError("records are deleted with their type nodes: use delete_nodes_and_edges")
+        label = collection_to_label(collection)
+        parameters: dict[str, Any] = {"key": key}
+        conditions = _cypher_expectations(expected, parameters)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE {" AND ".join(conditions)}
+            DETACH DELETE n
+            RETURN 1 AS deleted
+            """,
+            parameters=parameters,
+            txn_id=transaction,
+        )
+        return bool(rows)
 
     async def update_edge(
         self,
@@ -6821,16 +6866,56 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         {on_match}
         """
 
+    async def get_graph_user_keys_by_mongo_user_ids_all_orgs(
+        self,
+        user_ids: list[str],
+        *,
+        chunk_size: int,
+    ) -> dict[str, str]:
+        """System-scope variant of ``get_graph_user_keys_by_mongo_user_ids``: no organisation term, because a Mongo
+        ``userId`` is unique across organisations. For maintenance jobs that hold ids from every organisation (the
+        service-account kind backfill); a request handler must use the org-bound lookup. The call sites are pinned by
+        ``tests/unit/services/graph_db/test_system_scope_lookups_allowlist.py``."""
+        from app.core.org_context import peek
+
+        ctx = peek()
+        if ctx is None or ctx.kind != "system":
+            # Fail closed: no organisation term below, so only an explicit system scope may run it.
+            raise PermissionError("get_graph_user_keys_by_mongo_user_ids_all_orgs requires an explicit system context")
+        if not user_ids:
+            return {}
+
+        mongo_to_key: dict[str, str] = {}
+        for i in range(0, len(user_ids), chunk_size):
+            chunk = user_ids[i:i + chunk_size]
+            results = await self.client.execute_query(
+                """
+                MATCH (u:User)
+                WHERE u.userId IN $user_ids
+                RETURN u.userId AS userId, u.id AS _key
+                """,
+                parameters={"user_ids": chunk},
+            )
+            for record in results:
+                if record.get("userId") and record.get("_key"):
+                    mongo_to_key[record["userId"]] = record["_key"]
+
+        return mongo_to_key
+
     async def get_graph_user_keys_by_mongo_user_ids(
         self,
         user_ids: list[str],
         org_id: str | None = None,
         *,
         chunk_size: int,
+        allow_missing: bool = False,
     ) -> dict[str, str]:
         """Return graph user _key for each Mongo userId (batched lookup)."""
         if not user_ids:
             return {}
+        if not org_id:
+            # Fail closed: without an org the lookup would match a user of any organisation.
+            raise ValueError("org_id is required to look up graph users by Mongo user id")
 
         mongo_to_key: dict[str, str] = {}
         for i in range(0, len(user_ids), chunk_size):
@@ -6838,7 +6923,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = """
             MATCH (u:User)
             WHERE u.userId IN $user_ids
-              AND ($org_id IS NULL OR u.orgId = $org_id)
+              AND u.orgId = $org_id
             RETURN u.userId AS userId, u.id AS _key
             """
             results = await self.client.execute_query(
@@ -6852,7 +6937,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     mongo_to_key[mongo_id] = graph_key
 
         missing = [user_id for user_id in user_ids if user_id not in mongo_to_key]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError(f"Users not found in graph: {missing}")
 
         return mongo_to_key
@@ -12816,78 +12901,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return int(rows[0]["deleted"]) if rows else 0
 
-    async def get_key_by_external_file_id(
-        self,
-        external_file_id: str
-    ) -> str | None:
-        """Get internal key by external file ID"""
-        try:
-            query = """
-            MATCH (r:Record {externalRecordId: $external_file_id})
-            RETURN r.id AS id
-            LIMIT 1
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={"external_file_id": external_file_id}
-            )
-
-            return results[0]["id"] if results else None
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_key_by_external_file_id")
-            return None
-
-    async def get_key_by_external_message_id(
-        self,
-        external_message_id: str,
-        transaction: str | None = None
-    ) -> str | None:
-        """
-        Get internal key by external message ID.
-
-        Args:
-            external_message_id (str): External message ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Internal key if found, None otherwise
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Retrieving internal key for external message ID {external_message_id}"
-            )
-
-            query = """
-            MATCH (r:Record {externalRecordId: $external_message_id})
-            RETURN r.id AS id
-            LIMIT 1
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={"external_message_id": external_message_id},
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Successfully retrieved internal key for external message ID {external_message_id}"
-                )
-                return results[0]["id"]
-            else:
-                self.logger.warning(
-                    f"⚠️ No internal key found for external message ID {external_message_id}"
-                )
-                return None
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_key_by_external_message_id")
-            return None
-
     async def get_message_id_header_by_key(
         self,
         record_key: str,
@@ -12940,65 +12953,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="get_message_id_header_by_key", record_id=record_key)
             return None
-
-    async def get_related_mails_by_message_id_header(
-        self,
-        message_id_header: str,
-        exclude_key: str,
-        collection: str,
-        transaction: str | None = None
-    ) -> list[str]:
-        """
-        Find all mail records with the same messageIdHeader, excluding a specific key.
-
-        Args:
-            message_id_header (str): messageIdHeader value to search for
-            exclude_key (str): Record key to exclude from results
-            collection (str): Collection name (e.g., "records" or "mails")
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[str]: List of record keys (_key or id) matching the criteria
-        """
-        try:
-            self.logger.debug(
-                f"🚀 Finding related mails with messageIdHeader {message_id_header}, excluding {exclude_key}"
-            )
-
-            # Map collection to Neo4j label
-            label = self._get_label(collection)
-
-            query = f"""
-            MATCH (r:{label})
-            WHERE r.messageIdHeader = $message_id_header
-            AND r.id <> $exclude_key
-            RETURN r.id AS id
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={
-                    "message_id_header": message_id_header,
-                    "exclude_key": exclude_key
-                },
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.debug(
-                    f"✅ Found {len(results)} related mails with messageIdHeader {message_id_header}"
-                )
-                return [r["id"] for r in results]
-            else:
-                self.logger.debug(
-                    f"ℹ️ No related mails found with messageIdHeader {message_id_header}"
-                )
-                return []
-
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_related_mails_by_message_id_header")
-            return []
 
     async def check_connector_name_uniqueness(
         self,
@@ -25493,6 +25447,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         origin: str,
         edges: list[dict],
         transaction: str | None = None,
+        *,
+        keep_edge_types: Collection[str] = (),
     ) -> None:
         """See :meth:`IGraphDBProvider.replace_record_entity_relations`."""
         if not record_id or not to_collections or not origin:
@@ -25503,6 +25459,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         parameters: dict[str, Any] = {
             "record_id": record_id, "origin": origin, "inferred": EntityOrigin.INFERRED.value,
             "labels": [collection_to_label(c) for c in to_collections],
+            "keep": list(keep_edge_types),
         }
         grouped = self._edges_by_labels(edges)
         if sum(len(rows) for rows in grouped.values()) != len(edges):
@@ -25523,6 +25480,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             f"""
             OPTIONAL MATCH (:Record {{id: $record_id}})-[old:{rel}]->(target)
             WHERE any(l IN labels(target) WHERE l IN $labels) AND coalesce(old.origin, $inferred) = $origin
+              AND NOT coalesce(old.edgeType, '') IN $keep
             DELETE old
             WITH count(*) AS _
             {"".join(creates)}

@@ -295,10 +295,10 @@ export class OAuthTokenService {
     }
 
     this.logger.info('OAuth tokens generated', {
-      clientId: app.clientId,
-      userId,
+      client_id: app.clientId,
+      target_user_id: userId,
       scopes,
-      hasRefreshToken: !!result.refreshToken,
+      refresh_issued: !!result.refreshToken,
     });
 
     return result;
@@ -612,9 +612,9 @@ export class OAuthTokenService {
 
     if (storedToken.clientId !== app.clientId) {
       this.logger.warn('Refresh token presented by a different client', {
-        issuedTo: storedToken.clientId,
-        presentedBy: app.clientId,
-        userId: storedToken.userId,
+        issued_to: storedToken.clientId,
+        presented_by: app.clientId,
+        user_id: storedToken.userId,
       });
       throw new InvalidGrantError(
         'Refresh token was not issued to this client',
@@ -700,9 +700,9 @@ export class OAuthTokenService {
     }
 
     this.logger.info('Tokens refreshed', {
-      clientId: app.clientId,
-      userId: payload.userId,
-      rotationCount: storedToken.rotationCount + 1,
+      client_id: app.clientId,
+      user_id: payload.userId,
+      rotation_count: storedToken.rotationCount + 1,
     });
 
     return newTokens;
@@ -729,7 +729,7 @@ export class OAuthTokenService {
   ): Promise<never> {
     this.logger.warn(
       'Refresh token reuse detected. Revoking all tokens for this client and user',
-      { clientId, userId },
+      { client_id: clientId, user_id: userId },
     );
     const repo = getOAuthTokenRepository();
     await repo.flagRefreshReplayed(refreshId);
@@ -761,14 +761,14 @@ export class OAuthTokenService {
 
     if (!tokenType || tokenType === 'access_token') {
       if (await repo.revokeAccessByHash(tokenHash, clientId)) {
-        this.logger.info('Access token revoked', { clientId });
+        this.logger.info('Access token revoked', { client_id: clientId });
         return true;
       }
     }
 
     if (!tokenType || tokenType === 'refresh_token') {
       if (await repo.revokeRefreshByHash(tokenHash, clientId)) {
-        this.logger.info('Refresh token revoked', { clientId });
+        this.logger.info('Refresh token revoked', { client_id: clientId });
         return true;
       }
     }
@@ -810,7 +810,9 @@ export class OAuthTokenService {
     await repo.revokeAgentRegistration(
       registrationId.slice(REGISTRATION_ID_PREFIX.length),
     );
-    this.logger.info('Agent registration revoked by token', { registrationId });
+    this.logger.info('Agent registration revoked by token', {
+      registration_id: registrationId,
+    });
     return true;
   }
 
@@ -824,7 +826,7 @@ export class OAuthTokenService {
       await getOAuthTokenRepository().revokeAllAgentRegistrations();
     }
 
-    this.logger.info('All tokens revoked for app', { clientId });
+    this.logger.info('All tokens revoked for app', { client_id: clientId });
   }
 
   /**
@@ -841,7 +843,7 @@ export class OAuthTokenService {
     );
 
     this.logger.info('Refresh tokens without a stored limit revoked', {
-      clientId,
+      client_id: clientId,
     });
   }
 
@@ -870,8 +872,8 @@ export class OAuthTokenService {
     }
 
     this.logger.info('All tokens revoked for user in app', {
-      clientId,
-      userId,
+      client_id: clientId,
+      target_user_id: userId,
     });
   }
 
@@ -1012,7 +1014,7 @@ export class OAuthTokenService {
     if (tokens.length === limit) {
       this.logger.warn(
         'Token list reached its limit; older tokens are not shown',
-        { clientId, userId, limit },
+        { client_id: clientId, target_user_id: userId, limit },
       );
     }
 
@@ -1086,7 +1088,11 @@ export class OAuthTokenService {
     );
 
     if (revoked) {
-      this.logger.info('Access token revoked by id', { id, clientId, userId });
+      this.logger.info('Access token revoked by id', {
+        id,
+        client_id: clientId,
+        target_user_id: userId,
+      });
       return true;
     }
     return false;
@@ -1149,8 +1155,8 @@ export class OAuthTokenService {
     if (revoked) {
       this.logger.info('Access token revoked by id (admin)', {
         id,
-        clientId,
-        revokedBy,
+        client_id: clientId,
+        user_id: revokedBy,
       });
       return true;
     }

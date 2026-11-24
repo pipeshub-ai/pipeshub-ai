@@ -16,7 +16,7 @@ info:
     ## Behaviour common to every route
     App-level middleware runs before any router, so the following applies to every operation below, before authentication, unless an exception is named.
 
-    **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST`. The message names where the value was, for example `HTML tags, scripts, and XSS content are not allowed in the field "name".` or `... in the query parameter "search".` (a field name that is not a plain identifier path reads `the request`), and says what counted: text in angle brackets such as `<id>` counts as an HTML tag, an encoded script tag counts, or script content such as `onclick=`, `javascript:` or `data:text/html` counts. A string over 100,000 characters is refused as too long to check instead: `The value of the field "name" is longer than 100,000 characters, which is too long to check for HTML tags and scripts. Please shorten it and try again.` It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/`, `/connectors` and `/api-toolsets`, and POST, PUT and PATCH under `/skills`, skip the filter. So does the question of a search: the `query` string of a JSON body sent to `POST /search` or `POST /retrieve` is neither checked nor rewritten, unless it is longer than 100,000 characters.
+    **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST`. The message names where the value was, for example `HTML tags, scripts, and XSS content are not allowed in the field "name".` or `... in the query parameter "search".` (a field name that is not a plain identifier path reads `the request`), and says what counted: text in angle brackets such as `<id>` counts as an HTML tag, an encoded script tag counts, or script content such as `onclick=`, `javascript:` or `data:text/html` counts. A string over 100,000 characters is refused as too long to check instead: `The value of the field "name" is longer than 100,000 characters, which is too long to check for HTML tags and scripts. Please shorten it and try again.` It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/`, `/connectors` and `/api-toolsets`, and POST, PUT and PATCH under `/skills`, skip the filter. So does the question of a search: the `query` string of a JSON body sent to `POST /search` or `POST /retrieve` is neither checked nor rewritten, unless it is longer than 100,000 characters. On `POST /mcp`, the same holds for the free-text argument of a chat or search tool call and for each `citations[].quote` of a `pipeshub_show_citations` call, which is text copied from a record (a Slack message's `<!here>` included).
 
     **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse or whose top level is not an object or an array (a bare string, number, `true`, `false` or `null`), or a body shorter or longer than its `Content-Length`, is answered `400 HTTP_BAD_REQUEST` (`The request body is not valid JSON.`, `The request body does not match its Content-Length.`), a body past these limits `413 HTTP_PAYLOAD_TOO_LARGE`, and an unsupported content encoding or character set `415 HTTP_UNSUPPORTED_MEDIA_TYPE`; a JSON body over 5 MB on `/mcp` gets its `413` as a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
 
@@ -2744,6 +2744,25 @@ components:
           type: array
           items:
             type: string
+        category:
+          type: string
+          nullable: true
+          enum: [communication, meetings, docs, projects, developer, data, sales, support, finance, design, automation, search, security]
+          description: The one category the server is listed under.
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: What people get done with it, in plain words (for example "Schedule meetings"). Search reads these.
+          example: [Schedule meetings, Find free time]
+        readOnly:
+          type: boolean
+          description: Every tool only looks things up.
+        matchedCapability:
+          type: string
+          description: |
+            Only in `GET /mcp-servers/catalog` results for a `search`: the capability the search
+            matched, to show why the server is listed.
         replacedBy:
           type: string
           nullable: true
@@ -25842,14 +25861,15 @@ components:
     EntityType:
       type: string
       description: >-
-        Kind of knowledge-graph entity a request can name. `person` and `organization`, which
-        `POST /search/entities` also returns, are not accepted in a request (400).
+        Kind of knowledge-graph entity `POST /search/entities/neighbors` can expand. `person` and
+        `organization` results (`EntitySearchResultType`) cannot be expanded there (400).
       enum: [department, category, subcategory, topic, language, record_group, record, named_entity]
     EntitySearchResultType:
       type: string
       description: >-
-        Kind of entity a search result is: one of the `EntityType` values, or `person` (a member of the
-        organisation named by records) or `organization` (an external organisation, such as a CRM account).
+        Kind of entity a search result is, and what `POST /search/entities` can be narrowed to: one of the
+        `EntityType` values, or `person` (a member of the organisation named by records) or `organization`
+        (an external organisation, such as a CRM account).
       enum: [department, category, subcategory, topic, language, record_group, record, named_entity, person, organization]
     EntityRecordDate:
       type: object
@@ -25885,10 +25905,12 @@ components:
           type: array
           maxItems: 10
           description: >-
-            Only these kinds. Omitted or empty means all, which is the only way to get `person`
-            and `organization` results: neither is accepted here (400).
+            Only these kinds. Omitted or empty means all. Where named-entity extraction is on,
+            `organization` also finds organization and product named entities, unless
+            `named_entity` is listed too, which then searches named entities of every kind.
+            `person` finds people only: named people are never indexed for search.
           items:
-            $ref: '#/components/schemas/EntityType'
+            $ref: '#/components/schemas/EntitySearchResultType'
         namedEntityKinds:
           type: array
           maxItems: 10
@@ -26104,7 +26126,7 @@ components:
             type: string
             minLength: 1
             maxLength: 32
-            enum: [assignee, reporter, creator, author, owner, editor, reviewer, recipient, lead, mentioned, involved]
+            enum: [assignee, reporter, creator, author, owner, editor, shared_with, reviewer, recipient, lead, mentioned, involved]
           description: Roles to keep; every role when omitted.
         recordTypes:
           type: array
@@ -43521,7 +43543,7 @@ paths:
         '404':
           description: |
             Record not found, not accessible to the caller, or in the trash. The message is
-            `Record <recordId> not found` in every case.
+            `Record not found` in every case.
           content:
             application/json:
               schema:
@@ -45134,7 +45156,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            - `Knowledge base <kbId> not found`: unknown knowledge base, or the caller holds no
+            - `Knowledge base not found`: unknown knowledge base, or the caller holds no
               role on it
             - `Folder <folderId> was not found in knowledge base '<name>' (<kbId>). ...`
           content:
@@ -65826,9 +65848,21 @@ paths:
             default: 50
         - name: search
           in: query
-          description: Matches name, description and tags.
+          description: |
+            Ranked: a name match first, then servers whose capabilities match (common synonyms
+            count, for less than the word itself), then the category, then servers whose description
+            or tags contain every word. In capabilities, the category, descriptions and tags, words
+            match only where a word starts ("sign" doesn't find "assign"); a name also matches
+            inside a word ("hub" finds GitHub). Without it, templates keep the catalog's order.
           schema:
             type: string
+            maxLength: 200
+        - name: category
+          in: query
+          description: Only templates in this category.
+          schema:
+            type: string
+            enum: [communication, meetings, docs, projects, developer, data, sales, support, finance, design, automation, search, security]
       responses:
         '200':
           description: One page of templates
@@ -65933,6 +65967,87 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No template with this type id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Unexpected failure in the gateway or in the connectors service.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /mcp-servers/popular:
+    get:
+      tags:
+        - MCP Server Catalog
+      summary: List the organization's most used MCP servers
+      description: |
+        The organization's servers that people signed in to with their own credentials, most used
+        first, with how many people. Counts only, never who. A server people reach through one
+        shared credential, or with no sign-in, keeps no per-person record and is not listed;
+        agents' own credentials are not counted. Personal servers are never listed, nor an
+        organization server the caller can't see in their own server list.
+      operationId: listPopularMcpServers
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - mcp:read
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 6
+      responses:
+        '200':
+          description: Servers, most used first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        instanceId:
+                          type: string
+                        typeId:
+                          type: string
+                          nullable: true
+                          description: The catalog entry it was made from; null for a custom server.
+                        name:
+                          type: string
+                        people:
+                          type: integer
+                          minimum: 1
+                          description: How many people signed in to it.
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `mcp:read` scope
+            - MCP servers are disabled for this organization (`ENABLE_MCP` feature flag is off)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: '`limit` is not a whole number from 1 to 50'
           content:
             application/json:
               schema:
@@ -69734,8 +69849,9 @@ paths:
         - Skills
       summary: Reject a skill candidate
       description: |
-        Discards a learning-loop candidate without creating a skill. The removal is blind:
-        an id that matches no pending candidate is answered with the same success.
+        Discards a pending learning-loop candidate of your organization without creating a skill.
+        An id that matches no pending candidate of your organization is answered with `404`, whoever
+        holds the id.
       operationId: rejectSkillCandidate
       security:
         - bearerAuth: []
@@ -69748,7 +69864,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Candidate rejected. An id that matches no candidate is also answered with success.
+          description: Candidate rejected.
           content:
             application/json:
               schema:
@@ -69773,6 +69889,12 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/ErrorResponse'
                   - $ref: '#/components/schemas/SkillsServiceError'
+        '404':
+          description: Candidate not found (no pending candidate of your organization has this id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillsServiceError'
         '500':
           description: |
             Internal server error.
@@ -80193,8 +80315,7 @@ paths:
         (`person`: members of the organisation named by records) and
         organisations (`organization`, such as CRM accounts) and, where
         named-entity extraction is on, other named entities (`named_entity`).
-        People and organisations are returned only when `entityTypes` is
-        omitted or empty.
+        `entityTypes` narrows the search to some of these kinds.
 
         Only entities connected to records the caller can read are returned,
         decided by the same access check as the assistant's entity tools. Each
@@ -80228,7 +80349,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/EntitySearchResponse'
         '400':
-          description: The request is invalid, for example an `entityTypes` value outside `EntityType` (such as `person` or `organization`), or only named entities asked for while named-entity extraction is off.
+          description: The request is invalid, for example an `entityTypes` value outside `EntitySearchResultType`, or only named entities asked for while named-entity extraction is off.
           content:
             application/json:
               schema:

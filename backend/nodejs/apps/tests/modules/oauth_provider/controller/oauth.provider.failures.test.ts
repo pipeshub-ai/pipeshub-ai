@@ -226,7 +226,10 @@ describe('OAuthProviderController failures', function () {
         expect(a.status).to.equal(status)
         expect(a.body).to.deep.equal({ error: code, error_description: error.message })
         expect(above(a, ['info', 'warn', 'error'])).to.deep.equal([])
-        expect(a.lines.find((r) => r.message === 'oauth.request.refused')!.code).to.equal(code)
+        const refused = a.lines.find((r) => r.message === 'oauth.request.refused')!
+        expect(refused.code).to.equal(code)
+        // Only a /token schema refusal carries errors; the controller's line is just the code.
+        expect(refused.metadata?.errors).to.equal(undefined)
       })
     }
 

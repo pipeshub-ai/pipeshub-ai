@@ -1,4 +1,4 @@
-"""A development downgrade of identity_0006 (accounts a Slack bot creates) with such accounts present.
+"""A development downgrade of identity_0007 (accounts a Slack bot creates) with such accounts present.
 The users table forces row-level security, which hides every org's rows from the role that runs the migration: a delete that did not lift it
 removed nothing, and the narrower kind check then refused the rows that were left."""
 from .conftest import run_migrate
@@ -31,7 +31,7 @@ def test_the_downgrade_removes_slack_only_accounts_of_every_org_and_keeps_everyo
         c.execute("INSERT INTO identity.user_activities (org_id, id, user_id, email, activity_type, ip_address, details, created_at, updated_at) "
                   "VALUES (%s, %s, %s, 's@x.test', 'ACCOUNT CREATED FROM SLACK', 'system', 'created from Slack bot c', now(), now())", (ORG_A, "5" * 24, "2" * 24))
 
-    r = run_migrate(url, "downgrade", "identity_0005", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    r = run_migrate(url, "downgrade", "identity_0006", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout + r.stderr
 
     with connect(cluster, name) as c:

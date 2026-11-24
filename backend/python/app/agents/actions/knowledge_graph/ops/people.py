@@ -56,6 +56,7 @@ ROLE_EDGES: dict[str, str] = {
     "author": EntityRelations.AUTHORED_BY.value,
     "owner": EntityRelations.OWNED_BY.value,
     "editor": EntityRelations.LAST_MODIFIED_BY.value,
+    "shared_with": EntityRelations.SHARED_WITH.value,
     "reviewer": EntityRelations.REVIEWED_BY.value,
     "recipient": EntityRelations.ADDRESSED_TO.value,
     "lead": EntityRelations.LEAD_BY.value,

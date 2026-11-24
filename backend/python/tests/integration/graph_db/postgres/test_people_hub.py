@@ -146,21 +146,14 @@ async def test_the_owner_of_a_record_is_a_user_with_an_owner_grant_of_type_user_
         assert await p.get_record_owner_source_user_email("noowner") is None
 
 
-async def test_mail_is_found_by_its_message_id_header_in_its_collection_and_org_only(w: World) -> None:
+async def test_mail_message_id_header_is_read_in_its_collection_and_org_only(w: World) -> None:
     await w.nodes("mails", {"_key": "m1", "messageIdHeader": "<a@x>"}, {"_key": "m2", "messageIdHeader": "<a@x>"}, {"_key": "m3", "messageIdHeader": "<b@x>"})
     await w.nodes("records", {"_key": "r1", "messageIdHeader": "<a@x>", "connectorId": APP})
     p = w.p
     assert await p.get_message_id_header_by_key("m1", "mails") == "<a@x>" and await p.get_message_id_header_by_key("m1", "records") is None
     assert await p.get_message_id_header_by_key("missing", "mails") is None
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == ["m2"]
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "none", "mails") == ["m1", "m2"]
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "none", "records") == ["r1"]
-    assert await p.get_related_mails_by_message_id_header("<zz@x>", "none", "mails") == []
-    other = _org()
-    with in_org(other):
-        await World(p, other).nodes("mails", {"_key": "m9", "messageIdHeader": "<a@x>"})
-        assert await p.get_related_mails_by_message_id_header("<a@x>", "none", "mails") == ["m9"]
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == ["m2"]          # not the other org's m9
+    with in_org(_org()):
+        assert await p.get_message_id_header_by_key("m1", "mails") is None
 
 
 async def test_mail_reads_answer_nothing_when_they_fail_and_come_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -168,10 +161,9 @@ async def test_mail_reads_answer_nothing_when_they_fail_and_come_back(w: World, 
     real = w.p._q
     monkeypatch.setattr(w.p, "_q", failing)
     assert await w.p.get_message_id_header_by_key("m1", "mails") is None
-    assert await w.p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == []
     assert await w.p.get_record_owner_source_user_email("m1") is None
     monkeypatch.setattr(w.p, "_q", real)
-    assert await w.p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == ["m2"]
+    assert await w.p.get_message_id_header_by_key("m1", "mails") == "<a@x>"
 
 
 # ---- the verified email of a login user ------------------------------------------------------------------------------------------------
