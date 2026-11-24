@@ -91,6 +91,15 @@ export function prepareSource(
   for (const d of m.dropped ?? [])
     if (deletePath(doc, d.path)) rep.bump(`dropped ${d.path}`);
   for (const f of m.fields) {
+    // the decoder leaves a column equal to its default out, so a document that stores the default (an emptied array, a reset flag) reads the same
+    if (
+      f.absentWhen !== undefined &&
+      hasPath(doc, f.path) &&
+      JSON.stringify(getPath(doc, f.path)) === JSON.stringify(f.absentWhen)
+    ) {
+      deletePath(doc, f.path);
+      rep.bump(`${f.path} equal to its default read as absent`);
+    }
     if (f.readAbsentAs !== undefined && !hasPath(doc, f.path)) {
       setPath(doc, f.path, f.readAbsentAs);
       rep.bump(`absent ${f.path} read as ${JSON.stringify(f.readAbsentAs)}`);

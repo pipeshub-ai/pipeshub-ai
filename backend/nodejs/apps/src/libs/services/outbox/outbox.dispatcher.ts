@@ -3,6 +3,7 @@ import { Logger } from '../logger.service';
 import { IMessageProducer, StreamMessage } from '../../types/messaging.types';
 import { getOutboxRepository } from '../../repositories/outbox';
 import type { OutboxEventRow, OutboxStatus } from '../../repositories/outbox';
+import { mongoStoreMoving } from '../../repositories/fence';
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
 
@@ -138,7 +139,8 @@ export class OutboxDispatcher {
     let delivered = 0;
     try {
       for (;;) {
-        if (this.stopped) break;
+        // a store move (F3): no claim while the fence is not active; what is unsent is copied with its state at the cut
+        if (this.stopped || (await mongoStoreMoving())) break;
         const event = await this.claimNext();
         if (!event) {
           if (!this.rerun) break;
