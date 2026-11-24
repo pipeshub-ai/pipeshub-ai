@@ -320,7 +320,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
         onSaved: (updated) => {
           confirmedToolsRef.current = updated.tools ?? [];
           toolsRef.current = updated.tools ?? [];
-          setProject(updated);
+          applyServerProject(updated);
         },
         onError: () => {
           toolsRef.current = confirmedToolsRef.current;
@@ -328,7 +328,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
           toast.error(t('chat.projects.workspace.updateToolsFailed'));
         },
       }),
-    [projectId, setProject, t],
+    [projectId, setProject, applyServerProject, t],
   );
 
   const handleToolsChange = useCallback(
