@@ -56,6 +56,7 @@ class UsersSync:
         """
         c = self.c
         c._users_listing_complete, c._listed_user_emails = False, set()
+        c._creator_is_token_holder = False
         # Set by any member read that was skipped or failed: what was read is then partial.
         self._read_cut = False
         self._member_rows = 0
@@ -650,6 +651,11 @@ class UsersSync:
                 )
 
         c._listed_user_emails = {u.email.strip().lower() for u in app_users if u.email}
+        creator = (c.creator_email or "").strip().lower()
+        token_account = str(c._gitlab_user_id) if c._gitlab_user_id is not None else None
+        c._creator_is_token_holder = bool(creator) and any(
+            u.source_user_id == token_account and u.email.strip().lower() == creator for u in app_users
+        )
         if app_users:
             await c.data_entities_processor.on_new_app_users(app_users)
             total_users_synced += len(app_users)

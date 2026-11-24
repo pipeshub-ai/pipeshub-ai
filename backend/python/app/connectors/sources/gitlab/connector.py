@@ -22,7 +22,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi.responses import StreamingResponse
 
@@ -89,6 +89,8 @@ from .scope import ScopeHelper
 from .streaming import StreamingHelper
 from .users import UsersSync
 
+if TYPE_CHECKING:
+    from app.models.permission import Permission
 
 _GITLAB_EXECUTOR_MAX_WORKERS = 8
 
@@ -287,6 +289,10 @@ class GitLabConnector(BaseConnector):
         # The member listing of this run: read in full and non-empty, and every listed member's email.
         self._users_listing_complete = False
         self._listed_user_emails: set[str] = set()
+        # Whether this run's listing bound the creator's email to the token's own GitLab account.
+        self._creator_is_token_holder = False
+        # Whether the creator holds OWNER on every group; kept from the last complete listing.
+        self._creator_group_grant = False
         # GitLab ids of each project's members at Guest or above, from this run's member read.
         self._project_reader_ids: dict[int, set[int]] = {}
         self._is_admin: bool = False
@@ -449,6 +455,7 @@ class GitLabConnector(BaseConnector):
             self.logger.info("Starting sync of GitLab users")
             await self.users.sync_users()
             await self._register_authenticated_identity()
+            self._decide_creator_group_grant()
             self.logger.info("Starting sync of GitLab projects")
             await self.projects.sync_all_projects()
             self.repos.schedule_timestamp_backfill()
@@ -586,6 +593,23 @@ class GitLabConnector(BaseConnector):
             email=self.creator_email,
             type=PermissionType.OWNER,
         )
+
+    def _decide_creator_group_grant(self) -> None:
+        """Decide from this run's member listing whether the creator gets OWNER on every group.
+
+        A creator the listing names under their own GitLab account sees their groups through
+        their own membership, not the token's. When the listing was not read in full that is
+        unknown, so the last decision stands and nobody is newly granted.
+        """
+        if self._creator_is_token_holder:
+            self._creator_group_grant = True
+        elif self._users_listing_complete:
+            creator = (self.creator_email or "").strip().lower()
+            self._creator_group_grant = bool(creator) and creator not in self._listed_user_emails
+
+    def creator_group_permission(self) -> Permission | None:
+        """The creator's OWNER permission for a group record group, when they are to hold one."""
+        return self.creator_user_permission() if self._creator_group_grant else None
 
     # ------------------------------------------------------------------
     # Factory method

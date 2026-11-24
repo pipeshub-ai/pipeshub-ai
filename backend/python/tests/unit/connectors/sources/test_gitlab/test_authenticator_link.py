@@ -5,13 +5,16 @@ listed member's email, the injected creator's too, is passed as listed.
 """
 from __future__ import annotations
 
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.connectors.sources.gitlab.connector import GitLabConnector
+from app.connectors.sources.gitlab.projects import ProjectsSync
 from app.connectors.sources.gitlab.users import UsersSync
+from app.models.permission import PermissionType
 
 from .conftest import make_mock_connector
 
@@ -224,3 +227,84 @@ async def test_the_full_pass_carries_the_listing_state() -> None:
     assert c.register_authenticated_source_user.await_args.kwargs == {
         "listing_complete": True, "extra_present_emails": {"creator@corp.com"},
     }
+
+
+async def test_a_creator_bound_to_the_tokens_own_account_is_the_token_holder() -> None:
+    c, users = _scoped(_ok([_member(1, "a@corp.com")]))
+    c._gitlab_user_id, c.creator_email = 9, "Creator@Corp.com"
+
+    await users.sync_users()
+
+    assert c._creator_is_token_holder is True
+
+
+async def test_a_creator_listed_under_their_own_account_is_not_the_token_holder() -> None:
+    c, users = _scoped(_ok([_member(1, "creator@corp.com"), _member(9, "bot@corp.com")]))
+    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
+    c._creator_is_token_holder = True
+
+    await users.sync_users()
+
+    assert c._creator_is_token_holder is False
+
+
+def _group_owner_grant(
+    *, listed: set[str], complete: bool = True, token_holder: bool = False, previous: bool = False,
+) -> MagicMock:
+    c = make_mock_connector()
+    c.creator_email = "creator@corp.com"
+    c._listed_user_emails, c._users_listing_complete = listed, complete
+    c._creator_is_token_holder, c._creator_group_grant = token_holder, previous
+    c.creator_user_permission = partial(GitLabConnector.creator_user_permission, c)
+    c.creator_group_permission = partial(GitLabConnector.creator_group_permission, c)
+    GitLabConnector._decide_creator_group_grant(c)
+    group = SimpleNamespace(full_path="eng", name="Eng", web_url=None)
+
+    async def ds_call(fn: object, *_a: object, **_k: object) -> MagicMock:
+        return MagicMock(success=True, data=group, error=None) if "get_group" in str(fn) else _ok([])
+
+    c.runtime.ds_call = AsyncMock(side_effect=ds_call)
+    return c
+
+
+async def _group_grantees(c: MagicMock) -> set[str]:
+    await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"])
+    _rg, perms = c.data_entities_processor.on_new_record_groups.await_args.args[0][0]
+    return {p.email for p in perms if p.type == PermissionType.OWNER}
+
+
+class TestCreatorGroupOwnerGrant:
+    async def test_a_listed_creator_who_is_not_the_token_holder_gets_no_group_grant(self) -> None:
+        c = _group_owner_grant(listed={"creator@corp.com", "bot@corp.com"})
+
+        assert await _group_grantees(c) == set()
+
+    async def test_an_unlisted_creator_still_gets_the_group_grant(self) -> None:
+        c = _group_owner_grant(listed={"bot@corp.com"})
+
+        assert await _group_grantees(c) == {"creator@corp.com"}
+
+    async def test_an_incomplete_listing_grants_nothing_new(self) -> None:
+        c = _group_owner_grant(listed={"bot@corp.com"}, complete=False)
+
+        assert await _group_grantees(c) == set()
+
+    async def test_an_incomplete_listing_keeps_the_last_grant(self) -> None:
+        c = _group_owner_grant(listed={"bot@corp.com"}, complete=False, previous=True)
+
+        assert await _group_grantees(c) == {"creator@corp.com"}
+
+    @pytest.mark.parametrize("complete", [True, False])
+    async def test_the_token_holder_keeps_the_group_grant(self, complete: bool) -> None:
+        c = _group_owner_grant(listed={"creator@corp.com"}, complete=complete, token_holder=True)
+
+        assert await _group_grantees(c) == {"creator@corp.com"}
+
+    async def test_the_grant_is_decided_after_the_user_sync_and_before_the_projects(self) -> None:
+        order: list[str] = []
+        c = TestRunSyncOrder()._conn(order)
+        c._decide_creator_group_grant = MagicMock(side_effect=lambda: order.append("decide"))
+
+        await TestRunSyncOrder()._run(c)
+
+        assert order.index("users") < order.index("decide") < order.index("projects")

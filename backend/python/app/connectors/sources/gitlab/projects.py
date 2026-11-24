@@ -347,8 +347,7 @@ class ProjectsSync:
                     if permission:
                         group_permissions.append(permission)
 
-                # Always ensure the creator has access to the group node
-                creator_permission = c.creator_user_permission()
+                creator_permission = c.creator_group_permission()
                 if creator_permission is not None and not any(
                     getattr(p, "email", None) == creator_permission.email for p in group_permissions
                 ):
