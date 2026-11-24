@@ -4,6 +4,7 @@ import {
   APP_MONGO_DEFAULT_OPTIONS,
   fenceClientOptions,
   installMongoFence,
+  setConsumerPauseDb,
 } from '../repositories/fence';
 import { ConnectionError } from '../errors/database.errors';
 import { BadRequestError, InternalServerError } from '../errors/http.errors';
@@ -84,6 +85,7 @@ export class MongoService {
       // Connect to MongoDB
       await mongoose.connect(uri, connectOptions);
       this.connection = mongoose.connection;
+      setConsumerPauseDb(mongoose.connection.db);
 
       // Set up connection event handlers
       this.setupConnectionHandlers();

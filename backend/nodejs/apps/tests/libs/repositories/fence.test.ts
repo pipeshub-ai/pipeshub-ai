@@ -263,4 +263,41 @@ describe('Mongo store fence', () => {
     }
     expect(fresh().mongoFenceArmed()).to.equal(true)
   })
+
+  describe('consumers pause while the store is moved (F3)', () => {
+    // the fence a consumer reads: the same collection API the wrapped driver reads it through
+    const armed = (state: { fence: Fence; log: unknown[][] }) => {
+      const f = fresh()
+      f.setFenceTrustMsForTests(0)
+      f.installMongoFence(makeCollectionClass(state))
+      f.setConsumerPauseDb(new (makeCollectionClass(state))('x').s.db as never)
+      return f
+    }
+
+    it('a consumer holds off while the fence is draining, read-only or retired, and goes on when it is active or missing', async () => {
+      for (const [fence, moving] of [[{ mode: 'draining' }, true], [{ mode: 'readonly' }, true], [{ mode: 'retired' }, true], [{ mode: 'active' }, false], [null, false]] as const) {
+        const f = armed({ fence, log: [] })
+        expect(await f.mongoStoreMoving(), JSON.stringify(fence)).to.equal(moving)
+      }
+    })
+
+    it('does not hold off when the fence is off in this process, or when the fence cannot be read (writes are refused then anyway)', async () => {
+      const off = fresh()
+      off.setConsumerPauseDb(new (makeCollectionClass({ fence: { mode: 'readonly' }, log: [] }))('x').s.db as never)
+      expect(await off.mongoStoreMoving()).to.equal(false)
+      expect(await armed({ fence: new Error('down'), log: [] }).mongoStoreMoving()).to.equal(false)
+    })
+
+    it('waits until the store is writable again, and stops waiting when the consumer stops', async () => {
+      const state = { fence: { mode: 'readonly' } as Fence, log: [] as unknown[][] }
+      const f = armed(state)
+      setTimeout(() => { state.fence = { mode: 'active' } }, 30)
+      expect(await f.untilMongoWritable(() => true, 5)).to.equal(true)
+      expect(state.log.filter((l) => l[0] === 'fence-read').length).to.be.greaterThan(1)
+      state.fence = { mode: 'retired' }
+      let running = true
+      setTimeout(() => { running = false }, 30)
+      expect(await f.untilMongoWritable(() => running, 5)).to.equal(false)
+    })
+  })
 })

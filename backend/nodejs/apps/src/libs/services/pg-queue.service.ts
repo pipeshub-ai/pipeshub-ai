@@ -19,6 +19,7 @@ import {
 } from '../context/envelope';
 import { redactSecretsInText } from '../utils/log-redaction.utils';
 import { spawnDetached } from '../context/orgContext';
+import { untilMongoWritable } from '../repositories/fence';
 import { ensurePgRuntime } from '../db/runtime-boot';
 import { PgListener, listenUrl } from '../db/listen';
 import type { Tx } from '../db/uow';
@@ -475,7 +476,8 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
             attempts: r.attempts,
           });
         for (const r of rows) {
-          if (!this.isRunning()) break;
+          // a store move (F3): the claim is kept alive by the heartbeat, so the wait costs no delivery attempt
+          if (!(await untilMongoWritable(() => this.isRunning()))) break;
           await this.settle(r, handler);
         }
       } catch (error) {
