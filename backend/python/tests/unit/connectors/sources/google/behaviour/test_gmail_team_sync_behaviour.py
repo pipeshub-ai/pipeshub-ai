@@ -142,15 +142,20 @@ async def test_an_unlisted_creator_is_linked_to_the_admin(ws: Harness) -> None:
     assert _readable_mailboxes(ws, "vendor@elsewhere.com") == {f"mailbox:{ADMIN}"}
 
 
-async def test_a_creator_once_listed_is_not_linked_after_their_account_goes(ws: Harness) -> None:
+@pytest.mark.parametrize("remembered", [True, False], ids=["marker", "control-without-marker"])
+async def test_a_creator_once_listed_is_not_linked_after_their_account_goes(ws: Harness, remembered: bool) -> None:
     ws.records.authenticator_emails["admin-user"] = ALICE
     await ws.sync()
     ws.directory.users.pop(ALICE)
     ws.records.app_users.pop(ALICE)
+    if not remembered:
+        ws.records.listed_authenticators.clear()
 
     await ws.sync()
 
-    assert ws.records.linked_authenticators == []
+    admin_id = ws.directory.users[ADMIN].user_id
+    expected = [] if remembered else [(CONNECTOR_ID, "admin-user", ADMIN, admin_id)]
+    assert ws.records.linked_authenticators == expected
 
 
 async def test_a_stale_link_goes_on_the_next_sync(ws: Harness) -> None:
