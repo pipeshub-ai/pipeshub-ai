@@ -1362,6 +1362,7 @@ class TestForeignSharedDrive:
         connector._shared_drive_exists = AsyncMock(return_value=False)
         # No records stored for it yet, so a leaver has no grants to remove.
         connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
+        connector.data_entities_processor.get_roles_on_record = AsyncMock(return_value=(_EVERYONE, {}))
         return state
 
     @staticmethod
@@ -1514,11 +1515,9 @@ class TestForeignSharedDrive:
 
         connector._sync_ledger.note_incomplete.assert_called_once()
         assert _drives(state)["0APG"]["members"] == ["a@example.com"]
-        assert not connector._reaches_foreign_drive("a@example.com", "0APG")
         connector.data_entities_processor.on_new_record_groups = AsyncMock()
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
         assert self._last_group_write(connector)[1] == ["a@example.com"]
-        assert connector._reaches_foreign_drive("a@example.com", "0APG")
 
     async def test_a_leave_whose_group_write_fails_is_stored_as_revoked_and_written_again(self, connector) -> None:
         """No later rewrite can start from a membership that still holds the leaver."""
@@ -1736,7 +1735,8 @@ class TestForeignSharedDrive:
 
         connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
 
-    async def test_below_folders_that_all_inherit_the_viewer_reads_through_the_drive(self, connector) -> None:
+    async def test_a_viewer_keeps_their_own_grant_on_a_foreign_drives_file(self, connector) -> None:
+        """It is exactly the access Google gives them; it goes when they leave the drive (`_drop_leaver_grants`)."""
         self._store(connector)
         await connector._note_foreign_drives_reached(self._user("viewer@example.com"), [self.FOREIGN])
         folder = MagicMock(id="rec-F", parent_external_record_id=None)
@@ -1748,9 +1748,8 @@ class TestForeignSharedDrive:
             metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
         )
 
-        connector.data_entities_processor.delete_permission_from_record.assert_awaited_once_with(
-            "rec-1", "viewer@example.com", connector.connector_id
-        )
+        connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
+        connector.data_entities_processor.add_permission_to_record.assert_awaited_once()
 
     async def test_a_viewer_whose_group_grant_was_not_written_keeps_their_own_grant(self, connector) -> None:
         self._store(connector)
@@ -1829,38 +1828,6 @@ class TestForeignSharedDrive:
 
         connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
 
-    async def test_a_viewer_keeps_their_own_grant_until_the_item_inherits(self, connector) -> None:
-        """Its inheritance is written with the record, later: until then their own grant is their only access."""
-        self._store(connector)
-        await connector._note_foreign_drives_reached(self._user("viewer@example.com"), [self.FOREIGN])
-        item = MagicMock(id="rec-1", external_record_group_id="0APG", parent_external_record_id=None)
-        metadata = self._viewer_item(connector, parents=["0APG"], records={"file-1": item})
-        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
-
-        result = await connector._process_drive_item(
-            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
-        )
-
-        assert result.record.inherit_permissions is True
-        connector.data_entities_processor.delete_permission_from_record.assert_not_awaited()
-
-    async def test_a_folder_that_stops_inheriting_clears_what_the_group_was_known_to_reach(self, connector) -> None:
-        connector._foreign_group_reach = {"folder-F": True}
-        existing = MagicMock(id="rec-F", external_record_group_id="0APG", parent_external_record_id=None)
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
-        connector._fetch_permissions = AsyncMock(return_value=([], True, []))
-        connector.data_entities_processor.stop_inheriting_permissions = AsyncMock()
-        metadata = _make_file_metadata(parents=["0APG"], owners=[])
-        metadata["driveId"] = "0APG"
-        metadata["inheritedPermissionsDisabled"] = True
-
-        await connector._process_drive_item(
-            metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
-        )
-
-        connector.data_entities_processor.stop_inheriting_permissions.assert_awaited_once()
-        assert connector._foreign_group_reach == {}
-
     async def test_a_failed_read_of_who_is_active_prunes_nobody(self, connector) -> None:
         state = self._store(connector)
         await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
@@ -1928,27 +1895,34 @@ class TestForeignSharedDrive:
 
         dep.delete_permission_from_record.assert_awaited_once_with("gone-1", "a@example.com", connector.connector_id)
 
-    async def test_a_viewer_member_who_cannot_read_sharing_gets_no_grant_of_their_own(self, connector) -> None:
-        """They read the file through the foreign drive's group; an own grant would outlast their leaving."""
+    async def test_a_shared_drive_item_whose_parent_is_hidden_keeps_its_stored_folder(self, connector) -> None:
+        """Drive leaves `parents` out when the reader cannot see the folder: filed at the drive's root instead, the
+        item would hang off the drive's group, and every member would reach a file below a limited folder."""
         self._store(connector)
-        await connector._note_foreign_drives_reached(self._user("viewer@example.com"), [self.FOREIGN])
-        connector._fetch_permissions = AsyncMock(return_value=(
-            [Permission(email="viewer@example.com", type=PermissionType.READ, entity_type=EntityType.USER)], True, [],
-        ))
-        existing = MagicMock(id="rec-1", external_record_group_id="0APG", parent_external_record_id=None)
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
-        connector.data_entities_processor.add_permission_to_record = AsyncMock()
-        connector.data_entities_processor.delete_permission_from_record = AsyncMock()
-        metadata = _make_file_metadata(parents=["0APG"], owners=[])
-        metadata["driveId"] = "0APG"
+        item = MagicMock(id="rec-1", external_record_group_id="0APG", parent_external_record_id="folder-L",
+                         parent_record_type=RecordType.FILE, record_name="test.txt")
+        metadata = self._viewer_item(connector, parents=["x"], records={"file-1": item})
+        del metadata["parents"]
 
         result = await connector._process_drive_item(
             metadata=metadata, user_id="u1", user_email="viewer@example.com", drive_id="0APG", is_shared_drive=True
         )
 
-        assert result.record.inherit_permissions is True
-        connector.data_entities_processor.add_permission_to_record.assert_not_awaited()
-        connector.data_entities_processor.delete_permission_from_record.assert_awaited_once_with(
-            "rec-1", "viewer@example.com", connector.connector_id
-        )
+        assert result.record.parent_external_record_id == "folder-L"
+
+    async def test_a_leaver_with_no_grant_on_a_file_is_neither_asked_nor_removed(self, connector) -> None:
+        self._store(connector)
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [self.FOREIGN])
+        connector.synced_users = [self._user("a@example.com")]
+        dep = connector.data_entities_processor
+        dep.get_record_group_by_external_id = AsyncMock(side_effect=lambda _c, ext: MagicMock(id="group-d") if ext == "0APG" else None)
+        dep.get_records_by_status = AsyncMock(side_effect=[[MagicMock(id="rec-1")], []])
+        dep.get_roles_on_record = AsyncMock(return_value=({"b@example.com": "READER"}, {}))
+        dep.delete_permission_from_record = AsyncMock()
+        connector._leaver_still_opens = AsyncMock(return_value=False)
+
+        await connector._note_foreign_drives_reached(self._user("a@example.com"), [])
+
+        connector._leaver_still_opens.assert_not_awaited()
+        dep.delete_permission_from_record.assert_not_awaited()
 
