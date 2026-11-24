@@ -1,4 +1,5 @@
 import { expect } from 'chai';
+import express, { Router } from 'express';
 import {
   emitPlatformEvent,
   resetPlatformEvents,
@@ -8,6 +9,7 @@ import {
   getCapability,
   loadPlugins,
   pluginHttpMiddlewares,
+  pluginRouters,
   resetPlugins,
   shutdownPlugins,
   startPlugins,
@@ -90,6 +92,7 @@ describe('libs/plugins', () => {
           register: (ctx) => {
             ctx.onEvent('docstore.ttl.swept', () => void events++);
             ctx.useHttpMiddleware((_req, _res, next) => next());
+            ctx.useRouter('/half', Router());
             ctx.onStart(() => void hooks++);
             ctx.onShutdown(() => void hooks++);
             ctx.provideCapability('data-collection', { isActive: () => true });
@@ -103,6 +106,7 @@ describe('libs/plugins', () => {
       expect(events).to.equal(0);
       expect(hooks).to.equal(0);
       expect(host.httpMiddlewares()).to.have.length(0);
+      expect(host.httpRouters()).to.have.length(0);
       expect(host.getCapability('data-collection')).to.equal(undefined);
     });
 
@@ -185,6 +189,52 @@ describe('libs/plugins', () => {
       expect(host.httpMiddlewares()).to.deep.equal([first, second]);
     });
 
+    it('collects routers with their paths in registration order', async () => {
+      const host = new PluginHost();
+      const first = Router();
+      const second = Router();
+      await host.load([
+        { name: 'a', register: (ctx) => ctx.useRouter('/api/v1/a', first) },
+        { name: 'b', register: (ctx) => ctx.useRouter('/api/v1/b', second) },
+      ]);
+      expect(host.httpRouters()).to.deep.equal([
+        { path: '/api/v1/a', router: first },
+        { path: '/api/v1/b', router: second },
+      ]);
+    });
+
+    it('serves routes a plug-in adds to its router from a start hook', async () => {
+      const host = new PluginHost();
+      await host.load([
+        {
+          name: 'late',
+          register: (ctx) => {
+            const router = Router();
+            ctx.useRouter('/late', router);
+            ctx.onStart(() => {
+              router.get('/ping', (_req, res) => {
+                res.json({ ok: true });
+              });
+            });
+          },
+        },
+      ]);
+      const app = express();
+      for (const { path, router } of host.httpRouters()) app.use(path, router);
+      const server = app.listen(0);
+      try {
+        const { port } = server.address() as { port: number };
+        const url = `http://127.0.0.1:${port}/late/ping`;
+        expect((await fetch(url)).status).to.equal(404);
+        await host.start();
+        const answer = await fetch(url);
+        expect(answer.status).to.equal(200);
+        expect(await answer.json()).to.deep.equal({ ok: true });
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
     it('runs start hooks in order and shutdown hooks in reverse', async () => {
       const host = new PluginHost();
       const order: string[] = [];
@@ -265,7 +315,7 @@ describe('libs/plugins', () => {
       expect(host.getCapability('data-collection')).to.equal(capability);
     });
 
-    it('reset removes listeners, hooks, middlewares and capabilities', async () => {
+    it('reset removes listeners, hooks, middlewares, routers and capabilities', async () => {
       const host = new PluginHost();
       let calls = 0;
       await host.load([
@@ -274,6 +324,7 @@ describe('libs/plugins', () => {
           register: (ctx) => {
             ctx.onEvent('docstore.ttl.swept', () => void calls++);
             ctx.useHttpMiddleware((_q, _s, next) => next());
+            ctx.useRouter('/a', Router());
             ctx.onStart(() => void calls++);
             ctx.provideCapability('data-collection', { isActive: () => true });
           },
@@ -284,6 +335,7 @@ describe('libs/plugins', () => {
       await host.start();
       expect(calls).to.equal(0);
       expect(host.httpMiddlewares()).to.have.length(0);
+      expect(host.httpRouters()).to.have.length(0);
       expect(host.loadedPlugins()).to.have.length(0);
       expect(host.getCapability('data-collection')).to.equal(undefined);
     });
@@ -296,10 +348,19 @@ describe('libs/plugins', () => {
       expect(report.loaded).to.deep.equal(generatedPlugins.map((p) => p.name));
     });
 
+    it('hands the application the routers the loaded plug-ins asked for', async () => {
+      const router = Router();
+      await loadPlugins([
+        { name: 'routes', register: (ctx) => ctx.useRouter('/api/v1/x', router) },
+      ]);
+      expect(pluginRouters()).to.deep.equal([{ path: '/api/v1/x', router }]);
+    });
+
     it('accepts an empty list: nothing is registered and nothing breaks', async () => {
       const report = await loadPlugins([]);
       expect(report).to.deep.equal({ loaded: [], failed: [] });
       expect(pluginHttpMiddlewares()).to.have.length(0);
+      expect(pluginRouters()).to.have.length(0);
       expect(getCapability('data-collection')).to.equal(undefined);
       expect(await startPlugins()).to.deep.equal([]);
       expect(await shutdownPlugins()).to.deep.equal([]);

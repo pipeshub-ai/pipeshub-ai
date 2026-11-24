@@ -7,6 +7,7 @@ import type {
   PluginFailure,
   PluginHook,
   PluginLoadReport,
+  PluginRouter,
 } from './types';
 
 interface NamedHook {
@@ -24,6 +25,7 @@ type Report = (failure: PluginFailure) => void;
 export class PluginHost {
   private readonly names: string[] = [];
   private readonly middlewares: RequestHandler[] = [];
+  private readonly routers: PluginRouter[] = [];
   private readonly startHooks: NamedHook[] = [];
   private readonly shutdownHooks: NamedHook[] = [];
   private readonly capabilities = new Map<string, unknown>();
@@ -41,6 +43,7 @@ export class PluginHost {
     for (const plugin of plugins) {
       const subscriptions: (() => () => void)[] = [];
       const middlewares: RequestHandler[] = [];
+      const routers: PluginRouter[] = [];
       const startHooks: PluginHook[] = [];
       const shutdownHooks: PluginHook[] = [];
       const capabilities: [string, unknown][] = [];
@@ -62,6 +65,9 @@ export class PluginHost {
         }) as PluginContext['onEvent'],
         useHttpMiddleware: (middleware) => {
           middlewares.push(middleware);
+        },
+        useRouter: (path, router) => {
+          routers.push({ path, router });
         },
         onStart: (hook) => {
           startHooks.push(hook);
@@ -91,6 +97,7 @@ export class PluginHost {
         this.unsubscribers.push(subscribe());
       }
       this.middlewares.push(...middlewares);
+      this.routers.push(...routers);
       for (const hook of startHooks) {
         this.startHooks.push({ plugin: plugin.name, hook });
       }
@@ -114,6 +121,11 @@ export class PluginHost {
     return this.middlewares;
   }
 
+  /** Routers the loaded plug-ins asked for, in registration order. */
+  httpRouters(): readonly PluginRouter[] {
+    return this.routers;
+  }
+
   getCapability<K extends keyof PlatformCapabilities>(
     name: K,
   ): PlatformCapabilities[K] | undefined {
@@ -135,6 +147,7 @@ export class PluginHost {
     for (const stop of this.unsubscribers.splice(0)) stop();
     this.names.length = 0;
     this.middlewares.length = 0;
+    this.routers.length = 0;
     this.startHooks.length = 0;
     this.shutdownHooks.length = 0;
     this.capabilities.clear();

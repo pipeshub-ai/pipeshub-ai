@@ -31,6 +31,7 @@ import {
 import {
   loadPlugins,
   pluginHttpMiddlewares,
+  pluginRouters,
   shutdownPlugins,
   startPlugins,
 } from './libs/plugins';
@@ -924,6 +925,9 @@ export class Application {
     );
 
     editionBoot.mountRoutes(this.app, this.editionContainers());
+    for (const { path: mountPath, router } of pluginRouters()) {
+      this.app.use(mountPath, router);
+    }
 
     this.app.use(
       '/api/v1/artifacts',

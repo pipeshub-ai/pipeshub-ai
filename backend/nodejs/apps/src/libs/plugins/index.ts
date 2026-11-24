@@ -13,7 +13,12 @@ import { Logger } from '../services/logger.service';
 import { plugins as generatedPlugins } from '../../plugins.generated';
 import { getCapability } from './capabilities';
 import { host, setPluginFailureReporter } from './registry';
-import type { PlatformPlugin, PluginFailure, PluginLoadReport } from './types';
+import type {
+  PlatformPlugin,
+  PluginFailure,
+  PluginLoadReport,
+  PluginRouter,
+} from './types';
 
 export { PluginHost } from './host';
 export { getCapability };
@@ -27,6 +32,7 @@ export type {
   PluginFailure,
   PluginHook,
   PluginLoadReport,
+  PluginRouter,
 } from './types';
 
 const logger = Logger.getInstance({ service: 'Plugins' });
@@ -72,6 +78,11 @@ export function loadPlugins(
 /** Middlewares the loaded plug-ins asked for, in registration order. */
 export function pluginHttpMiddlewares(): readonly RequestHandler[] {
   return host.httpMiddlewares();
+}
+
+/** Routers the loaded plug-ins asked to have mounted, in registration order. */
+export function pluginRouters(): readonly PluginRouter[] {
+  return host.httpRouters();
 }
 
 export function startPlugins(): Promise<PluginFailure[]> {

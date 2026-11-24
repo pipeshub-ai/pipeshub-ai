@@ -1,4 +1,4 @@
-import type { RequestHandler } from 'express';
+import type { RequestHandler, Router } from 'express';
 import type { onPlatformEvent } from '../platform-events';
 import type { PlatformCapabilities } from './capabilities';
 
@@ -10,6 +10,12 @@ export interface PluginContext {
   onEvent: typeof onPlatformEvent;
   /** Adds an Express middleware to every request, after the rate limiter. */
   useHttpMiddleware(middleware: RequestHandler): void;
+  /**
+   * Mounts an Express router at `path`, next to the application's own routes.
+   * Routes may still be added to it from a start hook, once the application's
+   * services exist; the plug-in authenticates its own routes.
+   */
+  useRouter(path: string, router: Router): void;
   /** Runs once the application has configured its routes; in registration order. */
   onStart(hook: PluginHook): void;
   /** Runs when the application stops; in reverse registration order. */
@@ -29,6 +35,12 @@ export interface PluginContext {
 export interface PlatformPlugin {
   name: string;
   register(ctx: PluginContext): void | Promise<void>;
+}
+
+/** A router a plug-in asked to have mounted, and where. */
+export interface PluginRouter {
+  path: string;
+  router: Router;
 }
 
 export interface PluginFailure {
