@@ -23,6 +23,8 @@ import { untilMongoWritable } from '../repositories/fence';
 import { ensurePgRuntime } from '../db/runtime-boot';
 import { PgListener, listenUrl } from '../db/listen';
 import type { Tx } from '../db/uow';
+import { ConnectionLost, DbOverloaded, PoolTimeout } from '../db/errors';
+import { ServiceUnavailableError } from '../errors/http.errors';
 
 /**
  * The work queue behind `MESSAGE_BROKER=postgres`, on the same three tables the Python services use
@@ -31,7 +33,8 @@ import type { Tx } from '../db/uow';
  * A message is stored once and each consumer group on its topic gets a delivery row, so groups ack, retry and
  * dead-letter independently. A claim counts an attempt and hides the row for `claimMinIdleMs` (a heartbeat keeps the
  * rows still being worked on hidden); an expired claim is handed out again. A handler that throws sends the row back
- * after a backoff; past `MAX_DELIVERY_ATTEMPTS` it is marked dead. NOTIFY wakes consumers; they also poll.
+ * after a backoff; past `MAX_DELIVERY_ATTEMPTS` it is marked dead. A handler that failed only because the database could not be
+ * reached gets its attempt back (up to `PG_QUEUE_HANDBACK_LIMIT` times per message). NOTIFY wakes consumers; they also poll.
  */
 export const QUEUE_CHANNEL = 'pipeshub_queue';
 
@@ -68,7 +71,8 @@ const SQL = {
   ack: `/* pipeshub:queue.ack */ DELETE FROM platform.queue_deliveries
     WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'`,
   nack: `/* pipeshub:queue.nack */ UPDATE platform.queue_deliveries
-    SET status = 'ready', locked_until = NULL, consumer = NULL, last_error = $5, visible_at = now() + make_interval(secs => $6::double precision)
+    SET status = 'ready', locked_until = NULL, consumer = NULL, last_error = $5, attempts = attempts - $7::int,
+      visible_at = now() + make_interval(secs => $6::double precision)
     WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'`,
   dead: `/* pipeshub:queue.dead */ UPDATE platform.queue_deliveries SET status = 'dead', locked_until = NULL, visible_at = now(), last_error = $5
     WHERE group_id = $1 AND topic = $2 AND message_id = $3 AND attempts = $4 AND status = 'claimed'`,
@@ -217,11 +221,42 @@ const MAX_DELIVERY_ATTEMPTS = (): number =>
   Number(process.env.MAX_DELIVERY_ATTEMPTS ?? 3);
 const RETRY_BASE_S = (): number =>
   Number(process.env.PG_QUEUE_RETRY_BASE_S ?? 5);
+const HANDBACK_BASE_S = (): number =>
+  Number(process.env.PG_QUEUE_HANDBACK_BASE_S ?? 1);
+const HANDBACK_LIMIT = (): number =>
+  Number(process.env.PG_QUEUE_HANDBACK_LIMIT ?? 200);
+const HANDBACK_CAP_S = 60; // longest the per-message back-off of hand-backs grows to
+const HANDBACK_TABLE_MAX = 10_000; // hand-back counts kept in memory
 const SAFETY_NET_MS = 300_000; // longest an idle consumer with a LISTEN connection sleeps
 const POLL_MS = 1000; // without LISTEN
 const SWEEP_EVERY_MS = 60_000;
 const SWEEP_BATCH = 5000;
 const SWEEP_MAX_BATCHES = 40; // per sweep: bounds one tick, the next carries on
+
+/**
+ * Whether a handler failed only because the database could not be reached: a lost connection whose COMMIT was not sent, a pool wait
+ * or a server out of connection slots, by itself or as the cause of a 503 or a plain Error. A commit that may have applied, a
+ * statement timeout or any other typed error counts an attempt.
+ */
+export function failedOnDatabaseOnly(e: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (
+    let link: unknown = e;
+    link instanceof Error && !seen.has(link);
+    link = (link as { cause?: unknown }).cause
+  ) {
+    seen.add(link);
+    if (link instanceof ConnectionLost) return !link.commitSent;
+    if (link instanceof PoolTimeout) return true;
+    if (link instanceof DbOverloaded) return link.sqlstate === '53300';
+    if (
+      !(link instanceof ServiceUnavailableError) &&
+      link.constructor !== Error
+    )
+      return false;
+  }
+  return false;
+}
 
 export abstract class BasePgQueueConsumerConnection implements IMessageConsumer {
   private connected = false;
@@ -239,6 +274,7 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
     { topic: string; id: string; attempts: number }
   >();
   private lastSweep = 0;
+  private handbacks = new Map<string, number>(); // hand-backs per message, for the back-off and the cap
   private readonly groupId: string;
   private readonly clientId: string;
   private readonly visibilityS: number;
@@ -497,6 +533,7 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
     handler: (message: StreamMessage<T>) => Promise<void>,
   ): Promise<void> {
     const key = [this.groupId, r.topic, r.message_id, r.attempts];
+    const id = `${r.topic}:${r.message_id}`;
     const max = MAX_DELIVERY_ATTEMPTS();
     const finish = (sql: string, extra: unknown[] = []): Promise<unknown> =>
       unit(true, (tx) => tx.query(sql, [...key, ...extra]));
@@ -506,6 +543,7 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
           topic: r.topic,
           id: r.message_id,
         });
+        this.handbacks.delete(id);
         await finish(SQL.dead, ['delivery attempts exhausted']);
         return;
       }
@@ -535,29 +573,55 @@ export abstract class BasePgQueueConsumerConnection implements IMessageConsumer 
         return;
       }
       await finish(SQL.ack);
+      this.handbacks.delete(id);
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      const n = failedOnDatabaseOnly(error) ? this.countHandback(id) : 0;
+      const refund = n > 0 && n <= HANDBACK_LIMIT();
       this.logger.error('Error processing queue message', {
         topic: r.topic,
         id: r.message_id,
         attempt: r.attempts,
         error: text,
+        ...(n > 0 ? { databaseUnavailable: n, attemptRefunded: refund } : {}),
       });
+      if (n === 0) this.handbacks.delete(id);
+      const retryS = Math.min(RETRY_BASE_S() * r.attempts, 30);
       try {
-        if (r.attempts >= max) await finish(SQL.dead, [storedError(text)]);
-        else
+        if (refund)
           await finish(SQL.nack, [
             storedError(text),
-            Math.min(RETRY_BASE_S() * r.attempts, 30),
+            Math.max(
+              retryS,
+              Math.min(
+                HANDBACK_BASE_S() * 2 ** Math.min(n - 1, 10),
+                HANDBACK_CAP_S,
+              ),
+            ),
+            1,
           ]);
+        else if (r.attempts >= max) {
+          this.handbacks.delete(id);
+          await finish(SQL.dead, [storedError(text)]);
+        } else await finish(SQL.nack, [storedError(text), retryS, 0]);
       } catch (e) {
         this.logger.error('Could not settle a failed queue message', {
           error: (e as Error).message,
         });
       }
     } finally {
-      this.held.delete(`${r.topic}:${r.message_id}`);
+      this.held.delete(id);
     }
+  }
+
+  /** One more hand-back of this message, and how many it has had. The table is bounded: the oldest entries go first. */
+  private countHandback(id: string): number {
+    const n = (this.handbacks.get(id) ?? 0) + 1;
+    this.handbacks.delete(id);
+    this.handbacks.set(id, n);
+    if (this.handbacks.size > HANDBACK_TABLE_MAX)
+      this.handbacks.delete(this.handbacks.keys().next().value as string);
+    return n;
   }
 
   /** Pause and resume are no-ops, as on Redis Streams. */
