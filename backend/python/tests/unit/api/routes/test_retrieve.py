@@ -404,7 +404,8 @@ class TestHeadingOnlyPassages:
         ):
             await retrieve(request=_request(), body=RetrieveQuery(query="q"), retrieval_service=retrieval,
                            graph_provider=MagicMock())
-        retrieval.blob_store.get_record_from_storage.assert_awaited_once_with("v-r1", "org-bound")
+        retrieval.blob_store.get_record_from_storage.assert_awaited_once()
+        assert retrieval.blob_store.get_record_from_storage.await_args.args[:2] == ("v-r1", "org-bound")
 
     @pytest.mark.asyncio
     async def test_no_record_is_read_when_nothing_is_a_lone_heading(self) -> None:
