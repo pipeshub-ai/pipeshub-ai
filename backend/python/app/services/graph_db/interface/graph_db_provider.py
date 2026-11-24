@@ -1665,6 +1665,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def delete_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        expected: dict[str, Any],
+        graph_name: str = "knowledgeGraph",
+        transaction: str | None = None,
+    ) -> bool:
+        """Delete the node and every edge touching it only while every field in
+        ``expected`` still holds its value (``None`` means absent), as one atomic
+        unit: the check and the delete cannot be split by another writer.
+
+        Returns:
+            True iff this call deleted the node; False when it is missing or a
+            field no longer matches (the node and its edges are left unchanged).
+
+        Raises:
+            ValueError: when ``expected`` is empty, or for ``records``, whose
+                type documents go with them (use ``delete_nodes_and_edges``).
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def update_edge(
         self,
         from_key: str,

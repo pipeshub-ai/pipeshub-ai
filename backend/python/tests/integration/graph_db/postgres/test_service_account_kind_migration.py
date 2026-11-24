@@ -15,7 +15,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.core.org_context import OrgContext, bind, system
-from app.migrations.service_account_kind_migration import ServiceAccountKindMigrationService
+from app.migrations.service_account_kind_migration import (
+    ServiceAccountKindMigrationService,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator

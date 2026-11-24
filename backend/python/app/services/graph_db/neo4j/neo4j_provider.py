@@ -956,6 +956,19 @@ class _TransientContainers(Exception):
         self.result = result
 
 
+def _cypher_expectations(expected: dict[str, Any], parameters: dict[str, Any], node: str = "n") -> list[str]:
+    """One predicate per expected field (``None`` means absent), its names and values bound in ``parameters``."""
+    conditions = []
+    for i, (field, value) in enumerate(expected.items()):
+        parameters[f"f{i}"] = field
+        if value is None:
+            conditions.append(f"{node}[$f{i}] IS NULL")
+        else:
+            parameters[f"v{i}"] = value
+            conditions.append(f"{node}[$f{i}] = $v{i}")
+    return conditions
+
+
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     Neo4j implementation of IGraphDBProvider.
@@ -3571,6 +3584,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception:
             raise
+
+    async def delete_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        expected: dict[str, Any],
+        graph_name: str = "knowledgeGraph",
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.delete_node_if_match`. One statement that takes the
+        node's write lock before it reads the expectation, as ``update_node_fields_if_match``."""
+        if not expected:
+            raise ValueError("delete_node_if_match needs an expectation")
+        if collection == CollectionNames.RECORDS.value:
+            raise ValueError("records are deleted with their type nodes: use delete_nodes_and_edges")
+        label = collection_to_label(collection)
+        parameters: dict[str, Any] = {"key": key}
+        conditions = _cypher_expectations(expected, parameters)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE {" AND ".join(conditions)}
+            DETACH DELETE n
+            RETURN 1 AS deleted
+            """,
+            parameters=parameters,
+            txn_id=transaction,
+        )
+        return bool(rows)
 
     async def update_edge(
         self,

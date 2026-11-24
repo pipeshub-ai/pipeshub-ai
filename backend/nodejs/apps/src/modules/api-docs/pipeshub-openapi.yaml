@@ -69441,12 +69441,6 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/ErrorResponse'
                   - $ref: '#/components/schemas/SkillsServiceError'
-        '404':
-          description: Candidate not found (no pending candidate of your organization has this id)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SkillsServiceError'
         '500':
           description: |
             Internal server error.
@@ -69721,6 +69715,12 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/ErrorResponse'
                   - $ref: '#/components/schemas/SkillsServiceError'
+        '404':
+          description: Candidate not found (no pending candidate of your organization has this id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillsServiceError'
         '500':
           description: |
             Internal server error.

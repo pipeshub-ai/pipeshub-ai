@@ -1058,6 +1058,33 @@ def _dated_rows(results: list[dict] | None) -> list[DatedRow]:
 
 _EXISTING_KEYS_CHUNK = 20000
 
+def _aql_expectations(expected: dict[str, Any], bind_vars: dict[str, Any], doc: str = "doc") -> list[str]:
+    """One FILTER per expected field (``None`` means absent), its names and values bound in ``bind_vars``."""
+    filters = []
+    for i, (name, value) in enumerate(expected.items()):
+        bind_vars[f"f{i}"] = name
+        if value is None:
+            filters.append(f"FILTER {doc}[@f{i}] == null")
+        else:
+            bind_vars[f"v{i}"] = value
+            filters.append(f"FILTER {doc}[@f{i}] == @v{i}")
+    return filters
+
+
+# A node's edges in one edge collection, one statement per direction: an OR over the
+# two cannot use the edge index, so it scanned the whole collection per node.
+_DELETE_EDGES_FROM_AQL = """
+            FOR edge IN @@edge_collection
+                FILTER edge._from IN @node_ids
+                REMOVE edge IN @@edge_collection
+            """
+_DELETE_EDGES_TO_AQL = """
+            FOR edge IN @@edge_collection
+                FILTER edge._to IN @node_ids
+                REMOVE edge IN @@edge_collection
+            """
+
+
 class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     ArangoDB implementation using REST API for fully async operations.
@@ -15242,6 +15269,69 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     error_class.log_failure(self.logger, "graph.provider.step_failed", rb_err, include_error_text=False,
                                             op="delete_nodes_and_edges", step="rollback")
             raise
+
+    async def delete_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        expected: dict[str, Any],
+        graph_name: str = GraphNames.KNOWLEDGE_GRAPH.value,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.delete_node_if_match`.
+
+        The first statement removes the node only while the expectation holds; the edges
+        go after it in the same transaction, so a miss writes nothing. Two deleters, or a
+        deleter and a writer that re-created the key, meet on the node's document: the loser
+        gets a write-write conflict and runs again from a new transaction, where the
+        expectation is read against the winner's write. Inside a caller's transaction the
+        conflict is raised for its owner to handle."""
+        if not expected:
+            raise ValueError("delete_node_if_match needs an expectation")
+        if collection == CollectionNames.RECORDS.value:
+            raise ValueError("records are deleted with their type documents: use delete_nodes_and_edges")
+        edge_collections = list(dict.fromkeys(
+            c for listed in await self._edge_collections_of_graph(graph_name) for c in self._logical_edge_collections(listed)
+        ))
+        bind_vars: dict[str, Any] = {"@collection": collection, "key": key}
+        newline = "\n                "
+        remove_node = f"""
+            FOR doc IN @@collection
+                FILTER doc._key == @key
+                {newline.join(_aql_expectations(expected, bind_vars))}
+                REMOVE doc IN @@collection
+                RETURN 1
+            """
+        node_ids = [f"{collection}/{key}"]
+
+        async def delete_in(txn: str) -> bool:
+            if not await self.http_client.execute_aql(remove_node, bind_vars=bind_vars, txn_id=txn):
+                return False
+            for edge_collection in edge_collections:
+                for query in (_DELETE_EDGES_FROM_AQL, _DELETE_EDGES_TO_AQL):
+                    await self.http_client.execute_aql(
+                        query, bind_vars={"node_ids": node_ids, "@edge_collection": edge_collection}, txn_id=txn,
+                    )
+            return True
+
+        if transaction is not None:
+            return await delete_in(transaction)
+
+        async def in_own_transaction() -> bool:
+            txn = await self.begin_transaction(read=[], write=[collection, *edge_collections])
+            try:
+                deleted = await delete_in(txn)
+                if deleted:
+                    await self.commit_transaction(txn)
+                else:
+                    await self.rollback_transaction(txn)
+                return deleted
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await self.rollback_transaction(txn)
+                raise
+
+        return await self._retry_write_conflicts(in_own_transaction, None)
 
     async def update_edge(
         self,

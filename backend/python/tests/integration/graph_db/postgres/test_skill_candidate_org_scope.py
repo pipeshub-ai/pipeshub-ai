@@ -108,3 +108,14 @@ async def test_queue_with_another_orgs_candidate_id_does_not_overwrite_it(pg_pro
     with org_ctx(org_b):
         assert [c.name for c in await GraphSkillStore(pg_provider, org_b, "user-b").get_pending_candidates()] == ["b-secret-skill"]
 
+
+async def test_a_delete_bound_to_an_owner_removes_only_that_owners_candidate(pg_provider, orgs, org_ctx) -> None:
+    org_a, org_b = orgs
+    cid = str(uuid.uuid4())
+    await _queue(pg_provider, org_ctx, org_b, cid)
+    with org_ctx(org_b):
+        assert await pg_provider.delete_node_if_match(cid, "agentSkillCandidates", {"orgId": org_a}) is False  # the stored owner is not org A
+        assert await _pending(pg_provider, org_ctx, org_b) == [cid]
+        assert await pg_provider.delete_node_if_match(cid, "agentSkillCandidates", {"orgId": org_b}) is True
+    assert await _pending(pg_provider, org_ctx, org_b) == []
+

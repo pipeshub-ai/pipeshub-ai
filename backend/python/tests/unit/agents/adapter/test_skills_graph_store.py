@@ -121,6 +121,18 @@ class FakeGraphProvider:
         col[key] = {**node, "id": key}
         return True
 
+    async def delete_node_if_match(
+        self, key: str, collection: str, expected: dict[str, Any],
+        graph_name: str = "knowledgeGraph", transaction: str | None = None,
+    ) -> bool:
+        assert expected, "delete_node_if_match needs an expectation"
+        col = self._col(collection)
+        existing = col.get(key)
+        if existing is None or any(existing.get(field) != value for field, value in expected.items()):
+            return False
+        del col[key]
+        return True
+
     async def delete_nodes(self, keys: list[str], collection: str, transaction: str | None = None) -> bool:
         col = self._col(collection)
         for key in keys:

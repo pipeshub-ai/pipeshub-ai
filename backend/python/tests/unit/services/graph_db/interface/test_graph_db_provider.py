@@ -231,6 +231,7 @@ class TestAbstractMethodInventory:
         "delete_edges_to_groups",
         "delete_edges_between_collections",
         "delete_nodes_and_edges",
+        "delete_node_if_match",
         "update_edge",
         # Generic filter operations
         "remove_nodes_by_field",

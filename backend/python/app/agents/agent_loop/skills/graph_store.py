@@ -823,13 +823,14 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
         }
         # Insert-only: the key is the bare candidate id, so a plain upsert would let one org overwrite (and take over)
-        # another org's candidate that has the same id. Re-queueing a candidate of this org replaces it, as before.
+        # another org's candidate that has the same id.
         if await self._graph.create_node_if_absent(candidate.candidate_id, _CANDIDATES, {k: v for k, v in doc.items() if k != "id"}):
             return
-        existing = await self._graph.get_document(candidate.candidate_id, _CANDIDATES)
-        if existing is None or existing.get("orgId") != self._org_id:
+        # Re-queueing a candidate of this org replaces it: the delete is bound to this org at write time, the insert never
+        # overwrites, so a candidate another org holds under the id is neither removed nor replaced (the insert is refused).
+        await self._graph.delete_node_if_match(candidate.candidate_id, _CANDIDATES, {"orgId": self._org_id})
+        if not await self._graph.create_node_if_absent(candidate.candidate_id, _CANDIDATES, {k: v for k, v in doc.items() if k != "id"}):
             raise RegistryError(f"Candidate {candidate.candidate_id!r} already exists")
-        await self._graph.batch_upsert_nodes([doc], _CANDIDATES)
 
     async def get_pending_candidates(self) -> list[SkillCandidate]:
         docs = await self._graph.get_nodes_by_filters(_CANDIDATES, {"orgId": self._org_id})
@@ -850,9 +851,6 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         ]
 
     async def remove_candidate(self, candidate_id: str) -> None:
-        """Removes the candidate only if it belongs to this org: the key is resolved through an
-        org-scoped read, so an id of another org (or none) removes nothing."""
-        docs = await self._graph.get_nodes_by_filters(_CANDIDATES, {"orgId": self._org_id, "candidateId": candidate_id})
-        keys = [key for doc in docs if (key := _doc_id(doc))]
-        if keys:
-            await self._graph.delete_nodes(keys, _CANDIDATES)
+        """Deletes the candidate only while it belongs to this org: one conditional statement, so an id of
+        another org is a no-op and there is no read-then-delete gap."""
+        await self._graph.delete_node_if_match(candidate_id, _CANDIDATES, {"orgId": self._org_id})

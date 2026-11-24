@@ -1040,7 +1040,7 @@ class TestCandidateRoutes:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_reject_unknown_or_foreign_candidate_is_404(self):
+    async def test_reject_unknown_or_foreign_candidate_is_404(self) -> None:
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
         manager.reject_candidate = AsyncMock(side_effect=RegistryError("Candidate 'c1' not found"))
