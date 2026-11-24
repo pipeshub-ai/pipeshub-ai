@@ -711,6 +711,11 @@ class TestRetryLater:
                     _chained(TypeError("bug"), ConnectionError("down"), explicit=False), asyncio.CancelledError()):
             assert EC.retry_later(exc) is False, type(exc).__name__
 
+    def test_a_member_met_twice_is_judged_each_time_not_taken_for_a_loop(self) -> None:
+        lost = ConnectionError("down")
+        assert EC.retry_later(ExceptionGroup("reads", [lost, lost])) is True
+        assert EC.retry_later(ExceptionGroup("reads", [_chained(RuntimeError("a"), lost), _chained(RuntimeError("b"), lost)])) is True
+
     def test_a_group_whose_member_loops_back_ends(self) -> None:
         member = ValueError("not decisive")
         group = ExceptionGroup("g", [member])

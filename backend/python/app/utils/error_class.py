@@ -230,19 +230,25 @@ def retry_later(exc: BaseException) -> bool:
     ours: the same request is worth sending again. The first decisive link of the chain decides, as in :func:`classify_error`;
     an exception group in it decides by its members, and only when every one of them is retry-later, so a bug beside an
     outage is still a bug. Never raises."""
-    seen: set[int] = set()
+    # Only links still being walked: a member met again beside its twin (a shared cause) is judged again, not a loop.
+    active: set[int] = set()
 
     def walk(error: BaseException) -> bool:
-        for link in _chain(error):
-            if id(link) in seen:  # a member that points back at its group
-                return False
-            seen.add(id(link))
-            if isinstance(link, BaseExceptionGroup):
-                return bool(link.exceptions) and all(walk(member) for member in link.exceptions)
-            found = _classify_link(link)
-            if found is not None:
-                return found in _RETRY_LATER
-        return classify_error(error) in _RETRY_LATER  # no decisive link: a retryable transport error is still one
+        entered: list[int] = []
+        try:
+            for link in _chain(error):
+                if id(link) in active:  # a member that points back at its group
+                    return False
+                active.add(id(link))
+                entered.append(id(link))
+                if isinstance(link, BaseExceptionGroup):
+                    return bool(link.exceptions) and all(walk(member) for member in link.exceptions)
+                found = _classify_link(link)
+                if found is not None:
+                    return found in _RETRY_LATER
+            return classify_error(error) in _RETRY_LATER  # no decisive link: a retryable transport error is still one
+        finally:
+            active.difference_update(entered)
 
     try:
         return walk(exc)
