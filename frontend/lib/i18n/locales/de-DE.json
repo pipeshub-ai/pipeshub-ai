@@ -4951,6 +4951,7 @@
         "candidateApproved": "„{{name}}“ genehmigt",
         "candidateRejected": "„{{name}}“ abgelehnt",
         "candidateActionError": "Vorschlag konnte nicht aktualisiert werden",
+        "candidateGone": "Dieser Vorschlag wurde bereits geprüft",
         "disabled": "Skill „{{name}}“ deaktiviert",
         "enabled": "Skill „{{name}}“ aktiviert",
         "toggleError": "Verfügbarkeit des Skills konnte nicht aktualisiert werden",

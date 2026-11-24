@@ -4442,6 +4442,7 @@
         "candidateApproved": "已核准「{{name}}」",
         "candidateRejected": "已拒絕「{{name}}」",
         "candidateActionError": "更新候選項目失敗",
+        "candidateGone": "此候選項目已審核過",
         "conflict": "此技能已在其他位置被變更",
         "conflictDescription": "請重新載入最新版本，然後再次套用您的編輯。",
         "conflictReload": "重新載入"

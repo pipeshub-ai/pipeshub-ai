@@ -69789,8 +69789,9 @@ paths:
         - Skills
       summary: Reject a skill candidate
       description: |
-        Discards a learning-loop candidate without creating a skill. The removal is blind:
-        an id that matches no pending candidate is answered with the same success.
+        Discards a pending learning-loop candidate of your organization without creating a skill.
+        An id that matches no pending candidate of your organization is answered with `404`, whoever
+        holds the id.
       operationId: rejectSkillCandidate
       security:
         - bearerAuth: []
@@ -69803,7 +69804,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Candidate rejected. An id that matches no candidate is also answered with success.
+          description: Candidate rejected.
           content:
             application/json:
               schema:
@@ -69828,6 +69829,12 @@ paths:
                 oneOf:
                   - $ref: '#/components/schemas/ErrorResponse'
                   - $ref: '#/components/schemas/SkillsServiceError'
+        '404':
+          description: Candidate not found (no pending candidate of your organization has this id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SkillsServiceError'
         '500':
           description: |
             Internal server error.

@@ -4442,6 +4442,7 @@
         "candidateApproved": "已批准“{{name}}”",
         "candidateRejected": "已拒绝“{{name}}”",
         "candidateActionError": "更新候选技能失败",
+        "candidateGone": "该候选技能已审核过",
         "conflict": "此技能已在其他位置被更改",
         "conflictDescription": "请重新加载最新版本，然后再次应用您的编辑。",
         "conflictReload": "重新加载"

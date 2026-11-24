@@ -4473,6 +4473,7 @@
         "candidateApproved": "Approved \"{{name}}\"",
         "candidateRejected": "Rejected \"{{name}}\"",
         "candidateActionError": "Failed to update candidate",
+        "candidateGone": "This candidate has already been reviewed",
         "conflict": "This skill was changed elsewhere",
         "conflictDescription": "Reload the latest version, then re-apply your edits.",
         "conflictReload": "Reload"
