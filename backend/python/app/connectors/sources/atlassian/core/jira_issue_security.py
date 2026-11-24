@@ -1164,3 +1164,36 @@ def unreadable_security_notices(
             f"security level there {effect} until their levels can be read."
         )))
     return notices
+
+
+async def close_stored_issue(processor: Any, stored: Record) -> None:  # noqa: ANN401
+    """Store an issue closed: ``RESTRICTED`` with no grants of its own, so no one reads it, and no one reads its files
+    and comments, which read through it (a file inherits it, a comment needs it as well as its own grant). Its links
+    stay, so it opens again with its access once a sync builds it. A placeholder has no access to close."""
+    if stored.is_placeholder:
+        return
+    stored.access_rule = AccessRule.RESTRICTED
+    stored.rewrite_permissions = True
+    await processor.on_new_records([(stored, [])])
+
+
+async def close_kept_issues(
+    processor: Any, stored: list[Record], issue_ids: set[str], logger: Any,  # noqa: ANN401
+) -> set[str]:
+    """Close (``close_stored_issue``) the issues among ``stored`` named in ``issue_ids``, before a full sync keeps them:
+    their build failed, so their access was not read again and may no longer be what Jira gives. Returns the ids of those
+    that could not be closed, which the caller must not keep: the full sync then unlinks them. One in the trash is not
+    written, which would bring it back: no one reads it there, and a sync that restores it builds it with its access."""
+    unclosed: set[str] = set()
+    for record in stored:
+        if record.external_record_id not in issue_ids or record.is_deleted:
+            continue
+        try:
+            await close_stored_issue(processor, record)
+        except Exception as e:
+            logger.error(
+                "Could not close stored issue %s, whose build failed; the full sync unlinks it instead: %s",
+                record.external_record_id, e,
+            )
+            unclosed.add(record.external_record_id)
+    return unclosed

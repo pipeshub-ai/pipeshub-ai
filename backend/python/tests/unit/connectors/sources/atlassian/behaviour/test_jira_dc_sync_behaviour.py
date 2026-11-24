@@ -3677,9 +3677,9 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
         keeps: list[tuple[str, set[str] | None]] = []
         keep = connector._keep_stored_records
 
-        async def spy(project_id: str, issue_ids: set[str] | None = None) -> None:
+        async def spy(project_id: str, issue_ids: set[str] | None = None, **kwargs: Any) -> None:  # noqa: ANN401
             keeps.append((project_id, issue_ids))
-            await keep(project_id, issue_ids)
+            await keep(project_id, issue_ids, **kwargs)
         connector._keep_stored_records = spy
 
         await run_full_sync(connector, db)
@@ -3733,6 +3733,61 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
 
         assert json.loads(store.values_for("project_ENG")["given_up_issues"]) == {"1001": ts(1)}
         assert {stored["1001"], stored["attachment_200"]} <= set(db.kept_records)
+
+    async def test_a_soft_deleted_file_of_an_issue_that_fails_to_build_is_kept(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        db.records["attachment_200"].is_deleted = True  # in the trash: a restored file must come back with its edges
+        db.fail_lookup_for = {"1001"}
+
+        await run_full_sync(connector, db)
+
+        assert stored["attachment_200"] in db.kept_records
+
+    async def test_an_issue_that_fails_to_build_is_kept_closed(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        # Grants Jira may no longer give: its access was not read again.
+        db.record_permissions["1001"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
+        db.fail_lookup_for = {"1001"}
+
+        graph = await run_full_sync(connector, db)
+
+        eng_1 = db.records["1001"]
+        assert eng_1.access_rule == AccessRule.RESTRICTED and eng_1.rewrite_permissions is True
+        assert db.record_permissions["1001"] == [], "no one reads it, nor its file, until a sync builds it"
+        assert eng_1.id == stored["1001"], "the same record: its links stay"
+        assert self._missed(db, graph, stored) == {"1005", "1008"}, "it and its file keep their edges"
+        assert json.loads(store.values_for("project_ENG")["failed_issue_attempts"]) == {"1001": 1}, "a first failure"
+
+    async def test_an_issue_that_fails_to_build_and_cannot_be_closed_is_not_kept(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        db.fail_lookup_for = {"1001"}
+        write = db.on_new_records
+
+        async def closing_fails(records: list[tuple[Any, list[Any]]]) -> None:
+            if any(r.external_record_id == "1001" and r.access_rule == AccessRule.RESTRICTED for r, _ in records):
+                raise RuntimeError("graph unavailable")
+            await write(records)
+        db.on_new_records = closing_fails
+
+        graph = await run_full_sync(connector, db)
+
+        assert self._missed(db, graph, stored) == {"1001", "attachment_200", "1005", "1008"}, (
+            "its access cannot be shown to match Jira, so the unlink takes its edges, as before the keep")
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    async def test_an_issue_built_this_sync_keeps_its_access(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        db.record_permissions["1004"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
+        before = (db.records["1001"].access_rule, list(db.record_permissions["1001"]))
+        # ENG-1 is built, but its file cannot be read: it is kept as it is. ENG-4 fails to build.
+        db.fail_lookup_for = {"attachment_200", "1004"}
+
+        graph = await run_full_sync(connector, db)
+
+        assert before[0] != AccessRule.RESTRICTED
+        assert (db.records["1001"].access_rule, db.record_permissions["1001"]) == before
+        assert db.records["1004"].access_rule == AccessRule.RESTRICTED and db.record_permissions["1004"] == []
+        assert self._missed(db, graph, stored) == {"1005", "1008"}
 
     async def test_an_incremental_sync_scans_nothing(self, jira, db, store, search) -> None:
         connector, _ = await self._synced(jira, db, store, search)

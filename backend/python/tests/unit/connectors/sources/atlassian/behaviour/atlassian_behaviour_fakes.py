@@ -415,9 +415,9 @@ async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # no
         collection, key = tracked[name]
 
         async def write(items: list[tuple[Any, list[Any]]]) -> None:
-            for item, _ in items:
-                seen.add(collection, key(item))
             await originals[name](items)
+            for item, _ in items:  # as the processor notes them: once the write commits
+                seen.add(collection, key(item))
 
         return write
 

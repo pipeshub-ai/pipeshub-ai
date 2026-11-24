@@ -3043,6 +3043,87 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
         assert stored["1"] in site_db.kept_records, "so the sub-task's edges into it stay"
         assert missed_by_full_sync(site_db, graph, stored) == {"3", "8"}
 
+    async def test_a_soft_deleted_file_under_a_kept_comment_is_kept(self, api, site_db, checkpoints, search) -> None:
+        eng_1 = self._restricted_eng_1(api)
+        connector, stored = await self._synced(api, site_db, checkpoints, search, eng_1=eng_1)
+        assert under(site_db, "attachment_901") == "comment_c1"
+        site_db.records["attachment_901"].is_deleted = True  # in the trash: a restored file must come back with its edges
+        search.add("ENG", None, {"issues": [eng_1, issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+
+        await run_full_sync(connector, site_db)
+
+        assert stored["attachment_901"] in site_db.kept_records
+
+    @staticmethod
+    def _granted(site_db: CloudRecordsDb, external_id: str) -> None:
+        from app.models.permission import EntityType, Permission, PermissionType
+
+        site_db.record_permissions[external_id] = [
+            Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
+
+    async def test_an_issue_that_fails_to_build_is_kept_closed(self, api, site_db, checkpoints, search) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        self._granted(site_db, "1")  # grants Jira may no longer give: its access was not read again
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+
+        graph = await run_full_sync(connector, site_db)
+
+        eng_1 = site_db.records["1"]
+        assert eng_1.access_rule == AccessRule.RESTRICTED and eng_1.rewrite_permissions is True
+        assert site_db.record_permissions["1"] == [], "no one reads it, nor its files, until a sync builds it"
+        assert eng_1.id == stored["1"], "the same record: its links stay"
+        assert missed_by_full_sync(site_db, graph, stored) == {"3", "8"}, "it and its files keep their edges"
+
+    async def test_an_issue_that_fails_to_build_and_cannot_be_closed_is_not_kept(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+        write = site_db.on_new_records
+
+        async def closing_fails(records: list[tuple[Any, list[Any]]]) -> None:
+            if any(r.external_record_id == "1" and r.access_rule == AccessRule.RESTRICTED for r, _ in records):
+                raise RuntimeError("graph unavailable")
+            await write(records)
+        site_db.on_new_records = closing_fails
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert missed_by_full_sync(site_db, graph, stored) == {"1", "attachment_901", "attachment_902", "3", "8"}, (
+            "its access cannot be shown to match Jira, so the unlink takes its edges, as before the keep")
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    async def test_an_issue_built_this_sync_keeps_its_access(self, api, site_db, checkpoints, search) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        for key in ("ENG", "OPS"):  # no issue security scheme: the issues are open to their project
+            api.on("GET", f"{JIRA}/project/{key}/issuesecuritylevelscheme", json_response(
+                {"errorMessages": [f"Security level for project {key} does not exist."]}, status=404))
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        before = (site_db.records["1"].access_rule, list(site_db.record_permissions["1"]))
+        assert before[0] != AccessRule.RESTRICTED, "a close would change it"
+        # ENG-1 is built, but its comments cannot be read: it is kept as it is. ENG-2 fails to build.
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", [], total=60),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        api.on("GET", f"{JIRA}/issue/1/comment", json_response({"errorMessages": ["oops"]}, status=500))
+        site_db.fail_lookup_for = {"2"}
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert stored["1"] in site_db.kept_records, "ENG-1 is kept: its comments are read again by the next sync"
+        assert (site_db.records["1"].access_rule, site_db.record_permissions["1"]) == before, "as its build wrote it"
+        assert site_db.records["2"].access_rule == AccessRule.RESTRICTED and site_db.record_permissions["2"] == []
+        assert missed_by_full_sync(site_db, graph, stored) == {"3", "8"}
+
     async def test_a_sync_that_is_not_a_full_sync_scans_nothing(self, api, site_db, checkpoints, search) -> None:
         connector, _ = await self._synced(api, site_db, checkpoints, search)
         search.add("ENG", None, {"issues": [commented(1, "2024-05-02T10:00:00.000+0000", []),

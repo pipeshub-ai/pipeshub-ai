@@ -802,7 +802,9 @@ class TestRunSync:
         assert kept == {"r0005", "r1200", "r1300", "r1499", "r-comment-file"}, (
             "a sub-task is written when still in Jira; other issues' files are not kept"
         )
-        processor.get_records_by_parent.assert_awaited_once_with(connector.connector_id, "c1", RecordType.FILE.value)
+        processor.get_records_by_parent.assert_awaited_once_with(
+            connector.connector_id, "c1", RecordType.FILE.value, visibility=RecordVisibility.ALL,
+        )  # a soft-deleted file under a kept comment is kept with it
         processor.note_kept_record_group.assert_awaited_once_with(connector.connector_id, "proj")
 
     @pytest.mark.asyncio

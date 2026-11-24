@@ -35,6 +35,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 def _make_logger() -> logging.Logger:
@@ -1636,8 +1637,14 @@ async def test_keep_stored_records_for_issues_keeps_them_and_their_files_only() 
     rows[1499] = stored("r1499", "attachment_9", RecordType.FILE, "1")
     after_keys: list[str | None] = []
 
-    async def scan(connector_id: str, group_id: str, limit: int, after_key: str | None = None) -> list[MagicMock]:
+    visibilities: list[RecordVisibility] = []
+
+    async def scan(
+        connector_id: str, group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[MagicMock]:
         after_keys.append(after_key)
+        visibilities.append(visibility)
         return [r for r in rows if after_key is None or r.id > after_key][:limit]
 
     processor = conn.data_entities_processor
@@ -1648,6 +1655,7 @@ async def test_keep_stored_records_for_issues_keeps_them_and_their_files_only() 
     await conn._keep_stored_records("proj", {"1"})
 
     assert after_keys == [None, "r0999"]
+    assert visibilities == [RecordVisibility.ALL] * 2, "soft-deleted ones too: a restored issue comes back with its edges"
     kept = [rid for call in processor.note_kept_records.call_args_list for rid in call.args[1]]
     assert kept == ["r0005", "r0006", "r1499"], "a sub-task is written when still in Jira; other issues' files are not kept"
     processor.note_kept_record_group.assert_awaited_once_with("conn-dc-cov", "proj")
