@@ -34,6 +34,9 @@ def _make_connector(
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
+    dep.full_sync_running = MagicMock(return_value=False)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
+    dep.note_kept_records = MagicMock()
 
     dsp = MagicMock()
     config_service = AsyncMock()
@@ -185,7 +188,7 @@ class TestZoomConnectorPermissions:
             }
         })
 
-        perms = await connector._build_meeting_permissions(
+        perms, participants_read = await connector._build_meeting_permissions(
             meeting_detail=meeting_detail,
             encoded_uuid="encoded-uuid",
             host_email="host@example.com",
@@ -205,6 +208,7 @@ class TestZoomConnectorPermissions:
         assert "invitee1@example.com" in read_emails
         # host should not be duplicated as READ
         assert "host@example.com" not in read_emails
+        assert participants_read is True
 
     @pytest.mark.asyncio
     async def test_permissions_still_work_when_meeting_detail_missing(self) -> None:
@@ -213,13 +217,14 @@ class TestZoomConnectorPermissions:
             return_value=[ZoomParticipant(user_email="participant@example.com")]
         )
 
-        perms = await connector._build_meeting_permissions(
+        perms, participants_read = await connector._build_meeting_permissions(
             meeting_detail=None,
             encoded_uuid="encoded-uuid",
             host_email="host@example.com",
         )
         emails = {p.email for p in perms if p.email}
         assert emails == {"host@example.com", "participant@example.com"}
+        assert participants_read is True
 
     @pytest.mark.asyncio
     async def test_permissions_when_participants_fetch_fails(self) -> None:
@@ -234,13 +239,14 @@ class TestZoomConnectorPermissions:
             }
         })
 
-        perms = await connector._build_meeting_permissions(
+        perms, participants_read = await connector._build_meeting_permissions(
             meeting_detail=meeting_detail,
             encoded_uuid="encoded-uuid",
             host_email="host@example.com",
         )
         emails = {p.email for p in perms if p.email}
         assert emails == {"host@example.com", "alt@example.com", "invitee@example.com"}
+        assert participants_read is False
 
 
 class TestZoomConnectorFreshDatasource:
@@ -309,6 +315,27 @@ class TestZoomConnectorSyncFlow:
         await connector.run_sync()
 
         assert connector._sync_meetings_for_user.await_count == 2
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_run_sync_resets_coverage_each_run(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._load_filters = AsyncMock()  # type: ignore[method-assign]
+        connector._today = MagicMock(return_value=date(2026, 3, 31))  # type: ignore[method-assign]
+        connector._list_users = AsyncMock(  # type: ignore[method-assign]
+            return_value=[ZoomUser(id="u1", email="u1@example.com")]
+        )
+        connector._build_app_users = MagicMock(return_value=[])  # type: ignore[method-assign]
+        connector._sync_meetings_for_user = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[Exception("u1 failed"), None]
+        )
+
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is False
+
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
 
     @pytest.mark.asyncio
     async def test_run_sync_raises_on_fatal_error(self) -> None:
@@ -375,6 +402,92 @@ class TestZoomConnectorSyncFlow:
 
         connector.data_entities_processor.on_new_records.assert_not_awaited()
         connector._update_user_meeting_sync_point.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_report_row_without_uuid_does_not_make_the_run_incomplete(self) -> None:
+        connector = _make_connector()
+        today = date(2026, 3, 31)
+        zoom_user = ZoomUser(id="u1", email="host@example.com")
+
+        connector._get_user_meeting_sync_point = AsyncMock(return_value=today)  # type: ignore[method-assign]
+        connector._update_user_meeting_sync_point = AsyncMock()  # type: ignore[method-assign]
+        connector._build_record_group = MagicMock(  # type: ignore[method-assign]
+            return_value=(MagicMock(id="rg-1"), [])
+        )
+        connector._list_report_meetings = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                ZoomMeetingReport(id=111, uuid=""),
+                ZoomMeetingReport(id=222, uuid="good-uuid"),
+            ]
+        )
+        ds = MagicMock()
+        ds.recording_get = AsyncMock(return_value=MagicMock(success=False, data=None))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+        connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=([], True))  # type: ignore[method-assign]
+
+        await connector._sync_meetings_for_user(zoom_user, today)
+
+        written = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert [rec.external_record_id for rec, _ in written] == ["good-uuid"]
+        assert connector.full_sync_coverage().complete is True
+
+    @pytest.mark.asyncio
+    async def test_failed_report_listing_keeps_the_checkpoint(self) -> None:
+        """A chunk that could not be listed leaves the user's checkpoint where it was."""
+        connector = _make_connector()
+        today = date(2026, 3, 31)
+        zoom_user = ZoomUser(id="u1", email="host@example.com")
+
+        connector._get_user_meeting_sync_point = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        connector._update_user_meeting_sync_point = AsyncMock()  # type: ignore[method-assign]
+        connector._build_record_group = MagicMock(  # type: ignore[method-assign]
+            return_value=(MagicMock(id="rg-1"), [])
+        )
+        connector._list_report_meetings = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                [ZoomMeetingReport(id=111, uuid="chunk-1-uuid")],
+                RuntimeError("report_meetings failed"),
+                [],
+            ]
+        )
+        ds = MagicMock()
+        ds.recording_get = AsyncMock(return_value=MagicMock(success=False, data=None))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+        connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=([], True))  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="report_meetings failed"):
+            await connector._sync_meetings_for_user(zoom_user, today)
+
+        assert connector._list_report_meetings.await_count == 2
+        written = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert [rec.external_record_id for rec, _ in written] == ["chunk-1-uuid"]
+        connector._update_user_meeting_sync_point.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_meeting_task_ending_in_a_base_exception_makes_the_run_incomplete(self) -> None:
+        connector = _make_connector()
+        today = date(2026, 3, 31)
+        zoom_user = ZoomUser(id="u1", email="host@example.com")
+
+        connector._get_user_meeting_sync_point = AsyncMock(return_value=today)  # type: ignore[method-assign]
+        connector._update_user_meeting_sync_point = AsyncMock()  # type: ignore[method-assign]
+        connector._build_record_group = MagicMock(  # type: ignore[method-assign]
+            return_value=(MagicMock(id="rg-1"), [])
+        )
+        connector._list_report_meetings = AsyncMock(  # type: ignore[method-assign]
+            return_value=[ZoomMeetingReport(id=111, uuid="m-1")]
+        )
+        connector._process_one_meeting = AsyncMock(  # type: ignore[method-assign]
+            side_effect=asyncio.CancelledError()
+        )
+
+        await connector._sync_meetings_for_user(zoom_user, today)
+
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+        assert connector.full_sync_coverage().complete is False
 
     @pytest.mark.asyncio
     async def test_sync_meetings_per_meeting_exception_continues(self) -> None:
@@ -396,7 +509,7 @@ class TestZoomConnectorSyncFlow:
             ]
         )
         connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        connector._build_meeting_permissions = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=([], True))  # type: ignore[method-assign]
 
         # First meeting build raises, second succeeds
         original_build = connector._build_meeting_record
@@ -415,6 +528,60 @@ class TestZoomConnectorSyncFlow:
         # Second meeting still recorded
         connector.data_entities_processor.on_new_records.assert_awaited_once()
         connector._update_user_meeting_sync_point.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is False
+
+
+class TestKeepMeetingsOlderThanTheReportRange:
+    @pytest.mark.asyncio
+    async def test_old_meetings_are_read_only_during_a_full_sync(self) -> None:
+        connector = _make_connector()
+        today = date(2026, 3, 31)
+        connector._get_user_meeting_sync_point = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        connector._update_user_meeting_sync_point = AsyncMock()  # type: ignore[method-assign]
+        connector._list_report_meetings = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+        await connector._sync_meetings_for_user(ZoomUser(id="u1", email="u1@example.com"), today)
+
+        connector.data_entities_processor.get_records_in_record_group.assert_not_awaited()
+        connector.data_entities_processor.note_kept_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_full_sync_keeps_meetings_before_the_first_day_it_lists(self) -> None:
+        connector = _make_connector()
+        today = date(2026, 3, 31)
+        connector.data_entities_processor.full_sync_running.return_value = True
+        connector._get_user_meeting_sync_point = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        connector._update_user_meeting_sync_point = AsyncMock()  # type: ignore[method-assign]
+        connector._list_report_meetings = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        connector._keep_meetings_before = AsyncMock()  # type: ignore[method-assign]
+
+        await connector._sync_meetings_for_user(ZoomUser(id="u1", email="u1@example.com"), today)
+
+        connector._keep_meetings_before.assert_awaited_once_with("u1", today - timedelta(days=180))
+
+    @pytest.mark.asyncio
+    async def test_keep_meetings_before_pages_through_the_group(self) -> None:
+        connector = _make_connector()
+        read_from = date(2026, 1, 1)
+        old_ms = int(datetime(2025, 12, 1, tzinfo=timezone.utc).timestamp() * 1000)
+        boundary_ms = int(datetime(2026, 1, 1, 23, tzinfo=timezone.utc).timestamp() * 1000)
+        recent_ms = int(datetime(2026, 1, 2, tzinfo=timezone.utc).timestamp() * 1000)
+        processor = connector.data_entities_processor
+        processor.get_records_in_record_group = AsyncMock(side_effect=[
+            [MagicMock(id="a", source_created_at=old_ms), MagicMock(id="b", source_created_at=recent_ms)],
+            [MagicMock(id="c", source_created_at=boundary_ms), MagicMock(id="d", source_created_at=None)],
+            [MagicMock(id="e", source_created_at=old_ms)],
+        ])
+
+        with patch("app.connectors.sources.zoom.connector._STORED_MEETINGS_PAGE", 2):
+            await connector._keep_meetings_before("u1", read_from)
+
+        assert [c.args for c in processor.get_records_in_record_group.await_args_list] == [
+            ("zoom-conn-1", "u1", 2, None),
+            ("zoom-conn-1", "u1", 2, "b"),
+            ("zoom-conn-1", "u1", 2, "d"),
+        ]
+        processor.note_kept_records.assert_called_once_with("zoom-conn-1", ["a", "c", "e"])
 
 
 # ============================================================================
@@ -433,7 +600,7 @@ class TestProcessOneMeeting:
         ))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
         connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        connector._build_meeting_permissions = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=([], True))  # type: ignore[method-assign]
 
         sem = asyncio.Semaphore(1)
         result = await connector._process_one_meeting(
@@ -464,7 +631,7 @@ class TestProcessOneMeeting:
         ))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
         connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        connector._build_meeting_permissions = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=([], True))  # type: ignore[method-assign]
 
         sem = asyncio.Semaphore(1)
         result = await connector._process_one_meeting(
@@ -498,6 +665,138 @@ class TestProcessOneMeeting:
 
         assert result is None
         ds.recording_get.assert_not_awaited()
+
+
+def _acl_datasource(*, participants_ok: bool) -> MagicMock:
+    """A datasource for a meeting with one alt host, one invitee and one participant."""
+    ds = MagicMock()
+    ds.recording_get = AsyncMock(return_value=MagicMock(success=False, data=None))
+    if participants_ok:
+        ds.report_meeting_participants = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={
+                "participants": [
+                    {"user_email": "guest@example.com"},
+                    {"user_email": "alt@example.com"},
+                ],
+                "next_page_token": None,
+            },
+        ))
+    else:
+        ds.report_meeting_participants = AsyncMock(return_value=MagicMock(
+            success=False, data=None, status_code=429, message="Failed with status 429", error=None,
+        ))
+    return ds
+
+
+_ACL_DETAIL = ZoomMeetingDetail.model_validate({
+    "settings": {
+        "alternative_hosts": "alt@example.com",
+        "meeting_invitees": [{"email": "invitee@example.com"}],
+    }
+})
+
+
+class TestProcessOneMeetingAcl:
+    @pytest.mark.asyncio
+    async def test_process_one_meeting_marks_full_acl_as_replacing(self) -> None:
+        connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock(  # type: ignore[method-assign]
+            return_value=_acl_datasource(participants_ok=True)
+        )
+        connector._get_meeting_detail = AsyncMock(return_value=_ACL_DETAIL)  # type: ignore[method-assign]
+
+        result = await connector._process_one_meeting(
+            asyncio.Semaphore(1), ZoomMeetingReport(id=123, uuid="uuid-1"), "host@example.com", "rg-1",
+        )
+
+        assert result is not None
+        rec, perms = result
+        assert rec.adds_permissions is False
+        assert sorted((p.email, p.type) for p in perms) == sorted([
+            ("host@example.com", PermissionType.OWNER),
+            ("alt@example.com", PermissionType.READ),
+            ("guest@example.com", PermissionType.READ),
+            ("invitee@example.com", PermissionType.READ),
+        ])
+
+    @pytest.mark.asyncio
+    async def test_a_new_meeting_with_a_failed_participants_read_gets_only_the_grants_read(self) -> None:
+        connector = _make_connector()
+        detail = ZoomMeetingDetail.model_validate({"settings": {"alternative_hosts": "alt@example.com"}})
+        connector._get_fresh_datasource = AsyncMock(  # type: ignore[method-assign]
+            return_value=_acl_datasource(participants_ok=False)
+        )
+        connector._get_meeting_detail = AsyncMock(return_value=detail)  # type: ignore[method-assign]
+
+        result = await connector._process_one_meeting(
+            asyncio.Semaphore(1), ZoomMeetingReport(id=123, uuid="uuid-1"), "host@example.com", "rg-1",
+        )
+
+        assert result is not None
+        rec, perms = result
+        assert rec.adds_permissions is True
+        assert sorted((p.email, p.type) for p in perms) == sorted([
+            ("host@example.com", PermissionType.OWNER),
+            ("alt@example.com", PermissionType.READ),
+        ])
+
+    @pytest.mark.asyncio
+    async def test_a_failed_meeting_detail_read_adds_the_grants_read(self) -> None:
+        connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock(  # type: ignore[method-assign]
+            return_value=_acl_datasource(participants_ok=True)
+        )
+        connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        result = await connector._process_one_meeting(
+            asyncio.Semaphore(1), ZoomMeetingReport(id=123, uuid="uuid-1"), "host@example.com", "rg-1",
+        )
+
+        assert result is not None
+        rec, perms = result
+        assert rec.adds_permissions is True
+        assert {p.email for p in perms} == {"host@example.com", "guest@example.com", "alt@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_a_meeting_without_an_id_adds_the_grants_read(self) -> None:
+        """Without an id the meeting detail is never read, so alt hosts and invitees are unknown."""
+        connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock(  # type: ignore[method-assign]
+            return_value=_acl_datasource(participants_ok=True)
+        )
+        connector._get_meeting_detail = AsyncMock()  # type: ignore[method-assign]
+
+        result = await connector._process_one_meeting(
+            asyncio.Semaphore(1), ZoomMeetingReport(id=None, uuid="uuid-1"), "host@example.com", "rg-1",
+        )
+
+        assert result is not None
+        assert result[0].adds_permissions is True
+        connector._get_meeting_detail.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_process_one_meeting_partial_acl_does_not_make_run_incomplete(self) -> None:
+        connector = _make_connector()
+        today = date(2026, 3, 31)
+        connector._get_user_meeting_sync_point = AsyncMock(return_value=today)  # type: ignore[method-assign]
+        connector._update_user_meeting_sync_point = AsyncMock()  # type: ignore[method-assign]
+        connector._build_record_group = MagicMock(  # type: ignore[method-assign]
+            return_value=(MagicMock(id="rg-1"), [])
+        )
+        connector._list_report_meetings = AsyncMock(  # type: ignore[method-assign]
+            return_value=[ZoomMeetingReport(id=123, uuid="uuid-1")]
+        )
+        connector._get_fresh_datasource = AsyncMock(  # type: ignore[method-assign]
+            return_value=_acl_datasource(participants_ok=False)
+        )
+        connector._get_meeting_detail = AsyncMock(return_value=_ACL_DETAIL)  # type: ignore[method-assign]
+
+        await connector._sync_meetings_for_user(ZoomUser(id="u1", email="host@example.com"), today)
+
+        written = connector.data_entities_processor.on_new_records.await_args.args[0]
+        assert [(rec.external_record_id, rec.adds_permissions) for rec, _ in written] == [("uuid-1", True)]
+        assert connector.full_sync_coverage().complete is True
 
 
 # ============================================================================
@@ -663,6 +962,33 @@ class TestZoomApiWrappers:
 
         users = await connector._list_users()
         assert users == []
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_list_users_keeps_the_pages_read_before_a_failure(self) -> None:
+        connector = _make_connector()
+        page1 = MagicMock(success=True, data={"users": [{"id": "u1"}], "next_page_token": "tok1"})
+        fail = MagicMock(success=False, data=None, message="429")
+        ds = MagicMock()
+        ds.users = AsyncMock(side_effect=[page1, fail])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        users = await connector._list_users()
+
+        assert [u.id for u in users] == ["u1"]
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_list_users_read_in_full_keeps_the_run_complete(self) -> None:
+        connector = _make_connector()
+        page = MagicMock(success=True, data={"users": [{"id": "u1"}], "next_page_token": None})
+        ds = MagicMock()
+        ds.users = AsyncMock(return_value=page)
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        await connector._list_users()
+
+        assert connector.full_sync_coverage().complete is True
 
     @pytest.mark.asyncio
     async def test_list_report_meetings_paginates(self) -> None:
@@ -683,15 +1009,26 @@ class TestZoomApiWrappers:
         assert [m.uuid for m in meetings] == ["m1", "m2", "m3"]
 
     @pytest.mark.asyncio
-    async def test_list_report_meetings_breaks_on_failure_with_code(self) -> None:
+    async def test_list_report_meetings_raises_on_failure(self) -> None:
         connector = _make_connector()
+        page1 = MagicMock(success=True, data={"meetings": [{"uuid": "m1"}], "next_page_token": "tok"})
         fail = MagicMock(
             success=False,
             data={"code": 124, "message": "Access token is expired."},
             message="Failed with status 401",
         )
         ds = MagicMock()
-        ds.report_meetings = AsyncMock(return_value=fail)
+        ds.report_meetings = AsyncMock(side_effect=[page1, fail])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="zoom_code=124"):
+            await connector._list_report_meetings("u1", "2026-03-01", "2026-03-31")
+
+    @pytest.mark.asyncio
+    async def test_list_report_meetings_with_an_empty_success_returns_nothing(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.report_meetings = AsyncMock(return_value=MagicMock(success=True, data=None))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
 
         meetings = await connector._list_report_meetings("u1", "2026-03-01", "2026-03-31")
@@ -1225,13 +1562,14 @@ class TestBuildMeetingPermissionsEdgeCases:
         connector = _make_connector()
         connector._list_meeting_participants = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
-        perms = await connector._build_meeting_permissions(
+        perms, participants_read = await connector._build_meeting_permissions(
             meeting_detail=None,
             encoded_uuid="encoded",
             host_email="",
         )
 
         assert perms == []
+        assert participants_read is True
 
 
 class TestApiWrapperEdgeCases:
@@ -1315,7 +1653,7 @@ class TestProcessOneMeetingBranches:
         ds.recording_get = AsyncMock()
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
         connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        connector._build_meeting_permissions = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=([], True))  # type: ignore[method-assign]
 
         sem = asyncio.Semaphore(1)
         result = await connector._process_one_meeting(
@@ -1337,7 +1675,7 @@ class TestProcessOneMeetingBranches:
         ds.recording_get = AsyncMock(return_value=MagicMock(success=False, data=None))
         connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
         connector._get_meeting_detail = AsyncMock(return_value=None)  # type: ignore[method-assign]
-        connector._build_meeting_permissions = AsyncMock(return_value=[])  # type: ignore[method-assign]
+        connector._build_meeting_permissions = AsyncMock(return_value=([], True))  # type: ignore[method-assign]
 
         sem = asyncio.Semaphore(1)
         result = await connector._process_one_meeting(
