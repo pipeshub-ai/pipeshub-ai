@@ -827,8 +827,15 @@ class TestSlackWorkspace:
         conn._listed_user_emails = set() if granted else {"admin@corp.com"}
 
         await SlackConnector._authenticator_grant(conn)
+        # "No grant" with no record before it waits for the channel pass to take the token's view back.
+        await SlackConnector._confirm_authenticator_withdrawal(conn)
 
         assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": granted}
+
+    async def test_a_grant_that_cannot_be_stored_is_not_given(self) -> None:
+        conn = self._conn(authenticator="admin@corp.com", kv=_Kv(writes_fail=True))
+
+        assert await SlackConnector._authenticator_grant(conn) is None
 
     @pytest.mark.parametrize("flag", ["_users_read_failed", "_users_listing_cut"])
     async def test_after_a_restart_an_incomplete_listing_keeps_the_stored_grant(self, flag: str) -> None:
@@ -908,9 +915,9 @@ class TestSlackWorkspace:
     @pytest.mark.parametrize(("listed", "stored", "withheld"), [
         ({"admin@corp.com"}, {"email": "admin@corp.com", "granted": True}, "admin@corp.com"),
         ({"admin@corp.com"}, {"email": "admin@corp.com", "granted": False}, None),
-        ({"admin@corp.com"}, None, None),
+        ({"admin@corp.com"}, None, "admin@corp.com"),
         (set(), {"email": "admin@corp.com", "granted": True}, None),
-    ], ids=["grant-taken-back", "no-earlier-grant", "nothing-stored", "not-listed"])
+    ], ids=["grant-taken-back", "no-earlier-grant", "no-record-may-be-an-earlier-release", "not-listed"])
     async def test_only_a_given_grant_is_withdrawn_and_only_until_that_is_confirmed(
         self, listed: set[str], stored: object, withheld: str | None,
     ) -> None:
@@ -2062,6 +2069,23 @@ class TestSlackUserListing:
 
         assert self._complete(conn)
         assert conn._listed_user_emails == {"a@corp.com", "b@corp.com"}
+
+    async def test_a_person_without_an_email_makes_the_listing_incomplete(self) -> None:
+        conn = self._conn([self._page([_slack_member("U1", "a@corp.com"), _slack_member("U2")])])
+
+        await SlackConnector._sync_users(conn)
+
+        assert not self._complete(conn)
+
+    @pytest.mark.parametrize("member", [
+        _slack_member("USLACKBOT"), _slack_member("U3", deleted=True), _slack_member("B1", is_bot=True),
+    ], ids=["slackbot", "deleted", "bot"])
+    async def test_rows_that_cannot_be_the_authenticator_keep_the_listing_complete(self, member: dict) -> None:
+        conn = self._conn([self._page([_slack_member("U1", "a@corp.com"), member])])
+
+        await SlackConnector._sync_users(conn)
+
+        assert self._complete(conn)
 
     async def test_every_listed_human_is_present_whatever_their_status(self) -> None:
         members = [

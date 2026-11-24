@@ -576,6 +576,8 @@ class UsersSync:
             public_email=c.creator_email,
             email=c.creator_email,
             access_level=50,  # OWNER — creator owns the records they sync
+            # Made here, not read from GitLab: never evidence that the creator is a listed member.
+            synthesized=True,
         )
 
     def _inject_creator_member_into(self, dict_member: dict[int, Any]) -> bool:
@@ -614,6 +616,7 @@ class UsersSync:
         c = self.c
         total_users_synced = total_users_skipped = 0
         app_users: list[AppUser] = []
+        source_emails: set[str] = set()
         for member_id, member in dict_member.items():
             raw_email = getattr(member, "public_email", None)
             if isinstance(raw_email, str) and raw_email.strip():
@@ -622,6 +625,7 @@ class UsersSync:
                 fallback = getattr(member, "email", None)
                 user_email = fallback.strip() if isinstance(fallback, str) else ""
 
+            synthesized = getattr(member, "synthesized", False) is True
             # Creator bypass: if this is the configuring user and GitLab
             # did not surface an email for them, use the PipesHub email.
             if (
@@ -631,6 +635,7 @@ class UsersSync:
                 and c.creator_email
             ):
                 user_email = c.creator_email
+                synthesized = True
                 self.logger.info(
                     "Resolved creator AppUser %r via PipesHub identity "
                     "(public_email not set on GitLab profile, gitlab id=%s).",
@@ -644,6 +649,8 @@ class UsersSync:
                     getattr(member, "username", "unknown"), member_id,
                 )
             else:
+                if not synthesized:
+                    source_emails.add(user_email.lower())
                 app_users.append(
                     AppUser(
                         app_name=c.connector_name,
@@ -656,7 +663,7 @@ class UsersSync:
                     )
                 )
 
-        c._listed_user_emails = {u.email.strip().lower() for u in app_users if u.email}
+        c._listed_user_emails = source_emails
         self._unresolved_members = total_users_skipped
         if app_users:
             await c.data_entities_processor.on_new_app_users(app_users)

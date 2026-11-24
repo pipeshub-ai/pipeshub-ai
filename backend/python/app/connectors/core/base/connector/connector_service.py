@@ -878,10 +878,12 @@ class BaseConnector(ABC):
         that; a complete listing that does not grants it and stores that. An incomplete listing that
         does not name them cannot decide: the stored decision stands (authenticator_grant_kept).
 
-        ``withdraw`` is set while the stored record shows the token's view was given to them: the
+        ``withdraw`` is set while the stored record shows the token's view was given to them, or when
+        there is no record at all (a release before records existed gave it to every creator): the
         caller takes it back where the source cannot be read, and only then stores "no grant"
         (confirm_authenticator_withdrawn), so a removal that fails is tried again next sync. A record
-        that cannot be read withdraws nothing and stores nothing: the next sync reads it again."""
+        that cannot be read withdraws nothing and stores nothing: the next sync reads it again. A
+        grant is given only once it is stored, so a later sync always knows what to take back."""
         if listed:
             try:
                 stored = await self._read_grant_record()
@@ -892,13 +894,12 @@ class BaseConnector(ABC):
                     self.connector_id, e,
                 )
                 return AuthenticatorGrant(granted=False)
-            if stored and stored["granted"] and stored["email"] == email.strip().lower():
+            if stored is None or (stored["granted"] and stored["email"] == email.strip().lower()):
                 return AuthenticatorGrant(granted=False, withdraw=True)
             await self.remember_authenticator_grant(email, granted=False)
             return AuthenticatorGrant(granted=False)
         if listing_complete:
-            await self.remember_authenticator_grant(email, granted=True)
-            return AuthenticatorGrant(granted=True)
+            return AuthenticatorGrant(granted=await self.remember_authenticator_grant(email, granted=True))
         return AuthenticatorGrant(granted=await self.authenticator_grant_kept(email))
 
     async def confirm_authenticator_withdrawn(self, email: str) -> None:
@@ -957,8 +958,9 @@ class BaseConnector(ABC):
             return False
         return (user.get("_key") or user.get("id")) in keys
 
-    async def remember_authenticator_grant(self, email: str, *, granted: bool) -> None:
-        """Store the decision a complete user listing made, for authenticator_grant_kept. Never raises.
+    async def remember_authenticator_grant(self, email: str, *, granted: bool) -> bool:
+        """Store the decision a complete user listing made, for authenticator_grant_kept. Answers whether
+        it was written. Never raises.
 
         set_config answers False on a store error rather than raising. When a "no grant" cannot be
         written the record is removed instead: an earlier grant left in place would be kept by the
@@ -970,13 +972,13 @@ class BaseConnector(ABC):
         except Exception as e:
             written, error = False, e
         if written:
-            return
+            return True
         self.logger.warning(
             "Connector %s: could not store the authenticator's grant (granted=%s): %s",
             self.connector_id, granted, error or "the store refused the write",
         )
         if granted:
-            return
+            return False
         try:
             removed = await delete_config_confirmed(self.config_service, key)
         except Exception:
@@ -987,6 +989,7 @@ class BaseConnector(ABC):
                 "may remain until a complete user listing is stored",
                 self.connector_id,
             )
+        return False
 
     async def drop_authenticator_link_if_listed(self) -> None:
         """Remove the authenticator's link when the connector lists them as a source user.

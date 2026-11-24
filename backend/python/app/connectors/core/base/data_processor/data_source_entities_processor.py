@@ -5940,7 +5940,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             result = await self._decide_authenticator_link(
                 tx_store, connector_id, created_by, email, source_user_id, app_name,
-                may_link=may_link and marker_read, check_listing=check_listing,
+                may_link=may_link, may_create=marker_read, check_listing=check_listing,
                 marker=marker, extra_present_emails=extra_present_emails,
                 # An unreadable marker is not rewritten: its other entries would be lost.
                 record_listed=record_listed if marker_read else None,
@@ -5963,6 +5963,7 @@ class DataSourceEntitiesProcessor:
         app_name: Connectors | None,
         *,
         may_link: bool,
+        may_create: bool,
         check_listing: bool,
         marker: list[str],
         extra_present_emails: Collection[str],
@@ -5970,7 +5971,9 @@ class DataSourceEntitiesProcessor:
     ) -> AuthenticatorLinkResult:
         """Apply the link decision inside the open transaction. A listed authenticator missing
         from the marker is recorded there (``record_listed``) before their link is removed, so the
-        decision outlives the source account that showed it."""
+        decision outlives the source account that showed it. ``may_create`` False (the marker could
+        not be read) blocks only a link to another account: a link the source account being the
+        authenticator's own makes wrong still goes."""
         unchanged = AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
         authenticated_by, authenticator = await self._authenticator(tx_store, connector_id, created_by)
         authenticator_key = authenticator.get("_key") or authenticator.get("id")
@@ -6015,6 +6018,9 @@ class DataSourceEntitiesProcessor:
         if authenticator_email == email.strip().lower():
             removed = await tx_store.remove_authenticated_as(connector_id)
             return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if removed else AuthenticatorLink.UNCHANGED)
+
+        if not may_create:
+            return unchanged
 
         source_user = await tx_store.get_user_by_email(email, org_id=self.org_id)
         if source_user is None:
@@ -6062,9 +6068,10 @@ class DataSourceEntitiesProcessor:
     ) -> tuple[str | None, dict]:
         """The id and user document of whoever authenticated this connector: the app's
         ``authenticatedBy``, else (instances written before it existed) the creator."""
-        app = await tx_store.get_app_by_id(connector_id)
+        # A failed read raises: read as "nobody", it would let a grant or a link stand unchecked.
+        app = await tx_store.get_app_by_id(connector_id, raise_on_error=True)
         authenticated_by = (app.authenticated_by if app else None) or created_by
-        user = await tx_store.get_user_by_user_id(authenticated_by) if authenticated_by else None
+        user = await tx_store.get_user_by_user_id(authenticated_by, raise_on_error=True) if authenticated_by else None
         return authenticated_by, user or {}
 
     async def get_app_authenticator_user(self, connector_id: str, created_by: str | None) -> dict:

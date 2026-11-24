@@ -104,7 +104,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
-from app.connectors.sources.slack.common.people import file_uploader
+from app.connectors.sources.slack.common.people import SLACKBOT_USER_ID, file_uploader
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
     slack_stream_error,
@@ -1014,6 +1014,9 @@ class SlackConnector(BaseConnector):
                 if not email and not is_bot:
                     self.logger.debug(f"Skipping {m.get('name')}: no email")
                     skipped += 1
+                    if uid != SLACKBOT_USER_ID and not m.get("deleted"):
+                        # A person whose email Slack did not show may be the authenticator.
+                        self._users_listing_cut = True
                     continue
 
                 if is_bot:

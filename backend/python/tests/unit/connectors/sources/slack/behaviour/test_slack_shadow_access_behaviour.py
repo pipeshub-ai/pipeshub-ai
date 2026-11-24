@@ -16,6 +16,7 @@ from slack_behaviour_setup import (
     ALICE,
     BOB,
     GENERAL,
+    NOEMAIL,
     PARTNERS,
     SECRET,
     standard_workspace,
@@ -31,7 +32,15 @@ CHANNELS = (GENERAL, SECRET, PARTNERS)
 
 @pytest.fixture
 def workspace(slack: SlackWorkspace) -> SlackWorkspace:
-    return standard_workspace(slack)
+    standard_workspace(slack)
+    # A person with no email may be the authenticator, which leaves every user list incomplete;
+    # here they have left, so the list is complete and the authenticator can be judged.
+    _user(slack, NOEMAIL)["deleted"] = True
+    return slack
+
+
+def _user(slack: SlackWorkspace, uid: str) -> dict:
+    return next(u for u in slack.users if u["id"] == uid)
 
 
 def grants_for(store, channel_id: str, email: str) -> list:
@@ -116,6 +125,17 @@ class TestBotToken:
         await connector.run_sync()
 
         assert len(grants_for(store, SECRET, "bob@acme.com")) == 1
+
+    async def test_a_person_without_an_email_leaves_an_unlisted_authenticator_without_a_new_grant(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        _user(workspace, NOEMAIL)["deleted"] = False
+        store.authenticator_email = ADMIN
+        connector, _ = await workspace_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert grants_for(store, PARTNERS, ADMIN) == []
 
     async def test_an_unlisted_authenticator_still_gets_every_channel(self, workspace, store, checkpoints) -> None:
         store.authenticator_email = ADMIN

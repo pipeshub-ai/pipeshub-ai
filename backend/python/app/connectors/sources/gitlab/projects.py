@@ -467,12 +467,15 @@ class ProjectsSync:
             if new_level > old_level:
                 dict_member[member.id] = member
 
-        # Inject creator so Admin/Auditor personas (no membership row) get access.
+        # Inject creator so Admin/Auditor personas (no membership row) get access, but only
+        # when the creator gets the token's view: a creator listed under their own account
+        # gets what their own membership gives.
         # The project folder is granted to every member at Guest or above. Restricting
         # it to direct members drops people who arrive through the group, a filter
         # that omitted an ancestor, or a project/group share. Work items inherit the
         # project, so a duplicate grant is harmless and a missing one hides the folder.
-        c.users._inject_creator_member_into(dict_member)
+        if c._creator_token_view:
+            c.users._inject_creator_member_into(dict_member)
         c._project_reader_ids[int(project_id)] = project_reader_ids(dict_member.values())
 
         permission_project_level: list[Permission] = []

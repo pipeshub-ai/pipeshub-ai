@@ -146,14 +146,32 @@ async def test_an_unscoped_walk_read_in_full_is_complete() -> None:
     assert c._users_listing_complete is True
 
 
-async def test_gitlab_injected_creator_counts_as_listed() -> None:
+async def test_an_injected_creator_is_not_listed() -> None:
     c, users = _scoped(_ok([_member(1, "a@corp.com")]))
     c._gitlab_user_id, c.creator_email = 9, "Creator@Corp.com"
 
     await users.sync_users()
 
     assert c._users_listing_complete is True
-    assert c._listed_user_emails == {"a@corp.com", "creator@corp.com"}
+    assert c._listed_user_emails == {"a@corp.com"}, "the stub is made here, not read from GitLab"
+
+
+async def test_the_creator_email_put_on_an_emailless_token_row_is_not_listed() -> None:
+    c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(9, None)]))
+    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
+
+    await users.sync_users()
+
+    assert c._listed_user_emails == {"a@corp.com"}
+
+
+async def test_a_real_row_for_the_token_account_is_listed() -> None:
+    c, users = _scoped(_ok([_member(1, "a@corp.com"), _member(9, "Bot@Corp.com")]))
+    c._gitlab_user_id, c.creator_email = 9, "creator@corp.com"
+
+    await users.sync_users()
+
+    assert c._listed_user_emails == {"a@corp.com", "bot@corp.com"}
 
 
 async def test_a_creator_alone_is_not_a_listing() -> None:
@@ -505,7 +523,7 @@ class TestCreatorTokenViewOnFallbacks:
         else:
             withdraw.assert_awaited_once_with(c.connector_id, ["eng"], CREATOR)
 
-    @pytest.mark.parametrize("stored", [None, {"email": CREATOR, "granted": False}])
+    @pytest.mark.parametrize("stored", [{"email": CREATOR, "granted": False}, {"email": "other@corp.com", "granted": True}])
     async def test_nothing_is_withdrawn_from_a_creator_never_given_the_token_view(self, stored: object) -> None:
         c = await _decided(listed=_LISTED, kv=_Kv({GRANT_KEY: stored}))
         c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
@@ -514,6 +532,37 @@ class TestCreatorTokenViewOnFallbacks:
         await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"])
 
         c.data_entities_processor.remove_user_grant_from_record_groups.assert_not_awaited()
+
+    async def test_a_creator_grant_from_before_grant_records_existed_is_withdrawn(self) -> None:
+        kv = _Kv()
+        c = await _decided(listed=_LISTED, kv=kv)
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=False, data=None, error="500", status_code=500))
+        c.data_entities_processor.has_stored_permissions = AsyncMock(return_value=True)
+
+        await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"])
+        assert kv.values == {}, "nothing stored before the removal"
+        await GitLabConnector._confirm_creator_withdrawal(c)
+
+        c.data_entities_processor.remove_user_grant_from_record_groups.assert_awaited_once_with(
+            c.connector_id, ["eng"], CREATOR,
+        )
+        assert kv.values[GRANT_KEY] == {"email": CREATOR, "granted": False}
+
+    @pytest.mark.parametrize("token_view", [True, False])
+    async def test_the_creator_is_injected_into_a_readable_member_list_only_with_the_token_view(
+        self, token_view: bool,
+    ) -> None:
+        c = make_mock_connector()
+        c._creator_token_view = token_view
+        c._gitlab_included_group_paths = None
+        c.runtime.ds_call = AsyncMock(return_value=_ok([SimpleNamespace(id=1, access_level=30)]))
+        c.users._inject_creator_member_into = MagicMock()
+        projects = ProjectsSync(c)
+        projects._transform_restrictions_to_permissions = AsyncMock(return_value=None)
+
+        await projects._sync_project_members_as_pseudo(_project())
+
+        assert c.users._inject_creator_member_into.called is token_view
 
     async def test_the_withdrawal_is_stored_only_after_the_removal_and_then_not_repeated(self) -> None:
         kv = _given()
@@ -654,8 +703,8 @@ class TestCreatorTokenViewRecord:
         await users.sync_users()
         await GitLabConnector._decide_creator_token_view(c)
 
-        assert CREATOR in c._listed_user_emails, "the creator stub stands for the token account"
-        assert c._creator_token_view is False
+        assert CREATOR not in c._listed_user_emails, "the stub is no evidence the creator is a member"
+        assert c._creator_token_view is True, "granted as an unlisted creator, not as the token holder"
 
     async def test_a_failed_read_of_the_stored_grant_grants_nothing(self) -> None:
         c = await _decided(listed=_UNLISTED, complete=False, kv=_Kv(error=RuntimeError("kv down")))

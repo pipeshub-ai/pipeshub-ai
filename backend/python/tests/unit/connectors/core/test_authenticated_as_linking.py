@@ -222,6 +222,18 @@ class TestListedAuthenticator:
         assert result.outcome is AuthenticatorLink.UNLINKED
         proc.config_service.set_config.assert_not_called()
 
+    async def test_a_failed_marker_read_still_unlinks_when_the_account_is_the_authenticators_own(self) -> None:
+        tx = _tx_store(creator_email="Darshan@PipesHub.com", edges=[])
+        tx.remove_authenticated_as = AsyncMock(return_value=True)
+        proc = _processor(tx)
+        self._unreadable_marker(proc)
+
+        result = await _link(proc)
+
+        tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
+        tx.upsert_authenticated_as.assert_not_called()
+        assert result.outcome is AuthenticatorLink.UNLINKED
+
     @pytest.mark.parametrize("stored", [
         "creator-key", {"creator-key": 1}, 7, [None], [""], ["  "], ["creator-key", 3], [["creator-key"]],
     ])
@@ -455,7 +467,7 @@ class TestWhoTheLinkHangsOff:
 
         await proc.link_authenticator_to_source_user(CONNECTOR, CREATED_BY, "darshan@pipeshub.com", "acct-123", Connectors.JIRA)
 
-        tx.get_user_by_user_id.assert_awaited_once_with("admin-user-id")
+        tx.get_user_by_user_id.assert_awaited_once_with("admin-user-id", raise_on_error=True)
         tx.upsert_authenticated_as.assert_awaited_once_with("admin-key", "src-key", CONNECTOR, "org-1")
 
     @pytest.mark.parametrize("app", [None, MagicMock(authenticated_by=None), MagicMock(authenticated_by="")])
@@ -466,7 +478,7 @@ class TestWhoTheLinkHangsOff:
 
         await proc.link_authenticator_to_source_user(CONNECTOR, CREATED_BY, "darshan@pipeshub.com", "acct-123", Connectors.JIRA)
 
-        tx.get_user_by_user_id.assert_awaited_once_with(CREATED_BY)
+        tx.get_user_by_user_id.assert_awaited_once_with(CREATED_BY, raise_on_error=True)
         tx.upsert_authenticated_as.assert_awaited_once_with("creator-key", "src-key", CONNECTOR, "org-1")
 
     async def test_the_authenticators_own_email_matching_removes_the_link(self) -> None:
@@ -650,10 +662,10 @@ class TestAuthenticatorGrantRecord:
 
         return await BaseConnector.authenticator_grant_kept(conn, email)
 
-    async def _remember(self, conn: MagicMock, email: str, *, granted: bool) -> None:
+    async def _remember(self, conn: MagicMock, email: str, *, granted: bool) -> bool:
         from app.connectors.core.base.connector.connector_service import BaseConnector
 
-        await BaseConnector.remember_authenticator_grant(conn, email, granted=granted)
+        return await BaseConnector.remember_authenticator_grant(conn, email, granted=granted)
 
     async def test_a_stored_grant_for_the_same_authenticator_is_kept(self) -> None:
         conn = self._connector({"email": "admin@corp.com", "granted": True})
@@ -712,7 +724,6 @@ class TestAuthenticatorGrantRecord:
         assert await self._decide(conn, complete=complete, listed=True) == AuthenticatorGrant(granted=False)
 
     @pytest.mark.parametrize("stored", [
-        None,
         {"email": "admin@corp.com", "granted": False},
         {"email": "someone.else@corp.com", "granted": True},
     ])
@@ -720,6 +731,16 @@ class TestAuthenticatorGrantRecord:
         conn = self._connector(stored)
 
         assert await self._decide(conn, complete=True, listed=True) == AuthenticatorGrant(granted=False, withdraw=False)
+        conn.config_service.set_config.assert_awaited_once_with(GRANT_KEY, {"email": "admin@corp.com", "granted": False})
+
+    @pytest.mark.parametrize("complete", [True, False])
+    async def test_no_record_at_all_is_withdrawn_as_a_grant_an_earlier_release_may_have_given(
+        self, complete: bool,
+    ) -> None:
+        conn = self._connector(None)
+
+        assert await self._decide(conn, complete=complete, listed=True) == AuthenticatorGrant(granted=False, withdraw=True)
+        conn.config_service.set_config.assert_not_awaited()
 
     @pytest.mark.parametrize("unreadable", [{"error": RuntimeError("kv down")}, {"stored": "granted"}])
     async def test_nothing_is_withdrawn_or_stored_when_the_earlier_grant_cannot_be_read(self, unreadable: dict) -> None:
@@ -735,6 +756,13 @@ class TestAuthenticatorGrantRecord:
 
         assert await self._decide(conn, complete=True, listed=False) == AuthenticatorGrant(granted=True, withdraw=False)
         conn.config_service.set_config.assert_awaited_once_with(GRANT_KEY, {"email": "admin@corp.com", "granted": True})
+
+    @pytest.mark.parametrize("failure", [{"return_value": False}, {"side_effect": RuntimeError("kv down")}])
+    async def test_a_grant_that_cannot_be_stored_is_not_given(self, failure: dict) -> None:
+        conn = self._connector()
+        conn.config_service.set_config = AsyncMock(**failure)
+
+        assert await self._decide(conn, complete=True, listed=False) == AuthenticatorGrant(granted=False, withdraw=False)
 
     @pytest.mark.parametrize(("stored", "granted"), [
         ({"email": "admin@corp.com", "granted": True}, True),
@@ -812,10 +840,13 @@ class TestAuthenticatorGrantRecord:
         conn = self._connector()
         conn.config_service.set_config = AsyncMock(**failure)
 
-        await self._remember(conn, "admin@corp.com", granted=True)
+        assert await self._remember(conn, "admin@corp.com", granted=True) is False
 
         conn.logger.warning.assert_called_once()
         conn.config_service.delete_config.assert_not_awaited()
+
+    async def test_a_written_decision_answers_true(self) -> None:
+        assert await self._remember(self._connector(), "admin@corp.com", granted=True) is True
 
     @pytest.mark.parametrize("failure", [{"return_value": False}, {"side_effect": RuntimeError("kv down")}])
     async def test_a_failed_no_grant_write_removes_the_record(self, failure: dict) -> None:
@@ -923,7 +954,7 @@ class TestAuthenticatorUser:
         user = await proc.get_app_authenticator_user(CONNECTOR, CREATED_BY)
 
         assert user["email"] == "admin@x.com"
-        tx.get_user_by_user_id.assert_awaited_once_with("admin-user-id")
+        tx.get_user_by_user_id.assert_awaited_once_with("admin-user-id", raise_on_error=True)
 
     async def test_instances_without_the_field_fall_back_to_the_creator(self) -> None:
         tx = _tx_store()
@@ -931,7 +962,7 @@ class TestAuthenticatorUser:
 
         await proc.get_app_authenticator_user(CONNECTOR, CREATED_BY)
 
-        tx.get_user_by_user_id.assert_awaited_once_with(CREATED_BY)
+        tx.get_user_by_user_id.assert_awaited_once_with(CREATED_BY, raise_on_error=True)
 
     async def test_nobody_to_read_answers_an_empty_user(self) -> None:
         tx = _tx_store()
@@ -940,6 +971,17 @@ class TestAuthenticatorUser:
 
         assert await proc.get_app_authenticator_user(CONNECTOR, None) == {}
         tx.get_user_by_user_id.assert_not_called()
+
+    @pytest.mark.parametrize("failing", ["get_app_by_id", "get_user_by_user_id"])
+    async def test_a_failed_read_raises_instead_of_answering_nobody(self, failing: str) -> None:
+        tx = _tx_store()
+        setattr(tx, failing, AsyncMock(side_effect=RuntimeError("graph down")))
+        proc = _processor(tx)
+
+        with pytest.raises(RuntimeError):
+            await proc.get_app_authenticator_user(CONNECTOR, CREATED_BY)
+
+        tx.get_app_by_id.assert_awaited_once_with(CONNECTOR, raise_on_error=True)
 
 
 class TestAuthenticatorEmail:

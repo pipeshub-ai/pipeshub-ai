@@ -240,7 +240,7 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_app_by_id(self, connector_id: str) -> Optional[AppMetadata]:
+    async def get_app_by_id(self, connector_id: str, *, raise_on_error: bool = False) -> Optional[AppMetadata]:
         pass
 
     @abstractmethod
