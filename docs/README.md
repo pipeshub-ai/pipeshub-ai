@@ -21,6 +21,17 @@ In-repo design docs:
 - [Web search and fetch — providers, typed failures, address policy, metrics and QA checks](./web-search.md)
 - [Logging — levels, formats, line shape, field names and the conventions every log line follows](./logging.md)
 - [Query service profiling — one-command load test, flame graphs and resource usage](./query-profiling.md)
+- [Org context — which org and user every request, message and job acts for, in Python and Node](./org-context.md)
+- [Context engineering — what the agent loop sends the model on each call](./context-engineering.md)
+- [Multi-agent practices — designing and reviewing the multi-agent runtime](./multi-agent-best-practices.md)
+- [AI models — configuring, discovering and listing chat, embedding, image and speech models](./ai-models.md)
+- [LLM gateway identity — forwarding the user and their groups to a gateway such as LiteLLM](./llm-gateway-identity.md)
+- [Text fragments — citation links that highlight the cited text on the source page](./text-fragments.md)
+- [Taxonomy entity resolution — merging spellings of the same category, subcategory and topic](./entity-resolution.md)
+- [Named entity extraction — typed entities extracted at indexing and the agent tools that read them](./named-entity-extraction.md)
+- [Knowledge Hub browse on Neo4j — the split browse and its permission model](./knowledge-hub-browse.md)
+- [Acting on behalf of someone — service-account delegation](./service-account-delegation.md)
+- [MCP hardening notes — why the MCP client works the way it does, change by change](./mcp-hardening-notes.md)
 
 Upgrading:
 

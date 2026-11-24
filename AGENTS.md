@@ -9,7 +9,7 @@ Human onboarding is [CONTRIBUTING.md](./CONTRIBUTING.md).
 ## Layout
 
 ```text
-frontend/                 Next.js dashboard. UI conventions: frontend/CLAUDE.md
+frontend/                 Next.js dashboard. UI conventions: frontend/AGENTS.md
 backend/nodejs/apps/     Express — auth, orgs, KB, gateway, MCP, and (in Docker) the built UI
 backend/python/          FastAPI: connectors :8088, indexing :8091, query :8000,
                           docling :8081, embedding :8002, parsing :8092, extraction :8093
@@ -17,6 +17,32 @@ deployment/               Docker Compose and Helm
 ```
 
 New connectors extend `ConnectorFactory` under `backend/python/app/connectors/sources/`. Before adding or changing one, read [CONNECTOR.md](./CONNECTOR.md); [CONNECTOR_CHECKLIST.md](./CONNECTOR_CHECKLIST.md) is the definition of done. New HTTP routes must keep `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` in sync — a mismatch is blocking.
+
+Design docs for each feature are listed in [docs/README.md](./docs/README.md).
+
+## Module guides
+
+Some folders have their own `AGENTS.md`: what the code does, the rules it must keep, the decisions behind it, and what to check when you add, change or remove code there. **Before you edit a file, read the guide in its folder and in every parent folder up to this one.** Each guide has a `CLAUDE.md` next to it that only imports it (`@AGENTS.md`), so Claude Code loads the guide when it opens a file in that folder.
+
+| Folder | Read before you change |
+| --- | --- |
+| [`frontend/`](./frontend/AGENTS.md) | Any UI: naming, routing, styling, i18n, data fetching |
+| [`backend/nodejs/apps/src/libs/`](./backend/nodejs/apps/src/libs/AGENTS.md) | Node errors, calls to other services, retries |
+| [`backend/nodejs/apps/src/libs/middlewares/`](./backend/nodejs/apps/src/libs/middlewares/AGENTS.md) | Error handling, path params, validation, access lines for any Node route |
+| [`backend/nodejs/apps/src/modules/`](./backend/nodejs/apps/src/modules/AGENTS.md) | Any Node feature module, above all the ones that proxy to the Python services |
+| [`backend/nodejs/apps/src/modules/user_management/`](./backend/nodejs/apps/src/modules/user_management/AGENTS.md) | Users, roles, admins, groups, teams, invites |
+| [`backend/python/app/agents/mcp/`](./backend/python/app/agents/mcp/AGENTS.md) | The MCP client and its server catalog |
+| [`backend/python/app/config/`](./backend/python/app/config/AGENTS.md) | Config reads and writes, KV providers, the file-type table |
+| [`backend/python/app/connectors/api/`](./backend/python/app/connectors/api/AGENTS.md) | The connectors service HTTP API: OAuth, connector create and config |
+| [`backend/python/app/services/graph_db/`](./backend/python/app/services/graph_db/AGENTS.md) | Graph queries and providers, and any job that reads the graph without a request |
+| [`backend/python/app/services/messaging/`](./backend/python/app/services/messaging/AGENTS.md) | Broker consumers and producers, retries, commits |
+
+### Writing and keeping a guide
+
+- **Same PR.** A change that makes a guide wrong (a rule, a decision, a file or symbol it names, a checklist step) updates the guide in the same PR. Reviewers treat a stale guide as a defect.
+- **Write one** for a folder whose rules an agent cannot see from the code: invariants, failure modes, decisions that look odd until you know why. Add it to the table above.
+- **Shape.** Content in `AGENTS.md`; a `CLAUDE.md` beside it that holds only `@AGENTS.md`. Sections: what it is and when to read it, how it fits, files, rules, decisions (with the PR), changing this code (adding / editing / removing), tests, keeping this file true. [`backend/python/app/agents/mcp/AGENTS.md`](./backend/python/app/agents/mcp/AGENTS.md) is a full example.
+- **Only what holds on main**, checked in the code. Cite files and symbols, never line numbers. Link this file and `docs/` instead of repeating them.
 
 ## Storage is pluggable
 
@@ -91,11 +117,23 @@ would run and why anything is skipped.
 
 Style: [.gemini/styleguide.md](./.gemini/styleguide.md) (Ruff, PEP 8, ESLint, no secrets).
 
+## Logging and errors
+
+Read [docs/logging.md](./docs/logging.md) before you add a log line or handle an error. The rules that apply everywhere:
+
+- **The message is static text or a dotted event name** (`sync_run.end`). Ids and values go in snake_case fields, named the same in Python and Node. Fields are scalars: ids, counts, enums.
+- **Never log** secrets, tokens, request or response bodies, prompts, document content, emails or names. Driver, provider and model error text counts as content: in Python use `error_class.log_failure(..., include_error_text=False)` for it, and `failure_reason(exc)`, never `str(e)`, in anything a client, tool result or trace receives. CI checks for emails and names in log calls (`log-pii`).
+- **Log an error once, where it is handled.** Python: `error_class.log_failure(logger, event, exc, **ids)`; lower layers `raise … from e`. Node: pass it to `next(err)` and the error middleware writes the line.
+- **Bind ids once where work enters** (a request, a broker message, a tick). `loop.run_in_executor`, `ThreadPoolExecutor.submit` and `threading.Thread` do not copy the context; run the work in `contextvars.copy_context().run`.
+- **An outage is not an absence.** A store, graph or config read that failed raises (`GraphQueryError`, `get_config(..., raise_on_error=True)`, `PermissionVerificationUnavailableError`) and the route answers an error. It is never read as "not found", "no access", "not configured" or "nothing to delete".
+- **A Python 4xx `detail` is shown to the user.** Node passes a 4xx's words through and replaces a 5xx with its own (`libs/errors/backend-error.ts`). So a 4xx `detail` holds no exception text, raw path value or email.
+- **The KV config stores have no compare-and-set.** `create_config_if_absent` is the only conditional write, so a read-modify-write can lose a concurrent write.
+
 ## Conventions
 
-- Python config reads and writes go through `ConfigurationService` (`config_service.get_config(key)`, `set_config(key, value)`), never `KeyValueStore` directly. Use `get_config(key, use_cache=False)` when you need the value right after an update.
+- Python config reads and writes go through `ConfigurationService` (`config_service.get_config(key)`, `set_config(key, value)`), never `KeyValueStore` directly. Caching and failure rules are in [backend/python/app/config/AGENTS.md](./backend/python/app/config/AGENTS.md).
 - Comments explain only the why the code cannot show: a non-obvious constraint or the bug a line guards against. No comments that restate the code or narrate the change, no commented-out code, no TODOs without an owner.
-- PR review criteria: [.claude/skills/pr-review/SKILL.md](./.claude/skills/pr-review/SKILL.md). Frontend work: [frontend/CLAUDE.md](./frontend/CLAUDE.md) (Collections vs Knowledge Base naming, styling, i18n).
+- PR review criteria: [.claude/skills/pr-review/SKILL.md](./.claude/skills/pr-review/SKILL.md). Frontend work: [frontend/AGENTS.md](./frontend/AGENTS.md) (Collections vs Knowledge Base naming, styling, i18n).
 
 ## Do not
 
