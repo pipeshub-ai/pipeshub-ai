@@ -2,23 +2,23 @@ import { Mutex } from 'async-mutex';
 import { inject, injectable } from 'inversify';
 import axios from 'axios';
 import * as https from 'https';
-import { Logger } from '../logger.service';
-import { KeyValueStoreService } from '../keyValueStore.service';
+import { Logger } from '../../libs/services/logger.service';
+import { KeyValueStoreService } from '../../libs/services/keyValueStore.service';
 import { keyValues, SERVICE_NAME } from './constants';
 import { eventBuffer } from './event-buffer';
 import {
   HEADER_REQUEST_ID,
   newSystemRoot,
-} from '../../context/request-context';
+} from '../../libs/context/request-context';
 import { metricsBackend } from './metrics-backend';
 import { setInstallInfo } from './modules/install-metrics';
 import { createHash, randomUUID } from 'crypto';
 const SCHEMA_VERSION = 1;
 const METRICS_VERSION = '2';
-import { parseBoolean } from '../../../modules/storage/utils/utils';
-import { configPaths } from '../../../modules/configuration_manager/paths/paths';
-import { EncryptionService } from '../../encryptor/encryptor';
-import { loadConfigurationManagerConfig } from '../../../modules/configuration_manager/config/config';
+import { parseBoolean } from '../../modules/storage/utils/utils';
+import { configPaths } from '../../modules/configuration_manager/paths/paths';
+import { EncryptionService } from '../../libs/encryptor/encryptor';
+import { loadConfigurationManagerConfig } from '../../modules/configuration_manager/config/config';
 
 const logger = Logger.getInstance({ service: 'Telemetry Service' });
 
@@ -450,6 +450,20 @@ export class TelemetryService implements ITelemetryService {
     }
     await this.pushMetricsToServer();
     await this.shipEventsToServer();
+  }
+
+  /**
+   * Stops the push loop and, when the install still consents, ships what is
+   * buffered so a clean stop does not lose the last interval.
+   */
+  public async shutdown(): Promise<void> {
+    this.stopMetricsPush();
+    if (this.enableMetricCollection) {
+      await this.flush();
+    }
+    if (TelemetryService.instance === this) {
+      TelemetryService.instance = undefined;
+    }
   }
 
   private async refreshInstallInfo(): Promise<void> {

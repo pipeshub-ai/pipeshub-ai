@@ -1,8 +1,8 @@
-import { metricsBackend } from '../services/telemetry/telemetry-impl';
+import { metricsBackend } from '../metrics-backend';
 
 const buckets = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 15, 60];
 
-export const metrics = {
+export const dbMetrics = {
   query: metricsBackend.createHistogram({
     name: 'pipeshub_db_query_seconds',
     help: 'Statement duration by call site',

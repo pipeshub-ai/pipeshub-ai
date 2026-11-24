@@ -1,4 +1,4 @@
-import { TELEMETRY_DEFAULT_ENABLED } from '../../../edition';
+import { USAGE_DATA_DEFAULT_ENABLED } from '../../edition';
 
 /**
  * Master switch for telemetry. `TELEMETRY_COLLECTION_FLAG` decides whether any
@@ -15,7 +15,7 @@ export const telemetryOffMessage = `Telemetry disabled (${TELEMETRY_COLLECTION_F
 export function isTelemetryEnabled(): boolean {
   const raw = process.env[TELEMETRY_COLLECTION_FLAG]?.trim();
   if (!raw) {
-    return TELEMETRY_DEFAULT_ENABLED;
+    return USAGE_DATA_DEFAULT_ENABLED;
   }
   return raw.toLowerCase() === 'true';
 }

@@ -1,16 +1,19 @@
 import { expect } from 'chai'
 import { stripNul } from '../../../src/libs/repositories/strip-nul'
-import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend'
+import { onPlatformEvent } from '../../../src/libs/platform-events'
 
-const counter = async (): Promise<number> => {
-  const text = await metricsBackend.serialize()
-  return text
-    .split('\n')
-    .filter((l) => l.startsWith('docstore_nul_stripped_total{') && l.includes('repo="t-nul"'))
-    .reduce((n, l) => n + Number(l.split(' ').pop()), 0)
-}
+let stripped = 0
+const counter = async (): Promise<number> => stripped
 
 describe('stripNul', () => {
+  let stop = (): void => undefined
+  before(() => {
+    stop = onPlatformEvent('docstore.nul_characters.stripped', (e) => {
+      if (e.repo === 't-nul') stripped += e.count
+    })
+  })
+  after(() => stop())
+
   it('removes U+0000 from strings, nested values and object keys, and counts each one', async () => {
     const before = await counter()
     const out = stripNul({ 'a\u0000b': ['x\u0000y', { z: 'q\u0000\u0000' }], n: 1, d: new Date(0), k: null }, 't-nul', 'doc')

@@ -1,6 +1,6 @@
 import { expect } from 'chai';
-import { recordHttpRequest, sessionApiSurface } from '../../../../../src/libs/services/telemetry/modules/http-metrics';
-import { metricsBackend } from '../../../../../src/libs/services/telemetry/metrics-backend';
+import { recordHttpRequest, sessionApiSurface } from '../../../../src/plugins/telemetry/modules/http-metrics';
+import { metricsBackend } from '../../../../src/plugins/telemetry/metrics-backend';
 
 describe('telemetry modules/http-metrics', () => {
   it('should count a request with all labels set', async () => {

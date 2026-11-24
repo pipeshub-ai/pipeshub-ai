@@ -1,12 +1,12 @@
 import { expect } from 'chai';
 import sinon from 'sinon';
-import { startOrgMetricsRefresh } from '../../../../src/modules/user_management/services/metrics.refresh.service';
-import { Org } from '../../../../src/modules/user_management/schema/org.schema';
-import { Users } from '../../../../src/modules/user_management/schema/users.schema';
-import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
-import * as orgMetrics from '../../../../src/libs/services/telemetry/modules/org-metrics';
-import * as userMetrics from '../../../../src/libs/services/telemetry/modules/user-metrics';
-import { createMockLogger } from '../../../helpers/mock-logger';
+import { startOrgMetricsRefresh } from '../../../src/plugins/telemetry/metrics.refresh.service';
+import { Org } from '../../../src/modules/user_management/schema/org.schema';
+import { Users } from '../../../src/modules/user_management/schema/users.schema';
+import { OrgAuthConfig } from '../../../src/modules/auth/schema/orgAuthConfiguration.schema';
+import * as orgMetrics from '../../../src/plugins/telemetry/modules/org-metrics';
+import * as userMetrics from '../../../src/plugins/telemetry/modules/user-metrics';
+import { createMockLogger } from '../../helpers/mock-logger';
 
 // A very large interval so only the immediate kick-off refresh runs in tests.
 const NEVER_MS = 2 ** 30;

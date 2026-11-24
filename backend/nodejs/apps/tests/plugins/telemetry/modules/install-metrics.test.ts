@@ -1,6 +1,6 @@
 import { expect } from 'chai';
-import { setInstallInfo } from '../../../../../src/libs/services/telemetry/modules/install-metrics';
-import { metricsBackend } from '../../../../../src/libs/services/telemetry/metrics-backend';
+import { setInstallInfo } from '../../../../src/plugins/telemetry/modules/install-metrics';
+import { metricsBackend } from '../../../../src/plugins/telemetry/metrics-backend';
 
 describe('telemetry modules/install-metrics', () => {
   describe('setInstallInfo', () => {

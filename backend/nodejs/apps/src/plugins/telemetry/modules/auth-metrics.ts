@@ -1,4 +1,4 @@
-import { BaseError } from '../../../errors/base.error';
+import { BaseError } from '../../../libs/errors/base.error';
 import { metricsBackend } from '../metrics-backend';
 
 /**

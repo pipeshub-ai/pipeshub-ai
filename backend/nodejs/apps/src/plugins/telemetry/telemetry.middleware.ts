@@ -1,10 +1,7 @@
 import { Response, NextFunction } from 'express';
-import { AuthenticatedUserRequest } from './types';
-import { recordHttpRequest } from '../services/telemetry/modules/http-metrics';
-import {
-  domainFromEmail,
-  normalizeOrgId,
-} from '../services/telemetry/identity';
+import { AuthenticatedUserRequest } from '../../libs/middlewares/types';
+import { recordHttpRequest } from './modules/http-metrics';
+import { domainFromEmail, normalizeOrgId } from './identity';
 
 type MetricsRequest = AuthenticatedUserRequest & {
   __metricsAttached?: boolean;

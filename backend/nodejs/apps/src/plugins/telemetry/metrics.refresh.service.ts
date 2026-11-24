@@ -1,12 +1,9 @@
-import { getOrgMetricsJobRepository } from '../../../libs/repositories/org-metrics-job';
-import {
-  setOrgsTotal,
-  setOrgAuthMethods,
-} from '../../../libs/services/telemetry/modules/org-metrics';
-import { setOrgUsers } from '../../../libs/services/telemetry/modules/user-metrics';
-import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
-import { spawnDetached, system } from '../../../libs/context/orgContext';
-import { Logger } from '../../../libs/services/logger.service';
+import { getOrgMetricsJobRepository } from '../../libs/repositories/org-metrics-job';
+import { setOrgsTotal, setOrgAuthMethods } from './modules/org-metrics';
+import { setOrgUsers } from './modules/user-metrics';
+import { normalizeOrgId } from './identity';
+import { spawnDetached, system } from '../../libs/context/orgContext';
+import { Logger } from '../../libs/services/logger.service';
 
 const DEFAULT_INTERVAL_MS = 60000 * 5;
 

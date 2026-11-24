@@ -1,8 +1,8 @@
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { EventEmitter } from 'events';
-import { metricsMiddleware } from '../../../src/libs/middlewares/telemetry.middleware';
-import * as httpMetricsModule from '../../../src/libs/services/telemetry/modules/http-metrics';
+import { metricsMiddleware } from '../../../src/plugins/telemetry/telemetry.middleware';
+import * as httpMetricsModule from '../../../src/plugins/telemetry/modules/http-metrics';
 
 type FinishableResponse = EventEmitter & { statusCode: number };
 

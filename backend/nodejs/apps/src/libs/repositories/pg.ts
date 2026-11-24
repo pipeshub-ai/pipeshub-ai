@@ -29,7 +29,7 @@ import {
   DocStoreReadOnlyError,
   VersionConflictError,
 } from './errors';
-import { docstoreMetrics } from './metrics';
+import { emitPlatformEvent } from '../platform-events';
 import type { Tx, UnitOfWork } from './uow';
 
 const logger = Logger.getInstance({ service: 'PgDocStore' });
@@ -57,21 +57,27 @@ export function kernelTx(tx: Tx): PgKernelTx {
 export function mapPgStoreError(error: unknown): unknown {
   const e = mapPgError(error);
   if (e instanceof DbReadOnly) {
-    docstoreMetrics.fenceRefused.inc({ store: 'postgres', reason: 'readonly' });
+    emitPlatformEvent('docstore.write.refused', {
+      store: 'postgres',
+      reason: 'readonly',
+    });
     return new DocStoreReadOnlyError();
   }
   if (e instanceof DbFenced) {
-    docstoreMetrics.fenceRefused.inc({ store: 'postgres', reason: 'epoch' });
+    emitPlatformEvent('docstore.write.refused', {
+      store: 'postgres',
+      reason: 'epoch',
+    });
     return new DocStoreFencedError();
   }
   if (e instanceof FailedTransaction) {
     // a statement ran after a swallowed error without a savepoint: a bug, never a user error
-    docstoreMetrics.failedTransaction.inc();
+    emitPlatformEvent('docstore.transaction.failed');
     logger.error('statement after an error inside a unit of work');
     return new InternalServerError('Database transaction was aborted');
   }
   if (e instanceof PermissionDenied) {
-    docstoreMetrics.rlsViolation.inc();
+    emitPlatformEvent('docstore.row_policy.violated');
     logger.error('privilege or row policy refused a write (wrong org?)');
     return new InternalServerError('Database refused the operation');
   }

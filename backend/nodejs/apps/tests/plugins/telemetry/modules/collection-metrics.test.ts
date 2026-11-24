@@ -1,6 +1,6 @@
 import { expect } from 'chai';
-import { setMetricCollectionEnabled } from '../../../../../src/libs/services/telemetry/modules/collection-metrics';
-import { metricsBackend } from '../../../../../src/libs/services/telemetry/metrics-backend';
+import { setMetricCollectionEnabled } from '../../../../src/plugins/telemetry/modules/collection-metrics';
+import { metricsBackend } from '../../../../src/plugins/telemetry/metrics-backend';
 
 describe('telemetry modules/collection-metrics', () => {
   it('should publish 1 when collection is enabled for an org', async () => {

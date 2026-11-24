@@ -1,6 +1,6 @@
 import { expect } from 'chai';
-import { setOrgUsers } from '../../../../../src/libs/services/telemetry/modules/user-metrics';
-import { metricsBackend } from '../../../../../src/libs/services/telemetry/metrics-backend';
+import { setOrgUsers } from '../../../../src/plugins/telemetry/modules/user-metrics';
+import { metricsBackend } from '../../../../src/plugins/telemetry/metrics-backend';
 
 describe('telemetry modules/user-metrics', () => {
   it('should publish user counts per org with domain', async () => {

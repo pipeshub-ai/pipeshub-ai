@@ -3,7 +3,7 @@ import {
   eventBuffer,
   recordEvent,
   BufferedEvent,
-} from '../../../../src/libs/services/telemetry/event-buffer';
+} from '../../../src/plugins/telemetry/event-buffer';
 
 describe('telemetry event-buffer', () => {
   beforeEach(() => {

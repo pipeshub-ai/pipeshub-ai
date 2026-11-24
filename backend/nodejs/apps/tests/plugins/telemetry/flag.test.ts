@@ -3,18 +3,18 @@ import sinon from 'sinon';
 import {
   isTelemetryEnabled,
   TELEMETRY_COLLECTION_FLAG,
-} from '../../../../src/libs/services/telemetry/flag';
-import * as flagModule from '../../../../src/libs/services/telemetry/flag';
-import { TELEMETRY_DEFAULT_ENABLED } from '../../../../src/edition';
+} from '../../../src/plugins/telemetry/flag';
+import * as flagModule from '../../../src/plugins/telemetry/flag';
+import { USAGE_DATA_DEFAULT_ENABLED } from '../../../src/edition';
 import {
   NoopBackend,
   PrometheusBackend,
   metricsBackend,
-} from '../../../../src/libs/services/telemetry/metrics-backend';
+} from '../../../src/plugins/telemetry/metrics-backend';
 import {
   eventBuffer,
   recordEvent,
-} from '../../../../src/libs/services/telemetry/event-buffer';
+} from '../../../src/plugins/telemetry/event-buffer';
 
 describe('telemetry flag', () => {
   let previous: string | undefined;
@@ -36,13 +36,13 @@ describe('telemetry flag', () => {
   describe('isTelemetryEnabled', () => {
     it('uses the edition default when the variable is unset', () => {
       delete process.env[TELEMETRY_COLLECTION_FLAG];
-      expect(isTelemetryEnabled()).to.equal(TELEMETRY_DEFAULT_ENABLED);
+      expect(isTelemetryEnabled()).to.equal(USAGE_DATA_DEFAULT_ENABLED);
     });
 
     for (const value of ['', '   ']) {
       it(`uses the edition default for "${value}"`, () => {
         process.env[TELEMETRY_COLLECTION_FLAG] = value;
-        expect(isTelemetryEnabled()).to.equal(TELEMETRY_DEFAULT_ENABLED);
+        expect(isTelemetryEnabled()).to.equal(USAGE_DATA_DEFAULT_ENABLED);
       });
     }
 

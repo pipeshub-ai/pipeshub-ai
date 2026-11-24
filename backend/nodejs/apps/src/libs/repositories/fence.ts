@@ -8,7 +8,7 @@ import {
 import { Logger } from '../services/logger.service';
 import { ServiceUnavailableError } from '../errors/http.errors';
 import { DocStoreFencedError, DocStoreReadOnlyError } from './errors';
-import { docstoreMetrics } from './metrics';
+import { emitPlatformEvent } from '../platform-events';
 
 /**
  * The Mongo half of the store fence. The cutover tooling writes one document,
@@ -207,7 +207,9 @@ async function readFenceMode(
     return 'unreadable';
   }
   const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
-  docstoreMetrics.fenceCheck.observe({}, elapsedMs / 1000);
+  emitPlatformEvent('docstore.fence.checked', {
+    durationSeconds: elapsedMs / 1000,
+  });
   // a read that came back late says nothing about now
   if (elapsedMs > FENCE_READ_DEADLINE_MS) return 'late';
   const mode = doc?.mode ?? 'active';
@@ -228,21 +230,33 @@ export async function assertMongoWritable(
 ): Promise<'active' | 'draining'> {
   const mode = await readFenceMode(db);
   if (mode === 'unreadable') {
-    docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'unreadable' });
+    emitPlatformEvent('docstore.write.refused', {
+      store: 'mongo',
+      reason: 'unreadable',
+    });
     throw new ServiceUnavailableError(
       'The document store fence could not be read',
     );
   }
   if (mode === 'late') {
-    docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'deadline' });
+    emitPlatformEvent('docstore.write.refused', {
+      store: 'mongo',
+      reason: 'deadline',
+    });
     throw new ServiceUnavailableError('The document store fence read was late');
   }
   if (mode === 'readonly') {
-    docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'readonly' });
+    emitPlatformEvent('docstore.write.refused', {
+      store: 'mongo',
+      reason: 'readonly',
+    });
     throw new DocStoreReadOnlyError();
   }
   if (mode === 'retired') {
-    docstoreMetrics.fenceRefused.inc({ store: 'mongo', reason: 'retired' });
+    emitPlatformEvent('docstore.write.refused', {
+      store: 'mongo',
+      reason: 'retired',
+    });
     throw new DocStoreFencedError('this store is no longer the live one');
   }
   return mode === 'draining' ? 'draining' : 'active';

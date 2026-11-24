@@ -4,13 +4,13 @@ import axios from 'axios';
 import {
   TelemetryService,
   startTelemetry,
-} from '../../../../src/libs/services/telemetry/telemetry.service';
-import * as installMetricsModule from '../../../../src/libs/services/telemetry/modules/install-metrics';
-import * as cmConfigModule from '../../../../src/modules/configuration_manager/config/config';
-import { configPaths } from '../../../../src/modules/configuration_manager/paths/paths';
-import { recordEvent, eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer';
-import { metricsBackend } from '../../../../src/libs/services/telemetry/metrics-backend';
-import { StoreType } from '../../../../src/libs/keyValueStore/constants/KeyValueStoreType';
+} from '../../../src/plugins/telemetry/telemetry.service';
+import * as installMetricsModule from '../../../src/plugins/telemetry/modules/install-metrics';
+import * as cmConfigModule from '../../../src/modules/configuration_manager/config/config';
+import { configPaths } from '../../../src/modules/configuration_manager/paths/paths';
+import { recordEvent, eventBuffer } from '../../../src/plugins/telemetry/event-buffer';
+import { metricsBackend } from '../../../src/plugins/telemetry/metrics-backend';
+import { StoreType } from '../../../src/libs/keyValueStore/constants/KeyValueStoreType';
 
 const VALID_URL = 'http://localhost:3031/collect-metrics';
 

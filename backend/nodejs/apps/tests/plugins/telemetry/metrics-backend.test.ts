@@ -1,5 +1,5 @@
 import { expect } from 'chai';
-import { PrometheusBackend } from '../../../../src/libs/services/telemetry/metrics-backend';
+import { PrometheusBackend } from '../../../src/plugins/telemetry/metrics-backend';
 
 describe('telemetry metrics-backend (PrometheusBackend)', () => {
   let backend: PrometheusBackend;

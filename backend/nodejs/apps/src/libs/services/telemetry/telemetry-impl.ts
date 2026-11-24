@@ -1,26 +1,29 @@
-/**
- * The only door into telemetry for code outside this folder. Import from here,
- * never from the files behind it, so a build can swap the whole implementation
- * for `telemetry-impl.stub.ts` (see the build steps that rename the `.stub.ts`
- * files over their twins). The two files must export the same names.
- *
- * Light exports only: heavy ones live in `telemetry-runtime.ts`, because this
- * file is imported while the DB layer loads and must not pull in the app config.
- */
-export { recordEvent } from './event-buffer';
+/** Transitional: re-exports for call sites not yet moved to platform events. */
+import type { IncomingHttpHeaders } from 'http';
+import { requestClient } from '../../utils/request-client.utils';
+import { clientTags as tagsOf } from '../../../plugins/telemetry/identity';
+
+export { recordEvent } from '../../../plugins/telemetry/event-buffer';
 export {
-  clientTags,
   domainFromEmail,
   normalizeOrgId,
-  signupSource,
-} from './identity';
-export { isTelemetryEnabled, telemetryOffMessage } from './flag';
-export { metricsBackend } from './metrics-backend';
-export { recordServiceActivity } from './modules/activity-metrics';
-export { setMetricCollectionEnabled } from './modules/collection-metrics';
+} from '../../../plugins/telemetry/identity';
+export { signupSource } from '../../utils/request-client.utils';
+export {
+  isTelemetryEnabled,
+  telemetryOffMessage,
+  TELEMETRY_COLLECTION_FLAG,
+} from '../../../plugins/telemetry/flag';
+export { metricsBackend } from '../../../plugins/telemetry/metrics-backend';
+export { recordServiceActivity } from '../../../plugins/telemetry/modules/activity-metrics';
+export { setMetricCollectionEnabled } from '../../../plugins/telemetry/modules/collection-metrics';
 export {
   recordAuthAttempt,
   refusalOutcome,
   signInMethod,
   type AuthAttemptMethod,
-} from './modules/auth-metrics';
+} from '../../../plugins/telemetry/modules/auth-metrics';
+
+export const clientTags = (
+  headers: IncomingHttpHeaders,
+): { user_agent?: string; channel?: string } => tagsOf(requestClient(headers));

@@ -2,8 +2,8 @@ import { expect } from 'chai';
 import {
   setOrgsTotal,
   setOrgAuthMethods,
-} from '../../../../../src/libs/services/telemetry/modules/org-metrics';
-import { metricsBackend } from '../../../../../src/libs/services/telemetry/metrics-backend';
+} from '../../../../src/plugins/telemetry/modules/org-metrics';
+import { metricsBackend } from '../../../../src/plugins/telemetry/metrics-backend';
 
 describe('telemetry modules/org-metrics', () => {
   describe('setOrgsTotal', () => {

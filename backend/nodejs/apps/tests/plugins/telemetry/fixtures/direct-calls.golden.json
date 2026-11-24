@@ -1,0 +1,318 @@
+{
+  "capturedFrom": "81c0496b38",
+  "events": [
+    {
+      "event": "login",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-1",
+        "userId": "user-1",
+        "email": "Ada@Example.COM",
+        "domain": "example.com",
+        "first_login": true,
+        "auth_method": "password"
+      }
+    },
+    {
+      "event": "login",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "domain": "unknown",
+        "first_login": false,
+        "auth_method": "google"
+      }
+    },
+    {
+      "event": "signup",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-1",
+        "userId": "user-2",
+        "email": "bob@example.com",
+        "domain": "example.com"
+      }
+    },
+    {
+      "event": "org_created",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-2",
+        "userId": "admin-2",
+        "email": "owner@acme.io",
+        "domain": "acme.io",
+        "fullName": "Owner Person",
+        "channel": "launch-week"
+      }
+    },
+    {
+      "event": "org_created",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-3",
+        "userId": "admin-3",
+        "email": "x@y.dev",
+        "domain": "y.dev",
+        "fullName": "X Y",
+        "channel": "direct",
+        "referrer_domain": "news.example.org"
+      }
+    },
+    {
+      "event": "mcp_connected",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-1",
+        "userId": "user-1",
+        "domain": "example.com",
+        "auth_type": "oauth",
+        "oauth_client_id": "client-abc",
+        "user_agent": "claude-code/2.1.0",
+        "channel": "docs-quickstart",
+        "client_name": "Claude Code",
+        "client_version": "2.1.0"
+      }
+    },
+    {
+      "event": "mcp_tool_called",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-1",
+        "userId": "user-1",
+        "domain": "example.com",
+        "auth_type": "oauth",
+        "oauth_client_id": "client-abc",
+        "user_agent": "claude-code/2.1.0",
+        "channel": "docs-quickstart",
+        "tool": "search"
+      }
+    },
+    {
+      "event": "mcp_tool_called",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "domain": "unknown",
+        "auth_type": "session"
+      }
+    },
+    {
+      "event": "mcp_connected",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-1",
+        "userId": "user-1",
+        "domain": "example.com",
+        "auth_type": "pat"
+      }
+    },
+    {
+      "event": "oauth_token_issued",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "grant_type": "authorization_code",
+        "client_id": "client-abc",
+        "user_agent": "claude-code/2.1.0",
+        "channel": "docs-quickstart"
+      }
+    },
+    {
+      "event": "oauth_token_issued",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "grant_type": "client_credentials",
+        "client_id": "client-xyz"
+      }
+    },
+    {
+      "event": "pat_created",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-1",
+        "userId": "user-1",
+        "domain": "example.com",
+        "scope_count": 3,
+        "expiry_days": 90,
+        "user_agent": "claude-code/2.1.0",
+        "channel": "docs-quickstart"
+      }
+    },
+    {
+      "event": "pat_access_changed",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-1",
+        "userId": "user-1",
+        "domain": "unknown",
+        "limited": true,
+        "item_count": 4,
+        "user_agent": "claude-code/2.1.0",
+        "channel": "docs-quickstart"
+      }
+    },
+    {
+      "event": "pat_access_changed",
+      "timestamp": "2026-01-02T03:04:05.000Z",
+      "props": {
+        "orgId": "org-1",
+        "userId": "user-1",
+        "domain": "example.com",
+        "limited": false,
+        "item_count": 0
+      }
+    }
+  ],
+  "metrics": [
+    "# HELP docstore_failed_transaction_total Statements run after an error inside a unit of work (a swallowed error without a savepoint)",
+    "# HELP docstore_fence_check_seconds Time spent reading the Mongo fence before a write",
+    "# HELP docstore_fence_refused_total Writes refused by the store fence",
+    "# HELP docstore_nul_stripped_total U+0000 characters removed from strings and keys before a write",
+    "# HELP docstore_rls_violation_total Writes the database refused for privilege or row policy (a wrong-org bug); alert on > 0",
+    "# HELP docstore_shadow_reads_total Reads of the shadow check (DOC_STORE=shadow) by repository and result: equal, diff, timeout, error",
+    "# HELP docstore_ttl_sweep_failed_total TTL sweeps of one table that failed",
+    "# HELP docstore_ttl_swept_total Rows the TTL sweeper removed (notifications past retention, delivered outbox rows)",
+    "# HELP notification_event_refused_total Notification events refused before any write, by reason",
+    "# HELP pipeshub_activity_total Total service activities recorded",
+    "# HELP pipeshub_consumer_inbox_errors_total Consumer inbox reads or writes that failed; the message was processed as if new (at-least-once)",
+    "# HELP pipeshub_consumer_inbox_skipped_total Redelivered or replayed broker messages acknowledged without running the handler again",
+    "# HELP pipeshub_db_pool_wait_seconds Time waiting for a pool connection",
+    "# HELP pipeshub_db_query_seconds Statement duration by call site",
+    "# HELP pipeshub_db_retries_total Unit of work retries by cause",
+    "# HELP pipeshub_db_session_role_leak_total Connections that arrived with a session role already set",
+    "# HELP pipeshub_db_uow_seconds Unit of work duration, retries included",
+    "# HELP pipeshub_http_request_duration_seconds HTTP request latency in seconds",
+    "# HELP pipeshub_http_requests_total Total HTTP requests handled by the service",
+    "# HELP pipeshub_install_info Infrastructure backends used by this install (value is always 1)",
+    "# HELP pipeshub_metric_collection_enabled Metric collection consent (1 = enabled, 0 = disabled)",
+    "# HELP pipeshub_org_auth_methods Enabled authentication methods per organization (1 = enabled)",
+    "# HELP pipeshub_org_context_missing_total Units of work refused for lack of an org context",
+    "# HELP pipeshub_org_users Current number of (non-deleted) users per organization",
+    "# HELP pipeshub_orgs_total Current number of (non-deleted) organizations",
+    "# TYPE docstore_failed_transaction_total counter",
+    "# TYPE docstore_fence_check_seconds histogram",
+    "# TYPE docstore_fence_refused_total counter",
+    "# TYPE docstore_nul_stripped_total counter",
+    "# TYPE docstore_rls_violation_total counter",
+    "# TYPE docstore_shadow_reads_total counter",
+    "# TYPE docstore_ttl_sweep_failed_total counter",
+    "# TYPE docstore_ttl_swept_total counter",
+    "# TYPE notification_event_refused_total counter",
+    "# TYPE pipeshub_activity_total counter",
+    "# TYPE pipeshub_consumer_inbox_errors_total counter",
+    "# TYPE pipeshub_consumer_inbox_skipped_total counter",
+    "# TYPE pipeshub_db_pool_wait_seconds histogram",
+    "# TYPE pipeshub_db_query_seconds histogram",
+    "# TYPE pipeshub_db_retries_total counter",
+    "# TYPE pipeshub_db_session_role_leak_total counter",
+    "# TYPE pipeshub_db_uow_seconds histogram",
+    "# TYPE pipeshub_http_request_duration_seconds histogram",
+    "# TYPE pipeshub_http_requests_total counter",
+    "# TYPE pipeshub_install_info gauge",
+    "# TYPE pipeshub_metric_collection_enabled gauge",
+    "# TYPE pipeshub_org_auth_methods gauge",
+    "# TYPE pipeshub_org_context_missing_total counter",
+    "# TYPE pipeshub_org_users gauge",
+    "# TYPE pipeshub_orgs_total gauge",
+    "docstore_failed_transaction_total 1",
+    "docstore_fence_check_seconds_bucket{le=\"+Inf\"} 1",
+    "docstore_fence_check_seconds_bucket{le=\"0.0005\"} 0",
+    "docstore_fence_check_seconds_bucket{le=\"0.001\"} 0",
+    "docstore_fence_check_seconds_bucket{le=\"0.005\"} 1",
+    "docstore_fence_check_seconds_bucket{le=\"0.01\"} 1",
+    "docstore_fence_check_seconds_bucket{le=\"0.05\"} 1",
+    "docstore_fence_check_seconds_bucket{le=\"0.2\"} 1",
+    "docstore_fence_check_seconds_bucket{le=\"1\"} 1",
+    "docstore_fence_check_seconds_bucket{le=\"2\"} 1",
+    "docstore_fence_check_seconds_count 1",
+    "docstore_fence_check_seconds_sum 0.003",
+    "docstore_fence_refused_total{store=\"mongo\",reason=\"deadline\"} 1",
+    "docstore_fence_refused_total{store=\"mongo\",reason=\"readonly\"} 1",
+    "docstore_fence_refused_total{store=\"mongo\",reason=\"retired\"} 1",
+    "docstore_fence_refused_total{store=\"mongo\",reason=\"unreadable\"} 1",
+    "docstore_fence_refused_total{store=\"postgres\",reason=\"epoch\"} 1",
+    "docstore_fence_refused_total{store=\"postgres\",reason=\"readonly\"} 1",
+    "docstore_nul_stripped_total{repo=\"notifications\",field=\"payload\"} 5",
+    "docstore_rls_violation_total 1",
+    "docstore_shadow_reads_total{repo=\"users\",result=\"diff\"} 1",
+    "docstore_shadow_reads_total{repo=\"users\",result=\"equal\"} 1",
+    "docstore_ttl_sweep_failed_total{target=\"notifications\"} 1",
+    "docstore_ttl_swept_total{target=\"outbox\"} 12",
+    "notification_event_refused_total{reason=\"id_with_many_recipients\"} 1",
+    "pipeshub_activity_total{service=\"node_api\",activity=\"mcp_connected\",connector=\"none\",status=\"ok\",org=\"org-1\",kb=\"none\",domain=\"example.com\",mimetype=\"none\"} 2",
+    "pipeshub_activity_total{service=\"node_api\",activity=\"mcp_tool_called\",connector=\"none\",status=\"ok\",org=\"org-1\",kb=\"none\",domain=\"example.com\",mimetype=\"none\"} 1",
+    "pipeshub_activity_total{service=\"node_api\",activity=\"mcp_tool_called\",connector=\"none\",status=\"ok\",org=\"unknown\",kb=\"none\",domain=\"unknown\",mimetype=\"none\"} 1",
+    "pipeshub_activity_total{service=\"node_api\",activity=\"pat_created\",connector=\"none\",status=\"ok\",org=\"org-1\",kb=\"none\",domain=\"example.com\",mimetype=\"none\"} 1",
+    "pipeshub_consumer_inbox_errors_total{op=\"seen\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"+Inf\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"0.001\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"0.005\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"0.01\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"0.05\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"0.1\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"0.5\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"1\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"15\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"5\"} 1",
+    "pipeshub_db_pool_wait_seconds_bucket{le=\"60\"} 1",
+    "pipeshub_db_pool_wait_seconds_count 1",
+    "pipeshub_db_pool_wait_seconds_sum 0.0007",
+    "pipeshub_db_query_seconds_bucket{le=\"+Inf\",service=\"node_api\",site=\"untagged\",class=\"write\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"+Inf\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"0.001\",service=\"node_api\",site=\"untagged\",class=\"write\"} 0",
+    "pipeshub_db_query_seconds_bucket{le=\"0.001\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 0",
+    "pipeshub_db_query_seconds_bucket{le=\"0.005\",service=\"node_api\",site=\"untagged\",class=\"write\"} 0",
+    "pipeshub_db_query_seconds_bucket{le=\"0.005\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"0.01\",service=\"node_api\",site=\"untagged\",class=\"write\"} 0",
+    "pipeshub_db_query_seconds_bucket{le=\"0.01\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"0.05\",service=\"node_api\",site=\"untagged\",class=\"write\"} 0",
+    "pipeshub_db_query_seconds_bucket{le=\"0.05\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"0.1\",service=\"node_api\",site=\"untagged\",class=\"write\"} 0",
+    "pipeshub_db_query_seconds_bucket{le=\"0.1\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"0.5\",service=\"node_api\",site=\"untagged\",class=\"write\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"0.5\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"1\",service=\"node_api\",site=\"untagged\",class=\"write\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"1\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"15\",service=\"node_api\",site=\"untagged\",class=\"write\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"15\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"5\",service=\"node_api\",site=\"untagged\",class=\"write\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"5\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"60\",service=\"node_api\",site=\"untagged\",class=\"write\"} 1",
+    "pipeshub_db_query_seconds_bucket{le=\"60\",service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_count{service=\"node_api\",site=\"untagged\",class=\"write\"} 1",
+    "pipeshub_db_query_seconds_count{service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 1",
+    "pipeshub_db_query_seconds_sum{service=\"node_api\",site=\"untagged\",class=\"write\"} 0.25",
+    "pipeshub_db_query_seconds_sum{service=\"node_api\",site=\"users.find_by_id\",class=\"read\"} 0.004",
+    "pipeshub_db_retries_total{code=\"40001\"} 1",
+    "pipeshub_db_retries_total{code=\"connection\"} 1",
+    "pipeshub_db_session_role_leak_total 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"+Inf\",service=\"jobs\",outcome=\"serialization_failure\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"+Inf\",service=\"node_api\",outcome=\"commit\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.001\",service=\"jobs\",outcome=\"serialization_failure\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.001\",service=\"node_api\",outcome=\"commit\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.005\",service=\"jobs\",outcome=\"serialization_failure\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.005\",service=\"node_api\",outcome=\"commit\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.01\",service=\"jobs\",outcome=\"serialization_failure\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.01\",service=\"node_api\",outcome=\"commit\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.05\",service=\"jobs\",outcome=\"serialization_failure\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.05\",service=\"node_api\",outcome=\"commit\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.1\",service=\"jobs\",outcome=\"serialization_failure\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.1\",service=\"node_api\",outcome=\"commit\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.5\",service=\"jobs\",outcome=\"serialization_failure\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"0.5\",service=\"node_api\",outcome=\"commit\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"1\",service=\"jobs\",outcome=\"serialization_failure\"} 0",
+    "pipeshub_db_uow_seconds_bucket{le=\"1\",service=\"node_api\",outcome=\"commit\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"15\",service=\"jobs\",outcome=\"serialization_failure\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"15\",service=\"node_api\",outcome=\"commit\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"5\",service=\"jobs\",outcome=\"serialization_failure\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"5\",service=\"node_api\",outcome=\"commit\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"60\",service=\"jobs\",outcome=\"serialization_failure\"} 1",
+    "pipeshub_db_uow_seconds_bucket{le=\"60\",service=\"node_api\",outcome=\"commit\"} 1",
+    "pipeshub_db_uow_seconds_count{service=\"jobs\",outcome=\"serialization_failure\"} 1",
+    "pipeshub_db_uow_seconds_count{service=\"node_api\",outcome=\"commit\"} 1",
+    "pipeshub_db_uow_seconds_sum{service=\"jobs\",outcome=\"serialization_failure\"} 2",
+    "pipeshub_db_uow_seconds_sum{service=\"node_api\",outcome=\"commit\"} 0.02",
+    "pipeshub_metric_collection_enabled{service=\"node_api\",org=\"org-1\"} 0",
+    "pipeshub_metric_collection_enabled{service=\"node_api\",org=\"org-2\"} 1",
+    "pipeshub_metric_collection_enabled{service=\"node_api\",org=\"org-obj\"} 0",
+    "pipeshub_metric_collection_enabled{service=\"node_api\",org=\"unknown\"} 1",
+    "pipeshub_org_context_missing_total 2"
+  ]
+}

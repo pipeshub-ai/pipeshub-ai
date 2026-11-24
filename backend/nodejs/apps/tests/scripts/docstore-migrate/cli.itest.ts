@@ -702,7 +702,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         const { MongoUserRepository } = require('../../../src/libs/repositories/user/mongo');
         const { PgUserRepository } = require('../../../src/libs/repositories/user/pg');
         const { shadowWrap } = require('../../../src/libs/repositories/shadow');
-        const { docstoreMetrics } = require('../../../src/libs/repositories/metrics');
+        const { onPlatformEvent } = require('../../../src/libs/platform-events');
         const { Logger } = require('../../../src/libs/services/logger.service');
         // (not MongoService: it would arm the write fence on the driver for the rest of this process)
         await mongoose.connect(mongo.uri, { dbName: DB });
@@ -710,8 +710,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         const rt = new PgRuntime({ pool, defaultService: 'node', readOnly: true, pooler: 'pgbouncer_txn' });
         configurePg(rt);
         const counts: Record<string, number> = {};
-        const realInc = docstoreMetrics.shadowReads.inc.bind(docstoreMetrics.shadowReads);
-        docstoreMetrics.shadowReads.inc = (l: any) => { counts[l.result] = (counts[l.result] ?? 0) + 1; };
+        const stopCounting = onPlatformEvent('docstore.shadow_read.compared', (l: any) => { counts[l.result] = (counts[l.result] ?? 0) + 1; });
         const warned: unknown[] = [];
         const log = Logger.getInstance({ service: 'DocStoreShadow' });
         const realWarn = log.warn.bind(log);
@@ -744,7 +743,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           expect((await stack.admin((c) => c.query("SELECT 1 FROM identity.users WHERE email = 'shadow-write@example.test'"))).rowCount).to.equal(0);
         } finally {
           process.env = saved;
-          docstoreMetrics.shadowReads.inc = realInc;
+          stopCounting();
           log.warn = realWarn;
           configurePg(undefined);
           await pool.end();

@@ -1,24 +1,10 @@
-/**
- * Identity helpers for product-behaviour events.
- *
- * Events are tagged with the caller's email-domain so adoption / funnel /
- * engagement dashboards can exclude internal (PipesHub) traffic. Email/domain
- * are identity, not document/query content, so they are allowed by the
- * collector.
- */
-
 import type { IncomingHttpHeaders } from 'http';
+import type { RequestClient } from '../platform-events/events';
 
 /** Lower-cased domain part of an email, or `"unknown"` when absent. */
-export function domainFromEmail(email: string | undefined | null): string {
+export function emailDomain(email: string | undefined | null): string {
   if (!email || !email.includes('@')) return 'unknown';
   return email.split('@').pop()?.trim().toLowerCase() || 'unknown';
-}
-
-export function normalizeOrgId(orgId: unknown): string {
-  if (orgId == null) return 'unknown';
-  const str = String(orgId);
-  return str !== '' && str !== '[object Object]' ? str : 'unknown';
 }
 
 /** The first product token of a User-Agent (`claude-code/2.1.0`), never the
@@ -41,15 +27,12 @@ export function channelOf(value: unknown): string | undefined {
     : undefined;
 }
 
-/** Which client and which of our channels sent a request, as event props. */
-export function clientTags(headers: IncomingHttpHeaders): {
-  user_agent?: string;
-  channel?: string;
-} {
+/** Which client and which of our channels sent a request. */
+export function requestClient(headers: IncomingHttpHeaders): RequestClient {
   const userAgent = productToken(headers['user-agent']);
   const channel = channelOf(headers['x-pipeshub-channel']);
   return {
-    ...(userAgent !== undefined ? { user_agent: userAgent } : {}),
+    ...(userAgent !== undefined ? { userAgent } : {}),
     ...(channel !== undefined ? { channel } : {}),
   };
 }

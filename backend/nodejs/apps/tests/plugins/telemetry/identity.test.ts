@@ -3,8 +3,7 @@ import {
   clientTags,
   domainFromEmail,
   normalizeOrgId,
-  signupSource,
-} from '../../../../src/libs/services/telemetry/identity';
+} from '../../../src/plugins/telemetry/identity';
 
 describe('telemetry identity', () => {
   describe('domainFromEmail', () => {
@@ -57,41 +56,14 @@ describe('telemetry identity', () => {
   });
 
   describe('clientTags', () => {
-    it('keeps the first product token and a well-formed channel', () => {
+    it('names the client fields the way the collector expects', () => {
       expect(
-        clientTags({
-          'user-agent': 'claude-code/2.1.0 (Linux; x64)',
-          'x-pipeshub-channel': 'claude-code-plugin',
-        }),
+        clientTags({ userAgent: 'claude-code/2.1.0', channel: 'claude-code-plugin' }),
       ).to.deep.equal({ user_agent: 'claude-code/2.1.0', channel: 'claude-code-plugin' });
     });
 
-    it('drops a channel that is not a tag and a user agent that is an address', () => {
-      expect(
-        clientTags({ 'user-agent': 'me@example.com', 'x-pipeshub-channel': 'Docs Site' }),
-      ).to.deep.equal({});
-    });
-  });
-
-  describe('signupSource', () => {
-    it('records a well-formed ref as written', () => {
-      expect(signupSource({ ref: 'docs', referrerDomain: 'google.com' })).to.deep.equal({
-        channel: 'docs',
-      });
-    });
-
-    it('falls back to direct with the referrer domain, lower-cased', () => {
-      expect(signupSource({ ref: 'Not A Tag', referrerDomain: 'News.YCombinator.com' })).to.deep.equal({
-        channel: 'direct',
-        referrerDomain: 'news.ycombinator.com',
-      });
-    });
-
-    it('never keeps a referrer that is a URL rather than a domain', () => {
-      expect(signupSource({ referrerDomain: 'https://example.com/private?q=1' })).to.deep.equal({
-        channel: 'direct',
-      });
-      expect(signupSource({})).to.deep.equal({ channel: 'direct' });
+    it('leaves out what the client did not say', () => {
+      expect(clientTags({})).to.deep.equal({});
     });
   });
 });

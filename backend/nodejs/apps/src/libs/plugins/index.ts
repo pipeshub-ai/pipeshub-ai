@@ -11,11 +11,12 @@ import type { RequestHandler } from 'express';
 import { setPlatformEventErrorReporter } from '../platform-events';
 import { Logger } from '../services/logger.service';
 import { plugins as generatedPlugins } from '../../plugins.generated';
-import type { PlatformCapabilities } from './capabilities';
-import { PluginHost } from './host';
+import { getCapability } from './capabilities';
+import { host, setPluginFailureReporter } from './registry';
 import type { PlatformPlugin, PluginFailure, PluginLoadReport } from './types';
 
 export { PluginHost } from './host';
+export { getCapability };
 export type {
   DataCollectionCapability,
   PlatformCapabilities,
@@ -33,13 +34,13 @@ const logger = Logger.getInstance({ service: 'Plugins' });
 const describe = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-const host = new PluginHost((failure: PluginFailure) => {
+function reportFailure(failure: PluginFailure): void {
   logger.error(`Plug-in ${failure.phase} failed; continuing without it`, {
     plugin: failure.plugin,
     phase: failure.phase,
     error: describe(failure.error),
   });
-});
+}
 
 // One line per event name: a listener that fails on every request must not flood the log.
 const reportedEvents = new Set<string>();
@@ -54,6 +55,7 @@ export function loadPlugins(
   list: readonly PlatformPlugin[] = generatedPlugins,
 ): Promise<PluginLoadReport> {
   if (loading === undefined) {
+    setPluginFailureReporter(reportFailure);
     setPlatformEventErrorReporter((name, error) => {
       if (reportedEvents.has(name)) return;
       reportedEvents.add(name);
@@ -78,16 +80,6 @@ export function startPlugins(): Promise<PluginFailure[]> {
 
 export function shutdownPlugins(): Promise<PluginFailure[]> {
   return host.shutdown();
-}
-
-/**
- * What a loaded plug-in answers for `name`, or `undefined` when none does.
- * The caller decides what the product does without it.
- */
-export function getCapability<K extends keyof PlatformCapabilities>(
-  name: K,
-): PlatformCapabilities[K] | undefined {
-  return host.getCapability(name);
 }
 
 /** Unload everything so the next `loadPlugins` starts clean. For tests. */

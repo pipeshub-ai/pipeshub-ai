@@ -1,3 +1,5 @@
+import { host } from './registry';
+
 /**
  * Questions application code may ask of a plug-in without importing it.
  *
@@ -14,4 +16,14 @@ export interface PlatformCapabilities {
 export interface DataCollectionCapability {
   /** False when the deployment has switched collection off for the whole process. */
   isActive(): boolean;
+}
+
+/**
+ * What a loaded plug-in answers for `name`, or `undefined` when none does.
+ * The caller decides what the product does without it.
+ */
+export function getCapability<K extends keyof PlatformCapabilities>(
+  name: K,
+): PlatformCapabilities[K] | undefined {
+  return host.getCapability(name);
 }

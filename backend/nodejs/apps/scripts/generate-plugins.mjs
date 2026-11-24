@@ -74,7 +74,7 @@ const lines = [
   '',
   names.length === 0
     ? 'export const plugins: readonly PlatformPlugin[] = [];'
-    : `export const plugins: readonly PlatformPlugin[] = [\n${names
+    : `// prettier-ignore\nexport const plugins: readonly PlatformPlugin[] = [\n${names
         .map((n) => `  ${identifier(n)},\n`)
         .join('')}];`,
   '',

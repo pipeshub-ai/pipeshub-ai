@@ -1,6 +1,6 @@
 import { expect } from 'chai';
-import { recordServiceActivity } from '../../../../../src/libs/services/telemetry/modules/activity-metrics';
-import { metricsBackend } from '../../../../../src/libs/services/telemetry/metrics-backend';
+import { recordServiceActivity } from '../../../../src/plugins/telemetry/modules/activity-metrics';
+import { metricsBackend } from '../../../../src/plugins/telemetry/metrics-backend';
 
 describe('telemetry modules/activity-metrics', () => {
   it('counts an activation with org and domain, on the same labels as the Python counter', async () => {
