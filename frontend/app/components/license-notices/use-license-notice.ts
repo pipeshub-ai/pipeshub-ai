@@ -63,3 +63,7 @@ export function reminderStep(daysLeft: number): string {
   const reached = REMINDER_DAYS.filter((days) => daysLeft <= days);
   return reached.length ? String(reached[reached.length - 1]) : 'start';
 }
+
+/** An ISO date as the viewer's language writes a medium date; '' for none. */
+export const formatDay = (iso: string | null | undefined, language: string): string =>
+  iso ? new Date(iso).toLocaleDateString(language, { dateStyle: 'medium' }) : '';

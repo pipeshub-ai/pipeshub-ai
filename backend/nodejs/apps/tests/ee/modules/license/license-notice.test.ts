@@ -277,6 +277,19 @@ describe('license notice: what every signed-in user may read', () => {
       expect(warning).not.to.contain('No license key is installed');
     });
 
+    it('a key dated ahead: connectors are marked affected only if the grace ends before it starts', async () => {
+      upgradedDaysAgo(5);
+      connectors(connector('a'));
+      install({ startDate: at(3), issuedAt: at(-1), endDate: at(60) });
+      expect((await licenseNotice(store, ADMIN, NOW)).connectors.items).to.deep.equal([]);
+      install({ startDate: at(UPGRADE_GRACE_DAYS), issuedAt: at(-1), endDate: at(60) });
+      const [item] = (await licenseNotice(store, ADMIN, NOW)).connectors.items ?? [];
+      expect(item?.state).to.equal('affected');
+      install({ startDate: at(3), issuedAt: at(-1), endDate: at(60), features: [] });
+      const [noSync] = (await licenseNotice(store, ADMIN, NOW)).connectors.items ?? [];
+      expect(noSync?.state).to.equal('affected');
+    });
+
     it('a trial that ended inside the grace: the warning says the key ended', async () => {
       upgradedDaysAgo(5);
       install({ startDate: at(-30), issuedAt: at(-30), endDate: at(-10) });
