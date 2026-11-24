@@ -8,6 +8,7 @@ without Browse users with no rows, so there "absent" counts only once the same s
 the token's own account.
 """
 
+from collections.abc import Callable
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -175,11 +176,11 @@ def _acct(account_id: str, email: str | None, *, kind: str = "atlassian") -> dic
 TOKEN = "Token@Corp.com"
 
 
-def _by_query(creator_rows: list[dict], token_rows: list[dict] | None = None):
+def _by_query(creator_rows: list[dict], token_rows: list[dict] | None = None) -> Callable[..., SimpleNamespace]:
     """find_users answering the authenticator's lookup and the token account's own one."""
     token = [_acct("tok", TOKEN.lower())] if token_rows is None else token_rows
 
-    def run(*, query, **_):
+    def run(*, query: str, **_: object) -> SimpleNamespace:
         return _resp(OK, token if query.lower() == TOKEN.lower() else creator_rows)
     return run
 
@@ -251,7 +252,7 @@ class TestJiraCloudRefusedBulkRead:
         assert conn._listing_complete_for_link is False
 
     async def test_a_found_authenticator_needs_no_probe_of_the_token_account(self) -> None:
-        def find_users(*, query, **_):
+        def find_users(*, query: str, **_: object) -> SimpleNamespace:
             assert query.lower() != TOKEN.lower(), "probed the token account"
             return _resp(OK, [_acct("a1", "creator@corp.com")])
         conn = _cloud(find_users)
