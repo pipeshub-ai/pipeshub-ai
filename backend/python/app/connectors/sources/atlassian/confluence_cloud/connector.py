@@ -2534,6 +2534,8 @@ class ConfluenceConnector(BaseConnector):
                                                             mime_type = attachment_mime_types.get(attachment_id, "")
                                                             if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
                                                                 embedded_image_ids.add(attachment_id)
+                                    except AtlassianQuotaExhausted:
+                                        raise
                                     except Exception as comment_error:
                                         self.logger.debug(f"Failed to fetch footer comments for embedded image detection: {comment_error}", exc_info=True)
 
@@ -2570,9 +2572,13 @@ class ConfluenceConnector(BaseConnector):
                                                             mime_type = attachment_mime_types.get(attachment_id, "")
                                                             if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
                                                                 embedded_image_ids.add(attachment_id)
+                                    except AtlassianQuotaExhausted:
+                                        raise
                                     except Exception as comment_error:
                                         self.logger.debug(f"Failed to fetch inline comments for embedded image detection: {comment_error}", exc_info=True)
 
+                            except AtlassianQuotaExhausted:
+                                raise
                             except Exception as adf_error:
                                 self.logger.warning(f"Failed to detect embedded images for {content_type} {item_id}, all attachments will be created as FileRecords: {adf_error}")
                                 embedded_image_ids = set()
@@ -6234,6 +6240,8 @@ class ConfluenceConnector(BaseConnector):
                 kwargs["cursor"] = cursor
             try:
                 response = await list_attachments(**kwargs)
+            except AtlassianQuotaExhausted:
+                raise
             except Exception as e:
                 self.logger.warning(f"Could not list attachments of {content_type} {content_id}: {e}")
                 response = None

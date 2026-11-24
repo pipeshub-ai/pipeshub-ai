@@ -2515,6 +2515,24 @@ class TestNoRawErrorTextForUsers:
 
 
 class TestSpentQuotaEdges:
+    @pytest.mark.parametrize(
+        "spent_at", [f"{V2}/pages/10/attachments", f"{V2}/pages/10", f"{V2}/pages/10/footer-comments"]
+    )
+    async def test_a_quota_spent_while_reading_a_pages_attachments_stops_the_sync(
+        self, api, db, checkpoints, search, spent_at
+    ) -> None:
+        TestAttachmentsGoneFromAPage()._page_with(api, search, "att1")
+        api.on("GET", f"{V2}/pages/10/footer-comments", {"results": [], "_links": {}})
+
+        def spent(_: httpx.Request) -> httpx.Response:
+            raise AtlassianQuotaExhausted(time.time() + 600)
+
+        api.on("GET", spent_at, spent)
+        connector, _ = await ready_connector(db, checkpoints)
+
+        with pytest.raises(AtlassianQuotaExhausted):
+            await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
     async def test_a_response_the_policy_refuses_to_wait_for_is_closed(self, monkeypatch) -> None:
         from app.sources.client.http.http_resilient_transport import (
             ResilientHTTPTransport,
