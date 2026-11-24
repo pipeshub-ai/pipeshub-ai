@@ -69,7 +69,7 @@ File and folder names are kebab-case (`kb-data-table.tsx`), hooks are `use-*.ts`
 ## i18n
 
 - Every user-facing string goes through `useTranslation()` and a key in `lib/i18n/locales/en-US.json`.
-- There are 10 locales: `en-US` (source), `en-IN`, `de-DE`, `es-ES`, `hi-IN`, `ko-KR`, `zh-CN`, `zh-TW`, `zh-SG`, `cs-CZ`. `lib/i18n/locale-policy.json` gates all of them on parity with `en-US`, so a new key must be added to every locale file. Run `npm run i18n:check` and `npm run i18n:keys` after editing strings.
+- There are 10 locales: `en-US` (source), `en-IN`, `de-DE`, `es-ES`, `hi-IN`, `ko-KR`, `zh-CN`, `zh-TW`, `zh-SG`, `cs-CZ`. `lib/i18n/locale-policy.json` gates all of them on parity with `en-US`, so a new key must be added to every locale file. A plural key gets each locale's own categories (`Intl.PluralRules`), not a copy of the `en-US` ones: `es-ES` also needs `_many`, `cs-CZ` `_few` and `_many`, Chinese and Korean only `_other`. Run `npm run i18n:check` and `npm run i18n:keys` after editing strings.
 - Adding a language: follow `docs/i18n-guide.md` (locale file, `lib/i18n/supported-languages.ts`, `lib/i18n/locales/index.ts`).
 
 ## State

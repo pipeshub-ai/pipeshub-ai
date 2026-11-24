@@ -39,7 +39,7 @@ flowchart LR
 Any write that can make or unmake an admin goes through `user-admin.service.ts`: a demotion through `saveUserEnsuringOrgRetainsAdmin`, a promotion through `saveUserEnsuringAdminCap`, a create as admin through `createUserEnsuringAdminCap`, an admin invite through `writeEnsuringAdminCap`. Never set `role` with a plain `updateProfile` or `setRole` outside them. The `assertCan*` checks alone are only a fast refusal; the count that holds is the one the guarded write makes. Pinned by `tests/modules/user_management/services/user-admin.service.test.ts` and the real-store races in `tests/stores/mongo-transactions.itest.ts` and `tests/stores/pg-identity-checks.itest.ts`.
 
 **The guarded writes have two paths, and both must stay.**
-`unitsAreAtomic(rsAvailable)` (`libs/repositories/doc-store.ts`) is true on PostgreSQL and on a MongoDB replica set: the helper locks the org's admin changes (`lockOrgAdminChanges`), writes and counts in one transaction. On a standalone MongoDB it runs under the org's admin-role lease (`withAdminLease`), confirms the lease with `lease.confirm()` before a demotion is saved or a grant is undone, re-counts, and undoes the write when the org went over the cap or lost its last admin. A change that touches one path is tested on both.
+`unitsAreAtomic(rsAvailable)` (`libs/repositories/doc-store.ts`) is true on PostgreSQL and on a MongoDB replica set: the helper locks the org's admin changes (`lockOrgAdminChanges`), writes and counts in one transaction. On a standalone MongoDB it runs under the org's admin-role lease (`withAdminLease`), confirms the lease with `lease.confirm()` before a demotion is saved or a grant is undone, re-counts, and undoes the write when the org went over the cap or lost its last admin. If the lease was lost before an over-cap grant is undone, the grant stays (a warning is logged), so the org can end up over the cap. A change that touches one path is tested on both.
 
 **Restore and invite bring an account back as a member, never as an admin.**
 `restoreByEmails` sets `role: 'member'` in both stores; an admin invite then promotes, inside `writeEnsuringAdminCap`. The restore is recorded (`ACCOUNT_RESTORED` activity) before any account comes back, and nothing is restored when that record fails. Pinned by the identity contract test "restoreByEmails brings a removed admin back as a member" (`tests/stores/contract/identity.contract.ts`).
@@ -74,6 +74,7 @@ Refusals say "A user with this email already exists", not the address. A 4xx mes
 - Route it through the matching helper in `services/user-admin.service.ts`, passing `this.config.rsAvailable === 'true'`.
 - If no helper fits, add one there with both paths (transaction and lease), not in the controller.
 - Write `user.role.change` with `promote`, `demote` or `new_admin` after the write.
+- End the user's sessions as `updateUser` does: record `ROLE_CHANGED` for each live membership of the email (`listLiveMembershipsByEmail`), then `emitForceLogout(id, 'role_changed')` for each. Without it, issued tokens keep the old role.
 - Add a race to `tests/stores/mongo-transactions.itest.ts` and `pg-identity-checks.itest.ts`.
 
 ### Adding an audit event or reason

@@ -83,7 +83,7 @@ flowchart LR
 - [ ] The service's base URL is registered in `registerAppUpstreams`.
 - [ ] Path params pasted into the URL are guarded (middlewares guide).
 - [ ] On failure, `next(handleBackendError(error, '<what PipesHub tried to do>'))`, with no log line of your own.
-- [ ] A write sent through a command that must not be repeated passes a `shouldRetry` predicate.
+- [ ] A write that must not be repeated passes `retries: 1` (`ConnectorServiceCommand`, or `executeConnectorCommand(..., { retries: 1 })`). A timeout is not retried, but a dropped connection is, up to three attempts by default.
 
 ### Adding a call to a third party
 

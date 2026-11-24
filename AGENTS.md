@@ -131,7 +131,7 @@ Read [docs/logging.md](./docs/logging.md) before you add a log line or handle an
 
 ## Conventions
 
-- Python config reads and writes go through `ConfigurationService` (`config_service.get_config(key)`, `set_config(key, value)`), never `KeyValueStore` directly. Caching and failure rules are in [backend/python/app/config/AGENTS.md](./backend/python/app/config/AGENTS.md).
+- Python config reads and writes go through `ConfigurationService` (`config_service.get_config(key)`, `set_config(key, value)`), never `KeyValueStore` directly. Use `get_config(key, use_cache=False)` when you need the value right after an update. Caching and failure rules are in [backend/python/app/config/AGENTS.md](./backend/python/app/config/AGENTS.md).
 - Comments explain only the why the code cannot show: a non-obvious constraint or the bug a line guards against. No comments that restate the code or narrate the change, no commented-out code, no TODOs without an owner.
 - PR review criteria: [.claude/skills/pr-review/SKILL.md](./.claude/skills/pr-review/SKILL.md). Frontend work: [frontend/AGENTS.md](./frontend/AGENTS.md) (Collections vs Knowledge Base naming, styling, i18n).
 
