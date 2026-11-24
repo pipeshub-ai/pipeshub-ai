@@ -1187,15 +1187,19 @@ async def close_kept_issues(
     """Close (``close_stored_issue``) the records among ``stored`` named in ``issue_ids`` (issues, and attachments whose
     record could not be built), before a full sync keeps them: their build failed, so their access was not read again
     and may no longer be what Jira gives (an attachment may now be shown only in a restricted comment). Returns the ids
-    of those that could not be closed, which the caller must not keep: the full sync then unlinks them. One in the trash
-    is not written, which would bring it back: no one reads it there, and a sync that restores it builds it with its
-    access."""
+    of those that could not be closed, which the caller must not keep: the full sync then unlinks them. A close is read
+    back, as a write the schema refuses is skipped without an error. One in the trash is not written, which would bring
+    it back: no one reads it there, and a sync that restores it builds it with its access."""
     unclosed: set[str] = set()
     for record in stored:
         if record.external_record_id not in issue_ids or record.is_deleted:
             continue
         try:
             await close_stored_issue(processor, record)
+            if not record.is_placeholder:
+                written = await processor.get_record_by_external_id(record.connector_id, record.external_record_id)
+                if written is None or written.access_rule != AccessRule.RESTRICTED or written.source_updated_at != 0:
+                    raise RuntimeError("the close was not stored")
         except Exception as e:
             logger.error(
                 "Could not close stored record %s, whose build failed; the full sync unlinks it instead: %s",

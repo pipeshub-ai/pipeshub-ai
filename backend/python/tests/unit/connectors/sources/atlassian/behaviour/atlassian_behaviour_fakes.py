@@ -155,6 +155,8 @@ class FakeRecordsDb:
         self.permission_updates: list[tuple[Any, list[Any]]] = []
         self.reindexed: list[Any] = []
         self.fail_lookup_for: set[str] = set()
+        # Records whose write the processor quarantined (schema refused): not stored, not raised, not seen.
+        self.quarantined: set[str] = set()
         self.fail_delete_for: set[str] = set()
         self.fail_stored_permission_reads = False
         self.kept_records: list[str] = []
@@ -192,6 +194,8 @@ class FakeRecordsDb:
         for record, permissions in records_with_permissions:
             self.records[record.external_record_id] = record
             self.record_permissions[record.external_record_id] = list(permissions)
+            # A lookup failure fails the build; the close of the failed record is read back after its write.
+            self.fail_lookup_for.discard(record.external_record_id)
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
@@ -417,7 +421,8 @@ async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # no
         async def write(items: list[tuple[Any, list[Any]]]) -> None:
             await originals[name](items)
             for item, _ in items:  # as the processor notes them: once the write commits
-                seen.add(collection, key(item))
+                if name != "on_new_records" or key(item) not in db.quarantined:
+                    seen.add(collection, key(item))
 
         return write
 

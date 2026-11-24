@@ -3297,6 +3297,33 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
             "its access cannot be shown to match Jira, so the unlink takes its edges, as before the keep")
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
 
+    async def test_an_issue_whose_close_is_quarantined_is_not_kept(self, api, site_db, checkpoints, search) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        unclosed = site_db.records["1"].model_copy()
+        assert unclosed.source_updated_at, "a close would change it"
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+        write = site_db.on_new_records
+
+        async def schema_rejects_the_close(records: list[tuple[Any, list[Any]]]) -> None:
+            if any(r.external_record_id == "1" and r.access_rule == AccessRule.RESTRICTED for r, _ in records):
+                # The processor quarantines a write the schema refuses: nothing is stored and nothing is raised.
+                site_db.records["1"] = unclosed
+                site_db.fail_lookup_for = set()
+                site_db.quarantined.add("1")
+                return
+            await write(records)
+        site_db.on_new_records = schema_rejects_the_close
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert stored["1"] not in site_db.kept_records
+        assert missed_by_full_sync(site_db, graph, stored) == {"1", "attachment_901", "attachment_902", "3", "8"}, (
+            "still stored with its old grants, so the unlink takes its edges")
+
     async def test_an_issue_built_this_sync_keeps_its_access(self, api, site_db, checkpoints, search) -> None:
         from app.config.constants.arangodb import AccessRule
 

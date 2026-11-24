@@ -3792,6 +3792,29 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
             "its access cannot be shown to match Jira, so the unlink takes its edges, as before the keep")
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
 
+    async def test_an_issue_whose_close_is_quarantined_is_not_kept(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        unclosed = db.records["1001"].model_copy()
+        assert unclosed.source_updated_at, "a close would change it"
+        db.fail_lookup_for = {"1001"}
+        write = db.on_new_records
+
+        async def schema_rejects_the_close(records: list[tuple[Any, list[Any]]]) -> None:
+            if any(r.external_record_id == "1001" and r.access_rule == AccessRule.RESTRICTED for r, _ in records):
+                # The processor quarantines a write the schema refuses: nothing is stored and nothing is raised.
+                db.records["1001"] = unclosed
+                db.fail_lookup_for = set()
+                db.quarantined.add("1001")
+                return
+            await write(records)
+        db.on_new_records = schema_rejects_the_close
+
+        graph = await run_full_sync(connector, db)
+
+        assert stored["1001"] not in db.kept_records
+        assert self._missed(db, graph, stored) == {"1001", "attachment_200", "1005", "1008"}, (
+            "still stored with its old grants, so the unlink takes its edges")
+
     async def test_an_issue_built_this_sync_keeps_its_access(self, jira, db, store, search) -> None:
         connector, stored = await self._synced(jira, db, store, search)
         db.record_permissions["1004"] = [Permission(entity_type=EntityType.USER, email="dave@example.com", type=PermissionType.READ)]
