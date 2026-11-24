@@ -176,14 +176,15 @@ describe('Connector routes: a request is logged once, with its connector', funct
     expect(mine().filter((r) => CONTROLLER_LOGGERS.has(r.service))).to.deep.equal([])
   })
 
-  for (const [name, method, path, backendMethod, backendPath, body] of [
-    ['a read', 'GET', '/active', 'GET', '/api/v1/connectors/active', undefined],
-    ['an instance read', 'GET', `/${CONNECTOR}`, 'GET', `/api/v1/connectors/${CONNECTOR}`, undefined],
-    ['a delete', 'DELETE', `/${CONNECTOR}`, 'DELETE', `/api/v1/connectors/${CONNECTOR}`, undefined],
-    ['an agent toggle', 'POST', `/${CONNECTOR}/toggle`, 'POST', `/api/v1/connectors/${CONNECTOR}/toggle`, { type: 'agent' }],
-    ['a create', 'POST', '/', 'POST', '/api/v1/connectors/', { connectorType: 'Jira', instanceName: INSTANCE_NAME, scope: 'team' }],
+  // A save also writes its settings audit line, on the `audit` logger.
+  for (const [name, method, path, backendMethod, backendPath, body, auditEvent] of [
+    ['a read', 'GET', '/active', 'GET', '/api/v1/connectors/active', undefined, null],
+    ['an instance read', 'GET', `/${CONNECTOR}`, 'GET', `/api/v1/connectors/${CONNECTOR}`, undefined, null],
+    ['a delete', 'DELETE', `/${CONNECTOR}`, 'DELETE', `/api/v1/connectors/${CONNECTOR}`, undefined, 'config.connector.delete'],
+    ['an agent toggle', 'POST', `/${CONNECTOR}/toggle`, 'POST', `/api/v1/connectors/${CONNECTOR}/toggle`, { type: 'agent' }, 'config.connector.update'],
+    ['a create', 'POST', '/', 'POST', '/api/v1/connectors/', { connectorType: 'Jira', instanceName: INSTANCE_NAME, scope: 'team' }, 'config.connector.create'],
   ] as const) {
-    it(`${name} that succeeds writes one line at INFO or above: the access line`, async () => {
+    it(`${name} that succeeds writes one line at INFO or above besides any audit line: the access line`, async () => {
       backend.on(backendMethod, backendPath, { status: 200, body: { success: true, connector: { _key: CONNECTOR }, connectors: [] } })
 
       const status = await send(method, `/api/v1/connectors${path}`, body)
@@ -191,8 +192,11 @@ describe('Connector routes: a request is logged once, with its connector', funct
       await new Promise((resolve) => setTimeout(resolve, 20))
 
       expect(status).to.equal(200)
-      expect(visible().map((r) => r.message)).to.deep.equal(['http.request.end'])
-      if (path.includes(CONNECTOR)) expect(visible()[0].connector_id).to.equal(CONNECTOR)
+      expect(visible().map((r) => [r.service, r.message])).to.deep.equal([
+        ...(auditEvent === null ? [] : [['audit', auditEvent]]),
+        ['HttpAccess', 'http.request.end'],
+      ])
+      if (path.includes(CONNECTOR)) expect(visible().map((r) => r.connector_id)).to.deep.equal(visible().map(() => CONNECTOR))
     })
   }
 
