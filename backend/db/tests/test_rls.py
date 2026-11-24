@@ -44,6 +44,7 @@ def test_catalog_is_clean_and_covers_every_kind(org_db):
                                                        "lexical_df", "lexical_term_delta", "lexical_df_pending", "lexical_bound_pending")}
         retrieval |= {"retrieval.embedding_spaces": "global", "retrieval.collections": "global"}
         stored = {f"graph.{t}": "org" for t in ("nodes", "edges")}      # partitioned: the leaves are not registry rows
+        stored |= {f"graph.{t}": "org" for t in ("stats_changes", "stats_records", "stats_counts", "stats_apps")}      # graph_0021, plain tables
         stored |= {f"content.{t}": "org" for t in ("documents", "projects", "project_members")}
         stored |= {f"identity.{t}": "org" for t in ("orgs", "users", "user_groups", "user_group_members", "org_auth_config", "user_activities", "used_reset_links", "org_logos", "user_pictures", "slug_counters", "user_credentials")}
         stored |= {f"oauth.{t}": "org" for t in ("apps", "access_tokens", "refresh_tokens", "authorization_codes", "device_authorizations", "service_account_delegations", "delegation_events", "agent_registrations", "agent_call_events")}

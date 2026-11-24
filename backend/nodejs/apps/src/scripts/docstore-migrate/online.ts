@@ -16,7 +16,14 @@ import { Client } from 'pg';
 import { Log, bulk } from './bulk';
 import { drain } from './drain';
 import type { DocDiff } from './compare';
-import { casMongoFence, readMongoFence, setMongoFence } from './fence';
+import {
+  AppWritesReport,
+  appWritesNote,
+  casMongoFence,
+  readMongoFence,
+  revokeAppWrites,
+  setMongoFence,
+} from './fence';
 import {
   MARKER_COLLECTION,
   follow,
@@ -588,6 +595,8 @@ export interface CutoverReport {
   freezeMs?: number;
   precheck?: { ok: boolean; items: PrecheckItem[] };
   verify?: { ok: boolean; remaining: number; changed: number };
+  /** The write roles taken from the application's MongoDB users after the flip. */
+  mongoAppWrites?: AppWritesReport;
   aborted?: boolean;
 }
 
@@ -717,12 +726,13 @@ export async function cutover(
         'F2',
         `${String(d.remaining)} chat turns are still running after ${String(Math.round(o.drainWaitMs / 1000))} s (use --force-drain to close them as interrupted)`,
       );
-    // F3: the migrator cannot pause the application's consumers; the Mongo fence refuses their writes (they re-throw and retry)
+    // F3: the application's consumers and outbox dispatcher pause themselves while the fence is not active (they read it as their
+    // writes do); a write already on its way is waited out before read-only (fence.ts), and a later one is refused and retried
     steps.push({
       step: 'F3 background writers',
       ms: 0,
       detail:
-        'not paused by the migrator: their Mongo writes are refused by the fence from F4 on and retried',
+        'paused by the application while the fence is not active; writes in flight are waited out before F4',
     });
 
     // F4: read-only
@@ -903,6 +913,10 @@ export async function cutover(
       }
     });
     const freezeMs = Date.now() - frozenAt;
+    // after the flip, not at F4: an abort then never has roles to give back, and F5 and F8 already count any write that got through
+    const writes = await mark('F8 revoke app writes', () =>
+      revokeAppWrites(rt),
+    );
     if (o.failAt === 'F8-checkpoint')
       throw new Error('injected failure after the flip');
     js.progress.phase = 'cutover_done';
@@ -916,7 +930,8 @@ export async function cutover(
       freezeMs,
       precheck: pc,
       verify: { ok: true, remaining: 0, changed: v.changed },
-      message: `PostgreSQL is the store at epoch ${String(epoch)} (writes were frozen ${String(Math.round(freezeMs / 1000))} s). Roll the application over to DOC_STORE=postgres now, then start the reverse follower (F9)`,
+      mongoAppWrites: writes,
+      message: `PostgreSQL is the store at epoch ${String(epoch)} (writes were frozen ${String(Math.round(freezeMs / 1000))} s). Roll the application over to DOC_STORE=postgres now, then start the reverse follower (F9).${appWritesNote(writes)}`,
     };
   } catch (e) {
     return await abort(

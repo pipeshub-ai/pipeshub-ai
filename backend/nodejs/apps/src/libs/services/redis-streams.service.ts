@@ -31,6 +31,7 @@ import {
   signMessage,
 } from '../context/envelope';
 import { spawnDetached } from '../context/orgContext';
+import { untilMongoWritable } from '../repositories/fence';
 import {
   MESSAGING_HEALTH_MESSAGE_KEY,
   MESSAGING_HEALTH_MESSAGE_TYPE,
@@ -525,6 +526,8 @@ export abstract class BaseRedisStreamsConsumerConnection
           }
 
           for (const entry of claimed) {
+            // a store move (F3): a recovered entry waits as a new one does, and stays pending if the consumer stops
+            if (!(await untilMongoWritable(() => this.running))) return;
             const entryId = entry[0];
             const fields = entry[1];
             try {
@@ -694,6 +697,8 @@ export abstract class BaseRedisStreamsConsumerConnection
           const streamName = result[0];
           const entries = result[1];
           for (const entry of entries) {
+            // a store move (F3): the entry stays unacked, so pending, until the store takes writes again or the consumer stops
+            if (!(await untilMongoWritable(() => this.running))) break;
             const entryId = entry[0];
             const fields = entry[1];
             try {

@@ -56,6 +56,7 @@ from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.connectors.sources.drupal_wiki.connector import DrupalWikiConnector
 from app.connectors.sources.box.connector import BoxConnector
+from app.connectors.sources.cloudflare_r2.connector import CloudflareR2Connector
 from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
@@ -150,6 +151,7 @@ class ConnectorFactory:
         "github": GithubConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,
+        "cloudflarer2": CloudflareR2Connector,
         "gcs": GCSConnector,
         "kb": KnowledgeBaseConnector,
         "azureblob": AzureBlobConnector,

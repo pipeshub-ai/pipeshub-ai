@@ -196,6 +196,26 @@ column graph.nodes.coll type=text notnull=true identity= generated= default=-
 column graph.nodes.doc type=jsonb notnull=true identity= generated= default=-
 column graph.nodes.id type=text notnull=true identity= generated= default=-
 column graph.nodes.org_id type=text notnull=true identity= generated= default=-
+column graph.stats_apps.app_id type=text notnull=true identity= generated= default=-
+column graph.stats_apps.org_id type=text notnull=true identity= generated= default=-
+column graph.stats_changes.id type=bigint notnull=true identity=a generated= default=-
+column graph.stats_changes.keys type=text[] notnull=true identity= generated= default=-
+column graph.stats_changes.org_id type=text notnull=true identity= generated= default=-
+column graph.stats_counts.app_id type=text notnull=true identity= generated= default=-
+column graph.stats_counts.entities type=text notnull=true identity= generated= default=-
+column graph.stats_counts.extraction type=text notnull=true identity= generated= default=-
+column graph.stats_counts.indexing type=text notnull=true identity= generated= default=-
+column graph.stats_counts.n type=bigint notnull=true identity= generated= default=-
+column graph.stats_counts.org_id type=text notnull=true identity= generated= default=-
+column graph.stats_counts.record_type type=text notnull=true identity= generated= default=-
+column graph.stats_records.app_id type=text notnull=true identity= generated= default=-
+column graph.stats_records.entities type=text notnull=true identity= generated= default=-
+column graph.stats_records.extraction type=text notnull=true identity= generated= default=-
+column graph.stats_records.indexing type=text notnull=true identity= generated= default=-
+column graph.stats_records.org_id type=text notnull=true identity= generated= default=-
+column graph.stats_records.record_id type=text notnull=true identity= generated= default=-
+column graph.stats_records.record_type type=text notnull=true identity= generated= default=-
+column graph.stats_records.sid type=text notnull=false identity= generated= default=-
 column identity.org_auth_config.auth_steps type=jsonb notnull=true identity= generated= default=-
 column identity.org_auth_config.created_at type=timestamp with time zone notnull=true identity= generated= default=-
 column identity.org_auth_config.domain type=text notnull=false identity= generated= default=-
@@ -991,6 +1011,19 @@ constraint graph.edges org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint graph.nodes nodes_pkey p def=50f154e59db48322060e26dda7c3ea73
 constraint graph.nodes org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint graph.nodes org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint graph.stats_apps org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint graph.stats_apps org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint graph.stats_apps stats_apps_pkey p def=a54c4f5fa367b96319112e7f6930d18a
+constraint graph.stats_changes org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint graph.stats_changes org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint graph.stats_changes stats_changes_keys_check c def=abac3bad769e5586801e90ff59ee4848
+constraint graph.stats_changes stats_changes_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint graph.stats_counts org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint graph.stats_counts org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint graph.stats_counts stats_counts_pkey p def=02d2b4a38fdf2a926235d52957866e12
+constraint graph.stats_records org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint graph.stats_records org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint graph.stats_records stats_records_pkey p def=57049586eb6364f8fe3932dbfc7e8425
 constraint identity.org_auth_config org_auth_config_auth_steps_check c def=3d1ca2c84e37a363e9764721b059dd6e
 constraint identity.org_auth_config org_auth_config_pkey p def=23790d7e3b152b2426b0cd980c7b2821
 constraint identity.org_auth_config org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
@@ -1311,6 +1344,8 @@ func graph.stage_states_by_revision(text,text) owner=pipeshub_vetted_graph secde
 func graph.stage_states_page(text,text,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=a3208be1a7eb86259c302986beb3a97f ext=-
 func graph.stage_states_stale(text[],bigint,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=5bf31d0a9c981b840094d9d290c48b93 ext=-
 func graph.stage_states_unheld(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ba9881d75c81ed3a8070a207d711a4a3 ext=-
+func graph.stats_app_restored() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, pg_temp body=afda13637bd674ab8c91ebd15ebc5560 ext=-
+func graph.stats_log_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, graph, pg_temp;enable_nestloop=off;jit=off body=fd12d9a0cd5db04cbc89c3fbf70f4cfe ext=-
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
@@ -1695,6 +1730,12 @@ index graph.nodes_taxonomy_norm on graph.nodes unique=false exclusion=false vali
 index graph.nodes_user_email on graph.nodes unique=false exclusion=false valid=true def=d2dbf808e4ef54b5fb330ecfa91e8660
 index graph.nodes_user_userid on graph.nodes unique=false exclusion=false valid=true def=5f7dd84e6df3e7ea4d7b716b6ac3255e
 index graph.nodes_value_record on graph.nodes unique=false exclusion=false valid=true def=266d1a456d7c40531fc42a030e3c5fcc
+index graph.stats_apps_pkey on graph.stats_apps unique=true exclusion=false valid=true def=421c204d4d2ad57b1e3369b204048e37
+index graph.stats_changes_pkey on graph.stats_changes unique=true exclusion=false valid=true def=47f7bdc42332cbbfa4b2eddc9bd0c0ec
+index graph.stats_counts_pkey on graph.stats_counts unique=true exclusion=false valid=true def=d4a86014e8a4dd8be6bd3a96db6ce0ca
+index graph.stats_records_app on graph.stats_records unique=false exclusion=false valid=true def=bbc46ea3c027726fa30a53bcb86a249c
+index graph.stats_records_pkey on graph.stats_records unique=true exclusion=false valid=true def=35dc0d0c5c7079f82c7a9fbdf5c38a96
+index graph.stats_records_sid on graph.stats_records unique=false exclusion=false valid=true def=aabcd20a1acae58445bf5ba7c26456ef
 index identity.org_auth_config_pkey on identity.org_auth_config unique=true exclusion=false valid=true def=e69b8d3e8cc5a807296a9f0ad4388780
 index identity.org_logos_pkey on identity.org_logos unique=true exclusion=false valid=true def=12e487b6867b2ce725f022f849f4ae7f
 index identity.orgs_pkey on identity.orgs unique=true exclusion=false valid=true def=c5b9d956eb272cd5dc1422305510520a
@@ -2052,6 +2093,18 @@ policy graph.nodes jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true
 policy graph.nodes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy graph.nodes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy graph.nodes vetted_read cmd=r permissive=true roles=pipeshub_vetted_graph using=true check=-
+policy graph.stats_apps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_apps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy graph.stats_apps restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy graph.stats_changes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_changes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy graph.stats_changes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy graph.stats_counts backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_counts org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy graph.stats_counts restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy graph.stats_records backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy graph.stats_records org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy graph.stats_records restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy identity.org_auth_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy identity.org_auth_config import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy identity.org_auth_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
@@ -2321,6 +2374,11 @@ rel conversation.semantic_search_members kind=r owner=pipeshub_owner rls=true fo
 rel conversation.semantic_searches kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel graph.edges kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
 rel graph.nodes kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel graph.stats_apps kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05 ext=-
+rel graph.stats_changes kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05 ext=-
+rel graph.stats_changes_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
+rel graph.stats_counts kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05 ext=-
+rel graph.stats_records kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05 ext=-
 rel identity.org_auth_config kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel identity.org_logos kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel identity.org_slug_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
@@ -2577,6 +2635,40 @@ relacl graph.nodes pipeshub_query SELECT grantable=false
 relacl graph.nodes pipeshub_query UPDATE grantable=false
 relacl graph.nodes pipeshub_restore INSERT grantable=false
 relacl graph.nodes pipeshub_vetted_graph SELECT grantable=false
+relacl graph.stats_apps pipeshub_backup SELECT grantable=false
+relacl graph.stats_apps pipeshub_connectors DELETE grantable=false
+relacl graph.stats_apps pipeshub_connectors INSERT grantable=false
+relacl graph.stats_apps pipeshub_connectors SELECT grantable=false
+relacl graph.stats_apps pipeshub_connectors UPDATE grantable=false
+relacl graph.stats_apps pipeshub_indexing SELECT grantable=false
+relacl graph.stats_apps pipeshub_query SELECT grantable=false
+relacl graph.stats_apps pipeshub_restore INSERT grantable=false
+relacl graph.stats_changes pipeshub_backup SELECT grantable=false
+relacl graph.stats_changes pipeshub_connectors DELETE grantable=false
+relacl graph.stats_changes pipeshub_connectors INSERT grantable=false
+relacl graph.stats_changes pipeshub_connectors SELECT grantable=false
+relacl graph.stats_changes pipeshub_connectors UPDATE grantable=false
+relacl graph.stats_changes pipeshub_indexing INSERT grantable=false
+relacl graph.stats_changes pipeshub_indexing SELECT grantable=false
+relacl graph.stats_changes pipeshub_query INSERT grantable=false
+relacl graph.stats_changes pipeshub_query SELECT grantable=false
+relacl graph.stats_changes pipeshub_restore INSERT grantable=false
+relacl graph.stats_counts pipeshub_backup SELECT grantable=false
+relacl graph.stats_counts pipeshub_connectors DELETE grantable=false
+relacl graph.stats_counts pipeshub_connectors INSERT grantable=false
+relacl graph.stats_counts pipeshub_connectors SELECT grantable=false
+relacl graph.stats_counts pipeshub_connectors UPDATE grantable=false
+relacl graph.stats_counts pipeshub_indexing SELECT grantable=false
+relacl graph.stats_counts pipeshub_query SELECT grantable=false
+relacl graph.stats_counts pipeshub_restore INSERT grantable=false
+relacl graph.stats_records pipeshub_backup SELECT grantable=false
+relacl graph.stats_records pipeshub_connectors DELETE grantable=false
+relacl graph.stats_records pipeshub_connectors INSERT grantable=false
+relacl graph.stats_records pipeshub_connectors SELECT grantable=false
+relacl graph.stats_records pipeshub_connectors UPDATE grantable=false
+relacl graph.stats_records pipeshub_indexing SELECT grantable=false
+relacl graph.stats_records pipeshub_query SELECT grantable=false
+relacl graph.stats_records pipeshub_restore INSERT grantable=false
 relacl identity.org_auth_config pipeshub_backup SELECT grantable=false
 relacl identity.org_auth_config pipeshub_import DELETE grantable=false
 relacl identity.org_auth_config pipeshub_import INSERT grantable=false
@@ -3421,10 +3513,17 @@ trigger graph.edges kg_edges_delete enabled=A function=kg.log_graph_change()
 trigger graph.edges kg_edges_insert enabled=A function=kg.log_graph_change()
 trigger graph.edges kg_edges_truncate enabled=A function=kg.refuse_truncate()
 trigger graph.edges kg_edges_update enabled=A function=kg.log_graph_change()
+trigger graph.edges stats_edges_delete enabled=A function=graph.stats_log_change()
+trigger graph.edges stats_edges_insert enabled=A function=graph.stats_log_change()
+trigger graph.edges stats_edges_update enabled=A function=graph.stats_log_change()
 trigger graph.nodes kg_nodes_delete enabled=A function=kg.log_graph_change()
 trigger graph.nodes kg_nodes_insert enabled=A function=kg.log_graph_change()
 trigger graph.nodes kg_nodes_truncate enabled=A function=kg.refuse_truncate()
 trigger graph.nodes kg_nodes_update enabled=A function=kg.log_graph_change()
+trigger graph.nodes stats_nodes_delete enabled=A function=graph.stats_log_change()
+trigger graph.nodes stats_nodes_insert enabled=A function=graph.stats_log_change()
+trigger graph.nodes stats_nodes_update enabled=A function=graph.stats_log_change()
+trigger graph.stats_apps graph_stats_apps_restore enabled=O function=graph.stats_app_restored()
 trigger identity.org_auth_config docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger identity.org_logos docstore_change_log enabled=O function=platform.docstore_log_change()
 trigger identity.slug_counters docstore_change_log enabled=O function=platform.docstore_log_change()

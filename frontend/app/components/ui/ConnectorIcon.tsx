@@ -37,6 +37,7 @@ export type ConnectorType =
   | 'amazon-s3'
   | 'gcs'
   | 'minio'
+  | 'cloudflare-r2'
   | 'azure-blob'
   | 'azure-files'
   | 'azure-fileshares'
@@ -157,6 +158,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'amazon-s3': { svg: svg('s3'), fallback: 'cloud' },
   'gcs': { svg: svg('gcs'), fallback: 'cloud' },
   'minio': { svg: svg('minio'), fallback: 'cloud' },
+  'cloudflare-r2': { svg: svg('cloudflarer2'), fallback: 'cloud' },
   'azure-blob': { svg: svg('azureblob'), fallback: 'cloud' },
   'azure-files': { svg: svg('azurefiles'), fallback: 'folder_shared' },
   'azure-fileshares': { svg: svg('azurefiles'), fallback: 'folder_shared' },
@@ -276,6 +278,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   ['local-files', 'local-fs'],
   ['dropbox', 'dropbox'], ['box', 'box'],
   ['minio', 'minio'], ['nextcloud', 'nextcloud'],
+  ['cloudflare-r2', 'cloudflare-r2'], ['cloudflarer2', 'cloudflare-r2'],
   ['network-drive', 'smb'], ['smb3', 'smb'], ['smb2', 'smb'], ['smb', 'smb'],
   ['cifs', 'cifs'],
   // Dev tools & project tracking
