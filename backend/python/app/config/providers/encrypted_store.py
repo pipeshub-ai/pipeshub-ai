@@ -239,11 +239,17 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             self.logger.error("Failed to store key: %s", key)
             return False
 
-    def _encode_value(self, key: str, value: T) -> str:
+    def _encode_value(self, key: str, value: T) -> object:
         # Datetime-safe: a datetime that slipped into a config value must not fail the write.
-        # Plaintext keys still get JSON, not a Python repr, so other readers can parse them.
         value_json = json.dumps(value, cls=_DatetimeSafeEncoder)
-        return value_json if is_unencrypted_key(key) else self.encryption_service.encrypt(value_json)
+        if not is_unencrypted_key(key):
+            return self.encryption_service.encrypt(value_json)
+        # The underlying store serializes what it is given (Redis and PostgreSQL json.dumps it, etcd writes a str as-is
+        # and json.dumps anything else), so a plaintext key gets the decoded structure, never value_json: a pre-dumped
+        # string would be encoded twice and Node, which reads these keys with one JSON.parse, would get a string where
+        # it expects an object. A str stays a JSON string so "123" or "true" reads back as the str that was written;
+        # None has no one-layer form either.
+        return value_json if isinstance(value, str) or value is None else json.loads(value_json)
 
     async def update_value(
         self, key: str, value: T, ttl: Optional[int] = None

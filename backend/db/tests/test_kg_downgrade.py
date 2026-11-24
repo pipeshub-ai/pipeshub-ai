@@ -441,6 +441,39 @@ def test_a_copy_labelled_epoch_8_when_the_trash_columns_are_added_is_relabelled_
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
 
 
+def test_the_capture_only_revision_refuses_a_services_own_row_and_its_downgrade_takes_the_refusal_back(db):
+    """kg_0022: a change-log row a service inserts itself is refused; down to kg_0021 it is taken again (kg_0004's body) and the catalog is clean; an upgrade refuses it again."""
+    import psycopg
+
+    from .rls_fixture import ORG_A as org
+    from .test_vetted_pins import unit
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def takes(c) -> bool:
+        try:
+            with unit(c, "pipeshub_query", org):
+                c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:forged'])", (org,))
+        except psycopg.errors.InsufficientPrivilege:
+            return False
+        c.execute("DELETE FROM kg.graph_changes")
+        return True
+
+    assert run_migrate(url).returncode == 0
+    with connect(cluster, name) as c:
+        assert not takes(c)
+    r = run_migrate(url, "downgrade", "kg_0021", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert takes(c)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert not takes(c)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+
+
 def test_the_grant_only_revision_moves_the_floor_and_its_downgrade_takes_back_the_mark_and_the_relabel(db):
     """kg_0021: the change log's rows carry grant_only (the capture sets it), the projection writers refuse epoch 8 (code that compiled stamps from the graph's grants) and copies
     labelled 8 are relabelled 9; down to kg_0020, the column and the capture's mark are gone, epoch 8 is taken again, copies labelled 9 are 8 again and the catalog is clean; an

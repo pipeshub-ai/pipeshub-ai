@@ -59,6 +59,7 @@ VERIFY_BUDGET_S = 4.0            # seconds one connector's chunks run per pass (
 VERIFY_TIMEOUT = "30s"           # one chunk of a verify (a page of a connector), in a snapshot of its own
 OVERDUE_INTERVALS = 24           # a full verify not completed within this many intervals is logged as an error and raised on the gauge
 MARKER = "3:@demote"             # the one key of a demotion request in the change log, a record that is not there. The drain never takes a row that holds it (drainer.py), so it stays until the worker has acted
+# A row of this key alone is the only one a service may insert into the change log itself (kg_0022's stamp trigger spells it too); every other row is the capture trigger's.
 # One worker serves the org (OSS runs one process), so the hold and the distrusted set are per process: a second process would hold its own.
 HOLD_S = 300.0                   # after a demotion by the net, the bootstrap leaves the connector alone this long
 

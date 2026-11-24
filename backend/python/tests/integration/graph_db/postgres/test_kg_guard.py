@@ -30,6 +30,7 @@ from .kg_fresh import differences, graph_rows
 from .pg_support import new_org
 from .test_kg_derivation import ctx, held, prov
 from .test_kg_projection_races import world2
+from .test_kg_read import _admin
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 WRITE = re.compile(r"\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+graph\.(nodes|edges)\b", re.I)
@@ -203,14 +204,9 @@ async def log_rows(p, org: str) -> int:
         return await p._q(go, None)
 
 
-async def other_roles_rows(p, org: str, monkeypatch: pytest.MonkeyPatch, n: int = 20) -> None:
-    """Rows a unit of another service would leave (committed, by an earlier transaction): made by a unit the take-back does not recognise as the connectors service's own."""
-    async def go(tx) -> None:
-        await tx.execute("/* pipeshub:test.others */ INSERT INTO kg.graph_changes (org_id, ends) SELECT $1, ARRAY['3:f1'] FROM generate_series(1, $2)", org, n)
-    with monkeypatch.context() as m:
-        m.setattr(flush, "_own_role", lambda _tx: False)
-        with ctx(org):
-            await p._q(go, None, write=True)
+async def other_roles_rows(org: str, n: int = 20) -> None:
+    """Rows a unit of another service would leave (committed, by an earlier transaction). No service may insert a row itself (kg_0022), so the administrator plants them."""
+    await _admin("INSERT INTO kg.graph_changes (org_id, ends) SELECT $1, ARRAY['3:f1'] FROM generate_series(1, $2)", org, n)
 
 
 async def test_with_the_projection_off_the_connectors_service_leaves_no_row_in_the_log(pg_db, monkeypatch) -> None:
@@ -220,7 +216,7 @@ async def test_with_the_projection_off_the_connectors_service_leaves_no_row_in_t
     monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
     monkeypatch.setattr(flush, "_last_sweep", {})
     assert await log_rows(p, org) == 0                                   # its own rows are taken back at commit
-    await other_roles_rows(p, org, monkeypatch)
+    await other_roles_rows(org)
     assert await log_rows(p, org) == 20
     with ctx(org):
         await p.batch_upsert_nodes([{"_key": "f1", "orgId": org, "recordName": "Again", "connectorId": "app1"}], "records")
@@ -233,7 +229,7 @@ async def test_the_log_is_swept_by_any_write_unit_of_the_connectors_service_not_
     monkeypatch.setenv("PG_KG_PROJECT", "0")
     p, org = prov(pg_db), new_org()
     await quiet_world2(p, org, monkeypatch)
-    await other_roles_rows(p, org, monkeypatch, n=30)
+    await other_roles_rows(org, n=30)
     monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
     assert await log_rows(p, org) == 30
 
@@ -273,7 +269,7 @@ async def test_a_sweep_that_fails_does_not_fail_the_business_write(pg_db, monkey
     monkeypatch.setenv("PG_KG_PROJECT", "0")
     p, org = prov(pg_db), new_org()
     await quiet_world2(p, org, monkeypatch)
-    await other_roles_rows(p, org, monkeypatch, n=20)
+    await other_roles_rows(org, n=20)
     monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
     monkeypatch.setattr(flush, "_last_sweep", {})
     monkeypatch.setattr(KgWriter, "changes_delete", broken_statement)

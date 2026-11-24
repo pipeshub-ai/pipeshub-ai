@@ -27,6 +27,7 @@ import {
 } from '../config/storage.config';
 import { Logger } from '../../../libs/services/logger.service';
 import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { ConfigurationManagerServiceCommand } from '../../../libs/commands/configuration_manager/cm.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -437,7 +438,7 @@ export class StorageController {
   ): Promise<string> {
     const storageConfig =
       (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-    const { storageType } = JSON.parse(storageConfig);
+    const { storageType } = parseKvObject(storageConfig);
     return storageType ?? 'local';
   }
 
@@ -450,7 +451,7 @@ export class StorageController {
       const adapter = await this.initializeStorageAdapterForWrite(req);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       if (!isValidStorageVendor(storageType ?? '')) {
         throw new BadRequestError(`Invalid storage type: ${storageType}`);
       }
@@ -504,7 +505,7 @@ export class StorageController {
       const fullDocumentPath = getFullDocumentPath(orgId, documentPath);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       const storageVendor = getStorageVendor(storageType ?? '');
       const documentInfo: Partial<Document> = {
         documentName,
@@ -2758,7 +2759,7 @@ export class StorageController {
 
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       const storageVendorInETCD = storageType;
 
       // TODO: fix this usage
@@ -3039,7 +3040,7 @@ export class StorageController {
         const storageConfig =
           (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
           '{}';
-        const { storageType: configStorageType } = JSON.parse(storageConfig);
+        const { storageType: configStorageType } = parseKvObject(storageConfig);
 
         addVersion({
           version: 0,
