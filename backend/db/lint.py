@@ -434,7 +434,7 @@ def lint_file(path: Path) -> list[str]:
     branch, _, epoch = rev.value.rpartition("_") if isinstance(rev, ast.Constant) and isinstance(rev.value, str) else ("", "", "")
     shipped = epoch.isdigit() and int(epoch) <= _released().get(branch, 0)     # as lint_revision: a released revision cannot change
     if not contract and not shipped:
-        for s in unsafe_bodies(statements(text) + [q for s in py_sql for q in statements(s)]):
+        for s in unsafe_bodies(statements(text) + [q for x in py_sql for q in statements(x)]):
             flag(f"{s[:60]!r} runs in the upgrade and its body may DROP INDEX (a DROP INDEX, an EXECUTE, a nested or not dollar-quoted body): "
                  "set min_code_epoch (older_code_compatible does not clear it)")
     if py_dynamic:
