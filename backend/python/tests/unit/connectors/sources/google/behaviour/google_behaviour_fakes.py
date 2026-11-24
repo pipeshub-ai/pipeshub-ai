@@ -462,7 +462,7 @@ class FakeEntitiesProcessor:
     async def get_placeholder_records(self, connector_id: str, *_: object, **__: object) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
 
-    async def get_all_active_users(self) -> list[Any]:
+    async def get_all_active_users(self, *, raise_on_error: bool = False) -> list[Any]:
         return list(self.active_users)
 
     async def get_user_by_user_id(self, user_id: str) -> object | None:

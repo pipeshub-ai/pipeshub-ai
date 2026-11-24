@@ -7807,7 +7807,10 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _get_users_to_sync(self, users: List[AppUser], *, raise_on_error: bool = False) -> List[AppUser]:
         """Narrow the workspace's users down to those active in this deployment. ``raise_on_error`` raises a failed
         read instead of answering that nobody is active."""
-        all_active_users = await self.data_entities_processor.get_all_active_users(raise_on_error=raise_on_error)
+        processor = self.data_entities_processor
+        all_active_users = await (
+            processor.get_all_active_users(raise_on_error=True) if raise_on_error else processor.get_all_active_users()
+        )
         active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
         # A suspended or archived account cannot be impersonated, and reads nothing at the source.
