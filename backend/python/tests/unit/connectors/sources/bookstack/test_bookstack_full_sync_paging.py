@@ -142,3 +142,53 @@ async def test_a_group_still_in_bookstack_is_not_removed(connector) -> None:
     processor.on_record_group_deleted.assert_awaited_once_with("chapter/13", "bs-paging")
     ((batch,), _), = processor.on_new_record_groups.await_args_list
     assert [group.external_group_id for group, _ in batch] == ["book/9"]
+
+
+@pytest.mark.asyncio
+async def test_a_chapter_moved_out_of_a_deleted_book_keeps_its_records(connector) -> None:
+    """Book 9 is deleted at the source after its chapter 13 moved to book 2, and the listing missed the chapter.
+    The chapter is written under book 2 before book 9 goes, so the book's removal no longer takes it."""
+    parents = {"book/9": None, "chapter/13": "book/9"}
+    records = {"page/5": ("chapter/13", "record-5")}
+    processor = connector.data_entities_processor
+    processor.get_nodes_by_filters = AsyncMock(return_value=[
+        {"externalGroupId": "book/9"}, {"externalGroupId": "chapter/13"}])
+
+    async def write(batch: list) -> None:
+        for group, _ in batch:
+            parents[group.external_group_id] = group.parent_external_group_id
+
+    async def delete(external_id: str, connector_id: str) -> bool:
+        if external_id not in parents:
+            return False
+        subtree = {external_id} | {gid for gid, parent in parents.items() if parent == external_id}
+        for gid in subtree:
+            parents.pop(gid)
+        for page in [page for page, (group, _) in records.items() if group in subtree]:
+            records.pop(page)
+        return True
+
+    processor.on_new_record_groups = AsyncMock(side_effect=write)
+    processor.on_record_group_deleted = AsyncMock(side_effect=delete)
+    connector.data_source.get_chapter = AsyncMock(return_value=BookStackResponse(
+        success=True, data={"id": 13, "name": "c", "book_id": 2}, status_code=200))
+    connector._access = AsyncMock(return_value=MagicMock(permissions=[]))
+
+    assert await connector._remove_groups_not_listed({"book/2"}) is True
+    assert parents == {"chapter/13": "book/2"}
+    assert records == {"page/5": ("chapter/13", "record-5")}
+    processor.on_record_group_deleted.assert_awaited_once_with("book/9", "bs-paging")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_group_lookup_logs_its_status_and_error(connector, caplog) -> None:
+    connector.data_source.get_book = AsyncMock(return_value=BookStackResponse(
+        success=False, data={"error": {"code": 503, "message": "down"}}, error="Down at https://bs.example/api/books/9",
+        status_code=503))
+
+    with caplog.at_level(logging.WARNING, logger="bookstack-paging"):
+        assert await connector._fetch_group("book", 9) == (False, None)
+
+    message = caplog.records[-1].getMessage()
+    assert "book ID 9 (HTTP 503): Down at [url]" in message
+    assert "bs.example" not in message

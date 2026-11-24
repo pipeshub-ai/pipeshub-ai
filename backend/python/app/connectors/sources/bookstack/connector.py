@@ -92,6 +92,7 @@ from app.sources.client.bookstack.bookstack import (
     BookStackTokenConfig,
 )
 from app.sources.external.bookstack.bookstack import BookStackDataSource
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.streaming import create_stream_record_response
 
 
@@ -1101,6 +1102,9 @@ class BookStackConnector(BaseConnector):
             self.logger.error(f"Could not list the stored BookStack groups, so none are removed: {e}")
             return False
         done = True
+        # Every lookup and rewrite comes before any removal: a chapter moved out of a deleted book is written
+        # under its new book first, or the book's removal would take it and its pages with it.
+        remove: list[str] = []
         for node in stored:
             external_id = node.get("externalGroupId") or ""
             kind, _, raw = external_id.partition("/")
@@ -1121,6 +1125,8 @@ class BookStackConnector(BaseConnector):
                         await self.data_entities_processor.on_new_record_groups(
                             [(self._group_for(kind, item), access.permissions)])
                     continue
+            remove.append(external_id)
+        for external_id in remove:
             self.logger.info(f"{external_id} is no longer in BookStack or in the sync's scope; removing it")
             # The processor reports a failed removal as False, not as an exception, and also says False for a
             # group already gone: a chapter goes with its book, which may come first in this loop.
@@ -1934,7 +1940,10 @@ class BookStackConnector(BaseConnector):
             return True, response.data
         if _gone(response):
             return True, None
-        self.logger.warning(f"Could not read BookStack's answer for {kind} ID {item_id}")
+        error = getattr(response, "error", None)
+        self.logger.warning(
+            f"Could not read BookStack's answer for {kind} ID {item_id} "
+            f"(HTTP {getattr(response, 'status_code', None)}): {redact_error_for_log(str(error))}")
         return False, None
 
     async def _content_exists(self, content_type: str, item_id: int) -> bool | None:
