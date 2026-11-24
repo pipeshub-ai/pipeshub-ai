@@ -571,7 +571,7 @@ def _wired(ds: MagicMock) -> NotionConnector:
 async def test_a_listing_read_to_its_end_is_complete_and_names_every_person() -> None:
     conn = _wired(_listing(
         {"results": [_person("u1", "Live@Corp.com")], "has_more": True, "next_cursor": "c1"},
-        {"results": [_person("u2", "other@corp.com"), _person("u3")], "has_more": False, "next_cursor": None},
+        {"results": [_person("u2", "other@corp.com")], "has_more": False, "next_cursor": None},
     ))
     conn._listed_user_emails = {"stale@corp.com"}
 
@@ -579,6 +579,18 @@ async def test_a_listing_read_to_its_end_is_complete_and_names_every_person() ->
 
     assert conn._users_listing_complete is True
     assert conn._listed_user_emails == {"live@corp.com", "other@corp.com"}
+
+
+@pytest.mark.asyncio
+async def test_a_person_with_a_hidden_email_leaves_the_listing_incomplete_but_named_people_count() -> None:
+    conn = _wired(_listing(
+        {"results": [_person("u1", "Live@Corp.com"), _person("u2")], "has_more": False, "next_cursor": None},
+    ))
+
+    await conn._sync_users()
+
+    assert conn._users_listing_complete is False
+    assert conn._listed_user_emails == {"live@corp.com"}
 
 
 @pytest.mark.asyncio

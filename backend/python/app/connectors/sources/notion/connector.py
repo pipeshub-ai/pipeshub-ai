@@ -2758,6 +2758,7 @@ class NotionConnector(BaseConnector):
             workspace_emails: List[str] = []
             persons_seen = 0
             persons_without_email = 0
+            persons_named = 0
             members_without_email: list[str] = []
 
             # Paginate through all users
@@ -2880,6 +2881,7 @@ class NotionConnector(BaseConnector):
                         user_detail = details[user_id]
                         persons_seen += 1
                         if _user_email(user_detail):
+                            persons_named += 1
                             self._listed_user_emails.add(_user_email(user_detail).lower())
                         if isinstance(user_detail, dict) and not _user_email(user_detail):
                             # A hidden email is not an absence: this member may still be one, so
@@ -2924,7 +2926,11 @@ class NotionConnector(BaseConnector):
                     "then sync again."
                 )
             self._bot_ids_complete = listing_complete
-            self._users_listing_complete = listing_complete and user_details_complete and persons_seen > 0
+            # A member without an email may be the creator, and Notion has no lookup by email to
+            # settle it, so such a listing can only remove a link.
+            self._users_listing_complete = (
+                listing_complete and user_details_complete and persons_seen > 0 and persons_named == persons_seen
+            )
             if self.workspace_id and workspace_emails:
                 await self._add_users_to_workspace_permissions(workspace_emails)
             if user_details_complete:
