@@ -645,6 +645,9 @@ _BUILD = 'def upgrade():\n    ensure_partitioned_index(op.get_bind(), "graph.nod
                                   '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, False),
     ("built from another list", 'INDEXES = []\n\n\ndef upgrade():\n    for ix in INDEXES:\n'
                                 '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, True),
+    ("the loop name rebound by a nested loop", 'ONLINE_INDEXES = []\nOTHER = []\n\n\ndef upgrade():\n    for ix in ONLINE_INDEXES:\n'
+                                               '        for ix in OTHER:\n            ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n',
+     None, True),
     ("the loop name reused for another list", 'ONLINE_INDEXES = []\nINDEXES = []\n\n\ndef upgrade():\n    for ix in ONLINE_INDEXES:\n'
                                               '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n    for ix in INDEXES:\n'
                                               '        ensure_partitioned_index(op.get_bind(), **ix, blocking=True)\n', None, True),
@@ -706,6 +709,11 @@ def test_lint_takes_an_index_a_later_revision_lists_online_as_built_ahead(tmp_pa
     ("a comment between the words", 'def upgrade():\n    op.execute("DROP/**/INDEX graph.x")\n', True),
     ("a line comment in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN DROP -- retired\\n INDEX graph.x; END $$")\n', True),
     ("DROP INDEX only in a string", 'def upgrade():\n    op.execute("SELECT \'DROP INDEX graph.x\'")\n', False),
+    ("EXECUTE of a literal in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN EXECUTE \'DROP INDEX graph.x\'; END $$")\n', True),
+    ("EXECUTE format in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN EXECUTE format(\'DROP INDEX %I\', \'x\'); END $$")\n', True),
+    ("any EXECUTE in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN EXECUTE \'SELECT 1\'; END $$")\n', True),
+    ("DROP INDEX only in a dollar-quoted string", 'def upgrade():\n    op.execute("SELECT $$DROP INDEX graph.x$$")\n', False),
+    ("DROP INDEX only in a tagged dollar-quoted string", 'def upgrade():\n    op.execute("SELECT $q$DROP INDEX graph.x$q$")\n', False),
     ("DROP INDEX only in a comment", 'def upgrade():\n    op.execute("SELECT 1 -- DROP INDEX graph.x")\n', False),
     ("in downgrade()", 'def downgrade():\n    op.execute(f"DROP INDEX graph.{n}")\n\n\ndef upgrade():\n    pass\n', False),
 ])

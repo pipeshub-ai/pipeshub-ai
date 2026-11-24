@@ -315,9 +315,11 @@ def _do_statements(stmt: str) -> list[str]:
 
 def _drops_index(sql: str) -> bool:
     """A DROP INDEX in any statement of ``sql`` or of a DO body in it, read as ``statements()`` reads SQL (comments are spaces) and outside
-    string literals."""
+    quoted and dollar-quoted strings (data), or any EXECUTE in a DO body: its SQL is a string, so it may be one (as lint_file takes it)."""
     stmts = statements(sql)
-    return any(re.search(r"\bDROP\s+INDEX\b", _strip_literals(q), re.I) for q in stmts + [d for q in stmts for d in _do_statements(q)])
+    bodies = [d for q in stmts for d in _do_statements(q)]
+    return any(re.search(r"\bEXECUTE\b(?!\s+ON\b)", _strip_literals(_strip_bodies(d)), re.I) for d in bodies) or any(
+        re.search(r"\bDROP\s+INDEX\b", _strip_literals(_strip_bodies(q)), re.I) for q in stmts + bodies)
 
 
 def lint_file(path: Path) -> list[str]:
@@ -484,8 +486,11 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
     waived = isinstance(why, ast.Constant) and isinstance(why.value, str) and len(why.value.split()) >= 4
     tree = ast.parse(text)
     nodes = [n for f in tree.body if not (isinstance(f, ast.FunctionDef) and f.name == "downgrade") for n in ast.walk(f)]
+    # a loop whose body binds its name again (a nested loop, an assignment) exempts nothing: which list a call reads is not followed
     from_online = {id(c) for f in nodes if isinstance(f, ast.For) and isinstance(f.target, ast.Name) and isinstance(f.iter, ast.Name)
-                   and f.iter.id == "ONLINE_INDEXES" for c in ast.walk(f) if isinstance(c, ast.Call)
+                   and f.iter.id == "ONLINE_INDEXES" and not any(isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.id == f.target.id
+                                                                for b in f.body for n in ast.walk(b))
+                   for c in ast.walk(f) if isinstance(c, ast.Call)
                    and any(k.arg is None and isinstance(k.value, ast.Name) and k.value.id == f.target.id for k in c.keywords)}
     bad = []
     for call in (n for n in nodes if isinstance(n, ast.Call) and _call_name(n.func) == "ensure_partitioned_index"):
