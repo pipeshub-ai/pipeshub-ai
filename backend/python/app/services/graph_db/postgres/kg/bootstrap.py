@@ -49,6 +49,7 @@ _RECOPY: set[tuple[str, str]] = set()                      # of those, the ones 
 _HELD: dict[tuple[str, str], float] = {}                  # connectors the net took back to the walk: not tried again before this time
 _STAMP_AFTER: dict[tuple[str, str], str | None] = {}      # where a connector's unfinished stamping goes on (in this process; a restart stamps again from the start)
 _FILL_AFTER: dict[tuple[str, str], str] = {}              # where a connector's unfinished trash fill goes on (in this process; a restart fills again from the start)
+_TOPS_AFTER: dict[tuple[str, str], int] = {}              # where a connector's unfinished pc_top fill goes on (likewise)
 
 
 def hold(org: str, app: str, seconds: float) -> None:
@@ -84,16 +85,20 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
                 # the copy that differed is not trusted: a fresh one from the first node (its rows that no node explains go too)
                 await bf.backfill_scope(db, org, app, page=PAGE, max_batches=0, restart=True)
                 _RECOPY.discard((org, app))
-            # Before anything verifies it: a copy of epoch 7 code is filled in place and relabelled (an enforced one is then done), never copied again.
-            # Bounded to BATCHES pages per pass, as a copy is: an unfinished fill keeps its cursor and is never verified meanwhile.
-            mode, more = await bf.fill_trash(db, org, app, page=PAGE, after=_FILL_AFTER.get((org, app), ""), max_pages=BATCHES, stop=stop)
+            # Before anything verifies it: a copy of epoch 7 code is filled in place to epoch 9, and one of epoch 9 to this code's, each relabelled (an enforced one is
+            # then done), never copied again. Each fill is bounded to BATCHES pages per pass, as a copy is: an unfinished fill keeps its cursor and is never verified meanwhile.
+            mode = more = None
+            for fill, cursors, start in ((bf.fill_trash, _FILL_AFTER, ""), (bf.fill_pc_tops, _TOPS_AFTER, 0)):
+                mode, more = await fill(db, org, app, page=PAGE, after=cursors.get((org, app), start), max_pages=BATCHES, stop=stop)
+                if more is not None:
+                    cursors[(org, app)] = more
+                    break
+                cursors.pop((org, app), None)
             if more is not None:
-                _FILL_AFTER[(org, app)] = more
                 due[(org, app)] = 0.0
                 PROMOTED.inc("filling")
                 progress += 1
                 continue
-            _FILL_AFTER.pop((org, app), None)
             if mode == "enforce":
                 PROMOTED.inc("filled")
                 due.pop((org, app), None)

@@ -225,8 +225,27 @@ def test_a_record_row_has_exactly_the_columns_the_writer_takes() -> None:
     from app.services.graph_db.postgres.kg.writers import RECORD_COLS
     snap = basic()
     row = derive({CHILD}, snap).records[snap.sk[CHILD]]
-    # the listing columns and the trash columns have writers of their own (w_listing_set, w_trash_set)
-    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort", "deleted_ms", "delete_batch"}
+    # the listing columns, the trash columns and pc_top have writers of their own (w_listing_set, w_trash_set, w_pc_top_set)
+    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort", "deleted_ms", "delete_batch", "pc_top"}
+
+
+def test_pc_top_is_a_record_with_no_parent_child_parent_that_is_a_record() -> None:
+    """What a knowledge base's root lists (the walk: no PARENT_CHILD relation from a record): an attachment, a record below a group or an App by PARENT_CHILD and a record
+    whose parent record is gone are on it; a record with a parent record, one with a second parent record and every App and group are not. It agrees with the kind-3 links,
+    which the fill of an older copy reads it from."""
+    kids = {k: ("records", k) for k in ("top", "kid", "second", "attached", "under_group", "under_app", "orphan")}
+    nodes = {APP: {}, G: {"connectorId": "a"}, REC: {"connectorId": "a"}, **{k: {"connectorId": "a"} for k in kids.values()}}
+    pc, att = {"relationshipType": "PARENT_CHILD"}, {"relationshipType": "ATTACHMENT"}
+    edges = [edge("nodeRelations", *REC, *kids["kid"], **pc), edge("nodeRelations", *REC, *kids["second"], **att), edge("nodeRelations", *kids["top"], *kids["second"], **pc),
+             edge("nodeRelations", *REC, *kids["attached"], **att), edge("nodeRelations", *G, *kids["under_group"], **pc), edge("nodeRelations", *APP, *kids["under_app"], **pc),
+             edge("nodeRelations", "records", "gone", *kids["orphan"], **pc)]
+    snap = world(nodes, edges)
+    d = derive(set(nodes), snap)
+    tops = {k[1] for k in nodes if d.records[snap.sk[k]]["pc_top"]}
+    assert tops == {"r", "top", "attached", "under_group", "under_app", "orphan"}
+    by_link = {k[1] for k in nodes if k[0] == "records" and not any(lk == LINK_PARENT_CHILD and c == snap.sk[k] and p in {snap.sk[x] for x in nodes if x[0] == "records"}
+                                                                   for p, lk, c in d.links)}
+    assert by_link == tops
 
 
 def test_the_trash_columns_are_the_delete_time_and_batch_as_the_walk_reads_them() -> None:

@@ -1336,7 +1336,15 @@
         },
         "toolNeedsApproval": "승인 필요",
         "toolNeedsApprovalHint": "이 도구는 데이터를 삭제할 수 있습니다. 프로젝트 채팅에서는 누군가 승인한 후에만 실행됩니다.",
-        "indexingStatusLabel": "인덱싱: {{status}}"
+        "indexingStatusLabel": "인덱싱: {{status}}",
+        "collectionsTitle": "컬렉션",
+        "collectionsSubtitle": "이 프로젝트의 채팅은 선택한 컬렉션과 업로드된 프로젝트 파일을 검색합니다.",
+        "noCollectionsAvailable": "추가할 컬렉션이 아직 없습니다.",
+        "failedToLoadCollections": "컬렉션을 불러오지 못했습니다",
+        "updateCollectionsFailed": "컬렉션을 업데이트하지 못했습니다",
+        "collectionsStatusCount": "{{count}}개 선택됨",
+        "collectionsStatusNone": "없음",
+        "untitledCollection": "제목 없는 컬렉션"
       },
       "moveDialog": {
         "title": "프로젝트로 이동",
