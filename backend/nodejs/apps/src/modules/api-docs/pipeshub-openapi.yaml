@@ -13038,7 +13038,10 @@ components:
             `QUERY_EMBEDDING_CACHE_ENTRIES`, 2048, queries per server process) gives the same
             chunks and scores on an unchanged index. When the embedding is computed again (the
             cache is off, the entry expired or was evicted, or another process answers), or
-            after a re-index, they can differ slightly.
+            after a re-index, they can differ slightly. They can also differ when more than
+            4,096 passages tie with the last one the search reads (rare: mostly keyword
+            matches on the same words), since which of those tied passages are read is then
+            the search index's choice.
         record:
           type: object
           properties:

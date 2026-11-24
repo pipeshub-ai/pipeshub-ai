@@ -46,8 +46,7 @@ MAX_HNSW_EF_CONSTRUCT = 4096
 # before the cut: a tie at the cut-off is not dropped at random.
 TIE_MARGIN = 2
 # A leg whose margin is all tied with the point at its cut is read again, twice as
-# deep each time, at most this many times and this deep.
-TIE_READ_ROUNDS = 3
+# deep each time, up to this many points.
 MAX_TIE_READ = 4096
 
 
