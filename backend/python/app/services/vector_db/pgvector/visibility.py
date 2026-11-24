@@ -8,8 +8,8 @@ change to this file and to the vetted function, nowhere else.
 
 SQL parameter numbers are fixed so the fragments can be dropped into any statement: ``$1`` org, ``$2`` collection, and ``$5`` apps,
 ``$6`` groups, ``$7`` roots, ``$8`` direct records, ``$9`` the tool's narrowing list (``$3`` is the space and ``$4`` the query vector
-of the dense statements, ``$10`` the number of rows and ``$11`` the rerank depth). Conditions on the promoted point columns (entity type, kind,
-level, block, ...) are ``extra``: the dense leg binds them from ``$12``; the lexical function cannot apply them, so the lexical leg asks it for
+of the dense statements, ``$10`` the number of rows, ``$11`` the rerank depth and ``$12`` the arms as membership keys, :meth:`Scope.keys`).
+Conditions on the promoted point columns (entity type, kind, level, block, ...) are ``extra``: the dense leg binds them from ``$13``; the lexical function cannot apply them, so the lexical leg asks it for
 more rows and keeps those that satisfy them (``sparse.leg``).
 """
 
@@ -21,17 +21,20 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from app.services.vector_db.models import FilterExpression
+from app.services.vector_db.pgvector import scope_filter as scope_sql
 from app.services.vector_db.pgvector.errors import PgVectorUnsupportedError
 from app.services.vector_db.pgvector.sql_filters import (
-    MEMBERSHIP,
     PROMOTED,
     compile_filter,
     values_of,
 )
 
 if TYPE_CHECKING:
+    from app.services.vector_db.filters import ScopeFilter
     from app.services.vector_db.models import FieldCondition
 
+# the membership arrays a search arm may name (the scope lists are not arms: a search that took one would drop it and widen)
+_ARM_KEYS = frozenset({"connectorIds", "recordGroupIds", "rootRecordGroupIds"})
 _VRID = "metadata.virtualRecordId"
 PER_ROW_PROBE = True      # False only to measure the hashed form (benchmarks)
 _GM = "FROM retrieval.group_members m WHERE m.org_id = $1 AND m.collection_id = $2"
@@ -47,6 +50,8 @@ class Scope:
     direct: list[str] | None = None
     must_vrids: list[str] | None = None
     extra: FilterExpression | None = None      # conditions on promoted point columns, for the dense leg
+    #: What the viewer may read by the stamps of the groups (see ``scope_filter``): ANDed with everything above, after the extra conditions.
+    scope_filter: ScopeFilter | None = None
 
     @property
     def whole_org(self) -> bool:
@@ -59,15 +64,30 @@ class Scope:
     def key(self) -> str:
         """A cache key: a digest of a canonical encoding, equal for equal scopes (lists and extra conditions) and, unlike ``hash()``, the
         same in every process and without collisions to speak of."""
-        canon = json.dumps([self.args(), repr(self.extra)], separators=(",", ":"))
+        flt = None if self.scope_filter is None else [*self.scope_filter.lists(), self.scope_filter.version, self.scope_filter.generation, self.scope_filter.defer]
+        canon = json.dumps([self.args(), repr(self.extra), flt], separators=(",", ":"))
         return hashlib.sha256(canon.encode()).hexdigest()
 
-    def extra_sql(self, first_param: int = 12) -> tuple[str, list]:
-        """``(" AND (...)", parameters from first_param)`` for the extra conditions, or ``("", [])``."""
-        if self.extra is None:
-            return "", []
-        c = compile_filter(self.extra, first_param=first_param)
-        return f" AND ({c.where})", c.params
+    @property
+    def filtered(self) -> bool:
+        """Whether conditions beyond the membership arms apply to the rows (the lexical function cannot apply them: see ``lexical``)."""
+        return self.extra is not None or self.scope_filter is not None
+
+    @property
+    def matches_nothing(self) -> bool:
+        """Whether the scope filter can trust nothing, so every statement renders ``AND false``: the answer is empty and nothing needs asking."""
+        return self.scope_filter is not None and self.scope_filter.matches_nothing
+
+    def extra_sql(self, first_param: int = 13) -> tuple[str, list]:
+        """``(" AND (...)", parameters from first_param)`` for the extra conditions and the scope filter, or ``("", [])``."""
+        sql, params = "", []
+        if self.extra is not None:
+            c = compile_filter(self.extra, first_param=first_param)
+            sql, params = f" AND ({c.where})", c.params
+        if self.scope_filter is not None:
+            more, bound = scope_sql.predicate(self.scope_filter, first_param + len(params))
+            sql, params = sql + more, [*params, *bound]
+        return sql, params
 
     def narrowed_to(self, org_connectors: frozenset[str] | None) -> Scope:
         """The arms are dropped when ``apps`` lists every connector of the org: the arms are alternatives, so the connector arm alone
@@ -96,8 +116,13 @@ class Scope:
                 "UNION SELECT unnest($8::text[])")
         return f" AND p.group_key IN ({arms}){self.tail()}"
 
+    def keys(self) -> list[str]:
+        """The arms as the membership keys a point row carries (``points.member_keys``, retrieval_0006: ``kind:member_id``)."""
+        return [f"{kind}:{m}" for kind, arm in ((1, self.apps), (2, self.groups), (3, self.roots)) for m in arm or ()]
+
     def probe(self) -> str:
-        """For the vector index: ``AND EXISTS (...)`` checked on each row the graph walk returns (a primary-key prefix probe)."""
+        """For the vector index: the arms tested on each row the graph walk returns, by the membership keys the row carries (an array
+        overlap, no read), or for a row whose keys are not known (NULL: written before they were kept) by a primary-key prefix probe."""
         if self.whole_org:
             return self.tail()
         arms = ("(m.kind = 1 AND m.member_id = ANY($5::text[])) OR (m.kind = 2 AND m.member_id = ANY($6::text[])) "
@@ -106,11 +131,12 @@ class Scope:
         # statement (57,640 rows, 7+ ms, for a user who reaches a big share of an org where each record is one chunk): the index tier asks
         # for a few hundred rows, so a primary-key probe per row it returns costs less, and its cost does not grow with the user's reach.
         barrier = " OFFSET 0" if PER_ROW_PROBE else ""
-        return (f" AND (p.group_key = ANY($8::text[]) OR EXISTS (SELECT 1 {_GM} AND m.group_key = p.group_key AND ({arms}){barrier}))"
-                f"{self.tail()}")
+        return (f" AND (p.group_key = ANY($8::text[]) OR CASE WHEN p.member_keys IS NULL"
+                f" THEN EXISTS (SELECT 1 {_GM} AND m.group_key = p.group_key AND ({arms}){barrier})"
+                f" ELSE p.member_keys OPERATOR(pg_catalog.&&) $12::text[] END){self.tail()}")
 
 
-def scope_of(expr: FilterExpression) -> Scope:
+def scope_of(expr: FilterExpression, scope_filter: ScopeFilter | None = None) -> Scope:
     """The scope of ``expr``: ``metadata.orgId`` (the caller pins the org), ``virtualRecordId`` in MUST (a narrowing list), in SHOULD the
     arms ``connectorIds``, ``recordGroupIds``, ``rootRecordGroupIds`` and ``virtualRecordId``, and other conditions on promoted point
     columns (``extra``). Anything else cannot be expressed by a search and raises (it would otherwise be dropped and widen the search)."""
@@ -133,11 +159,11 @@ def scope_of(expr: FilterExpression) -> Scope:
     arms: dict[str, list[str]] = {}
     for cond in expr.should:
         vals = values_of(cond)
-        if (cond.key != _VRID and cond.key not in MEMBERSHIP) or vals is None or cond.values_count_lte is not None:
+        if (cond.key != _VRID and cond.key not in _ARM_KEYS) or vals is None or cond.values_count_lte is not None:
             raise PgVectorUnsupportedError(f"a vector search cannot filter on '{cond.key}' in SHOULD")
         arms.setdefault(cond.key, []).extend(vals)
     extra = FilterExpression(must=extra_must, must_not=list(expr.must_not)) if extra_must or expr.must_not else None
     if not arms:
-        return Scope(must_vrids=must_vrids, extra=extra)
+        return Scope(must_vrids=must_vrids, extra=extra, scope_filter=scope_filter)
     return Scope(arms.get("connectorIds", []), arms.get("recordGroupIds", []), arms.get("rootRecordGroupIds", []),
-                 arms.get(_VRID, []), must_vrids, extra)
+                 arms.get(_VRID, []), must_vrids, extra, scope_filter)

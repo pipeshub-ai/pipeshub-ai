@@ -14,6 +14,7 @@ from app.config.constants.neo4j import (
 )
 from app.modules.named_entities.domain.kinds import VALUE_KINDS, EntityKind
 from app.modules.named_entities.keys import alias_partition, value_mention_key
+from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS, MERGED_INTO_FIELD
 
 _COLLECTION = CollectionNames.NAMED_ENTITIES.value
@@ -693,6 +694,8 @@ DELETE r
 RETURN 1 AS removed
 """
 
+_validator = NodeSchemaValidator()
+
 PERSIST_RETRY_BASE_MS = 60_000
 PERSIST_RETRY_MAX_MS = 6 * 60 * 60 * 1000
 
@@ -862,6 +865,9 @@ class NamedEntityGraph:
     async def create_if_absent(self, docs: list[dict[str, Any]]) -> None:
         if not docs:
             return
+        # The whole batch first, so a bad node writes none. Full: each is created when absent.
+        for doc in docs:
+            _validator.validate_node(_COLLECTION, doc)
         if self._dialect == "arango":
             payload = [arango_node(doc) for doc in docs]
             await self._write(RECLAIM_AQL, {"keys": [doc["_key"] for doc in payload]})
@@ -963,6 +969,10 @@ class NamedEntityGraph:
     ) -> None:
         if not aliases:
             return
+        # Partial: only these fields of an existing node change.
+        _validator.validate_node_update(_COLLECTION, {
+            "aliases": aliases[:_ALIAS_CAP], "normalizedAliases": normalized[:_ALIAS_CAP], "updatedAtTimestamp": now,
+        })
         binds = {
             "orgId": org_id,
             "kind": kind,
@@ -1149,6 +1159,9 @@ class NamedEntityGraph:
         """Make ``docs`` the record's value mentions. Rows belong to one record, so
         this never waits on another record's write."""
         keys = [doc["id"] for doc in docs]
+        # Before the stale rows are deleted. Full: each row is replaced whole.
+        for doc in docs:
+            _validator.validate_node(_VALUES, doc)
         if self._dialect == "arango":
             await self._write(DELETE_STALE_VALUES_AQL, {"recordId": record_id, "keys": keys}, transaction)
             if docs:
@@ -1180,6 +1193,11 @@ class NamedEntityGraph:
         self, org_id: str, record_id: str, error: str, now: int, base_backoff_ms: int, max_backoff_ms: int,
         attempts_so_far: int = 0,
     ) -> int:
+        # The marker this creates or rewrites; the statement computes attempts and dueAt.
+        self._validate_retry({
+            "orgId": org_id, "recordId": record_id, "attempts": attempts_so_far + 1, "dueAt": now,
+            "lastError": error[:200], "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        })
         binds = {
             "orgId": org_id, "recordId": record_id, "error": error[:200], "now": now,
             "baseBackoffMs": base_backoff_ms, "maxBackoffMs": max_backoff_ms, "attemptsSoFar": attempts_so_far,
@@ -1190,11 +1208,24 @@ class NamedEntityGraph:
         rows = await self._write(SCHEDULE_RETRY_CYPHER, binds) or []
         return int(rows[0].get("attempts") or 0) if rows else 0
 
+    @staticmethod
+    def _validate_retry(marker: dict[str, Any]) -> None:
+        # Full: the statements create the marker when absent and every field below is set on both paths.
+        _validator.validate_node(_RETRIES, marker)
+
     async def schedule_reextract(self, org_id: str, record_id: str, now: int) -> None:
+        self._validate_retry({
+            "orgId": org_id, "recordId": record_id, "attempts": 0, "dueAt": now, "reextract": True,
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        })
         binds = {"orgId": org_id, "recordId": record_id, "now": now}
         await self._write(SCHEDULE_REEXTRACT_AQL if self._dialect == "arango" else SCHEDULE_REEXTRACT_CYPHER, binds)
 
     async def schedule_reproject(self, org_id: str, record_id: str, now: int) -> None:
+        self._validate_retry({
+            "orgId": org_id, "recordId": record_id, "attempts": 0, "dueAt": now, "lastError": "reproject",
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        })
         binds = {"orgId": org_id, "recordId": record_id, "now": now}
         await self._write(SCHEDULE_REPROJECT_AQL if self._dialect == "arango" else SCHEDULE_REPROJECT_CYPHER, binds)
 
@@ -1258,6 +1289,7 @@ class NamedEntityGraph:
         return [row if isinstance(row, str) else str(row.get("id") or "") for row in rows]
 
     async def mark_orphans(self, org_id: str, now_ms: int, batch_size: int) -> int:
+        _validator.validate_node_update(_COLLECTION, {"orphanedAt": now_ms})
         binds = {"orgId": org_id, "now": now_ms, "batch": max(1, batch_size)}
         return await self._count(MARK_ORPHANS_AQL, MARK_ORPHANS_CYPHER, "marked", binds)
 

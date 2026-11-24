@@ -59,3 +59,20 @@ async def try_lock_apps(tx: Tx, org: str, app_ids: set[str], *, org_wide: bool =
         if not await tx.fetchval("/* pipeshub:kg.try_lock_app */ SELECT pg_try_advisory_xact_lock($1::int, $2::int)", LOCK_CLASS, keys[a]):
             return False
     return True
+
+
+# What the projection has written, per connector (and org-wide, ''), in this process: a counter a reader of kg compares to learn that rows of the connector were rewritten since it took
+# the value (the periodic verify restarts a scan then, because a key it had passed may have been rewritten). A unit counts while it holds the connector's lock, before it commits, so a
+# reader that takes the value under that lock (verify.begin) sees no unit between its count and its commit, and a page that read rows of a later unit finds the count already moved: the
+# count is made before the commit, never after it, so it needs no step after the commit. One process drains (the worker's), so the writes of another process are not seen.
+# shortcut: a second drainer would need the counter in the database.
+WRITTEN: dict[tuple[str, str], int] = {}
+
+
+def bump(org: str, apps: set[str], *, wide: bool = False) -> None:
+    for a in apps | ({""} if wide else set()):
+        WRITTEN[(org, a)] = WRITTEN.get((org, a), 0) + 1
+
+
+def written(org: str, app: str) -> int:
+    return WRITTEN.get((org, app), 0) + WRITTEN.get((org, ""), 0)

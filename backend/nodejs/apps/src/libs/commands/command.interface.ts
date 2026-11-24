@@ -2,11 +2,29 @@ import { InternalServerError } from "../errors/http.errors";
 import {
   injectRequestHeaders,
   HEADER_REQUEST_ID,
+  HEADER_MCP_RELAY,
 } from "../context/request-context";
+import { checkUpstreamUrl, isUpstreamRefusal } from '../http/upstream-call';
 
 export interface ICommand<T> {
   execute(): Promise<T>;
 }
+
+// Waits out a backoff, or less: it ends the moment the signal aborts.
+const backoffDelay = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const done = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener('abort', done, { once: true });
+  });
 
 export abstract class BaseCommand<T> implements ICommand<T> {
   protected uri: string;
@@ -24,15 +42,9 @@ export abstract class BaseCommand<T> implements ICommand<T> {
   }
 
   /**
-   * Build the full URL including query parameters, with SSRF validation.
-   *
-   * User-controlled path segments (e.g. `agentKey`, `conversationId`) are
-   * interpolated into the URI string by callers.  This method validates the
-   * result before it reaches `fetch()`:
-   *
-   *  - Must be a valid, absolute URL (`new URL()` will throw otherwise).
-   *  - Protocol must be `http:` or `https:`.
-   *  - Must not contain embedded credentials (blocks `http://x@evil.com/` tricks).
+   * The full URL including query parameters, refused unless it may be sent (`checkUpstreamUrl`: http(s),
+   * no credentials, a registered PipesHub service). Checked here too, so a refusal fails before the retry
+   * loop instead of being retried.
    */
   protected buildUrl(): string {
     let raw = this.uri;
@@ -48,19 +60,7 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       ).toString();
       raw = `${this.uri}?${queryString}`;
     }
-
-    const parsed = new URL(raw);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new InternalServerError(
-        `Blocked request with disallowed protocol: ${parsed.protocol}`,
-      );
-    }
-    if (parsed.username || parsed.password) {
-      throw new InternalServerError(
-        'Blocked request: URL must not contain embedded credentials',
-      );
-    }
-    return parsed.href;
+    return checkUpstreamUrl(raw);
   }
 
   protected sanitizeBody(body: any): any {
@@ -85,7 +85,10 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       'content-type',
       'authorization',
       HEADER_REQUEST_ID,
-      'client-name'
+      HEADER_MCP_RELAY,
+      'client-name',
+      // Opts a record read into the stored-version checks (a deleted or disabled connector is refused).
+      'x-record-content-open',
     ]);
     // Normalize to lowercase keys so case-variants (e.g. content-type from
     // Express + Content-Type from the caller) collapse to one entry. fetch
@@ -107,24 +110,30 @@ export abstract class BaseCommand<T> implements ICommand<T> {
 
   /**
    * Retry helper method using exponential backoff.
-   * @param fn - A function returning a promise to retry.
+   * @param fn - A function returning a promise to retry; it gets the 1-based attempt number.
    * @param retries - Number of retries (default is 3).
    * @param backoff - Initial backoff delay in milliseconds (default is 300ms).
+   * @param signal - The caller's signal: once it aborts there is no further attempt and no wait.
    */
   protected async fetchWithRetry<T>(
-    fn: () => Promise<T>,
+    fn: (attempt: number) => Promise<T>,
     retries: number = 3,
     backoff: number = 300,
     shouldRetry: (error: unknown) => boolean = () => true,
+    signal?: AbortSignal,
   ): Promise<T> {
     let attempt = 0;
     while (attempt < retries) {
       try {
-        const response = await fn();
+        const response = await fn(attempt + 1);
         return response;
       } catch (error) {
         // A caller that aborted a request is not waiting for another try.
         if ((error as { name?: string } | null)?.name === 'AbortError') {
+          throw error;
+        }
+        // A refused destination answers the same every time, and a refused redirect follows a request that was sent.
+        if (isUpstreamRefusal(error)) {
           throw error;
         }
         attempt++;
@@ -133,7 +142,9 @@ export abstract class BaseCommand<T> implements ICommand<T> {
         }
         // Calculate exponential backoff delay.
         const delay = backoff * Math.pow(2, attempt);
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await backoffDelay(delay, signal);
+        // The caller stopped waiting: throw its signal's reason, as fetch on that signal would.
+        signal?.throwIfAborted();
       }
     }
     // Should never reach here.

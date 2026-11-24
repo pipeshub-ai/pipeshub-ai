@@ -3,10 +3,12 @@ import { Container } from 'inversify';
 import { readStoreEpoch } from '../../../libs/db/boot';
 import { pgRuntime } from '../../../libs/db/uow';
 import { MongoService } from '../../../libs/services/mongo.service';
-import { usesInProcessCache } from '../../../libs/services/redis.service';
+import { defaultRedisMode } from '../../../libs/services/redis/connectionProviderFactory';
 import { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { TokenEventProducer } from '../services/token-event.producer';
 import { Logger }  from '../../../libs/services/logger.service';
+import { classifyError } from '../../../libs/utils/error-class';
+import { safeCause } from '../../../libs/errors/backend-error';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import axios from 'axios';
 import { AppConfig } from '../config/config';
@@ -19,8 +21,28 @@ import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { buildProxyHeaders } from '../controllers/connector.controllers';
 import { configuredLocalStorageReplicaProblem } from '../../storage/utils/replicas';
+import { precisionWaitWarningFromStore } from '../utils/precision-warning';
+
+/** What the health page calls the session cache: PostgreSQL, this process's memory or the Redis server. */
+function cacheDisplayName(redisMode: string): string {
+  if (redisMode === 'postgres') return 'PostgreSQL cache';
+  if (redisMode === 'inprocess') return 'In-process cache';
+  if (redisMode === 'cluster') return 'Redis (Cluster)';
+  if (redisMode === 'memorydb') return 'Redis (MemoryDB)';
+  return 'Redis';
+}
 
 const STORAGE_WARNING_TIMEOUT_MS = 2000;
+
+// GET /services: each Python /health answers from memory, so a slow answer
+// means that service's event loop is busy, not down. 3s marked busy services
+// unhealthy under load. Kept under the 10s docker-compose healthcheck timeout,
+// which calls this route; no Helm probe does (they call GET /).
+const SERVICE_HEALTH_TIMEOUT_MS = 8000;
+
+// The memory report reads every vector collection's configuration and Qdrant's
+// telemetry, which took about 12s on a loaded instance. Not a probe target.
+const VECTOR_MEMORY_TIMEOUT_MS = 20000;
 
 // The graph and vector stores are probed through the connector service. When
 // that service refuses the connection (it is still starting, or it is down) the
@@ -29,9 +51,52 @@ const STORAGE_WARNING_TIMEOUT_MS = 2000;
 const connectorRefused = (error: unknown): boolean =>
   (error as { code?: string } | null)?.code === 'ECONNREFUSED';
 
+/** What a dependency probe's line says about an answer, or about no answer. */
+const probeAnswer = (status: number): Record<string, unknown> =>
+  status === 200 ? { status } : { status, error_class: classifyError(status) };
+const probeFailure = (error: unknown): Record<string, unknown> =>
+  connectorRefused(error)
+    ? { reason: 'connector_refused' }
+    : {
+        reason:
+          (error as { code?: string } | null)?.code === 'ECONNABORTED'
+            ? 'timeout'
+            : 'request_failed',
+        error_class: classifyError(error),
+        error,
+      };
+
 const logger = Logger.getInstance({
   service: 'HealthStatus'
 });
+
+type CheckState = 'healthy' | 'unhealthy' | 'unknown';
+
+/**
+ * One line when a dependency's state changes: WARN when it turns unhealthy or unknown, INFO when it
+ * recovers, DEBUG while a probe finds what the last one found. The first probe of a healthy
+ * dependency is DEBUG too. Probes run every few seconds, so a line per probe would flood the log.
+ */
+const stateLogger = () => {
+  const last = new Map<string, CheckState>();
+  return (
+    check: string,
+    state: CheckState,
+    fields: Record<string, unknown> = {},
+  ): void => {
+    const before = last.get(check);
+    last.set(check, state);
+    const unchanged =
+      state === before || (before === undefined && state === 'healthy');
+    const level = unchanged ? 'debug' : state === 'healthy' ? 'info' : 'warn';
+    logger[level]('health.check.changed', {
+      check,
+      state,
+      previous: before ?? 'none',
+      ...fields,
+    });
+  };
+};
 
 const TYPES = {
   MongoService: 'MongoService',
@@ -50,9 +115,9 @@ export interface HealthStatus {
     messageBrokerType: string;
     graphDbType: string;
     vectorDbType: string;
-    // Not written to the KV deployment config -- REDIS_MODE is a
-    // process-env setting (R21/R22), so it is read directly rather than
-    // via getDeploymentConfig()'s KV-store fresh/fallback path.
+    // The cache mode this process runs (defaultRedisMode): REDIS_MODE, else
+    // `postgres` when KV_STORE_TYPE and MESSAGE_BROKER are both postgres.
+    // Read from the process env, not the KV deployment config.
     redisMode: string;
   };
   build: BuildInfo;
@@ -80,6 +145,7 @@ export function createHealthRouter(
   const configService = ConfigService.getInstance();
   // Resolved here, at startup: from source it shells out to git once.
   const build = getBuildInfo();
+  const noteCheck = stateLogger();
 
   async function getDeploymentConfig() {
     try {
@@ -93,7 +159,10 @@ export function createHealthRouter(
         };
       }
     } catch (error) {
-      logger.error('Failed to refresh deployment config', error);
+      // Answered from the boot config: degraded, not down.
+      logger.warn('Failed to refresh deployment config', {
+        error: safeCause(error),
+      });
     }
     return {
       dataStoreType: undefined as string | undefined,
@@ -129,12 +198,9 @@ export function createHealthRouter(
       };
       const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
-      const redisMode = process.env.REDIS_MODE || 'standalone';
-      const redisDisplayName =
-        usesInProcessCache() ? 'In-process cache'
-        : redisMode === 'cluster' ? 'Redis (Cluster)'
-        : redisMode === 'memorydb' ? 'Redis (MemoryDB)'
-        : 'Redis';
+      // One value for the row name and the published mode the page draws its logo from.
+      const redisMode = defaultRedisMode().toLowerCase();
+      const redisDisplayName = cacheDisplayName(redisMode);
 
       const serviceNames: Record<string, string> = {
         redis: redisDisplayName,
@@ -207,7 +273,7 @@ export function createHealthRouter(
       if (!deployment.dataStoreType) {
         // Python backend hasn't written dataStoreType to KV store yet
         services.graphDb = 'pending';
-        logger.info('dataStoreType not yet available in deployment config — Python backend may not have started');
+        logger.debug('dataStoreType not yet available in deployment config — Python backend may not have started');
       } else if (
         deployment.dataStoreType === 'neo4j' ||
         deployment.dataStoreType === 'arangodb' ||
@@ -227,32 +293,15 @@ export function createHealthRouter(
             `${appConfig.connectorBackend}/health/graph-db`,
             { timeout: 5000, validateStatus: () => true },
           );
-          services.graphDb = graphDbResp.status === 200 ? 'healthy' : 'unhealthy';
-          if (graphDbResp.status !== 200) {
-            overallHealthy = false;
-            Logger.getInstance({ service: 'HealthStatus' }).error(
-              'graph-db health check returned non-200',
-              { status: graphDbResp.status },
-            );
-          }
+          const state: CheckState = graphDbResp.status === 200 ? 'healthy' : 'unhealthy';
+          services.graphDb = state;
+          if (state !== 'healthy') overallHealthy = false;
+          noteCheck('graph_db', state, probeAnswer(graphDbResp.status));
         } catch (error: unknown) {
           overallHealthy = false;
-          if (connectorRefused(error)) {
-            services.graphDb = 'unknown';
-            logger.warn(
-              'graph-db not checked: the connector service is not accepting connections',
-            );
-          } else {
-            services.graphDb = 'unhealthy';
-            const axiosErr = error as { code?: string; message?: string };
-            const timedOut = axiosErr?.code === 'ECONNABORTED';
-            Logger.getInstance({ service: 'HealthStatus' }).error(
-              timedOut
-                ? 'graph-db health check timed out'
-                : 'graph-db health check failed',
-              axiosErr?.message ?? error,
-            );
-          }
+          const state: CheckState = connectorRefused(error) ? 'unknown' : 'unhealthy';
+          services.graphDb = state;
+          noteCheck('graph_db', state, probeFailure(error));
         }
       }
 
@@ -260,39 +309,62 @@ export function createHealthRouter(
       // configured provider (Qdrant, OpenSearch, or Redis) via VECTOR_DB_TYPE.
       if (!deployment.vectorDbType) {
         services.vectorDb = 'pending';
-        logger.info('vectorDbType not yet available in deployment config — Python backend may not have started');
+        logger.debug('vectorDbType not yet available in deployment config — Python backend may not have started');
       } else {
         try {
           const vectorDbResp = await axios.get(
             `${appConfig.connectorBackend}/health/vector-db`,
             { timeout: 5000, validateStatus: () => true },
           );
-          services.vectorDb = vectorDbResp.status === 200 ? 'healthy' : 'unhealthy';
-          if (vectorDbResp.status !== 200) overallHealthy = false;
+          const state: CheckState = vectorDbResp.status === 200 ? 'healthy' : 'unhealthy';
+          services.vectorDb = state;
+          if (state !== 'healthy') overallHealthy = false;
+          noteCheck('vector_db', state, probeAnswer(vectorDbResp.status));
         } catch (error) {
-          services.vectorDb = connectorRefused(error) ? 'unknown' : 'unhealthy';
+          const state: CheckState = connectorRefused(error) ? 'unknown' : 'unhealthy';
+          services.vectorDb = state;
           overallHealthy = false;
+          noteCheck('vector_db', state, probeFailure(error));
         }
       }
 
-      const warnings: string[] = [];
-      // Warning only: a stalled store must not hold the health answer.
-      let timer: NodeJS.Timeout | undefined;
-      try {
-        const replicaProblem = await Promise.race([
-          configuredLocalStorageReplicaProblem(keyValueStoreService),
-          new Promise<null>((resolve) => {
-            timer = setTimeout(() => resolve(null), STORAGE_WARNING_TIMEOUT_MS);
-          }),
-        ]);
-        if (replicaProblem) warnings.push(replicaProblem);
-      } catch (error) {
-        logger.warn(
-          'Could not read the storage configuration for the health warnings',
-          error,
-        );
-      }
-      clearTimeout(timer);
+      // Warnings only: a stalled store must not hold the health answer.
+      const warningWithin = async (
+        read: Promise<string | null>,
+        what: string,
+      ): Promise<string | null> => {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          return await Promise.race([
+            read,
+            new Promise<null>((resolve) => {
+              timer = setTimeout(() => {
+                resolve(null);
+              }, STORAGE_WARNING_TIMEOUT_MS);
+            }),
+          ]);
+        } catch (error) {
+          logger.warn('Could not read a health warning source', {
+            source: what,
+            error,
+          });
+          return null;
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+      const warnings = (
+        await Promise.all([
+          warningWithin(
+            configuredLocalStorageReplicaProblem(keyValueStoreService),
+            'the storage configuration',
+          ),
+          warningWithin(
+            precisionWaitWarningFromStore(keyValueStoreService),
+            'the weight-precision state',
+          ),
+        ])
+      ).filter((warning): warning is string => warning !== null);
 
       const health: HealthStatus = {
         status: overallHealthy ? 'healthy' : 'unhealthy',
@@ -304,16 +376,16 @@ export function createHealthRouter(
           messageBrokerType: deployment.messageBrokerType,
           graphDbType: deployment.dataStoreType || 'pending',
           vectorDbType: deployment.vectorDbType || 'pending',
-          redisMode: process.env.REDIS_MODE || 'standalone',
+          redisMode,
         },
         build,
         ...(warnings.length > 0 ? { warnings } : {}),
       };
 
       res.status(200).json(health);
-    } catch (exception: any) {
-      logger.error("health check status failed", exception.message);
-      next()
+    } catch (exception: unknown) {
+      // The error middleware logs it once and answers 500.
+      next(exception);
     }
   });
 
@@ -332,17 +404,18 @@ export function createHealthRouter(
       const parsingBackend = process.env.PARSING_SERVICE_URL || 'http://localhost:8092';
       const extractionBackend = process.env.EXTRACTION_SERVICE_URL || 'http://localhost:8093';
 
+      const probe = { timeout: SERVICE_HEALTH_TIMEOUT_MS };
       const baseSettled = Promise.allSettled([
-        axios.get(aiHealthUrl, { timeout: 3000 }),
-        axios.get(connectorHealthUrl, { timeout: 3000 }),
-        axios.get(indexingHealthUrl, { timeout: 3000 }),
-        axios.get(doclingHealthUrl, { timeout: 3000 }),
-        axios.get(embeddingHealthUrl, { timeout: 3000 }),
+        axios.get(aiHealthUrl, probe),
+        axios.get(connectorHealthUrl, probe),
+        axios.get(indexingHealthUrl, probe),
+        axios.get(doclingHealthUrl, probe),
+        axios.get(embeddingHealthUrl, probe),
       ]);
       const parsingSettled = parsingServicesEnabled
         ? Promise.allSettled([
-            axios.get(`${parsingBackend}/health`, { timeout: 3000 }),
-            axios.get(`${extractionBackend}/health`, { timeout: 3000 }),
+            axios.get(`${parsingBackend}/health`, probe),
+            axios.get(`${extractionBackend}/health`, probe),
           ])
         : null;
 
@@ -380,8 +453,8 @@ export function createHealthRouter(
         timestamp: new Date().toISOString(),
         services,
       });
-    } catch (error: any) {
-      logger.error('Combined services health check failed', error?.message ?? error);
+    } catch (error: unknown) {
+      logger.error('Combined services health check failed', { error });
       const services: Record<string, string> = {
         query: 'unknown',
         connector: 'unknown',
@@ -416,7 +489,7 @@ export function createHealthRouter(
           `${appConfig.connectorBackend}/health/vector-db/memory`,
           {
             headers: buildProxyHeaders(req),
-            timeout: 5000,
+            timeout: VECTOR_MEMORY_TIMEOUT_MS,
             validateStatus: () => true,
           },
         );
@@ -429,10 +502,7 @@ export function createHealthRouter(
           status: resp.status,
         });
       } catch (error: unknown) {
-        logger.warn(
-          'vector-db memory report failed',
-          error instanceof Error ? error.message : String(error),
-        );
+        logger.warn('vector-db memory report failed', { error });
       }
       res.status(502).json({ status: 'unknown' });
     },

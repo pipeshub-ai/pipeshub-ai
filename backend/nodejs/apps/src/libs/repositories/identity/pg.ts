@@ -4,7 +4,7 @@
  * is bound, the only questions are which one is the install's organisation and how many there are; both are vetted functions.
  */
 import { ValidationError } from '../../errors/validation.error';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { assertOrg, inPreOrgUnit, inUnit, oidOf } from '../pg-util';
 import { recordBeforeOrg } from '../activity/pg';
 import type { CredentialDto } from '../credential/types';

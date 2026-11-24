@@ -37,7 +37,8 @@ async function runFetchAppDirectChildren(appId: string): Promise<void> {
       sortBy: 'name',
       sortOrder: 'asc',
     });
-    if (!stillSignedIn()) return;
+    // A source still being prepared lists no children yet, not none: cache nothing, so a later open asks again.
+    if (!stillSignedIn() || response.preparing) return;
 
     cacheAppChildren(appId, response.items);
 

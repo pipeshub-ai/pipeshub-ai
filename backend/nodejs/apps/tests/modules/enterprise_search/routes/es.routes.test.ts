@@ -293,7 +293,8 @@ describe('Enterprise Search Routes', () => {
       expect(route.methods.get, 'not readable').to.equal(undefined)
       expect(route.methods.post, 'not a POST').to.equal(undefined)
       // authenticate + scope check + param validation + handler: dropping one must fail here.
-      expect(route.stack.length).to.equal(archive.stack.length)
+      // Archive also clears the Compare branches' artifacts first.
+      expect(route.stack.length).to.equal(archive.stack.length - 1)
       expect(route.stack.length).to.equal(4)
     })
   }

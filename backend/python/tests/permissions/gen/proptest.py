@@ -12,6 +12,7 @@ and placeholder nodes, org grants of every type, and unattached uploads.
 
 from __future__ import annotations
 
+import zlib
 from typing import TYPE_CHECKING
 
 from ..model import ORG_ID, Node, World, WorldBuilder
@@ -24,6 +25,11 @@ RGL = "RECORD_GROUP_LEVEL"
 INDEXING = ["COMPLETED", "COMPLETED", "COMPLETED", "QUEUED", "FAILED"]
 
 
+def with_parent_and_grant(name: str, rule: str | None) -> str | None:
+    """A third of the RESTRICTED nodes, picked by name, are PARENT_AND_GRANT: no draw of ``rng``, so the worlds of a seed keep their shape."""
+    return "PARENT_AND_GRANT" if rule == "RESTRICTED" and zlib.crc32(name.encode()) % 3 == 0 else rule
+
+
 def _shared_vrid(rng: random.Random, earlier: list[str]) -> str | None:
     """One record in five carries the content id of an earlier one, so a citation has copies to choose between."""
     return f"v-{rng.choice(earlier)}" if earlier and rng.random() < 0.2 else None
@@ -31,7 +37,7 @@ def _shared_vrid(rng: random.Random, earlier: list[str]) -> str | None:
 
 def _group(b: WorldBuilder, name: str, app: str, rule: str | None, rng: random.Random, rgl: float, deleted: float) -> str:
     return b.node(Node(
-        name, "group", app, rule,
+        name, "group", app, with_parent_and_grant(name, rule),
         model=RGL if rng.random() < rgl else None, deleted=rng.random() < deleted))
 
 
@@ -82,7 +88,7 @@ def random_world(rng: random.Random) -> World:
                 n = _group(b, f"{a}-g{j}", a, rng.choice(RULES), rng, 0.15, 0.06)
             else:
                 n = b.node(Node(
-                    f"{a}-r{j}", "record", a, rng.choice(RULES),
+                    f"{a}-r{j}", "record", a, with_parent_and_grant(f"{a}-r{j}", rng.choice(RULES)),
                     origin=rng.choice(["CONNECTOR", "CONNECTOR", "UPLOAD"]),
                     deleted=rng.random() < 0.06, placeholder=rng.random() < 0.04,
                     vrid=_shared_vrid(rng, records), indexing=rng.choice(INDEXING)))

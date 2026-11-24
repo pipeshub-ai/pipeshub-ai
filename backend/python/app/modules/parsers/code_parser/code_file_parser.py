@@ -23,7 +23,7 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
-from app.modules.code_graph.version import PARSER_VERSION
+from app.modules.code_graph.version import EMBED_UNITS_VERSION, PARSER_VERSION
 from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser.engine import parse_code
 from app.modules.parsers.code_parser.lang_config import (
@@ -32,8 +32,9 @@ from app.modules.parsers.code_parser.lang_config import (
     config_for_language,
     detect_language,
 )
-from app.modules.parsers.code_parser.models import Relation
+from app.modules.parsers.code_parser.models import DECLARATION, Relation
 from app.services.parsing.interface import ParseResult, ParserProvider
+from app.services.resource_governor.kinds import ParseKind
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
@@ -91,6 +92,14 @@ def qualified_name_for(kind: str, name: str | None, parent_chain: tuple[str, ...
         span = f"L{start_line}" if end_line in (None, start_line) else f"L{start_line}-{end_line}"
         return f"{kind}:{span}"
     return f"{kind}:anonymous"
+
+
+# Kinds a forward declaration (DECLARATION on a type, C/C++ only) can have.
+_DECLARABLE_TYPES = frozenset({"class", "struct", "enum"})
+
+
+def _forward_declaration(sym: ParsedSymbol) -> bool:
+    return sym.kind in _DECLARABLE_TYPES and DECLARATION in sym.modifiers
 
 
 def _content_hash(text: str) -> str:
@@ -208,7 +217,7 @@ class CodeFileParser:
         if parse_pool.should_offload(len(content)):
             return await parse_pool.submit(
                 parse_code_to_blocks, content, record_name, file_path, language,
-                label=file_path or record_name, size=len(content),
+                label=file_path or record_name, size=len(content), kind=ParseKind.CODE,
             )
         return await asyncio.to_thread(
             self.parse_to_blocks, content, record_name, file_path, language
@@ -253,15 +262,19 @@ class CodeFileParser:
         rather than allowed to collide.
         """
         used: dict[str, int] = {}
-        out: list[str] = []
-        for sym in symbols:
+        out: list[str] = [""] * len(symbols)
+        # A C++ forward declaration (`class Conn;` above `class Conn {...}`) is numbered after the definitions, so the
+        # definition keeps the plain name its out-of-line methods (`Conn::open`) are named under.
+        order = sorted(range(len(symbols)), key=lambda i: _forward_declaration(symbols[i]))
+        for i in order:
+            sym = symbols[i]
             qname = qualified_name_for(
                 sym.kind, sym.name, sym.parent_chain,
                 start_line=sym.start_line, end_line=sym.end_line, content=sym.text,
             )
             seen = used.get(qname, 0) + 1
             used[qname] = seen
-            out.append(qname if seen == 1 else f"{qname}#{seen}")
+            out[i] = qname if seen == 1 else f"{qname}#{seen}"
         return out
 
     def _to_container(self, parsed: ParsedFile, file_path: str, record_name: str) -> BlocksContainer:
@@ -353,8 +366,8 @@ class CodeFileParser:
     def _build_group(self, sym: ParsedSymbol, qualified_name: str, index: int,
                      language: str, parent_group: int | None = None) -> BlockGroup:
         # A container keeps its whole body. Its children are subsets of it, which
-        # costs nothing in vectors: vectorstore only embeds table/view groups, so
-        # a code group's text never reaches Qdrant.
+        # costs nothing in vectors: a code group embeds only its header unit
+        # (code_units.class_header_unit), never this text.
         return BlockGroup(
             index=index,
             name=sym.name,
@@ -368,7 +381,9 @@ class CodeFileParser:
                 "start_line": sym.start_line,
                 "end_line": sym.end_line,
             },
-            content_hash=_content_hash(sym.text),
+            # Folding in what a group embeds re-indexes classes on the next reconcile after a bump,
+            # while their members' hashes, and so their vectors, stay as they are.
+            content_hash=_content_hash(EMBED_UNITS_VERSION + sym.text),
             children=BlockGroupChildren(),
             code_metadata=self._code_metadata(sym, qualified_name, language),
         )
@@ -404,6 +419,9 @@ class CodeFileParser:
             signature=_extract_signature(sym.text) if sym.name else None,
             docstring=_extract_docstring(sym.text, language),
             decorators=list(sym.decorators) or None,
+            is_accessor=sym.is_accessor or None,
+            modifiers=list(sym.modifiers) or None,
+            type_param_count=sym.type_param_count or None,
             qualified_name=qualified_name,
             start_line=sym.start_line,
             end_line=sym.end_line,
@@ -414,10 +432,13 @@ class CodeFileParser:
         """Bucket pending facts by owning block; return the file-level ones."""
         buckets: dict[tuple[bool, int] | None, list[dict]] = {}
         seen: dict[tuple[bool, int] | None, set[tuple]] = {}
+        # Functions passed as values get a budget of their own, so they never crowd out a block's calls.
+        kept: dict[tuple[tuple[bool, int] | None, bool], int] = {}
         for fact in parsed.pending:
             key = placement.get(fact.from_symbol) if fact.from_symbol is not None else None
             facts = buckets.setdefault(key, [])
-            if len(facts) >= MAX_FACTS_PER_BLOCK:
+            budget = (key, fact.relation == Relation.INDIRECT_CALL)
+            if kept.get(budget, 0) >= MAX_FACTS_PER_BLOCK:
                 continue
             fact_dict = fact.to_dict()
             # The same call on another line resolves to the same edge.
@@ -425,6 +446,7 @@ class CodeFileParser:
             if identity in seen.setdefault(key, set()):
                 continue
             seen[key].add(identity)
+            kept[budget] = kept.get(budget, 0) + 1
             facts.append(fact_dict)
 
         for key, facts in buckets.items():
@@ -471,11 +493,13 @@ class CodeFileParser:
                 # The parse recovered past a syntax error here; symbols after it may be
                 # missing or partial. Kept so tools can say so instead of looking complete (P-9).
                 **({"parse_error_line": parsed.parse_error_line} if parsed.parse_error_line else {}),
+                **({"macros_dropped": parsed.macros_dropped} if parsed.macros_dropped else {}),
             },
             code_metadata=CodeMetadata(
                 language=parsed.language,
                 kind="file_summary",
                 type_table=parsed.type_table or None,
+                macro_table=parsed.macro_table or None,
                 pending_edges=facts or None,
             ),
         )

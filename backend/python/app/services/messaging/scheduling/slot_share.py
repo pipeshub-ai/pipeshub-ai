@@ -16,6 +16,14 @@ never less than one. The share is split the same way the scheduler's key is,
 level by level -- between orgs first, then between one org's connectors --
 weighted by the scheduler's own ``WeightProvider`` when one is configured.
 
+A connector counts as waiting when it has a record buffered in the scheduler
+and also when it has a dispatched record that has not yet been admitted at
+the gate. Such a record can sit at the consumer's suspect lock before it
+reaches the gate (a record in retry backoff stays buffered until it is due,
+and lease waits come after admission), so it holds no earlier place in the gate's arrival order than a record
+dispatched after it; without counting it, a connector with a deep backlog
+would get no cap and fill the gate ahead of it.
+
 The cap only applies while someone else is waiting. A connector indexing on
 its own still gets every slot, so an idle pool never stays idle for the sake
 of fairness. It does not take slots back either: a connector that already
@@ -106,6 +114,10 @@ class SlotShare:
         self._lock = threading.Lock()
         self._by_token: dict[Hashable, _EntityPool] = {}
         self._counts: defaultdict[_EntityPool, int] = defaultdict(int)
+        # Tokens dispatched and not yet admitted at the gate, and their
+        # per-connector counts.
+        self._unadmitted: set[Hashable] = set()
+        self._unadmitted_counts: defaultdict[_EntityPool, int] = defaultdict(int)
 
     # -- bookkeeping -----------------------------------------------------
 
@@ -116,17 +128,44 @@ class SlotShare:
                 return
             self._by_token[token] = entity_pool
             self._counts[entity_pool] += 1
+            self._unadmitted.add(token)
+            self._unadmitted_counts[entity_pool] += 1
+
+    def admitted(self, token: Hashable) -> None:
+        """The record holds a gate slot: it no longer counts as waiting.
+        Idempotent; ignores tokens it never saw."""
+        with self._lock:
+            self._clear_unadmitted(token)
+
+    def _clear_unadmitted(self, token: Hashable) -> None:
+        # Caller holds the lock.
+        if token not in self._unadmitted:
+            return
+        self._unadmitted.discard(token)
+        entity_pool = self._by_token[token]
+        remaining = self._unadmitted_counts[entity_pool] - 1
+        if remaining > 0:
+            self._unadmitted_counts[entity_pool] = remaining
+        else:
+            del self._unadmitted_counts[entity_pool]
 
     def finished(self, token: Hashable) -> None:
         with self._lock:
-            entity_pool = self._by_token.pop(token, None)
-            if entity_pool is None:
+            if token not in self._by_token:
                 return
+            # A task can end without ever being admitted (cancelled, given
+            # up on, failed before the gate).
+            self._clear_unadmitted(token)
+            entity_pool = self._by_token.pop(token)
             remaining = self._counts[entity_pool] - 1
             if remaining > 0:
                 self._counts[entity_pool] = remaining
             else:
                 del self._counts[entity_pool]
+
+    def unadmitted(self, entity: FairnessKey, pool: str) -> int:
+        with self._lock:
+            return self._unadmitted_counts.get((tuple(entity), pool), 0)
 
     def in_flight(self, entity: FairnessKey, pool: str) -> int:
         with self._lock:
@@ -153,9 +192,13 @@ class SlotShare:
         (``DRRScheduler.backlogged_keys``); ``pool_of`` maps a leaf key to the
         slot pool its records draw from; ``limit_of`` gives a pool's current
         slot limit on this node. A pool with a single waiting connector gets
-        no caps at all.
+        no caps at all. A connector with a dispatched record not yet admitted
+        counts as waiting in that record's pool, buffered or not.
         """
         waiting: defaultdict[str, set[FairnessKey]] = defaultdict(set)
+        with self._lock:
+            for entity, pool in self._unadmitted_counts:
+                waiting[pool].add(entity)
         for key in backlogged:
             waiting[pool_of(key)].add(tuple(key[: self._entity_depth]))
 

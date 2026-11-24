@@ -75,6 +75,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
+from app.modules.code_graph.synced_commit import record_synced_commit
 from app.modules.parsers.code_parser.file_role import FileRole, classify_file_role
 from app.modules.parsers.code_parser.gitattributes import (
     LinguistExclusions,
@@ -214,6 +215,8 @@ class ReposSync:
                 return True
         elif last_sha == current_sha:
             self.logger.debug("Code repo unchanged for %s (HEAD %s); skipping", repo.full_name, current_sha[:8])
+            # A repo synced before the stamp existed gets it here, without a resync.
+            await self._record_synced_commit(repo, current_sha)
             return True
 
         ok = await self._incremental_sync(repo, last_sha, current_sha)
@@ -318,6 +321,12 @@ class ReposSync:
                 GitHubLiterals.SYNCED_BRANCH.value: branch,
                 GitHubLiterals.FULL_NAME.value: repo.full_name,
             },
+        )
+        await self._record_synced_commit(repo, commit_sha)
+
+    async def _record_synced_commit(self, repo: GhObject, commit_sha: str) -> None:
+        await record_synced_commit(
+            self.c.data_entities_processor, self.c.connector_id, f"{repo.id}-code-repository", commit_sha,
         )
 
     # ------------------------------------------------------------------

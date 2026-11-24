@@ -38,6 +38,7 @@ Center ``/rest/api/2`` where the server exposes them):
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -65,12 +66,20 @@ HOLDER_ANYONE = "anyone"
 HOLDER_USER_FIELD = "userCustomField"
 HOLDER_GROUP_FIELD = "groupCustomField"
 _FIELD_HOLDERS = (HOLDER_USER_FIELD, HOLDER_GROUP_FIELD)
+# Browse holders that name people on each issue, so the grant goes on the issue, not the project.
+BROWSE_ISSUE_HOLDER_TYPES: tuple[str, ...] = (HOLDER_REPORTER, HOLDER_ASSIGNEE, *_FIELD_HOLDERS)
 # Holders that name the same people on every issue of a project. Reporter, assignee and
 # the field holders name people on each issue, so two issues in one level can differ.
 _SAME_ON_EVERY_ISSUE = frozenset({
     HOLDER_USER, HOLDER_GROUP, HOLDER_PROJECT_ROLE, HOLDER_PROJECT_LEAD,
     HOLDER_APPLICATION_ROLE, HOLDER_ANYONE,
 })
+# Someone Browse names may be in the level through members not known: the issue is written without them and read again.
+LEVEL_MEMBERS_UNREAD = "levelMembers"
+_ANY_READER = ("*", "*")  # stands for every reader, when a level holds ``anyone``
+def level_group_external_id(project_id: str, level_id: str) -> str:
+    """The external id of the record group that holds a level's holders (one per project and level)."""
+    return f"level:{project_id}:{level_id}"
 
 
 class SchemeKnowledge(str, Enum):
@@ -99,21 +108,54 @@ class IssueSecurityContext:
     read_status: int | None = None
     # Jira said the token lacks a scope. Any other 401 is a token Jira no longer accepts.
     scope_refused: bool = False
+    # Browse Projects holders that name people on each issue (reporter, assignee, user or group
+    # field). None when the project's permission scheme could not be read.
+    browse_holders: list[dict[str, Any]] | None = field(default_factory=list)
+    # Level id -> its name, from the scheme read, to name the level's record group.
+    level_names: dict[str, str] = field(default_factory=dict)
+    # Level id -> the people its same-on-every-issue holders name (``level_readers``), None for a level whose members
+    # were not read. None when not tracked: then a person is matched to the level by a user holder only.
+    level_readers: dict[str, frozenset[tuple[str, str]] | None] | None = None
+
+    def browse_fingerprint(self) -> str:
+        """"?" when the holders are unknown, "" when there are none, else a digest of them."""
+        if self.browse_holders is None:
+            return "?"
+        return hashlib.sha256(",".join(sorted(
+            f"{h.get('type')}:{h.get('parameter') or h.get('value') or (h['field'].get('id') if isinstance(h.get('field'), dict) else '')}"
+            for h in self.browse_holders
+        )).encode()).hexdigest()[:16] if self.browse_holders else ""
 
     def level_fingerprints(
-        self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
+        self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None, *, split: bool = False,
     ) -> dict[str, str]:
         """Level id -> a digest of its holders, so a change names the levels it touched.
 
         An application-role holder is granted as that role's groups, so the groups are part
-        of its digest: a group leaving the role re-reads the level's issues.
+        of its digest: a group leaving the role re-reads the level's issues. ``split`` gives
+        ``"<same on every issue>.<per issue>"``, so a change can tell a level whose record
+        group alone changed (see ``level_group_grants``) from one whose issues did.
         """
-        return {
-            level_id: hashlib.sha256(",".join(sorted(
-                _holder_fingerprint(holder, app_roles_mapping) for holder in holders if isinstance(holder, dict)
+        def digest(holders: list[dict[str, Any]]) -> str:
+            return hashlib.sha256(",".join(sorted(
+                _holder_fingerprint(holder, app_roles_mapping) for holder in holders
             )).encode()).hexdigest()[:16]
-            for level_id, holders in self.members_by_level.items()
-        }
+
+        out: dict[str, str] = {}
+        for level_id, listed in self.members_by_level.items():
+            holders = [h for h in listed if isinstance(h, dict)]
+            if not split:
+                out[level_id] = digest(holders)
+                continue
+            static = [h for h in holders if h.get("type") in _SAME_ON_EVERY_ISSUE]
+            dynamic = digest([h for h in holders if h not in static])
+            if self.level_readers is not None and self.browse_holders:
+                # An OPEN issue grants a member Browse names on it (``_reads_alone``): one leaving the level re-reads it.
+                readers = self.level_readers.get(level_id)
+                dynamic += ":" + ("?" if readers is None else hashlib.sha256(
+                    ",".join(sorted(f"{k}={v}" for k, v in readers)).encode()).hexdigest()[:16])
+            out[level_id] = f"{digest(static)}.{dynamic}"
+        return out
 
     def fingerprint(self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None) -> str:
         if self.knowledge == SchemeKnowledge.NONE:
@@ -199,8 +241,14 @@ async def collect_paged_values(
         if not isinstance(page, list):
             return status, None
         values.extend(item for item in page if isinstance(item, dict))
-        if body.get("isLast", True) or not page:
+        if not page or body.get("isLast") is True:
             return 200, values
+        if "isLast" not in body:
+            # A server that pages with ``total`` only: complete when the total is reached, else keep reading
+            # (an empty page ends it), never taken as complete after the first page.
+            total = body.get("total")
+            if isinstance(total, int) and not isinstance(total, bool) and len(values) >= total:
+                return 200, values
         step = body.get("maxResults") or len(page) or 50
         try:
             start += int(step)
@@ -225,6 +273,9 @@ UNREADABLE_SCOPE = "scope"
 UNREADABLE_AUTH = "auth"
 UNREADABLE_PERMISSION = "permission"
 UNREADABLE_ROLES = "roles"
+UNREADABLE_NOT_LISTED = "not_listed"
+UNREADABLE_MEMBERS_UNREAD = "members_unread"
+UNREADABLE_UNCLEAR_404 = "unclear_404"
 UNREADABLE_TRANSIENT = "transient"
 UNREADABLE_OTHER = "other"
 
@@ -236,13 +287,27 @@ UNREADABLE_REASONS = {
     UNREADABLE_AUTH: "Jira refused the connector's authorisation (HTTP 401). Reconnect the connector",
     UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
     UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
+    UNREADABLE_NOT_LISTED: (
+        "Jira does not list who holds each issue security level (HTTP 404, 405 or 501), "
+        "so an issue that has a level cannot be shown to anyone"
+    ),
+    UNREADABLE_MEMBERS_UNREAD: (
+        "Jira does not list who holds each issue security level (Jira Data Center documents no route for it, "
+        "and the one read answered with an error)"
+    ),
     UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
+    UNREADABLE_UNCLEAR_404: (
+        "Jira answered the scheme read with a not-found that does not say the project has no scheme "
+        "(HTTP 404; a proxy or a missing route can answer so)"
+    ),
     UNREADABLE_OTHER: "the read failed",
 }
 
 # Reasons after which issues keep the grants they were stored with, until a sync reads the
 # levels; after any other reason an issue that carries a level is closed to everyone.
-UNREADABLE_KEEPS_STORED_ACCESS = frozenset({UNREADABLE_ROLES, UNREADABLE_TRANSIENT})
+UNREADABLE_KEEPS_STORED_ACCESS = frozenset({
+    UNREADABLE_ROLES, UNREADABLE_TRANSIENT, UNREADABLE_UNCLEAR_404, UNREADABLE_MEMBERS_UNREAD,
+})
 
 
 def unreadable_reason(context: IssueSecurityContext) -> str | None:
@@ -252,15 +317,32 @@ def unreadable_reason(context: IssueSecurityContext) -> str | None:
         return None
     if context.knowledge == SchemeKnowledge.PRESENT and context.members_readable:
         return None
+    if (
+        context.knowledge == SchemeKnowledge.PRESENT and context.defer_checkpoint
+        and context.read_status in (401, 403, 404, 405, 501)
+    ):
+        # Only a read whose failures are all kept (Data Center's undocumented members route) gets here.
+        return UNREADABLE_MEMBERS_UNREAD
     if context.read_status == 401:
         return UNREADABLE_SCOPE if context.scope_refused else UNREADABLE_AUTH
     if context.read_status == 403 or context.scheme_forbidden:
         return UNREADABLE_PERMISSION
     if context.knowledge == SchemeKnowledge.PRESENT and context.read_status is None and context.members_by_level:
         return UNREADABLE_ROLES
+    if context.defer_checkpoint and context.knowledge == SchemeKnowledge.UNKNOWN and context.read_status == 404:
+        return UNREADABLE_UNCLEAR_404
     if context.defer_checkpoint:
         return UNREADABLE_TRANSIENT
+    if context.knowledge == SchemeKnowledge.PRESENT and context.read_status in (404, 405, 501):
+        return UNREADABLE_NOT_LISTED
     return UNREADABLE_OTHER
+
+
+def _says_no_scheme(message: object) -> bool:
+    """A not-found message that names the issue security scheme or level: a proxy's "Not Found" or a
+    missing project's message does not establish that the project has no scheme."""
+    text = message.lower() if isinstance(message, str) else ""
+    return "security" in text and ("scheme" in text or "level" in text)
 
 
 def classify_scheme_response(
@@ -268,8 +350,13 @@ def classify_scheme_response(
     body: object,
     *,
     project_style: str | None = None,
+    project_is_visible: bool = False,
 ) -> tuple[SchemeKnowledge, str | None]:
     """A 200 body with an ``id`` is a scheme. A bare 404 or a 403 is unknown.
+
+    ``project_is_visible``: the caller lists this project, so a 404 whose JSON body carries
+    error messages is the server answering "no scheme" (Data Center documents 404 only for a
+    project that is missing or hidden). A 404 with no such body may be a route the server lacks.
 
     Jira answers "this project has no issue security scheme" with 404 and
     ``Security level for project {id} does not exist``. A 403, or a 404 that
@@ -286,6 +373,8 @@ def classify_scheme_response(
         and isinstance(body, dict)
     ):
         messages = body.get("errorMessages") or []
+        if project_is_visible and any(_says_no_scheme(message) for message in messages):
+            return SchemeKnowledge.NONE, None
         if any(
             isinstance(message, str)
             and "security level for project" in message.lower()
@@ -344,11 +433,14 @@ def index_members(values: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]
     return by_level
 
 
-def custom_field_ids_from_members(members_by_level: dict[str, list[dict[str, Any]]]) -> list[str]:
+def custom_field_ids_from_members(
+    members_by_level: dict[str, list[dict[str, Any]]], kinds: tuple[str, ...] = _FIELD_HOLDERS,
+) -> list[str]:
+    """The custom fields the holders of ``kinds`` (user and group fields by default) read."""
     found: set[str] = set()
     for holders in members_by_level.values():
         for holder in holders:
-            if holder.get("type") not in _FIELD_HOLDERS:
+            if holder.get("type") not in kinds:
                 continue
             raw = holder.get("parameter") or holder.get("value")
             field_obj = holder.get("field")
@@ -402,18 +494,36 @@ def _email_of(user_by_id: dict[str, Any], identifier: str | None) -> str | None:
     return None
 
 
-def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tuple[str | None, bool]:
-    """Return ``(email, skip_because_inactive)``."""
+def _holder_user_email(holder: dict[str, Any], user_by_id: dict[str, Any]) -> tuple[str | None, bool, str | None]:
+    """Return ``(email, skip_because_inactive, account)``: grant ``email``, or, when it is None, grant by ``account``.
+
+    A person the payload names by account resolves only through the synced directory (``user_by_id``), never by the
+    email the payload carries: an account outside it reads nothing in Jira (no product access, deactivated), and its
+    email may be another, synced account's too. A synced account the directory holds no email for is granted by its
+    account, so the grant reaches that linked user; an email would reach whoever else holds it, or a new external
+    person. An email with no account names someone only when exactly one synced account holds it. Cloud's
+    ``accountId`` "uniquely identifies the user across all Atlassian products" and its ``emailAddress`` "may be
+    returned as null" (User, https://developer.atlassian.com/cloud/jira/platform/swagger-v3.v3.json); Data Center's
+    ``key`` "will never change" (https://developer.atlassian.com/server/jira/platform/renamable-users-in-jira-6-0/)."""
     user = holder.get("user") if isinstance(holder.get("user"), dict) else {}
     if user.get("active") is False:
-        return None, True
+        return None, True, None
     account = user.get("accountId") or user.get("key") or user.get("name") or holder.get("parameter")
-    email = _email_of(user_by_id, str(account) if account else None)
-    if not email:
-        raw = user.get("emailAddress")
-        if isinstance(raw, str) and raw.strip():
-            email = raw
-    return email, False
+    raw = user.get("emailAddress")
+    raw = raw if isinstance(raw, str) and raw.strip() else None
+    if account:
+        synced = user_by_id.get(str(account))
+        if synced is not None:
+            email = _email_of(user_by_id, str(account))
+            # Its own source id: a Data Center username alias names the account by key there.
+            return email, False, None if email else str(getattr(synced, "source_user_id", None) or account)
+        # Outside the directory, like a deactivated account: no access, so the level's other holders are still written.
+        # Named without an email, it may be an account a user read cut short left out, so it stays unread and is retried.
+        return None, raw is not None, None
+    if raw is None:
+        return None, False, None
+    holders = {id(u) for u in user_by_id.values() if (getattr(u, "email", None) or "").lower() == raw.strip().lower()}
+    return (raw if len(holders) == 1 else None), False, None
 
 
 def _permissions_for_holder(
@@ -426,6 +536,8 @@ def _permissions_for_holder(
     reporter_email: str | None,
     assignee_email: str | None,
     seen: set[str],
+    reporter_account: str | None = None,
+    assignee_account: str | None = None,
 ) -> tuple[list[Permission], bool, str | None]:
     """Return ``(grants, field_unreadable, skipped_type)``.
 
@@ -437,14 +549,16 @@ def _permissions_for_holder(
     value = holder.get("value")
     grants: list[Permission] = []
 
-    def add_user(email: str | None) -> None:
-        if not email:
+    def add_user(email: str | None, account: str | None = None) -> None:
+        if not email and not account:
             return
-        key = f"user:{email.lower()}"
+        key = f"user:{email.lower()}" if email else f"account:{account}"
         if key in seen:
             return
         seen.add(key)
-        grants.append(Permission(entity_type=EntityType.USER, email=email, type=PermissionType.READ))
+        # By email, or by the account's source id when the directory holds no email for it (resolved by that id).
+        grants.append(Permission(entity_type=EntityType.USER, email=email or None,
+                                 external_id=None if email else account, type=PermissionType.READ))
 
     def add_group(external_id: str | None) -> None:
         if not external_id:
@@ -471,11 +585,12 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_USER:
-        email, inactive = _holder_user_email(holder, user_by_id)
+        email, inactive, account = _holder_user_email(holder, user_by_id)
         if inactive:
             return grants, False, None
-        add_user(email)
-        return grants, False, None
+        add_user(email, account)
+        # A person who resolves to no e-mail is unread, not outside the level.
+        return grants, False, None if email or account else HOLDER_USER
 
     if holder_type == HOLDER_PROJECT_ROLE:
         role = holder.get("projectRole") if isinstance(holder.get("projectRole"), dict) else {}
@@ -487,11 +602,13 @@ def _permissions_for_holder(
         return grants, False, None
 
     if holder_type == HOLDER_REPORTER:
-        add_user(reporter_email)
+        if not _deactivated(fields.get("reporter")):
+            add_user(reporter_email, reporter_account)
         return grants, False, None
 
     if holder_type == HOLDER_ASSIGNEE:
-        add_user(assignee_email)
+        if not _deactivated(fields.get("assignee")):
+            add_user(assignee_email, assignee_account)
         return grants, False, None
 
     if holder_type == HOLDER_PROJECT_LEAD:
@@ -531,14 +648,16 @@ def _permissions_for_holder(
             return grants, True, holder_type
         present_key = next(key for key in keys if key in fields)
         value_at_field = fields.get(present_key)
+        unresolved = False
         for entry in _field_entries(value_at_field):
             if holder_type == HOLDER_GROUP_FIELD:
                 add_group(entry.get("groupId") or entry.get("name") or entry.get("value"))
             else:
-                email, inactive = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
+                email, inactive, account = _holder_user_email({"user": entry, "parameter": entry.get("accountId")}, user_by_id)
                 if not inactive:
-                    add_user(email)
-        return grants, False, None
+                    add_user(email, account)
+                    unresolved = unresolved or not (email or account)
+        return grants, False, holder_type if unresolved else None
 
     return grants, False, str(holder_type) if holder_type else "unknown"
 
@@ -553,6 +672,42 @@ def _field_entries(value: object) -> list[dict[str, Any]]:
     return []
 
 
+def _deactivated(user: object) -> bool:
+    """A deactivated account cannot sign in to Jira, so it reads nothing there."""
+    return isinstance(user, dict) and user.get("active") is False
+
+
+def browse_issue_holders(permission_grants: object) -> list[dict[str, Any]]:
+    """The per-issue Browse holders of a permission scheme's grants; a malformed grant or holder is skipped."""
+    found: list[dict[str, Any]] = []
+    for grant in permission_grants if isinstance(permission_grants, list) else []:
+        if not isinstance(grant, dict) or grant.get("permission") != "BROWSE_PROJECTS":
+            continue
+        holder = grant.get("holder")
+        if isinstance(holder, dict) and holder.get("type") in BROWSE_ISSUE_HOLDER_TYPES:
+            found.append(holder)
+    return found
+
+
+def browse_holder_grants(
+    holders: list[dict[str, Any]], *, project_key: str, fields: dict[str, Any], user_by_id: dict[str, Any],
+    reporter_email: str | None, assignee_email: str | None,
+    reporter_account: str | None = None, assignee_account: str | None = None,
+) -> list[Permission]:
+    """The people a project's Browse holders name on this issue. A holder whose field is not
+    in the payload grants nobody; it does not stop the others."""
+    grants: list[Permission] = []
+    seen: set[str] = set()
+    for holder in holders:
+        portion, _unreadable, _skipped = _permissions_for_holder(
+            holder, project_key=project_key, fields=fields, user_by_id=user_by_id, app_roles_mapping=None,
+            reporter_email=reporter_email, assignee_email=assignee_email, seen=seen,
+            reporter_account=reporter_account, assignee_account=assignee_account,
+        )
+        grants.extend(portion)
+    return grants
+
+
 def level_grants(
     holders: list[dict[str, Any]],
     *,
@@ -562,6 +717,8 @@ def level_grants(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
     reporter_email: str | None,
     assignee_email: str | None,
+    reporter_account: str | None = None,
+    assignee_account: str | None = None,
 ) -> tuple[list[Permission], bool, list[str]]:
     grants: list[Permission] = []
     skipped: list[str] = []
@@ -578,6 +735,8 @@ def level_grants(
             reporter_email=reporter_email,
             assignee_email=assignee_email,
             seen=seen,
+            reporter_account=reporter_account,
+            assignee_account=assignee_account,
         )
         if unreadable:
             return [], True, skipped
@@ -585,6 +744,48 @@ def level_grants(
         if skipped_type and skipped_type not in skipped:
             skipped.append(skipped_type)
     return grants, False, skipped
+
+
+def user_grant_key(email: str | None, account: str | None) -> tuple[str, str]:
+    """The key of the grant a person gets: by email, or by account when the directory holds no email for them."""
+    return _grant_key(Permission(entity_type=EntityType.USER, email=email or None,
+                                 external_id=None if email else account, type=PermissionType.READ))
+
+
+def level_readers(
+    grants: list[Permission], group_members: dict[str, Any], role_members: dict[str, Any],
+) -> frozenset[tuple[str, str]] | None:
+    """The people a level's record group grants (``level_group_grants``), with each group and role expanded to the
+    members the sync read. None when a group or role among them was not read: no one is matched through it."""
+    keys: set[tuple[str, str]] = set()
+    for grant in grants:
+        if grant.entity_type == EntityType.USER:
+            keys.add(_grant_key(grant))
+        elif grant.entity_type == EntityType.ORG:
+            keys.add(_ANY_READER)
+        else:
+            members = (group_members if grant.entity_type == EntityType.GROUP else role_members).get(str(grant.external_id))
+            if not isinstance(members, list):
+                return None
+            keys.update(user_grant_key(getattr(u, "email", None), getattr(u, "source_user_id", None)) for u in members)
+    return frozenset(keys)
+
+
+def level_group_grants(
+    holders: list[dict[str, Any]],
+    *,
+    project_key: str,
+    user_by_id: dict[str, Any],
+    app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+) -> tuple[list[Permission], list[str]]:
+    """The grants a level's record group holds once: its holders that name the same people on
+    every issue. Returns ``(grants, skipped holder types)``."""
+    grants, _, skipped = level_grants(
+        [h for h in holders if isinstance(h, dict) and h.get("type") in _SAME_ON_EVERY_ISSUE],
+        project_key=project_key, fields={}, user_by_id=user_by_id, app_roles_mapping=app_roles_mapping,
+        reporter_email=None, assignee_email=None,
+    )
+    return grants, skipped
 
 
 def apply_issue_access_settled(
@@ -598,6 +799,8 @@ def apply_issue_access_settled(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
+    project_id: str | None = None,
+    unchanged_stored_rule: AccessRule | None = None,
 ) -> tuple[list[Permission], list[str], bool]:
     """Set the issue's access rule and return the grants to write, the holder types
     skipped, and whether the result is settled. Settled means the level (or its
@@ -608,8 +811,28 @@ def apply_issue_access_settled(
     issue, whose level Jira copies onto it; a story under its epic only when everyone who
     reads the story reads the epic; any other issue under its project. A parent in another
     project is handled by the processor, which keeps the child on its own project.
-    Attachments are handled separately and stay empty.
+    Attachments are handled separately and stay empty. ``unchanged_stored_rule`` is the
+    stored record's access rule when the issue has not changed since it was stored.
+
+    With ``project_id``, a leveled issue other than a sub-task takes its access from its
+    level's record group (``level_group_external_id``), which holds the holders that name
+    the same people on every issue once (``level_group_grants``): the issue is STRICT,
+    inherits that group and nothing it is filed under, and carries as its own grants only
+    the holders it names itself (reporter, assignee, a field); OPEN when each of those is
+    someone who reads it without the project (``_reads_alone``). It stays filed where it
+    was; placement grants nothing. Every other issue names no group, so an earlier one is
+    removed. Without ``project_id`` no group is managed: a leveled issue holds a copy of
+    its level's holders, and a sub-task inherits its parent.
+
+    A leveled sub-task always holds that copy and inherits its parent, so it is read only by
+    those who read its parent too. Atlassian documents only that "Sub-tasks also inherit the
+    security level of their parent issue" (Issue security schemes,
+    https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-security-schemes/),
+    not that a sub-task's own holders read it without its parent: fail-closed until checked live.
     """
+    # None: no group is managed (or a stored one is kept); "": this issue has none. A personal
+    # account has no levels, so no group.
+    record.access_group_external_id = None if project_id is None or not context.enforce else ""
     if not context.enforce:
         # A personal account has no issue security. A nested issue inherits its
         # parent issue. One with no parent inherits the project, which inherits the app.
@@ -620,20 +843,57 @@ def apply_issue_access_settled(
     record.inherit_permissions = True
     record.inherit_permissions_from_group = False
     users = user_by_account_id or {}
+    reporter_account = assignee_account = None
+    if isinstance(fields, dict):
+        # The reporter and assignee the payload names resolve like any other person in it, not by the payload's email.
+        if "reporter" in fields:
+            reporter_email, _, reporter_account = _holder_user_email({"user": fields["reporter"]}, users) \
+                if isinstance(fields["reporter"], dict) else (None, False, None)
+        if "assignee" in fields:
+            assignee_email, _, assignee_account = _holder_user_email({"user": fields["assignee"]}, users) \
+                if isinstance(fields["assignee"], dict) else (None, False, None)
     present, level_id = read_security_level(fields)
     security = fields.get("security") if isinstance(fields, dict) else None
 
     def close() -> tuple[list[Permission], list[str], bool]:
         # RESTRICTED with no grant hides the issue. A transient failure is
         # retried, so the grants already stored stay until that retry.
+        if context.defer_checkpoint:
+            record.access_group_external_id = None  # and so does its level's group, with its stored rule
         record.access_rule = AccessRule.RESTRICTED
         record.rewrite_permissions = not context.defer_checkpoint
         return [], [], False
 
     def project_open() -> tuple[list[Permission], list[str], bool]:
-        record.access_rule = AccessRule.STRICT
+        # An issue filed under another one, or a stub, only follows it. A top-level issue is
+        # also read by the people the project's Browse holders name on it (its reporter, say),
+        # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
+        # A sub-task is read only with its parent: Atlassian does not document that a sub-task's own Browse holders (its
+        # reporter, say) read it without its parent, so it gets no grant of its own until a live check shows they do.
+        top_level = not (record.parent_external_record_id or getattr(record, "is_placeholder", False))
+        # A sub-task still under its parent gets no grant here: Jira Cloud files one whose Browse holders name people on it off its
+        # parent (JSWCLOUD-25762), so only unread or empty holders leave it here; Data Center keeps it under its parent.
+        if top_level and context.browse_holders is None and not present:
+            # Holders unread and the level not returned: keep the stored grants and stay OPEN so a stored
+            # reporter grant still opens the issue. An explicit null level is not this: the issue may have
+            # been RESTRICTED, and its old level members must lose it (OPEN would accept their grant alone).
+            record.access_rule = AccessRule.OPEN
+            record.rewrite_permissions = False
+            return [], [], True
+        if top_level and context.browse_holders is None and unchanged_stored_rule in (AccessRule.OPEN, AccessRule.STRICT):
+            # Holders unread, no level now and none when it was stored, and the issue unchanged since: its stored
+            # grants are the holders' grants for the same people, so they and its stored rule stay.
+            record.access_rule = unchanged_stored_rule
+            record.rewrite_permissions = False
+            return [], [], True
+        grants = browse_holder_grants(
+            context.browse_holders or [], project_key=project_key, fields=fields or {},
+            user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
+            reporter_account=reporter_account, assignee_account=assignee_account,
+        ) if top_level else []
+        record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
         record.rewrite_permissions = True
-        return [], [], True
+        return grants, [], True
 
     if present and security is None:
         # A null level is a positive "no level", whatever the scheme state: replace any stale grants.
@@ -659,6 +919,9 @@ def apply_issue_access_settled(
         return close()
 
     holders = context.members_by_level.get(level_id, [])
+    grouped = project_id is not None and level_id in context.members_by_level and not is_subtask
+    if grouped:
+        holders = [h for h in holders if isinstance(h, dict) and h.get("type") not in _SAME_ON_EVERY_ISSUE]
     grants, unreadable, skipped = level_grants(
         holders,
         project_key=project_key,
@@ -667,12 +930,67 @@ def apply_issue_access_settled(
         app_roles_mapping=app_roles_mapping,
         reporter_email=reporter_email,
         assignee_email=assignee_email,
+        reporter_account=reporter_account,
+        assignee_account=assignee_account,
     )
     if unreadable:
         return close()
-    record.access_rule = AccessRule.RESTRICTED
     record.rewrite_permissions = True
+    if grouped:
+        record.access_group_external_id = level_group_external_id(project_id, level_id)
+        alone, members_unread = _reads_alone(
+            context, level_id, grants, project_key=project_key, fields=fields or {}, users=users,
+            app_roles_mapping=app_roles_mapping, reporter_email=reporter_email, assignee_email=assignee_email,
+            reporter_account=reporter_account, assignee_account=assignee_account)
+        if members_unread:
+            skipped = [*skipped, LEVEL_MEMBERS_UNREAD]
+        # A grant of an OPEN record admits on its own (a seed), so the issue is OPEN only when every grant it holds is to someone
+        # Jira shows it to without the project: Browse named on this issue, and named by its level.
+        alone_keys = {_grant_key(g) for g in alone}
+        if alone and all(_grant_key(g) in alone_keys for g in grants):
+            record.access_rule = AccessRule.OPEN
+            return alone, skipped, True
+        # Someone who reads alone beside a grant that needs the project (an assignee the level names whom Browse does not) cannot
+        # both be held: a rule is the record's, not the grant's. STRICT keeps the second exact and asks the first for the project
+        # too, an under-share (permission corpus DELTA-18); OPEN would admit the second without the project.
+        record.access_rule = AccessRule.STRICT
+        return grants, skipped, True
+    record.access_rule = AccessRule.RESTRICTED
     return grants, skipped, True
+
+
+def _grant_key(grant: Permission) -> tuple[str, str]:
+    return (str(grant.entity_type), (grant.email or "").lower() if grant.email else str(grant.external_id))
+
+
+def _reads_alone(
+    context: IssueSecurityContext, level_id: str, dynamic: list[Permission], *, project_key: str, fields: dict[str, Any],
+    users: dict[str, Any], app_roles_mapping: dict[str, list[dict[str, Any]]] | None, reporter_email: str | None,
+    assignee_email: str | None, reporter_account: str | None = None, assignee_account: str | None = None,
+) -> tuple[list[Permission], bool]:
+    """Who reads a leveled issue without browsing its project: a person the project's Browse holders name on this issue (its
+    reporter, say) whom the level names too, on this issue, as a user holder, or through a group, role or project lead
+    (``context.level_readers``). Jira shows it to them: Browse names them, and "these allow the visibility of individual
+    issues to be adjusted, within the bounds of the project's permissions"
+    (https://support.atlassian.com/jira/kb/jira-permissions-general-overview/). Also returns whether someone Browse names
+    may be in the level through members that were not read."""
+    if not context.browse_holders:
+        return [], False
+    # The same people the level's grants name, by account where the directory holds no email for them.
+    browse = browse_holder_grants(context.browse_holders, project_key=project_key, fields=fields, user_by_id=users,
+                                  reporter_email=reporter_email, assignee_email=assignee_email,
+                                  reporter_account=reporter_account, assignee_account=assignee_account)
+    static, _ = level_group_grants(context.members_by_level.get(level_id, []), project_key=project_key,
+                                   user_by_id=users, app_roles_mapping=app_roles_mapping)
+    named = {_grant_key(g) for g in dynamic} | {_grant_key(g) for g in static if g.entity_type == EntityType.USER}
+    tracked = context.level_readers is not None
+    readers = context.level_readers.get(level_id) if tracked else None
+    if readers is not None:
+        named |= readers
+    alone = [g for g in browse if _grant_key(g) in named or (readers is not None and _ANY_READER in readers)]
+    # Not read: someone Browse names may be a member, unless the level has no holder beyond its users.
+    unread = tracked and readers is None and len(alone) < len(browse) and any(g.entity_type != EntityType.USER for g in static)
+    return alone, unread
 
 
 def apply_issue_access(
@@ -686,13 +1004,16 @@ def apply_issue_access(
     app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
     reporter_email: str | None = None,
     assignee_email: str | None = None,
+    project_id: str | None = None,
+    unchanged_stored_rule: AccessRule | None = None,
 ) -> tuple[list[Permission], list[str]]:
     """``apply_issue_access_settled`` without the settled flag: the grants to write
     and the holder types skipped."""
     grants, skipped, _settled = apply_issue_access_settled(
         record, fields, is_subtask=is_subtask, project_key=project_key, context=context,
         user_by_account_id=user_by_account_id, app_roles_mapping=app_roles_mapping,
-        reporter_email=reporter_email, assignee_email=assignee_email,
+        reporter_email=reporter_email, assignee_email=assignee_email, project_id=project_id,
+        unchanged_stored_rule=unchanged_stored_rule,
     )
     return grants, skipped
 
@@ -704,3 +1025,142 @@ def apply_attachment_access(record: Record) -> list[Permission]:
     record.access_rule = AccessRule.STRICT
     record.rewrite_permissions = True
     return []
+
+
+# A sync that cannot read the application roles applies the last list read for a bounded time. The list needs
+# "Administer Jira" and a 403 is "Returned if the user is not an administrator"
+# (https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-application-roles/), which lasts until the
+# account is made one. 24 h, as long as other connectors trust a confirmation they cannot repeat.
+ROLE_LIST_SYNC_KEY = "application_roles"
+ROLE_LIST_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+
+async def roles_for_levels(
+    sync_point: Any,  # noqa: ANN401
+    mapping: dict[str, list[dict[str, Any]]],
+    *,
+    read: bool,
+    now_ms: int,
+    max_age_ms: int = ROLE_LIST_MAX_AGE_MS,
+) -> tuple[dict[str, list[dict[str, Any]]], bool]:
+    """The role list a sync applies to security levels, and whether to tell the owner that the last one expired.
+
+    Read in full: it is kept with its time and applied. Otherwise the last list kept is applied while it is younger
+    than ``max_age_ms``, so a level's other holders follow Jira and its role holders stay the groups the roles had.
+    Past that, or with none kept, role holders are left out: fewer readers, never more. So a group removed from a
+    role while the list cannot be read keeps its access for at most ``max_age_ms``. The expiry is told once."""
+    if read:
+        await sync_point.update_sync_point(ROLE_LIST_SYNC_KEY, {"roles": json.dumps(mapping, sort_keys=True), "read_at": now_ms})
+        return mapping, False
+    kept = await sync_point.read_sync_point(ROLE_LIST_SYNC_KEY) or {}
+    read_at = kept.get("read_at")
+    if isinstance(read_at, int) and now_ms - read_at <= max_age_ms:
+        try:
+            roles = json.loads(kept.get("roles") or "{}")
+        except (TypeError, ValueError):
+            roles = None
+        if isinstance(roles, dict):
+            return roles, False
+    if read_at is None or kept.get("expired_told"):
+        return {}, False
+    await sync_point.update_sync_point(ROLE_LIST_SYNC_KEY, {**kept, "expired_told": True})
+    return {}, True
+
+
+def plan_level_reread(
+    security: IssueSecurityContext,
+    stored: dict[str, str] | None,
+    *,
+    is_new_project: bool,
+    app_roles_mapping: dict[str, list[dict[str, Any]]] | None,
+    split: bool = False,
+) -> tuple[str | None, list[str] | None, dict[str, str]]:
+    """Decide the second pass over already-stored issues, and the level map saved after it.
+
+    No issue's ``updated`` moves when a level gains or loses a member, or when a level or
+    the scheme is removed, so the checkpoint keeps a digest per level. ``"*"`` in it marks
+    issues written while their level could not be applied: ``retry`` after a transient
+    read (the stored grants were kept), ``held`` after one on a project never tightened (its
+    leveled issues were closed), ``unreadable`` after a lasting one (they were closed). Returns ``(pass, level_ids, to_save)``; the pass is ``"levels"`` (only
+    ``level_ids``), ``"leveled"`` (every issue with a level), ``"project"`` (every issue,
+    since one may have lost its level without an update) or None. A project synced before
+    levels were tracked has no map, which reads as ``"leveled"``: that is the one-time re-read
+    that closes issues stored open before levels were applied.
+    """
+    stored_real = {k: v for k, v in (stored or {}).items() if k != "*"}
+    marker = (stored or {}).get("*")
+    if security.defer_checkpoint:
+        # Nothing was settled this sync: keep the digests and re-read once it is. A project never
+        # tightened has no grants of its own to keep, so its leveled issues are closed meanwhile.
+        # ``held`` marks that pass done, so a read that keeps failing does not repeat it.
+        held = marker == "held"
+        never_tightened = (
+            not stored_real and not is_new_project and not held and security.knowledge != SchemeKnowledge.NONE
+        )
+        return ("leveled" if never_tightened else None), None, {
+            **stored_real, "*": "held" if never_tightened or held else "retry"}
+    if security.knowledge == SchemeKnowledge.NONE:
+        # A removed scheme clears the issues' levels without changing their `updated`.
+        return ("project" if stored and not is_new_project else None), None, {}
+    if not security.members_readable or security.knowledge != SchemeKnowledge.PRESENT:
+        # Close every leveled issue once; a lasting failure does not repeat the walk.
+        closed = is_new_project or marker == "unreadable"
+        return (None if closed else "leveled"), None, {**stored_real, "*": "unreadable"}
+    current = security.level_fingerprints(app_roles_mapping, split=split)
+    if is_new_project:
+        return None, None, current
+    if stored is None:
+        # Synced before levels were tracked: every leveled issue, holder-less levels included.
+        return "leveled", None, current
+    if stored_real.keys() - current.keys():
+        # A level lost its last holder or was deleted. An issue moved out of it to no level
+        # matches no level predicate.
+        return "project", None, current
+    if marker is not None:
+        return "leveled", None, current
+    changed = sorted(lid for lid in current if stored_real.get(lid) != current[lid])
+    return ("levels" if changed else None), changed or None, current
+
+
+def closed_level_groups(stored: dict[str, str] | None, current: dict[str, str]) -> list[str]:
+    """Levels whose record group was written by an earlier sync and that the scheme no longer
+    lists: their groups are written with no holder, so their issues close at once."""
+    return sorted(k for k, v in (stored or {}).items() if k != "*" and "." in v and k not in current)
+
+
+def pre_walk_marker(stored: dict[str, str] | None) -> dict[str, str]:
+    """The level map saved before the walk when a read is deferred: the digests, and a marker that
+    asks for a re-read. A pass already done on a project never tightened (``held``) stays marked, so
+    a read that keeps failing does not repeat it."""
+    held = (stored or {}).get("*") == "held"
+    return {**{k: v for k, v in (stored or {}).items() if k != "*"}, "*": "held" if held else "retry"}
+
+
+def levels_after_walk(levels_to_save: dict[str, str], build_failures: int) -> dict[str, str]:
+    """The level map to save after the walk. An issue that failed to build in a pass that closed the
+    leveled issues of a project never tightened may have stayed open, so the pass is not marked done."""
+    if build_failures and levels_to_save.get("*") == "held":
+        return {**levels_to_save, "*": "retry"}
+    return levels_to_save
+
+
+def unreadable_security_notices(
+    unreadable: dict[str, str], never_tightened: frozenset[str] | set[str] = frozenset(),
+) -> list[tuple[str, str, list[str], str]]:
+    """``(reason, effect, project keys, message)`` per reason and effect, for the projects (key ->
+    ``UNREADABLE_*`` reason) whose issue security levels could not be applied this sync.
+    ``never_tightened``: projects with no grants of their own stored yet, whose leveled issues are
+    hidden even after a read that may pass."""
+    by_reason: dict[tuple[str, str], list[str]] = {}
+    for project_key, reason in unreadable.items():
+        keeps = reason in UNREADABLE_KEEPS_STORED_ACCESS and project_key not in never_tightened
+        effect = "keep the access they had" if keeps else "are hidden from everyone"
+        by_reason.setdefault((reason, effect), []).append(project_key)
+    notices = []
+    for (reason, effect), project_keys in by_reason.items():
+        keys = sorted(project_keys)
+        notices.append((reason, effect, keys, (
+            f"{', '.join(keys)}: {UNREADABLE_REASONS[reason]}. Issues with a "
+            f"security level there {effect} until their levels can be read."
+        )))
+    return notices

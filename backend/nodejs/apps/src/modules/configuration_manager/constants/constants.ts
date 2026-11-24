@@ -154,6 +154,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: false,
   },
   {
+    key: 'ENABLE_CHAT_COMPARE',
+    label: 'Enable Compare Models in Chat (Beta)',
+    description:
+      'Let users send one question to two configured models at once and choose the better answer. Disable to hide Compare models in chat and reject its requests.',
+    defaultEnabled: false,
+  },
+  {
     key: 'ENABLE_SKILLS',
     label: 'Enable Skills (Beta)',
     description:
@@ -213,6 +220,14 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Send User & Organization Context to Agents',
     description:
       "Include the current user's name, email, and organization name in the default assistant and Universal Agent system prompts. When disabled, those agents rely solely on tools, actions, and knowledge sources without knowing who is asking. Agent Builder agents have a separate per-agent toggle.",
+    defaultEnabled: true,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_RECORD_PREVIEW_CACHE',
+    label: 'Reuse Record Previews in the Browser',
+    description:
+      "Keep a previewed record's content in the browser tab's memory (never on disk) so jumping between citations of one record, or reopening it, does not stream the file again. Access is checked on every open and nothing outlives the session. Disable to fetch the content again on every open.",
     defaultEnabled: true,
     advanced: true,
   },

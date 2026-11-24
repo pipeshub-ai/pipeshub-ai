@@ -354,6 +354,14 @@ body {
   outline-offset: -2px;
 }
 
+/* MCP catalog card titles reset every style inline (all: unset), outline included, so the
+   keyboard ring has to win over the inline style */
+.mcp-card-title:focus-visible {
+  outline: 2px solid var(--focus-8) !important;
+  outline-offset: 2px !important;
+  border-radius: var(--radius-1) !important;
+}
+
 /* Records table column boundaries (kb-column-widths.tsx): a hairline appears on hover / drag */
 .kb-col-resize::after {
   content: '';
@@ -424,13 +432,6 @@ body {
 }
 .rt-BaseDialogOverlay::before {
   background-color: var(--frost-scrim);
-}
-
-/* A disabled switch that is on: Radix greys the track whatever the state, so in dark mode
-   it reads as off. Keep a faint accent track so on and off still differ. */
-.rt-SwitchRoot[data-disabled][data-state='checked']::before {
-  background-color: var(--accent-a5);
-  box-shadow: inset 0 0 0 1px var(--accent-a6);
 }
 
 /* Workspace side panels (WorkspaceRightPanel): the frost tokens below, one layer only;
@@ -603,6 +604,23 @@ input[type="submit"],
 input[type="reset"],
 summary {
   cursor: pointer;
+}
+
+/* ========================
+   Secret fields
+   ======================== */
+
+/* API keys, tokens and client secrets are masked text inputs, not type="password":
+   browsers treat every password input as a login and fill saved credentials into it
+   (app/components/ui/secret-text-field.tsx). The placeholder stays readable. */
+.secret-field-masked input,
+input.secret-field-masked {
+  -webkit-text-security: disc;
+}
+
+.secret-field-masked input::placeholder,
+input.secret-field-masked::placeholder {
+  -webkit-text-security: none;
 }
 
 /* ========================
@@ -1789,4 +1807,29 @@ th code {
 /* Filter chips keep their width and scroll below desktop instead of shrinking. */
 .kb-filter-bar-mobile > * {
   flex-shrink: 0;
+}
+
+/* Graph explorer: controls are at least 44px tall on touch screens and narrow windows (the switch is labelled, so its label is the target). */
+@media (pointer: coarse), (max-width: 480px) {
+  .graph-explorer button:not([role='switch']),
+  .graph-explorer input,
+  .graph-explorer [role='combobox'],
+  .graph-explorer [role='option'] {
+    min-height: 44px;
+  }
+  .graph-explorer button:not([role='switch']) {
+    min-width: 44px;
+  }
+}
+@media (pointer: coarse), (max-width: 480px) {
+  .graph-explorer label {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
+/* The repository list's placeholder, darker than Radix's default so it keeps 4.5:1 on white. */
+.graph-explorer .rt-SelectTrigger:where([data-placeholder]) {
+  color: var(--gray-11);
 }

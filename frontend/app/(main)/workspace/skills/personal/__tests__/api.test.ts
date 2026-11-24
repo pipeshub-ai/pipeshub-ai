@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient } from '@/lib/api';
-import { SkillsApi, isSkillConflictError } from '../api';
+import { SkillsApi, isCandidateGoneError, isSkillConflictError } from '../api';
 import type { SkillWritePayload } from '../types';
 
 vi.mock('@/lib/api', () => ({
@@ -241,6 +241,19 @@ describe('SkillsApi', () => {
       mockedPost.mockResolvedValueOnce({ data: { status: 'success' } });
       await SkillsApi.rejectCandidate('c1');
       expect(mockedPost).toHaveBeenCalledWith(`${BASE_URL}/candidates/c1/reject`);
+    });
+  });
+
+  describe('isCandidateGoneError', () => {
+    it('is true for a 404 from the candidate endpoints, in either error shape', () => {
+      expect(isCandidateGoneError({ response: { status: 404 } })).toBe(true);
+      expect(isCandidateGoneError({ statusCode: 404 })).toBe(true);
+    });
+
+    it('is false for other failures', () => {
+      expect(isCandidateGoneError({ response: { status: 500 } })).toBe(false);
+      expect(isCandidateGoneError({ statusCode: 403 })).toBe(false);
+      expect(isCandidateGoneError(null)).toBe(false);
     });
   });
 

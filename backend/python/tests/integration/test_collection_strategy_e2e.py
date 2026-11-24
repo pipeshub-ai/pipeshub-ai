@@ -26,6 +26,7 @@ import pytest
 from app.services.vector_db.collection_manifest import CollectionManifestStore
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.filters import (
+    ScopeFilterUnsupported,
     build_filter_expression,
     canonical_filter_key,
     require_filter_org,
@@ -223,6 +224,8 @@ class FakeVectorDBService(IVectorDBService):
         points = self.collections.get(collection_name, [])
         batches: List[List[SearchResult]] = []
         for req in requests:
+            if req.scope_filter is not None:          # a double that ignored the filter would answer more than the real stores do
+                raise ScopeFilterUnsupported(f"{type(self).__name__} does not evaluate a scope filter")
             candidates = [p for p in points if _filter_matches(p.payload, req.filter)]
             scored = sorted(
                 (
@@ -276,8 +279,9 @@ def _make_config_service():
     async def get_config(key, default=None, raise_on_error=False):
         return store.get(key, default)
 
-    async def set_config(key, value):
+    async def set_config(key, value, **_):  # ttl_seconds, keep_in_cache: no expiry and no cache here
         store[key] = value
+        return True
 
     svc = MagicMock()
     svc.get_config = AsyncMock(side_effect=get_config)

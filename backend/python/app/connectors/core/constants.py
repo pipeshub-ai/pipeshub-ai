@@ -120,6 +120,8 @@ class ConnectorStateKeys:
     IS_CONFIGURED = "isConfigured"
     IS_AUTHENTICATED = "isAuthenticated"
     IS_ACTIVE = "isActive"
+    # Counts sync toggles; each appEnabled/appDisabled event a toggle sends carries the count it took.
+    TOGGLE_SEQ = "toggleSeq"
     PENDING_FULL_SYNC = "pendingFullSync"
     VECTOR_MEMBERSHIP_BACKFILLED = "vectorMembershipBackfilled"
     VECTOR_MEMBERSHIP_BACKFILL_AFTER_KEY = "vectorMembershipBackfillAfterKey"
@@ -131,6 +133,7 @@ class ConnectorStateKeys:
     PENDING_RESYNC = "pendingResync"
     LAST_SYNC_STARTED_AT = "lastSyncStartedAtTimestamp"
     LAST_SYNC_FINISHED_AT = "lastSyncFinishedAtTimestamp"
+    USER_LINK_STARTED_AT = "userLinkStartedAtTimestamp"
     LAST_SYNC_OUTCOME = "lastSyncOutcome"
     LAST_SYNC_SUMMARY = "lastSyncSummary"
     ACTION_ITEMS = "actionItems"

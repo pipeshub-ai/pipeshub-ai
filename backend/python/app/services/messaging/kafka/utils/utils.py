@@ -1,13 +1,16 @@
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
 from app.services.messaging.kafka.config.kafka_config import kafka_security_kwargs
 from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
+from app.exceptions.non_retryable import NonRetryableError
 from app.edition_services import (
     EntityEventService,
     EventService,
-    RecordEventHandler,
 )
 from app.connectors.services.code_graph_event_service import CodeGraphEventService
 from app.containers.connector import ConnectorAppContainer
@@ -32,9 +35,9 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
 )
-from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
 from app.services.vector_db.rebuild_state import redis_from_config_service
+from app.utils.user_lookup import register_caller_node_ensurer
 
 
 def _str_or_none(value: Any) -> str | None:  # noqa: ANN401 - a message field of unknown type
@@ -159,26 +162,14 @@ class KafkaUtils:
             graph_provider=graph_provider,
             app_container=app_container
         )
+        register_caller_node_ensurer(entity_event_service.ensure_user)
 
         async def handle_entity_message(message: StreamMessage) -> bool:
-            try:
-                event_type = message.eventType
-                payload = message.payload
-
-                if not event_type:
-                    logger.error("Missing event_type in message")
-                    return False
-
-                if not payload:
-                    logger.error("Missing payload in message")
-                    return False
-
-                logger.info(f"Processing entity event: {event_type}")
-                return await entity_event_service.process_event(event_type, payload)
-
-            except Exception as e:
-                logger.error(f"Error processing entity message: {str(e)}", exc_info=True)
-                return False
+            if not message.eventType:
+                raise NonRetryableError("entity message has no eventType")
+            if not message.payload:
+                raise NonRetryableError("entity message has no payload")
+            return await entity_event_service.process_event(message.eventType, message.payload)
 
         return handle_entity_message
 
@@ -186,7 +177,7 @@ class KafkaUtils:
     async def create_record_event_handler(
         app_container: IndexingAppContainer,
         producer: Any = None,
-    ) -> RecordEventHandler:
+    ) -> "RecordEventHandler":
         """Build the record event handler.
 
         Separate from ``create_record_message_handler`` because the consumer
@@ -194,6 +185,11 @@ class KafkaUtils:
         puts a record into a terminal status when its message is discarded — and
         two instances would mean two graph clients for one job.
         """
+        # Imported here: the record handler pulls in the event processor and the whole
+        # parser stack, which services that only use other helpers in this module
+        # (the connector service) must not load.
+        from app.edition_services import RecordEventHandler
+
         logger = app_container.logger()
         event_processor = getattr(app_container, '_event_processor', None)
         if not event_processor:
@@ -209,7 +205,7 @@ class KafkaUtils:
     async def create_record_message_handler(
         app_container: IndexingAppContainer,
         producer: Any = None,
-        record_event_service: RecordEventHandler | None = None,
+        record_event_service: "RecordEventHandler | None" = None,
     ) -> IndexingMessageHandler:
         """Create a message handler for record events.
 
@@ -229,50 +225,39 @@ class KafkaUtils:
             )
 
         async def handle_record_message(message: StreamMessage) -> AsyncGenerator[PipelineEvent, None]:
-            try:
-                event_type = message.eventType
-                payload = message.payload
+            # Raises without logging: the consumer's index.end writes the record's failure once.
+            event_type = message.eventType
+            payload = message.payload
 
-                if not event_type:
-                    logger.error("Missing event_type in message")
-                    return
+            if not event_type:
+                logger.error("Missing event_type in message")
+                return
 
-                if not payload:
-                    logger.error("Missing payload in message")
-                    return
+            if not payload:
+                logger.error("Missing payload in message")
+                return
 
-                # Pass retry context to handler so it knows whether to update DB status on failure
-                # Convert payload to dict if it's not already, then add is_final_failure
-                if not isinstance(payload, dict):
-                    payload = dict(payload)
-                else:
-                    payload = payload.copy()  # Don't mutate original
-                payload["is_final_failure"] = message.is_final_failure
+            # Pass retry context to handler so it knows whether to update DB status on failure
+            # A copy (never the original), with is_final_failure added
+            payload = payload.copy() if isinstance(payload, dict) else dict(payload)
+            payload["is_final_failure"] = message.is_final_failure
 
-                logger.debug(f"Processing record event: {event_type}")
-                # Every model call this record makes (describe images, embed, extract)
-                # goes out as the indexing service, not as whoever happens to be
-                # logged in. Bound here because this generator is driven by one worker
-                # task for the whole record; the handler's own coroutines copy it.
-                async with call_scope(
-                    service_principal("indexing", str(payload.get("orgId") or "")),
-                    Workload.INDEXING,
-                    config_service=config_service_of(app_container),
-                    container=app_container,
-                    record_id=_str_or_none(payload.get("recordId")),
-                    connector_id=_str_or_none(payload.get("connectorId")),
-                ):
-                    async with aclosing(record_event_service.process_event(event_type, payload)) as events:
-                        async for event in events:
-                            yield event
-
-            except Exception as e:
-                if is_expected_outcome(e):
-                    # Expected and already logged by the handler, once.
-                    logger.debug(f"Record message ended as expected: {e}")
-                else:
-                    logger.error(f"Error processing record message: {str(e)}", exc_info=True)
-                raise
+            logger.debug(f"Processing record event: {event_type}")
+            # Every model call this record makes (describe images, embed, extract)
+            # goes out as the indexing service, not as whoever happens to be
+            # logged in. Bound here because this generator is driven by one worker
+            # task for the whole record; the handler's own coroutines copy it.
+            async with call_scope(
+                service_principal("indexing", str(payload.get("orgId") or "")),
+                Workload.INDEXING,
+                config_service=config_service_of(app_container),
+                container=app_container,
+                record_id=_str_or_none(payload.get("recordId")),
+                connector_id=_str_or_none(payload.get("connectorId")),
+            ):
+                async with aclosing(record_event_service.process_event(event_type, payload)) as events:
+                    async for event in events:
+                        yield event
 
         return handle_record_message
 
@@ -284,36 +269,32 @@ class KafkaUtils:
         logger = app_container.logger()
 
         async def handle_sync_message(message: StreamMessage) -> bool:
-            try:
-                event_type = message.eventType
-                payload = message.payload
+            event_type = message.eventType
+            payload = message.payload
 
-                if not event_type:
-                    logger.error("Missing event_type in sync message")
-                    return False
+            if not event_type:
+                raise NonRetryableError("sync message has no eventType")
 
-                connector = None
-                if "." in event_type:
-                    connector = event_type.split(".")[0].lower()
-                else:
-                    connector = payload.get("connector")
-
+            if "." in event_type:
+                connector = event_type.split(".")[0].lower()
                 if not connector:
-                    logger.error("Missing connector in event_type or payload")
-                    return False
+                    raise NonRetryableError("sync event names no connector")
+            else:
+                connector = payload.get("connector")
+                if not connector:
+                    # Node's config manager publishes events no connector consumes here
+                    # (connectorPublicUrlChanged, gmailUpdates*Event): not addressed to this consumer.
+                    logger.debug(f"Skipping sync event without a connector: {event_type}")
+                    return True
 
-                logger.debug(f"Processing sync event: {event_type} for connector {connector}")
+            logger.debug(f"Processing sync event: {event_type} for connector {connector}")
 
-                event_service = EventService(
-                    logger=logger,
-                    graph_provider=graph_provider,
-                    app_container=app_container,
-                )
-                return await event_service.process_event(event_type, payload)
-
-            except Exception as e:
-                logger.error(f"Error processing sync message: {str(e)}", exc_info=True)
-                return False
+            event_service = EventService(
+                logger=logger,
+                graph_provider=graph_provider,
+                app_container=app_container,
+            )
+            return await event_service.process_event(event_type, payload)
 
         return handle_sync_message
 
@@ -381,24 +362,16 @@ class KafkaUtils:
         )
 
         async def handle_aiconfig_message(message: StreamMessage) -> bool:
-            try:
-                event_type = message.eventType
-                payload = message.payload
+            event_type = message.eventType
 
-                if not event_type:
-                    logger.error("Missing event_type in AI config message")
-                    return False
+            if not event_type:
+                raise NonRetryableError("AI config message has no eventType")
 
-                # Only process AI configuration events
-                if event_type not in ["llmConfigured", "embeddingModelConfigured"]:
-                    logger.debug(f"Skipping non-AI config event: {event_type}")
-                    return True
+            # Only process AI configuration events
+            if event_type not in ["llmConfigured", "embeddingModelConfigured"]:
+                logger.debug(f"Skipping non-AI config event: {event_type}")
+                return True
 
-                logger.info(f"Processing AI config event: {event_type}")
-                return await aiconfig_event_service.process_event(event_type, payload)
-
-            except Exception as e:
-                logger.error(f"Error processing AI config message: {str(e)}", exc_info=True)
-                return False
+            return await aiconfig_event_service.process_event(event_type, message.payload)
 
         return handle_aiconfig_message

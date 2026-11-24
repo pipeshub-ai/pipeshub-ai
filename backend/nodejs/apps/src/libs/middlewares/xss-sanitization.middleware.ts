@@ -54,6 +54,10 @@ function sanitizeString(value: string): string {
   }
 }
 
+// As the router matches: a trailing slash and any letter case reach the same handler.
+const LOCAL_REPO_PUSH_PATH =
+  /^\/api\/v1\/local-repos\/[^/]+\/(files|manifest)\/?$/i;
+
 // Field paths are built from the request's own keys, so only plain names are
 // repeated back; anything else (a key that is itself markup) is not echoed.
 const SAFE_FIELD_PATH = /^[A-Za-z0-9_.[\]-]{1,200}$/;
@@ -116,14 +120,16 @@ function xssRejectionMessage(value: string, field: string): string {
 }
 
 /**
- * The one field of a request that holds a person's question, when it is a
- * string. `holder` is the object the field sits on, so the field is found by
- * object identity rather than by a dotted path a caller could imitate with a
- * key such as "params.arguments.query".
+ * The fields of a request that hold free text: a person's question, or the
+ * quotes an MCP citations call shows. Each is found by the object it sits on
+ * (object identity) rather than by a dotted path a caller could imitate with
+ * a key such as "params.arguments.query".
  */
 interface QuestionField {
-  holder: Record<string, unknown>;
-  key: string;
+  /** Each object holding free text, and the keys on it that hold it. A route
+   *  can carry several such fields (a code search has a pattern and a path),
+   *  and a citations call one quote per citation. */
+  holders: ReadonlyMap<object, readonly string[]>;
 }
 
 /** MCP tools with a free-text argument typed for chat or search, and its name.
@@ -135,13 +141,30 @@ const MCP_QUESTION_TOOLS = new Map([
   ['pipeshub_grep', 'pattern'],
 ]);
 
+/**
+ * The MCP citations tool, and the free-text field of each citation it takes.
+ * A quote is text copied from a record, and a Slack message's text is full
+ * of angle brackets (`<!here>`, `<@U123>`, `<https://…|label>`), so checking
+ * it refused the whole call. The quote is only ever shown as text: the
+ * citations card sets it with `textContent` (@pipeshub-ai/mcp,
+ * src/mcp-app/citation-viewer.ts `el`).
+ */
+const MCP_CITATIONS_TOOL = 'pipeshub_show_citations';
+const MCP_CITATION_TEXT_FIELDS: readonly string[] = ['quote'];
+
 /** The routes behind those tools, and the field each reads. */
-const SEARCH_QUESTION_ROUTES = new Map([
-  ['/api/v1/search', 'query'],
+const SEARCH_QUESTION_ROUTES = new Map<string, readonly string[]>([
+  ['/api/v1/search', ['query']],
   // /retrieve takes the same plain-text query and renders nothing.
-  ['/api/v1/retrieve', 'query'],
-  ['/api/v1/search/entities', 'query'],
-  ['/api/v1/search/grep', 'pattern'],
+  ['/api/v1/retrieve', ['query']],
+  ['/api/v1/search/entities', ['query']],
+  ['/api/v1/search/grep', ['pattern']],
+  // Source text: a symbol such as `vector<int>::push_back` or `operator<<`, a pattern, a path.
+  ['/api/v1/code-graph/search', ['pattern', 'path']],
+  ['/api/v1/code-graph/semantic-search', ['query']],
+  ['/api/v1/code-graph/read', ['qualified_name', 'file_path']],
+  ['/api/v1/code-graph/outline', ['file_path']],
+  ['/api/v1/graph/resolve', ['qualifiedName', 'filePath']],
 ]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -168,9 +191,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * app/(main)/chat/sidebar/chat-section-element.tsx). It is also the same
  * text the web chat route already stores unchecked.
  *
- * Only that one string is passed through. Every other field of these
- * requests (filters, ids, model keys) and every field of every other request
- * is still checked and sanitized as before. Matching is exact and
+ * The same holds for the quotes of an MCP `pipeshub_show_citations` call
+ * (see MCP_CITATIONS_TOOL): text copied from a record, shown only as text.
+ *
+ * Only those strings are passed through. Every other field of these
+ * requests (filters, ids, model keys, a citation's `cite`) and every field
+ * of every other request is still checked and sanitized as before. Matching is exact and
  * case-sensitive, so a request that does not match is checked as before.
  */
 function findQuestionField(req: Request): QuestionField | undefined {
@@ -180,11 +206,9 @@ function findQuestionField(req: Request): QuestionField | undefined {
   const body = req.body;
 
   // The search route MCP's pipeshub_search calls, and the web search box.
-  const routeField = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
-  if (routeField !== undefined) {
-    return typeof body[routeField] === 'string'
-      ? { holder: body, key: routeField }
-      : undefined;
+  const routeFields = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
+  if (routeFields !== undefined) {
+    return { holders: new Map([[body, routeFields]]) };
   }
 
   // A JSON-RPC tool call to the MCP endpoint.
@@ -193,15 +217,27 @@ function findQuestionField(req: Request): QuestionField | undefined {
     if (
       body.method !== 'tools/call' ||
       !isPlainObject(params) ||
-      typeof params.name !== 'string' ||
-      !MCP_QUESTION_TOOLS.has(params.name)
+      typeof params.name !== 'string'
     ) {
       return undefined;
     }
     const args = params.arguments;
+    if (params.name === MCP_CITATIONS_TOOL) {
+      const citations = isPlainObject(args) ? args.citations : undefined;
+      if (!Array.isArray(citations)) return undefined;
+      const holders = new Map<object, readonly string[]>(
+        citations
+          .filter(isPlainObject)
+          .map((citation) => [citation, MCP_CITATION_TEXT_FIELDS] as const),
+      );
+      return holders.size > 0 ? { holders } : undefined;
+    }
+    if (!MCP_QUESTION_TOOLS.has(params.name)) {
+      return undefined;
+    }
     const field = MCP_QUESTION_TOOLS.get(params.name) as string;
     return isPlainObject(args) && typeof args[field] === 'string'
-      ? { holder: args, key: field }
+      ? { holders: new Map([[args, [field]]]) }
       : undefined;
   }
 
@@ -219,14 +255,14 @@ function isQuestionField(
   key: string,
   question: QuestionField | undefined,
 ): boolean {
-  if (
-    question === undefined ||
-    holder !== question.holder ||
-    key !== question.key
-  ) {
+  const keys =
+    question !== undefined && typeof holder === 'object' && holder !== null
+      ? question.holders.get(holder)
+      : undefined;
+  if (keys === undefined || !keys.includes(key)) {
     return false;
   }
-  const text = question.holder[key];
+  const text = (holder as Record<string, unknown>)[key];
   return typeof text === 'string' && text.length <= XSS_CHECK_MAX_LENGTH;
 }
 
@@ -423,6 +459,16 @@ export const xssSanitizationMiddleware = (
     }
 
     if (req.path.startsWith('/api/v1/conversations/') && (req.method === 'POST' || req.method === 'PUT')) {
+      next();
+      return;
+    }
+
+    // A pushed repository's files and manifest are source text (markup in it is not markup here: it is stored as a file and shown as text).
+    // Python validates every path and checks each file's sha256. The repository's name is not exempt: it is sanitised like any other name.
+    if (
+      LOCAL_REPO_PUSH_PATH.test(req.path) &&
+      (req.method === 'POST' || req.method === 'PUT')
+    ) {
       next();
       return;
     }

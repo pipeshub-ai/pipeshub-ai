@@ -5,7 +5,9 @@ construct at process startup and share across their consumers/routes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
+import os
 import random
 import threading
 import time
@@ -13,9 +15,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from app.services.resource_governor.container_link import auto_inputs as _auto_inputs
 from app.services.resource_governor.download_ahead import (
     HEAVY_DOWNLOAD_AHEAD,
     DownloadAhead,
+)
+from app.services.resource_governor.explain import (
+    PRESSURE_REASONS,
+    BrakeReason,
+    brake_reason,
 )
 from app.services.resource_governor.feedback import (
     DownstreamFeedback,
@@ -24,7 +32,9 @@ from app.services.resource_governor.feedback import (
 )
 from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
 from app.services.resource_governor.lanes import (
+    POOL_WORKERS_ENV,
     LaneBudget,
+    explicit_setting,
     lanes_health,
     open_lane_budget,
     parse_lanes_mode,
@@ -34,11 +44,17 @@ from app.services.resource_governor.memory_budget import MemoryBudget
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
+    LimitRule,
+    Limits,
     Pool,
     PoolDemand,
     ResourceSnapshot,
+    merge_cooldown_causes,
 )
 from app.services.resource_governor.policy import (
+    CPU_BRAKE_PRESSURE_AVG10,
+    CPU_BRAKE_THROTTLED_RATIO,
+    CPU_BRAKE_UTILISATION,
     EMBEDDING_CPU_RESERVATION,
     EMBEDDING_CPU_RESERVATION_MAX_FRACTION,
     HEAVY_PARSE_SLOTS_PER_CPU,
@@ -50,15 +66,22 @@ from app.services.resource_governor.policy import (
     INDEX_SLOTS_PER_CPU,
     INDEX_TOTAL_MAX,
     LIGHT_PARSE_SLOTS_PER_CPU,
+    MEM_HARD,
+    MEM_SOFT,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
+    YIELD_GROW_CONFIRM_SAMPLES,
+    YIELD_POOLS,
+    HeavyWorkingSet,
     ceiling_cpus,
     ceiling_for,
     cgroup_heavy_parse_limit,
     floor_for,
     free_memory_share_bytes,
     next_limits,
+    pressure_floor,
     resolve_ceilings,
+    resolve_heavy_working_set,
     split_ceilings,
     start_rate_limiter_params,
     warm_start_limits,
@@ -67,6 +90,7 @@ from app.services.resource_governor.probe import (
     ResourceProbe,
     build_probe,
     effective_cpu_count,
+    memory_domain_id,
 )
 from app.services.resource_governor.registry import LimitRegistry
 from app.services.resource_governor.shared_slots import (
@@ -74,11 +98,14 @@ from app.services.resource_governor.shared_slots import (
     SlotHold,
     open_shared_slots,
 )
+from app.services.resource_governor.yield_signal import YieldState
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
     from pathlib import Path
+
+    from app.services.resource_governor.yield_signal import YieldSignal
 
 
 _T = TypeVar("_T")
@@ -124,8 +151,19 @@ class ResourceGovernor:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: Callable[[], float] = random.random,
+        heavy_working_set_gb: float | None = None,
+        yield_signal: YieldSignal | None = None,
+        remote_parse_slots: int | None = None,
     ) -> None:
         self._logger = logger
+        # Code sandbox runs waiting for memory this container shares ask
+        # indexing to slow down through it; only the indexing governor reads it.
+        self._yield = yield_signal
+        self._yield_state = YieldState()
+        self._yield_read_failed = False
+        # The Docling service's own working set; the other services leave it unset.
+        self._docling_working_set_gb = heavy_working_set_gb
+        self._heavy_ws = resolve_heavy_working_set()
         self._probe = probe or build_probe()
         self._feedback = feedback or get_default_downstream_feedback()
         self._sample_interval = sample_interval
@@ -146,12 +184,25 @@ class ResourceGovernor:
                 "ResourceGovernor: initial probe snapshot failed; retrying once before resolving ceilings"
             )
             initial_snapshot = self._probe.snapshot()
+        # ``PIPESHUB_CAPACITY_PROFILE=auto`` only: sizes from the capacity plan and joins the container
+        # controller. Without it the calls below are exactly what they have always been.
+        auto = _auto_inputs(self._worker_count, sample_interval)
         self._fleet_ceilings: Ceilings = resolve_ceilings(
             initial_snapshot,
             env_parse,
             env_index,
             reserve_embedding_cpus=reserve_embedding_cpus,
+            **(auto.resolve_kwargs if auto is not None else {}),
         )
+        if remote_parse_slots:
+            from app.services.parsing.remote_concurrency import lift_ceilings
+            # Parsing runs in another pod: the ceilings hold that many parses, not this CPU's share.
+            self._fleet_ceilings = lift_ceilings(self._fleet_ceilings, remote_parse_slots, env_index)
+        container_fleet = self._fleet_ceilings  # the whole container's: what the shared ramp is sized against
+        if auto is not None and not remote_parse_slots:
+            # A service that parses elsewhere holds no local parse share of the member budget (and does not join the
+            # container's shared ramp below): its heavy ceiling is the remote pool's width, not this CPU's.
+            self._fleet_ceilings = auto.partition(self._fleet_ceilings)
         self._ceilings: Ceilings = split_ceilings(self._fleet_ceilings, self._worker_count)
         # Only shared when there are workers to share with: one process's
         # heavy gate already holds it to free memory.
@@ -187,6 +238,9 @@ class ResourceGovernor:
         self._state_lock = threading.Lock()
         self._registry = LimitRegistry(warm_start_limits(self._ceilings))
         self._state = ControllerState.initial()
+        self._container = (
+            auto.link(container_fleet, self._ceilings, self._logger) if auto is not None and not remote_parse_slots else None
+        )
 
         self._gates_lock = threading.Lock()
         self._gates: dict[Pool, AdmissionGate] = {}
@@ -202,6 +256,22 @@ class ResourceGovernor:
         self._last_snapshot: ResourceSnapshot = initial_snapshot
         self._last_demand: dict[Pool, PoolDemand] = {pool: PoolDemand.empty() for pool in Pool}
         self._last_feedback: FeedbackWindow = FeedbackWindow.empty()
+        # Read-only observability, folded under _stats_lock with the fields above: how many
+        # samples have been taken, when the last one finished, and what the feedback windows
+        # have summed to.
+        self._sample_seq = 0
+        self._last_sample_at: float | None = None
+        self._feedback_totals: dict[str, dict[str, int]] = {
+            "throttles": {}, "timeouts": {}, "exhaustions": {}, "unavailable": {},
+        }
+        # Monotonic count of brake entries per pool and pressure reason, counted at the decision that
+        # enters the brake (under _state_lock), read with the rest of the admission block.
+        self._brake_entries: dict[str, dict[str, int]] = {}
+        self._brake_reasons: dict[str, str] = {}  # the reason each pool is held for as of the last decision
+        self._memory_reasons: dict[str, BrakeReason] = {}  # the kind of memory brake a pool was last in
+        # Threads waiting on the shared heavy-parse slots (slot_wait()).
+        self._slot_waiting = 0
+        self._slot_wait_lock = threading.Lock()
 
         # Records too big for the count limits reserve their memory here.
         self.memory_budget = MemoryBudget()
@@ -366,8 +436,60 @@ class ResourceGovernor:
             return SlotHold()
         with self._stats_lock:
             snapshot = self._last_snapshot
-        return self._heavy_parse_slots.try_acquire(
-            cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings), count
+        limit = cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings, self._policy_working_set())
+        if self._yield is not None:
+            with self._state_lock:
+                holdoff = self._state.get(Pool.HEAVY_PARSE).yield_holdoff
+            if self._yield_state.active or holdoff > 0:
+                # Each worker's own heavy limit stops at its floor, so N workers
+                # would keep N floors running while code sandbox runs wait for
+                # memory. Until this worker's holdoff runs out, the workers
+                # together hold to the floor one worker alone would have.
+                limit = min(limit, floor_for(Pool.HEAVY_PARSE, self._fleet_ceilings.heavy))
+        return self._heavy_parse_slots.try_acquire(limit, count)
+
+    @contextlib.contextmanager
+    def slot_wait(self) -> Iterator[None]:
+        """Count a caller polling for the shared heavy-parse slots (read by ``admission_explain``)."""
+        with self._slot_wait_lock:
+            self._slot_waiting += 1
+        try:
+            yield
+        finally:
+            with self._slot_wait_lock:
+                self._slot_waiting -= 1
+
+    @property
+    def heavy_working_set(self) -> HeavyWorkingSet:
+        """The working set a heavy permit assumes as of the last sample, and where it came from."""
+        return self._heavy_ws
+
+    def _policy_working_set(self) -> float | None:
+        """What to hand the policy: the resolved figure where it differs from the legacy rule, else
+        ``None`` so the legacy rule itself decides (``off`` never passes a figure)."""
+        ws = self._heavy_ws
+        return ws.gb if ws.source in ("measured", "docling") else None
+
+    def _measured_base_applies(self) -> bool:
+        """Whether the PdfPlumber parent base may replace the old heavy working set.
+
+        Only while a shared lane budget charges the worker's memory: the mode is on, the pool is
+        sized by the plan (no explicit ``PARSE_POOL_WORKERS``, which is private or none), and the
+        budget's slots and ledger are shared and healthy. A degraded or local budget protects this
+        process alone, so the old margin returns at the next sample.
+        """
+        if parse_lanes_mode() != "on" or os.name != "posix":
+            return False
+        if explicit_setting(POOL_WORKERS_ENV) is not None:
+            return False
+        lanes = self._lanes
+        return lanes is not None and lanes.shared()
+
+    def _resolve_heavy_working_set(self) -> HeavyWorkingSet:
+        on = parse_lanes_mode() == "on"
+        return resolve_heavy_working_set(
+            measured_base=self._docling_working_set_gb is None and self._measured_base_applies(),
+            docling_gb=self._docling_working_set_gb if on else None,
         )
 
     def limit(self, pool: Pool) -> int:
@@ -429,6 +551,9 @@ class ResourceGovernor:
             lanes, self._lanes, self._lanes_built = self._lanes, None, True
         if lanes is not None:
             lanes.close()
+        signal, self._yield = self._yield, None
+        if signal is not None:
+            signal.close()
 
     async def _sample_once(self) -> None:
         now = self._clock()
@@ -441,8 +566,10 @@ class ResourceGovernor:
                 await asyncio.to_thread(lanes.brake_step, snapshot.mem_pressure_raw)
             except Exception:
                 self._logger.exception("ResourceGovernor: the lane brake step failed")
+        self._heavy_ws = self._resolve_heavy_working_set()
         demand = self._drain_all_demand()
         feedback = self._feedback.drain()
+        yield_state = await asyncio.to_thread(self._read_yield) if self._yield is not None else YieldState()
 
         # Held across the registry snapshot, the limit calculation, and the
         # resulting writes so report_memory_incident() (called from another
@@ -450,6 +577,7 @@ class ResourceGovernor:
         # that read the registry before the incident but writes after it.
         changed: list[tuple[Pool, int, int]] = []
         with self._state_lock:
+            state_at_start = self._state
             current = self._registry.snapshot()
             new_limits, new_state = next_limits(
                 current=current,
@@ -461,19 +589,63 @@ class ResourceGovernor:
                 interval=self._sample_interval,
                 feedback=feedback,
                 worker_count=self._worker_count,
+                heavy_working_set_gb=self._policy_working_set(),
+                host_yield=yield_state.active,
             )
-            self._state = new_state
+            if self._container is None:
+                self._count_brake_entries(self._state, new_state, now)
+                self._state = new_state
 
-            for pool in Pool:
-                new_value = new_limits.get(pool)
-                old_value = current.get(pool)
-                if self._registry.set(pool, new_value):
-                    changed.append((pool, old_value, new_value))
+                for pool in Pool:
+                    new_value = new_limits.get(pool)
+                    old_value = current.get(pool)
+                    if self._registry.set(pool, new_value):
+                        changed.append((pool, old_value, new_value))
+            ws_gb = self._policy_working_set()
+        if self._container is not None:
+            # PIPESHUB_CAPACITY_PROFILE=auto only. The shared ledger is read and written under file locks: off the
+            # event loop and outside the state lock, so a slow holder stalls neither the handlers nor an incident report.
+            stepped = await asyncio.to_thread(
+                self._container.step,
+                own=(new_limits, new_state), snap=snapshot, ceilings=self._ceilings, demand=demand, now=now,
+                interval=self._sample_interval, feedback=feedback, heavy_working_set_gb=ws_gb,
+            )
+            with self._state_lock:
+                new_limits, new_state = stepped
+                current = self._registry.snapshot()
+                if self._state is not state_at_start:
+                    # report_memory_incident() ran meanwhile: its state and its halved heavy limit stand.
+                    new_state = self._state
+                    new_limits = Limits(values={
+                        p: (min(new_limits.get(p), current.get(p)) if p is Pool.HEAVY_PARSE else new_limits.get(p))
+                        for p in Pool
+                    })
+                self._count_brake_entries(self._state, new_state, now)
+                self._state = new_state
+                for pool in Pool:
+                    new_value = new_limits.get(pool)
+                    old_value = current.get(pool)
+                    if self._registry.set(pool, new_value):
+                        changed.append((pool, old_value, new_value))
 
         with self._stats_lock:
             self._last_snapshot = snapshot
             self._last_demand = demand
             self._last_feedback = feedback
+            self._sample_seq += 1
+            self._last_sample_at = now
+            for kind, counts in (
+                ("throttles", feedback.throttles),
+                ("timeouts", feedback.timeouts),
+                ("exhaustions", feedback.pool_exhaustions),
+                ("unavailable", feedback.unavailable),
+            ):
+                bucket = self._feedback_totals[kind]
+                for service, count in counts.items():
+                    bucket[service] = bucket.get(service, 0) + count
+
+        if self._yield is not None:
+            await self._after_yield_read(yield_state, new_limits)
 
         if not feedback.is_empty:
             self._logger.info(
@@ -482,11 +654,12 @@ class ResourceGovernor:
         if changed:
             self._logger.info(
                 "ResourceGovernor limits changed: %s (mem_pressure=%s cpu_util=%s "
-                "downstream=%s source=%s)",
+                "downstream=%s yield=%s source=%s)",
                 ", ".join(f"{pool.value}:{old}->{new}" for pool, old, new in changed),
                 _fmt_ratio(snapshot.mem_pressure),
                 _fmt_ratio(snapshot.cpu_utilisation),
                 feedback.describe(),
+                "on" if yield_state.active else "off",
                 snapshot.source,
             )
             shrank = any(new_value < old_value for _, old_value, new_value in changed)
@@ -535,12 +708,102 @@ class ResourceGovernor:
                 ),
             )
 
+    def _read_yield(self) -> YieldState:
+        """The code sandbox's yield signal; unreadable reads as off. Blocking."""
+        assert self._yield is not None
+        try:
+            return self._yield.read_state()
+        except Exception:
+            if not self._yield_read_failed:
+                self._yield_read_failed = True
+                self._logger.warning(
+                    "ResourceGovernor: the code sandbox yield signal cannot be read; ignoring it",
+                    exc_info=True,
+                )
+            return YieldState()
+
+    async def _after_yield_read(self, state: YieldState, limits: Limits) -> None:
+        """Log a change of the signal and, while it is up, ack it with
+        whether this worker's yielding pools are at their floor."""
+        assert self._yield is not None
+        was = self._yield_state.active
+        self._yield_state = state
+        if state.active and not was:
+            self._logger.info(
+                "ResourceGovernor: sandbox runs are waiting for memory; slowing indexing "
+                "(index x0.75, heavy -1 per sample)",
+            )
+        elif was and not state.active:
+            with self._state_lock:
+                heavy = self._state.get(Pool.HEAVY_PARSE).yield_holdoff_set
+            self._logger.info(
+                "ResourceGovernor: sandbox yield released; growth resumes after %.0f s%s",
+                YIELD_GROW_CONFIRM_SAMPLES * self._sample_interval,
+                f", heavy parse after {heavy * self._sample_interval:.0f} s"
+                if heavy > YIELD_GROW_CONFIRM_SAMPLES else "",
+            )
+        if not state.active:
+            return
+        at_floor = all(
+            limits.get(pool) <= pressure_floor(pool, ceiling_for(pool, self._ceilings), self._worker_count)
+            for pool in YIELD_POOLS
+        )
+        try:
+            await asyncio.to_thread(self._yield.ack, os.getpid(), at_floor=at_floor)
+        except Exception:
+            self._logger.debug("ResourceGovernor: could not ack the sandbox yield signal", exc_info=True)
+
+    def _count_brake_entries(self, old: ControllerState, new: ControllerState, now: float) -> None:
+        """Count each pool that, by this decision, is braked for a pressure reason it was not braked for.
+
+        Called under ``_state_lock``, so every decision is seen exactly once whatever the readers do.
+        """
+        entered: list[tuple[str, str]] = []
+        reasons: dict[str, str] = {}
+        memory_reasons = (BrakeReason.MEMORY_SOFT, BrakeReason.MEMORY_HARD, BrakeReason.MEMORY_TARGET)
+        for pool in Pool:
+            state = new.get(pool)
+            last = BrakeReason(self._brake_reasons.get(pool.value, BrakeReason.NONE.value))
+            cause = state.active_cooldown_cause(now)
+            reason = brake_reason(state.rule.value, cause)
+            holding = last not in (BrakeReason.NONE, BrakeReason.RAMPING, BrakeReason.FROZEN)
+            if state.rule is LimitRule.COOLDOWN and cause == "memory":
+                # The policy names one cause for every kind of memory pressure; the kind is the one this pool
+                # was last braked for by a memory rule (soft when it never was).
+                reason = self._memory_reasons.get(pool.value, BrakeReason.MEMORY_SOFT)
+            elif state.rule is LimitRule.COOLDOWN and cause is None and holding:
+                reason = last  # the window has run out but no decision has ended the cooldown yet
+            elif state.rule is LimitRule.PRESSURE_UNKNOWN and state.cooldown_until > now and holding:
+                reason = last  # a sample without a pressure reading does not end an open cooldown
+            elif reason in memory_reasons:
+                self._memory_reasons[pool.value] = reason
+            reasons[pool.value] = reason.value
+            if reason in PRESSURE_REASONS and reason != last:
+                entered.append((pool.value, reason.value))
+        with self._stats_lock:
+            self._brake_reasons.update(reasons)
+            for pool_name, reason_name in entered:
+                row = self._brake_entries.setdefault(pool_name, {})
+                row[reason_name] = row.get(reason_name, 0) + 1
+
     def _drain_all_demand(self) -> dict[Pool, PoolDemand]:
         with self._gates_lock:
             gates = dict(self._gates)
         return {
             pool: gates[pool].drain_demand() if pool in gates else PoolDemand.empty()
             for pool in Pool
+        }
+
+    def _yield_stats(self) -> dict[str, Any]:
+        state = self._yield_state
+        with self._state_lock:
+            holdoff = max(self._state.get(pool).yield_holdoff for pool in YIELD_POOLS)
+        return {
+            "active": state.active,
+            "since_s": None if state.since is None else round(max(0.0, self._clock() - state.since), 1),
+            "ackers": state.ackers,
+            "index_at_floor": state.index_at_floor,
+            "holdoff_samples": holdoff,
         }
 
     # -- fast-reacting incident path ---------------------------------------
@@ -557,11 +820,20 @@ class ResourceGovernor:
             floor = floor_for(Pool.HEAVY_PARSE, self._ceilings.heavy)
             current = self._registry.get(Pool.HEAVY_PARSE)
             self._registry.set(Pool.HEAVY_PARSE, max(floor, current // 2))
+            before = self._state
             self._state = self._state.with_update(Pool.HEAVY_PARSE, replace(
                 self._state.get(Pool.HEAVY_PARSE),
                 healthy_streak=0,
                 cooldown_until=now + INCIDENT_COOLDOWN_SECONDS,
+                rule=LimitRule.MEM_INCIDENT,
+                rule_since=now,
+                cooldown_causes=merge_cooldown_causes(
+                    self._state.get(Pool.HEAVY_PARSE).cooldown_causes,
+                    (("memory", now + INCIDENT_COOLDOWN_SECONDS),),
+                    now,
+                ),
             ))
+            self._count_brake_entries(before, self._state, now)
         self._logger.warning(
             "ResourceGovernor: memory incident reported (%s); heavy_parse halved", reason,
         )
@@ -573,6 +845,120 @@ class ResourceGovernor:
                 self._logger.exception("ResourceGovernor: could not record the incident in the lane ledger")
 
     # -- observability ------------------------------------------------------
+
+    def admission_explain(self) -> dict[str, Any]:
+        """Why each pool admits what it admits, for health endpoints. Safe from any thread.
+
+        Read-only: it never creates a gate, awaits, or touches a file or the network. Each read is
+        a lock-guarded copy or a single attribute. CPU lanes are not included (reading them does
+        file I/O); ``stats()["lanes"]`` carries them.
+        """
+        now = self._clock()
+        # One decision at a time: the limits, the state and the brake reasons all come from the same one
+        # (_state_lock, then _stats_lock, as everywhere else).
+        with self._state_lock:
+            limits = self._registry.snapshot()
+            state = self._state
+            with self._stats_lock:
+                snapshot = self._last_snapshot
+                demand = dict(self._last_demand)
+                feedback = self._last_feedback
+                seq = self._sample_seq
+                sampled_at = self._last_sample_at
+                totals = {kind: dict(counts) for kind, counts in self._feedback_totals.items()}
+                brake_entries = {pool: dict(row) for pool, row in self._brake_entries.items()}
+                brake_reasons = dict(self._brake_reasons)
+        with self._gates_lock:
+            gates = dict(self._gates)
+        pools: dict[str, Any] = {}
+        for pool in Pool:
+            gate = gates.get(pool)
+            pool_state = state.get(pool)
+            window = demand.get(pool) or PoolDemand.empty()
+            ceiling = ceiling_for(pool, self._ceilings)
+            entry: dict[str, Any] = {
+                "unit": "permits" if pool in (Pool.HEAVY_PARSE, Pool.LIGHT_PARSE) else "records",
+                "inUse": gate.in_use if gate is not None else 0,
+                "limit": limits.get(pool),
+                "ceiling": ceiling,
+                "floor": pressure_floor(pool, ceiling, self._worker_count),
+                "waiting": gate.waiting if gate is not None else 0,
+                "headBlock": gate.head_block if gate is not None else "none",
+                "rule": pool_state.rule.value,
+                "brakeReason": brake_reasons.get(pool.value),
+                "ruleAgeSec": None if pool_state.rule_since is None else max(0.0, now - pool_state.rule_since),
+                "cooldownRemainingSec": max(0.0, pool_state.cooldown_until - now),
+                "window": {
+                    "seq": seq,
+                    "blocked": window.blocked_acquires,
+                    "waitSec": window.total_wait_seconds,
+                    "rateLimited": window.rate_limited_acquires,
+                    "completions": window.completions,
+                },
+            }
+            cause = pool_state.active_cooldown_cause(now)
+            if cause is not None and pool_state.cooldown_until > now:
+                entry["cooldownCause"] = cause
+            if services := pool_state.active_services(now):
+                entry["services"] = list(services)
+            pools[pool.value] = entry
+        slots = self._heavy_parse_slots
+        shared: dict[str, int] | None = None
+        if slots is not None:
+            shared = {
+                "capacity": slots.capacity,
+                "limit": cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings, self._policy_working_set()),
+                "waiting": self._slot_waiting,
+            }
+        record_memory = self.memory_budget.stats()
+        return {
+            "v": 2,
+            "sampleSeq": seq,
+            "brakeEntries": brake_entries,
+            "sampleAgeSec": None if sampled_at is None else max(0.0, now - sampled_at),
+            "workerCount": self._worker_count,
+            "memoryDomain": memory_domain_id(),
+            "cpu": {
+                "quota": snapshot.cpu_quota,
+                "utilisation": snapshot.cpu_utilisation,
+                "throttledRatio": snapshot.cpu_throttled_ratio,
+                "psi": snapshot.cpu_pressure,
+                "brakeAt": {
+                    "util": CPU_BRAKE_UTILISATION,
+                    "throttled": CPU_BRAKE_THROTTLED_RATIO,
+                    "psi": CPU_BRAKE_PRESSURE_AVG10,
+                },
+            },
+            "mem": {
+                "pressureRaw": snapshot.mem_pressure_raw,
+                "limitBytes": snapshot.mem_limit_bytes,
+                "usableBytes": snapshot.mem_usable_bytes,
+                "softAt": MEM_SOFT,
+                "hardAt": MEM_HARD,
+            },
+            "pools": pools,
+            "fleetCeilings": {
+                "index_heavy": self._fleet_ceilings.index_heavy,
+                "index_light": self._fleet_ceilings.index_light,
+                "heavy_parse": self._fleet_ceilings.heavy,
+                "light_parse": self._fleet_ceilings.light,
+            },
+            "downloadAhead": {
+                "limit": self.download_ahead.limit,
+                "inUse": self.download_ahead.stats()["in_use"],
+                "waiting": self.download_ahead.waiting,
+            },
+            "recordMemory": {
+                "limitBytes": record_memory["limit_bytes"],
+                "reservedBytes": record_memory["reserved_bytes"],
+                "waiting": record_memory["waiting"],
+            },
+            "sharedSlots": shared,
+            "feedback": {
+                "window": {"seq": seq, **feedback.as_dict()},
+                "totals": totals,
+            },
+        }
 
     def stats(self) -> dict[str, Any]:
         """Snapshot for health endpoints / logs. Safe from any thread."""
@@ -617,11 +1003,14 @@ class ResourceGovernor:
                 "index_light": self._ceilings.index_light,
             },
             "lanes": lanes_health(self, effective_cpu_count()),
+            **({"heavy_working_set": self._heavy_ws.as_dict()} if parse_lanes_mode() == "on" else {}),
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,
             "downstream_feedback": feedback.as_dict(),
+            **({"yield_to_sandboxes": self._yield_stats()} if self._yield is not None else {}),
             "record_memory": self.memory_budget.stats(),
             "download_ahead": self.download_ahead.stats(),
+            "admission": self.admission_explain(),
             "demand": {
                 pool.value: {
                     "utilisation": demand[pool].utilisation(limits.get(pool), self._sample_interval),
@@ -631,4 +1020,5 @@ class ResourceGovernor:
                 }
                 for pool in Pool
             },
+            **({"capacity": self._container.stats()} if self._container is not None else {}),
         }

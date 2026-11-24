@@ -60,7 +60,7 @@ class TestWhatThePersonSees:
 
         await connector.run_sync()
 
-        assert set(store.record_groups) == {GENERAL, SECRET, PARTNERS, DM_BOB, GROUP_DM}
+        assert set(store.record_groups) == {GENERAL, SECRET, PARTNERS, RANDOM, DM_BOB, GROUP_DM}
         for channel in store.record_groups:
             assert store.group_access[channel] == [], "conversations inherit the app, which only the person is linked to"
             assert store.record_groups[channel].inherit_permissions is True
@@ -128,9 +128,47 @@ class TestWhatThePersonSees:
 
         assert options.success is True
         labels = {o.id: o.label for o in options.options}
-        assert set(labels) == {GENERAL, SECRET, PARTNERS, DM_BOB, GROUP_DM}
+        assert set(labels) == {GENERAL, SECRET, PARTNERS, RANDOM, DM_BOB, GROUP_DM}
         assert (labels[GENERAL], labels[DM_BOB]) == ("general", "DM: Bob")
         assert labels[GROUP_DM] == store.record_groups[GROUP_DM].name
+
+
+class TestPublicChannelsThePersonHasNotJoined:
+    async def test_an_unjoined_public_channel_is_read_and_stays_the_persons_alone(self, workspace, store, checkpoints) -> None:
+        unjoined = ts_minutes_ago(30)
+        workspace.post(RANDOM, unjoined, BOB, "open to everyone in the workspace")
+        connector, _ = await personal_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert block_ts(store, RANDOM) == [unjoined]
+        assert store.group_access[RANDOM] == []
+        assert store.record_groups[RANDOM].inherit_permissions is True
+        assert [u.email for u in store.app_users.values()] == ["alice@acme.com"]
+
+    async def test_a_private_channel_the_person_is_not_in_is_still_left_out(self, workspace, store, checkpoints) -> None:
+        workspace.add_channel("G0OTHER", "others", kind="private", members=[BOB], is_member=False)
+        connector, _ = await personal_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert "G0OTHER" not in store.record_groups
+
+
+class TestArchivedChannels:
+    async def test_an_archived_channel_is_synced_and_stays_the_persons_alone(self, workspace, store, checkpoints) -> None:
+        kept = ts_minutes_ago(30)
+        workspace.post(SECRET, kept, BOB, "before archiving")
+        workspace.channels[SECRET]["is_archived"] = True
+        connector, _ = await personal_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert not any(c.params.get("exclude_archived") for c in workspace.calls_to("conversations.list"))
+        assert block_ts(store, SECRET) == [kept]
+        assert store.group_access[SECRET] == []
+        assert store.record_groups[SECRET].inherit_permissions is True
+        assert SECRET in {o.id for o in (await connector.get_filter_options("channel_ids", limit=100)).options}
 
 
 class TestAccountAndTokens:
@@ -198,7 +236,7 @@ class TestTokenScopes:
 
         await connector.run_sync()
 
-        assert set(store.record_groups) == {GENERAL, SECRET, PARTNERS}
+        assert set(store.record_groups) == {GENERAL, SECRET, PARTNERS, RANDOM}
         assert posted in store.records
         assert [c.params["types"] for c in workspace.calls_to("conversations.list")] == [
             "public_channel,private_channel",

@@ -4,8 +4,9 @@ Reconciliation Service
 import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 import hashlib
-from app.models.blocks import BlocksContainer, BlockType
+from app.models.blocks import BlocksContainer, BlockType, GroupSubType
 from app.modules.parsers.table_titles import table_titles
+from app.utils.table_row_memory import without_row_digest
 from app.utils.logger import create_logger
 
 logger = create_logger("reconciliation_service")
@@ -13,8 +14,14 @@ logger = create_logger("reconciliation_service")
 
 def _content_hash(data: Any, title: str | None) -> str:  # noqa: ANN401 - block data is any JSON value
     """A block's data hash; with a title, of the data and the title together."""
+    data = without_row_digest(data)
     payload = json.dumps(data if title is None else {"data": data, "title": title}, sort_keys=True).encode("utf-8")
     return hashlib.sha256(payload).hexdigest() + ":" + hashlib.md5(payload).hexdigest()
+
+
+def _legacy_code_group_hash(text: str) -> str:
+    """A code class's hash as code_file_parser wrote it before EMBED_UNITS_VERSION was folded in."""
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 class ReconciliationMetadata:
@@ -27,21 +34,41 @@ class ReconciliationMetadata:
        The list preserves insertion order: block_group IDs first, then block IDs,
        each sub-group ordered by their position in the container.
     2. block_id_to_index: block_id -> index (int) to locate blocks in the blob for O(1) access
+    3. block_group_ids: which ids are block groups, so a diff never pairs a group with a block.
+       None for metadata written before it was recorded.
     """
 
     def __init__(
         self,
         hash_to_block_ids: Optional[Dict[str, List[str]]] = None,
         block_id_to_index: Optional[Dict[str, int]] = None,
+        block_group_ids: set[str] | None = None,
     ) -> None:
         self.hash_to_block_ids: Dict[str, List[str]] = hash_to_block_ids or {}
         self.block_id_to_index: Dict[str, int] = block_id_to_index or {}
+        self.block_group_ids: set[str] | None = block_group_ids
+        # Not stored: the hashes this container's code classes had before EMBED_UNITS_VERSION, the only
+        # hashes under which legacy metadata (no block_group_ids) can list a group beside blocks.
+        self.legacy_group_hashes: frozenset[str] = frozenset()
+        # How the ids were derived (``block_identity.ID_SCHEME``); None for metadata of random ids.
+        self.id_scheme: str | None = None
+        # The block and group ids that actually had a point in the store when the record was last indexed, as the stray sweep listed
+        # them (None: not recorded, the record predates it). A block that is not in it never had a point (a provider-skipped image, code
+        # with no unit of its own) and is not expected to have one; a block in it whose point is gone lost it.
+        self.pointed_blocks: set[str] | None = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "hash_to_block_ids": self.hash_to_block_ids,
             "block_id_to_index": self.block_id_to_index,
         }
+        if self.block_group_ids is not None:
+            out["block_group_ids"] = sorted(self.block_group_ids)
+        if self.id_scheme is not None:
+            out["idScheme"] = self.id_scheme
+        if self.pointed_blocks is not None:
+            out["pointedBlocks"] = sorted(self.pointed_blocks)
+        return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ReconciliationMetadata":
@@ -50,15 +77,38 @@ class ReconciliationMetadata:
         for bid, val in raw.items():
             if isinstance(val, int):
                 block_id_to_index[bid] = val
-        return cls(
+        groups = data.get("block_group_ids")
+        metadata = cls(
             hash_to_block_ids=data.get("hash_to_block_ids", {}),
             block_id_to_index=block_id_to_index,
+            block_group_ids={g for g in groups if isinstance(g, str)} if isinstance(groups, list) else None,
         )
+        scheme = data.get("idScheme")
+        metadata.id_scheme = scheme if isinstance(scheme, str) else None
+        pointed = data.get("pointedBlocks")
+        metadata.pointed_blocks = {p for p in pointed if isinstance(p, str)} if isinstance(pointed, list) else None
+        return metadata
 
 
 class ReconciliationService:
     def __init__(self, service_logger=None) -> None:
         self.logger = service_logger or logger
+
+    @staticmethod
+    def fill_content_hashes(block_containers: BlocksContainer) -> None:
+        """Set every block's and group's reconciliation hash (idempotent)."""
+        # A table's rows and summary are embedded under its title, so a new title
+        # must re-embed them even when their own data is unchanged.
+        titles = table_titles(block_containers.blocks, block_containers.block_groups)
+        for block_group in block_containers.block_groups:
+            title = titles.get(block_group.index)
+            # A parser's own hash (JSON, SQL) knows nothing of the title.
+            if title is not None or block_group.content_hash is None:
+                block_group.content_hash = _content_hash(block_group.data, title)
+        for block in block_containers.blocks:
+            title = titles.get(block.parent_index) if block.type == BlockType.TABLE_ROW else None
+            if title is not None or block.content_hash is None:
+                block.content_hash = _content_hash(block.data, title)
 
     def build_metadata(self, block_containers: BlocksContainer) -> ReconciliationMetadata:
         """
@@ -72,25 +122,18 @@ class ReconciliationService:
         Returns:
             ReconciliationMetadata with hash mappings
         """
+        self.fill_content_hashes(block_containers)
         hash_to_block_ids: Dict[str, List[str]] = {}
         block_id_to_index: Dict[str, int] = {}
-        # A table's rows and summary are embedded under its title, so a new title
-        # must re-embed them even when their own data is unchanged.
-        titles = table_titles(block_containers.blocks, block_containers.block_groups)
+        block_group_ids: set[str] = set()
 
         for i, block_group in enumerate(block_containers.block_groups):
-            title = titles.get(block_group.index)
-            # A parser's own hash (JSON, SQL) knows nothing of the title.
-            if title is not None or block_group.content_hash is None:
-                block_group.content_hash = _content_hash(block_group.data, title)
             if block_group.content_hash:
                 hash_to_block_ids.setdefault(block_group.content_hash, []).append(block_group.id)
                 block_id_to_index[block_group.id] = i
+                block_group_ids.add(block_group.id)
 
         for i, block in enumerate(block_containers.blocks):
-            title = titles.get(block.parent_index) if block.type == BlockType.TABLE_ROW else None
-            if title is not None or block.content_hash is None:
-                block.content_hash = _content_hash(block.data, title)
             if block.content_hash:
                 hash_to_block_ids.setdefault(block.content_hash, []).append(block.id)
                 block_id_to_index[block.id] = i
@@ -103,10 +146,17 @@ class ReconciliationService:
             f"{len(block_id_to_index)} block index mappings"
         )
 
-        return ReconciliationMetadata(
+        metadata = ReconciliationMetadata(
             hash_to_block_ids=hash_to_block_ids,
             block_id_to_index=block_id_to_index,
+            block_group_ids=block_group_ids,
         )
+        metadata.legacy_group_hashes = frozenset(
+            _legacy_code_group_hash(g.data["text"]) for g in block_containers.block_groups
+            if g.sub_type == GroupSubType.CODE_CLASS and isinstance(g.data, dict)
+            and isinstance(g.data.get("text"), str)
+        )
+        return metadata
 
     def compute_diff(
         self,
@@ -133,6 +183,13 @@ class ReconciliationService:
             - block_ids_to_delete:  old block IDs to remove from Qdrant
             - unchanged_id_map:     new_block_id -> old_block_id for ID preservation
         """
+        if old_metadata.id_scheme != new_metadata.id_scheme:
+            # Ids of another derivation (random ones, before ids followed content) share nothing with
+            # the new ids: every old point goes and every new block is indexed, once.
+            old_ids = {i for ids in old_metadata.hash_to_block_ids.values() for i in ids}
+            new_ids = {i for ids in new_metadata.hash_to_block_ids.values() for i in ids}
+            return new_ids, old_ids - new_ids, {}
+
         remaining_old_hashes: Dict[str, List[str]] = {
             h: list(ids) for h, ids in old_metadata.hash_to_block_ids.items()
         }
@@ -143,18 +200,15 @@ class ReconciliationService:
         for content_hash, new_ids in new_metadata.hash_to_block_ids.items():
             if content_hash in remaining_old_hashes:
                 old_ids = remaining_old_hashes.pop(content_hash)
-                min_len = min(len(new_ids), len(old_ids))
-
-                for i in range(min_len):
-                    unchanged_id_map[new_ids[i]] = old_ids[i]
-
-                # More new duplicates than old -> index the extras
-                for i in range(min_len, len(new_ids)):
-                    blocks_to_index_ids.add(new_ids[i])
-
-                # More old duplicates than new -> delete the extras
-                for i in range(min_len, len(old_ids)):
-                    block_ids_to_delete.add(old_ids[i])
+                for new_part, old_part in self._same_kind_pairs(
+                        content_hash, new_ids, old_ids, new_metadata, old_metadata):
+                    min_len = min(len(new_part), len(old_part))
+                    for i in range(min_len):
+                        unchanged_id_map[new_part[i]] = old_part[i]
+                    # More new duplicates than old -> index the extras
+                    blocks_to_index_ids.update(new_part[min_len:])
+                    # More old duplicates than new -> delete the extras
+                    block_ids_to_delete.update(old_part[min_len:])
             else:
                 # Entirely new content hash -> index all its blocks
                 blocks_to_index_ids.update(new_ids)
@@ -171,6 +225,63 @@ class ReconciliationService:
         )
 
         return blocks_to_index_ids, block_ids_to_delete, unchanged_id_map
+
+    def compute_rekey(
+        self,
+        old_metadata: ReconciliationMetadata,
+        new_metadata: ReconciliationMetadata,
+    ) -> tuple[set[str], set[str], dict[str, str]]:
+        """The diff of a record whose stored ids are of another scheme than its new ones.
+
+        Blocks of unchanged content are paired as in ``compute_diff`` (equal hash, in order) but, as their ids differ, they are not
+        left alone: ``rekey`` maps each old id to the new one so the stored point can be moved to it. Returns
+        ``(blocks_to_index_ids, block_ids_to_delete, rekey)`` with the paired blocks in neither set.
+        """
+        same_scheme = ReconciliationMetadata(
+            hash_to_block_ids=old_metadata.hash_to_block_ids,
+            block_id_to_index=old_metadata.block_id_to_index,
+            block_group_ids=old_metadata.block_group_ids,
+        )
+        same_scheme.id_scheme = new_metadata.id_scheme
+        same_scheme.legacy_group_hashes = old_metadata.legacy_group_hashes
+        to_index, to_delete, paired = self.compute_diff(same_scheme, new_metadata)
+        return to_index, to_delete, {old: new for new, old in paired.items() if old != new}
+
+    @staticmethod
+    def _same_kind_pairs(
+        content_hash: str,
+        new_ids: list[str],
+        old_ids: list[str],
+        new_metadata: ReconciliationMetadata,
+        old_metadata: ReconciliationMetadata,
+    ) -> list[tuple[list[str], list[str]]]:
+        """One hash's (new ids, old ids) split so groups are matched only with groups and blocks only
+        with blocks: a block paired with a group's id keeps the group's vector (code groups have none)
+        while its own is deleted.
+
+        Old metadata that did not record its groups still lists every hash as [groups..., blocks...]
+        (``build_metadata``), so its blocks are the tail of the list and its groups the head. Only a hash
+        a code class had before the group hashes changed can hold an old group's id at all.
+        """
+        new_groups = new_metadata.block_group_ids
+        if new_groups is None:  # the new side's kinds unknown: nothing to split on
+            return [(new_ids, old_ids)]
+        new_g = [i for i in new_ids if i in new_groups]
+        new_b = [i for i in new_ids if i not in new_groups]
+        old_groups = old_metadata.block_group_ids
+        if old_groups is not None:
+            return [(new_g, [i for i in old_ids if i in old_groups]),
+                    (new_b, [i for i in old_ids if i not in old_groups])]
+        # A group's text equals a block's only when the group is that one block (a methodless class), so
+        # at least half of such a hash's ids are blocks. More new blocks than that and the tail can hold
+        # an old group's id, which has no vector: pair nothing, so every new id is indexed.
+        if content_hash in new_metadata.legacy_group_hashes and len(new_b) > (len(old_ids) + 1) // 2:
+            return [(new_ids, []), ([], old_ids)]
+        split = len(old_ids) - min(len(new_b), len(old_ids))
+        head, tail = old_ids[:split], old_ids[split:]
+        # The head is old groups (and any old block beyond the new count); what new groups don't take
+        # is deleted, like any old duplicate left over.
+        return [(new_g, head), (new_b, tail)]
 
     def apply_preserved_ids(
         self,

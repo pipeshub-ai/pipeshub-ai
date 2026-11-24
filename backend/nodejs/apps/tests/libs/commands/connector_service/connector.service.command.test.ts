@@ -6,8 +6,12 @@ import {
   ConnectorServiceCommandOptions,
 } from '../../../../src/libs/commands/connector_service/connector.service.command'
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 describe('ConnectorServiceCommand', () => {
+  beforeEach(() => registerUpstreams({ connector: ['http://connector.local'] }))
+  afterEach(() => registerUpstreams({}))
+
   let fetchStub: sinon.SinonStub
 
   beforeEach(() => {
@@ -35,6 +39,17 @@ describe('ConnectorServiceCommand', () => {
       body: null,
     } as unknown as Response
   }
+
+  it('sends the record content-open header on the outbound request', async () => {
+    fetchStub.resolves(makeFetchResponse(200, {}))
+    await new ConnectorServiceCommand({
+      uri: 'http://connector.local/api/v1/records/r1',
+      method: HttpMethod.GET,
+      headers: { authorization: 'Bearer t', 'X-Record-Content-Open': '1' },
+    }).execute()
+    const sent = new Headers(fetchStub.firstCall.args[1].headers as Record<string, string>)
+    expect(sent.get('x-record-content-open')).to.equal('1')
+  })
 
   describe('constructor', () => {
     it('should set method, body, and sanitized headers', () => {

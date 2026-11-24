@@ -204,7 +204,8 @@ class LocalSyncCoordinator:
         self.ttl_sec = 0
         self.heartbeat_sec = 0
         self._held: dict[str, SyncLease] = {}
-        self._tasks = SyncTaskManager(label="Sync")
+        # Each sync logs its own sync_run.start and sync_run.end.
+        self._tasks = SyncTaskManager(label="Sync", lifecycle_level=logging.DEBUG)
         #: Set once shutdown starts cancelling syncs, so their finalizers do not
         #: hand back requests the next boot's resume will start anyway.
         self.shutting_down = False

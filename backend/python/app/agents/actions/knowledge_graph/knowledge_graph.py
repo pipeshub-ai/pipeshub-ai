@@ -31,13 +31,18 @@ from app.agents.agent_loop.entity_search_tool import (
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
 )
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
-from app.modules.retrieval.selection_scope import connection_sources_of
+from app.modules.retrieval.selection_scope import (
+    connection_sources_of,
+    resolve_user_key,
+    unavailable_message,
+)
 from app.utils.chat_helpers import (
     keep_context_blocks_inside_connection,
     keep_row_summaries_inside_connection,
@@ -86,7 +91,9 @@ def _navigate_args_summary(args: dict[str, Any]) -> str | None:
         base = f"Navigated to node {node_id}"
     else:
         base = "Navigated to root"
-    if page and page > 1:
+    if args.get("cursor"):
+        base += " — next page"
+    elif page and page > 1:
         base += f" — page {page}"
     if depth and depth > 1:
         base += f" (depth {depth})"
@@ -337,6 +344,16 @@ class KnowledgeGraph:
                 default=50,
             ),
             ToolParameter(
+                name="cursor",
+                type=ParameterType.STRING,
+                description=(
+                    "Cursor printed in the previous page's Next: line, copied exactly, with the same node_id "
+                    "and depth. It chooses the next page and keeps that page's filters; page is then ignored. "
+                    "Page numbers stop at 50, a cursor does not."
+                ),
+                required=False,
+            ),
+            ToolParameter(
                 name="depth",
                 type=ParameterType.INTEGER,
                 description=(
@@ -413,6 +430,7 @@ class KnowledgeGraph:
         modified_after: str | None = None,
         modified_before: str | None = None,
         node_types: list[str] | None = None,
+        cursor: str | None = None,
     ) -> tuple[bool, str]:
         """Walk the knowledge graph hierarchy."""
         if not self.state:
@@ -475,7 +493,10 @@ class KnowledgeGraph:
             node_id = record_id_shortener.resolve(node_id)
 
         # Get user key
-        user_key = await _get_user_key(graph_provider, user_id)
+        try:
+            user_key = await _get_user_key(graph_provider, user_id)
+        except PermissionVerificationUnavailableError:
+            return False, unavailable_message()
         if not user_key:
             return False, "User not found."
 
@@ -548,9 +569,11 @@ class KnowledgeGraph:
             org_id=org_id,
             frontend_url=frontend_url,
             excluded_app_ids=excluded_app_ids(state),
+            config_service=state.get("config_service"),
         )
 
         app_names = {c.id: c.name for c in catalog.connectors}
+        cursor = cursor.strip() if cursor else None
 
         try:
             view = await navigator.navigate(
@@ -564,6 +587,7 @@ class KnowledgeGraph:
                 updated_at=updated_at,
                 node_types=node_types,
                 app_names=app_names,
+                cursor=cursor,
             )
             if node_id and view.current is None:
                 return False, NODE_NOT_FOUND_MESSAGE
@@ -604,7 +628,8 @@ class KnowledgeGraph:
 
         fetchable = set(_record_ids_in_view(view))
         cite_refs = await cite_listed_records(state, graph_provider, org_id, _listed_facts(view, fetchable))
-        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener, cite_refs)
+        # A cursor page is past the first: no header, breadcrumbs or related again.
+        text, emitted = render_navigation_view_with_ids(view, 2 if cursor else page, record_id_shortener, cite_refs)
         remember_record_ids(
             state,
             [rid for rid in emitted if rid in fetchable],
@@ -688,7 +713,10 @@ class KnowledgeGraph:
             return False, "No identifiers provided."
         idents = idents[:10]
 
-        user_key = await _get_user_key(graph_provider, user_id)
+        try:
+            user_key = await _get_user_key(graph_provider, user_id)
+        except PermissionVerificationUnavailableError:
+            return False, unavailable_message()
         if not user_key:
             return False, "User not found."
 
@@ -732,6 +760,8 @@ class KnowledgeGraph:
 
         try:
             result = await resolver.resolve_many(idents)
+        except PermissionVerificationUnavailableError:
+            return False, unavailable_message()
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
@@ -948,24 +978,34 @@ class KnowledgeGraph:
 
     @tool(
         path="/tools/knowledgegraph/search_entities",
-        short_description="Find departments, categories, topics, languages, record groups and record titles the user can access",
+        short_description="Find departments, categories, topics, languages, record groups, people, organizations and record titles the user can access",
         description=(
             "Semantic lookup of knowledge-graph entities by name or description: departments, "
-            "categories, subcategories, topics, languages, record groups (a project, space, "
-            "folder, channel, ...) and record titles. Only entities backed by records you can "
-            "access are returned.\n\n"
+            "categories, subcategories, topics, languages, record groups (a Jira project, a "
+            "Confluence space, a folder, a channel, ...), people (members of the organization "
+            "named on records as author, sender, recipient, assignee, reporter, reviewer or "
+            "owner), organizations (customer and prospect companies from CRM accounts, and "
+            "companies or institutions named in two or more documents) and records by title "
+            "(a document, page, file, epic, issue or ticket). Only "
+            "entities backed by records you can access are returned.\n\n"
+            "A name does not tell you its type: 'SAAS Launch' may be an epic (a record), a "
+            "project (a record group) or a topic. Leave entity_types out unless the user named "
+            "the kind of thing; when a type filter matches no name, matches of other types are "
+            "returned in otherTypeMatches.\n\n"
             "Call it when the question names one of these — a team, a topic, a category, a "
-            "project or space, a document title — to find the matching entity, alongside or "
-            "before a content search.\n\n"
+            "project or space, a colleague, a customer, a document title — to find the "
+            "matching entity, alongside or before a content search.\n\n"
             "Results are best match first. Each has entityId, entityType, name and the apps it "
             "appears in. The "
-            "top few department/category/topic/language/record_group results also include a "
+            "top few department/category/topic/language/record_group/person/organization results "
+            "also include a "
             "short preview of records (newest first) with moreRecords when there are more.\n\n"
             "Next steps:\n"
             "  - knowledgegraph__find_records_by_entity(entity_id=...) lists the records "
             "connected to one entity, newest first, with paging.\n"
             "  - search(query=..., entity_ids=[...]) searches content inside a "
-            "department/category/subcategory/topic/language or record_group entity.\n"
+            "department/category/subcategory/topic/language, record_group, person or "
+            "organization entity.\n"
             "  - A 'record' result's entityId is a Record ID: pass it straight to "
             "fetch_record or navigate. A record result with a 'note' exists but its content is "
             "not indexed yet: it cannot be read."
@@ -982,7 +1022,10 @@ class KnowledgeGraph:
                 type=ParameterType.ARRAY,
                 description=(
                     "Optional filter on entity type: 'department', 'category', 'subcategory', "
-                    "'topic', 'language', 'record_group', 'record'. Omit to search all types."
+                    "'topic', 'language', 'record_group', 'person', 'organization', 'record'. "
+                    "Omit it (search every type) unless the user named the kind of thing. An "
+                    "epic, issue, ticket, page or document is 'record'; a Jira project, "
+                    "Confluence space, channel or folder is 'record_group'."
                 ),
                 required=False,
                 items={"type": "string"},
@@ -1064,8 +1107,10 @@ class KnowledgeGraph:
         description=(
             "Given an entityId from search_entities, list the records connected to it that you "
             "can access, newest first: every record tagged with a department, category, "
-            "subcategory, topic or language, every record directly inside a record_group, or "
-            "the record itself for a 'record' entity.\n\n"
+            "subcategory, topic or language, every record directly inside a record_group, every "
+            "record naming a person, every record of an organization's account or naming the "
+            "organization, or the record "
+            "itself for a 'record' entity.\n\n"
             "Use it when the question is about an entity's records as a whole ('what's tagged "
             "Q3 Roadmap', 'what's in this Drive folder', 'Legal's documents'). For content "
             "inside an entity, use search(entity_ids=[...]) instead.\n\n"
@@ -1088,7 +1133,8 @@ class KnowledgeGraph:
                 type=ParameterType.STRING,
                 description=(
                     "The entity's type: 'department', 'category', 'subcategory', 'topic', "
-                    "'language', 'record_group' or 'record'. Optional when the entityId came "
+                    "'language', 'record_group', 'person', 'organization' or 'record'. Optional when the "
+                    "entityId came "
                     "from search_entities in this turn."
                 ),
                 required=False,
@@ -1292,10 +1338,11 @@ class KnowledgeGraph:
 
     @tool(
         path="/tools/knowledgegraph/find_records_by_person",
-        short_description="List the records a person is assigned, reported, created, leads or is mentioned in",
+        short_description="List the records a person is assigned, reported, created, wrote, last edited, received, reviews, owns, leads or is mentioned in",
         description=(
             "List the records the connectors link to a person by role (assignee, reporter, "
-            "creator, lead, mentioned, involved) that you can read, newest first. Use it for "
+            "creator, author, owner, editor, reviewer, recipient, lead, mentioned, involved) that you "
+            "can read, newest first. Use it for "
             "\"tickets assigned to Priya\", \"what did Darshan report\", \"issues created by "
             "dev@acme.com\", \"projects Sam leads\", \"my tickets\" (person=\"me\"). It uses "
             "the links the connectors write (mentioned/involved come from indexing): for any "
@@ -1314,11 +1361,19 @@ class KnowledgeGraph:
             ToolParameter(
                 name="roles",
                 type=ParameterType.ARRAY,
-                description="Optional roles: assignee, reporter, creator, lead, mentioned, involved. Omit for all.",
+                description=(
+                    "Optional roles: assignee, reporter, creator, author (a mail's sender, a comment's "
+                    "writer), owner, editor (who last changed a file or page), shared_with (a file's sharees), reviewer, recipient (to/cc of a "
+                    "mail), lead, mentioned, involved. "
+                    "Omit for all."
+                ),
                 required=False,
                 items={
                     "type": "string",
-                    "enum": ["assignee", "reporter", "creator", "lead", "mentioned", "involved"],
+                    "enum": [
+                        "assignee", "reporter", "creator", "author", "owner", "editor", "shared_with", "reviewer",
+                        "recipient", "lead", "mentioned", "involved",
+                    ],
                 },
             ),
             ToolParameter(
@@ -1545,8 +1600,8 @@ class KnowledgeGraph:
                 name="cursor",
                 type=ParameterType.STRING,
                 description=(
-                    "The next-page token from the selection listed in the prompt. "
-                    "Pass it with any query; the cursor chooses the page. "
+                    "The cursor a previous page's output printed, copied exactly. "
+                    "It chooses the page and keeps that listing's filters; page is then ignored. "
                     "Omit it to start at the first page."
                 ),
                 required=False,
@@ -1718,15 +1773,9 @@ class KnowledgeGraph:
 
 
 async def _get_user_key(graph_provider: Any, user_id: str) -> str | None:
-    """Resolve user_id → internal _key via graph provider."""
-    try:
-        user = await graph_provider.get_user_by_user_id(user_id=user_id)
-        if user:
-            return user.get("_key") or user.get("id")
-        return None
-    except Exception as e:
-        logger.warning("Failed to get user key for %s: %s", user_id, e)
-        return None
+    """Resolve user_id → internal _key via graph provider. None: no such user.
+    Raises ``PermissionVerificationUnavailableError`` when the graph could not answer."""
+    return await resolve_user_key(graph_provider, user_id)
 
 
 # ---------------------------------------------------------------------------

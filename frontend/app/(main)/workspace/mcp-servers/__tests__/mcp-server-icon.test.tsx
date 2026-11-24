@@ -21,19 +21,56 @@ function logo(ui: React.ReactElement): string | null {
   return render(ui).container.querySelector('img')?.getAttribute('alt') ?? null;
 }
 
+/** Path of the shown logo file, so a wrong asset mapping can't pass on alt text alone. */
+function logoPath(ui: React.ReactElement): string | null {
+  const src = render(ui).container.querySelector('img')?.src;
+  return src ? new URL(src, window.location.href).pathname : null;
+}
+
 describe('McpServerIcon', () => {
   it("shows a catalog server's own logo", () => {
     expect(logo(<McpServerIcon typeId="atlassian_rovo" name="Atlassian Rovo" />)).toBe('atlassian icon');
     expect(logo(<McpServerIcon typeId="stripe" name="Stripe" />)).toBe('stripe icon');
   });
 
+  it.each(['Airtable', 'Team records'])("shows Airtable's catalog logo for %s", (name) => {
+    const { container } = render(<McpServerIcon typeId="airtable" name={name} />);
+
+    const image = container.querySelector('img');
+    expect(image?.getAttribute('alt')).toBe('airtable icon');
+    const sourcePath = new URL(image?.src ?? '', window.location.href).pathname;
+    expect(sourcePath).toBe('/icons/connectors/airtable.svg');
+  });
+
   it("shows Microsoft Learn's own logo, not the broad Microsoft match", () => {
     expect(logo(<McpServerIcon typeId="microsoft_learn" name="Microsoft Learn" />)).toBe('microsoft-learn icon');
   });
 
-  it('shows the DocuSign and Okta catalog logos', () => {
+  it.each([
+    { typeId: 'monday', name: 'monday.com' },
+    { typeId: 'monday', name: 'Team tracker' },
+    { typeId: null, name: 'monday.com' },
+  ])("shows monday.com's logo for $name with type $typeId", ({ typeId, name }) => {
+    const { container } = render(<McpServerIcon typeId={typeId} name={name} />);
+
+    const image = container.querySelector('img');
+    expect(image?.getAttribute('alt')).toBe('monday icon');
+    const sourcePath = new URL(image?.src ?? '', window.location.href).pathname;
+    expect(sourcePath).toBe('/icons/connectors/monday.svg');
+    expect(image?.style.filter).toBe('');
+  });
+
+  it('keeps the MCP mark for an unrelated server named after a weekday', () => {
+    const { container } = render(<McpServerIcon name="Monday planning" />);
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('[data-icon="hub"]')).toBeTruthy();
+  });
+
+  it('shows the DocuSign, Okta, and HubSpot catalog logos', () => {
     expect(logo(<McpServerIcon typeId="docusign" name="DocuSign" />)).toBe('docusign icon');
     expect(logo(<McpServerIcon typeId="okta" name="Okta" />)).toBe('okta icon');
+    expect(logo(<McpServerIcon typeId="hubspot" name="HubSpot" />)).toBe('hubspot icon');
   });
 
   it('goes by the catalog type when the server was renamed', () => {
@@ -50,6 +87,45 @@ describe('McpServerIcon', () => {
 
   it("shows Zoom's catalog logo", () => {
     expect(logo(<McpServerIcon typeId="zoom" name="Zoom" />)).toBe('zoom icon');
+  });
+
+  it("shows PayPal's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="paypal" name="PayPal" />)).toBe('paypal icon');
+    expect(logo(<McpServerIcon typeId={null} name="PayPal" />)).toBe('paypal icon');
+  });
+
+  it("shows Egnyte's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="egnyte" name="Egnyte" />)).toBe('egnyte icon');
+    expect(logo(<McpServerIcon typeId={null} name="Egnyte MCP" />)).toBe('egnyte icon');
+  });
+
+  it("shows Intercom's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="intercom" name="Intercom" />)).toBe('intercom icon');
+    expect(logo(<McpServerIcon typeId={null} name="Intercom MCP" />)).toBe('intercom icon');
+    expect(logoPath(<McpServerIcon typeId="intercom" name="Intercom" />)).toBe('/icons/connectors/intercom.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Intercom MCP" />)).toBe('/icons/connectors/intercom.svg');
+  });
+
+  it("shows Granola's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="granola" name="Granola" />)).toBe('granola icon');
+    expect(logo(<McpServerIcon typeId={null} name="Granola MCP" />)).toBe('granola icon');
+    expect(logoPath(<McpServerIcon typeId="granola" name="Granola" />)).toBe('/icons/connectors/granola.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Granola MCP" />)).toBe('/icons/connectors/granola.svg');
+  });
+
+  it("shows Fireflies's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="fireflies" name="Fireflies" />)).toBe('fireflies icon');
+    expect(logo(<McpServerIcon typeId={null} name="Fireflies MCP" />)).toBe('fireflies icon');
+    expect(logoPath(<McpServerIcon typeId="fireflies" name="Fireflies" />)).toBe('/icons/connectors/fireflies.png');
+    expect(logoPath(<McpServerIcon typeId={null} name="Fireflies MCP" />)).toBe('/icons/connectors/fireflies.png');
+  });
+
+  it("shows Fathom's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="fathom" name="Fathom" />)).toBe('fathom icon');
+    expect(logo(<McpServerIcon typeId={null} name="Fathom MCP" />)).toBe('fathom icon');
+    expect(logoPath(<McpServerIcon typeId="fathom" name="Fathom" />)).toBe('/icons/connectors/fathom.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Fathom MCP" />)).toBe('/icons/connectors/fathom.svg');
+    expect(logo(<McpServerIcon typeId={null} name="Unfathomable Drive" />)).toBe('google-drive icon');
   });
 
   it("shows Hugging Face's logo, also for a custom server named after it", () => {
@@ -86,5 +162,52 @@ describe('McpServerIcon', () => {
 
   it("shows Zapier's logo", () => {
     expect(logo(<McpServerIcon typeId="zapier" name="Zapier" />)).toBe('zapier icon');
+  });
+
+  it("shows Trello's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="trello" name="Trello" />)).toBe('trello icon');
+    expect(logo(<McpServerIcon typeId={null} name="Trello" />)).toBe('trello icon');
+  });
+
+  it("shows Cloudflare's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="cloudflare" name="Cloudflare" />)).toBe('cloudflare icon');
+    expect(logo(<McpServerIcon typeId={null} name="Cloudflare" />)).toBe('cloudflare icon');
+  });
+
+  it("shows GitLab's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="gitlab" name="GitLab" />)).toBe('gitlab icon');
+    expect(logo(<McpServerIcon typeId={null} name="GitLab" />)).toBe('gitlab icon');
+  });
+
+  it("shows PostHog's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="posthog" name="PostHog" />)).toBe('posthog icon');
+    expect(logo(<McpServerIcon typeId={null} name="PostHog" />)).toBe('posthog icon');
+  });
+
+  it("shows Lucid's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="lucid" name="Lucid" />)).toBe('lucid icon');
+    expect(logo(<McpServerIcon typeId={null} name="Lucid" />)).toBe('lucid icon');
+  });
+
+  it("shows Miro's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="miro" name="Miro" />)).toBe('miro icon');
+    expect(logo(<McpServerIcon typeId={null} name="Miro" />)).toBe('miro icon');
+  });
+
+  it("shows Instantly's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="instantly" name="Instantly" />)).toBe('instantly icon');
+    expect(logo(<McpServerIcon typeId={null} name="Instantly MCP" />)).toBe('instantly icon');
+    expect(logoPath(<McpServerIcon typeId="instantly" name="Instantly" />)).toBe('/icons/connectors/instantly.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Instantly MCP" />)).toBe('/icons/connectors/instantly.svg');
+  });
+
+  it('shows the Apollo logo for catalog instances and matching custom servers', () => {
+    expect(logoPath(<McpServerIcon typeId="apollo" name="Sales research" />)).toBe('/icons/connectors/apollo.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Apollo MCP" />)).toBe('/icons/connectors/apollo.svg');
+  });
+
+  it('shows the Zapmail logo for catalog instances and matching custom servers', () => {
+    expect(logoPath(<McpServerIcon typeId="zapmail" name="Cold email" />)).toBe('/icons/connectors/zapmail.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Zapmail MCP" />)).toBe('/icons/connectors/zapmail.svg');
   });
 });

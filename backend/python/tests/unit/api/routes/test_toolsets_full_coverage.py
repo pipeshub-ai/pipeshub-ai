@@ -484,16 +484,17 @@ class TestCreateOrUpdateToolsetOAuthConfig:
             assert result is not None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_raises_500(self):
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
 
-        with patch("app.api.routes.toolsets._prepare_toolset_auth_config", new_callable=AsyncMock, side_effect=Exception("fail")):
-            result = await _create_or_update_toolset_oauth_config(
+        with patch("app.api.routes.toolsets._prepare_toolset_auth_config", new_callable=AsyncMock, side_effect=Exception("fail")), \
+             pytest.raises(HTTPException) as exc:
+            await _create_or_update_toolset_oauth_config(
                 "jira", {}, "Jira", "u1", "org1", cs, MagicMock(), "http://localhost"
             )
-            assert result is None
+        assert (exc.value.status_code, exc.value.__cause__ is not None) == (500, True)
 
 
 class TestPrepareToolsetAuthConfig:
@@ -1297,7 +1298,7 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None))):
             result = await handle_toolset_oauth_callback(req, code="auth-code", state=encoded_state, error=None, base_url=None, config_service=cs)
 
         assert result["success"] is True
@@ -1382,7 +1383,7 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None))):
             result = await handle_toolset_oauth_callback(req, code="auth-code", state=encoded_state, error=None, base_url=None, config_service=cs)
 
         assert result["success"] is True
@@ -1568,8 +1569,8 @@ class TestHandleToolsetOAuthCallbackFlows:
         cs.set_config.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_callback_auth_status_update_exception_still_succeeds(self):
-        """Lines 2390-2391 — auth status update exception doesn't block."""
+    async def test_callback_auth_record_read_failure_is_server_error(self):
+        """A callback that can't read the record it must update must not report the toolset connected."""
         from app.api.routes.toolsets import handle_toolset_oauth_callback
         cs = AsyncMock()
         cs.get_config = AsyncMock(side_effect=RuntimeError("etcd fail"))
@@ -1593,9 +1594,11 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": MagicMock(startup_service=MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None))):
             result = await handle_toolset_oauth_callback(req, code="code", state=encoded_state, error=None, base_url=None, config_service=cs)
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "oauth_error=server_error" in result["redirect_url"]
+        cs.set_config.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_refresh_scheduling_failure_still_succeeds(self):
@@ -1628,7 +1631,7 @@ class TestHandleToolsetOAuthCallbackFlows:
              patch("app.api.routes.toolsets._get_oauth_config_by_id", new_callable=AsyncMock, return_value=oauth_cfg), \
              patch("app.api.routes.toolsets._build_oauth_config", new_callable=AsyncMock, return_value={"clientId": "cid", "clientSecret": "cs"}), \
              patch("app.api.routes.toolsets.OAuthProvider", return_value=mock_provider), \
-             patch.dict("sys.modules", {"app.connectors.core.base.token_service.startup_service": mock_startup}):
+             patch("app.connectors.core.base.token_service.startup_service.startup_service", mock_startup.startup_service):
             result = await handle_toolset_oauth_callback(req, code="code", state=encoded_state, error=None, base_url=None, config_service=cs)
 
         assert result["success"] is True

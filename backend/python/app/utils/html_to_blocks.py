@@ -172,14 +172,7 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str]) -> N
             # Flush pending text first
             _flush_buffer(buffer, blocks)
 
-            # Prefer srcset's first candidate, fall back to src
-            src = (child.get("src") or "").strip()
-            srcset = child.get("srcset", "")
-            if srcset:
-                first_candidate = srcset.split(",")[0].split()[0]
-                src = first_candidate or src
-
-            url = _resolve_url(src, base_url)
+            url = _resolve_url(_img_source(child), base_url)
             if url:
                 alt = _clean(child.get("alt", ""))
                 blocks.append(ImageBlock(url=url, alt=alt))
@@ -217,11 +210,22 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str]) -> N
         _walk(child, base_url, blocks, buffer)
 
 
+def _img_source(img: Tag) -> str:
+    """The address an ``<img>`` shows: its ``srcset``'s first candidate, else its ``src``.
+    One rule for images on their own and images inside a block, which used to read only
+    ``src`` and so lost an image given by ``srcset`` alone."""
+    src = (img.get("src") or "").strip()
+    # A candidate's URL runs to the first whitespace and may itself hold commas
+    # ("/resize/w_800,h_600/chart.png 2x"); only commas ending it separate candidates.
+    tokens = (img.get("srcset") or "").split()
+    first = tokens[0].rstrip(",") if tokens else ""
+    return first or src
+
+
 def _walk_images_only(node: Tag, base_url: str, blocks: list[Block]) -> None:
     """Collect images nested inside an already-processed block element."""
     for img in node.find_all("img"):
-        src = (img.get("src") or "").strip()
-        url = _resolve_url(src, base_url)
+        url = _resolve_url(_img_source(img), base_url)
         if url:
             alt = _clean(img.get("alt", ""))
             blocks.append(ImageBlock(url=url, alt=alt))

@@ -12,9 +12,8 @@ outcome.
 
 Every tracked offset must reach exactly one of two ends:
 
-- :meth:`mark_done` -- this delivery is finished with (processed, re-queued,
-  dead-lettered, or superseded by a duplicate delivery that holds the
-  record lease). The watermark may advance past it.
+- :meth:`mark_done` -- this delivery is finished with (processed, re-queued
+  or dead-lettered). The watermark may advance past it.
 - :meth:`mark_redeliver` -- this delivery did *not* finish and must be
   redelivered. The offset becomes a floor: the watermark stops at it until
   the offset is read again and re-tracked.

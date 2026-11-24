@@ -21,7 +21,9 @@ from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
-from app.modules.demo_data.access import is_hidden_demo_record
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.modules.demo_data.access import refuse_hidden_demo_record
+from app.modules.pipeline.parse_now import ParseNow, optional_redis
 from app.modules.retrieval.selection_scope import within_connection
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
@@ -42,6 +44,8 @@ from app.utils.record_reader import (
     read_record,
     read_thread,
 )
+from app.utils.user_lookup import get_document_or_503
+from app.utils.user_messages import DATABASE_UNREACHABLE
 
 if TYPE_CHECKING:
     from app.containers.query import QueryAppContainer
@@ -57,7 +61,6 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
     403, a switched-off demo record a 404. Returns the accessible ids, for the
     fetch to reuse."""
     container: QueryAppContainer = request.app.container
-    logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     try:
@@ -67,23 +70,19 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
             )
-        doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-        try:
-            hidden = await is_hidden_demo_record(
-                graph_provider, container.config_service(), org_id, user_id,
-                (doc or {}).get("connectorId"),
-            )
-        except Exception as exc:
-            logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
-            hidden = False
-        if hidden:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+        doc = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
+        await refuse_hidden_demo_record(
+            graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId"),
+        )
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         return accessible
     except HTTPException:
         raise
+    except PermissionVerificationUnavailableError as exc:  # the access check could not be made: the record routes' 503
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail=DATABASE_UNREACHABLE, headers={"Retry-After": "5"},
+        ) from exc
     except Exception as exc:
-        logger.error("Error checking record access for %s: %s", record_id, exc)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to check record access",
@@ -245,6 +244,10 @@ async def read_record_content(
             user_id=user_id,
             connection_sources=connection_limit(request.state.user),
             accessible=accessible,
+            # A later page reads what the first left stored; it never starts a parse.
+            parse_now=None if start_block else ParseNow(
+                container.config_service(), logger, redis_provider=await optional_redis(container.config_service(), logger),
+            ),
         )
     except Exception as exc:
         logger.error("Error fetching record content for %s: %s", record_id, exc, exc_info=True)
@@ -258,11 +261,13 @@ async def read_record_content(
         # described rather than reported as missing.
         unindexed = (result.get("not_indexed_records") or {}).get(record_id)
         content = (
-            f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'])}"
+            f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'], unindexed.get('preparing'))}"
             if unindexed else "No record found"
         )
-        return {"content": content, "mode": "record", "recordId": record_id, "complete": True,
+        body = {"content": content, "mode": "record", "recordId": record_id, "complete": True,
                 "nextStartBlock": None, "chars": len(content), "maxChars": max_chars}
+        # `complete` stays true: the note is the whole answer for now, and no later block is waiting.
+        return {**body, "preparing": True} if unindexed and unindexed.get("preparing") == "waiting" else body
 
     retrieval_service = None
     if query and query.strip() and start_block is None:

@@ -6,6 +6,7 @@ import pytest
 
 from app.config.constants.arangodb import AppStatus
 from app.connectors.core.constants import ConnectorStateKeys
+from tests.unit.attempt_start import attempt_start_via
 
 
 def _service(doc: dict):
@@ -15,6 +16,7 @@ def _service(doc: dict):
     graph.get_document = AsyncMock(return_value=doc)
     graph.batch_upsert_nodes = AsyncMock()
     graph.update_node = AsyncMock()
+    graph.write_attempt_start = attempt_start_via(graph)
     graph.reset_indexing_status_for_connector = AsyncMock()
     container = MagicMock()
     container.connectors_map = {}

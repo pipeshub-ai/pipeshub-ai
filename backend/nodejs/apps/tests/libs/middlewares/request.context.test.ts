@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context'
+import { injectRequestHeaders } from '../../../src/libs/context/request-context'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -297,6 +298,25 @@ describe('Request Context Middleware', () => {
       expect(req.context.meta.method).to.equal('POST')
       expect(req.context.meta.protocol).to.equal('https')
       expect(req.context.meta.originalUrl).to.equal('/api/v1/users?active=true')
+    })
+  })
+
+  describe('/mcp relay header', () => {
+    it('is forwarded on the service calls the request makes', () => {
+      const req = createMockRequest({ headers: { 'x-pipeshub-mcp-relay': 'relay-1' } })
+      let forwarded: Record<string, string> = {}
+      requestContextMiddleware(req, createMockResponse(), () => {
+        forwarded = injectRequestHeaders({})
+      })
+      expect(forwarded['x-pipeshub-mcp-relay']).to.equal('relay-1')
+    })
+
+    it('is not added when the request has none', () => {
+      let forwarded: Record<string, string> = {}
+      requestContextMiddleware(createMockRequest(), createMockResponse(), () => {
+        forwarded = injectRequestHeaders({})
+      })
+      expect(forwarded).to.not.have.property('x-pipeshub-mcp-relay')
     })
   })
 

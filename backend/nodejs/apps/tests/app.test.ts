@@ -12,6 +12,7 @@ import { Logger } from '../src/libs/services/logger.service';
 import * as telemetryModule from '../src/libs/services/telemetry/telemetry.service';
 import * as metricsRefreshModule from '../src/modules/user_management/services/metrics.refresh.service';
 import { KeyValueStoreService } from '../src/libs/services/keyValueStore.service';
+import { OutboxDispatcher } from '../src/libs/services/outbox/outbox.dispatcher';
 import { MigrationService } from '../src/modules/configuration_manager/services/migration.service';
 import { NotificationService } from '../src/modules/notification/service/notification.service';
 import * as appConfigModule from '../src/modules/tokens_manager/config/config';
@@ -47,6 +48,7 @@ import * as orgAuthConfigRoutes from '../src/modules/auth/routes/orgAuthConfig.r
 import * as storageRoutes from '../src/modules/storage/routes/storage.routes';
 import * as esRoutes from '../src/modules/enterprise_search/routes/es.routes';
 import * as codeGraphRoutes from '../src/modules/enterprise_search/routes/code-graph.routes';
+import * as graphViewRoutes from '../src/modules/enterprise_search/routes/graph-view.routes';
 import * as connectorRoutes from '../src/modules/tokens_manager/routes/connectors.routes';
 import * as oauthRoutes from '../src/modules/tokens_manager/routes/oauth.routes';
 import * as kbRoutes from '../src/modules/knowledge_base/routes/kb.routes';
@@ -54,13 +56,16 @@ import * as artifactsRoutes from '../src/modules/artifacts/routes/artifacts.rout
 import * as notificationRoutes from '../src/modules/notification/routes/notification.routes';
 import * as cmRoutes from '../src/modules/configuration_manager/routes/cm_routes';
 import * as openaiModelsRoutes from '../src/modules/configuration_manager/routes/openai_models.routes';
+import * as openaiCompatRoutes from '../src/modules/openai_compat/routes/openai_compat.routes';
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
+import * as supportRoutes from '../src/modules/support/support.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
 import * as agentRegistrationRoutes from '../src/modules/oauth_provider/routes/agent-registration.routes';
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
 import * as patRoutes from '../src/modules/oauth_provider/routes/pat.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
+import * as agentActivityRoutes from '../src/modules/agent_activity/agent-activity.routes';
 import {
   MCP_BODY_TOO_LARGE_MESSAGE,
   MCP_JSON_BODY_LIMIT_BYTES,
@@ -72,6 +77,7 @@ import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
 import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
+import * as localReposRoutes from '../src/modules/local_repos/routes/local_repos.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
@@ -179,6 +185,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
   sandbox.stub(codeGraphRoutes, 'createCodeGraphRouter').returns(dummyRouter);
+  sandbox.stub(graphViewRoutes, 'createGraphViewRouter').returns(dummyRouter);
   sandbox.stub(connectorRoutes, 'createConnectorRouter').returns(dummyRouter);
   sandbox.stub(oauthRoutes, 'createOAuthRouter').returns(dummyRouter);
   sandbox.stub(kbRoutes, 'createKnowledgeBaseRouter').returns(dummyRouter);
@@ -186,7 +193,10 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(notificationRoutes, 'createNotificationRouter').returns(dummyRouter);
   sandbox.stub(cmRoutes, 'createConfigurationManagerRouter').returns(dummyRouter);
   sandbox.stub(openaiModelsRoutes, 'createOpenAIModelsRouter').returns(dummyRouter);
+  sandbox.stub(openaiCompatRoutes, 'createOpenAICompatRouter').returns(dummyRouter);
   sandbox.stub(mailRoutes, 'createMailServiceRouter').returns(dummyRouter);
+  sandbox.stub(supportRoutes, 'createSupportRouter').returns(dummyRouter);
+  sandbox.stub(supportRoutes, 'createFeedbackRouter').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);
   sandbox.stub(oauthProviderRoutes, 'createOAuthProviderRouter').returns(dummyRouter);
@@ -194,6 +204,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(oauthClientsRoutes, 'createOAuthClientsRouter').returns(dummyRouter);
   sandbox.stub(patRoutes, 'createPatRouter').returns(dummyRouter);
   sandbox.stub(mcpRoutes, 'createMCPRouter').returns(dummyRouter);
+  sandbox.stub(agentActivityRoutes, 'createAgentActivityRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createOIDCDiscoveryRouter').returns(dummyRouter);
   sandbox.stub(oidcRoutes, 'createAuthMdRouter').returns(dummyRouter);
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
@@ -202,6 +213,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
   sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
   sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
+  sandbox.stub(localReposRoutes, 'createLocalReposRouter').returns(dummyRouter);
 }
 
 /**
@@ -215,6 +227,8 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
   // Telemetry — never start the real push loop / Mongo-backed gauge refresh
   sandbox.stub(telemetryModule, 'startTelemetry');
   sandbox.stub(metricsRefreshModule, 'startOrgMetricsRefresh');
+  // Most cases never stop the app, so a started dispatcher would poll a database that is not there for the rest of the run
+  sandbox.stub(OutboxDispatcher.prototype, 'start');
   sandbox.stub(KeyValueStoreService, 'getInstance').returns({} as any);
 
   const containers: Record<string, Container> = {};
@@ -747,12 +761,16 @@ describe('Application', () => {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
 
-      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
-        .map((call) => String(call.args[0]))
-        .filter((line) => line.includes('access-log-probe'));
-      expect(accessLines.some((line) => line.includes('GET /api/v1/access-log-probe '))).to.equal(true);
-      expect(accessLines.some((line) => line.includes('GET /API/v1/access-log-probe-upper '))).to.equal(true);
-      expect(accessLines.some((line) => line.includes('/access-log-probe-page'))).to.equal(false);
+      const accessLines = (mockLogger.info as sinon.SinonStub).getCalls()
+        .filter((call) => call.args[0] === 'http.request.end')
+        .map((call) => call.args[1])
+      // Two API requests (any case), none for the page; the raw path is never on the line.
+      expect(accessLines).to.have.length(2)
+      for (const fields of accessLines) {
+        // The app's catch-all API 404 route answers them.
+        expect(fields).to.include({ method: 'GET', route: '*', status: 404, error_class: 'not_found' })
+        expect(JSON.stringify(fields)).to.not.include('access-log-probe')
+      }
     });
 
     it('writes an access-log line for an API request a mounted router answers', async () => {
@@ -784,11 +802,14 @@ describe('Application', () => {
       }
 
       expect(status).to.equal(200);
-      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
-        .map((call) => String(call.args[0]))
-        .filter((line) => line.includes('probe=mounted-router'));
+      // A health poll is a debug line, with the mount kept and the query left out.
+      const accessLines = (mockLogger.debug as sinon.SinonStub).getCalls()
+        .filter((call) => call.args[0] === 'http.request.end')
+        .map((call) => call.args[1])
       expect(accessLines).to.have.length(1);
-      expect(accessLines[0]).to.include('"GET /api/v1/health?probe=mounted-router HTTP/1.1" 200');
+      expect(accessLines[0]).to.include({ method: 'GET', route: '/api/v1/health/', status: 200, outcome: 'success' });
+      expect(JSON.stringify(accessLines[0])).to.not.include('mounted-router');
+      expect((mockLogger.info as sinon.SinonStub).getCalls().some((call) => call.args[0] === 'http.request.end')).to.equal(false);
     });
   });
 
@@ -1044,8 +1065,8 @@ describe('Application', () => {
 
       const server = (app as any).server as http.Server;
       const listenStub = sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
+        (...args: any[]) => {
+          args[args.length - 1]();
           return server;
         },
       );
@@ -1065,8 +1086,8 @@ describe('Application', () => {
 
         const server = (app as any).server as http.Server;
         const listenStub = sandbox.stub(server, 'listen').callsFake(
-          (_port: number, callback: () => void) => {
-            callback();
+          (...args: any[]) => {
+            args[args.length - 1]();
             return server;
           },
         );
@@ -1076,6 +1097,48 @@ describe('Application', () => {
       } finally {
         restoreEnv('PORT', original);
       }
+    });
+
+    it('should listen on PIPESHUB_BIND_HOST when it is set, and on every interface when it is not', async () => {
+      const original = process.env.PIPESHUB_BIND_HOST;
+      const originalPort = process.env.PORT;
+      process.env.PIPESHUB_BIND_HOST = '127.0.0.1';
+      process.env.PORT = '3000';
+      try {
+        const app = new Application();
+        (app as any).logger = mockLogger;
+
+        const server = (app as any).server as http.Server;
+        const listenStub = sandbox.stub(server, 'listen').callsFake((...args: any[]) => {
+          args[args.length - 1]();
+          return server;
+        });
+
+        await app.start();
+        expect(listenStub.firstCall.args.slice(0, 2)).to.deep.equal([3000, '127.0.0.1']);
+      } finally {
+        restoreEnv('PIPESHUB_BIND_HOST', original);
+        restoreEnv('PORT', originalPort);
+      }
+    });
+
+    it('should reject when the server cannot bind (address not available, port in use)', async () => {
+      const app = new Application();
+      (app as any).logger = mockLogger;
+
+      const server = (app as any).server as http.Server;
+      sandbox.stub(server, 'listen').callsFake(() => {
+        setImmediate(() => server.emit('error', Object.assign(new Error('listen EADDRNOTAVAIL'), { code: 'EADDRNOTAVAIL' })));
+        return server;
+      });
+
+      try {
+        await app.start();
+        expect.fail('Should have rejected');
+      } catch (err: any) {
+        expect(err.code).to.equal('EADDRNOTAVAIL');
+      }
+      expect(server.listenerCount('error')).to.equal(0);
     });
 
     it('should throw if server.listen fails', async () => {

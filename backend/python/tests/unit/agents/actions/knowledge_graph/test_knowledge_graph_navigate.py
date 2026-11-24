@@ -83,6 +83,8 @@ def _make_knowledge_hub_response(items=None, page=1, total=0):
     pag.totalItems = total
     pag.hasNext = False
     pag.hasPrev = False
+    pag.totalCapped = False
+    pag.nextCursor = None
     resp.pagination = pag
     return resp
 
@@ -1913,10 +1915,22 @@ class TestNavigateFailedListing:
             success, text = await KnowledgeGraph(state=state).navigate(page=51)
 
         assert not success
-        assert text.startswith("Listing failed: Page 51 is past the last page a listing reaches (50).")
+        assert text.startswith("Listing failed: Page 51 is past the last page reached by number (50).")
+        assert "Pass the cursor printed with a previous page" in text
         assert "larger limit" in text
-        assert "cursor" not in text
         listing.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_page_past_the_walk_is_reached_by_cursor(self) -> None:
+        state = _make_state(config_service=AsyncMock())
+        state["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        listing = AsyncMock(return_value=_make_knowledge_hub_response(items=[_make_node_item("r51", "Fifty-one")]))
+        with patch("app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes", new=listing):
+            success, text = await KnowledgeGraph(state=state).navigate(page=51, cursor="tok-51")
+
+        assert success, text
+        assert listing.await_args.kwargs["cursor"] == "tok-51"
+        assert "Fifty-one" in text
 
     @pytest.mark.asyncio
     async def test_only_a_listing_too_large_to_read_points_to_a_name_query(self) -> None:

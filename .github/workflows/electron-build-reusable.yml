@@ -9,6 +9,10 @@ on:
         description: 'JSON array of platforms to build, e.g. ["linux"] or ["mac","win","linux"].'
         type: string
         default: '["win", "linux"]'
+      warm_cache_only:
+        description: 'Fill the download cache and stop: skip the build when the cache already holds this exact key.'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,9 +30,9 @@ jobs:
           TARGETS: ${{ inputs.targets }}
         run: |
           ALL='[
-            {"name":"macOS","os":"macos-latest","target":"mac","cache_path":"~/Library/Caches/electron"},
-            {"name":"Windows","os":"windows-latest","target":"win","cache_path":"~/AppData/Local/electron/Cache"},
-            {"name":"Linux","os":"ubuntu-latest","target":"linux","cache_path":"~/.cache/electron"}
+            {"name":"macOS","os":"macos-latest","target":"mac","cache_path":"~/Library/Caches/electron","builder_cache_path":"~/Library/Caches/electron-builder"},
+            {"name":"Windows","os":"windows-latest","target":"win","cache_path":"~/AppData/Local/electron/Cache","builder_cache_path":"~/AppData/Local/electron-builder/Cache"},
+            {"name":"Linux","os":"ubuntu-latest","target":"linux","cache_path":"~/.cache/electron","builder_cache_path":"~/.cache/electron-builder"}
           ]'
           MATRIX=$(jq -cn --argjson all "$ALL" --argjson t "$TARGETS" \
             '{include: [$all[] | select(.target | IN($t[]))]}')
@@ -55,28 +59,40 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Cache Electron binaries
+      # electron-builder also fetches its packaging tools from GitHub releases (AppImage, 7-Zip and fpm on Linux,
+      # NSIS on Windows, dmg tooling on macOS). Cached with Electron so a release-download outage does not fail
+      # the build: the retries below span about two minutes, and such outages have lasted longer.
+      # The key changed when the electron-builder folder was added: an exact hit on the old key is never re-saved.
+      # A pull request can restore only what main saved (release-download-cache.yml fills it), and a lockfile
+      # change misses the exact key, so the prefix restores main's latest: most of what it holds is still current.
+      - name: Cache Electron and electron-builder downloads
+        id: download-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ matrix.cache_path }}
-          key: ${{ runner.os }}-electron-${{ hashFiles('frontend/package-lock.json') }}
+          path: |
+            ${{ matrix.cache_path }}
+            ${{ matrix.builder_cache_path }}
+          key: ${{ runner.os }}-electron-and-builder-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-electron-and-builder-
 
       - name: Install dependencies
+        if: ${{ !(inputs.warm_cache_only && steps.download-cache.outputs.cache-hit == 'true') }}
         run: npm ci --include=dev
 
       - name: Build ${{ matrix.name }} app
+        if: ${{ !(inputs.warm_cache_only && steps.download-cache.outputs.cache-hit == 'true') }}
         shell: bash
         env:
           # Produce unsigned artifacts in CI; wire real signing secrets here later.
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           TARGET: ${{ matrix.target }}
         run: |
-          # Retry to ride out transient GitHub release CDN failures (HTTP 502)
-          # while electron-builder downloads the Electron binary.
+          # Retry to ride out transient GitHub release CDN failures (HTTP 502/504)
+          # while electron-builder downloads what the cache above does not hold.
           for attempt in 1 2 3; do
             if npm run electron:build:"$TARGET"; then
               exit 0
@@ -88,6 +104,7 @@ jobs:
           exit 1
 
       - name: Upload installers
+        if: ${{ !inputs.warm_cache_only }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pipeshub-${{ matrix.target }}

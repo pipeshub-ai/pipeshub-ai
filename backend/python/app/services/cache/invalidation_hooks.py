@@ -31,6 +31,7 @@ __all__ = [
     "init_accessible_records_invalidator",
     "get_accessible_records_invalidator",
     "reset_accessible_records_invalidator",
+    "get_viewer_scope_cache",
     "init_viewer_scope_version",
     "reset_viewer_scope_version",
     "notify_connector_sync_completed",
@@ -70,6 +71,10 @@ def reset_accessible_records_invalidator() -> None:
 def init_viewer_scope_version(cache: "ViewerScopeCache") -> None:
     """Register the cache whose ACL version the permission events below bump."""
     _scope_cache["cache"] = cache
+
+
+def get_viewer_scope_cache() -> "ViewerScopeCache | None":
+    return _scope_cache["cache"]
 
 
 def reset_viewer_scope_version() -> None:
@@ -130,6 +135,27 @@ async def notify_kb_records_changed(kb_id: str, org_id: str | None = None, *, sc
         return
     try:
         await invalidator.on_kb_records_changed(kb_id, org_id)
+    except Exception as e:  # pragma: no cover - the invalidator already swallows
+        _logger.warning("accessible-records invalidation failed: %s", str(e))
+
+
+async def notify_record_vrid_moved(
+    connector_name: "Connectors | str | None" = None,
+    connector_id: str | None = None,
+    external_record_group_id: str | None = None,
+    org_id: str | None = None,
+) -> None:
+    """A record now names another virtual record. Drops its cache entry at once (not coalesced like `notify_record_indexed`)."""
+    invalidator = _state["invalidator"]
+    if invalidator is None:
+        return
+    try:
+        await invalidator.on_record_vrid_moved(
+            connector_name=connector_name,
+            connector_id=connector_id,
+            external_record_group_id=external_record_group_id,
+            org_id=org_id,
+        )
     except Exception as e:  # pragma: no cover - the invalidator already swallows
         _logger.warning("accessible-records invalidation failed: %s", str(e))
 

@@ -13,21 +13,24 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.markdown.image_references import is_inline_raster_image
 from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.document import DoclingDocument
-from docling.document_converter import DocumentConverter
+from docling_core.types.doc.document import DoclingDocument
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.lazy_heavy import require_off_loop
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.html_parser import url_utils
 from app.modules.parsers.text_decoding import decode_text
 from app.utils.converters.caption_map import apply_caption_map
+
+
+if TYPE_CHECKING:
+    from docling.document_converter import DocumentConverter
 
 
 class DoclingHtmlParser:
@@ -47,10 +50,30 @@ class DoclingHtmlParser:
         self,
         logger: logging.Logger | None = None,
         config_service: object | None = None,
+        *,
+        allow_remote_fetch: bool = True,
     ) -> None:
-        self.converter = DocumentConverter(allowed_formats=[InputFormat.HTML])
+        self._converter: "DocumentConverter | None" = None
         self._logger = logger or logging.getLogger(__name__)
         self._config_service = config_service
+        # False for a mail's HTML: fetching its remote images would tell the sender it was read.
+        self._allow_remote_fetch = allow_remote_fetch
+
+    @property
+    def converter(self) -> "DocumentConverter":
+        """The Docling converter, built on first use (this imports ``docling``; see
+        ``app.utils.lazy_heavy``). Call from a worker thread or after ``ensure_docling()``."""
+        if self._converter is None:
+            require_off_loop()
+            from docling.datamodel.base_models import InputFormat
+            from docling.document_converter import DocumentConverter
+
+            self._converter = DocumentConverter(allowed_formats=[InputFormat.HTML])
+        return self._converter
+
+    @converter.setter
+    def converter(self, value: "DocumentConverter") -> None:
+        self._converter = value
 
     def parse_string(self, html_content: str) -> bytes:
         """
@@ -209,7 +232,7 @@ class DoclingHtmlParser:
         if images:
             urls_to_convert = [image["url"] for image in images]
             base64_urls = await ImageParser.urls_to_base64(
-                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+                urls_to_convert, allow_remote_fetch=self._allow_remote_fetch
             )
 
             for i, image in enumerate(images):

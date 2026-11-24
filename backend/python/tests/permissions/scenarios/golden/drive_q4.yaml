@@ -5,8 +5,10 @@
 #   shared-drive items: inherit the drive unless limited access is on; only direct grants are stored:
 #          drive_access.py:38-61 (grants_to_store); the drive group is OPEN, does not inherit the app, granted to members.
 #   the user's My Drive group is granted to its owner: connector.py:1620-1628 (owner_permission)
-#   link shares: "anyone" is not stored; a domain share is dropped (data_source_entities_processor.py:2317-2331),
-#          so a discoverable domain share gives nobody a grant.
+#   link shares: a domain or "anyone" share that Drive search can find (allowFileDiscovery true) is stored as a grant
+#          to an audience group of the enabled people it reaches (connector.py:1388-1401, _discoverable_audience);
+#          a link-only share (allowFileDiscovery false) is stored as nothing. g:domain-members is that group for the
+#          one verified domain everyone here is on, written from the user listing (_write_audience_groups, :1052).
 # Extra principals and nodes (fay, ops folder, notes, legal) exist for the change scenarios.
 principals:
   - {id: lee}
@@ -21,6 +23,7 @@ principals:
   - {id: g:eng, kind: group}
   - {id: g:marketing, kind: group}
   - {id: g:finance, kind: group}
+  - {id: g:domain-members, kind: group}
 nodes:
   - {id: app, kind: app, app_type: GOOGLE_DRIVE}
   - {id: owner:henry, kind: group, connector: app, rule: OPEN, parents: [app], belongs: [app]}
@@ -77,6 +80,14 @@ memberships:
   - [ed, g:eng]
   - [mo, g:marketing]
   - [fay, g:finance]
+  - [lee, g:domain-members]
+  - [ed, g:domain-members]
+  - [ivy, g:domain-members]
+  - [cfo, g:domain-members]
+  - [ceo, g:domain-members]
+  - [mo, g:domain-members]
+  - [henry, g:domain-members]
+  - [fay, g:domain-members]
 gates:
   - [lee, app]
   - [ed, app]

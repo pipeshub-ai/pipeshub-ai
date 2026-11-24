@@ -148,12 +148,18 @@ class TestNeo4jStageStates:
 
     @pytest.mark.asyncio
     async def test_create_merges_on_the_unique_id_and_reports_whether_it_created(self) -> None:
+        document = {
+            "id": "k", "orgId": "o", "virtualRecordId": "v", "rev": "r", "stage": "parse", "status": "QUEUED",
+            "stageVersion": 1, "recordIds": ["r1"], "connectorId": "c", "tier": "heavy", "priority": "interactive",
+            "trigger": "t", "textDigest": "a", "blocksDigest": "b", "textChars": 0, "hasTables": False,
+            "hasImages": False, "updatedAtMs": 1,
+        }
         provider = _neo4j([{"created": True}])
-        assert await provider.stage_state_create({"id": "k", "status": "QUEUED"})
+        assert await provider.stage_state_create(document)
         query = _query(provider.client.execute_query)
         assert "MERGE (n:StageState {id: $id}) ON CREATE SET n += $props" in query
         provider.client.execute_query = AsyncMock(return_value=[{"created": False}])
-        assert await provider.stage_state_create({"id": "k"}) is False
+        assert await provider.stage_state_create(document) is False
 
     @pytest.mark.asyncio
     async def test_cas_takes_the_write_lock_before_reading_status(self) -> None:
@@ -371,11 +377,15 @@ class TestAConnectorDeleteTakesItsStageStates:
     @pytest.mark.asyncio
     async def test_its_stage_states_go_in_the_delete_transaction(self, provider) -> None:
         _connector_delete_ready(provider)
+        order: list[object] = []
+        provider._delete_stage_states_by_connector_id.side_effect = lambda txn, _c: order.append(txn) or (3, True)
+        provider.commit_transaction.side_effect = lambda txn: order.append(f"commit {txn}")
 
         result = await provider.delete_connector_instance("c1", "org1")
 
         assert result["success"] is True
-        provider._delete_stage_states_by_connector_id.assert_awaited_once_with("txn1", "c1")
+        # In the delete transaction, then swept again after the commit, for states written meanwhile.
+        assert order == ["txn1", "commit txn1", None]
         assert "stageStates" in provider.begin_transaction.await_args.kwargs["write"]
         provider.commit_transaction.assert_awaited_once_with("txn1")
 
@@ -470,3 +480,83 @@ class TestRecordContentRevs:
         provider = _arango(side_effect=ConnectionError("graph down"))
         with pytest.raises(ConnectionError):
             await provider.get_record_content_revs(["r1"], **self._SELECTION)
+
+
+class TestAStatusThisReleaseDoesNotKnow:
+    """A later release may write a status value the stored schema accepts (any string)."""
+
+    def _document(self, **overrides: object) -> dict:
+        document = {
+            "id": "vr:rev:classify", "orgId": "o", "virtualRecordId": "vr", "rev": "rev", "stage": "classify",
+            "status": "IN_PROGRESS", "stageVersion": 1, "recordIds": ["r"], "connectorId": "c", "tier": "light",
+            "priority": "bulk", "trigger": "embed", "textDigest": "t", "blocksDigest": "b", "textChars": 1,
+            "hasTables": False, "hasImages": False, "updatedAtMs": 1, "sweepAtMs": 5,
+        }
+        return {**document, **overrides}
+
+    def test_reads_as_foreign_and_ignores_unknown_fields(self) -> None:
+        from app.modules.pipeline.models import ForeignStatus
+        from app.modules.pipeline.state import _from_document
+
+        state = _from_document(self._document(status="SPLIT"))
+
+        assert state.status == ForeignStatus("SPLIT")
+        assert state.attempt == 0
+
+    def test_a_known_status_is_unchanged(self) -> None:
+        from app.config.constants.arangodb import ProgressStatus
+        from app.modules.pipeline.state import _from_document
+
+        assert _from_document(self._document(status="COMPLETED")).status is ProgressStatus.COMPLETED
+
+
+class TestATierOrPriorityThisReleaseDoesNotKnow:
+    """A reader never raises on a value a newer writer may add; one such row never blocks the others."""
+
+    def _document(self, **overrides: object) -> dict:
+        return TestAStatusThisReleaseDoesNotKnow()._document(**overrides)
+
+    def test_an_unknown_tier_is_heavy_and_an_unknown_priority_is_bulk(self) -> None:
+        from app.modules.pipeline.models import Priority
+        from app.modules.pipeline.state import _from_document
+        from app.services.resource_governor.models import ParseTier
+
+        state = _from_document(self._document(tier="nano", priority="urgent"))
+
+        assert state.tier is ParseTier.HEAVY
+        assert state.priority is Priority.BULK
+
+    def test_known_values_are_unchanged(self) -> None:
+        from app.modules.pipeline.models import Priority
+        from app.modules.pipeline.state import _from_document
+        from app.services.resource_governor.models import ParseTier
+
+        state = _from_document(self._document(tier="light", priority="interactive"))
+
+        assert (state.tier, state.priority) == (ParseTier.LIGHT, Priority.INTERACTIVE)
+
+    def test_a_value_is_logged_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.modules.pipeline import models
+        from app.modules.pipeline.state import _from_document
+
+        models._REPORTED.discard(("tier", "pico"))
+        with caplog.at_level("WARNING", logger=models.__name__):
+            for _ in range(3):
+                _from_document(self._document(tier="pico"))
+
+        assert [r.getMessage() for r in caplog.records].count(
+            "Stage state with unknown tier 'pico' (written by a newer release): read as heavy"
+        ) == 1
+
+    @pytest.mark.asyncio
+    async def test_one_bad_row_does_not_stop_get_many_for_its_revision(self) -> None:
+        from app.modules.pipeline.state import GraphStageStateStore
+
+        graph = AsyncMock()
+        graph.stage_states_for_revision = AsyncMock(return_value=[
+            self._document(), self._document(id="vr:rev:entities", stage="entities", tier="nano", priority="urgent"),
+        ])
+
+        states = await GraphStageStateStore(graph).get_many("vr", "rev")
+
+        assert set(states) == {"classify", "entities"}

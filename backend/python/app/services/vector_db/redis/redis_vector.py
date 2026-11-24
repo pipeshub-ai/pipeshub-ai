@@ -40,16 +40,39 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
+import os
 import re
 import time
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.vector_db.errors import OrgRequired
+from app.services.permissions.metrics import (
+    SCOPE_PREFILTER_CAPPED,
+    SCOPE_PREFILTER_DROPPED,
+)
+from app.services.permissions.scope_fields import (
+    PATH_IDS_FIELD,
+    SCOPE_FENCE_FIELD,
+    checked_fence,
+)
+from app.services.vector_db import scope_expr as sx
+from app.services.vector_db.const.const import (
+    CONNECTOR_IDS_FIELD,
+    SCOPE_KEYWORD_INDEXES,
+)
+from app.services.vector_db.errors import (
+    OrgRequired,
+    PartialResult,
+    VectorsNotFetchable,
+)
 from app.services.vector_db.filters import (
+    ScopeFilterTooLarge,
     build_generic_conditions,
+    forbid_fence_in_payload,
     forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
@@ -78,8 +101,13 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 from app.services.vector_db.redis.config import RedisVectorConfig
-from app.services.vector_db.redis.errors import classify_redis_search_error
+from app.services.vector_db.redis.errors import (
+    FilterFieldNotIndexed,
+    IndexBackfilling,
+    classify_redis_search_error,
+)
 from app.services.vector_db.redis.utils import (
+    bytes_to_vector,
     coerce_payload_hash_value,
     decode_hash_doc,
     filter_expression_to_redis_query,
@@ -88,19 +116,29 @@ from app.services.vector_db.redis.utils import (
     parse_ft_hybrid_reply,
     parse_ft_search_reply,
     parse_search_rows,
+    query_fields,
     redisearch_any_term_query,
+    refuse_unsafe_ids,
+    scope_query,
     vector_point_to_hash_fields,
     vector_to_bytes,
     within_values_count,
 )
 from app.utils.logger import create_logger
 from app.utils.loop_local import LoopLocal
+from redis.exceptions import ResponseError
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import redis.asyncio as aioredis
     from app.services.redis.connection_provider import RedisClient
+    from app.services.vector_db.filters import ScopeFilter
 
 logger = create_logger("redis_vector_service")
+
+#: The most candidates a scoped Redis search asks for while it looks for ``limit`` points that pass the exact rule.
+MAX_SCOPE_CANDIDATES = 1000
 
 _REDIS_CAPABILITIES = VectorDBCapabilities(
     supports_sparse_vectors=False,
@@ -121,12 +159,62 @@ _MAX_SEARCH_RESULTS = 10000
 # servers cap a foreground (``search-workers 0``) query at 60 s, so operators who
 # want a hard guarantee can also set ``search-on-timeout FAIL``.
 _NO_TIMEOUT = ("TIMEOUT", "0")
+# RediSearch's default dialect is 1, which drops a clause on a field that is not in the schema (the query then matches every document);
+# dialect 2 answers "Unknown field". Every FT.SEARCH / FT.AGGREGATE names it rather than depend on the server's DEFAULT_DIALECT.
+# FT.HYBRID refuses a DIALECT option (it answers "Unknown field" on its own, as dialect 2 does); its queries are only checked
+# against the schema too (`_require_indexed`), so every path raises the same typed error.
+_DIALECT = ("DIALECT", "2")
+# How long a delete or payload write that names a field still being back-filled waits for the scan (seconds). A back-fill took
+# about 2.5 minutes per 300k documents, so the default covers roughly a million. The wait is inside the call: the
+# message is not redelivered, so it does not use up delivery attempts.
+_BACKFILL_WAIT_ENV = "REDIS_VECTOR_BACKFILL_WAIT_SECONDS"
+_DEFAULT_BACKFILL_WAIT_SECONDS = 600.0
+_BACKFILL_POLL_SECONDS = 1.0
+# The set holds the run id of the server that recorded it: a restart that replays FT.CREATE or FT.ALTER from the AOF rebuilds the
+# index in the background while the server answers, and the set, persisted with the data, must not vouch for that rebuild.
+_THIS_RUN = "local run = 'run:' .. string.match(redis.call('INFO', 'server'), 'run_id:(%x+)')\n"
+# KEYS[1] the set of complete fields, ARGV[1] the index: when FT.INFO says no scan is running, the set becomes the schema of that
+# reply and this run. Lua sees FT.INFO's simple-string replies as {ok = "..."} tables.
+_NOTE_COMPLETE_FIELDS = _THIS_RUN + """
+local function str(v) if type(v) == 'table' then return v.ok end return v end
+local info = redis.call('FT.INFO', ARGV[1])
+local indexing, percent, names = nil, nil, {}
+for i = 1, #info - 1, 2 do
+  local key = str(info[i])
+  if key == 'indexing' then indexing = tonumber(str(info[i + 1]))
+  elseif key == 'percent_indexed' then percent = tonumber(str(info[i + 1]))
+  elseif key == 'attributes' then
+    for _, attribute in ipairs(info[i + 1]) do
+      for j = 1, #attribute - 1 do
+        if str(attribute[j]) == 'attribute' then names[#names + 1] = str(attribute[j + 1]) end
+      end
+    end
+  end
+end
+if indexing == 0 and percent == 1 and #names > 0 then
+  redis.call('DEL', KEYS[1])
+  redis.call('SADD', KEYS[1], run, unpack(names))
+  return 1
+end
+return 0
+"""
+# KEYS[1] the set of complete fields: its members when this server run recorded it, else none.
+_COMPLETE_FIELDS = _THIS_RUN + """
+if redis.call('SISMEMBER', KEYS[1], run) == 1 then return redis.call('SMEMBERS', KEYS[1]) end
+return {}
+"""
+# How long a key lookup waits for documents written just before it to show up in the index (0.75 s in all).
+_SETTLE_ATTEMPTS = 5
+_SETTLE_DELAY_SECONDS = 0.05
 
 # Page size for paged deletes and aggregate-cursor reads.
 _DELETE_PAGE_SIZE = 500
 
 # How long RediSearch keeps an idle aggregate cursor alive between reads.
 _CURSOR_MAX_IDLE_MS = 300000
+# Past the search window a scroll reads by cursor: rows read per round trip, and cursors kept open for the next page of a scroll.
+_SCROLL_CURSOR_COUNT = 10000
+_SCROLL_CURSORS_KEPT = 8
 
 # Fallback for when the service was built without a parsed config.
 _DEFAULT_MAX_CONCURRENT_SEARCHES = 8
@@ -159,6 +247,15 @@ def _is_unknown_index_error(exc: Exception) -> bool:
     )
 
 
+def _backfill_wait_seconds() -> float:
+    """The bound on waiting for a field's back-fill: ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS``, or the default when unset or not a number."""
+    try:
+        wait = float(os.environ[_BACKFILL_WAIT_ENV])
+    except (KeyError, ValueError):
+        return _DEFAULT_BACKFILL_WAIT_SECONDS
+    return max(0.0, wait) if math.isfinite(wait) else _DEFAULT_BACKFILL_WAIT_SECONDS
+
+
 class RedisVectorService(IVectorDBService):
     """Redis >= 8.4 vector DB provider implementing IVectorDBService."""
 
@@ -176,6 +273,8 @@ class RedisVectorService(IVectorDBService):
         self._collection_configs: dict[str, CollectionConfig] = {}
         # Dense vector dtype applied to all indexes; set from config on connect().
         self._dense_dtype: str = "FLOAT16"
+        # (index, query) -> (position, cursor id) of the cursor the last past-the-window page left open
+        self._scroll_cursors: dict[tuple[str, str], tuple[int, int]] = {}
         self._max_concurrent_searches: int = _DEFAULT_MAX_CONCURRENT_SEARCHES
 
     # ------------------------------------------------------------------
@@ -459,7 +558,13 @@ class RedisVectorService(IVectorDBService):
             "recordGroupIds", "TAG",
             "rootRecordGroupIds", "TAG",
         ]
-        await self.client.execute_command(*cmd)  # type: ignore
+        self._schema_fields.pop(idx, None)
+        # A record left by an earlier index of this name must not vouch for this one, which may be reading stored hashes.
+        await self.client.execute_command("DEL", self._complete_key(idx))  # type: ignore
+        try:
+            await self.client.execute_command(*cmd)  # type: ignore
+        finally:
+            self._schema_fields.pop(idx, None)
         logger.info(
             f"Created Redis collection/index '{idx}' "
             f"(dim={config.embedding_size}, dtype={self._dense_dtype})"
@@ -509,7 +614,10 @@ class RedisVectorService(IVectorDBService):
         # Drop index (DD = also delete documents)
         with contextlib.suppress(Exception):
             await self.client.execute_command("FT.DROPINDEX", idx, "DD")  # type: ignore
+        with contextlib.suppress(Exception):  # create_collection clears it again before it reuses the name
+            await self.client.execute_command("DEL", self._complete_key(idx))  # type: ignore
         self._collection_configs.pop(collection_name, None)
+        self._schema_fields.pop(idx, None)
         logger.info(f"Deleted Redis collection '{collection_name}'")
 
     async def create_index(
@@ -522,18 +630,30 @@ class RedisVectorService(IVectorDBService):
 
         field_name uses ``metadata.`` prefix convention (e.g. ``metadata.orgId``).
         We convert ``metadata.x`` → ``metadata_x`` for the Redis hash field alias.
-        No JSONPath prefix is needed for ON HASH indexes.
+        No JSONPath prefix is needed for ON HASH indexes. A failure other than
+        "already in the schema" is raised so the caller knows the field is not
+        searchable.
         """
         self._assert_connected()
         idx = self._index_name(collection_name)
         redis_alias = field_name.replace(".", "_")
-        field_type = "TAG" if field_schema.get("type") == "keyword" else "TEXT"
+        field_type = {"keyword": "TAG", "integer": "NUMERIC"}.get(field_schema.get("type"), "TEXT")
+        # Before the ALTER: its scan would hide, until it ends, that every field already in the schema is complete. Best effort: a
+        # failure here only makes writes by those fields wait for the scan.
+        with contextlib.suppress(Exception):
+            await self._note_complete_fields(idx)
         try:
-            await self.client.execute_command(  # type: ignore
-                "FT.ALTER", idx,
-                "SCHEMA", "ADD",
-                redis_alias, field_type,
-            )
+            # The scope fields are new in this release line: tags that tell `X` from `x`, so an exclusion can be carried by the query. (The membership
+            # tags created with the index in older releases cannot be changed and keep matching without case.)
+            case = ["CASESENSITIVE"] if field_type == "TAG" and field_name in {name for name, _ in SCOPE_KEYWORD_INDEXES} else []
+            try:
+                await self.client.execute_command(  # type: ignore
+                    "FT.ALTER", idx,
+                    "SCHEMA", "ADD",
+                    redis_alias, field_type, *case,
+                )
+            finally:
+                self._schema_fields.pop(idx, None)
         except Exception as e:
             err = str(e).lower()
             # Silently skip fields that are already part of the schema.
@@ -541,7 +661,7 @@ class RedisVectorService(IVectorDBService):
             # "duplicate field in schema".
             if "already exists" in err or "duplicate field" in err:
                 return
-            logger.warning(f"FT.ALTER failed for field '{field_name}': {e}")
+            raise
 
     # ------------------------------------------------------------------
     # Filter construction
@@ -660,6 +780,9 @@ class RedisVectorService(IVectorDBService):
         idx = self._index_name(collection_name)
         base_filter, raw_count_limits = split_values_count_conditions(filter)
         query = filter_expression_to_redis_query(base_filter)
+        # Before the first page is read: a clause on a field the index lacks must stop the delete, not shrink it.
+        await self._require_indexed(idx, query)
+        await self._require_settled(idx, query)
         # Redis hash fields cannot contain dots, so a canonical key like
         # "metadata.x" is stored and echoed back as "metadata_x". Normalise once:
         # looking the value up under the canonical name misses, and a miss reads
@@ -668,12 +791,16 @@ class RedisVectorService(IVectorDBService):
             (key.replace(".", "_"), limit) for key, limit in raw_count_limits
         ]
 
-        if count_limits:
-            total_deleted = await self._delete_filtered(
-                collection_name, idx, query, count_limits
-            )
-        else:
-            total_deleted = await self._delete_all_matching(collection_name, idx, query)
+        total_deleted = 0
+        while True:
+            if count_limits:
+                total_deleted += await self._delete_filtered(collection_name, idx, query, count_limits)
+            else:
+                total_deleted += await self._delete_all_matching(collection_name, idx, query)
+            # A scan that started during the walk (the collection re-created over hashes an asynchronous FT.DROPINDEX DD had not
+            # removed yet) can hold matches the pages did not see: once it ends, walk again.
+            if not await self._require_settled(idx, query):
+                break
 
         logger.info(
             f"Deleted {total_deleted} points from Redis collection '{collection_name}'"
@@ -691,12 +818,14 @@ class RedisVectorService(IVectorDBService):
         total_deleted = 0
         while True:
             try:
-                raw = await self.client.execute_command(  # type: ignore
+                raw = await self._ft_query(
                     "FT.SEARCH", idx, query,
                     "NOCONTENT",
                     "LIMIT", "0", str(_DELETE_PAGE_SIZE),
                     *_NO_TIMEOUT,
                 )
+            except FilterFieldNotIndexed:
+                raise
             except Exception as e:
                 # Do not swallow: callers treat a returned delete as complete and
                 # go on to drop the VRID->doc mapping, which would leave the
@@ -734,13 +863,15 @@ class RedisVectorService(IVectorDBService):
         """
         load = ["@__key"] + [f"@{key}" for key, _ in count_limits]
         try:
-            raw = await self.client.execute_command(  # type: ignore
+            raw = await self._ft_query(
                 "FT.AGGREGATE", idx, query,
                 "LOAD", str(len(load)), *load,
                 *_NO_TIMEOUT,
                 "WITHCURSOR", "COUNT", str(_DELETE_PAGE_SIZE),
                 "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
             )
+        except FilterFieldNotIndexed:
+            raise
         except Exception as e:
             logger.warning(
                 f"FT.AGGREGATE cursor unavailable on '{collection_name}' ({e}); "
@@ -812,12 +943,14 @@ class RedisVectorService(IVectorDBService):
                     f"deleted so far. Narrow the filter or raise MAXSEARCHRESULTS."
                 )
             try:
-                raw = await self.client.execute_command(  # type: ignore
+                raw = await self._ft_query(
                     "FT.SEARCH", idx, query,
                     "RETURN", str(len(return_fields)), *return_fields,
                     "LIMIT", str(offset), str(_DELETE_PAGE_SIZE),
                     *_NO_TIMEOUT,
                 )
+            except FilterFieldNotIndexed:
+                raise
             except Exception as e:
                 raise RuntimeError(
                     f"Paged delete on '{collection_name}' aborted after "
@@ -912,6 +1045,46 @@ class RedisVectorService(IVectorDBService):
         ]
         await self._hset_keys(collection_name, payload, keys)
 
+    generation_fence = True
+
+    # One script is one atomic step on the server: the org and the fence are read and the hash written with no other command between.
+    # A stored fence that is not a number is an error, not a skip or an overwrite. A missing key and another org's point are left alone (HSET would create a bare hash); a hash without a fence counts as the oldest.
+    _FENCED_HSET = (
+        "if redis.call('HGET', KEYS[1], 'metadata_orgId') ~= ARGV[2] then return 0 end "
+        "local f = redis.call('HGET', KEYS[1], ARGV[3]) "
+        "if f then if not tonumber(f) then return redis.error_reply('stored scopeFence is not a number') end "
+        "if tonumber(f) > tonumber(ARGV[1]) then return 0 end end "
+        "redis.call('HSET', KEYS[1], ARGV[3], ARGV[1], unpack(ARGV, 4)) return 1")
+
+    async def update_payloads_by_ids(self, collection_name: str, updates: Mapping[str, dict], *, org_id: str, **extra: object) -> None:
+        """With ``fence=n``: one pipeline of ``_FENCED_HSET`` scripts, one per point. Without a fence it is ``update_payload_by_ids`` for
+        each distinct payload."""
+        fence = extra.pop("fence", None)
+        if fence is None:
+            await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
+            return
+        fence = checked_fence(fence)
+        self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        for payload in updates.values():
+            forbid_org_in_payload(payload)
+            forbid_fence_in_payload(payload)
+        if not updates:
+            return
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point_id, payload in updates.items():
+            flat: list[Any] = []
+            for field, value in payload.items():
+                flat += [field.replace(".", "_"), coerce_payload_hash_value(value)]
+            pipeline.execute_command("EVAL", self._FENCED_HSET, 1, self._key(collection_name, point_id), int(fence), org_id,
+                                     SCOPE_FENCE_FIELD, *flat)
+        results = await pipeline.execute()
+        failed = [r for r in results or [] if isinstance(r, Exception)]
+        if failed:
+            raise RuntimeError(f"Redis fenced payload write on '{collection_name}' had {len(failed)} failed command(s) of {len(updates)}. "
+                               f"First error: {failed[0]}")
+
     async def _hset_matching(
         self,
         collection_name: str,
@@ -922,8 +1095,13 @@ class RedisVectorService(IVectorDBService):
 
         Redis HSET is inherently a merge, so overwrite and set share one body.
         """
-        keys = await self._keys_matching_filter(collection_name, filter_expr)
-        await self._hset_keys(collection_name, payload, keys)
+        idx, query = self._index_name(collection_name), filter_expression_to_redis_query(filter_expr)
+        while True:
+            keys = await self._keys_matching_filter(collection_name, filter_expr)
+            await self._hset_keys(collection_name, payload, keys)
+            # As in delete_points: a scan that started meanwhile can hold matches the key scan did not see.
+            if not await self._require_settled(idx, query):
+                break
 
     async def _hset_keys(self, collection_name: str, payload: dict, keys: list[str]) -> None:
         """Per-command results are checked for the same reason upsert_points
@@ -947,6 +1125,15 @@ class RedisVectorService(IVectorDBService):
                 f"failed HSET command(s) of {len(keys)}. "
                 f"First error: {results[failed[0]]}"
             )
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        self._assert_connected()
+        counted = await self._ft_query(
+            "FT.SEARCH", self._index_name(collection_name), filter_expression_to_redis_query(count_filter), "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+        )
+        if not isinstance(counted, (list, tuple)) or not counted:
+            raise PartialResult(f"{collection_name}: unexpected count reply {counted!r}")
+        return int(counted[0])
 
     async def scroll(
         self,
@@ -976,17 +1163,21 @@ class RedisVectorService(IVectorDBService):
             except (ValueError, TypeError):
                 int_offset = 0
 
-        # RediSearch refuses offsets past MAXSEARCHRESULTS (10k by default).
-        # Refused here, not on the page before: that page is still returned,
-        # with a next_offset, so the caller sees every point the window holds
-        # and cannot mistake the ceiling for the end of the scroll.
-        if int_offset >= _MAX_SEARCH_RESULTS:
-            raise ScrollWindowExceededError(
-                f"Scroll of '{collection_name}' reached the RediSearch result "
-                f"ceiling at offset {int_offset} (MAXSEARCHRESULTS). Narrow the "
-                f"filter or raise MAXSEARCHRESULTS; continuing would silently "
-                f"drop the remainder."
-            )
+        # FT.SEARCH refuses offsets past MAXSEARCHRESULTS (10k by default), and its pages of an unsorted match set can repeat and skip
+        # points (the order of a LIMIT without SORTBY is not guaranteed, and it moved with other indexes' writes on a shared server). A
+        # match set larger than the window is therefore read by one cursor, start to end (FT.AGGREGATE ... WITHCURSOR, no offset
+        # bound), and so is every page the cursor already left a place for.
+        cached = self._cursor_cache().get((idx, query))
+        if int_offset >= _MAX_SEARCH_RESULTS or (cached is not None and cached[0] == int_offset):
+            try:
+                return await self._scroll_past_window(collection_name, idx, query, int_offset, limit, with_payload)
+            except FilterFieldNotIndexed:
+                raise
+            except Exception as e:
+                raise ScrollWindowExceededError(
+                    f"Scroll of '{collection_name}' reached the RediSearch result ceiling at offset {int_offset} "
+                    f"(MAXSEARCHRESULTS) and FT.AGGREGATE could not continue it: {e}"
+                ) from e
 
         # With ON HASH and no RETURN/NOCONTENT clause, FT.SEARCH returns all
         # hash fields for each matching document.  dense_embedding is skipped
@@ -995,18 +1186,28 @@ class RedisVectorService(IVectorDBService):
             [key.replace(".", "_") for key in with_payload] if with_payload else []
         )
         if return_fields:
-            raw = await self.client.execute_command(  # type: ignore
+            raw = await self._ft_query(
                 "FT.SEARCH", idx, query,
                 "RETURN", str(len(return_fields)), *return_fields,
                 "LIMIT", str(int_offset), str(limit),
                 *_NO_TIMEOUT,
             )
         else:
-            raw = await self.client.execute_command(  # type: ignore
+            raw = await self._ft_query(
                 "FT.SEARCH", idx, query,
                 "LIMIT", str(int_offset), str(limit),
                 *_NO_TIMEOUT,
             )
+
+        if int_offset == 0 and isinstance(raw, (list, tuple)) and raw and str(raw[0]).isdigit() and int(raw[0]) > _MAX_SEARCH_RESULTS:
+            try:
+                return await self._scroll_past_window(collection_name, idx, query, 0, limit, with_payload)
+            except FilterFieldNotIndexed:
+                raise
+            except Exception as e:
+                raise ScrollWindowExceededError(
+                    f"Scroll of '{collection_name}' has more than {_MAX_SEARCH_RESULTS} matches and FT.AGGREGATE could not read it: {e}"
+                ) from e
 
         points: list[VectorPoint] = []
         total_count = 0
@@ -1049,6 +1250,91 @@ class RedisVectorService(IVectorDBService):
         next_offset: str | None = str(next_page_start) if more_available else None
         return ScrollResult(points=points, next_offset=next_offset)
 
+    async def _scroll_past_window(
+        self, collection_name: str, idx: str, query: str, offset: int, limit: int, with_payload: list[str] | None,
+    ) -> ScrollResult:
+        """One page at *offset* (past MAXSEARCHRESULTS) through ``FT.AGGREGATE ... WITHCURSOR``: the keys of the page, then their fields.
+        A cursor is not bounded by the offset cap (``LIMIT`` is). The order is the index's, the same as the pages before the window, so the
+        position is a cursor that survives a call: the cursor the last page left is kept for the page that follows it, and any other
+        offset reads and drops the rows before it."""
+        keys = await self._cursor_keys(idx, query, offset, limit)
+        total = await self._ft_query("FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT)
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        wanted = [key.replace(".", "_") for key in with_payload] if with_payload else None
+        for key in keys:
+            if wanted:
+                pipeline.execute_command("HMGET", key, *wanted)
+            else:
+                pipeline.execute_command("HGETALL", key)
+        replies = await pipeline.execute()
+        points: list[VectorPoint] = []
+        for key, reply in zip(keys, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            if wanted:
+                doc = decode_hash_doc({name: value for name, value in zip(wanted, reply) if value is not None})
+            else:
+                doc = decode_hash_doc(reply)
+            if doc:
+                points.append(VectorPoint(id=key.split(":")[-1], payload=hash_doc_to_payload(doc)))
+        nxt = offset + len(keys)
+        more = len(keys) == limit and nxt < int(total[0])
+        return ScrollResult(points=points, next_offset=str(nxt) if more else None)
+
+    def _cursor_cache(self) -> dict[tuple[str, str], tuple[int, int]]:
+        return self.__dict__.setdefault("_scroll_cursors", {})
+
+    async def _cursor_keys(self, idx: str, query: str, offset: int, limit: int) -> list[str]:
+        """The document keys at positions ``offset`` .. ``offset + limit`` of the query's match set, by cursor."""
+        cache = self._cursor_cache()
+        cached = cache.pop((idx, query), None)
+        cursor, position = 0, 0
+        raw = None
+        if cached is not None and cached[0] == offset:
+            cursor, position = cached[1], offset
+            try:
+                raw = await self.client.execute_command("FT.CURSOR", "READ", idx, cursor, "COUNT", str(limit))  # type: ignore
+            except Exception:  # expired or evicted: read again from the start
+                cursor, position, raw = 0, 0, None
+        elif cached is not None:
+            with contextlib.suppress(Exception):
+                await self.client.execute_command("FT.CURSOR", "DEL", idx, cached[1])  # type: ignore
+        keys: list[str] = []
+        try:
+            while True:
+                if raw is None:
+                    raw = await self._ft_query(
+                        "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key", *_NO_TIMEOUT,
+                        "WITHCURSOR", "COUNT", str(max(1, min(_SCROLL_CURSOR_COUNT, offset or limit))), "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
+                    )
+                rows, cursor, _ = parse_aggregate_rows(raw)
+                for key, _fields in rows:
+                    if position >= offset and len(keys) < limit:
+                        keys.append(key.decode() if isinstance(key, bytes) else key)
+                    position += 1
+                if len(keys) >= limit or not cursor:
+                    break
+                raw = await self.client.execute_command(  # type: ignore
+                    "FT.CURSOR", "READ", idx, cursor,
+                    "COUNT", str(min(_SCROLL_CURSOR_COUNT, offset - position) if position < offset else limit),
+                )
+        except BaseException:
+            if cursor:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(self.client.execute_command("FT.CURSOR", "DEL", idx, cursor))  # type: ignore
+            raise
+        if cursor and len(keys) >= limit and position == offset + len(keys):
+            cache[(idx, query)] = (position, cursor)
+            while len(cache) > _SCROLL_CURSORS_KEPT:
+                (evicted_idx, _), (_, evicted) = next(iter(cache.items()))
+                del cache[next(iter(cache))]
+                with contextlib.suppress(Exception):
+                    await self.client.execute_command("FT.CURSOR", "DEL", evicted_idx, evicted)  # type: ignore
+        elif cursor:
+            with contextlib.suppress(Exception):
+                await self.client.execute_command("FT.CURSOR", "DEL", idx, cursor)  # type: ignore
+        return keys
+
     def scroll_offset_after_delete(
         self, next_offset: str | None, deleted: int,
     ) -> str | None:
@@ -1060,6 +1346,44 @@ class RedisVectorService(IVectorDBService):
             return str(max(0, int(next_offset) - deleted))
         except (TypeError, ValueError):
             return next_offset
+
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: str | None = None,
+    ) -> ScrollResult:
+        """``scroll`` plus each point's stored ``dense_embedding`` (one pipelined ``HGET`` per point, decoded with the index's dtype).
+
+        The whole match set comes back in **one** query (one snapshot, no paging: the pages of an unsorted match set can repeat and skip
+        points), so *limit* is not a page size here and ``next_offset`` is always None. A match set larger than one query can return
+        (``MAXSEARCHRESULTS``, 10,000) raises ``VectorsNotFetchable``: the caller embeds instead of moving points.
+        """
+        if offset:
+            return ScrollResult(points=[], next_offset=None)  # everything came with the first call
+        idx = self._index_name(collection_name)
+        counted = await self._ft_query(
+            "FT.SEARCH", idx, filter_expression_to_redis_query(scroll_filter), "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+        )
+        total = int(counted[0]) if isinstance(counted, (list, tuple)) and counted else 0
+        if total == 0:
+            return ScrollResult(points=[], next_offset=None)
+        if total > _MAX_SEARCH_RESULTS:
+            raise VectorsNotFetchable(f"'{collection_name}': {total} matches, more than one query returns ({_MAX_SEARCH_RESULTS})")
+        page = await self.scroll(collection_name, scroll_filter, total, None)
+        page.next_offset = None
+        if not page.points:
+            return page
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point in page.points:
+            pipeline.execute_command("HGET", self._key(collection_name, point.id), "dense_embedding")
+        replies = await pipeline.execute()
+        for point, reply in zip(page.points, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            point.dense_vector = bytes_to_vector(reply, self._dense_dtype) if reply else None
+        return page
 
     async def retrieve_points(
         self,
@@ -1081,6 +1405,22 @@ class RedisVectorService(IVectorDBService):
             if doc:
                 points.append(VectorPoint(id=point_id, payload=hash_doc_to_payload(doc)))
         return points
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        self._assert_connected()
+        if not ids:
+            return set()
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point_id in ids:
+            pipeline.execute_command("EXISTS", self._key(collection_name, point_id))
+        replies = await pipeline.execute()
+        found: set[str] = set()
+        for point_id, reply in zip(ids, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            if reply:
+                found.add(point_id)
+        return found
 
     async def query_nearest_points(
         self,
@@ -1109,7 +1449,36 @@ class RedisVectorService(IVectorDBService):
         collection_name: str,
         req: HybridSearchRequest,
     ) -> list[SearchResult]:
-        """Execute one FT.HYBRID query and return SearchResult list.
+        """One search; with a scope filter, until ``req.limit`` points pass the exact rule or the candidates run out.
+
+        The query is already narrowed by the scope filter, but a tag query compares without case (and the connectors it excludes were read just
+        before): a point it returns that the exact rule refuses is dropped (:meth:`_exact_scope`). Dropping after the limit was applied would
+        leave fewer than ``limit`` points although the next candidates are valid, so a search that lost points asks for twice as many, up to
+        ``MAX_SCOPE_CANDIDATES``, and keeps the first ``limit`` that pass."""
+        if req.scope_filter is None:
+            return await self._search_once(idx, collection_name, req, req.limit)
+        asked = req.limit
+        while True:
+            found = await self._search_once(idx, collection_name, req, asked)
+            kept = self._exact_scope(req, found, count=False)
+            if len(kept) >= req.limit or len(found) < asked or asked >= MAX_SCOPE_CANDIDATES:
+                if len(kept) != len(found):      # counted once, on the answer that is returned, not on every widening
+                    SCOPE_PREFILTER_DROPPED.inc("redis", value=len(found) - len(kept))
+                if len(kept) < req.limit and len(found) >= asked:      # the candidates ran into the cap, not out: an answer that may be short
+                    SCOPE_PREFILTER_CAPPED.inc("redis")
+                    logger.warning("scoped Redis search asked for %d candidates, %d passed the exact rule, %d wanted: the answer may be short",
+                                   asked, len(kept), req.limit)
+                return kept[: req.limit]
+            asked = min(asked * 2, MAX_SCOPE_CANDIDATES)
+
+    async def _search_once(
+        self,
+        idx: str,
+        collection_name: str,
+        req: HybridSearchRequest,
+        limit: int,
+    ) -> list[SearchResult]:
+        """Execute one FT.HYBRID query for ``limit`` points and return SearchResult list.
 
         When ``dense_query`` is None the caller expects text-only search
         (e.g. no embedding model configured).  All other errors propagate so
@@ -1122,16 +1491,21 @@ class RedisVectorService(IVectorDBService):
         filter_query = ""
         if req.filter is not None and not req.filter.is_empty():
             filter_query = filter_expression_to_redis_query(req.filter)
+        if req.scope_filter is not None:
+            scope = await self._scope_query(idx, req.scope_filter)
+            filter_query = scope if filter_query in ("", "*") else f"({filter_query}) {scope}"      # ANDed with the request's own filter, never in its place
 
         text_query = redisearch_any_term_query(req.text_query or "")
         search_query = _combine_text_and_filter(text_query, filter_query)
+        # Same typed refusal as the FT.SEARCH paths (the server would also error here, but with a message only).
+        await self._require_indexed(idx, search_query, filter_query)
 
         if req.dense_query is None:
             # Dense vector required for FT.HYBRID; use text-only FT.SEARCH
-            return await self._text_only_search(idx, search_query, req.limit)
+            return await self._text_only_search(idx, search_query, limit)
 
         vec_bytes = vector_to_bytes(req.dense_query, self._dense_dtype)
-        k = req.limit
+        k = limit
         window = max(k * 2, 20)
 
         # FT.HYBRID <idx>
@@ -1168,13 +1542,17 @@ class RedisVectorService(IVectorDBService):
         ]
 
         # FT.HYBRID errors propagate — do NOT silently fall back to text-only.
-        raw = await self.client.execute_command(*cmd)  # type: ignore
+        try:
+            raw = await self.client.execute_command(*cmd)  # type: ignore
+        except ResponseError as e:
+            await self._refuse_if_unknown_field(idx, e, search_query, filter_query)
+            raise
         key_score_pairs = parse_ft_hybrid_reply(raw)
 
         if not key_score_pairs:
             return []
 
-        if not req.with_payload:
+        if not req.with_payload and req.scope_filter is None:
             return [
                 SearchResult(
                     id=key.rsplit(":", 1)[-1] if ":" in key else key,
@@ -1199,6 +1577,63 @@ class RedisVectorService(IVectorDBService):
 
         return results
 
+    @staticmethod
+    def _exact_scope(req: HybridSearchRequest, results: list[SearchResult], *, count: bool = True) -> list[SearchResult]:
+        """What the scope filter admits, decided again on the points themselves with the exact rule (case-sensitive ids, the connectors the point
+        holds now). The query already narrowed the search, but a tag query compares without case and the connectors it excludes were read just
+        before the search: a point it let through that the rule refuses is dropped and counted, so the answer never holds more than the rule admits."""
+        if req.scope_filter is None:
+            return results
+        node = sx.admits(req.scope_filter)
+        kept = [r for r in results if sx.evaluate(node, r.payload)]
+        if count and len(kept) != len(results):
+            SCOPE_PREFILTER_DROPPED.inc("redis", value=len(results) - len(kept))
+        return kept if req.with_payload else [replace(r, payload={}) for r in kept]
+
+    async def _scope_query(self, idx: str, flt: ScopeFilter) -> str:
+        """The scope filter as an FT query. "Every connector is current" needs the connectors the index holds that are not (RediSearch can only
+        exclude values): they are read with ``FT.TAGVALS`` just before the search. A connector that first appears in between could be missed; the
+        post-check still applies."""
+        sx.check_size(flt, "Redis")
+        refuse_unsafe_ids(flt)
+        node = sx.admits(flt)
+        # With a case-sensitive ``pathIds`` the query carries the excluded and pending scopes. Without it they are left out and enforced by the exact
+        # check on the points the query returns: a case-insensitive tag query would drop a point that stores ``X`` for an excluded ``x``. Blocked
+        # connectors are always left to the exact check (``connectorIds`` is not case-sensitive in the indexes that exist).
+        # shortcut: on an index with case-insensitive tags, blocked (always) and pending (and excluded) are filtered after top-k, a recall cost the
+        # widening loop covers; it goes away when the index is rebuilt with CASESENSITIVE tags (blocked stays: connectorIds is not case-sensitive)
+        leave_out = [sx.Has(CONNECTOR_IDS_FIELD, tuple(sorted(flt.blocked)))]
+        if PATH_IDS_FIELD not in await self._case_sensitive_fields(idx):      # an index from before the scope tags were case-sensitive
+            leave_out += [sx.Has(PATH_IDS_FIELD, tuple(sorted(flt.excluded))), sx.Has(PATH_IDS_FIELD, tuple(sorted(flt.pending)))]
+        node = sx.relax(node, leave_out)
+        outside: dict[str, tuple[str, ...]] = {}
+        if node != sx.FALSE:
+            held = await self.client.execute_command("FT.TAGVALS", idx, CONNECTOR_IDS_FIELD)  # type: ignore
+            stale = tuple(sorted({v.decode() if isinstance(v, bytes) else str(v) for v in held} - set(flt.current)))
+            if len(stale) > sx.MAX_IDS["Redis"]:
+                raise ScopeFilterTooLarge(f"Redis: the index holds more than {sx.MAX_IDS['Redis']} connectors outside the filter")
+            outside[CONNECTOR_IDS_FIELD] = stale
+        return scope_query(node, outside)
+
+    async def _case_sensitive_fields(self, idx: str) -> frozenset[str]:
+        """The TAG fields of the index declared ``CASESENSITIVE`` (read from ``FT.INFO``, kept for a minute; unreadable means none)."""
+        cache: dict[str, tuple[float, frozenset[str]]] = self.__dict__.setdefault("_case_fields", {})
+        hit = cache.get(idx)
+        now = time.monotonic()
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        found: set[str] = set()
+        try:
+            attributes = _parse_ft_info(await self.client.execute_command("FT.INFO", idx)).get("attributes") or []  # type: ignore
+            for attribute in attributes:
+                tokens = [t.decode() if isinstance(t, bytes) else str(t) for t in attribute]
+                if "CASESENSITIVE" in tokens and "identifier" in tokens:
+                    found.add(tokens[tokens.index("identifier") + 1])
+        except Exception:
+            found = set()
+        cache[idx] = (now + 60.0, frozenset(found))
+        return cache[idx][1]
+
     async def _text_only_search(
         self, idx: str, query: str, limit: int
     ) -> list[SearchResult]:
@@ -1208,7 +1643,7 @@ class RedisVectorService(IVectorDBService):
         default. ``parse_ft_search_reply`` handles the flat field list and
         ignores the binary ``dense_embedding`` blob via ``decode_hash_doc``.
         """
-        raw = await self.client.execute_command(  # type: ignore
+        raw = await self._ft_query(
             "FT.SEARCH", idx, query or "*",
             "LIMIT", "0", str(limit),
         )
@@ -1217,7 +1652,24 @@ class RedisVectorService(IVectorDBService):
     async def _keys_matching_filter(
         self, collection_name: str, filter_expr: FilterExpression
     ) -> list[bytes]:
-        """Return all Redis keys in a collection matching a filter expression.
+        """Return all Redis keys in a collection matching a filter expression, waiting briefly for an index
+        still settling after a write: a scan that finds fewer than it counted is read again, and raises only
+        when it stays short. Callers such as the scope back-fill do not retry, so a short scan would cost them
+        the record."""
+        delay = _SETTLE_DELAY_SECONDS
+        for attempt in range(_SETTLE_ATTEMPTS):
+            keys, total = await self._scan_matching_keys(collection_name, filter_expr)
+            if len(keys) >= total:
+                return keys
+            if attempt + 1 < _SETTLE_ATTEMPTS:
+                await asyncio.sleep(delay)
+                delay *= 2
+        raise RuntimeError(f"Key lookup on '{collection_name}' returned {len(keys)} of {total} counted key(s)")
+
+    async def _scan_matching_keys(
+        self, collection_name: str, filter_expr: FilterExpression
+    ) -> tuple[list[bytes], int]:
+        """The keys a scan finds and the number a count query reported for the same filter.
 
         Read through an aggregate cursor, not ``FT.SEARCH ... LIMIT offset``: an unsorted offset page is not
         stable across calls (documents still settling in the index move between pages), so a page-by-page
@@ -1226,22 +1678,24 @@ class RedisVectorService(IVectorDBService):
         keys than a count query reported for the same filter raises instead of answering with a part. The
         count is a separate ``FT.SEARCH ... LIMIT 0 0``: the first integer of an aggregate reply is not
         defined as the number of matches. Documents may change between the two calls, so only a scan that
-        finds fewer than counted raises (a retry by the caller then sees a settled index).
+        finds fewer than counted is short.
         """
         idx = self._index_name(collection_name)
         query = filter_expression_to_redis_query(filter_expr)
+        await self._require_indexed(idx, query)
+        await self._require_settled(idx, query)
 
         found: dict[bytes, None] = {}
         total = 0
         cursor = 0
         try:
-            counted = await self.client.execute_command(  # type: ignore
+            counted = await self._ft_query(
                 "FT.SEARCH", idx, query, "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
             )
             if not isinstance(counted, (list, tuple)) or not counted:
                 raise RuntimeError(f"unexpected count reply {counted!r}")
             total = int(counted[0])
-            reply = await self.client.execute_command(  # type: ignore
+            reply = await self._ft_query(
                 "FT.AGGREGATE", idx, query, "LOAD", "1", "@__key",
                 "WITHCURSOR", "COUNT", "1000", *_NO_TIMEOUT,
             )
@@ -1266,6 +1720,8 @@ class RedisVectorService(IVectorDBService):
                 with contextlib.suppress(Exception):
                     await asyncio.shield(self.client.execute_command("FT.CURSOR", "DEL", idx, cursor))  # type: ignore
             raise
+        except FilterFieldNotIndexed:
+            raise
         except Exception as e:
             if cursor:
                 with contextlib.suppress(Exception):  # best effort; the cursor expires on its own
@@ -1276,11 +1732,138 @@ class RedisVectorService(IVectorDBService):
                 f"Key lookup on '{collection_name}' failed after {len(found)} key(s): {e}"
             ) from e
 
-        if len(found) < total:
-            raise RuntimeError(
-                f"Key lookup on '{collection_name}' returned {len(found)} of {total} counted key(s)"
-            )
-        return list(found)
+        return list(found), total
+
+    # ------------------------------------------------------------------
+    # Query guards
+    # ------------------------------------------------------------------
+
+    @property
+    def _schema_fields(self) -> dict[str, frozenset[str]]:
+        """index name → the fields of its schema (FT.INFO), dropped when this process creates, alters or drops the index."""
+        return self.__dict__.setdefault("_schema_cache", {})
+
+    async def _read_index(self, idx: str) -> tuple[frozenset[str], float | None, bool] | None:
+        """``FT.INFO`` of the index as (schema fields, percent indexed, still back-filling); None when the index does not exist.
+
+        A reply with no schema attribute, or with no way to tell whether it is still indexing, is an error: the caller would
+        refuse everything, or trust a search that may be missing documents.
+        """
+        try:
+            raw = await self.client.execute_command("FT.INFO", idx)  # type: ignore
+        except Exception as e:
+            if _is_unknown_index_error(e):
+                return None
+            raise
+        info = _parse_ft_info(raw)
+        names: set[str] = set()
+        for attribute in info.get("attributes") or []:
+            tokens = [t.decode() if isinstance(t, bytes) else str(t) for t in attribute]
+            for key in ("attribute", "identifier"):
+                if key in tokens[:-1]:
+                    names.add(tokens[tokens.index(key) + 1])
+        if not names:
+            raise RuntimeError(f"Redis index '{idx}': FT.INFO reply carries no schema attributes")
+        try:
+            percent = float(info["percent_indexed"])
+            indexing = int(info["indexing"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise RuntimeError(f"Redis index '{idx}': FT.INFO reply does not say whether the index is still indexing") from e
+        fields = frozenset(names)
+        self._schema_fields[idx] = fields
+        return fields, percent, bool(indexing) or percent < 1.0
+
+    async def _indexed_fields(self, idx: str, *, refresh: bool = False) -> frozenset[str] | None:
+        """The fields of the index's schema, or None when the index does not exist.
+
+        Kept until this process creates, alters or drops the index. Another process can alter it too, so a
+        field missing from the kept copy is looked up again before it is refused (`_require_indexed`).
+        """
+        known = None if refresh else self._schema_fields.get(idx)
+        if known is not None:
+            return known
+        read = await self._read_index(idx)
+        return None if read is None else read[0]
+
+    @staticmethod
+    def _complete_key(idx: str) -> str:
+        """The set beside the index (``<index>.complete_fields``) of the fields an idle FT.INFO showed in its schema. No ``:``: a
+        document key is ``<collection>:<id>`` and a collection name is ``[a-z0-9_]``, so it is never a document's key or under a prefix."""
+        return f"{idx}.complete_fields"
+
+    async def _note_complete_fields(self, idx: str) -> bool:
+        """An idle FT.INFO reply proves every field in its schema fully indexed. Read and recorded in one script, so a drop and
+        re-create of the index in between cannot make the old schema vouch for the new index. A field does not become incomplete
+        again until the index is dropped (create_collection and delete_collection clear the set) or the server restarts (the set
+        is only read back in the run that recorded it)."""
+        return bool(await self.client.execute_command("EVAL", _NOTE_COMPLETE_FIELDS, "1", self._complete_key(idx), idx))  # type: ignore
+
+    async def _complete_fields(self, idx: str) -> frozenset[str]:
+        raw = await self.client.execute_command("EVAL", _COMPLETE_FIELDS, "1", self._complete_key(idx))  # type: ignore
+        return frozenset(m.decode() if isinstance(m, bytes) else str(m) for m in raw or ())
+
+    async def _require_settled(self, idx: str, query: str) -> bool:
+        """Hold a delete or payload write until the fields its filter names are fully indexed (:class:`IndexBackfilling` after the bound).
+
+        ``FT.CREATE`` over stored hashes and an ``FT.ALTER`` that adds a field return at once and index the stored documents in the
+        background (minutes on a large collection); until then a field matches only the documents reached, so a write built on it
+        would leave some behind. FT.INFO does not say which fields are being filled, so a field counts as complete only once some
+        process saw it in the schema of an idle index (:meth:`_note_complete_fields`, also called by create_index before its ALTER).
+        Proof, not a record of work in flight: no interleaving of processes, lost reply or clock can make a field being filled look
+        complete. A write that names only complete fields runs during a scan; one that names any other field waits inside this call,
+        polling ``FT.INFO``, for at most ``REDIS_VECTOR_BACKFILL_WAIT_SECONDS`` (a wait is not a failed delivery), then raises.
+        Returns whether it waited: the scan it waited for may have indexed matches the caller has not seen yet.
+        """
+        named = query_fields(query)
+        deadline = time.monotonic() + _backfill_wait_seconds()
+        waited = False
+        while True:
+            read = await self._read_index(idx)
+            if read is None:
+                return waited
+            # The script reads FT.INFO again: an index re-created in between is busy there, and its answer decides.
+            if not read[2] and await self._note_complete_fields(idx):
+                return waited
+            if named <= await self._complete_fields(idx):
+                return waited
+            if time.monotonic() >= deadline:
+                raise IndexBackfilling(idx, read[1])
+            waited = True
+            await asyncio.sleep(_BACKFILL_POLL_SECONDS)
+
+    async def _require_indexed(self, idx: str, *queries: str) -> None:
+        """Refuse a query that names a field the index does not hold (:class:`FilterFieldNotIndexed`)."""
+        wanted = frozenset().union(*(query_fields(q) for q in queries))
+        if not wanted:
+            return
+        known = await self._indexed_fields(idx)
+        if known is None:  # no such index: the command itself reports it
+            return
+        if wanted <= known:
+            return
+        known = await self._indexed_fields(idx, refresh=True) or frozenset()
+        if not wanted <= known:
+            raise FilterFieldNotIndexed(idx, wanted - known)
+
+    async def _ft_query(self, command: str, idx: str, query: str, *args: Any) -> Any:  # noqa: ANN401
+        """``FT.SEARCH`` / ``FT.AGGREGATE`` with the query checked against the schema and the dialect pinned."""
+        await self._require_indexed(idx, query)
+        try:
+            return await self.client.execute_command(command, idx, query, *_DIALECT, *args)  # type: ignore
+        except ResponseError as e:
+            await self._refuse_if_unknown_field(idx, e, query)
+            raise
+
+    async def _refuse_if_unknown_field(self, idx: str, error: ResponseError, *queries: str) -> None:
+        """The server answered "Unknown field": the kept schema is out of date (the index was dropped and rebuilt without the field).
+        Forget it, read the live one and raise the typed refusal; any other error is left to the caller."""
+        if "unknown field" not in str(error).lower():
+            return
+        self._schema_fields.pop(idx, None)
+        known = await self._indexed_fields(idx, refresh=True) or frozenset()
+        missing = frozenset().union(*(query_fields(q) for q in queries)) - known
+        if missing:
+            raise FilterFieldNotIndexed(idx, missing) from error
 
     # ------------------------------------------------------------------
     # Internal guards

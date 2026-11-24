@@ -9,7 +9,7 @@ import {
   InternalServerError,
 } from '../../errors/http.errors';
 import { ownUnit } from './token-unit';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import {
   Params,
   assertOrg,
@@ -353,7 +353,15 @@ async function insert(
     ['awaiting_direct_upload', i.awaitingDirectUpload ?? null],
     [
       'artifact_set',
-      json(storageInfo(i.artifactSet, ['virtualRecordId', 'rev', 'root'])),
+      json(
+        storageInfo(i.artifactSet, [
+          'virtualRecordId',
+          'rev',
+          'contentRev',
+          'writeId',
+          'root',
+        ]),
+      ),
     ],
     ['retired_at', i.retiredAt ?? null],
     ['created_at', created],
@@ -1114,27 +1122,37 @@ export class PgDocumentRepository implements DocumentRepository, Importable {
       input.artifactSet?.virtualRecordId,
       input.artifactSet?.rev,
     ];
-    const { rows } = await k.query<Row>(
-      fill(
-        `/* pipeshub:content.document_artifact_touch */ UPDATE content.documents
-        SET updated_at = $4, artifact_set = artifact_set - 'retiringAt'
-        WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3
-          AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $5)
-        RETURNING @{COLS}`,
-        { COLS },
-      ),
-      [...key, new Date(now), now - staleMs],
-    );
-    if (rows[0]) return docOf(rows[0]);
+    const touch = async (): Promise<DocumentRow | null> => {
+      const { rows } = await k.query<Row>(
+        fill(
+          `/* pipeshub:content.document_artifact_touch */ UPDATE content.documents
+          SET updated_at = GREATEST($4::timestamptz, updated_at + interval '1 millisecond'),
+            artifact_set = artifact_set - 'retiringAt'
+          WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3
+            AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $5)
+          RETURNING @{COLS}`,
+          { COLS },
+        ),
+        [...key, new Date(now), now - staleMs],
+      );
+      return rows[0] ? docOf(rows[0]) : null;
+    };
+    const touched = await touch();
+    if (touched) return touched;
     const { rowCount } = await k.query(
       `/* pipeshub:content.document_artifact_present */ SELECT 1 FROM content.documents
       WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3`,
       key,
     );
-    if ((rowCount ?? 0) > 0)
+    if ((rowCount ?? 0) > 0) {
+      // Created by a concurrent presign between the two statements: touch it once more. Only a revision that is still
+      // refused (claimed by a delete that has not gone stale) is a conflict.
+      const again = await touch();
+      if (again) return again;
       throw new ConflictError(
         'This revision is being deleted; write it again once the delete has finished',
       );
+    }
     return null;
   }
 

@@ -1,6 +1,7 @@
 """The PostgreSQL graph provider (``DATA_STORE=postgres``): it is opt-in, it comes from the factory over the shared database runtime, and it keeps up with the graph interface."""
 from __future__ import annotations
 
+import ast
 import inspect
 import logging
 import os
@@ -14,12 +15,19 @@ from app.services.graph_db.postgres import core
 from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase
 from app.services.graph_db.postgres.codegraph import CodeGraphMixin
 from app.services.graph_db.postgres.delete import DeleteMixin
-from app.services.graph_db.postgres.hierarchy import HierarchyMixin
+from app.services.graph_db.postgres.hierarchy import HierarchyMixin, HubMixin
 from app.services.graph_db.postgres.identity import IdentityMixin
+from app.services.graph_db.postgres.kb import KbMixin
+from app.services.graph_db.postgres.kb_listings import KbListingsMixin
+from app.services.graph_db.postgres.legacy_migrations import LegacyMigrationMixin
 from app.services.graph_db.postgres.lookups import LookupsMixin
+from app.services.graph_db.postgres.organizations import OrganizationsMixin
+from app.services.graph_db.postgres.people import PeopleMixin
 from app.services.graph_db.postgres.permissions import PermissionsMixin
 from app.services.graph_db.postgres.provider import PostgresGraphProvider, unimplemented
 from app.services.graph_db.postgres.records import RecordsMixin
+from app.services.graph_db.postgres.sync_state import SyncStateMixin
+from app.services.graph_db.postgres.taxonomy import TaxonomyMixin
 from app.services.graph_db.postgres.trash import TrashMixin
 
 FACTORY = "app.services.graph_db.graph_db_provider_factory.GraphDBProviderFactory"
@@ -107,7 +115,8 @@ def _mismatches(name: str) -> list[str]:
 
 
 IMPLEMENTED = sorted(n for n, _ in inspect.getmembers(IGraphDBProvider, inspect.isfunction)
-                     if not n.startswith("_") and n not in unimplemented() and n in {*vars(core.CoreMixin), *vars(PermissionsMixin), *vars(IdentityMixin), *vars(CodeGraphMixin), *vars(RecordsMixin), *vars(HierarchyMixin), *vars(TrashMixin), *vars(LookupsMixin), *vars(DeleteMixin)})
+                     if not n.startswith("_") and n not in unimplemented() and n in {*vars(core.CoreMixin), *vars(PermissionsMixin), *vars(IdentityMixin), *vars(CodeGraphMixin), *vars(RecordsMixin), *vars(HierarchyMixin), *vars(HubMixin), *vars(TrashMixin), *vars(LookupsMixin), *vars(DeleteMixin), *vars(KbMixin), *vars(KbListingsMixin), *vars(SyncStateMixin), *vars(TaxonomyMixin), *vars(LegacyMigrationMixin),
+                                                       *vars(PeopleMixin), *vars(OrganizationsMixin)})
 
 
 @pytest.mark.parametrize("name", IMPLEMENTED)
@@ -124,7 +133,8 @@ def test_the_foundation_implements_the_generic_documents_and_edges() -> None:
 
 def test_no_name_is_defined_by_a_mixin_and_the_base_class() -> None:
     """A name defined twice is silently decided by the MRO."""
-    names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin, IdentityMixin, CodeGraphMixin, RecordsMixin, HierarchyMixin, TrashMixin, LookupsMixin, DeleteMixin)}
+    names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin, IdentityMixin, CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, KbMixin, KbListingsMixin, SyncStateMixin, TaxonomyMixin, LegacyMigrationMixin,
+                                                                                                 PeopleMixin, OrganizationsMixin)}
     mixins = list(names)
     assert not [n for i, a in enumerate(mixins) for b in mixins[i + 1:] for n in names[a] & names[b]], "defined by two mixins"
     assert not [n for ns in names.values() for n in ns if n in vars(PgBase)]
@@ -141,7 +151,8 @@ def test_the_provider_keeps_the_config_service_callers_read_from_it() -> None:
 HELPERS = ["_normalize_name", "_normalized_name_variants_lower", "_generate_upload_message", "_analyze_upload_structure", "_populate_file_destinations"]
 CALLER_METHODS = ["_get_kb_context_for_record", "_fetch_existing_file_names_in_parent", "_validate_upload_context", "get_user_app_ids",
                   "get_user_permission_app_ids", "_create_reindex_event_payload", "delete_inherit_permissions_relation_record_group", "get_user_apps",
-                  "delete_all_edges_for_node", "get_template", "clone_agent_template"]
+                  "delete_all_edges_for_node", "get_template", "clone_agent_template", "get_all_agent_templates", "update_agent_template",
+                  "delete_agent_template", "get_all_agents", "update_agent", "delete_agent"]
 
 
 def _providers() -> list[type]:
@@ -156,6 +167,42 @@ def test_every_provider_has_every_method_callers_use(provider: type) -> None:
     for name in CALLER_METHODS:
         assert name in IGraphDBProvider.__abstractmethods__
         assert callable(getattr(provider, name))
+
+
+def _raises_only(fn: ast.AST) -> bool:
+    body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
+    exc = body[0].exc if len(body) == 1 and isinstance(body[0], ast.Raise) else None
+    exc = exc.func if isinstance(exc, ast.Call) else exc
+    return isinstance(exc, ast.Name) and exc.id == "NotImplementedError"
+
+
+def raising_defaults() -> set[str]:
+    """Interface methods that are not abstract but whose default only raises NotImplementedError: a store that does not override one raises
+    wherever it is called, and nothing flags it at construction (unlike an abstract method, which ``unimplemented()`` stubs and lists)."""
+    tree = ast.parse(inspect.getsource(inspect.getmodule(IGraphDBProvider)))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == IGraphDBProvider.__name__)
+    return {f.name for f in cls.body if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and f.name not in IGraphDBProvider.__abstractmethods__ and _raises_only(f)}
+
+
+# Raising defaults PostgreSQL may leave unimplemented, each with the reason it is safe to.
+RAISING_DEFAULTS_NOT_ON_POSTGRES = {
+    # data repairs of the other stores; their app/migrations/*_migration.py callers catch NotImplementedError and skip
+    "backfill_app_org_ids", "split_link_edges", "backfill_hierarchy", "drop_redundant_group_edges", "normalize_folder_mime_types", "stamp_kh_listing_state",
+    # only the Neo4j and ArangoDB browse paths call these (_with_readable_children and _kh_v3_scoped_start_access); PostgreSQL browses in kh_browse.py
+    "_kh_v3_child_ids", "_kh_v3_declared_scope", "_kh_v3_start_lineage",
+    # only with ACL_SCOPE_FIELDS on or ACL_FILTER_MODE shadow/scopes (off by default); there a search fails at start and a vector point stays on the
+    # legacy filter (marked stale). shortcut: the scope filter is not served on PostgreSQL, implement both views before it is
+    "permission_hierarchy_view", "permission_stamp_graph",
+}
+
+
+def test_every_raising_default_of_the_interface_is_overridden_by_the_postgres_provider_or_allowed_with_a_reason() -> None:
+    raising = raising_defaults()
+    mro = PostgresGraphProvider.__mro__
+    missing = {n for n in raising if not any(n in vars(c) for c in mro[:mro.index(IGraphDBProvider)])}
+    assert {"remove_user_access_to_connector", "get_virtual_record_holders", "set_record_properties"} <= raising      # the scan still finds them
+    assert sorted(missing - RAISING_DEFAULTS_NOT_ON_POSTGRES) == [], "the interface's default raises: implement it on PostgreSQL"
+    assert sorted(RAISING_DEFAULTS_NOT_ON_POSTGRES - missing) == [], "allowed but implemented (or no longer a raising default): drop it from the list"
 
 
 @pytest.mark.parametrize("name", CALLER_METHODS)
@@ -188,3 +235,72 @@ async def test_ping_runs_one_constant_select_through_the_service_role() -> None:
     db.runtime_uow.return_value.__aexit__ = AsyncMock(return_value=False)
     await PgBase(logging.getLogger("t"), db).ping()
     tx.fetchval.assert_awaited_once_with("/* pipeshub:graph.ping */ SELECT 1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("org_id", "found"), [("o1", True), ("o2", False)])
+async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, found: bool) -> None:
+    """An ``org_id`` is checked against the bound org, never put into the query: a different org reads as no user. (None is refused:
+    test_an_org_argument_of_none_is_refused_even_inside_an_org.)"""
+    from app.core.org_context import for_org
+    from app.services.graph_db.postgres import identity
+
+    p = object.__new__(IdentityMixin)
+    p.logger = logging.getLogger("t")
+    p._principals_by_email = AsyncMock(return_value=[{"doc": {"email": "a@x.io"}}])      # the vetted read, which takes the ambient org itself
+    user = object()
+    with for_org("o1", job="t"), patch.object(identity, "_arango", lambda d, _c: d), \
+            patch.object(identity.User, "from_arango_user", return_value=user):
+        got = await p.get_user_by_email("A@x.io", org_id=org_id)
+    assert got is (user if found else None)
+    if found:
+        assert p._principals_by_email.await_args.args[:2] == (["users"], ["A@x.io"])
+    else:
+        p._principals_by_email.assert_not_awaited()
+
+
+class TestReplaceRecordEntityRelations:
+    """One org-scoped statement: the new edges are written and only that origin's other edges of the record go."""
+
+    @staticmethod
+    async def _run(edges: list[dict], collections: list[str] | None = None, origin: str = "EXTRACTED") -> tuple[str, tuple]:
+        from app.core.org_context import OrgContext, bind
+
+        provider = PostgresGraphProvider.__new__(PostgresGraphProvider)
+        provider.logger = logging.getLogger("t")
+        seen: dict = {}
+
+        async def q(fn, transaction, write=False):  # noqa: ANN202
+            tx = MagicMock()
+            tx.execute = AsyncMock(side_effect=lambda sql, *args: seen.update(sql=sql, args=args))
+            await fn(tx)
+            seen["write"] = write
+
+        provider._q = q
+        with bind(OrgContext("org-1", None, "job", "job:test", "t")):
+            await provider.replace_record_entity_relations("r1", collections or ["organizations"], origin, edges)
+        assert seen["write"] is True
+        return seen["sql"], seen["args"]
+
+    @pytest.mark.asyncio
+    async def test_it_is_one_statement_scoped_by_org_record_origin_and_collections(self) -> None:
+        edge = {"_from": "records/r1", "_to": "organizations/o1", "edgeType": "MENTIONS", "origin": "EXTRACTED", "createdAtTimestamp": 1}
+        sql, args = await self._run([edge], ["organizations", "users"])
+        assert sql.count("INSERT INTO") == 1 and sql.count("DELETE FROM") == 1
+        assert "d.org_id = $1" in sql and "d.from_id = $3" in sql and "d.to_coll = ANY($4::text[])" in sql
+        assert "coalesce(d.doc->>'origin', $5) = $6" in sql and "NOT EXISTS (SELECT 1 FROM ins" in sql
+        assert (args[0], args[2], args[3], args[4], args[5]) == ("org-1", "r1", ["organizations", "users"], "INFERRED", "EXTRACTED")
+
+    @pytest.mark.asyncio
+    async def test_no_edges_still_clears_the_origin(self) -> None:
+        sql, args = await self._run([])
+        assert "DELETE FROM" in sql and args[1] == "[]"
+
+    @pytest.mark.asyncio
+    async def test_a_missing_record_collection_or_origin_raises_before_any_statement(self) -> None:
+        provider = PostgresGraphProvider.__new__(PostgresGraphProvider)
+        provider._q = AsyncMock()
+        for args in (("", ["users"], "INFERRED", []), ("r1", [], "INFERRED", []), ("r1", ["users"], "", [])):
+            with pytest.raises(ValueError, match="needs a record"):
+                await provider.replace_record_entity_relations(*args)
+        provider._q.assert_not_awaited()

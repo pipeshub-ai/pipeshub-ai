@@ -49,6 +49,7 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any, Dict, List, Optional, Union
 
@@ -59,15 +60,20 @@ from opensearchpy.exceptions import NotFoundError
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.scope_fields import SCOPE_KEYS
+from app.services.permissions.scope_fields import (
+    SCOPE_FENCE_FIELD,
+    SCOPE_KEYS,
+    checked_fence,
+)
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
 )
-from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.errors import OrgRequired, PartialResult
 from app.services.vector_db.filters import (
+    forbid_fence_in_payload,
     forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
@@ -134,11 +140,21 @@ _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
 # A partial update re-reads the document when another write lands between its
 # read and write; without retries it fails the item with a 409.
-_MERGE_IF_ORG_SCRIPT = (
+_MERGE_FN = (
     "void merge(Map t, Map s) { for (e in s.entrySet()) { def v = e.getValue(); def c = t.get(e.getKey()); "
     "if (v instanceof Map && c instanceof Map) { merge(c, v) } else { t.put(e.getKey(), v) } } } "
+)
+_MERGE_IF_ORG_SCRIPT = _MERGE_FN + (
     "if (ctx._source.metadata == null || ctx._source.metadata.orgId != params.org) { ctx.op = 'noop' } "
     "else { merge(ctx._source, params.doc) }"
+)
+# The same, and a noop while the stored fence is above the writer's; a document without one counts as the oldest. The check, the merge and
+# the new fence are one step on the shard: a concurrent update of the document is a version conflict that reruns the script.
+_FENCED_MERGE_IF_ORG_SCRIPT = _MERGE_FN + (
+    f"def fence = ctx._source.{SCOPE_FENCE_FIELD}; "
+    "if (ctx._source.metadata == null || ctx._source.metadata.orgId != params.org || (fence != null && fence > params.fence)) "
+    "{ ctx.op = 'noop' } "
+    f"else {{ merge(ctx._source, params.doc); ctx._source.{SCOPE_FENCE_FIELD} = params.fence }}"
 )
 # Bounded: a conflict means a concurrent writer; a few refreshed passes outlast it, more would hide a bug.
 _DELETE_CONFLICT_RETRIES = 5
@@ -829,7 +845,7 @@ class OpenSearchService(IVectorDBService):
                 }
             }
         else:
-            os_type = "keyword" if field_schema.get("type") == "keyword" else "text"
+            os_type = {"keyword": "keyword", "integer": "long"}.get(field_schema.get("type"), "text")
             mapping_body = {"properties": {field_name: {"type": os_type}}}
 
         await self.client.indices.put_mapping(index=collection_name, body=mapping_body)  # type: ignore
@@ -889,9 +905,10 @@ class OpenSearchService(IVectorDBService):
             if with_payload
             else {"exclude": ["dense_embedding"]}
         )
+        page_size = min(limit, 10000)  # the store's page ceiling: a full page of that size, not of *limit*, means there may be more
         body: Dict[str, Any] = {
             "query": bool_query,
-            "size": min(limit, 10000),
+            "size": page_size,
             "_source": source,
             "sort": [{"point_id": "asc"}],
         }
@@ -904,12 +921,12 @@ class OpenSearchService(IVectorDBService):
 
         result = await self.client.search(index=collection_name, body=body)  # type: ignore
         hits = result.get("hits", {}).get("hits", [])
-        if len(hits) > limit:
-            hits = hits[:limit]
+        if len(hits) > page_size:
+            hits = hits[:page_size]
         points = [self._hit_to_point(hit) for hit in hits]
         # Return a cursor for the next page when the result set is full
         next_offset = None
-        if len(hits) == limit and hits:
+        if len(hits) == page_size and hits:
             last_sort = hits[-1].get("sort")
             if not last_sort:
                 # No sort value on a full page means the documents predate the
@@ -925,6 +942,56 @@ class OpenSearchService(IVectorDBService):
 
         return ScrollResult(points=points, next_offset=next_offset)
 
+    async def scroll_with_vectors(
+        self,
+        collection_name: str,
+        scroll_filter: FilterExpression,
+        limit: int,
+        offset: Optional[str] = None,
+    ) -> ScrollResult:
+        """``scroll`` with ``dense_embedding`` kept in ``_source``. The text is searched server-side, so there is no sparse vector."""
+        await self._assert_connected()
+        page_size = min(limit, 10000)  # the store's page ceiling: a full page of that size, not of *limit*, means there may be more
+        body: dict[str, Any] = {
+            "query": OpenSearchUtils.filter_expression_to_bool_query(scroll_filter),
+            "size": page_size,
+            "sort": [{"point_id": "asc"}],
+        }
+        if offset is not None:
+            try:
+                body["search_after"] = json.loads(offset)
+            except (ValueError, TypeError):
+                body["search_after"] = [offset]
+        result = await self.client.search(index=collection_name, body=body)  # type: ignore
+        hits = (result.get("hits", {}).get("hits", []))[:page_size]
+        points = []
+        for hit in hits:
+            point = self._hit_to_point(hit)
+            dense = hit.get("_source", {}).get("dense_embedding")
+            point.dense_vector = list(dense) if dense is not None else None
+            points.append(point)
+        next_offset = None
+        if len(hits) == page_size and hits:
+            last_sort = hits[-1].get("sort")
+            if not last_sort:
+                raise RuntimeError(f"Cannot page '{collection_name}': documents have no 'point_id' to sort on.")
+            next_offset = json.dumps(last_sort)
+        return ScrollResult(points=points, next_offset=next_offset)
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        await self._assert_connected()
+        result = await self.client.count(  # type: ignore
+            index=collection_name, body={"query": OpenSearchUtils.filter_expression_to_bool_query(count_filter)},
+        )
+        if result.get("_shards", {}).get("failed"):
+            raise PartialResult(f"{collection_name}: {result['_shards']['failed']} shard(s) failed to count")
+        return int(result["count"])
+
+    async def make_searchable(self, collection_name: str) -> None:
+        """A write reaches a search at the next refresh (30 s here), a get by id at once: publish every write acknowledged so far."""
+        await self._assert_connected()
+        await self.client.indices.refresh(index=collection_name)  # type: ignore
+
     @staticmethod
     def _hit_to_point(hit: Dict[str, Any]) -> VectorPoint:
         source = hit.get("_source", {})
@@ -936,7 +1003,7 @@ class OpenSearchService(IVectorDBService):
                 CONNECTOR_IDS_FIELD: list(source.get(CONNECTOR_IDS_FIELD) or []),
                 RECORD_GROUP_IDS_FIELD: list(source.get(RECORD_GROUP_IDS_FIELD) or []),
                 ROOT_RECORD_GROUP_IDS_FIELD: list(source.get(ROOT_RECORD_GROUP_IDS_FIELD) or []),
-                **{k: source[k] for k in SCOPE_KEYS if k in source},
+                **{k: source[k] for k in (*SCOPE_KEYS, SCOPE_FENCE_FIELD) if k in source},
             },
         )
 
@@ -956,6 +1023,32 @@ class OpenSearchService(IVectorDBService):
         )
         return [self._hit_to_point(doc) for doc in result.get("docs", []) if doc.get("found")]
 
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """``mget`` with the source switched off: realtime, and no payload or vector crosses the wire."""
+        await self._assert_connected()
+        if not ids:
+            return set()
+        result = await self.client.mget(  # type: ignore
+            index=collection_name,
+            body={"ids": list(ids)},
+            _source=False,
+        )
+        return {doc["_id"] for doc in result.get("docs", []) if doc.get("found")}
+
+    async def _clause_limit(self) -> int:
+        """The cluster's ``indices.query.bool.max_clause_count`` (1024 unless set), read once. If it cannot be read the default is assumed: a
+        smaller assumed limit only refuses a filter, it never sends a search that fails."""
+        if self.__dict__.get("_max_clause_count") is None:
+            limit = 1024
+            try:
+                got = await self.client.cluster.get_settings(include_defaults=True, flat_settings=True)  # type: ignore
+                key = "indices.query.bool.max_clause_count"
+                limit = int(next((got[k][key] for k in ("transient", "persistent", "defaults") if key in (got.get(k) or {})), 1024))
+            except Exception as exc:
+                logger.warning(f"OpenSearch max_clause_count not read, assuming 1024: {exc}")
+            self.__dict__["_max_clause_count"] = limit
+        return self.__dict__["_max_clause_count"]
+
     async def query_nearest_points(
         self,
         collection_name: str,
@@ -972,7 +1065,7 @@ class OpenSearchService(IVectorDBService):
             await self._ensure_rrf_pipeline(collection_name)
 
         async def _one_search(req: HybridSearchRequest) -> List[SearchResult]:
-            body = OpenSearchUtils.build_hybrid_query(req)
+            body = OpenSearchUtils.build_hybrid_query(req, await self._clause_limit() if req.scope_filter is not None else 1024)
             # Only attach the RRF pipeline when the request is genuinely hybrid
             # (has both a dense leg and a text/BM25 leg).  Single-leg queries
             # must not use it — the score-ranker-processor produces nonsensical
@@ -1318,6 +1411,71 @@ class OpenSearchService(IVectorDBService):
                 f"update_payload_by_ids on '{collection_name}' failed for "
                 f"{len(failed)} of {len(point_ids)} point(s): {failed[0]}"
             )
+
+    generation_fence = True
+
+    async def update_payloads_by_ids(self, collection_name: str, updates: Mapping[str, dict], *, org_id: str, **extra: object) -> None:
+        """With ``fence=n``: one bulk request of scripted updates (``_FENCED_MERGE_IF_ORG_SCRIPT``), each a noop for another org's point and
+        for one whose ``scopeFence`` is above ``n``. Without a fence it is ``update_payload_by_ids`` for each distinct payload."""
+        fence = extra.pop("fence", None)
+        if fence is None:
+            await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
+            return
+        fence = checked_fence(fence)
+        await self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        for payload in updates.values():
+            forbid_org_in_payload(payload)
+            forbid_fence_in_payload(payload)
+        if not updates:
+            return
+        if not await self._guard_scope_mapping(collection_name, {k for p in updates.values() for k in p}):
+            # a point whose scope fields cannot be written must not take the fence: a later correct write at an equal or lower one would be refused
+            updates = {i: p for i, p in updates.items() if self._without_scope(p) == p}
+            if not updates:
+                return
+        actions = [
+            {
+                "_op_type": "update", "_index": collection_name, "_id": point_id,
+                "script": {"lang": "painless", "source": _FENCED_MERGE_IF_ORG_SCRIPT,
+                           "params": {"org": org_id, "doc": OpenSearchUtils.nest_dotted_keys(payload), "fence": int(fence)}},
+                "retry_on_conflict": _UPDATE_RETRY_ON_CONFLICT,
+            }
+            for point_id, payload in updates.items()
+        ]
+        _, errors = await os_helpers.async_bulk(self.client, actions, raise_on_error=False, refresh=False)
+        failed = [e for e in errors if (e.get("update") or {}).get("status") != 404]
+        if failed:
+            raise RuntimeError(
+                f"update_payloads_by_ids on '{collection_name}' failed for {len(failed)} of {len(actions)} point(s): {failed[0]}"
+            )
+
+    async def swap_array_value(self, collection_name: str, field: str, old: str, new: str, points: FilterExpression, *,
+                               fence: int | None = None) -> int | None:
+        if points.is_empty():
+            raise ValueError("swap_array_value called with an empty filter")
+        require_filter_org(points)
+        if fence is not None:
+            fence = checked_fence(fence)
+        await self._assert_connected()
+        if not await self._guard_scope_mapping(collection_name, {field: [new]}):
+            return None
+        query: dict[str, Any] = OpenSearchUtils.filter_expression_to_bool_query(points)
+        stamp = ""
+        if fence is not None:
+            # the query skips a point a later reader wrote; the script checks again when it runs, and a point it changes takes the fence
+            query = {"bool": {"must": [query], "must_not": [{"range": {SCOPE_FENCE_FIELD: {"gt": int(fence)}}}]}}
+            stamp = (f"def f = ctx._source.{SCOPE_FENCE_FIELD}; if (f != null && f > params.fence) {{ ctx.op = 'noop'; return; }} "
+                     f"ctx._source.{SCOPE_FENCE_FIELD} = params.fence; ")
+        done = await self.client.update_by_query(  # type: ignore
+            index=collection_name, conflicts="proceed", refresh=True,
+            body={"query": query, "script": {
+                "lang": "painless", "params": {"old": old, "new": new, "field": field, "fence": int(fence) if fence is not None else 0},
+                "source": stamp + "def a = new ArrayList(ctx._source[params.field] == null ? [] : ctx._source[params.field]); "
+                          "a.removeIf(x -> x == params.old); if (!a.contains(params.new)) { a.add(params.new) } "
+                          "ctx._source[params.field] = a"}})
+        return int(done.get("updated", 0))
 
     # ------------------------------------------------------------------
     # Performance utilities

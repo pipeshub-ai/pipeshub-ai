@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..model import ORG_ID, Node, World, WorldBuilder
+from .proptest import with_parent_and_grant
 
 if TYPE_CHECKING:
     import random
@@ -33,7 +34,7 @@ class _Adversary:
     def node(self, app: str, name: str, is_group: bool, parent: str, chain: bool = False) -> str:
         rng = self.rng
         deleted = rng.random() < (0.03 if chain else 0.06)
-        rule = rng.choice(RULES)
+        rule = with_parent_and_grant(name, rng.choice(RULES))
         if is_group:
             n = self.b.node(Node(name, "group", app, rule, model=RGL if rng.random() < 0.2 else None, deleted=deleted))
         else:

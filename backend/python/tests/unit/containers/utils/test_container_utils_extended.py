@@ -50,7 +50,7 @@ class TestCreateIndexingPipelineExtended:
         cu = ContainerUtils()
         registry = MagicMock()
 
-        with patch("app.containers.utils.utils.IndexingPipeline") as MockPipeline:
+        with patch("app.modules.indexing.run.IndexingPipeline") as MockPipeline:
             mock_instance = MagicMock()
             MockPipeline.return_value = mock_instance
 
@@ -72,16 +72,16 @@ class TestCreateParsersExtended:
     async def test_all_expected_extensions(self):
         """Verify all file extension types have parsers."""
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocParser"), \
-             patch("app.containers.utils.utils.PPTXParser"), \
-             patch("app.containers.utils.utils.PPTParser"), \
-             patch("app.containers.utils.utils.HTMLParser"), \
-             patch("app.containers.utils.utils.MarkdownParser"), \
-             patch("app.containers.utils.utils.MDXParser"), \
-             patch("app.containers.utils.utils.CSVParser"), \
-             patch("app.containers.utils.utils.ExcelParser"), \
-             patch("app.containers.utils.utils.XLSParser"), \
-             patch("app.containers.utils.utils.ImageParser"):
+        with patch("app.modules.parsers.docx.docparser.DocParser"), \
+             patch("app.modules.parsers.pptx.pptx_parser.PPTXParser"), \
+             patch("app.modules.parsers.pptx.ppt_parser.PPTParser"), \
+             patch("app.modules.parsers.html_parser.html_parser.HTMLParser"), \
+             patch("app.modules.parsers.markdown.markdown_parser.MarkdownParser"), \
+             patch("app.modules.parsers.markdown.mdx_parser.MDXParser"), \
+             patch("app.modules.parsers.csv.csv_parser.CSVParser"), \
+             patch("app.modules.parsers.excel.excel_parser.ExcelParser"), \
+             patch("app.modules.parsers.excel.xls_parser.XLSParser"), \
+             patch("app.modules.parsers.image_parser.image_parser.ImageParser"):
             parsers = await cu.create_parsers(MagicMock(), MagicMock())
 
             expected_keys = [
@@ -101,16 +101,16 @@ class TestCreateParsersExtended:
         from app.modules.parsers.yaml.yaml_parser import YAMLParser
 
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocParser"), \
-             patch("app.containers.utils.utils.PPTXParser"), \
-             patch("app.containers.utils.utils.PPTParser"), \
-             patch("app.containers.utils.utils.HTMLParser"), \
-             patch("app.containers.utils.utils.MarkdownParser"), \
-             patch("app.containers.utils.utils.MDXParser"), \
-             patch("app.containers.utils.utils.CSVParser"), \
-             patch("app.containers.utils.utils.ExcelParser"), \
-             patch("app.containers.utils.utils.XLSParser"), \
-             patch("app.containers.utils.utils.ImageParser"):
+        with patch("app.modules.parsers.docx.docparser.DocParser"), \
+             patch("app.modules.parsers.pptx.pptx_parser.PPTXParser"), \
+             patch("app.modules.parsers.pptx.ppt_parser.PPTParser"), \
+             patch("app.modules.parsers.html_parser.html_parser.HTMLParser"), \
+             patch("app.modules.parsers.markdown.markdown_parser.MarkdownParser"), \
+             patch("app.modules.parsers.markdown.mdx_parser.MDXParser"), \
+             patch("app.modules.parsers.csv.csv_parser.CSVParser"), \
+             patch("app.modules.parsers.excel.excel_parser.ExcelParser"), \
+             patch("app.modules.parsers.excel.xls_parser.XLSParser"), \
+             patch("app.modules.parsers.image_parser.image_parser.ImageParser"):
             parsers = await cu.create_parsers(MagicMock(), MagicMock())
 
             assert isinstance(parsers["json"], JSONParser)
@@ -121,16 +121,16 @@ class TestCreateParsersExtended:
     async def test_image_parsers_share_same_instance(self):
         """All image extensions should share the same ImageParser instance."""
         cu = ContainerUtils()
-        with patch("app.containers.utils.utils.DocParser"), \
-             patch("app.containers.utils.utils.PPTXParser"), \
-             patch("app.containers.utils.utils.PPTParser"), \
-             patch("app.containers.utils.utils.HTMLParser"), \
-             patch("app.containers.utils.utils.MarkdownParser"), \
-             patch("app.containers.utils.utils.MDXParser"), \
-             patch("app.containers.utils.utils.CSVParser"), \
-             patch("app.containers.utils.utils.ExcelParser"), \
-             patch("app.containers.utils.utils.XLSParser"), \
-             patch("app.containers.utils.utils.ImageParser") as MockImg:
+        with patch("app.modules.parsers.docx.docparser.DocParser"), \
+             patch("app.modules.parsers.pptx.pptx_parser.PPTXParser"), \
+             patch("app.modules.parsers.pptx.ppt_parser.PPTParser"), \
+             patch("app.modules.parsers.html_parser.html_parser.HTMLParser"), \
+             patch("app.modules.parsers.markdown.markdown_parser.MarkdownParser"), \
+             patch("app.modules.parsers.markdown.mdx_parser.MDXParser"), \
+             patch("app.modules.parsers.csv.csv_parser.CSVParser"), \
+             patch("app.modules.parsers.excel.excel_parser.ExcelParser"), \
+             patch("app.modules.parsers.excel.xls_parser.XLSParser"), \
+             patch("app.modules.parsers.image_parser.image_parser.ImageParser") as MockImg:
                 mock_img = MagicMock()
                 MockImg.return_value = mock_img
                 parsers = await cu.create_parsers(MagicMock(), MagicMock())
@@ -203,7 +203,7 @@ class TestCreateRetrievalServiceExtended:
         """Verifies the collection_registry dependency is passed through."""
         cu = ContainerUtils()
 
-        with patch("app.containers.utils.utils.RetrievalService") as MockRS:
+        with patch("app.modules.retrieval.retrieval_service.RetrievalService") as MockRS:
             mock_instance = MagicMock()
             MockRS.return_value = mock_instance
             registry = MagicMock()
@@ -235,7 +235,7 @@ class TestCreateProcessorExtended:
         mock_sink = MagicMock()
         mock_runtime = MagicMock()
 
-        with patch("app.containers.utils.utils.Processor") as MockProc:
+        with patch("app.events.processor.Processor") as MockProc:
             mock_instance = MagicMock()
             MockProc.return_value = mock_instance
 
@@ -271,7 +271,7 @@ class TestCreateEventProcessorExtended:
         mock_config = MagicMock()
         mock_registry = MagicMock()
 
-        with patch("app.containers.utils.utils.EventProcessor") as MockEP:
+        with patch("app.events.events.EventProcessor") as MockEP:
             mock_instance = MagicMock()
             MockEP.return_value = mock_instance
 

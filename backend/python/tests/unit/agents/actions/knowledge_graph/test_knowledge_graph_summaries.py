@@ -262,12 +262,15 @@ class TestGetUserKey:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_returns_none_on_exception(self) -> None:
+    async def test_raises_unavailable_on_exception(self) -> None:
         from app.agents.actions.knowledge_graph.knowledge_graph import _get_user_key
+        from app.exceptions.graph_db_exceptions import (
+            PermissionVerificationUnavailableError,
+        )
         gp = AsyncMock()
         gp.get_user_by_user_id.side_effect = RuntimeError("db error")
-        result = await _get_user_key(gp, "u1")
-        assert result is None
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await _get_user_key(gp, "u1")
 
 
 class TestTimeRangeToKhFilters:

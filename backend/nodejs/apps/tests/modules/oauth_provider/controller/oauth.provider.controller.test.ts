@@ -3,10 +3,9 @@ import { expect } from 'chai'
 import { setWorkspaceMismatchDetails } from '../../../../src/modules/oauth_provider/services/oauth.app.service'
 import sinon from 'sinon'
 import { OAuthProviderController } from '../../../../src/modules/oauth_provider/controller/oauth.provider.controller'
+import { NotFoundError } from '../../../../src/libs/errors/http.errors'
 import {
   InvalidClientError,
-  InvalidGrantError,
-  UnsupportedGrantTypeError,
   InvalidScopeError,
   AccessDeniedError,
 } from '../../../../src/libs/errors/oauth.errors'
@@ -151,6 +150,50 @@ describe('OAuthProviderController', () => {
       expect(response.consentData.workspace).to.deep.equal({ name: 'Acme Inc.' })
     })
 
+    it('says who registered an app that was not dynamically registered', async () => {
+      stubOrgLookup(null)
+      const creatorId = '507f1f77bcf86cd799439013'
+      const usersFind = sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({
+            exec: sinon.stub().resolves([{ _id: creatorId, fullName: 'Mallory', email: 'mallory@example.com' }]),
+          }),
+        }),
+      } as any)
+      mockOAuthAppService.getAppByClientId.resolves({
+        orgId: '507f1f77bcf86cd799439012', name: 'Payroll', allowedScopes: ['org:read'], isConfidential: true, createdBy: creatorId,
+      })
+      const req = {
+        query: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope: 'org:read', state: 's' },
+        user: { userId: 'u1', orgId: '507f1f77bcf86cd799439012', email: 'u@e.com' },
+      } as any
+
+      await controller.authorize(req, mockRes, mockNext)
+
+      expect(mockRes.json.firstCall.args[0].consentData.app.registeredBy).to.equal('Mallory')
+      // Looked up in the signed-in person's org.
+      const filter = usersFind.firstCall.args[0] as Record<string, unknown>
+      expect(String(filter.orgId)).to.equal('507f1f77bcf86cd799439012')
+    })
+
+    it('names no registrant for a dynamically registered app', async () => {
+      stubOrgLookup(null)
+      const usersFind = sinon.stub(Users, 'find')
+      mockOAuthAppService.getAppByClientId.resolves({
+        orgId: 'o1', isDynamic: true, name: 'Agent', allowedScopes: ['org:read'], isConfidential: true,
+        createdBy: '507f1f77bcf86cd799439013',
+      })
+      const req = {
+        query: { client_id: 'cid', redirect_uri: 'https://example.com/cb', scope: 'org:read', state: 's' },
+        user: { userId: 'u1', orgId: 'o1', email: 'u@e.com' },
+      } as any
+
+      await controller.authorize(req, mockRes, mockNext)
+
+      expect(mockRes.json.firstCall.args[0].consentData.app).to.not.have.property('registeredBy')
+      expect(usersFind.called).to.equal(false)
+    })
+
     it('should return 403 when the app belongs to another workspace', async () => {
       mockOAuthAppService.getAppByClientId.resolves({ orgId: 'other-org', name: 'App', allowedScopes: ['org:read'] })
       const req = {
@@ -292,6 +335,8 @@ describe('OAuthProviderController', () => {
       await controller.authorizeConsent(req, mockRes, mockNext)
       const response = mockRes.json.firstCall.args[0]
       expect(response.redirectUrl).to.include('code=auth-code-123')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('should issue a code for any authenticated user (not limited to app creator)', async () => {
@@ -539,6 +584,9 @@ describe('OAuthProviderController', () => {
 
       await controller.token(req, mockRes, mockNext)
       expect(mockRes.setHeader.calledWith('Cache-Control', 'no-store')).to.be.true
+      expect(mockRes.json.firstCall.args[0].access_token).to.equal('at')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('records oauth_token_issued with the grant, client and channel', async () => {
@@ -793,25 +841,6 @@ describe('OAuthProviderController', () => {
     })
   })
 
-  describe('buildErrorResponse (private)', () => {
-    it('should map different error types to correct codes', () => {
-      const buildErr = (controller as any).buildErrorResponse.bind(controller)
-
-      expect(buildErr(new InvalidGrantError('test')).error).to.equal('invalid_grant')
-      expect(buildErr(new InvalidClientError('test')).error).to.equal('invalid_client')
-      expect(buildErr(new UnsupportedGrantTypeError('test')).error).to.equal('unsupported_grant_type')
-      expect(buildErr(new InvalidScopeError('test')).error).to.equal('invalid_scope')
-      expect(buildErr(new AccessDeniedError('test')).error).to.equal('access_denied')
-      expect(buildErr(new Error('test')).error).to.equal('server_error')
-    })
-
-    it('should include state when provided', () => {
-      const buildErr = (controller as any).buildErrorResponse.bind(controller)
-      const result = buildErr(new Error('test'), 'state123')
-      expect(result.state).to.equal('state123')
-    })
-  })
-
   describe('getErrorStatusCode (private)', () => {
     it('should return correct status codes', () => {
       const getStatus = (controller as any).getErrorStatusCode.bind(controller)
@@ -1024,6 +1053,8 @@ describe('OAuthProviderController', () => {
       const response = mockRes.json.firstCall.args[0]
       expect(response.access_token).to.equal('new-at')
       expect(response.refresh_token).to.equal('new-rt')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('should require client_secret for confidential clients on refresh', async () => {
@@ -1436,6 +1467,9 @@ describe('OAuthProviderController', () => {
       const args = mockOAuthTokenService.generateTokens.firstCall.args
       expect(args[5]).to.equal('Creator Name')
       expect(args[6]).to.equal('premium')
+      expect(mockRes.json.firstCall.args[0].access_token).to.equal('at')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
   })
 
@@ -1447,9 +1481,10 @@ describe('OAuthProviderController', () => {
       mockOAuthAppService.getAppByClientId.resolves({ isConfidential: true })
     })
 
-    it('should return 200 on non-client errors', async () => {
+    // RFC 7009 2.2: a token the server does not know is not an error.
+    it('should return 200 when the token is refused, not revoked by us', async () => {
       mockOAuthAppService.verifyClientCredentials.resolves({})
-      mockOAuthTokenService.revokeToken.rejects(new Error('token not found'))
+      mockOAuthTokenService.revokeToken.rejects(new NotFoundError('token not found'))
       const req = {
         body: { token: 'tok', client_id: 'cid', client_secret: 'secret' },
       } as any
@@ -1514,11 +1549,13 @@ describe('OAuthProviderController', () => {
       ).to.be.true
     })
 
-    it('should return 400 when frontendUrl is not configured', async () => {
+    // A missing setting is ours: not the client's bad request, and its name stays out of the answer.
+    it('should return 500 when frontendUrl is not configured', async () => {
       const req = { body: { client_id: 'cid' } } as any
       await controller.deviceAuthorization(req, mockRes, mockNext)
-      expect(mockRes.status.calledWith(400)).to.be.true
+      expect(mockRes.status.calledWith(500)).to.be.true
       expect(mockRes.json.firstCall.args[0].error).to.equal('server_error')
+      expect(mockRes.json.firstCall.args[0].error_description).to.not.contain('frontendUrl')
       expect(mockOAuthDeviceService.createAuthorization.called).to.be.false
     })
   })

@@ -272,7 +272,7 @@ class TestNeo4jRecordGroupInheritance:
         # predicate, which expands through every record and attachment.
         original = query.replace(
             "MATCH p = (seed)<-[:INHERIT_PERMISSIONS*1..20]-(child)\n"
-            "            WHERE all(n IN nodes(p) WHERE n:RecordGroup)\n"
+            "            WHERE all(n IN nodes(p) WHERE n:RecordGroup AND n.connectorId = seed.connectorId)\n"
             "            WITH child, record_level_app_ids\n"
             "            WHERE child.orgId",
             "MATCH (seed)<-[:INHERIT_PERMISSIONS*1..20]-(child:RecordGroup)\n"
@@ -387,6 +387,26 @@ class TestArangoTaxonomyWritesUnderConcurrentTransactions:
         finally:
             for txn in (t1, t2):
                 await provider.commit_transaction(txn)
+
+    async def test_an_alias_update_that_matches_no_node_is_retried(self, arango) -> None:
+        """Under concurrent updates ArangoDB can answer the alias UPDATE's
+        lookup with no node; the UPDATE then matched nothing and reported
+        success. Here the node appears after the first attempt."""
+        provider, org_id = arango
+        key, node = _topic(org_id, "Standup")
+
+        async def create_late() -> None:
+            await asyncio.sleep(0.05)
+            await provider.create_taxonomy_node_if_absent(TOPICS, node)
+
+        await asyncio.gather(
+            provider.add_taxonomy_aliases(TOPICS, key, ["Daily"], ["daily"], org_id=org_id),
+            create_late(),
+        )
+        docs = await provider.http_client.execute_aql(
+            f"FOR d IN {TOPICS} FILTER d._key == @key RETURN d", {"key": key},
+        )
+        assert docs[0]["normalizedAliases"] == ["daily"]
 
     async def test_two_records_enriching_the_same_new_topic_both_succeed(self, arango) -> None:
         """The real transformer: each record resolves the same new canonical
@@ -1009,3 +1029,43 @@ class TestBatchedFieldsIfMatch:
             ]},
         )
         await _assert_batched_fields_if_match(provider, keys)
+
+
+class TestRecordPeopleEdges:
+    """KG-13: the new person edge types pass the ArangoDB collection schema
+    (strict, enum of edge types) and are written once per type on both."""
+
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        await provider.client.execute_query(
+            "CREATE (:Record {id: $rec, orgId: $org}) CREATE (:User {id: $user, orgId: $org})",
+            parameters={"rec": f"{org_id}-rec", "user": f"{org_id}-user", "org": org_id},
+        )
+        edges = [
+            {"_from": f"records/{org_id}-rec", "_to": f"users/{org_id}-user", "edgeType": t, "createdAtTimestamp": 1}
+            for t in ("AUTHORED_BY", "ADDRESSED_TO", "AUTHORED_BY")
+        ]
+        await provider.batch_create_entity_relations(edges)
+        rows = await provider.client.execute_query(
+            "MATCH (:Record {id: $rec})-[r]->(:User {id: $user}) RETURN r.edgeType AS t ORDER BY t",
+            parameters={"rec": f"{org_id}-rec", "user": f"{org_id}-user"},
+        )
+        assert [r["t"] for r in rows] == ["ADDRESSED_TO", "AUTHORED_BY"]
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        edges = [
+            {"_from": f"records/{org_id}-rec", "_to": f"users/{org_id}-user", "edgeType": t,
+             "createdAtTimestamp": 1, "itOrg": org_id}
+            for t in ("AUTHORED_BY", "ADDRESSED_TO", "REVIEWED_BY", "OWNED_BY", "AUTHORED_BY")
+        ]
+        try:
+            await provider.batch_create_entity_relations(edges)
+            rows = await provider.http_client.execute_aql(
+                "FOR e IN entityRelations FILTER e.itOrg == @org SORT e.edgeType RETURN e.edgeType", {"org": org_id},
+            )
+            assert rows == ["ADDRESSED_TO", "AUTHORED_BY", "OWNED_BY", "REVIEWED_BY"]
+        finally:
+            await provider.http_client.execute_aql(
+                "FOR e IN entityRelations FILTER e.itOrg == @org REMOVE e IN entityRelations", {"org": org_id},
+            )

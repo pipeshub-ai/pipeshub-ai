@@ -55,7 +55,7 @@ def _localise(ns: Namespace, scopes: ViewerScopes) -> ViewerScopes:
         org_id="", user_key=ns.local(scopes.user_key), gated_apps=ids(scopes.gated_apps), open_apps=ids(scopes.open_apps),
         readable_groups=ids(scopes.readable_groups), readable_scopes=ids(scopes.readable_scopes),
         unreadable_restricted=ids(scopes.unreadable_restricted), principal_tokens=tokens,
-        pending=ids(scopes.pending), legacy_apps=ids(scopes.legacy_apps), version=scopes.version)
+        pending=ids(scopes.pending), blocked=ids(scopes.blocked), legacy_apps=ids(scopes.legacy_apps), version=scopes.version)
 
 
 # ---- the oracle-derived scopes -------------------------------------------------------------------------------

@@ -4,13 +4,19 @@ import http from 'http'
 import { AddressInfo } from 'net'
 import express, { NextFunction, Request, Response, Router } from 'express'
 import { Container } from 'inversify'
+import sinon from 'sinon'
 import {
   INVALID_PATH_SEGMENT_MESSAGE,
+  bindPathLogFields,
   guardPathParams,
   isSafePathSegment,
 } from '../../../src/libs/middlewares/safe-path-params.middleware'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
+import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context'
+import { accessLog } from '../../../src/libs/middlewares/access-log.middleware'
+import { LogRecord, captureLogRecords, newRequestId, recordsOf } from '../../helpers/log-capture'
 import { BadRequestError } from '../../../src/libs/errors/http.errors'
+import { getRequestContext, runWithRequestContext } from '../../../src/libs/context/request-context'
 import { createConnectorRouter } from '../../../src/modules/tokens_manager/routes/connectors.routes'
 import { createOAuthRouter } from '../../../src/modules/tokens_manager/routes/oauth.routes'
 import { createToolsetsRouter } from '../../../src/modules/toolsets/routes/toolsets_routes'
@@ -114,6 +120,116 @@ describe('safe path params', () => {
       const r = await get('/api/open/a%2Fb')
       expect(r).to.deep.equal({ status: 200, body: { other: 'a/b' } })
     })
+  })
+
+  describe('bindPathLogFields after guardPathParams', () => {
+    let server: http.Server
+    let port = 0
+    let records: LogRecord[]
+    let handled = 0
+
+    before(async () => {
+      const router = Router()
+      guardPathParams(router, 'id')
+      bindPathLogFields(router, { id: 'record_id' })
+      router.get('/items/:id/:other', (_req, res) => {
+        handled += 1
+        res.json({})
+      })
+      const app = express()
+      app.use(requestContextMiddleware)
+      app.use(accessLog())
+      app.use('/api', router)
+      app.use(ErrorMiddleware.handleError())
+      server = http.createServer((req, res) => void app(req, res))
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      port = (server.address() as AddressInfo).port
+    })
+
+    after(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    beforeEach(() => {
+      records = captureLogRecords()
+      handled = 0
+    })
+
+    afterEach(() => {
+      sinon.restore()
+    })
+
+    /** Sends a raw path (so `%2F` reaches Express as sent) and returns the request's lines once the access line is in. */
+    const lines = async (rawPath: string): Promise<{ status: number; lines: LogRecord[] }> => {
+      const requestId = newRequestId('bind-path-log-fields')
+      const status = await new Promise<number>((resolve, reject) => {
+        http
+          .get({ host: '127.0.0.1', port, path: rawPath, headers: { 'x-request-id': requestId } }, (res) => {
+            res.resume()
+            res.on('end', () => resolve(res.statusCode ?? 0))
+          })
+          .on('error', reject)
+      })
+      const deadline = Date.now() + 5000
+      while (Date.now() < deadline && !recordsOf(records, requestId).some((r) => r.message === 'http.request.end')) {
+        await new Promise((resolve) => setImmediate(resolve))
+      }
+      return { status, lines: recordsOf(records, requestId) }
+    }
+
+    it('binds a checked param under its key on the access line, and only the params it was given', async () => {
+      const r = await lines('/api/items/rec-7/unlisted-41')
+
+      expect(r.status).to.equal(200)
+      expect(r.lines.map((l) => [l.message, l.record_id])).to.deep.equal([['http.request.end', 'rec-7']])
+      expect(JSON.stringify(r.lines)).to.not.include('unlisted-41')
+    })
+
+    it('binds an id field only when the value is id-shaped: an email passes the guard but is on no line', async () => {
+      const r = await lines('/api/items/n5n-fake-ada@example.com/x')
+
+      expect(r.status).to.equal(200)
+      expect(r.lines.filter((l) => l.record_id !== undefined)).to.deep.equal([])
+      expect(JSON.stringify(r.lines)).to.not.include('n5n-fake-ada')
+    })
+
+    it('never binds a segment the guard refused: 400 before the handler, and the value is on no line', async () => {
+      const r = await lines('/api/items/..%2Fadmin/x')
+
+      expect(r.status).to.equal(400)
+      expect(handled).to.equal(0)
+      expect(r.lines.map((l) => l.message)).to.deep.equal(['http.request.error', 'http.request.end'])
+      expect(JSON.stringify(r.lines)).to.not.include('../admin')
+      expect(r.lines.filter((l) => l.record_id !== undefined)).to.deep.equal([])
+    })
+  })
+
+  describe('bindPathLogFields: the value a field takes', () => {
+    /** The value bound under `key` after the router's param handler saw `value`. */
+    const bound = (key: 'connector_type' | 'connector_id', value: string): unknown => {
+      const router = Router() as Router & { params: Record<string, Array<(...args: unknown[]) => void>> }
+      bindPathLogFields(router, { p: key })
+      return runWithRequestContext({ rootId: 'bind-rule' }, () => {
+        router.params.p![0]!({}, {}, () => undefined, value)
+        return getRequestContext()?.logFields?.[key]
+      })
+    }
+
+    const CASES: Array<[key: 'connector_type' | 'connector_id', value: string, isBound: boolean]> = [
+      ['connector_type', 'SHAREPOINT ONLINE', true],
+      ['connector_type', 'x'.repeat(128), true],
+      ['connector_type', 'a/b', false],
+      ['connector_type', 'x'.repeat(129), false],
+      ['connector_type', '100%', false],
+      ['connector_id', '64f0c0ffee00000000000a5a', true],
+      ['connector_id', 'Ada Lovelace', false],
+    ]
+    for (const [key, value, isBound] of CASES) {
+      const shown = value.length > 40 ? `${value.slice(0, 8)}… (${value.length} chars)` : value
+      it(`${key} ${isBound ? 'binds' : 'does not bind'} ${JSON.stringify(shown)}`, () => {
+        expect(bound(key, value)).to.equal(isBound ? value : undefined)
+      })
+    }
   })
 
   describe('every router that pastes path params into a service URL guards them', () => {

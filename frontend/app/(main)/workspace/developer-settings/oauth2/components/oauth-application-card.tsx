@@ -26,6 +26,8 @@ export function OAuthApplicationCard({ client, onManage }: OAuthApplicationCardP
       ? client.description.trim()
       : client.clientId?.trim() || '…';
 
+  const creator = client.createdByName?.trim() || client.createdByEmail?.trim();
+
   return (
     <Flex
       direction="column"
@@ -75,6 +77,11 @@ export function OAuthApplicationCard({ client, onManage }: OAuthApplicationCardP
             >
               {subtitle}
             </Text>
+            {creator ? (
+              <Text size="1" style={{ color: 'var(--gray-11)', wordBreak: 'break-word' }}>
+                {t('workspace.oauth2.createdBy', { name: creator })}
+              </Text>
+            ) : null}
           </Flex>
           <Badge color="blue" size="1" variant="soft" style={{ alignSelf: 'flex-start', flexShrink: 0 }}>
             <Flex align="center" gap="1">

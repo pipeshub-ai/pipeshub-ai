@@ -163,10 +163,10 @@ async def retry_pending_duplicate_reconciles(
     """Reconcile primaries whose pending flag is due: their handler did not
     clear it within ``DUPLICATE_RECONCILE_GRACE_MS`` of the promotion.
 
-    Holds no ``record:<id>`` lease. The consumer drops an event whose record
-    lease it cannot take within seconds, so holding it through a reconcile
-    would lose a real update or delete; recovery's own lock already keeps
-    sweeps apart, and a reconcile is idempotent. What must not race is the
+    Holds no ``record:<id>`` lease. The consumer hands back an event whose
+    record lease it cannot take within seconds, so holding it through a
+    reconcile would hold up a real update or delete; recovery's own lock already
+    keeps sweeps apart, and a reconcile is idempotent. What must not race is the
     flag: it is cleared only while its due time is still the one this sweep
     read, so a promotion made meanwhile keeps its flag.
 
@@ -262,6 +262,59 @@ async def _retry_one(
     return False
 
 
+async def rearm_failed_reconcile(
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+    record_id: str,
+    now_ms: Callable[[], int] | None = None,
+) -> bool:
+    """Keep a retry trigger for a reconcile whose every attempt failed.
+
+    A sweep can clear the pending flag while a slow promotion is still in
+    flight (it finds no promoted copies yet), so the handler's failed reconcile
+    may find no flag left. The flag is set again with the first failure's
+    backoff, and only when the record itself says it is not pending: a flag that
+    is set (by the promotion, or by an earlier re-arm) already has its own due
+    time and attempt count, which the sweep owns. The write is fenced on the
+    flag, due time and indexing status that were read, so a promotion made meanwhile keeps its
+    own flag. A record the sweep gave up on (attempt count at the limit) is not
+    re-armed, so the retries stay bounded. Returns whether the flag was set; a failed read or write is logged and
+    answers False.
+    """
+    try:
+        # A failed read must raise (and be logged below), not answer None: here
+        # None means the record is gone, and an unread record keeps no flag.
+        record = await graph_provider.get_document(record_id, _RECORDS, raise_on_error=True)
+        if not isinstance(record, dict):
+            return False
+        if record.get(DUPLICATE_RECONCILE_PENDING_FIELD) is True:
+            return False
+        if record.get("indexingStatus") not in _RECONCILED_STATUSES:
+            return False
+        attempts = _int(record.get(DUPLICATE_RECONCILE_ATTEMPTS_FIELD)) + 1
+        if attempts >= MAX_RECONCILE_ATTEMPTS:
+            return False
+        return bool(
+            await graph_provider.update_node_fields_if_match(
+                record_id,
+                _RECORDS,
+                {
+                    DUPLICATE_RECONCILE_PENDING_FIELD: True,
+                    DUPLICATE_RECONCILE_ATTEMPTS_FIELD: attempts,
+                    DUPLICATE_RECONCILE_DUE_AT_FIELD: (now_ms or get_epoch_timestamp_in_ms)() + DUPLICATE_RECONCILE_GRACE_MS * 2 ** attempts,
+                },
+                {
+                    DUPLICATE_RECONCILE_PENDING_FIELD: record.get(DUPLICATE_RECONCILE_PENDING_FIELD),
+                    DUPLICATE_RECONCILE_DUE_AT_FIELD: record.get(DUPLICATE_RECONCILE_DUE_AT_FIELD),
+                    "indexingStatus": record.get("indexingStatus"),
+                },
+            )
+        )
+    except Exception as exc:
+        logger.warning("Could not re-arm the reconcile of record %s: %s", record_id, type(exc).__name__)
+        return False
+
+
 async def _record_failure(
     graph_provider: IGraphDBProvider,
     logger: Logger,
@@ -306,5 +359,6 @@ def _int(value: object) -> int:
 __all__ = [
     "MAX_RECONCILE_ATTEMPTS",
     "DuplicateReconciler",
+    "rearm_failed_reconcile",
     "retry_pending_duplicate_reconciles",
 ]

@@ -21,8 +21,12 @@ Typical provider usage::
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Union
+from dataclasses import dataclass
+from functools import cached_property
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 
+from app.exceptions.non_retryable import NonRetryableError
+from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, SCOPE_KEYS
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -36,9 +40,14 @@ from app.services.vector_db.models import (
     FilterValue,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
+    from app.services.permissions.scopes import ViewerScopes
+
 # Top-level payload fields — must not be auto-prefixed with ``metadata.``.
 TOP_LEVEL_FILTER_FIELDS = frozenset(
-    {CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD, ROOT_RECORD_GROUP_IDS_FIELD}
+    {CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD, ROOT_RECORD_GROUP_IDS_FIELD, *SCOPE_KEYS}
 )
 
 
@@ -124,6 +133,12 @@ def forbid_org_in_payload(payload: dict) -> None:
     """A payload merge must not change which org a point belongs to (the org is what every write filter pins)."""
     if _org_in_payload(payload)[0]:
         raise OrgMismatch("a payload update may not name orgId: it would move points to another organisation")
+
+
+def forbid_fence_in_payload(payload: dict) -> None:
+    """The fence is set by the fenced write alone; a payload that names it could set it to anything (a later duplicate field wins on Redis)."""
+    if SCOPE_FENCE_FIELD in payload:
+        raise ValueError(f"a payload may not name {SCOPE_FENCE_FIELD}: the fenced write sets it")
 
 
 def keep_org_in_overwrite(payload: dict, expr: FilterExpression) -> None:
@@ -268,16 +283,29 @@ def build_filter_expression(
     )
 
 
+class BlankFilterValue(NonRetryableError, ValueError):
+    """A filter names an identifying field (a record, a block) with no value. Dropping the clause would select everything the other clauses allow."""
+
+
+#: Fields that say *which* record or block a filter is about. A filter that names one without a value is a caller's bug, never "no restriction":
+#: ``delete_embeddings("")`` would otherwise become "delete everything of the org".
+REQUIRED_VALUE_KEYS = frozenset({"virtualRecordId", "blockId"})
+_REQUIRED_VALUE_FIELDS = frozenset(canonical_filter_key(k) for k in REQUIRED_VALUE_KEYS)
+
+
 def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondition]:
     """Backend-neutral ``FieldCondition`` list from a key -> value dict.
 
     Keys are canonicalised to ``metadata.x``; None and blank-string values are
-    skipped. A list is kept even when empty (after dropping None): an empty list
-    matches nothing, it is not the absence of a filter. Providers translate the
-    conditions into their own query syntax.
+    skipped, except for the identifying fields in ``REQUIRED_VALUE_KEYS``, where
+    they raise :class:`BlankFilterValue`. A list is kept even when empty (after
+    dropping None): an empty list matches nothing, it is not the absence of a
+    filter. Providers translate the conditions into their own query syntax.
     """
     conditions: list[FieldCondition] = []
     for key, value in filters.items():
+        if is_missing(value) and canonical_filter_key(key) in _REQUIRED_VALUE_FIELDS:
+            raise BlankFilterValue(f"'{key}' in the filter has no value; the clause would be dropped and the filter widened")
         if value is None:
             continue
         field_key = canonical_filter_key(key)
@@ -289,3 +317,86 @@ def build_generic_conditions(filters: dict[str, FilterValue]) -> list[FieldCondi
         else:
             conditions.append(FieldCondition(key=field_key, value=value))
     return conditions
+
+
+#: Most ids one list of a ScopeFilter may hold; a viewer past it is not filtered by scope (`ScopeFilterTooLarge`): the caller keeps the
+#: legacy filter for that viewer.
+MAX_SCOPE_IDS = 100_000
+
+
+class ScopeFilterTooLarge(ValueError):
+    """A viewer's scope list is longer than a store can take in one query."""
+
+
+class ScopeFilterUnsupported(ValueError):
+    """A store cannot evaluate this filter exactly (Redis tags compare without case, so an id with capitals could meet another id)."""
+
+
+@dataclass(frozen=True)
+class ScopeFilter:
+    """What one viewer may read, as a store-neutral predicate over the scope fields a point carries (ANDed with the request's filter).
+
+    A point is admitted only by a **trusted** stamp: its group carries the current field version and the deployment's scope generation,
+    and every connector it belongs to is in ``current`` (the connectors whose stamps may be used now). Then, by its stamp:
+
+    * ``container``: a record group or root group in ``readable_groups``, or a connector in ``open_apps``;
+    * ``union`` / ``intersection``: ``pathIds`` meets ``reach`` and does not meet ``excluded``;
+    * any of them: ``aclScope`` (the record's own id and the seeds on its chain) meets ``reach``;
+    * **whatever the stamp**, a point whose ``pathIds`` meet ``pending`` (the scopes whose subtree is being rewritten) is hidden, and a
+      ``container`` point of a connector in ``blocked`` (a connector with a pending root) is not admitted by the stamp at all: a point with no
+      path cannot be hidden by a path, so it is read with the legacy filter until the rewrite finishes.
+
+    Every other point (never stamped, a ``legacy`` or unknown stamp, an untrusted one, a connector not in ``current``) is **not** admitted:
+    an empty list admits nothing, never everything. ``reach`` is ``readable_groups | readable_scopes | open_apps``.
+
+    ``defer`` turns that into a filter that serves a search beside the request's own arms: a point the stamps do not decide (never stamped,
+    ``legacy`` or unknown, another version or generation, a connector not in ``current``, or no connector) is left to the request's own
+    arms and the post-check as before, and only a point a trusted stamp of a current connector decides is admitted or hidden by it.
+    """
+
+    current: frozenset[str] = frozenset()
+    open_apps: frozenset[str] = frozenset()
+    readable_groups: frozenset[str] = frozenset()
+    readable_scopes: frozenset[str] = frozenset()
+    #: Restricted scopes the viewer cannot read: a ``union`` / ``intersection`` path through one hides the point.
+    excluded: frozenset[str] = frozenset()
+    #: The field version and scope generation a stamp must carry to be used (`ScopeFields.trusted`); a negative generation (the shared
+    #: state could not be read) trusts nothing.
+    version: int = 0
+    generation: int = -1
+    #: Scopes whose subtree is being rewritten (hide-first), and the connectors that have such a scope (see the class docstring). Last, so the
+    #: positional order of the fields before them is unchanged.
+    pending: frozenset[str] = frozenset()
+    blocked: frozenset[str] = frozenset()
+    defer: bool = False
+
+    @classmethod
+    def of(cls, scopes: ViewerScopes, current_connectors: Iterable[str] | Mapping[str, int], *, version: int, generation: int,
+           blocked: Iterable[str] = (), defer: bool = False) -> ScopeFilter:
+        return cls(frozenset(current_connectors), scopes.open_apps, scopes.readable_groups, scopes.readable_scopes,
+                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked) | scopes.blocked, defer)
+
+    @property
+    def reach(self) -> frozenset[str]:
+        return self.readable_groups | self.readable_scopes | self.open_apps
+
+    @property
+    def trusts_nothing(self) -> bool:
+        return self.generation < 0 or not self.current
+
+    @property
+    def matches_nothing(self) -> bool:
+        """Whether no point can pass: nothing is trusted and nothing is left to the request's own arms."""
+        return self.trusts_nothing and not self.defer
+
+    def lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
+        """``(current, open_apps, readable_groups, reach, excluded, pending, blocked)``, sorted, for a store that binds arrays. Computed once per
+        filter: callers must not mutate it."""
+        return self._lists
+
+    @cached_property
+    def _lists(self) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str], list[str]]:
+        sets = (self.current, self.open_apps, self.readable_groups, self.reach, self.excluded, self.pending, self.blocked)
+        if any(len(x) > MAX_SCOPE_IDS for x in sets):                                                     # refuse before paying for the sort
+            raise ScopeFilterTooLarge(f"a scope list holds more than {MAX_SCOPE_IDS} ids")
+        return tuple(sorted(x) for x in sets)  # type: ignore[return-value]

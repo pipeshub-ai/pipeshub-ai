@@ -881,6 +881,22 @@ describe('log-redaction.utils', () => {
 })
 
 describe('redactSecretsInText', () => {
+  it('masks a JWT anywhere in the text, with or without a signature, and keeps what is around it', () => {
+    const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFAYi5jIn0.c2lnbmF0dXJlLXZhbHVl';
+    expect(redactSecretsInText(`Invalid token signature: ${jwt}`)).to.equal('Invalid token signature: [REDACTED]');
+    expect(redactSecretsInText(`seen (${jwt}) and eyJhbGciOiJub25lIn0.eyJzdWIiOiIxIn0.`)).to.equal('seen ([REDACTED]) and [REDACTED]');
+    expect(redactSecretsInText('version 1.2.3 of eyJ-lib, file a.b.c')).to.equal('version 1.2.3 of eyJ-lib, file a.b.c');
+    expect(redactSecretsInText(`Authorization: Bearer ${jwt}`)).to.equal('Authorization: Bearer [REDACTED]');
+    expect(redactSecretsInText(`{"error":"bad","token_hint":"${jwt}"}`)).to.equal('{"error":"bad","token_hint":"[REDACTED]"}');
+  });
+
+  it('stays linear on a long run of eyJ- (a JWT match can only start where no token character precedes)', () => {
+    const text = 'eyJ-'.repeat(25_000) + 'x';
+    const started = process.hrtime.bigint();
+    expect(redactSecretsInText(text)).to.equal(text);
+    expect(Number(process.hrtime.bigint() - started) / 1e6).to.be.below(200);
+  });
+
   it('redacts a secret in free text and keeps the rest readable', () => {
     const out = redactSecretsInText('GET https://x.example/cb?code=s3cr3t failed; Authorization: Bearer abc.def at foo (a.ts:1:2)');
 
@@ -889,12 +905,153 @@ describe('redactSecretsInText', () => {
     expect(out).to.include('at foo (a.ts:1:2)');
   });
 
+  it('redacts a quoted JSON field by its sensitive key, however it is spaced or escaped', () => {
+    const out = redactSecretsInText(
+      'upstream said {"access_token":"AT-SECRET","refresh_token": "RT-SECRET", "client_secret" : "CS-\\"SECRET\\"-X", "error":"invalid_grant"} at foo (a.ts:1:2)',
+    );
+
+    expect(out).not.to.include('AT-SECRET');
+    expect(out).not.to.include('RT-SECRET');
+    expect(out).not.to.include('SECRET');
+    expect(out).to.include('"access_token":"[REDACTED]"');
+    expect(out).to.include('"refresh_token": "[REDACTED]"');
+    expect(out).to.include('"client_secret" : "[REDACTED]"');
+    expect(out).to.include('"error":"invalid_grant"');
+    expect(out).to.include('at foo (a.ts:1:2)');
+  });
+
+  it('redacts a quoted JSON value cut off before its closing quote', () => {
+    expect(redactSecretsInText('body: {"refresh_token":"RT-SECRET')).to.equal('body: {"refresh_token":"[REDACTED]"');
+    expect(redactSecretsInText('body: {"refresh_token":"RT-SECRET\\')).to.equal('body: {"refresh_token":"[REDACTED]"');
+  });
+
+  it('redacts a quoted JSON field named like a credential header', () => {
+    const out = redactSecretsInText('sent {"Authorization":"raw-TOKEN-SECRET","x-api-key":"KEY-SECRET"}');
+    expect(out).to.equal('sent {"Authorization":"[REDACTED]","x-api-key":"[REDACTED]"}');
+  });
+
+  it('leaves a quoted JSON field with a non-sensitive key as it is', () => {
+    const text = '{"error":"invalid_grant","error_description":"Bad Request"}';
+    expect(redactSecretsInText(text)).to.equal(text);
+  });
+
   it('stays linear on a long run with no separator', () => {
     const started = Date.now();
 
     redactSecretsInText('!'.repeat(200_000));
 
     expect(Date.now() - started).to.be.below(1000);
+  });
+});
+
+describe('redactSecretsInText on a JSON.parse error (V8 quotes the text it could not read)', () => {
+  // Built from a real JSON.parse, so a change in V8's wording or window fails here.
+  const parseError = (text: string): Error => {
+    try {
+      JSON.parse(text);
+    } catch (e) {
+      return e as Error;
+    }
+    throw new Error(`parsed: ${text}`);
+  };
+  const WITH_TOKEN = 'Unexpected token, "[REDACTED]" is not valid JSON';
+  const BARE = '"[REDACTED]" is not valid JSON';
+
+  // [what V8 quotes, the text parsed, V8's message (proves the form is exercised), the logged message]
+  const forms: [string, string, string, string][] = [
+    ['all of a short text', 'FAKE-pw-0123456', `Unexpected token 'F', "FAKE-pw-0123456" is not valid JSON`, WITH_TOKEN],
+    ['the start of a long text', 'sk-FAKE0123456789abcdefghijklmnop', `Unexpected token 's', "sk-FAKE012"... is not valid JSON`, WITH_TOKEN],
+    ['10 units each side of the error', '{"brokers":["k:9092"],"sasl":{"password": FAKEPW0123456789}}', `Unexpected token 'F', ..."assword": FAKEPW0123"... is not valid JSON`, WITH_TOKEN],
+    ['the end of a long text', '{"aaaaaaaaaaaaaaaa": FAKEPW0', `Unexpected token 'F', ..."aaaaaaa": FAKEPW0" is not valid JSON`, WITH_TOKEN],
+    ['a bare undefined', 'undefined', `"undefined" is not valid JSON`, BARE],
+    ['a stringified object', '[object Object]', `"[object Object]" is not valid JSON`, BARE],
+    ['a text holding a double quote', 'ab"cd', `Unexpected token 'a', "ab"cd" is not valid JSON`, WITH_TOKEN],
+    ['a text holding a single quote', "it's", `Unexpected token 'i', "it's" is not valid JSON`, WITH_TOKEN],
+    ['a text holding a newline', 'FAKE\nline2', `Unexpected token 'F', "FAKE\nline2" is not valid JSON`, WITH_TOKEN],
+    ['an emoji (its token is a lone high surrogate)', '😀FAKE', `Unexpected token '\ud83d', "😀FAKE" is not valid JSON`, WITH_TOKEN],
+    ["a ' token", "'''", `Unexpected token ''', "'''" is not valid JSON`, WITH_TOKEN],
+    ['a lone surrogate token', '\ud800x', `Unexpected token '\ud800', "\ud800x" is not valid JSON`, WITH_TOKEN],
+    ['a line separator token', '\u2028FAKE', `Unexpected token '\u2028', "\u2028FAKE" is not valid JSON`, WITH_TOKEN],
+  ];
+  for (const [form, text, message, logged] of forms) {
+    it(`logs ${form} as [REDACTED], with no offending character`, () => {
+      expect(parseError(text).message).to.equal(message);
+      expect(redactSecretsInText(message)).to.equal(logged);
+    });
+  }
+
+  it('rewrites the first line of the stack and keeps its frames', () => {
+    const lines = redactSecretsInText(parseError('FAKE-pw-0123456').stack!).split('\n');
+    expect(lines[0]).to.equal(`SyntaxError: ${WITH_TOKEN}`);
+    expect(lines[1]).to.match(/^ {4}at JSON\.parse \(<anonymous>\)$/);
+  });
+
+  it('keeps the text around the quote', () => {
+    const { message } = parseError('FAKE-pw-0123456');
+    expect(redactSecretsInText(`Could not read the stored kafka config: ${message}; using defaults`)).to.equal(
+      `Could not read the stored kafka config: ${WITH_TOKEN}; using defaults`,
+    );
+    // A quoted word more than 32 units before the quote is kept.
+    expect(redactSecretsInText(`Failed to read "kb" of the stored settings: ${message}`)).to.equal(
+      `Failed to read "kb" of the stored settings: ${WITH_TOKEN}`,
+    );
+  });
+
+  it('masks a quoted word within 32 units before the quote with it (accepted over-masking)', () => {
+    expect(redactSecretsInText(`Failed to read "kb": ${parseError('ab').message}`)).to.equal(`Failed to read ${BARE}`);
+  });
+
+  it('leaves the JSON.parse errors that quote nothing, and text without the phrase, as they are', () => {
+    for (const text of ['', '{', '"abc', '"\\q"', '1 2', '{"a" 1}']) {
+      const { message } = parseError(text);
+      expect(redactSecretsInText(message)).to.equal(message);
+    }
+    expect(redactSecretsInText('name "kb" was "not" valid')).to.equal('name "kb" was "not" valid');
+  });
+
+  it('is stable on its own output (the JSON console redacts a line a second time)', () => {
+    for (const [, , message, logged] of forms) {
+      expect(redactSecretsInText(redactSecretsInText(message))).to.equal(logged);
+    }
+  });
+
+  it('redacts every quote in one string, before the credential rules see it', () => {
+    // `Bearer FAKE-b` would leave `"Bearer [REDACTED]` if the credential rules ran first.
+    const [a, b] = [parseError('FAKE-a-0123').message, parseError('Bearer FAKE-b').message];
+    expect(redactSecretsInText(`${a}; then ${b}`)).to.equal(`${WITH_TOKEN}; then ${WITH_TOKEN}`);
+  });
+
+  it('never keeps any of the quoted text, whatever V8 is given (seeded, so the same inputs every run)', () => {
+    // mulberry32
+    let seed = 5;
+    const random = (): number => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const units = ['a', 'b', 'F', '"', '\\', ' ', '{', '}', '[', ']', ':', ',', 'é', '😀', '\n', '\t', "'", '\ud800', '\u2028'];
+    const prefixes = ['', '{"k":', '"'];
+    let quoted = 0;
+    for (let i = 0; i < 5000; i += 1) {
+      const length = 1 + Math.floor(random() * 60);
+      let text = prefixes[i % prefixes.length]!;
+      for (let j = 0; j < length; j += 1) text += units[Math.floor(random() * units.length)]!;
+      let message: string;
+      try {
+        JSON.parse(text);
+        continue;
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      if (message.endsWith(' is not valid JSON')) {
+        quoted += 1;
+        expect([WITH_TOKEN, BARE], JSON.stringify(message)).to.include(redactSecretsInText(message));
+      } else {
+        expect(redactSecretsInText(message), JSON.stringify(message)).to.equal(message);
+      }
+    }
+    expect(quoted, 'inputs V8 quoted').to.be.above(1000);
   });
 });
 
@@ -939,6 +1096,13 @@ describe('redaction on adversarial input', () => {
     ['redactQueryForLog, password-URL shape', () => redactQueryForLog({ q: manyPasswordShapes })],
     ['redactSecretsInText, password-URL shape', () => redactSecretsInText(manyPasswordShapes.join(' '))],
     ['redactLogMetadata, password-URL shape', () => redactLogMetadata({ urls: manyPasswordShapes.map((p) => `/x?a=${p}`) })],
+    ['redactSecretsInText, unterminated quoted JSON value', () => redactSecretsInText(`"access_token":"${'\\"'.repeat(N)}`)],
+    ['redactSecretsInText, many quoted JSON heads', () => redactSecretsInText(`"a":`.repeat(N))],
+    ['redactSecretsInText, quoted key then a long run of spaces', () => redactSecretsInText(`"a"${' '.repeat(N)}`)],
+    ['redactSecretsInText, a run of quotes before a JSON.parse phrase', () => redactSecretsInText(`${'"'.repeat(N)} is not valid JSON`)],
+    ['redactSecretsInText, a run of x" before a JSON.parse phrase', () => redactSecretsInText(`${'x"'.repeat(N)} is not valid JSON`)],
+    ['redactSecretsInText, a run of ..." before a JSON.parse phrase', () => redactSecretsInText(`${'..."'.repeat(N)} is not valid JSON`)],
+    ['redactSecretsInText, a run of token prefixes before a JSON.parse phrase', () => redactSecretsInText(`${"Unexpected token 'a', ".repeat(N / 10)}"x" is not valid JSON`)],
   ]
   for (const [name, run] of cases) {
     it(`${name} finishes in linear time`, () => {

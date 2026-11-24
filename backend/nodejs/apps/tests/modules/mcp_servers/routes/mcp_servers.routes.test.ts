@@ -56,6 +56,7 @@ describe('mcp_servers/routes/mcp_servers.routes', () => {
       const expected: Array<[string, string]> = [
         ['get', '/catalog'],
         ['get', '/catalog/:typeId'],
+        ['get', '/popular'],
         ['get', '/my-mcp-servers'],
         ['get', '/oauth/callback'],
         ['get', '/instances'],

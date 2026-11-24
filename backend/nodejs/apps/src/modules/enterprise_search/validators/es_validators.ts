@@ -460,6 +460,9 @@ const enterpriseSearchCreateBodySchema = z.object({
   ...keywordSearchFieldsSchema,
 });
 
+/** Opt-in: this turn is also being answered by a second model (Compare models); the stream announces the question's id early. */
+const compareTurnSchema = z.boolean().optional();
+
 export const enterpriseSearchCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema,
 });
@@ -478,6 +481,7 @@ const universalStreamChatModeSchema = z.enum(UNIVERSAL_STREAM_CHAT_MODES, {
 export const enterpriseSearchStreamCreateSchema = z.object({
   body: enterpriseSearchCreateBodySchema.extend({
     chatMode: universalStreamChatModeSchema,
+    compareTurn: compareTurnSchema,
   }),
 });
 
@@ -674,6 +678,7 @@ export const addMessageStreamParamsSchema = z.object({
   params: z.object(conversationIdParam),
   body: addMessageBodySchema.extend({
     chatMode: universalStreamChatModeSchema,
+    compareTurn: compareTurnSchema,
   }),
 });
 
@@ -1398,11 +1403,18 @@ const ENTITY_TYPES = [
   'record',
   'named_entity',
 ] as const;
+// Any entity a search returns: a search can be narrowed to people and
+// organizations, and `records` lists theirs; `neighbors` cannot expand them.
+const RECORD_ENTITY_TYPES = [
+  ...ENTITY_TYPES,
+  'person',
+  'organization',
+] as const;
 
 export const enterpriseSearchEntitiesSchema = z.object({
   body: z.object({
     query: z.string().min(1, { message: 'A query is required' }).max(500),
-    entityTypes: z.array(z.enum(ENTITY_TYPES)).max(10).optional(),
+    entityTypes: z.array(z.enum(RECORD_ENTITY_TYPES)).max(10).optional(),
     namedEntityKinds: z.array(z.string().min(1).max(64)).max(10).optional(),
     limit: z.number().int().min(1).max(25).optional(),
   }),
@@ -1416,6 +1428,80 @@ export const enterpriseSearchEntityNeighborsSchema = z.object({
     recordLimit: z.number().int().min(1).max(50).optional(),
     relatedLimit: z.number().int().min(1).max(50).optional(),
     cursor: z.string().max(64).optional(),
+  }),
+});
+
+const optionalIds = (max: number): z.ZodOptional<z.ZodArray<z.ZodString>> =>
+  z.array(z.string().min(1).max(256)).max(max).optional();
+const pageCursor = z.string().min(1).max(4096).optional();
+const pageLimit = z.number().int().min(1).max(50).optional();
+
+export const enterpriseSearchEntityRecordsSchema = z.object({
+  body: z.object({
+    entityId: z.string().min(1).max(256),
+    entityType: z.enum(RECORD_ENTITY_TYPES),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    limit: pageLimit,
+    cursor: pageCursor,
+  }),
+});
+
+export const enterpriseSearchCoMentionedSchema = z.object({
+  body: z.object({
+    entityIds: z.array(z.string().min(1).max(256)).min(1).max(20),
+    kinds: z.array(z.string().min(1).max(64)).max(20).optional(),
+    limit: pageLimit,
+  }),
+});
+
+export const enterpriseSearchRecordsByPersonSchema = z.object({
+  body: z.object({
+    person: z.string().min(1, { message: 'A person is required' }).max(320),
+    roles: z.array(z.string().min(1).max(32)).max(20).optional(),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    limit: pageLimit,
+    cursor: pageCursor,
+  }),
+});
+
+export const enterpriseSearchRecordsByValueSchema = z.object({
+  body: z.object({
+    kinds: z.array(z.string().min(1).max(64)).max(20).optional(),
+    name: z.string().min(1).max(200).optional(),
+    entityIds: optionalIds(20),
+    dateFrom: z.string().min(1).max(64).optional(),
+    dateTo: z.string().min(1).max(64).optional(),
+    amountMin: z.number().optional(),
+    amountMax: z.number().optional(),
+    currency: z.string().min(1).max(16).optional(),
+    quantityMin: z.number().optional(),
+    quantityMax: z.number().optional(),
+    dimension: z.string().min(1).max(64).optional(),
+    percentMin: z.number().optional(),
+    percentMax: z.number().optional(),
+    recordTypes: z.array(z.string().min(1).max(64)).max(20).optional(),
+    sourceIds: optionalIds(50),
+    limit: pageLimit,
+    cursor: pageCursor,
+  }),
+});
+
+export const enterpriseSearchRecordsByEntitiesSchema = z.object({
+  body: z.object({
+    mentions: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(200),
+          kind: z.string().min(1).max(64).optional(),
+        }),
+      )
+      .min(1, { message: 'At least one name is required' })
+      // The AI service looks up at most 5 names (linking.mentions.MAX_MENTIONS).
+      .max(5),
+    match: z.enum(['any', 'all']).optional(),
+    query: z.string().max(1000).optional(),
+    limit: pageLimit,
+    maxChunksPerRecord: pageLimit,
   }),
 });
 
@@ -1710,4 +1796,28 @@ export const agentAttachmentUploadSchema = z.object({
 
 export const agentAttachmentRecordIdParamsSchema = z.object({
   params: z.object({ ...agentKeyParam, ...recordIdParam }),
+});
+
+// ---------------------------------------------------------------------------
+// Compare models: a hidden branch conversation answers the same question
+// ---------------------------------------------------------------------------
+
+/** `compare/branch` body: the saved question to re-ask in the branch. */
+export const compareBranchParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: z.object({ userMessageId: objectId('message ID') }),
+});
+
+export const compareListParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+});
+
+/** `compare/choose` body: `primary` keeps the conversation's own answer, a branch id swaps that branch's turn in. */
+export const compareChooseParamsSchema = z.object({
+  params: z.object(conversationIdParam),
+  body: z.object({
+    choice: z.string().regex(/^(primary|[a-f0-9]{24})$/i, {
+      message: "choice must be 'primary' or a branch conversation ID",
+    }),
+  }),
 });

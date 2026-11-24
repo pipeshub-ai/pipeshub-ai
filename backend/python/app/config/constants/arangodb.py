@@ -1,5 +1,7 @@
 from enum import Enum
 
+from app.config import file_types
+
 
 class DepartmentNames(Enum):
     LEGAL = "Legal"
@@ -88,6 +90,7 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    LOCAL_REPO = "LOCAL REPOSITORY"
     DEMO = "DEMO"
     SMB = "SMB"
     CIFS = "CIFS"
@@ -127,6 +130,13 @@ class AccessRule(Enum):
     ``STRICT``: every ancestor up to the App must be accessible as well.
     ``RESTRICTED``: implies strict, and inheritance alone is not sufficient —
     the node's own grant is required on top of it.
+    ``PARENT_AND_GRANT``: the node must inherit from its parent, the parent
+    must be accessible (by its own rule, which for ``STRICT`` consults the
+    ancestors above it), and the node needs its own grant. The rule adds no
+    requirement of its own on the ancestors above the parent, so, as for
+    ``OPEN``, a parent read only through its own direct grant counts. For
+    content only some readers of its parent may see (a comment restricted to
+    a group). The node is never readable through its grant alone.
 
     A missing value reads as ``OPEN`` (a connector that declares nothing gets
     the permissive reading), but an *unrecognised* value reads as
@@ -137,6 +147,7 @@ class AccessRule(Enum):
     OPEN = "OPEN"
     STRICT = "STRICT"
     RESTRICTED = "RESTRICTED"
+    PARENT_AND_GRANT = "PARENT_AND_GRANT"
 
 
 class AppGroups(Enum):
@@ -390,25 +401,21 @@ class ExtensionTypes(Enum):
     JSON = "json"
     YAML = "yaml"
     YML = "yml"
+    MSG = "msg"
+    ODT = "odt"
+    RTF = "rtf"
+    XLSM = "xlsm"
+    LOG = "log"
+    CFG = "cfg"
+    DOCM = "docm"
+    DOTX = "dotx"
+    POTX = "potx"
+    PPTM = "pptm"
 
 # Common file types PipesHub cannot index. Sync filters offer them so a user can
 # exclude them (Not in); they are kept out of ExtensionTypes because that enum
 # lists the types that can be indexed.
-EXCLUDABLE_FILE_EXTENSIONS: tuple[str, ...] = (
-    # archives
-    "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz",
-    # databases
-    "db", "sqlite", "sqlite3", "mdb", "accdb",
-    # executables and installers
-    "exe", "dll", "msi", "bin", "iso", "dmg", "apk", "jar",
-    # temporary and backup files
-    "tmp", "bak", "swp", "lock",
-    # logs
-    "log",
-    # video and audio
-    "mp4", "mov", "avi", "mkv", "webm", "wmv",
-    "mp3", "wav", "flac", "m4a", "aac", "ogg",
-)
+EXCLUDABLE_FILE_EXTENSIONS: tuple[str, ...] = file_types.EXCLUDE_ONLY_EXTENSIONS
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -472,6 +479,27 @@ class MimeTypes(Enum):
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
     SQL_COLUMN = "application/vnd.sql.column"
+    MSG = "application/vnd.ms-outlook"
+    ODT = "application/vnd.oasis.opendocument.text"
+    RTF = "application/rtf"
+    XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12"
+    DOCM = "application/vnd.ms-word.document.macroEnabled.12"
+    DOTX = "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
+    POTX = "application/vnd.openxmlformats-officedocument.presentationml.template"
+    PPTM = "application/vnd.ms-powerpoint.presentation.macroEnabled.12"
+    LOG = "text/x-log"
+    CFG = "text/x-cfg"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "MimeTypes | None":
+        # Mime types are case-insensitive, and connectors build members from guessed or
+        # server-sent spellings ("application/vnd.ms-excel.sheet.macroenabled.12").
+        if isinstance(value, str):
+            lowered = value.lower()
+            for member in cls:
+                if member.value.lower() == lowered:
+                    return member
+        return None
 
 
 # Every mimeType a folder record has been written with. Folders are written as
@@ -483,98 +511,14 @@ FOLDER_MIME_TYPES = [
     MimeTypes.GOOGLE_DRIVE_FOLDER.value,  # older Google Drive folders
 ]
 
-CODE_FILE_MIME_TYPE_VALUES = frozenset({
-    MimeTypes.PYTHON.value,
-    MimeTypes.PYTHON_SCRIPT.value,
-    MimeTypes.PYTHON_SCRIPT_X.value,
-    MimeTypes.JAVA_SOURCE.value,
-    MimeTypes.C_SOURCE.value,
-    MimeTypes.CPP.value,
-    MimeTypes.PHP.value,
-    MimeTypes.JAVASCRIPT.value,
-    MimeTypes.JAVASCRIPT_TEXT.value,
-    MimeTypes.TYPESCRIPT.value,
-    MimeTypes.CSHARP.value,
-    MimeTypes.GO.value,
-    MimeTypes.RUST.value,
-    MimeTypes.RUBY.value,
-    MimeTypes.SWIFT.value,
-    MimeTypes.KOTLIN.value,
-    MimeTypes.DART.value,
-    MimeTypes.SHELL.value,
-    MimeTypes.SHELL_TEXT.value,
-    MimeTypes.SHELLSCRIPT.value,
-})
+CODE_FILE_MIME_TYPE_VALUES = file_types.CODE_MIMES
 
-CODE_FILE_EXTENSION_VALUES = frozenset({
-    ExtensionTypes.PY.value,
-    ExtensionTypes.JS.value,
-    ExtensionTypes.JSX.value,
-    ExtensionTypes.MJS.value,
-    ExtensionTypes.CJS.value,
-    ExtensionTypes.TS.value,
-    ExtensionTypes.TSX.value,
-    ExtensionTypes.JAVA.value,
-    ExtensionTypes.C.value,
-    ExtensionTypes.H.value,
-    ExtensionTypes.CPP.value,
-    ExtensionTypes.CC.value,
-    ExtensionTypes.CXX.value,
-    ExtensionTypes.HPP.value,
-    ExtensionTypes.HXX.value,
-    ExtensionTypes.CS.value,
-    ExtensionTypes.GO.value,
-    ExtensionTypes.RS.value,
-    ExtensionTypes.RB.value,
-    ExtensionTypes.PHP.value,
-    ExtensionTypes.SWIFT.value,
-    ExtensionTypes.KT.value,
-    ExtensionTypes.KTS.value,
-    ExtensionTypes.DART.value,
-    ExtensionTypes.SH.value,
-    ExtensionTypes.BASH.value,
-    # Parsed by the code parser too; test_code_file_extensions keeps this list
-    # a superset of lang_config's, which it had drifted from (P-3).
-    ExtensionTypes.PYI.value,
-    ExtensionTypes.MTS.value,
-    ExtensionTypes.CTS.value,
-    ExtensionTypes.SCALA.value,
-    ExtensionTypes.GROOVY.value,
-    ExtensionTypes.GRADLE.value,
-    ExtensionTypes.LUA.value,
-})
+# Parsed by the code parser; test_code_file_extensions keeps this a superset of
+# lang_config's, which it had drifted from (P-3).
+CODE_FILE_EXTENSION_VALUES = file_types.GRAMMAR_EXTENSIONS
 
 # MIME type mapping for common file extensions
-FILE_MIME_TYPES = {
-    '.pdf': MimeTypes.PDF,
-    '.doc': MimeTypes.DOC,
-    '.docx': MimeTypes.DOCX,
-    '.xls': MimeTypes.XLS,
-    '.xlsx': MimeTypes.XLSX,
-    '.ppt': MimeTypes.PPT,
-    '.pptx': MimeTypes.PPTX,
-    '.txt': MimeTypes.PLAIN_TEXT,
-    '.csv': MimeTypes.CSV,
-    '.tsv': MimeTypes.TSV,
-    '.json': MimeTypes.JSON,
-    '.yaml': MimeTypes.YAML,
-    '.yml': MimeTypes.YAML,
-    '.xml': MimeTypes.XML,
-    '.zip': MimeTypes.ZIP,
-    '.jpg': MimeTypes.JPEG,
-    '.jpeg': MimeTypes.JPEG,
-    '.png': MimeTypes.PNG,
-    '.gif': MimeTypes.GIF,
-    '.svg': MimeTypes.SVG,
-    '.webp': MimeTypes.WEBP,
-    '.heic': MimeTypes.HEIC,
-    '.heif': MimeTypes.HEIF,
-    '.html': MimeTypes.HTML,
-    '.htm': MimeTypes.HTML,
-    '.md': MimeTypes.MARKDOWN,
-    '.mdx': MimeTypes.MDX,
-    '.epub': MimeTypes.EPUB,
-}
+FILE_MIME_TYPES = {f".{ext}": MimeTypes(mime) for ext, mime in file_types.FILE_MIME_MAP.items()}
 
 
 def normalize_file_extension(extension: str | None) -> str:
@@ -599,58 +543,15 @@ def get_mime_type_for_extension(
     return mapped.value
 
 
-RECONCILIATION_ENABLED_MIME_TYPES = {
-    MimeTypes.SQL_TABLE.value,
-    MimeTypes.SQL_VIEW.value,
-    MimeTypes.GOOGLE_DOCS.value,
-    MimeTypes.GOOGLE_SHEETS.value,
-    MimeTypes.GOOGLE_SLIDES.value,
-    MimeTypes.PDF.value,
-    MimeTypes.DOCX.value,
-    MimeTypes.DOC.value,
-    MimeTypes.PLAIN_TEXT.value,
-    MimeTypes.HTML.value,
-    MimeTypes.BLOCKS.value,
-}
+RECONCILIATION_ENABLED_MIME_TYPES = file_types.RECONCILED_MIMES
 
-RECONCILIATION_ENABLED_EXTENSIONS = {
-    ExtensionTypes.SQL_TABLE.value,
-    ExtensionTypes.SQL_VIEW.value,
-    ExtensionTypes.PDF.value,
-    ExtensionTypes.DOCX.value,
-    ExtensionTypes.DOC.value,
-    ExtensionTypes.TXT.value,
-    ExtensionTypes.MD.value,
-    ExtensionTypes.MDX.value,
-    ExtensionTypes.HTML.value
-}
+RECONCILIATION_ENABLED_EXTENSIONS = file_types.RECONCILED_EXTENSIONS
 
 # Extensions that make a repository blob a CODE_FILE record. Connectors that walk
 # a git tree (GitLab, GitHub) classify each blob against this set; anything outside
 # it is an ordinary FILE record and is gated by the generic mime/extension allowlist
 # instead. Text-based only — a binary listed here would be fed to the code parser.
-SUPPORTED_CODE_FILE_EXTENSIONS = {
-    # C / C++
-    "c", "h", "cpp", "cc", "cxx", "hpp", "hxx",
-    # C#
-    "cs",
-    # Java / JVM
-    "java", "kt", "kts", "scala", "groovy", "gradle",
-    # Python
-    "py", "pyi",
-    # JavaScript / TypeScript
-    "js", "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte",
-    # Go / Rust / Ruby / PHP / Swift / Dart
-    "go", "rs", "rb", "php", "swift", "dart",
-    # Other languages
-    "lua", "pl", "pm", "r", "ex", "exs", "erl", "hs", "clj", "cljs",
-    # Shell
-    "sh", "bash", "zsh", "fish", "ps1",
-    # Markup / stylesheets
-    "html", "htm", "css", "scss", "sass", "less", "md",
-    # Schema / IDL / infra-as-code
-    "sql", "proto", "graphql", "gql", "tf", "tfvars",
-}
+SUPPORTED_CODE_FILE_EXTENSIONS = file_types.REPO_CODE_EXTENSIONS
 
 
 class ProgressStatus(Enum):
@@ -735,6 +636,10 @@ class RecordRelations(Enum):
     # properties). A link like any other type outside the hierarchy: stored on
     # RECORD_LINK in Neo4j and in recordLinks in Arango.
     DERIVED_FROM = "DERIVED_FROM"
+    # A pull or merge request changed this code file: pull request -> code-file record, written where the
+    # PR's file list is read (the index/stream path), with its own per-PR cleanup -- not among the processor's
+    # LINK_RELATION_TYPES, which every PR save deletes and rewrites. A link: RECORD_LINK / recordLinks.
+    MODIFIES = "MODIFIES"
 
     # --- code knowledge graph ---
     # Structural, written at parse time because both endpoints are in one file.
@@ -743,6 +648,9 @@ class RecordRelations(Enum):
     METHOD = "METHOD"          # class -> method
     # Cross-file, written by the edge-resolution pass once a repo is indexed.
     CALLS = "CALLS"
+    # A function named as a value (a callback, a table entry, a returned handler):
+    # it may run later, which is not a call, so it is never written as CALLS.
+    INDIRECT_CALL = "INDIRECT_CALL"
     IMPORTS = "IMPORTS"            # file -> imported symbol
     IMPORTS_FROM = "IMPORTS_FROM"  # file -> imported module file
     RE_EXPORTS = "RE_EXPORTS"
@@ -765,6 +673,30 @@ class EntityRelations(Enum):
     RELATED_TO_PERSON = "RELATED_TO_PERSON"
     MENTIONED_IN = "MENTIONED_IN"  # User mentioned in a message/record
     INVOLVED_IN = "INVOLVED_IN"
+    # Record -> member edges written by record_people (KG-13)
+    AUTHORED_BY = "AUTHORED_BY"
+    # Who last changed the record's current version (source-reported)
+    LAST_MODIFIED_BY = "LAST_MODIFIED_BY"
+    ADDRESSED_TO = "ADDRESSED_TO"
+    REVIEWED_BY = "REVIEWED_BY"
+    OWNED_BY = "OWNED_BY"
+    # Record -> the CRM account (external organisation) it belongs to (KG-13).
+    FOR_ACCOUNT = "FOR_ACCOUNT"
+    # Record -> an organisation its content names (KG-13 slice 3b, EXTRACTED).
+    MENTIONS = "MENTIONS"
+    # Record -> a person the source says it is shared with (not the owner).
+    SHARED_WITH = "SHARED_WITH"
+
+
+class EntityOrigin(str, Enum):
+    """Where a record -> entity link came from (KG-13). Stored as ``origin``
+    on ``entityRelations`` edges; an edge without one predates the field
+    and came from a connector."""
+
+    # Taken directly from a connector's structured data.
+    INFERRED = "INFERRED"
+    # Produced by a model or agent while indexing or building knowledge.
+    EXTRACTED = "EXTRACTED"
 
 
 class EventTypes(Enum):
@@ -781,6 +713,9 @@ class EventTypes(Enum):
     # Vectors-only cleanup for records moved to the trash; never touches blob or Mongo.
     SOFT_DELETE_RECORDS = "softDeleteRecords"
     DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
+    # The delayed second purge of a deleted record's stored model outputs.
+    PURGE_PAID_RESULTS = "purgePaidResults"
+    PURGE_PAID_RESULTS_BATCH = "purgePaidResultsBatch"
     BUILD_CODE_EDGES = "buildCodeEdges"
 
 

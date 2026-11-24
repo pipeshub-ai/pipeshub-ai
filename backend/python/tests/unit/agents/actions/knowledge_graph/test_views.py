@@ -229,6 +229,12 @@ class TestEmptyListing:
         text = render_navigation_view(view, page=1)
         assert "no children" in text.lower()
 
+    def test_a_source_still_being_prepared_says_so_instead_of_no_children(self) -> None:
+        view = NavigationView(current=_ref("app1", "Notes", "app", "KB"), breadcrumbs=[], rows=[], related=[], pagination=None, web_url=None, indexing_status=None,
+                              connector=None, preparing=True)
+        text = render_navigation_view(view, page=1)
+        assert "still being prepared" in text and "no children" not in text.lower()
+
 
 class TestTruncation:
     def test_very_long_output_is_capped(self):

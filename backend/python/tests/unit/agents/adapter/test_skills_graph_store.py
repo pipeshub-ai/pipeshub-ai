@@ -111,6 +111,28 @@ class FakeGraphProvider:
         col[key] = dict(node)
         return True
 
+    async def create_node_if_absent(
+        self, key: str, collection: str, node: dict[str, Any], transaction: str | None = None,
+    ) -> bool:
+        _assert_neo4j_safe(node, f"create_node_if_absent({collection})")
+        col = self._col(collection)
+        if key in col:
+            return False
+        col[key] = {**node, "id": key}
+        return True
+
+    async def delete_node_if_match(
+        self, key: str, collection: str, expected: dict[str, Any],
+        graph_name: str = "knowledgeGraph", transaction: str | None = None,
+    ) -> bool:
+        assert expected, "delete_node_if_match needs an expectation"
+        col = self._col(collection)
+        existing = col.get(key)
+        if existing is None or any(existing.get(field) != value for field, value in expected.items()):
+            return False
+        del col[key]
+        return True
+
     async def delete_nodes(self, keys: list[str], collection: str, transaction: str | None = None) -> bool:
         col = self._col(collection)
         for key in keys:
@@ -567,6 +589,32 @@ class TestSkillManagerCandidateDelegation:
 
         assert len(await org1_manager.get_pending_candidates()) == 1
         assert len(await org2_manager.get_pending_candidates()) == 0
+
+    async def test_another_orgs_candidate_cannot_be_rejected_or_removed(self) -> None:
+        """The id comes from the request path, so an id of another org answers as a missing id."""
+        from app.agent_loop_lib.core.exceptions import RegistryError
+
+        graph = FakeGraphProvider()
+        org1_manager = self._manager(graph, org_id="org-1")
+        org2_manager = self._manager(graph, org_id="org-2")
+        await org1_manager.queue_candidate(SkillCandidate(
+            candidate_id="cand-1", name="new-skill", description="d", body="b", status="pending",
+            created_at="2026-01-01T00:00:00+00:00",
+        ))
+
+        with pytest.raises(RegistryError, match="not found") as foreign:
+            await org2_manager.reject_candidate("cand-1")
+        with pytest.raises(RegistryError, match="not found") as missing:
+            await org2_manager.reject_candidate("cand-nobody")
+        assert str(foreign.value).replace("cand-1", "ID") == str(missing.value).replace("cand-nobody", "ID")
+        with pytest.raises(RegistryError, match="not found"):
+            await org2_manager.approve_candidate("cand-1")
+        # Even a caller that skips the manager's lookup removes nothing outside its own org.
+        await org2_manager._candidate_store.remove_candidate("cand-1")
+
+        assert [c.candidate_id for c in await org1_manager.get_pending_candidates()] == ["cand-1"]
+        await org1_manager.reject_candidate("cand-1")
+        assert await org1_manager.get_pending_candidates() == []
 
 
 class TestOptimisticConcurrency:

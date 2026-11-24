@@ -516,6 +516,8 @@ class StorageCleanupHelper:
             )
         payload = await self.graph_provider._create_reindex_event_payload(record, file_record)
         payload["forceReindex"] = True
+        # Storage was cleaned up: whatever was stored for the record cannot be trusted, so its paid results are paid again.
+        payload["refreshPaidOutputs"] = True
         sent = await publish(
             Topic.RECORD_EVENTS.value,
             {

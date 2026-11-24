@@ -7,12 +7,10 @@ take the caller from the session, never from the body.
 import asyncio
 import json
 from collections.abc import Iterator
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import jsonschema
 import pytest
-import yaml
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
@@ -24,6 +22,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityRecordPage,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+from tests.support.openapi_spec import openapi_spec
 
 ORG, USER, RID, VRID = "org-1", "user-1", "rec-1", "vrid-1"
 
@@ -370,12 +369,9 @@ def test_both_graph_providers_answer_the_calls_the_routes_make(provider) -> None
     assert not getattr(cls, "__abstractmethods__", frozenset())
 
 
-_SPEC = Path(__file__).resolve().parents[4].parent / "nodejs" / "apps" / "src" / "modules" / "api-docs" / "pipeshub-openapi.yaml"
-
-
 def _validate(schema_name: str, payload: dict) -> None:
     """Check a payload against the published schema (resolved against the spec's own components)."""
-    components = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))["components"]
+    components = openapi_spec()["components"]
     jsonschema.validate(payload, {"$ref": f"#/components/schemas/{schema_name}", "components": components})
 
 
@@ -415,14 +411,80 @@ async def test_the_neighbors_answer_matches_the_published_schema_and_dates_a_rec
     assert {k: v for k, v in preview.items() if k in dates} == dates
 
 
-async def test_the_search_answer_matches_the_published_schema_with_its_notes() -> None:
-    payload = {
-        "status": "success", "results": [], "ignoredEntityTypes": ["galaxy"], "kindNotes": ["x is not searched"],
-        "scopeNote": "limited",
-    }
-    _validate("EntitySearchResponse", payload)
+async def _search_answer(
+    hits: list, *, named: bool = False, wider: list | None = None, matching: set[str] | None = None, **body,
+) -> tuple[dict, AsyncMock]:
+    """What the route answers for ``hits`` (as the access check kept them), with named-entity extraction ``named``, and the search it ran.
+
+    The route's own state and access context are built for real, so whatever the route leaves out of them (a turn's
+    selection or bound) is left out here too; only the graph's answer about the caller's access is stubbed."""
+    from app.modules.retrieval.selection_scope import SelectionScope
+
+    ed = "app.agents.actions.knowledge_graph.ops.entity_discovery"
+    ep = "app.modules.retrieval.entity_permissions"
+    # ``wider``: what a search of every type finds when a type filter matched no name. A name
+    # matches the query when it is in ``matching`` (every name does when that is None).
+    search = AsyncMock(side_effect=[hits, wider or []])
+    store = MagicMock()
+    store.dense_similarities = AsyncMock(side_effect=lambda query, names: [
+        0.9 if matching is None or n in matching else 0.2 for n in names
+    ])
+    with patch("app.api.routes.chatbot.load_entity_vector_store", AsyncMock(return_value=store)), \
+         patch(f"{ep}._load_access_context", AsyncMock(return_value=_context())), \
+         patch(f"{ep}._row_scopes", AsyncMock(return_value=(SelectionScope(),))), \
+         patch(f"{ed}.search_entities_for_user", search), \
+         patch(f"{ed}._named_entities_enabled", AsyncMock(return_value=named)):
+        response = await ks.search_entities(_request(), ks.EntitySearchQuery(query="acme", **body), MagicMock())
+    return json.loads(response.body), search
+
+
+async def test_the_search_answer_is_exactly_what_the_published_schema_documents() -> None:
+    from app.modules.retrieval.entity_permissions import EntityHit, EntitySearchHits
+
+    row = {"_key": RID, "recordName": "Doc", "recordType": "FILE", "connectorId": "c1"}
+    found, _ = await _search_answer([
+        EntityHit("u1", "person", "Ada", 0.9, [row], True),
+        EntityHit("o1", "organization", "Acme", 0.8, [row], False),
+        EntityHit(RID, "record", "Acme plan", 0.7, [row], False, indexing_status="QUEUED", indexed=False),
+    ])
+    empty, _ = await _search_answer([])
+    cut_short, _ = await _search_answer(EntitySearchHits([EntityHit("o1", "organization", "Acme", 0.8, [row], False)],
+                                                         incomplete=True))
+    # A type filter (and a word that is no type) that matches no name: matches of other types are listed apart.
+    other_types, _ = await _search_answer(
+        [EntityHit("g1", "record_group", "Sales", 0.5, [], False)],
+        wider=[EntityHit(RID, "record", "Acme plan", 0.7, [row], False)], matching={"Acme plan"},
+        entityTypes=["record_group", "project"],
+    )
+    for payload in (found, empty, cut_short, other_types):
+        _validate("EntitySearchResponse", payload)
+    schemas = openapi_spec()["components"]["schemas"]
+    schema = schemas["EntitySearchResponse"]
+    item = schemas["EntitySearchResult"]["properties"]
+    # every field the route writes is documented, and every documented field is one the route writes
+    assert set(found) | set(empty) | set(cut_short) | set(other_types) == set(schema["properties"])
+    assert cut_short["incomplete"] is True and "incomplete" not in found
+    assert [m["entityId"] for m in other_types["otherTypeMatches"]] == [RID]
+    assert other_types["ignoredEntityTypes"] == ["project"]
+    assert {k for r in found["results"] for k in r} == set(item)
+    # the route never limits the search to part of the caller's sources, so it never says it did
+    assert "scopeNote" not in empty
     with pytest.raises(jsonschema.ValidationError):
         _validate("EntitySearchResponse", {"results": [{"entityId": 1}]})
+
+
+@pytest.mark.parametrize("types", [None, []])
+async def test_no_entity_types_or_an_empty_list_searches_every_type(types) -> None:
+    _, search = await _search_answer([], entityTypes=types)
+    assert search.await_args_list[0].kwargs["entity_types"] is None
+
+
+async def test_named_entity_alone_is_a_400_while_extraction_is_off_and_searched_while_it_is_on() -> None:
+    with pytest.raises(HTTPException) as err:
+        await _search_answer([], entityTypes=["named_entity"])
+    assert err.value.status_code == 400 and "not enabled" in err.value.detail
+    _, search = await _search_answer([], named=True, entityTypes=["named_entity"])
+    assert search.await_args_list[0].kwargs["entity_types"] == ["named_entity"]
 
 
 @pytest.mark.parametrize("failing", ["get_record_taxonomy_links", "get_named_entities_for_record"])
@@ -700,13 +762,12 @@ async def test_grep_never_returns_a_line_from_a_record_the_caller_cannot_read() 
     "a{101}", "a{1,101}", "a{101,}", "(?:ab){999}", "x{0,100000}",
 ])
 def test_grep_refuses_costly_repeats_before_compiling_and_fast(pattern) -> None:
-    import time
-
-    started = time.monotonic()
-    with pytest.raises(HTTPException) as err:
+    # Refused before the compiler sees it, which is what keeps it fast: proved by the compiler never being called, not by
+    # a 0.5 s wall-clock bound a busy runner can stretch.
+    with patch.object(ks.regex, "compile", side_effect=AssertionError("the pattern reached the compiler")), \
+            pytest.raises(HTTPException) as err:
         ks._grep_command(ks.GrepQuery(pattern=pattern, regex=True))
     assert err.value.status_code == 400
-    assert time.monotonic() - started < 0.5
 
 
 @pytest.mark.parametrize("pattern", [
@@ -758,10 +819,8 @@ async def test_a_record_whose_stored_size_is_over_the_limit_is_not_loaded_at_all
 
 
 def test_the_scan_is_linear_in_the_length_of_the_pattern() -> None:
-    import time
-
-    started = time.monotonic()
-    with pytest.raises(HTTPException) as err:  # 500 opening parentheses: refused by the scan, never reaching the compiler
+    # 500 opening parentheses: refused by the scan, never reaching the compiler
+    with patch.object(ks.regex, "compile", side_effect=AssertionError("the pattern reached the compiler")), \
+            pytest.raises(HTTPException) as err:
         ks._grep_command(ks.GrepQuery(pattern="(" * 500, regex=True))
     assert err.value.status_code == 400 and "deeper" in err.value.detail
-    assert time.monotonic() - started < 0.5

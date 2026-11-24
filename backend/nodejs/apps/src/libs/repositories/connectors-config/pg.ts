@@ -1,6 +1,6 @@
 /** PostgreSQL implementation of the connectors-config repository (`DOC_STORE=postgres`): one row per connector name in an org. */
 import { BadRequestError } from '../../errors/http.errors';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { assertOrg, fill, inUnit, newObjectId, oidOf } from '../pg-util';
 import type { Tx as PgKernelTx } from '../../db';
 import type { ConnectorsConfigDto, ConnectorsConfigRepository } from './types';

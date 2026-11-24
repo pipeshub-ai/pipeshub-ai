@@ -16,12 +16,18 @@ from __future__ import annotations
 
 import ast
 import difflib
+import functools
 from pathlib import Path
+
+import pytest
 
 _REPO = Path(__file__).resolve().parents[2]
 _SOURCES = _REPO / "backend" / "python" / "app" / "connectors" / "sources"
 _APP = _REPO / "backend" / "python" / "app"
 _SUITES = _REPO / "integration-tests"
+
+# Parsing every module under app takes 30-75 s on a busy 8-CPU host, over the suite's 30 s default.
+pytestmark = pytest.mark.timeout(240)
 
 
 def _parse(path: Path) -> ast.Module | None:
@@ -31,6 +37,7 @@ def _parse(path: Path) -> ast.Module | None:
         return None
 
 
+@functools.cache
 def _string_constants() -> dict[str, str]:
     """Module-level ``NAME = "..."`` and class-level ``Class.ATTR = "..."``.
 
@@ -64,6 +71,7 @@ def _string_constants() -> dict[str, str]:
     return table
 
 
+@functools.cache
 def _registered_names() -> tuple[set[str], list[str]]:
     """Names passed to ConnectorBuilder, and any this cannot resolve."""
     constants = _string_constants()

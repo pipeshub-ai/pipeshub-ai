@@ -33,6 +33,7 @@ import {
 import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { visibleWebSearchProviders } from './sidebar-web-search-section';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
+import { AgentBuilderMcpDiscovery } from './sidebar-mcp-discovery';
 import { AgentBuilderMcpSection } from './sidebar-mcp-section';
 import { AgentBuilderSkillsSection } from './sidebar-skills-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
@@ -93,6 +94,8 @@ export function AgentBuilderSidebar(props: {
   toolsetsOrgCredentialLocked?: boolean;
   /** Web-search provider currently attached to the agent (null if none). */
   webSearchAttached: AgentWebSearchAttachment | null;
+  /** A service agent not bound to a service account: collections are not offered, and the group says why. */
+  collectionsNeedBinding?: boolean;
 }) {
   const {
     open,
@@ -118,6 +121,7 @@ export function AgentBuilderSidebar(props: {
     toolsetsOrgCredentialLocked = false,
     webSearchAttached,
     inSheet = false,
+    collectionsNeedBinding = false,
   } = props;
 
   const { t } = useTranslation();
@@ -129,7 +133,7 @@ export function AgentBuilderSidebar(props: {
   }, [paletteDragBlockedMessage, onNotify]);
   const [search, setSearch] = useState('');
   const searching = search.trim() !== '';
-  const { isOpen, toggle: toggleKey } = useSearchAwareExpanded(searching, {
+  const { isOpen, toggle: toggleKey, expand } = useSearchAwareExpanded(searching, {
     models: false,
     knowledge: true,
     'knowledge-apps': true,
@@ -139,6 +143,11 @@ export function AgentBuilderSidebar(props: {
     skills: true,
   });
   const toggle = (key: string) => toggleKey(key, DEFAULT_KNOWLEDGE_NEST_EXPANDED);
+  // After adding a server from the catalog: a search could hide it and the sign-in it needs.
+  const revealMcpServers = () => {
+    setSearch('');
+    expand('mcpServers');
+  };
   const isSectionOpen = (key: string) => isOpen(key, DEFAULT_KNOWLEDGE_NEST_EXPANDED);
 
   // Every section filters by the palette query; a query that names a section or group shows all of it.
@@ -481,11 +490,13 @@ export function AgentBuilderSidebar(props: {
                   itemCount={kbIndividuals.length}
                   isExpanded={isSectionOpen('knowledge-collections')}
                   onToggle={() => toggle('knowledge-collections')}
-                  dragType={paletteStructureLocked ? undefined : 'kb-group'}
+                  dragType={paletteStructureLocked || collectionsNeedBinding ? undefined : 'kb-group'}
                 >
                   {kbIndividuals.length === 0 ? (
                     <Text size="1" style={{ color: 'var(--olive-11)', padding: '4px 8px', fontStyle: 'italic' }}>
-                      {t('agentBuilder.noCollections')}
+                      {collectionsNeedBinding
+                        ? t('agentBuilder.serviceAgentCollectionsNeedBinding')
+                        : t('agentBuilder.noCollections')}
                     </Text>
                   ) : (
                     <>
@@ -596,8 +607,10 @@ export function AgentBuilderSidebar(props: {
                     mcpMergeCheckNodes={mcpMergeCheckNodes}
                     isServiceAccount={isServiceAccount}
                     agentShared={isServiceAccount || shareWithOrg}
+                    isAdmin={Boolean(isAdmin)}
                     agentKey={agentKey}
                     onNotify={onNotify}
+                    onServerAdded={revealMcpServers}
                     structureLocked={paletteStructureLocked}
                     onPaletteStructureDragBlocked={onPaletteDragBlocked}
                   />
@@ -631,6 +644,19 @@ export function AgentBuilderSidebar(props: {
             <Text size="1" role="status" style={{ color: 'var(--olive-11)', fontStyle: 'italic', padding: '4px 8px' }}>
               {t('message.noResults')}
             </Text>
+          ) : null}
+
+          {/* No added server matches, so the MCP section is hidden: the catalog still answers. */}
+          {mcpEnabled && searching && !showMcp ? (
+            <AgentBuilderMcpDiscovery
+              search={mcpSearch}
+              mcpServers={mcpServers}
+              isAdmin={Boolean(isAdmin)}
+              agentShared={isServiceAccount || shareWithOrg}
+              refreshMcpServers={refreshMcpServers}
+              onNotify={onNotify}
+              onServerAdded={revealMcpServers}
+            />
           ) : null}
         </Box>
       </ScrollArea>

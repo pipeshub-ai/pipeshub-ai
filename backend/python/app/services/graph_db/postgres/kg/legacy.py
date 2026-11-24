@@ -7,13 +7,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.services.graph_db.postgres.kg import drainer
+from app.services.graph_db.postgres.kg import drainer, restamp
 from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import Tx
 
 LEGACY = METRICS_BACKEND.gauge("pipeshub_kg_legacy_records", "Records of a connector that keep today's walk, by the compiler's reason", ["org", "app", "reason"])
+FENCE_AGE = METRICS_BACKEND.gauge("pipeshub_kg_fence_oldest_seconds", "Age of the oldest queued restamp job (a fence hides until it is done)", ["org"])
+QUEUE = METRICS_BACKEND.gauge("pipeshub_kg_restamp_queue", "Queued restamp jobs, by whether a worker holds them", ["org", "state"])
 QUARANTINED = METRICS_BACKEND.gauge("pipeshub_kg_quarantined_rows", "Change-log rows the drain cannot read (alert on > 0)", ["org"])
 LAG = METRICS_BACKEND.gauge("pipeshub_kg_change_log_rows", "Committed change-log rows not yet projected", ["org"])
 _published: dict[str, set[tuple[str, str]]] = {}      # per org, the LEGACY series it has published: a series is set to 0 when its records are gone, never cleared for every org
@@ -35,5 +37,9 @@ async def publish(tx: Tx, org: str) -> None:
     for (app, reason), n in counts.items():
         LEGACY.set(org, app, reason, value=n)
     _published[org] = set(counts)
+    FENCE_AGE.set(org, value=await restamp.oldest_seconds(tx, org))
+    held = {r["held"]: r["n"] for r in await tx.fetch("/* pipeshub:kg.queue_state */ SELECT claimed_by IS NOT NULL AS held, count(*) AS n FROM kg.restamp_queue WHERE org_id = $1 GROUP BY 1", org)}
+    QUEUE.set(org, "held", value=held.get(True, 0))
+    QUEUE.set(org, "waiting", value=held.get(False, 0))
     QUARANTINED.set(org, value=len(await drainer.quarantined(tx, org)))
     LAG.set(org, value=await drainer.lag_in(tx, org))

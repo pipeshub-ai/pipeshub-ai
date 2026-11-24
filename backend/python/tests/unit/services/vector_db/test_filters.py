@@ -94,3 +94,29 @@ class TestBuildFilterExpression:
         )
         keys = {c.key for c in expr.must}
         assert keys == {"connectorIds", "recordGroupIds", "metadata.orgId"}
+
+
+def test_the_scope_keys_are_top_level_fields_like_the_membership_arrays() -> None:
+    from app.services.permissions.scope_fields import SCOPE_KEYS
+    from app.services.vector_db.filters import (
+        build_generic_conditions,
+        canonical_filter_key,
+    )
+
+    for key in SCOPE_KEYS:
+        assert canonical_filter_key(key) == key
+        assert [c.key for c in build_generic_conditions({key: "x"})] == [key]
+    for key in ("blockId", "virtualRecordId", "orgId"):          # everything else is still a metadata field
+        assert canonical_filter_key(key) == f"metadata.{key}"
+    assert canonical_filter_key("connectorIds") == "connectorIds"
+
+
+def test_scope_filter_of_binds_every_list_into_its_own_slot() -> None:
+    from app.services.permissions.scopes import ViewerScopes
+    from app.services.vector_db.filters import ScopeFilter
+
+    scopes = ViewerScopes(org_id="o", user_key="u", open_apps=frozenset({"a1"}), readable_groups=frozenset({"g1"}),
+                          readable_scopes=frozenset({"s1"}), unreadable_restricted=frozenset({"x1"}), pending=frozenset({"p1"}))
+    current, opn, grp, reach, exc, pen, blk = ScopeFilter.of(scopes, ["c1"], version=1, generation=2, blocked=["b1"]).lists()
+    assert (current, opn, grp, exc, pen, blk) == (["c1"], ["a1"], ["g1"], ["x1"], ["p1"], ["b1"])
+    assert reach == ["a1", "g1", "s1"]

@@ -50,11 +50,17 @@ class NodeRow(NodeRef):
 class PaginationInfo(BaseModel):
     """Pagination envelope."""
 
-    page: int
+    page: int | None                # None on a page reached by cursor: it has a position (`start_index`), not a number
     limit: int
     total: int
+    # `total` is a lower bound: the listing stopped counting at a cap.
+    total_capped: bool = False
     has_next: bool
     has_prev: bool
+    # Pass back as `cursor` for the next page; None when there is none, or nothing could sign one.
+    next_cursor: str | None = None
+    # 1-based position of the page's first row in the listing, when the listing says it.
+    start_index: int | None = None
 
 
 class NavigationView(BaseModel):
@@ -73,6 +79,8 @@ class NavigationView(BaseModel):
     # the node-access projection does not carry. Same field and rendering
     # as LookupMatch.context_block.
     context_block: str | None = None
+    # The node's source is still being prepared (its copy is not finished): nothing could be listed yet, which is not the same as no children.
+    preparing: bool = False
 
 
 class LookupMatch(BaseModel):

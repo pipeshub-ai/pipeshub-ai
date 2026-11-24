@@ -19,6 +19,7 @@ Questions: [Discord](https://discord.com/invite/K5RskzJBm2), [GitHub Discussions
 - [Setting Up the Development Environment](#setting-up-the-development-environment)
 - [Project Architecture](#project-architecture)
 - [Contribution Workflow](#contribution-workflow)
+- [Contributor License Agreement](#contributor-license-agreement)
 - [Code Style Guidelines](#code-style-guidelines)
 - [Testing](#testing)
 - [Community Guidelines](#community-guidelines)
@@ -91,7 +92,6 @@ The rest of this section is for running application services from source.
 sudo apt update
 sudo apt install python3.12-venv
 sudo apt-get install libreoffice
-sudo apt install libmariadb-dev
 ```
 
 #### macOS
@@ -111,7 +111,7 @@ Install Python 3.12, or use WSL2 and follow the Linux steps.
 ### Application tools
 
 1. **Docker** — Redis, Qdrant, Neo4j, and MongoDB (the default stores below)
-2. **Node.js 22** — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
+2. **Node.js 24 LTS** (22 minimum, 22.13 for the frontend) — API in `backend/nodejs/apps`, frontend in `frontend`. There is no root `package.json`.
 3. **Python 3.12** — FastAPI services in `backend/python`
 
 ### Environment files
@@ -194,6 +194,26 @@ python -m app.query_main
 python -m app.docling_main
 ```
 
+`pyproject.toml` tells uv to skip `unclecode-litellm`, a fork that crawl4ai pins and that writes into the same `litellm/` directory as the real `litellm`. Run the install with `uv` from `backend/python`; plain `pip install -e .` ignores that setting. If you used plain pip, or installed with uv before this exclusion and the fork is still there (`uv pip install` does not remove packages it no longer needs), remove the fork and reinstall the litellm version the resolver already chose. Removing the fork deletes files litellm owns too, so read the version first:
+
+```bash
+v=$(python -c "import importlib.metadata as m; print(m.version('litellm'))") && [ -n "$v" ] \
+  && pip uninstall -y unclecode-litellm \
+  && pip install --force-reinstall --no-deps "litellm==$v"
+```
+
+On Windows PowerShell:
+
+```powershell
+$v = python -c "import importlib.metadata as m; print(m.version('litellm'))"
+if ($LASTEXITCODE -eq 0 -and $v) {
+    pip uninstall -y unclecode-litellm
+    if ($LASTEXITCODE -eq 0) { pip install --force-reinstall --no-deps "litellm==$v" }
+}
+```
+
+`tests/unit/test_single_litellm_owner.py` fails while two packages own `litellm/`.
+
 Parsing (`app.parsing_main`, 8092) and extraction (`app.extraction_main`, 8093) only when `USE_PARSING_SERVICE=true`. That variable is not in `backend/env.template`; set it in `backend/python/.env`.
 
 ### Frontend (port 3001)
@@ -257,12 +277,35 @@ In Docker (`./install.sh --build`), Node serves the API and the built UI togethe
    - Provide a clear description of the changes
    - Reference any related issues
    - Add screenshots if applicable
+9. **Sign the [Contributor License Agreement](CLA.md)** when the CLA Assistant bot asks, on your first pull request (see below)
 
 Pull requests from forks run the integration tests without repository secrets:
 CI runs only the helper unit tests under `integration-tests/unit/`. A maintainer
 runs the full suite on a reviewed commit using *Run workflow* on
 `integration-tests.yml` with that commit's hash (see
 [integration-tests/README.md](integration-tests/README.md)).
+
+## Contributor License Agreement
+
+Before we can merge your first pull request, you need to sign our [Contributor License Agreement](CLA.md) (CLA). You keep the copyright to your work; the CLA gives PipesHub a license to use and distribute it.
+
+Signing takes a minute. The CLA Assistant bot comments on your pull request with a link; follow it, sign in with GitHub and select **I agree**. You only sign once.
+
+If the `license/cla` check is still failing after you signed:
+
+- Select **recheck** in the bot's comment; that re-runs the check.
+- Make sure the email in your commits is linked to your GitHub account ([GitHub's guide](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/adding-an-email-address-to-your-github-account)). Commits made with an unlinked email can't be matched to your signature. To fix your own commits on the branch:
+
+  ```bash
+  git config user.email "you@example.com"   # an email linked to your GitHub account
+  git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/pipeshub-ai/pipeshub-ai.git
+  git fetch upstream
+  git log --merges --oneline upstream/main..HEAD   # if this prints anything, ask for help on the pull request instead
+  # Rewrite only the commits authored with your old email (replace old@example.com); other people's commits keep their author
+  git rebase --exec 'if [ "$(git log -1 --format=%ae)" = "old@example.com" ]; then git commit --amend --no-edit --reset-author; fi' upstream/main
+  git log --format="%h %ae %s" upstream/main..HEAD   # check your commits now show the new email
+  git push --force-with-lease origin HEAD:feature/your-feature-name   # your pull request's branch
+  ```
 
 ## Code Style Guidelines
 

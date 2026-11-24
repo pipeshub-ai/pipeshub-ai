@@ -6,12 +6,14 @@ the whole set in one transaction. Every method resolves the ambient org before i
 """
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.neo4j import EDGE_COLLECTION_TO_RELATIONSHIP
 from app.core.org_context import current_org_id
 from app.models.entities import RecordGroup
+from app.services.graph_db.common.name_match import name_query_key
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     PATH_MAX_CANDIDATES,
@@ -19,6 +21,7 @@ from app.services.graph_db.common.utils import (
     select_canonical_chain_names,
 )
 from app.services.graph_db.postgres.base import (
+    _VALIDATOR,
     PgBase,
     _arango,
     _doc,
@@ -27,8 +30,11 @@ from app.services.graph_db.postgres.base import (
     _ekey,
     _j,
 )
+from app.services.graph_db.postgres.kg import hierarchy as kg_hier
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -69,6 +75,20 @@ async def _remove_records(tx: Tx, org: str, ids: list[str]) -> int:
         RETURNING coll) SELECT count(*) FILTER (WHERE coll = 'records') FROM d""", org, ids, _TYPE_COLLS, everything, extra)
 
 
+# Whether each collection has a live child: one is enough, so the outer LIMIT 1 stops at the first, where a DISTINCT over the join read every child of every
+# collection. Each child is read by its key: joined, a planner without statistics scanned the org's records once per collection. The collection comes from ``c``
+# (OFFSET 0 keeps it a subquery), as in get_connector_stats: a literal 'records' lets a partial records index bounded by the org alone look as cheap. A
+# collection's edges are a range of one value in edges_by_target's order (org, coll, to_id), read under kg.reader.seeks (no sort, bitmap or sequential scan):
+# only that index returns them so. On a leaf whose statistics put the org at a row, ``to_id = k.id`` tied with the primary key (org, coll, from_id, ...), where
+# to_id is not leading: PostgreSQL 17 read every belongsTo edge of the org per collection, and PostgreSQL 18 skip-scanned it, sorted, from the primary key.
+HUB_ROOT_KB_CHILDREN = """/* pipeshub:graph.hub_root_kb_children */ SELECT k.id FROM unnest($2::text[]) k(id)
+    CROSS JOIN (SELECT 'records'::text AS rec OFFSET 0) c CROSS JOIN LATERAL (
+    SELECT 1 FROM (SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.to_id >= k.id AND e.to_id <= k.id
+      AND e.from_coll = 'records' AND e.to_coll = 'apps' ORDER BY e.to_id OFFSET 0) e
+    CROSS JOIN LATERAL (SELECT n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = c.rec AND n.id = e.from_id LIMIT 1) r
+    WHERE r.doc->>'connectorId' = k.id AND r.doc->>'orgId' = $1 AND r.doc->>'isDeleted' IS DISTINCT FROM 'true' AND r.doc->>'isPlaceholder' IS DISTINCT FROM 'true'
+    LIMIT 1) x"""
+
 class HierarchyMixin(PgBase):
     async def _rows(self, sql: str, *args: Any, transaction: str | None = None) -> list:  # noqa: ANN401
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction)
@@ -85,6 +105,7 @@ class HierarchyMixin(PgBase):
         rows: dict[tuple, dict] = {}
         for e in edges:
             fc, fi, tc, ti, props = _edge(e)
+            _VALIDATOR.validate_edge(collection, props)
             key = _ekey(collection, props)
             rows.setdefault((fc, fi, tc, ti, key), {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": key, "doc": props})      # the first of a duplicate wins, as MERGE ... ON CREATE
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_edges_if_absent */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
@@ -112,7 +133,8 @@ class HierarchyMixin(PgBase):
                            transaction, write=True)
             return True
         except Exception as e:
-            self.logger.error(f"❌ Error copying relationships from {source_key} to {target_key}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="copy_document_relationships")
             return False
 
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
@@ -125,7 +147,7 @@ class HierarchyMixin(PgBase):
                                                   org, colls, from_collection, from_id, to_collection, kind), transaction, write=True)
 
     async def delete_edges_by_relationship_types(self, from_id: str, from_collection: str, collection: str, relationship_types: list[str],
-                                                 transaction: str | None = None) -> int:
+                                                 transaction: str | None = None, *, raise_on_error: bool = False) -> int:
         """``nodeRelations`` is the hierarchy and the links, ``recordLinks`` the links only (Neo4j's ``NODE_RELATION|RECORD_LINK`` and ``RECORD_LINK``)."""
         org = current_org_id()
         colls, kind = _edge_scope(collection)
@@ -134,7 +156,10 @@ class HierarchyMixin(PgBase):
                 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND e.doc->>'relationshipType' = ANY($5::text[]) AND ($6::int = 0 OR ($6::int = 1 AND e.ekey = '') OR ($6::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1)
                 SELECT count(*) FROM d""", org, colls, from_collection, from_id, relationship_types, kind), transaction, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Delete edges by relationship types failed: {e}")
+            if raise_on_error:
+                raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_edges_by_relationship_types")
             return 0
 
     async def delete_parent_child_edge_to_record(self, record_id: str, transaction: str | None = None) -> bool:
@@ -146,8 +171,12 @@ class HierarchyMixin(PgBase):
         return bool(n)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None) -> RecordGroup | None:
-        d = await self._one("""/* pipeshub:graph.get_record_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
-            AND doc->>'connectorId' = $2 AND doc->>'externalGroupId' = $3 LIMIT 1""", current_org_id(), connector_id, external_id, transaction=transaction)
+        org = current_org_id()
+        if isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000:      # the vetted read of graph_0008
+            d = await self._one("/* pipeshub:graph.node_by_external */ SELECT node_id, doc FROM graph.node_by_external('recordGroups', $1, $2)", connector_id, external_id, transaction=transaction)
+        else:
+            d = await self._one("""/* pipeshub:graph.get_record_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
+                AND doc->>'connectorId' = $2 AND doc->>'externalGroupId' = $3 LIMIT 1""", org, connector_id, external_id, transaction=transaction)
         return RecordGroup.from_arango_base_record_group(_arango(d, "recordGroups")) if d else None
 
     async def batch_upsert_record_groups(
@@ -164,8 +193,7 @@ class HierarchyMixin(PgBase):
                 collection=CollectionNames.RECORD_GROUPS.value,
                 transaction=transaction
             )
-        except Exception as e:
-            self.logger.error(f"❌ Batch upsert record groups failed: {str(e)}")
+        except Exception:
             raise
 
     async def create_record_group_relation(
@@ -240,7 +268,7 @@ class HierarchyMixin(PgBase):
             rows = await self._ancestor_chains(record_id, transaction)
             return "/".join(select_canonical_chain_names(rows, ("names",))) if rows else None
         except Exception as e:
-            self.logger.error(f"❌ Get record path failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="get_record_path")
             return None
 
     async def get_record_path_segments(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> list[str]:
@@ -248,9 +276,10 @@ class HierarchyMixin(PgBase):
         try:
             rows = await self._ancestor_chains(record_id, transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get record path segments failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_path_segments")
             return []
         return select_canonical_chain_names(rows, ("names",))
 
@@ -279,9 +308,10 @@ class HierarchyMixin(PgBase):
                   WHERE NOT p.id = ANY(up.ids) AND cardinality(up.ids) <= 50)
                 SELECT ids, gn, nm FROM up ORDER BY cardinality(ids) DESC, ids LIMIT $3""", org, record_group_id, PATH_MAX_CANDIDATES, transaction=transaction)
         except Exception as e:
-            self.logger.error(f"❌ Get record group path failed: {e}")
             if raise_on_error:
                 raise
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_group_path")
             return []
         return select_canonical_chain_names([{"ids": list(r["ids"]), "groupNames": list(r["gn"]), "names": list(r["nm"])} for r in rows], ("groupNames", "names"))
 
@@ -307,7 +337,8 @@ class HierarchyMixin(PgBase):
                 ORDER BY (e.from_coll = 'records') DESC, e.from_id LIMIT 1""", org, record_id, transaction=transaction)
             return {"id": rows[0]["id"], "type": "recordGroup" if rows[0]["coll"] == "recordGroups" else "record"} if rows else None
         except Exception as e:
-            self.logger.error(f"❌ Get record parent info failed: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_record_parent_info")
             return None
 
     async def get_node_depths_batch(self, parent_id: str, node_ids: list[str], max_depth: int = 3, parent_type: str | None = None) -> dict[str, int]:
@@ -317,9 +348,10 @@ class HierarchyMixin(PgBase):
             return {}
         safe = max(1, min(int(max_depth), 10))
         rec_depth = max(1, safe - 1)
-        try:
+
+        async def walk(tx: Tx) -> dict[str, int]:
             if parent_type == "app":
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_app */ WITH RECURSIVE w(id, lvl) AS (
                       SELECT s.id, 1 FROM (SELECT b.from_id AS id FROM graph.nodes g JOIN graph.edges b ON b.org_id = g.org_id AND b.coll = 'belongsTo'
                           AND b.to_coll = 'recordGroups' AND b.to_id = g.id AND b.from_coll = 'records'
                         WHERE g.org_id = $1 AND g.coll = 'recordGroups' AND g.doc->>'connectorId' = $2 AND NOT coalesce((g.doc->>'isDeleted')::boolean, false)
@@ -330,7 +362,7 @@ class HierarchyMixin(PgBase):
                       WHERE w.lvl <= $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
             elif parent_type == "recordGroup":
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE w(id, lvl) AS (
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_group */ WITH RECURSIVE w(id, lvl) AS (
                       SELECT b.from_id, 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.to_coll = 'recordGroups' AND b.to_id = $2
                         AND b.from_coll = 'records'
                       UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
@@ -338,14 +370,20 @@ class HierarchyMixin(PgBase):
                       WHERE w.lvl <= $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) GROUP BY id""", org, parent_id, list(node_ids), rec_depth)
             else:
-                rows = await self._rows("""/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
+                rows = await tx.fetch("""/* pipeshub:graph.get_node_depths_batch_record */ WITH RECURSIVE w(id, lvl) AS (SELECT $2::text, 0
                       UNION SELECT nx.to_id, w.lvl + 1 FROM w JOIN LATERAL (SELECT e.to_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations'
                           AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT') AND e.from_coll = 'records' AND e.from_id = w.id AND e.to_coll = 'records') nx ON true
                       WHERE w.lvl < $4)
                     SELECT id, min(lvl) AS lvl FROM w WHERE id = ANY($3::text[]) AND lvl >= 1 GROUP BY id""", org, parent_id, list(node_ids), safe)
             return {r["id"]: int(r["lvl"]) for r in rows}
+        got = await kg_hier.answer(self, "depths", None, lambda tx: kg_hier.depths(tx, org, parent_id, parent_type, list(node_ids), safe, rec_depth), walk=walk)
+        if got is not None:
+            return got
+        try:
+            return await self._q(walk, None)
         except Exception as e:
-            self.logger.error("get_node_depths_batch failed: %s", e)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_node_depths_batch")
             return {}
 
     async def delete_records_and_relations(self, record_key: str, *, hard_delete: bool = False, transaction: str | None = None) -> bool:
@@ -419,7 +457,8 @@ class HierarchyMixin(PgBase):
                         p["taxonomyRefs"] = r
                     payloads.append(p)
         except Exception as e:
-            self.logger.error(f"❌ Failed to prepare deletion event payloads: {e}")
+            error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                    op="_delete_events", step="deletion_event_payload")
         return {"eventType": "deleteRecord", "topic": "record-events", "payloads": payloads} if payloads else None
 
     async def delete_records_recursive(self, record_ids: list[str], connector_id: str, transaction: str | None = None, cascade_children: bool = True,  # noqa: FBT001, FBT002
@@ -471,7 +510,8 @@ class HierarchyMixin(PgBase):
             if transaction is None:
                 await self.rollback_transaction(txn)
                 if isinstance(e, Exception):
-                    self.logger.error(f"❌ Failed to delete records recursively: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                            op="delete_records_recursive")
                     return {"success": False, "reason": str(e), "code": 500, "eventData": None}
             raise  # the caller owns the transaction: it needs the real error to roll back and retry
 
@@ -494,7 +534,7 @@ class HierarchyMixin(PgBase):
             if transaction is None:
                 await self.rollback_transaction(txn)
                 if isinstance(e, Exception):
-                    self.logger.error(f"❌ Failed to delete single record: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="delete_single_record")
                     return {"success": False, "reason": str(e), "code": 500, "eventData": None}
             raise
 
@@ -529,5 +569,254 @@ class HierarchyMixin(PgBase):
                 "recordType": record.get("recordType"),
             }
         except Exception as e:
-            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_create_deleted_record_event_payload")
             return {}
+
+    async def is_record_descendant_of(self, record_id: str, ancestor_id: str, transaction: str | None = None) -> bool:
+        """Whether the record lies below the ancestor over PARENT_CHILD edges between records (one hop or more; a record is not its own descendant unless a cycle says so).
+        Read from kg's PARENT_CHILD links for a connector it serves (``kg.hierarchy.pc_ancestor``), else walked."""
+        org = current_org_id()
+
+        async def walk(tx: Tx) -> bool:
+            return bool(await tx.fetchval("""/* pipeshub:graph.is_record_descendant_of */ WITH RECURSIVE up(id) AS (
+                  SELECT e.from_id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = $2 AND e.to_coll = 'records' AND e.from_coll = 'records'
+                    AND e.doc->>'relationshipType' = 'PARENT_CHILD'
+                  UNION
+                  SELECT e.from_id FROM up JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_id = up.id AND e.to_coll = 'records' AND e.from_coll = 'records'
+                    AND e.doc->>'relationshipType' = 'PARENT_CHILD')
+                SELECT EXISTS (SELECT 1 FROM up WHERE up.id = $3)""", org, record_id, ancestor_id))
+        try:
+            got = await kg_hier.answer(self, "pc_ancestor", transaction, lambda tx: kg_hier.pc_ancestor(tx, org, record_id, ancestor_id), walk=walk)
+            return got if got is not None else await self._q(walk, transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="is_record_descendant_of")
+            return False
+
+# ---- the knowledge hub's root listing, parent and trail --------------------------------------------------------------------------
+_KH_SORT_FIELDS = ("name", "createdAt", "updatedAt", "nodeType", "origin", "connector", "sizeInBytes")
+
+
+def _kh_date(doc: dict, source: str, ingest: str) -> Any:  # noqa: ANN401
+    """The source's own date for a connector node, the upload's for a collection item."""
+    if doc.get("connectorName") == "KB":
+        return doc.get(ingest) or 0
+    return next((v for v in (doc.get(source), doc.get(ingest)) if v is not None), 0)
+
+
+def _kh_order(a: dict, b: dict, *, ascending: bool) -> int:
+    """The page order: rows without a sort key last, then the key (in the sort direction), then the id."""
+    if a["nullRank"] != b["nullRank"]:
+        return -1 if a["nullRank"] < b["nullRank"] else 1
+    if a["nullRank"] == 0 and a["sortKey"] != b["sortKey"]:
+        c = -1 if a["sortKey"] < b["sortKey"] else 1
+        return c if ascending else -c
+    return (a["id"] > b["id"]) - (a["id"] < b["id"])
+
+
+_COLL_OF_CODE = {1: "apps", 2: "recordGroups", 3: "records"}
+
+
+class HubMixin(PgBase):
+    async def get_knowledge_hub_filter_options(self, user_key: str, org_id: str, transaction: str | None = None) -> dict[str, list[dict[str, Any]]]:
+        """The connector apps the user passes the gate for (a collection is not one), by name. An unreadable gate lists none."""
+        org = current_org_id()
+        try:
+            apps = await self.get_gated_apps(user_key, org_id, transaction=transaction) if org_id == org else []
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_filter_options")
+            return {"apps": []}
+        rows = [{"id": a.get("_key") or a.get("id"), "name": a.get("name"), "type": a.get("type")} for a in apps if (a.get("type") or "") != "KB" and (a.get("_key") or a.get("id"))]
+        return {"apps": sorted(rows, key=lambda a: (a.get("name") or "").lower())}
+
+    async def _hub_nodes(self, tx: Tx, org: str, ids: list[str]) -> dict[str, dict]:
+        """The hub's node of each id (a record, else a group, else an app), shaped as a step of the trail, with its collection."""
+        out: dict[str, dict] = {}
+        for n in await tx.fetch(kg_hier.HUB_NODES, org, ids):
+            d, coll = _doc(n["doc"]), n["coll"]
+            kind = ("folder" if n["is_file"] == "false" else "record") if coll == "records" else "recordGroup" if coll == "recordGroups" else "app"
+            sub = d.get("recordType") if coll == "records" else (("COLLECTION" if d.get("connectorName") == "KB" else d.get("groupType") or d.get("connectorName")) if coll == "recordGroups" else d.get("type"))
+            out[n["key"]] = {"coll": coll, "id": d.get("id"), "name": d.get("recordName") or d.get("groupName") or d.get("name"), "nodeType": kind, "subType": sub}
+        return out
+
+    async def _hub_trail(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
+        """The trail from the node up to its root, every step's parent in the trail: a record's hierarchy parent, else the group it belongs to, else the app (a
+        collection's folders); a group's group, else its app. It stops at a node with no name, and before a node it has passed."""
+        trail: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        cur: str | None = node_id
+        while cur and cur not in seen:
+            seen.add(cur)
+            info = (await self._hub_nodes(tx, org, [cur])).get(cur)
+            if not info or not info["id"] or not info["name"]:
+                break
+            trail.append({k: info[k] for k in ("id", "name", "nodeType", "subType")})
+            cur = await tx.fetchval("""/* pipeshub:graph.hub_parent */ SELECT pid FROM (
+                  SELECT 1 AS pri, e.from_id AS pid FROM graph.edges e WHERE $2 = 'records' AND e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $3
+                    AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
+                  UNION ALL SELECT 2, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'recordGroups'
+                  UNION ALL SELECT 3, b.to_id FROM graph.edges b WHERE $2 <> 'apps' AND b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = $3 AND b.to_coll = 'apps') p
+                ORDER BY pri, pid LIMIT 1""", org, info["coll"], cur)
+        return trail
+
+    async def _hub_trail_kg(self, tx: Tx, org: str, node_id: str) -> list[dict[str, Any]]:
+        """:meth:`_hub_trail` with the steps chosen in kg (``kg.hierarchy.trail``) and their documents read in one statement, as the walk reads each."""
+        trail: list[dict[str, Any]] = []
+        steps = await kg_hier.trail(tx, org, node_id)
+        nodes = await self._hub_nodes(tx, org, [nid for _, nid in steps])
+        for coll, nid in steps:
+            info = nodes.get(nid)
+            if info is not None and info["coll"] != _COLL_OF_CODE[coll]:
+                raise kg_hier.Fallback("coll")          # the id names a node of another collection too, which the walk would step to
+            if not info or not info["id"] or not info["name"]:
+                break
+            trail.append({k: info[k] for k in ("id", "name", "nodeType", "subType")})
+        return trail
+
+    async def _kh_trail(self, org: str, node_id: str, transaction: str | None) -> list[dict[str, Any]]:
+        """The node's trail before any access check: from kg for a connector it serves, else walked."""
+        trail = await kg_hier.answer(self, "breadcrumbs", transaction, lambda tx: self._hub_trail_kg(tx, org, node_id),
+                                     walk=lambda tx: self._hub_trail(tx, org, node_id))
+        return trail if trail is not None else await self._q(lambda tx: self._hub_trail(tx, org, node_id), transaction)
+
+    async def get_knowledge_hub_breadcrumbs(self, node_id: str, user_key: str, org_id: str, transaction: str | None = None) -> list[dict[str, Any]]:
+        """The trail from the root to the node, without the ancestors the user cannot see (skipped, not cut off); empty when the node itself is not
+        visible or any read fails. The trail is read from kg for a connector it serves (``kg.hierarchy.trail``), else walked."""
+        org = current_org_id()
+        if org_id != org:
+            return []
+        try:
+            trail = await self._kh_trail(org, node_id, transaction)
+            if not trail:
+                return []
+            visible = (await self.check_access(user_key, org_id, node_ids=[s["id"] for s in trail], transaction=transaction)).node_ids
+            return [s for s in reversed(trail) if s["id"] in visible] if trail[0]["id"] in visible else []
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_breadcrumbs")
+            return []
+
+    async def get_knowledge_hub_parent_node(self, node_id: str, folder_mime_types: list[str], transaction: str | None = None) -> dict[str, Any] | None:
+        """The node's parent as ``{id, name, nodeType, subType}``: a group's group (by ``parentId``) else its app (by ``connectorId``); a record's hierarchy
+        parent, else the group, record or app it belongs to, else what it inherits permissions from (an app for a collection item, a group otherwise)."""
+        org = current_org_id()
+
+        async def go(tx: Tx) -> dict[str, Any] | None:
+            async def node(coll: str, key: str | None) -> dict | None:
+                r = await tx.fetchrow("/* pipeshub:graph.hub_parent_doc */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3", org, coll, key) if key else None
+                return _doc(r["doc"]) if r else None
+
+            if await node("apps", node_id):
+                return None
+            rg = await node("recordGroups", node_id)
+            if rg:
+                if rg.get("parentId"):
+                    p = await node("recordGroups", rg["parentId"])
+                    return {"id": p["id"], "name": p["groupName"], "nodeType": "recordGroup", "subType": p.get("groupType") or p.get("connectorName")} if p and p.get("groupName") else None
+                a = await node("apps", rg.get("connectorId"))
+                return {"id": a["id"], "name": a["name"], "nodeType": "app", "subType": a.get("type")} if a and a.get("name") else None
+            rec = await node("records", node_id)
+            if not rec:
+                return None
+            cid = rec.get("connectorId")
+            is_kb = rec.get("connectorName") == "KB" or any((x or {}).get("type") == "KB" for x in (await node("recordGroups", cid), await node("apps", cid)))
+            pid = await tx.fetchval("""/* pipeshub:graph.hub_record_parent */ SELECT pid FROM (
+                  SELECT 1 AS pri, e.from_id AS pid FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'nodeRelations' AND e.to_coll = 'records' AND e.to_id = $2
+                    AND e.from_coll = 'records' AND e.doc->>'relationshipType' IN ('PARENT_CHILD', 'ATTACHMENT')
+                  UNION ALL SELECT 2, b.to_id FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = $2
+                    AND b.to_coll IN ('recordGroups', 'records', 'apps')
+                  UNION ALL SELECT 3, i.to_id FROM graph.edges i WHERE i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.from_coll = 'records' AND i.from_id = $2
+                    AND i.to_coll = CASE WHEN $3 THEN 'apps' ELSE 'recordGroups' END) p ORDER BY pri, pid LIMIT 1""", org, node_id, is_kb)
+            if not pid:
+                return None
+            if p := await node("records", pid):
+                return {"id": p["id"], "name": p["recordName"], "nodeType": "folder" if p.get("mimeType") in folder_mime_types else "record", "subType": p.get("recordType")} if p.get("recordName") else None
+            if p := await node("recordGroups", pid):
+                return {"id": p["id"], "name": p["groupName"], "nodeType": "recordGroup", "subType": p.get("groupType") or p.get("connectorName")} if p.get("groupName") else None
+            p = await node("apps", pid)
+            return {"id": p["id"], "name": p["name"], "nodeType": "app", "subType": p.get("type")} if p and p.get("name") else None
+        try:
+            return await self._q(go, transaction)
+        except Exception as e:
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="get_knowledge_hub_parent_node")
+            return None
+
+    async def get_knowledge_hub_root_nodes_v2(self, user_key: str, org_id: str, user_app_ids: list[str], limit: int, sort_field: str = "name", sort_dir: str = "ASC", *,
+                                              after: dict[str, Any] | None = None, origins: list[str] | None = None, node_types: list[str] | None = None,
+                                              only_containers: bool = False, search_query: str | None = None, record_types: list[str] | None = None,
+                                              indexing_status: list[str] | None = None, created_at: dict[str, int | None] | None = None,
+                                              updated_at: dict[str, int | None] | None = None, size: dict[str, int | None] | None = None,
+                                              connector_ids: list[str] | None = None, direction: str = "next", include_ids: bool = False,
+                                              transaction: str | None = None, names_only: bool = False,
+                                              exclude_app_ids: frozenset[str] = frozenset()) -> dict[str, Any]:
+        """The root listing: the apps among ``user_app_ids`` (a hidden connector left out), filtered, sorted and paged by keyset, in the partitioned shape.
+        A read that fails raises: an empty listing would read as "you may see nothing". The apps of one user are few, so the page is cut here, not in SQL."""
+        org = current_org_id()
+        if direction not in ("next", "prev"):
+            raise ValueError(f"Unsupported page direction: {direction!r}.")
+        if sort_field not in _KH_SORT_FIELDS:
+            raise ValueError(f"Unsupported sort field: {sort_field!r}. Allowed: {sorted(_KH_SORT_FIELDS)}")
+        order = (sort_dir or "").strip().upper()
+        if order not in ("ASC", "DESC"):
+            raise ValueError(f"Unsupported sort order: {sort_dir!r}. Use 'asc' or 'desc'.")
+        query = name_query_key(search_query) if search_query else None
+
+        async def go(tx: Tx) -> list[dict]:
+            if org_id != org:
+                return []
+            user = await tx.fetchrow("/* pipeshub:graph.hub_root_user */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2", org, user_key)
+            apps = await tx.fetch("/* pipeshub:graph.hub_root_apps */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", org, list(user_app_ids))
+            if not user:
+                return []
+            u = _doc(user["doc"])
+            kept = [a for a in (_doc(r["doc"]) for r in apps) if (a.get("type") == "KB" or not a.get("hideConnector")) and a["id"] not in exclude_app_ids]
+            kbs = [a["id"] for a in kept if a.get("type") == "KB"]
+            filled: set[str] = set()
+            if kbs and not names_only:
+                async with seeks(tx):
+                    filled = {r["id"] for r in await tx.fetch(HUB_ROOT_KB_CHILDREN, org, kbs)}
+            rows = []
+            for a in kept:
+                kb = a.get("type") == "KB"
+                mine = kb and a.get("createdBy") is not None and a["createdBy"] in (u.get("userId"), u.get("id"))
+                rows.append({"id": a["id"], "name": a.get("name"), "nodeType": "app", "parentId": None, "parentType": None, "parentName": None, "parentIsInternal": False,
+                             "origin": "COLLECTION" if kb else "CONNECTOR", "connector": a.get("type"), "connectorId": a["id"], "recordType": None, "recordGroupType": None,
+                             "indexingStatus": None, "reason": None, "createdAt": _kh_date(a, "sourceCreatedAtTimestamp", "createdAtTimestamp"),
+                             "updatedAt": _kh_date(a, "sourceLastModifiedTimestamp", "updatedAtTimestamp"), "sizeInBytes": None, "mimeType": None, "extension": None,
+                             "webUrl": f"/app/{a['id']}", "sharingStatus": "personal" if mine else "shared" if kb else a.get("scope") or "personal",
+                             "isInternal": bool(a.get("isInternal")), "isPlaceholder": False,
+                             "hasChildren": a["id"] in filled if kb else (a.get("type") is not None and not names_only), "userRole": None})
+            return rows
+        rows = await self._q(go, transaction)
+
+        def window(row: dict, field: str, w: dict | None) -> bool:
+            return not w or ((w.get("gte") is None or row[field] >= w["gte"]) and (w.get("lte") is None or row[field] <= w["lte"]))
+        wanted = [r for r in rows if not r["isPlaceholder"]
+                  and (query is None or query in name_query_key(r["name"] or ""))
+                  and (not node_types or r["nodeType"] in node_types) and not record_types and not indexing_status
+                  and window(r, "createdAt", created_at) and window(r, "updatedAt", updated_at)
+                  and not (size and (size.get("gte") is not None or size.get("lte") is not None))      # an app has no size: a size window rules it out
+                  and (not origins or r["origin"] in origins) and (not connector_ids or r["id"] in connector_ids)]
+        for r in wanted:
+            key = r["name"].lower() if sort_field == "name" and r["name"] is not None else r[sort_field]
+            r["sortKey"], r["nullRank"] = key, 1 if key is None else 0
+        ordered = sorted(wanted, key=functools.cmp_to_key(lambda a, b: _kh_order(a, b, ascending=order == "ASC")))
+        total = len(ordered)
+        if after is not None:
+            boundary = {"nullRank": after["nullRank"], "sortKey": after.get("sortKey"), "id": after["id"]}
+            sign = 1 if direction == "next" else -1
+            ordered = [r for r in ordered if _kh_order(r, boundary, ascending=order == "ASC") * sign > 0]
+        page = ordered[:limit + 1] if direction == "next" else ordered[max(0, len(ordered) - limit - 1):]
+        has_more = len(page) > limit
+        page = page[:limit] if direction == "next" else page[len(page) - limit:] if has_more else page
+        if not names_only and page:
+            async def roles(tx: Tx) -> list:
+                return [await self._app_role(tx, org, user_key, r["id"]) for r in page]
+            for r, role in zip(page, await self._q(roles, transaction), strict=True):
+                r["userRole"] = role
+        return {"partitions": [{"partitionId": "__root__", "partitionKind": "ROOT", "appId": None, "rows": page,
+                                "ids": [{"id": r["id"], "nodeType": r["nodeType"]} for r in wanted] if include_ids else [], "hasMore": has_more, "exhausted": not has_more,
+                                "total": None if after is not None else total, "countsByType": None}], "scope": None}

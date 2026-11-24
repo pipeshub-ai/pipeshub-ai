@@ -404,7 +404,7 @@ class TestResetPassword(UserAccountTestBase):
 
     def test_reset_password_negative_tests(self) -> None:
         """Missing Authorization; empty body with token — ErrorResponse."""
-        # No Authorization header — userValidator / validateJwt → 400 + ErrorResponse
+        # No Authorization header — authMiddleware.authenticate → 401 + ErrorResponse
         resp = self.account.post(
             "/password/reset",
             json={
@@ -413,13 +413,13 @@ class TestResetPassword(UserAccountTestBase):
             },
             auth=False,
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
         reset_password_missing_auth_error_body = resp.json()
         assert "error" in reset_password_missing_auth_error_body, resp.text
         assert reset_password_missing_auth_error_body["error"]["message"] == (
-            "Authorization header not found"
+            "No token provided"
         )
         assert_response_matches_openapi_ref(
             reset_password_missing_auth_error_body,
@@ -485,15 +485,15 @@ class TestLogoutManual(UserAccountTestBase):
 
     def test_logout_negative_tests(self) -> None:
         """Without Authorization — ErrorResponse; success-shaped operation rejects error body."""
-        # No Authorization — userValidator → 400 Authorization header not found + ErrorResponse
+        # No Authorization — authMiddleware.authenticate → 401 No token provided + ErrorResponse
         resp = self.account.post("/logout/manual", auth=False)
-        assert resp.status_code == 400, (
-            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
         logout_missing_authorization_error_body = resp.json()
         assert "error" in logout_missing_authorization_error_body, resp.text
         assert logout_missing_authorization_error_body["error"]["message"] == (
-            "Authorization header not found"
+            "No token provided"
         )
         assert_response_matches_openapi_ref(
             logout_missing_authorization_error_body,

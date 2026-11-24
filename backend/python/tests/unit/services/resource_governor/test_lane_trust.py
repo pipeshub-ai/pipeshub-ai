@@ -22,7 +22,10 @@ from app.services.resource_governor.lanes import (
     open_lane_budget,
     plan_lanes,
 )
-from app.services.resource_governor.shared_slots import SharedSlots
+from app.services.resource_governor.shared_slots import (
+    SharedSlots,
+    ensure_private_directory,
+)
 from tests.unit.lane_gauge import Mem
 
 if TYPE_CHECKING:
@@ -129,6 +132,29 @@ class TestForeignDirectory:
             budget.close()
 
 
+class TestPrivateDirectoryParents:
+    def test_a_missing_parent_is_created_private_too(self, tmp_path: Path) -> None:
+        """Opening ``<state>/slots`` first must not leave ``<state>`` group or
+        world readable, or every later user of ``<state>`` refuses it."""
+        state = tmp_path / "state"
+        old = os.umask(0o022)
+        try:
+            ensure_private_directory(state / "slots")
+        finally:
+            os.umask(old)
+        assert os.stat(state).st_mode & 0o777 == 0o700
+        assert os.stat(state / "slots").st_mode & 0o777 == 0o700
+        ensure_private_directory(state)
+
+    def test_an_existing_parent_is_left_alone(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared"
+        shared.mkdir(mode=0o755)
+        shared.chmod(0o755)
+        ensure_private_directory(shared / "state")
+        assert os.stat(shared).st_mode & 0o777 == 0o755
+        assert os.stat(shared / "state").st_mode & 0o777 == 0o700
+
+
 def _sentinel(path: Path) -> int:
     path.write_bytes(CANARY)
     return os.open(path, os.O_RDWR)
@@ -221,6 +247,10 @@ class TestUseAfterClose:
         assert seen.get("inode") == ledger_inode != sentinel_inode, seen
         assert "error" not in seen
 
+    # Hundreds of rounds of four threads that spin on the GIL: about 25 s of CPU on a
+    # quiet host, so the 30 s default fails on a slower or busier one, and the timed-out
+    # test leaves its threads spinning, which starves the tests after it in that worker.
+    @pytest.mark.timeout(300)
     def test_ledger_calls_racing_close_never_touch_a_reused_descriptor(self, tmp_path: Path) -> None:
         errors: list[BaseException] = []
         record = LedgerRecord(plan_lanes=4, cap=2, cap_stamp=1.0)
@@ -262,6 +292,10 @@ class TestUseAfterClose:
             assert (tmp_path / f"sentinel{round_no}").read_bytes() == CANARY, round_no
         assert not errors, errors[:3]
 
+    # Hundreds of rounds of four threads that spin on the GIL: about 25 s of CPU on a
+    # quiet host, so the 30 s default fails on a slower or busier one, and the timed-out
+    # test leaves its threads spinning, which starves the tests after it in that worker.
+    @pytest.mark.timeout(300)
     def test_budget_calls_racing_close_get_only_budget_closed(self, tmp_path: Path) -> None:
         unexpected: list[BaseException] = []
         for round_no in range(25):

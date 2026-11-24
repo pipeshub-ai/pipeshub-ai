@@ -25,12 +25,12 @@ def _make_mock_logger():
 
 def _make_processor():
     """Create a DoclingProcessor with a mocked converter (bypass real docling init)."""
-    with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter") as MockConverter, \
-         patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
-         patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions"), \
-         patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
+    with patch("docling.document_converter.DocumentConverter") as MockConverter, \
+         patch("docling.document_converter.PdfFormatOption"), \
+         patch("docling.document_converter.WordFormatOption"), \
+         patch("docling.document_converter.MarkdownFormatOption"), \
+         patch("docling.datamodel.pipeline_options.ThreadedPdfPipelineOptions"), \
+         patch("docling.backend.pypdfium2_backend.PyPdfiumDocumentBackend"):
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
         processor = DoclingProcessor(_make_mock_logger(), _make_mock_config())
     return processor
@@ -51,12 +51,12 @@ class TestDoclingProcessorInit:
 
     def test_init_stores_config(self):
         """Config dict is stored as-is."""
-        with patch("app.modules.parsers.pdf.docling_processor.DocumentConverter"), \
-             patch("app.modules.parsers.pdf.docling_processor.PdfFormatOption"), \
-             patch("app.modules.parsers.pdf.docling_processor.WordFormatOption"), \
-             patch("app.modules.parsers.pdf.docling_processor.MarkdownFormatOption"), \
-             patch("app.modules.parsers.pdf.docling_processor.ThreadedPdfPipelineOptions"), \
-             patch("app.modules.parsers.pdf.docling_processor.PyPdfiumDocumentBackend"):
+        with patch("docling.document_converter.DocumentConverter"), \
+             patch("docling.document_converter.PdfFormatOption"), \
+             patch("docling.document_converter.WordFormatOption"), \
+             patch("docling.document_converter.MarkdownFormatOption"), \
+             patch("docling.datamodel.pipeline_options.ThreadedPdfPipelineOptions"), \
+             patch("docling.backend.pypdfium2_backend.PyPdfiumDocumentBackend"):
             from app.modules.parsers.pdf.docling_processor import DoclingProcessor
             config = {"ocr": True, "model": "fast"}
             processor = DoclingProcessor(_make_mock_logger(), config)
@@ -124,7 +124,7 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.document = mock_doc
 
         with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
-             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream, \
+             patch("docling.datamodel.base_models.DocumentStream") as MockStream, \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             await processor.parse_document("my_report.pdf", b"content")
             MockStream.assert_called_once()
@@ -143,7 +143,7 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.document = mock_doc
 
         with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
-             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream, \
+             patch("docling.datamodel.base_models.DocumentStream") as MockStream, \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             await processor.parse_document("test.pdf", b"raw bytes")
             call_kwargs = MockStream.call_args
@@ -164,7 +164,7 @@ class TestDoclingProcessorParseDocument:
         original_stream = BytesIO(b"pre-wrapped content")
 
         with patch("app.modules.parsers.pdf.docling_processor.LOCAL_DOCLING_PARSE_WORKERS", 1), \
-             patch("app.modules.parsers.pdf.docling_processor.DocumentStream") as MockStream, \
+             patch("docling.datamodel.base_models.DocumentStream") as MockStream, \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             await processor.parse_document("test.pdf", original_stream)
             call_kwargs = MockStream.call_args

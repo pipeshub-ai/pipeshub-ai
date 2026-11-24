@@ -7,7 +7,6 @@ import {
   Badge,
   Box,
   Button,
-  Callout,
   Flex,
   IconButton,
   Select,
@@ -17,6 +16,7 @@ import {
   Tooltip,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { FootNote } from '@/app/components/ui/foot-note';
 import { ConnectorIcon } from '@/app/components/ui';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -51,6 +51,7 @@ import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
 import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
 import { useFrontendPublicUrl } from '@/lib/hooks/use-frontend-public-url';
 import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
+import { SecretTextField } from '@/app/components/ui/secret-text-field';
 
 const NEW_OAUTH_VALUE = '__new__';
 
@@ -699,9 +700,7 @@ export function ActionSetupPanel({
       ) : adminOnly ? (
         <Flex direction="column" gap="4" style={{ minWidth: 0, padding: '4px 0' }}>
           {authTypeField}
-          <Callout.Root color="gray" variant="surface" size="1">
-            <Callout.Text size="2">{t('workspace.actions.personal.adminOnly', { name: displayName })}</Callout.Text>
-          </Callout.Root>
+          <FootNote>{t('workspace.actions.personal.adminOnly', { name: displayName })}</FootNote>
         </Flex>
       ) : (
         <Flex direction="column" gap="6" style={{ minWidth: 0, padding: '4px 0' }}>
@@ -875,9 +874,7 @@ export function ActionSetupPanel({
               ))}
             </Flex>
           ) : !isNoneAuthType(authType) && !personal ? (
-            <Callout.Root color="amber" variant="surface" size="1">
-              <Callout.Text size="1">{t('agentBuilder.noCredentialFields')}</Callout.Text>
-            </Callout.Root>
+            <FootNote icon="warning">{t('agentBuilder.noCredentialFields')}</FootNote>
           ) : null}
 
           {isOAuthType(authType) && (!showOAuthAppPicker || oauthAppValue === NEW_OAUTH_VALUE) ? (
@@ -909,8 +906,7 @@ export function ActionSetupPanel({
                   required={!storedSecrets.includes('clientSecret')}
                   error={fieldErrors.clientSecret}
                 >
-                  <TextField.Root
-                    type="password"
+                  <SecretTextField
                     placeholder={
                       storedSecrets.includes('clientSecret') ? t('workspace.actions.manage.secretPlaceholder') : undefined
                     }
@@ -947,11 +943,9 @@ export function ActionSetupPanel({
           ) : null}
 
           {editing ? null : (
-            <Callout.Root color="blue" variant="surface" size="1">
-              <Callout.Text size="1" style={{ color: 'var(--slate-11)' }}>
-                {t(personal ? 'workspace.actions.personal.setupCallout' : 'workspace.actions.setupInfoCallout')}
-              </Callout.Text>
-            </Callout.Root>
+            <FootNote>
+              {t(personal ? 'workspace.actions.personal.setupCallout' : 'workspace.actions.setupInfoCallout')}
+            </FootNote>
           )}
 
           {error ? (

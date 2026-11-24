@@ -88,6 +88,10 @@ class FakeGraphProvider:
             return [{field: doc.get(field) for field in return_fields} for doc in page]
         return page
 
+    async def get_edges_from_node(self, node_id, edge_collection, transaction=None, *,
+                                  raise_on_error=False) -> list[dict]:
+        return [dict(edge) for edge in self.edges if edge.get("_from") == node_id]
+
     async def get_edges_by_target_keys(
         self, target_keys, edge_collection, filters=None, return_field="_from",
         transaction=None, raise_on_error=False,
@@ -141,8 +145,9 @@ class FakeGraphProvider:
         if collection == CollectionNames.RECORDS.value:
             # The repo's code files, empty ones included, as the builder lists them.
             return [{"_key": record_id} for record_id in self.code_files]
+        fields = [f for f in return_fields or ("name", "kind") if f != "_key"]
         return [
-            {"_key": key, "name": doc.get("name"), "kind": doc.get("kind")}
+            {"_key": key, **{f: doc.get(f) for f in fields}}
             for key, doc in self.blocks.items()
             if all(doc.get(field) == value for field, value in filters.items())
         ]
@@ -169,6 +174,19 @@ class FakeGraphProvider:
             doc["_key"] = doc.pop("id")
             self.blocks[doc["_key"]] = doc
         return True
+
+    async def batch_update_nodes(self, nodes, collection, transaction=None) -> bool:
+        """A partial merge into blocks that exist, as both providers do; a missing one is skipped."""
+        found = True
+        for node in nodes:
+            key = node.get("id") or node.get("_key")
+            if "externalRefs" in node:
+                self.ref_updates = [*getattr(self, "ref_updates", []), (key, node["externalRefs"])]
+            if collection != CollectionNames.BLOCKS.value or key not in self.blocks:
+                found = False
+                continue
+            self.blocks[key].update({k: v for k, v in node.items() if k not in ("id", "_key")})
+        return found
 
     async def delete_nodes(self, keys, collection, transaction=None) -> bool:
         for key in keys:
@@ -235,3 +253,12 @@ def index_file(graph) -> Callable[..., Awaitable[dict[str, int]]]:
         )
 
     return _index
+
+
+@pytest.fixture
+def c_repo(index_file) -> Callable[[dict[str, bytes]], Awaitable[None]]:
+    """Index C/C++ files by path: `.cpp`/`.hpp` as C++, the rest as C."""
+    async def _repo(files: dict[str, bytes]) -> None:
+        for i, (path, source) in enumerate(files.items()):
+            await index_file(f"r{i}", path, source, "cpp" if path.endswith((".cpp", ".hpp")) else "c")
+    return _repo

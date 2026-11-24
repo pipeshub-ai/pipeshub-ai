@@ -10,6 +10,8 @@ import { UserGroups } from '../../../../src/modules/user_management/schema/userG
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer';
+import * as outboxDispatcher from '../../../../src/libs/services/outbox/outbox.dispatcher';
+import { MongoUnitOfWork } from '../../../../src/libs/repositories/mongo';
 import {
   BadRequestError,
   NotFoundError,
@@ -674,6 +676,71 @@ describe('OrgController', () => {
       expect([org.signupChannel, org.signupReferrerDomain]).to.deep.equal(['direct', 'news.ycombinator.com']);
       const [event] = eventBuffer.drain().filter((e) => e.event === 'org_created');
       expect(event.props).to.include({ channel: 'direct', referrer_domain: 'news.ycombinator.com' });
+    });
+
+    it('delivers the new org and admin events as soon as they are stored, not at the next poll', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+      sinon.stub(Org, 'countDocuments').resolves(0);
+      sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      const kick = sinon.stub(outboxDispatcher, 'kickOutbox');
+      // Hold the unit of work open after its body ran, so a kick from inside the body would show.
+      let commit!: () => void;
+      const committed = new Promise<void>((resolve) => { commit = resolve; });
+      let bodyRan!: () => void;
+      const bodyDone = new Promise<void>((resolve) => { bodyRan = resolve; });
+      const run = MongoUnitOfWork.prototype.run;
+      sinon.stub(MongoUnitOfWork.prototype, 'run').callsFake(async function (
+        this: MongoUnitOfWork,
+        ...args: Parameters<MongoUnitOfWork['run']>
+      ) {
+        const out = await run.apply(this, args);
+        bodyRan();
+        await committed;
+        return out;
+      });
+
+      const done = controller.createOrg(req, res);
+      await bodyDone;
+      expect(mockEventService.publishEvent.calledTwice).to.be.true;
+      expect(kick.called).to.be.false;
+      commit();
+      await done;
+
+      expect(kick.calledOnce).to.be.true;
+    });
+
+    it('does not kick the outbox when the organisation was not created', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+      sinon.stub(Org, 'countDocuments').resolves(0);
+      sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      mockEventService.publishEvent.rejects(new Error('outbox write failed'));
+      const kick = sinon.stub(outboxDispatcher, 'kickOutbox');
+
+      try {
+        await controller.createOrg(req, res);
+        expect.fail('Should have thrown');
+      } catch (error: any) {
+        expect(error.statusCode).to.equal(500);
+      }
+      expect(kick.called).to.be.false;
     });
 
     it('should send email when sendEmail is true', async () => {

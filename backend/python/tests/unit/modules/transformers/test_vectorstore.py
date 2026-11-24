@@ -26,14 +26,13 @@ def _make_vectorstore():
     mock_vdb.get_capabilities = MagicMock(return_value=VectorDBCapabilities())
     mock_vdb.get_service_name = MagicMock(return_value="mock")
 
-    vs = VectorStore(
+    return VectorStore(
         logger=MagicMock(),
         config_service=AsyncMock(),
         graph_provider=AsyncMock(),
         collection_registry=_make_collection_registry(),
         vector_db_service=mock_vdb,
     )
-    return vs
 
 
 # ===================================================================
@@ -186,6 +185,7 @@ class TestVectorStoreApply:
             is_reconciliation=False,
             record=record,
             titles={},
+            member_blocks=record.block_containers.blocks,
         )
         assert result is True
 
@@ -238,6 +238,7 @@ class TestVectorStoreApply:
             is_reconciliation=False,
             record=record,
             titles={},
+            member_blocks=block_containers.blocks,
         )
 
 
@@ -1348,6 +1349,7 @@ class TestApply:
             is_reconciliation=False,
             record=mock_ctx.record,
             titles={},
+            member_blocks=mock_ctx.record.block_containers.blocks,
         )
 
 
@@ -2105,7 +2107,7 @@ class TestBuildImagePoints:
 
         assert len(points) == 1
         assert points[0].dense_vector == [0.1, 0.2, 0.3]
-        assert points[0].payload["metadata"] == {"orgId": "org1"}
+        assert points[0].payload["metadata"] == {"orgId": "org1", "embedPrecision": "image"}
 
     def test_error_result_is_skipped_and_logged(self):
         from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
@@ -2171,8 +2173,8 @@ class TestBuildImagePoints:
         points = vs._build_image_points(image_chunks, results)
 
         assert len(points) == 2
-        assert points[0].payload["metadata"] == {"i": 0}
-        assert points[1].payload["metadata"] == {"i": 2}
+        assert points[0].payload["metadata"] == {"i": 0, "embedPrecision": "image"}
+        assert points[1].payload["metadata"] == {"i": 2, "embedPrecision": "image"}
 
     def test_no_embedding_size_set_skips_validation(self):
         """When embedding_size hasn't been resolved yet (e.g. instance not
@@ -2209,7 +2211,7 @@ class TestBuildImagePoints:
         points = vs._build_image_points(image_chunks, results)
 
         assert len(points) == 1
-        assert points[0].payload["metadata"] == {"i": 0}
+        assert points[0].payload["metadata"] == {"i": 0, "embedPrecision": "image"}
         vs.logger.error.assert_called()
 
 
@@ -2705,6 +2707,33 @@ class TestRecordPresenceAcrossBatches:
             assert await presence.check() is False  # 3 s later: read again, gone
 
         assert graph.get_document.await_count == 2
+
+    @staticmethod
+    async def _graph_down(key, collection, transaction=None, *, raise_on_error=False) -> None:
+        """What the providers do: a failed read answers None unless told to raise."""
+        if raise_on_error:
+            raise ConnectionError("graph unreachable")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_fails_the_record_instead_of_skipping_its_batches(self) -> None:
+        from app.exceptions.indexing_exceptions import VectorStoreError
+        from app.modules.transformers.vectorstore import _DEFAULT_DOCUMENT_BATCH_SIZE
+
+        vs = self._store(AsyncMock(side_effect=self._graph_down))
+
+        with pytest.raises(VectorStoreError) as failure:
+            await vs._process_document_chunks(
+                self._docs(2 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
+            )
+
+        assert isinstance(failure.value.__cause__, ConnectionError)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_does_not_drop_the_images(self) -> None:
+        vs = self._store(AsyncMock(side_effect=self._graph_down))
+
+        with pytest.raises(ConnectionError):
+            await vs._process_image_embeddings([{"metadata": {}}], ["data:image/png;base64,AAAA"], "rec-1")
 
 
 # ===================================================================

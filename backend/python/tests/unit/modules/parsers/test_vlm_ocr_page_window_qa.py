@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import gc
 import logging
-import time
 import weakref
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -112,32 +111,60 @@ class TestBatchShapes:
 
     async def test_images_alive_never_exceed_the_window_at_any_model_call(self) -> None:
         strategy, live, _events, _calls = _strategy(pages=60, batch=8, concurrency=5)
+        render = strategy._render_page_batch_to_base64
         peak = 0
+        filled = False
+
+        def render_and_count(numbers: list[int]) -> dict[int, str]:
+            nonlocal peak
+            out = render(numbers)
+            # Images only become alive in a render, so the count's highest value is read here, not at whatever
+            # moments the model calls happen to sample it. WeakSet len: refcounting drops images at once.
+            peak = max(peak, len(live))
+            return out
 
         async def call_llm(image_base64: str, page_number: int) -> str:
-            nonlocal peak
-            peak = max(peak, len(live))  # WeakSet len: refcounting drops images at once
+            nonlocal filled
+            # The first calls are held until the render thread has recorded a full window. Left to the wall clock,
+            # the 1-3 ms calls outran a render thread on a busy runner and the window never filled (peak 4).
+            # The recorded peak, not len(live): images are alive before the thread samples them, and calls
+            # released in between could drop some first.
+            async with asyncio.timeout(20):  # bounds a hang only: a window that never fills fails here
+                while not filled:
+                    filled = peak >= 8
+                    await asyncio.sleep(0.001)
             await asyncio.sleep(0.001 * (page_number % 4))
             return "x"
 
+        strategy._render_page_batch_to_base64 = render_and_count  # type: ignore[method-assign]
+
         strategy._call_llm_for_markdown = call_llm  # type: ignore[method-assign]
         await strategy._preprocess_document()
 
-        assert 5 <= peak <= 8
+        assert peak == 8  # the window is used to the full and never exceeded
 
     async def test_a_slow_page_does_not_hold_up_the_other_slots(self) -> None:
-        """Three slow pages in a 24-page document, window 8, 4 slots: a per-batch
-        barrier would cost a slow page per batch (~0.9 s); rolling costs about one."""
+        """A 24-page document, window 8, 4 slots: page 1's call does not end until page 9's
+        has started. A per-batch barrier would hold page 9 until page 1 is done."""
         strategy, _live, _events, _calls = _strategy(pages=24, batch=8, concurrency=4)
-        slow = 0.3
+        ninth_started = asyncio.Event()
+        overlapped = False
 
         async def call_llm(image_base64: str, page_number: int) -> str:
-            await asyncio.sleep(slow if page_number in (1, 9, 17) else 0.01)
+            nonlocal overlapped
+            if page_number == 9:
+                ninth_started.set()
+            if page_number == 1:
+                # Proved by an event, not timed (it was "elapsed < 0.6 s"). The wait bounds a hang only, and
+                # does not raise: the page retry loop would run it three times.
+                waiter = asyncio.ensure_future(ninth_started.wait())
+                await asyncio.wait({waiter}, timeout=10)
+                waiter.cancel()
+                overlapped = ninth_started.is_set()
+            await asyncio.sleep(0)
             return "x"
 
         strategy._call_llm_for_markdown = call_llm  # type: ignore[method-assign]
-        started = time.monotonic()
         await strategy._preprocess_document()
-        elapsed = time.monotonic() - started
 
-        assert elapsed < slow * 2
+        assert overlapped

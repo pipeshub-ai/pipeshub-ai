@@ -15,6 +15,8 @@ point) and asserts only one of the two duplicate calls actually ran.
 from __future__ import annotations
 
 import asyncio
+import logging
+from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
@@ -27,7 +29,11 @@ from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskComplete
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.tools.tags import TAG_DEDUP_EXACT
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.utils.logger import log_record_fields
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class _CountingWebSearchTool(Tool):
@@ -201,3 +207,22 @@ class TestComputeDuplicateFlagsPrePass:
         seen: set[str] = set()
         flags = compute_duplicate_flags(calls, seen, _dedup_registry())
         assert flags == {"a": False, "b": False}
+
+
+class TestTheSkippedDuplicateIsLogged:
+    async def test_one_line_per_call_and_the_duplicate_is_skipped_at_info(self, caplog: pytest.LogCaptureFixture) -> None:
+        transport = ScriptedTransport()
+        transport.add_tool_calls([
+            ToolCall(id="call-1", name="web_search", arguments={"query": "same query"}),
+            ToolCall(id="call-2", name="web_search", arguments={"query": "same query"}),
+        ])
+        transport.add_tool_call(ToolCall(id="call-3", name="task_complete", arguments={"output": "done"}))
+
+        with caplog.at_level(logging.DEBUG):
+            await _build_agent(transport, _CountingWebSearchTool(delay=0)).run(Goal(description="search twice"))
+
+        ends = [(r.levelno, log_record_fields(r)) for r in caplog.records if r.getMessage() == "tool_call.end"]
+        assert sorted(f["tool_call_id"] for _, f in ends) == ["call-1", "call-2", "call-3"]
+        (duplicate,) = [(level, f) for level, f in ends if f.get("reason") == "duplicate"]
+        assert duplicate[0] == logging.INFO
+        assert (duplicate[1]["outcome"], duplicate[1]["tool"]) == ("skipped", "web_search")

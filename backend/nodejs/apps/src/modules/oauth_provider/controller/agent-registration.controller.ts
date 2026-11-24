@@ -3,16 +3,13 @@ import { Request, Response, NextFunction } from 'express';
 import { AgentRegistrationService } from '../services/agent-registration.service';
 import { DeviceGrantError } from '../../../libs/errors/oauth.errors';
 import { UnauthorizedError } from '../../../libs/errors/http.errors';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 
-interface SessionRequest extends Request {
-  user?: { userId: string; orgId: string; email: string };
-}
+type SessionUser = { userId: string; orgId: string; email: string };
 
-const sessionUser = (
-  req: SessionRequest,
-): NonNullable<SessionRequest['user']> => {
+const sessionUser = (req: AuthenticatedUserRequest): SessionUser => {
   if (!req.user) throw new UnauthorizedError('Sign in first');
-  return req.user;
+  return req.user as SessionUser;
 };
 
 const STATUS: Record<string, number> = {
@@ -51,7 +48,7 @@ export class AgentRegistrationController {
   };
 
   claimVerify = (
-    req: SessionRequest,
+    req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
@@ -62,7 +59,7 @@ export class AgentRegistrationController {
   };
 
   claimComplete = (
-    req: SessionRequest,
+    req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> => {
@@ -83,14 +80,14 @@ export class AgentRegistrationController {
   };
 
   list = (
-    req: SessionRequest,
+    req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> =>
     this.run(res, next, () => this.service.listForUser(sessionUser(req)));
 
   revoke = (
-    req: SessionRequest,
+    req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> =>

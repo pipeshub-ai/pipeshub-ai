@@ -181,6 +181,15 @@ extraSecretData: {}
 #       secretKeyRef:
 #         name: pipeshub-e2b
 #         key: api-key
+#   # Bundled embedding server weights: auto (default, same as unset, 32-bit fp32) or int8 (the large
+#   # weight matrices as 8-bit integers: about 0.85 GiB less memory for bge-large, about 12 percent
+#   # slower encoding, the top search result changes for about 3.5 percent of queries, accuracy
+#   # unchanged). An index remembers the precision it was built with: to switch, set the value,
+#   # restart the embedding server, then run "Clean up embeddings" and "Reindex embeddings" in
+#   # Workspace > Connectors. The cleanup deletes the whole search index; search finds nothing
+#   # until the reindex has finished.
+#   - name: EMBEDDING_SERVER_PRECISION
+#     value: "int8"
 extraEnv: []
 extraEnvFrom: []
 
@@ -202,6 +211,17 @@ affinity: {}
 # Prefer one app replica per node, matching this release's own pods. Ignored
 # when affinity is set.
 spreadAcrossNodes: false
+
+# Prometheus metrics of the indexing service's admission governor: one /metrics per pod on `port`,
+# bounded and without pid, pod, org or record labels. Point your Prometheus at it. With
+# networkPolicy.enabled, add an ingress rule that lets your Prometheus reach this port.
+# `bind` is the address the port listens on: `podIP` (the default) binds the pod's own address, so only
+# traffic to the pod reaches it; `0.0.0.0` listens on every interface; any other IP address is used as is.
+# The port is unauthenticated and served over plain HTTP: reach it only from your Prometheus.
+metrics:
+  enabled: true
+  port: 9091
+  bind: podIP
 
 # Pod Disruption Budget for High Availability
 podDisruptionBudget:
@@ -302,6 +322,8 @@ persistence:
 config:
   nodeEnv: "production"
   logLevel: "info"
+  # text (default) or json: json prints one JSON object per log line.
+  logFormat: "text"
   # Mask stored secrets in admin config API responses (HIDE_SECRET_CONFIG).
   # false matches the docker-compose default: one org's admins see what they stored.
   hideSecretConfig: false
@@ -407,8 +429,13 @@ config:
   # code runs offline instead.
   sandboxAllowNetwork: false
   # Comma-separated IPv4 CIDRs exempt from that firewall, e.g. a private
-  # package mirror. Link-local and metadata addresses stay blocked.
+  # package mirror. Link-local and metadata addresses, the sandbox bridge and
+  # its gateway (this pod, under DinD) stay blocked however broad this is.
   sandboxEgressAllowCidrs: ""
+  # Comma-separated IPv4 resolvers a networked sandbox may query on port 53
+  # only, when Docker forwards DNS from the container (cloud resolvers, the
+  # gateway and Docker's configured upstreams are already allowed).
+  sandboxEgressDnsServers: ""
   sandboxEgressNetwork: "pipeshub_sandbox_egress"
   # Writable-layer cap for EACH docker-mode sandbox container (default 10g;
   # 0/off disables), so one run cannot fill the daemon's storage. This is a
@@ -418,12 +445,19 @@ config:
   # supports it (overlay2 on xfs+pquota, or btrfs/zfs/devicemapper); otherwise
   # the service logs a warning once and runs continue uncapped.
   sandboxDiskQuota: "10g"
+  # The most seconds one `run_code` run may take (10..3600). A larger timeout
+  # asked for by the model is lowered to it. Set it here only, never through
+  # extraEnv: the docker-proxy sidecar reads the same value to decide when a
+  # leftover sandbox container is old enough to remove.
+  sandboxMaxRunTimeoutS: 300
   # Address of the Docker daemon for SANDBOX_MODE=docker. Leave empty to use
   # the DinD sidecar (see `sandbox.dind`) when it is enabled, or set it to
   # reach a daemon you run yourself, e.g. "tcp://docker-proxy.svc:2375".
   # The chart cannot secure that daemon: put the same policy proxy in front of
   # it (`python -m app.docker_proxy_main` from this image, as the DinD sidecar
-  # does) and never point this at a raw, unauthenticated dockerd.
+  # does) and never point this at a raw, unauthenticated dockerd. That proxy
+  # listens on 127.0.0.1 unless DOCKER_PROXY_HOST says otherwise and has no
+  # client authentication: expose it only to the app (a NetworkPolicy).
   dockerHost: ""
 
   # Light records take their own cluster-wide indexing lease pool. Leave false
@@ -455,6 +489,16 @@ config:
   governorIndexLightWorkingSetGb: ""  # (0.02) RAM assumed per in-flight light record
   governorHeavyParseWorkingSetGb: ""  # (1.5) RAM assumed per in-flight heavy parse
   governorBaselineMemoryMb: ""        # process baseline excluded from pressure
+  parsePoolWorkers: ""  # (derived from the CPU limit) worker processes for large text, code and CSV parses
+  embeddingServerMaxConcurrency: ""  # (derived) bundled embedding server encode slots
+  embeddingServerQueryReservedSlots: ""  # (1) encode slots kept for search queries
+  embeddingBatchConcurrency: ""  # (derived) embedding requests in flight per batch
+  maxConcurrentIndexingLlmCalls: ""  # (24) LLM calls in flight per LLM-calling service
+  cpuBudget: ""  # CPUs the capacity plan may use, instead of the pod limit (inactive until capacityProfile is auto)
+  memoryBudget: ""  # bytes the capacity plan may use, instead of the pod limit (inactive until capacityProfile is auto)
+  capacityProfile: ""  # (legacy) legacy or auto: auto sizes every cap from the pod's CPU and memory
+  capacityCellCpus: ""  # (16) CPUs one indexing process is planned for under auto
+  cpuOversub: ""  # (1.25) running threads per CPU the member budget admits under auto
   indexingConcurrencyLeaseSeconds: 120
   # Must stay below any caller's own deadline so redis-py raises its own clean
   # timeout rather than having a command cancelled underneath it — a cancelled
@@ -535,10 +579,14 @@ sandbox:
     # Loopback port of the policy proxy the application connects to
     # (DOCKER_HOST). The daemon itself has no TCP listener.
     port: 2375
+    # The code sandbox cap is sized from these limits (see sandbox.capacity),
+    # so both limits are required. Requests equal the limits so the node
+    # really has the room the cap assumes; that adds 2 CPU / 4Gi to each app
+    # pod's scheduling footprint.
     resources:
       requests:
-        cpu: "250m"
-        memory: "512Mi"
+        cpu: "2"
+        memory: "4Gi"
       limits:
         cpu: "2"
         memory: "4Gi"
@@ -548,6 +596,54 @@ sandbox:
     storage:
       sizeLimit: "20Gi"
       existingClaim: ""
+    # Live limit: holds new code runs back only when this sidecar is close to
+    # its own limits (memory above ~90 % / 95 %, or its CPU throttled).
+    # Running code is never stopped. A loop in the dind container writes the
+    # sidecar's cgroup counters for docker-proxy every exportIntervalSeconds
+    # (2..15: docker-proxy treats counters older than 20 s as missing);
+    # it needs /bin/sh in sandbox.dind.image (set enabled=false otherwise).
+    liveLimit:
+      enabled: true
+      exportIntervalSeconds: 5
+      # Empty values use the defaults: 0.90, 0.95, 0.95 and 0.25.
+      memHigh: ""
+      memHard: ""
+      cpuBrake: ""
+      cpuThrottle: ""
+
+  # How many code sandboxes run at once in each app pod (every query worker
+  # of the pod shares the count). Empty values are sized automatically: with
+  # the dind sidecar, the smallest of memoryShare x its memory limit / 512Mi
+  # per run, cpuFactor (0.75) x its CPU limit / 0.5 CPU per run, and 25% of
+  # the process limit / 256, at least minTotal (2). The defaults give 3.
+  # With config.dockerHost, each pod sizes itself from that daemon; when more
+  # than one pod can run (replicaCount, or autoscaling.maxReplicas) and
+  # maxTotal is empty, each pod takes 1/<pods> of it, but never below minTotal,
+  # so many pods on a small daemon together can admit more runs than it fits.
+  # Set maxTotal to cap each pod exactly.
+  capacity:
+    # Replaces the computed cap per pod (up to 1024). Empty or 0: sized
+    # automatically (and split between pods sharing config.dockerHost).
+    maxTotal: ""
+    # The most sandboxes one org may hold at once in a pod (empty: no cap).
+    maxPerOrg: ""
+    # The most sandboxes one chat request runs at once (empty: 2); its other
+    # calls wait without holding one.
+    maxPerRequest: ""
+    minTotal: ""
+    # Share of the dind sidecar's memory limit sandboxes may claim. Only used
+    # with the dind sidecar, which runs nothing else.
+    memoryShare: "0.9"
+    # Share of the CPUs sandboxes may claim (default 0.75).
+    cpuFactor: ""
+    # Seconds a run waits for a free sandbox before it is refused (default 120).
+    slotWaitSeconds: ""
+    # The pod's pids limit (kubelet podPidsLimit), which the app cannot read.
+    pidLimit: ""
+    # Count each run at 1/N of its memory limit (default 1, off). With the
+    # dind sidecar it applies only while the live limit reads the sidecar's
+    # cgroup, and at most 2; it only raises a memory-bound cap.
+    memoryOvercommit: ""
 
   # Docker API policy proxy, deployed with the DinD sidecar. It runs
   # app.docker_proxy_main from the application image (`image` above), so that
@@ -564,6 +660,10 @@ sandbox:
     # allows only config.sandboxDockerImage; a value replaces it, so list
     # that image too.
     allowedImages: ""
+    # Also remove sandbox containers with no instance label (left by a proxy
+    # from before the label, e.g. on a persisted dind volume) once past the
+    # reap age. Off: they are only counted in the proxy log.
+    reapUnlabeled: false
     resources:
       requests:
         cpu: "50m"
@@ -596,6 +696,16 @@ mongodb:
   architecture: replicaset
   replicaSetName: rs0
   replicaCount: 2  # 2 data nodes + 1 arbiter = quorum with less storage than 3 full copies
+  # Bitnami subchart data nodes. mongod sizes its WiredTiger cache from this limit.
+  # Setting resources makes the subchart ignore mongodb.resourcesPreset; to use a
+  # preset instead, set mongodb.resources to null (an empty {} keeps these values).
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+    requests:
+      cpu: 1000m
+      memory: 2Gi
   # Note: REPLICA_SET_AVAILABLE for the app is derived from mongodb.architecture
   # in templates/deployment.yaml. Do not add a separate flag here.
   tls:
@@ -721,11 +831,11 @@ arango:
     pullPolicy: IfNotPresent
   resources:
     limits:
-      cpu: 1000m
-      memory: 1Gi
+      cpu: 2000m
+      memory: 4Gi
     requests:
-      cpu: 500m
-      memory: 512Mi
+      cpu: 1000m
+      memory: 2Gi
   persistence:
     enabled: true
     size: 10Gi
@@ -898,11 +1008,11 @@ qdrant:
   # the app as QDRANT_MEMORY_LIMIT for the warning on the Services page.
   resources:
     limits:
+      cpu: 4000m
+      memory: 8Gi
+    requests:
       cpu: 2000m
       memory: 4Gi
-    requests:
-      cpu: 1000m
-      memory: 2Gi
   # Performance tuning — mirrors docker-compose.prod.yml settings.
   # QDRANT__SERVICE__API_KEY is injected separately from the secret; do not duplicate it here.
   env:
@@ -963,11 +1073,11 @@ neo4j:
     storageClass: "" # Fill
   resources:
     limits:
+      cpu: 4000m
+      memory: 8Gi
+    requests:
       cpu: 2000m
       memory: 4Gi
-    requests:
-      cpu: 1000m
-      memory: 2Gi
   podSecurityContext:
     runAsUser: 1000
     fsGroup: 1000
@@ -982,11 +1092,104 @@ neo4j:
       - ALL
   nodeSelector: {}
   tolerations: []
-  # apoc plugin and memory tuning for production (4Gi K8s limit).
-  # heap (2g) + pagecache (1g) + JVM overhead (~500m) fits within 4Gi limit.
+  # The heap (half of resources.limits.memory, starting at an eighth) and page
+  # cache (a quarter) are derived from the limit: 4g heap and 2g page cache at
+  # 8Gi. Set NEO4J_server_memory_heap_max__size, ..._heap_initial__size or
+  # ..._pagecache_size here to choose one yourself.
   env:
     NEO4J_PLUGINS: '["apoc"]'
     NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-    NEO4J_dbms_memory_heap_initial__size: 512m
-    NEO4J_dbms_memory_heap_max__size: 2g
-    NEO4J_dbms_memory_pagecache_size: 1g
+    # A cached plan outlives index-statistics drift this long: the knowledge hub statements take minutes to plan again.
+    NEO4J_dbms_cypher_min__replan__interval: "30m"
+
+# Parsing in its own pods (off by default; the chart then renders exactly as
+# without this block). When enabled, a Deployment and ClusterIP Service named
+# <release fullname>-parsing run the application image with PIPESHUB_ROLE=parsing
+# (only the Parsing service and the Docling service it calls), and the app pods
+# get USE_PARSING_SERVICE=true and PARSING_SERVICE_URL pointing at it.
+# The pods carry the label pipeshub.ai/workload=parsing. The replica count is
+# fixed by parsing.replicas.
+parsing:
+  enabled: false
+  replicas: 1
+  port: 8092
+  # With networkPolicy.enabled the parsing pods get a policy of their own: ingress on `port` only from
+  # the application pods, egress as networkPolicy.egress. List anything else that must reach them (a
+  # metrics scraper, for example) in extraIngress, as NetworkPolicy ingress rules.
+  networkPolicy:
+    extraIngress: []
+  # Parses in flight per parsing pod. Beyond it a pod answers 429 with
+  # Retry-After at once (PARSING_MAX_CONCURRENT). Empty = not limited by count.
+  maxConcurrent: ""
+  # Parses the application pods keep in flight toward the parsing pods in total
+  # (PARSING_SERVICE_CONCURRENCY on the app). Size it as the most parsing pods
+  # times maxConcurrent. Empty = the application's own CPU-derived slots.
+  clientConcurrency: ""
+  # Parse pods are CPU-bound (Docling layout analysis). The CPU request must
+  # stay set: the pod's CPU use is measured against it.
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  # A parse in flight when a pod is stopped gets this long to finish.
+  terminationGracePeriodSeconds: 120
+  # Dedicated node pool: select and tolerate its taint here.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Prefer one parsing pod per node. Ignored when affinity is set.
+  spreadAcrossNodes: true
+  podAnnotations: {}
+  podLabels: {}
+  # Extra container env entries ({name, value} items).
+  extraEnv: []
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  healthCheck:
+    startupProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 60
+    readinessProbe:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    livenessProbe:
+      periodSeconds: 20
+      timeoutSeconds: 10
+      failureThreshold: 6
+
+# Prometheus exporter for the PostgreSQL server the application uses (prometheus-community/postgres_exporter), off by default. The
+# chart does not run PostgreSQL: dataSource names yours, as host:port/database?sslmode=... (for example
+# pg.example.internal:5432/pipeshub?sslmode=require). Log in as the monitoring role: python -m db.bootstrap_roles with
+# PG_MONITOR_PASSWORD set creates pipeshub_monitor, a member of pg_monitor that holds no privilege on any table of the application
+# (backend/db/README.md). Its password is read from an existing Secret. Metrics are served on port 9187 (/metrics) of the Service
+# <fullname>-postgres-exporter, unauthenticated over plain HTTP: let only your Prometheus reach it. The args add the collectors for
+# long transactions, transaction-id wraparound and running autovacuums to the exporter's defaults (connections, locks, replication,
+# WAL, table statistics such as dead rows and the last vacuum). Statement statistics (--collector.stat_statements) also need the
+# pg_stat_statements extension in the database, whose surface lines the migrate job must then be given (PG_MIGRATE_SURFACE_FILES).
+postgresExporter:
+  enabled: false
+  image:
+    repository: quay.io/prometheuscommunity/postgres-exporter
+    tag: v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
+  dataSource: ""
+  user: pipeshub_monitor
+  passwordSecret:
+    name: ""
+    key: PG_MONITOR_PASSWORD
+  args:
+    - --collector.long_running_transactions
+    - --collector.database_wraparound
+    - --collector.stat_activity_autovacuum
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi

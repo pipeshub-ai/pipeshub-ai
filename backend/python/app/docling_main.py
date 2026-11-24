@@ -11,11 +11,15 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.validation_errors import input_free_422
 from app.config.constants.http_status_code import HttpStatusCode
 from app.containers.docling import DoclingAppContainer, initialize_container
+from app.edition import check_runtime_settings
 from app.modules.parsers.pdf.docling_processor import (
+    shutdown_docling_pool,
     set_resource_governor as set_docling_processor_governor,
 )
 from app.modules.parsers.pdf.pdf_rasterizer import (
@@ -32,13 +36,16 @@ from app.services.docling.docling_service import (
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
+from app.services.resource_governor.policy import docling_working_set_gb
 from app.telemetry.setup import setup_telemetry
-from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
-from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.logger import install_log_redaction
 from app.utils.memory_release import limit_malloc_arenas
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
 
 
 # Only for development/debugging
@@ -80,6 +87,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Initialize Docling service with proper dependencies
         config_service = app_container.config_service()
         logger = app_container.logger()
+        from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+        await check_main_redis_eviction_policy(config_service, logger, "docling")
         app.state.docling_service = DoclingService(
             config_service=config_service, logger=logger
         )
@@ -103,6 +113,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # module-level singleton since it has its own FastAPI app/state (see
     # set_resource_governor's docstring).
     worker_count = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
+    # Imported here: this module pulls in the LLM provider libraries, which this service
+    # otherwise never loads.
+    from app.utils.llm import is_local_cpu_embedding_configured
+
     governor = ResourceGovernor(
         logger=logger,
         env_parse=messaging_env.env_max_concurrent_parsing,
@@ -110,6 +124,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             config_service, logger
         ),
+        # Every permit here is a Docling conversion: its own working set, whatever the
+        # PdfPlumber parent base or the lane charges are.
+        heavy_working_set_gb=docling_working_set_gb(),
     )
     app.state.governor = governor
     set_resource_governor(governor)
@@ -124,6 +141,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("🔄 Shutting down Docling service")
+    shutdown_docling_pool()
     governor.stop()
     governor_task.cancel()
     try:
@@ -154,11 +172,14 @@ app = FastAPI(
     title="Docling Processing Service",
     description="Microservice for PDF processing using Docling",
     version="1.0.0",
+    exception_handlers={RequestValidationError: input_free_422},
 )
 
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)
 
+# The mounted app answers its own routes' 422s, so it needs the handler too.
+docling_app.add_exception_handler(RequestValidationError, input_free_422)
 # Mount the Docling service routes
 app.mount("/", docling_app)
 
@@ -236,8 +257,10 @@ async def health_check() -> JSONResponse:
             },
         )
 
-def run(host: str = "0.0.0.0", port: int = 8081, *, reload: bool = False) -> None:
+def run(host: str | None = None, port: int | None = None, *, reload: bool = False) -> None:
     """Run the Docling service"""
+    host = host or bind_host()
+    port = port if port is not None else bind_port(8081)
     workers = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
     if reload and workers > 1:
         workers = 1

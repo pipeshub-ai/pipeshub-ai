@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
@@ -11,28 +11,35 @@ import {
   selectMcpEnabled,
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
-import { ConfirmationDialog } from '../../components';
+import { ConfirmationDialog, WorkspaceHeaderIconButton } from '../../components';
 import { useMcpPersonalStore } from './store';
 import { McpServersApi } from '../api';
 import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../hooks/use-mcp-oauth-popup';
-import type { McpMyServerEntry } from '../types';
+import { isPersonalMcpInstance, type McpMyServerEntry } from '../types';
+import { offeredForPersonalServers } from '../catalog-replacement';
 import { McpInstanceConfigPanel } from '../team/components';
-import { McpPersonalLayout, McpAuthDialog, McpAddServerDialog } from './components';
-import { McpDisconnectDialog, McpToolRulesDialog } from '../components';
-import { ruleToolsFromInfo } from '../tool-rules';
+import { McpAuthDialog, McpAddServerDialog } from './components';
+import { McpAddServerButton, McpServerPage, McpServersLayout } from '../components';
 import { reloadMcpLogos } from '../logo-store';
 
-export default function PersonalMcpServersPage() {
+const LIST_PATH = '/workspace/mcp-servers/personal/';
+
+function PersonalMcpServersPageContent() {
   const { t } = useTranslation();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
   const store = useMcpPersonalStore();
   const [busyInstanceId, setBusyInstanceId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [rulesFor, setRulesFor] = useState<McpMyServerEntry | null>(null);
-  const [disconnecting, setDisconnecting] = useState<McpMyServerEntry | null>(null);
-  const rulesTools = useMemo(() => ruleToolsFromInfo(rulesFor?.tools ?? []), [rulesFor]);
+
+  const serverId = searchParams.get('serverId');
+  const justAdded = searchParams.get('added') === '1';
+  const selectedServer = useMemo(
+    () => (serverId ? store.instances.find((i) => i._id === serverId) ?? null : null),
+    [serverId, store.instances]
+  );
 
   // Loads overlap (a refresh during a disconnect) and can answer out of order: only the latest applies.
   const loadRequestIdRef = useRef(0);
@@ -68,6 +75,16 @@ export default function PersonalMcpServersPage() {
     return () => useMcpPersonalStore.getState().reset();
   }, [flagsLoaded, mcpEnabled, loadData]);
 
+  const refresh = useCallback(() => {
+    void loadData();
+    void reloadMcpLogos();
+  }, [loadData]);
+
+  const openServer = useCallback(
+    (instance: McpMyServerEntry) => router.push(`${LIST_PATH}?serverId=${encodeURIComponent(instance._id)}`),
+    [router]
+  );
+
   const { startOAuthPopup } = useMcpOAuthPopup({
     verifyAuthenticated: async () => {
       const res = await McpServersApi.getMyMcpServers(false);
@@ -87,6 +104,8 @@ export default function PersonalMcpServersPage() {
     },
   });
 
+  // A first sign-in and a new one take the same path: a new sign-in replaces the stored tokens
+  // only when it succeeds, so a blocked or cancelled popup leaves the working connection as it was.
   const handleAuthenticate = useCallback(
     (instance: McpMyServerEntry) => {
       if (instance.authMode === 'oauth') {
@@ -97,20 +116,6 @@ export default function PersonalMcpServersPage() {
       store.openAuthDialog(instance);
     },
     [store, startOAuthPopup]
-  );
-
-  const handleReauthenticate = useCallback(
-    async (instance: McpMyServerEntry) => {
-      if (instance.authMode === 'oauth') {
-        // A new sign-in replaces the stored tokens only when it succeeds, so a blocked or
-        // cancelled popup leaves the working connection as it was.
-        setBusyInstanceId(instance._id);
-        void startOAuthPopup(instance._id);
-        return;
-      }
-      store.openAuthDialog(instance);
-    },
-    [store, startOAuthPopup, t]
   );
 
   const handleRemoveCredentials = useCallback(
@@ -139,6 +144,7 @@ export default function PersonalMcpServersPage() {
       toast.success(t('workspace.mcpServers.toasts.deleted'));
       store.closeDeleteDialog();
       store.closeConfigPanel();
+      if (serverId === target._id) router.push(LIST_PATH);
       void loadData();
     } catch (error) {
       const detail = isProcessedError(error) ? error.message : undefined;
@@ -146,32 +152,60 @@ export default function PersonalMcpServersPage() {
     } finally {
       setIsDeleting(false);
     }
-  }, [store, loadData, t]);
+  }, [store, loadData, t, serverId, router]);
 
   if (!flagsLoaded || !mcpEnabled) return null;
 
+  // Only a person's own servers are theirs to change.
+  const own = (instance: McpMyServerEntry) => isPersonalMcpInstance(instance);
+
   return (
-    <ServiceGate services={['connector']}>
-      <McpPersonalLayout
-        instances={store.instances}
-        templates={store.templates}
-        isLoading={store.isLoading}
-        searchQuery={store.searchQuery}
-        busyInstanceId={busyInstanceId}
-        onSearchChange={store.setSearchQuery}
-        onRefresh={() => {
-          void loadData();
-          void reloadMcpLogos();
-        }}
-        onAddServer={store.openAddDialog}
-        onSetUp={store.openCreateFromTemplate}
-        onAuthenticate={handleAuthenticate}
-        onReauthenticate={(instance) => void handleReauthenticate(instance)}
-        onRemoveCredentials={setDisconnecting}
-        onToolApprovals={setRulesFor}
-        onEdit={store.openEditInstance}
-        onDelete={store.openDeleteDialog}
-      />
+    <>
+      {selectedServer ? (
+        <McpServerPage
+          key={selectedServer._id}
+          instance={selectedServer}
+          templates={store.templates}
+          isAdmin={false}
+          rulesEditable
+          isBusy={busyInstanceId === selectedServer._id}
+          onBack={() => router.push(LIST_PATH)}
+          onAuthenticate={() => handleAuthenticate(selectedServer)}
+          onReauthenticate={() => handleAuthenticate(selectedServer)}
+          onDisconnect={() => handleRemoveCredentials(selectedServer)}
+          onEdit={own(selectedServer) ? () => store.openEditInstance(selectedServer) : undefined}
+          justAdded={justAdded}
+          onDismissAdded={() => router.replace(`${LIST_PATH}?serverId=${encodeURIComponent(selectedServer._id)}`)}
+          onDelete={own(selectedServer) ? () => store.openDeleteDialog(selectedServer) : undefined}
+        />
+      ) : (
+        <McpServersLayout
+          title={t('workspace.mcpServers.personal.title')}
+          subtitle={t('workspace.mcpServers.personal.subtitle')}
+          actions={
+            <>
+              <McpAddServerButton onClick={store.openAddDialog} />
+              <WorkspaceHeaderIconButton icon="refresh" onClick={refresh} aria-label={t('action.refresh')} />
+            </>
+          }
+          isLoading={store.isLoading}
+          searchQuery={store.searchQuery}
+          onSearchChange={store.setSearchQuery}
+          instances={store.instances}
+          templates={store.templates}
+          catalog={offeredForPersonalServers(store.templates)}
+          catalogDescription={t('workspace.mcpServers.catalog.personalDescription')}
+          emptyTitle={t('workspace.mcpServers.personal.emptyTitle')}
+          emptyDescription={t('workspace.mcpServers.personal.emptyDescription')}
+          isAdmin={false}
+          busyInstanceId={busyInstanceId}
+          onOpen={openServer}
+          onConnect={handleAuthenticate}
+          onReconnect={handleAuthenticate}
+          onEdit={(instance) => (own(instance) ? store.openEditInstance(instance) : openServer(instance))}
+          onAdd={store.openCreateFromTemplate}
+        />
+      )}
 
       <McpAddServerDialog
         open={store.addDialogOpen}
@@ -192,24 +226,10 @@ export default function PersonalMcpServersPage() {
         onOpenChange={(open) => {
           if (!open) store.closeConfigPanel();
         }}
-        onSaved={() => void loadData()}
-        onRequestDelete={store.openDeleteDialog}
-        busyInstanceId={busyInstanceId}
-        onAuthenticate={handleAuthenticate}
-        onReauthenticate={(instance) => void handleReauthenticate(instance)}
-        onDisconnect={(instance) => void handleRemoveCredentials(instance)}
-      />
-
-      <McpDisconnectDialog
-        instance={disconnecting}
-        onOpenChange={(open) => {
-          if (!open && busyInstanceId !== disconnecting?._id) setDisconnecting(null);
-        }}
-        isLoading={disconnecting !== null && busyInstanceId === disconnecting._id}
-        onConfirm={() => {
-          const target = disconnecting;
-          if (!target) return;
-          void handleRemoveCredentials(target).finally(() => setDisconnecting(null));
+        onSaved={({ id, created }) => {
+          void loadData();
+          // A new server opens on its own page, where its sign-in is the next step.
+          if (created) router.push(`${LIST_PATH}?serverId=${encodeURIComponent(id)}&added=1`);
         }}
       />
 
@@ -222,18 +242,6 @@ export default function PersonalMcpServersPage() {
         }}
         onAuthenticated={() => void loadData()}
       />
-
-      {rulesFor && (
-        <McpToolRulesDialog
-          open
-          onOpenChange={(open) => {
-            if (!open) setRulesFor(null);
-          }}
-          instanceId={rulesFor._id}
-          serverName={rulesFor.name}
-          tools={rulesTools}
-        />
-      )}
 
       <ConfirmationDialog
         open={store.deleteTarget !== null}
@@ -248,6 +256,16 @@ export default function PersonalMcpServersPage() {
         confirmLoadingLabel={t('action.deleting')}
         onConfirm={() => void handleConfirmDelete()}
       />
+    </>
+  );
+}
+
+export default function PersonalMcpServersPage() {
+  return (
+    <ServiceGate services={['connector']}>
+      <Suspense>
+        <PersonalMcpServersPageContent />
+      </Suspense>
     </ServiceGate>
   );
 }

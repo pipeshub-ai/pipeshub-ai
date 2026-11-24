@@ -822,7 +822,19 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             "sourceTrajectorySummary": candidate.source_trajectory_summary,
             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
         }
-        await self._graph.batch_upsert_nodes([doc], _CANDIDATES)
+        # Insert-only: the key is the bare candidate id, so a plain upsert would let one org overwrite (and take over)
+        # another org's candidate that has the same id.
+        fresh = {k: v for k, v in doc.items() if k != "id"}
+        if await self._graph.create_node_if_absent(candidate.candidate_id, _CANDIDATES, fresh):
+            return
+        # Re-queueing a candidate of this org replaces it in one statement that holds only while this org still owns it, so
+        # there is no point between a delete and an insert where a cancelled or failed write loses the candidate, and a
+        # candidate another org holds under the id is neither replaced nor removed.
+        if await self._graph.update_node_if_match(candidate.candidate_id, _CANDIDATES, doc, "orgId", self._org_id):
+            return
+        # The candidate went away meanwhile (this org removed it): queue it again; the insert still never overwrites.
+        if not await self._graph.create_node_if_absent(candidate.candidate_id, _CANDIDATES, fresh):
+            raise RegistryError(f"Candidate {candidate.candidate_id!r} already exists")
 
     async def get_pending_candidates(self) -> list[SkillCandidate]:
         docs = await self._graph.get_nodes_by_filters(_CANDIDATES, {"orgId": self._org_id})
@@ -843,4 +855,6 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         ]
 
     async def remove_candidate(self, candidate_id: str) -> None:
-        await self._graph.delete_nodes([candidate_id], _CANDIDATES)
+        """Deletes the candidate only while it belongs to this org: one conditional statement, so an id of
+        another org is a no-op and there is no read-then-delete gap."""
+        await self._graph.delete_node_if_match(candidate_id, _CANDIDATES, {"orgId": self._org_id})

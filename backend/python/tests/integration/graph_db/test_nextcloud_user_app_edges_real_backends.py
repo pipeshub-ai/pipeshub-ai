@@ -80,6 +80,11 @@ async def test_only_the_creators_edge_into_a_nextcloud_app_survives(graph: IGrap
     alice, bob = f"alice-{run}", f"bob-{run}"
     nextcloud, drive = f"nextcloud-{run}", f"drive-{run}"
     try:
+        # The migration goes org by org, so the org must exist.
+        assert await graph.batch_upsert_nodes(
+            [{"id": org_id, "accountType": "enterprise", "isActive": True, "name": "nextcloud edges", **stamps}],
+            collection=CollectionNames.ORGS.value,
+        )
         assert await graph.batch_upsert_nodes(
             [{"id": nextcloud, "orgId": org_id, "name": "Nextcloud", "type": "Nextcloud", "appGroup": "Cloud Storage",
               "scope": "personal", "isActive": True, "createdBy": alice, **stamps},
@@ -110,3 +115,4 @@ async def test_only_the_creators_edge_into_a_nextcloud_app_survives(graph: IGrap
         with contextlib.suppress(Exception):
             await graph.delete_nodes_and_edges([nextcloud, drive], CollectionNames.APPS.value)
             await graph.delete_nodes_and_edges([alice, bob], CollectionNames.USERS.value)
+            await graph.delete_nodes_and_edges([org_id], CollectionNames.ORGS.value)

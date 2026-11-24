@@ -9,6 +9,7 @@ from qdrant_client.http.models import (  # type: ignore
     Fusion,
     FusionQuery,
     MatchAny,
+    MatchExcept,
     MatchValue,
     MinShould,
     Prefetch,
@@ -20,6 +21,7 @@ from qdrant_client.http.models import (  # type: ignore
 )
 
 from app.services.vector_db.filters import build_generic_conditions, canonical_filter_key
+from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.models import (
     FieldCondition as GenericFieldCondition,
     FilterExpression,
@@ -241,7 +243,39 @@ class QdrantUtils:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def scope_node(node: "sx.Node") -> FieldCondition | Filter:
+        """A scope tree (:mod:`~app.services.vector_db.scope_expr`) as a Qdrant condition. An empty ``should`` matches EVERY point in Qdrant, so
+        FALSE is a match on an empty list (which matches none), never an empty ``should``."""
+        if isinstance(node, sx.Has):
+            return FieldCondition(key=node.field, match=MatchAny(any=list(node.values)))
+        if isinstance(node, sx.Is):
+            return FieldCondition(key=node.field, match=MatchValue(value=node.value))
+        if isinstance(node, sx.Within):       # one of the values, and none outside them (MatchExcept on an array: any element outside)
+            return Filter(must=[FieldCondition(key=node.field, match=MatchAny(any=list(node.values)))],
+                          must_not=[FieldCondition(key=node.field, match=MatchExcept(**{"except": list(node.values)}))])
+        if isinstance(node, sx.All):
+            return Filter(must=[QdrantUtils.scope_node(p) for p in node.parts]) if node.parts else Filter(must=[])
+        if isinstance(node, sx.Some):
+            if not node.parts:
+                return FieldCondition(key="metadata.orgId", match=MatchAny(any=[]))
+            return Filter(should=[QdrantUtils.scope_node(p) for p in node.parts])
+        return Filter(must_not=[QdrantUtils.scope_node(node.part)])
+
+    @staticmethod
     def search_request_to_qdrant(req: HybridSearchRequest) -> QueryRequest:
+        qdrant_filter = (
+            QdrantUtils.filter_expression_to_qdrant(req.filter)
+            if req.filter is not None
+            else None
+        )
+        if req.scope_filter is not None:
+            # ANDed with the request's own filter, never in its place
+            sx.check_size(req.scope_filter, "Qdrant")
+            scope = QdrantUtils.scope_node(sx.admits(req.scope_filter))
+            qdrant_filter = Filter(must=[scope] if qdrant_filter is None else [qdrant_filter, scope])
+        # With a scope filter each leg is filtered where it searches: the candidates of a leg are its best ``limit * 2`` AFTER the filter, not a
+        # window of the whole collection that the filter then thins (a request without one is sent exactly as before).
+        legs = {"filter": qdrant_filter} if req.scope_filter is not None else {}
         prefetch_list = []
         if req.dense_query is not None:
             prefetch_list.append(
@@ -250,6 +284,7 @@ class QdrantUtils:
                     using="dense",
                     limit=req.limit * 2,
                     params=dense_search_params(),
+                    **legs,
                 )
             )
         if req.sparse_query is not None:
@@ -261,14 +296,10 @@ class QdrantUtils:
                     ),
                     using="sparse",
                     limit=req.limit * 2,
+                    **legs,
                 )
             )
 
-        qdrant_filter = (
-            QdrantUtils.filter_expression_to_qdrant(req.filter)
-            if req.filter is not None
-            else None
-        )
 
         # Only RRF is supported; default to RRF if anything else is requested
         fusion = Fusion.RRF

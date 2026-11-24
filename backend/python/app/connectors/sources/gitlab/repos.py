@@ -44,6 +44,7 @@ from app.connectors.core.registry.code_indexing_flags import (
     code_indexing_flags,
 )
 from app.models.entities import CodeFileRecord, FileRecord, RecordGroupType, RecordType
+from app.modules.code_graph.synced_commit import record_synced_commit
 from app.modules.parsers.code_parser.file_role import (
     FileRole,
     classify_file_role,
@@ -188,6 +189,9 @@ class ReposSync:
         if last_sha == current_sha:
             if branch_changed:
                 await self._update_code_repo_checkpoint(project_id, current_sha, project_path, branch)
+            else:
+                # A project synced before the stamp existed gets it here, without a resync.
+                await self._record_synced_commit(project_id, current_sha)
             self.logger.info(
                 "Code repo unchanged for project %s (HEAD %s); skipping",
                 project_id, current_sha[:8],
@@ -234,6 +238,11 @@ class ReposSync:
     # Checkpoints
     # ------------------------------------------------------------------
 
+    async def synced_project_path(self, project_id: int) -> str | None:
+        """The ``path_with_namespace`` this project's code-file ids were last built on (its checkpoint), or None
+        when its code was never synced -- then it has no code-file records to link to."""
+        return (await self._get_code_repo_checkpoint(project_id))[1]
+
     async def _get_code_repo_checkpoint(self, project_id: int) -> tuple[str | None, str | None, str | None]:
         """Return the last synced head commit SHA, and the project path and branch it was synced under."""
         from app.config.constants.arangodb import Connectors
@@ -264,6 +273,12 @@ class ReposSync:
         )
         await self.c.record_sync_point.update_sync_point(
             key, {GitlabLiterals.LAST_COMMIT_SHA.value: commit_sha, "project_path": project_path, "branch": branch}
+        )
+        await self._record_synced_commit(project_id, commit_sha)
+
+    async def _record_synced_commit(self, project_id: int, commit_sha: str) -> None:
+        await record_synced_commit(
+            self.c.data_entities_processor, self.c.connector_id, f"{project_id}-code-repository", commit_sha,
         )
 
     # ------------------------------------------------------------------

@@ -95,6 +95,7 @@ from app.utils.chat_helpers import (
     keep_record_text_inside_connection,
     merge_into_records_map,
 )
+from app.utils.error_class import log_failure
 from app.utils.image_admission import admission_from_state
 from app.utils.pattern_match import (
     PatternMatchCoverage,
@@ -374,7 +375,7 @@ def resolve_record_scoped_entities(
     state: "ChatState", entity_ids: list[str] | None,
 ) -> list[tuple[str, str]]:
     """``(entity_id, entity_type)`` for the ``entity_ids`` that are record
-    groups or subcategories returned by ``search_entities`` in this request.
+    groups, subcategories, people or organisations returned by ``search_entities`` in this request.
     They have no name-based graph filter, so they become a permission-checked
     ``virtualRecordId`` allow-list (``resolve_entity_virtual_ids``) passed to
     the retrieval service as ``virtual_record_ids_from_tool``.
@@ -414,7 +415,7 @@ def _entity_notes(
         )
     if filter_dropped:
         scope_left = (
-            " The record group/subcategory scope still applies." if record_scope_applied else ""
+            " The record group/subcategory/person/organization scope still applies." if record_scope_applied else ""
         )
         notes.append(
             "Note: nothing matched inside the requested department/category/topic/"
@@ -422,13 +423,13 @@ def _entity_notes(
         )
     if scope_truncated:
         notes.append(
-            "Note: the requested record group/subcategory has more records than one "
+            "Note: the requested record group/subcategory/person/organization has more records than one "
             "search can cover, so only part of its accessible records were searched."
         )
     if entities_skipped:
         notes.append(
-            f"Note: only the first {SEARCH_SCOPE_MAX_ENTITIES} record group/subcategory "
-            f"entity_ids scoped this search; {entities_skipped} more record group/subcategory "
+            f"Note: only the first {SEARCH_SCOPE_MAX_ENTITIES} record group/subcategory/person/organization "
+            f"entity_ids scoped this search; {entities_skipped} more record group/subcategory/person/organization "
             "entity_ids were not applied. Search them separately. Department, category, "
             "topic and language entity_ids are not limited."
         )
@@ -455,8 +456,9 @@ async def _unindexed_title_matches(
             find_unindexed_matches(state["entity_vector_store"], state["graph_provider"], context, query),
             timeout=_TITLE_LOOKUP_TIMEOUT_SECONDS,
         )
-    except Exception:
-        log.warning("knowledgegraph__search: the lookup of records by name failed", exc_info=True)
+    except Exception as exc:
+        # The content answer stands without it. Text-free: the title check's embedding error is the provider's body.
+        log_failure(log, "title_lookup.failed", exc, include_error_text=False)
         return None
 
 

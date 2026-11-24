@@ -258,3 +258,64 @@ async def test_a_failed_group_lookup_keeps_the_stored_group_access(harness, gitl
     await harness.sync_incomplete()
 
     assert db.group_access("acme") == before
+
+
+async def test_a_project_transferred_out_of_the_filtered_group_is_removed(harness, gitlab, db) -> None:
+    # Its members were never read again: acme/platform's carol kept code GitLab no longer shows her.
+    build_acme(gitlab)
+    harness.set_sync_filter("group_ids", "in", ["acme/platform"])
+    gitlab.add_project(33, "acme/platform/tools", files={"a.txt": "a\n"})
+    await harness.sync()
+    assert "carol@example.com" in db.group_access(f"{API}-code-repository")
+
+    gitlab.projects[API].path_with_namespace = "acme/api"
+    await harness.sync()
+
+    assert all(not g.startswith(str(API)) for g in db.record_groups), "every part of the project goes"
+    assert "33-code-repository" in db.record_groups, "the project still in the group stays"
+
+
+async def test_a_deleted_project_is_removed_without_any_filter(harness, gitlab, db) -> None:
+    build_acme(gitlab)
+    await harness.sync()
+    assert str(API) in db.record_groups
+
+    del gitlab.projects[API]
+    await harness.sync()
+
+    assert str(API) not in db.record_groups and str(WEB) in db.record_groups
+
+
+async def test_a_failed_group_listing_or_lookup_removes_no_project(harness, gitlab, db) -> None:
+    build_acme(gitlab)
+    harness.set_sync_filter("group_ids", "in", ["acme/platform", "acme/web-team"])
+    gitlab.add_group("acme/web-team", {})
+    gitlab.projects[WEB].path_with_namespace = "acme/web-team/web"
+    await harness.sync()
+    assert {str(API), str(WEB)} <= set(db.record_groups)
+
+    gitlab.fail("GET", r"^/api/v4/groups/acme/web-team/projects", 500)
+    with pytest.raises(Exception, match="incomplete"):
+        await harness.sync()
+    assert str(WEB) in db.record_groups, "a listing that failed names nobody"
+
+    gitlab.clear_faults()
+    gitlab.projects[WEB].path_with_namespace = "acme/web"
+    gitlab.fail("GET", rf"^/api/v4/projects/{WEB}$", 503)
+    with pytest.raises(Exception, match="incomplete"):
+        await harness.sync()
+    assert str(WEB) in db.record_groups, "GitLab did not say the project is gone"
+
+
+
+async def test_a_project_the_filter_now_leaves_out_is_left_to_the_full_sync(harness, gitlab, db) -> None:
+    # Same path in GitLab: the filter changed, not the project. The full sync's unlink hides it and keeps its records.
+    build_acme(gitlab)
+    harness.set_sync_filter("group_ids", "in", ["acme"])
+    await harness.sync()
+    assert {str(WEB), str(API)} <= set(db.record_groups)
+
+    harness.set_sync_filter("group_ids", "in", ["acme/platform"])
+    await harness.sync()
+
+    assert str(WEB) in db.record_groups and f"{WEB}-code-repository" in db.record_groups

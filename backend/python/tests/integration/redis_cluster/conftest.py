@@ -53,21 +53,28 @@ def _redis_cluster_env() -> None:
     os.environ.setdefault("REDIS_CLUSTER_ENDPOINTS", DEFAULT_ENDPOINTS)
 
 
+def _unavailable(reason: str) -> None:
+    """Skip locally; fail under CI, where a missing cluster must never read as a pass (the job starts one)."""
+    if os.environ.get("CI", "").lower() in ("1", "true", "yes"):
+        pytest.fail(f"CI is set but the Redis Cluster is unusable: {reason}")
+    pytest.skip(reason)
+
+
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def redis_cluster_available(_redis_cluster_env: None) -> RedisConnectionConfig:
     """The resolved cluster config, or skip the module if no cluster answers."""
     pytest.importorskip("redis", reason="redis package not installed")
     config = RedisConnectionConfig.from_env()
     if not config.cluster_endpoints:
-        pytest.skip("REDIS_CLUSTER_ENDPOINTS not set")
+        _unavailable("REDIS_CLUSTER_ENDPOINTS not set")
 
     provider = get_redis_provider(config, mode="cluster")
     try:
         reachable = await asyncio.wait_for(provider.ping(), timeout=10.0)
     except Exception as exc:
-        pytest.skip(f"Redis Cluster not available at {config.cluster_endpoints} — {exc}")
+        _unavailable(f"Redis Cluster not available at {config.cluster_endpoints} — {exc}")
     if not reachable:
-        pytest.skip(f"Redis Cluster not reachable at {config.cluster_endpoints}")
+        _unavailable(f"Redis Cluster not reachable at {config.cluster_endpoints}")
     return config
 
 

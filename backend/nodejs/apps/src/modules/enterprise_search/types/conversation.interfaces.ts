@@ -339,6 +339,10 @@ export interface IChatSession {
   projectId?: Types.ObjectId;
   /** Per-conversation override of the project's default chat-sharing visibility. */
   projectVisibility?: 'private' | 'project';
+  /** Compare models: set on a hidden branch, the chat it branched from. */
+  compareOf?: Types.ObjectId;
+  /** Compare models: the parent's `user_query` the branch re-asks. */
+  compareFromMessageId?: Types.ObjectId;
 }
 
 export interface IChatSessionDocument extends Document, IChatSession {
@@ -404,6 +408,13 @@ export interface IAIResponse {
   modelInfo?: IAIModel;
   /** Set when a search of the run was answered with less than the full search (see `searchDegradedMeta`). */
   searchDegraded?: boolean;
+  /** Codes for connectors the search reached that are syncing or updating permissions; the client words them. */
+  accessNotices?: {
+    code: string;
+    connectorId?: string;
+    connectorName?: string;
+    firstSync?: boolean;
+  }[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
   /** Present only when `PIPESHUB_PERSIST_REASONING=true` on the Python side. */

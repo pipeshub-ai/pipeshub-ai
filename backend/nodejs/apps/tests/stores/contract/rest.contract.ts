@@ -141,9 +141,10 @@ export function describeOrgContract(fx: OrgFixture): void {
 
     it('reads, updates and soft-deletes', async () => {
       const { org } = await newOrg({ shortName: 'AC' });
-      expect(await orgs.getAccountType(org._id)).to.include({ accountType: 'business' });
-      expect(await orgs.getNames(org._id)).to.include({ shortName: 'AC' });
-      expect((await orgs.getOnboardingStatus(org._id))?.onBoardingStatus).to.equal('notConfigured');
+      // exact shapes: a store that adds a field (MongoDB's default `_id` in a projection) shows as a shadow-read difference
+      expect(await orgs.getAccountType(org._id)).to.deep.equal({ accountType: 'business' });
+      expect(await orgs.getNames(org._id)).to.deep.equal({ registeredName: org.registeredName, shortName: 'AC' });
+      expect(await orgs.getOnboardingStatus(org._id)).to.deep.equal({ onBoardingStatus: 'notConfigured' });
       const set = await orgs.setOnboardingStatus(org._id, 'configured');
       expect(set?.onBoardingStatus).to.equal('configured');
       const upd = await orgs.update(org._id, { shortName: 'NEW' });

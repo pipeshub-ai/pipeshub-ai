@@ -299,10 +299,12 @@ interface SpreadsheetRendererProps {
   fileType?: string;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
+  /** Increments on every click on a citation, so a repeat click on the active one scrolls again. */
+  citationClickVersion?: number;
   onHighlightClick?: (citationId: string) => void;
 }
 
-export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, activeCitationId, onHighlightClick }: SpreadsheetRendererProps) {
+export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, activeCitationId, citationClickVersion, onHighlightClick }: SpreadsheetRendererProps) {
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const [state, dispatch] = useReducer(viewerReducer, INITIAL_STATE);
@@ -552,6 +554,7 @@ export function SpreadsheetRenderer({ fileUrl, fileName, fileType, citations, ac
     scrollToRow(rowNum);
   }, [
     activeCitationId,
+    citationClickVersion,
     citations,
     rowOffset,
     applyHighlight,

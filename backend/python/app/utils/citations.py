@@ -25,7 +25,12 @@ logger = create_logger(__name__)
 #   - legacy full block web URL (/record/<id>/preview#blockIndex=N)
 #   - any http(s):// URL used as a web citation target
 # Kept permissive because web citations are arbitrary external URLs.
-_MD_LINK_PATTERN = r'\[([^\]]*?)\]\((ref\d+|https?://[^)]+)\)'
+# Link text may hold a few "[", but a scan gives up past them. Answers carry model output, and
+# scanning from every "[" of a long run to the next "]" takes quadratic time.
+_LINK_TEXT = r'[^\[\]]*(?:\[[^\[\]]*){0,8}'
+# The same for a target, whose unclosed "(" would otherwise be scanned from every link start.
+_LINK_URL = r'https?://(?!\))[^)\[]*(?:\[[^)\[]*){0,8}'
+_MD_LINK_PATTERN = rf'\[({_LINK_TEXT})\]\((ref\d+|{_LINK_URL})\)'
 
 # Tiny web-ref URL format exposed to the LLM when the real URL exceeds TINY_URL_THRESHOLD.
 # The embedded refN resolves through the shared CitationRefMapper, same as internal-search refs.
@@ -40,7 +45,7 @@ TINY_URL_THRESHOLD = 0
 #   [source](https://example.com/page) (https://ref123.xyz)
 #   [source](ref5) (https://example.com/page)
 _TRAILING_PAREN_URL_RE = re.compile(
-    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 1: md link; Grp 2: target
+    rf'(\[(?!\]){_LINK_TEXT}\]\((ref\d+|{_LINK_URL})\))'   # Grp 1: md link; Grp 2: target
     r'\s*'
     r'\((https?://[^\s)]+|ref\d+)\)'              # Grp 3: trailing URL/ref
 )
@@ -49,25 +54,26 @@ _TRAILING_PAREN_URL_RE = re.compile(
 #   [Bellandur Restaurants](https://ref6.xyz) [source](https://ref6.xyz)
 #   [Title](ref3)[source](ref3)
 _CONSECUTIVE_MD_LINKS_RE = re.compile(
-    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 1: first md link; Grp 2: first target
+    rf'(\[(?!\]){_LINK_TEXT}\]\((ref\d+|{_LINK_URL})\))'   # Grp 1: first md link; Grp 2: first target
     r'(\s*)'                                       # Grp 3: optional whitespace between links
-    r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'   # Grp 4: second md link; Grp 5: second target
+    rf'(\[(?!\]){_LINK_TEXT}\]\((ref\d+|{_LINK_URL})\))'   # Grp 4: second md link; Grp 5: second target
 )
 
 # ── Malformed citation normalization ──────────────────────────────────────────
 # Matches a markdown link whose target is a comma- or whitespace-separated list
 # of two or more refs/URLs — a common LLM slip-up e.g. [source](ref1, ref2).
+_LIST_URL = r'https?://(?![\s,)])[^\s,)\[]*(?:\[[^\s,)\[]*){0,8}'
 _MULTI_REF_IN_LINK_RE = re.compile(
-    r'\[([^\]]*?)\]\(('
-    r'(?:ref\d+|https?://[^\s,)]+)'
-    r'(?:(?:\s*,\s*|\s+)(?:ref\d+|https?://[^\s,)]+))+'
+    rf'\[({_LINK_TEXT})\]\(('
+    rf'(?:ref\d+|{_LIST_URL})'
+    rf'(?:(?:\s*,\s*|\s+)(?:ref\d+|{_LIST_URL}))+'
     r')\)'
 )
 
 # Any markdown link, whatever its target. Matched first by the bare-ref passes
 # so a ref inside an existing link's text or URL is never rewritten into a
 # nested link.
-_ANY_MD_LINK = r'\[[^\]]*?\]\([^)\n]*\)'
+_ANY_MD_LINK = rf'\[{_LINK_TEXT}\]\([^)\n\[]*(?:\[[^)\n\[]*){{0,8}}\)'
 
 # Matches [refN] — a bracketed bare ref without a link target — which LLMs
 # commonly emit instead of proper [source](refN).  Must run BEFORE
@@ -107,7 +113,8 @@ _REF_TOKEN = rf'(?:https?://ref\d+\.xyz/?|{_ANY_REF_TARGET})'
 # e.g. [source]([ref2]], [source](<ref2>), [source](ref1, [source](ref2)),
 # [[source](ref2)]. Parsed by _parse_cited_link, not one regex, because the
 # wrapping nests to any depth and a sentence paren after it must be kept.
-_CITED_LINK_START_RE = re.compile(r'(\[*)\[[^\[\]\n]*\]\(')
+# Only the first "[" of a run can start a match: a later one has the same tail to fail on.
+_CITED_LINK_START_RE = re.compile(r'(?<!\[)(\[*)\[[^\[\]\n]*\]\(')
 _CITED_LINK_HEAD_RE = re.compile(r'\[([^\[\]\n]*)\]\(')
 _TARGET_GAP_RE = re.compile(r'[ \t.,;:]*')
 _TARGET_SEP_RE = re.compile(r'[ \t]*[,;]?[ \t]*')
@@ -492,9 +499,11 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
 # A ``[text](ref…)`` or ``[text](https://refN.xyz)`` link.  Resolvable refs were already
 # rewritten to ``[N](url)`` by the time this runs, so whatever still matches is dead.  One
 # pattern, so a later link sees every earlier one already stripped.
-_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _REF_TOKEN + r'\)')
+_UNRESOLVED_REF_LINK_RE = re.compile(rf'\[({_LINK_TEXT})\]\(' + _REF_TOKEN + r'\)')
+# Matched against stripped text, and no two whitespace runs here can reach the same spaces:
+# overlapping runs make a failed match cubic in the length of the text.
 _CITATION_LABEL_RE = re.compile(
-    r'^\s*(?:(?:sources?|refs?|links?|citations?)\s*#?\s*\d*|\d+(?:\s*[,;]\s*\d+)*)?\s*$', re.IGNORECASE,
+    r'(?:(?:sources?|refs?|links?|citations?)(?:\s*#)?(?:\s*\d+)?|\d+(?:\s*[,;]\s*\d+)*)?', re.IGNORECASE,
 )
 # Link text that only names the target: a ref token or a record id.  Meaningless to a reader,
 # so it goes even when the link is dead and no badge replaces it.
@@ -512,7 +521,7 @@ _LINK_TEXT_ECHO_WINDOW = 2000
 
 
 def _is_label_or_id(link_text: str) -> bool:
-    return bool(_CITATION_LABEL_RE.match(link_text) or _LINK_ID_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
+    return bool(_CITATION_LABEL_RE.fullmatch(link_text.strip()) or _LINK_ID_TEXT_RE.match(link_text.strip(_LINK_TEXT_WRAPPERS)))
 
 
 def _is_url_text(link_text: str) -> bool:

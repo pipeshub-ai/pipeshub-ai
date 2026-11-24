@@ -15,7 +15,10 @@ import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
-import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import {
+  bindPathLogFields,
+  guardPathParams,
+} from '../../../libs/middlewares/safe-path-params.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
   validateApiToolsetSpec,
@@ -38,6 +41,7 @@ import {
 export function createApiToolsetsRouter(container: Container): Router {
   const router = Router();
   guardPathParams(router, 'instanceId');
+  bindPathLogFields(router, { instanceId: 'toolset_id' });
   const config = container.get<AppConfig>('AppConfig');
   // eslint-disable-next-line @typescript-eslint/unbound-method -- AuthMiddleware binds authenticate in its constructor
   const { authenticate } = container.get<AuthMiddleware>('AuthMiddleware');

@@ -67,8 +67,12 @@ import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
+import { runWithRequestContext } from '../../../../src/libs/context/request-context'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
-import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { BadRequestError, ConflictError, InternalServerError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema'
@@ -378,6 +382,7 @@ let restoreSessionDocs: () => void = () => undefined
 
 describe('Enterprise Search Controller', () => {
   beforeEach(() => {
+    registerAppUpstreams(createMockAppConfig())
     if (!(conversationArtifacts.deleteConversationArtifacts as any).restore) {
       sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()
     }
@@ -386,6 +391,11 @@ describe('Enterprise Search Controller', () => {
     // buffer against a real Mongo connection for 10s.
     if (!(ChatSession.findOneAndUpdate as any).restore) {
       sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ nextSeq: 1 } as any)
+    }
+    // discardBranches looks up compare branches with ChatSession.find; without
+    // this, delete/archive paths buffer against a real Mongo connection for 10s.
+    if (!(ChatSession.find as any).restore) {
+      stubMongooseFind(ChatSession, 'find', [])
     }
     if (!(ChatSessionMessage.insertMany as any).restore) {
       sinon.stub(ChatSessionMessage, 'insertMany').resolves([createMockMessageDoc()] as any)
@@ -416,6 +426,11 @@ describe('Enterprise Search Controller', () => {
     if (!(searchUtils.reserveRun as any).restore) {
       sinon.stub(searchUtils, 'reserveRun').resolves(null)
     }
+    // The run heartbeat is covered in utils.persistence.test.ts. These fake streams never close, so the real
+    // one would keep a 60 s interval alive after the test and log into whichever test file runs next.
+    if (!(searchUtils.keepRunAlive as any).restore) {
+      sinon.stub(searchUtils, 'keepRunAlive')
+    }
     // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
     // call this on every request to extend the access filter with
     // project-shared conversations; default to "no accessible projects" so
@@ -440,6 +455,7 @@ describe('Enterprise Search Controller', () => {
   afterEach(() => {
     sinon.restore()
     restoreSessionDocs()
+    registerUpstreams({})
   })
 
   // -----------------------------------------------------------------------
@@ -1367,6 +1383,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
@@ -1396,6 +1413,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB error')),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -2840,6 +2858,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
@@ -2949,6 +2968,69 @@ describe('Enterprise Search Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response).to.have.property('searchId')
       expect(response).to.have.property('searchResponse')
+    })
+
+    // The error goes through the real error middleware, so the body is what a client gets.
+    const bodyOf = (error: any, requestId?: string): { status: number; body: any } => {
+      const res: any = { status: sinon.stub(), json: sinon.stub(), setHeader: sinon.stub(), headersSent: false }
+      res.status.returns(res)
+      res.json.returns(res)
+      ErrorMiddleware.handleError()(error, { method: 'POST', params: {}, context: { requestId } } as any, res, sinon.stub())
+      return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0] }
+    }
+    const NOTICES = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }]
+
+    for (const [status, notices] of [
+      [404, NOTICES],
+      [503, [{ code: 'check_unavailable' }]],
+    ] as const) {
+      it(`keeps the error envelope of a ${status} and adds only the access notice codes`, async () => {
+        const handler = search(createMockAppConfig())
+        sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+          statusCode: status,
+          data: {
+            status: 'accessible_records_not_found',
+            message: 'No documents are available',
+            accessNotices: notices,
+            records: [{ hidden: 'x' }],
+          },
+        } as any)
+        const next = createMockNext()
+
+        await handler(
+          createMockRequest({ body: { query: 'q', limit: 10 }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          createMockResponse(),
+          next,
+        )
+
+        const { status: sent, body } = bodyOf(next.firstCall.args[0], 'req-7')
+        expect(sent).to.equal(status)
+        expect(body.accessNotices).to.deep.equal(notices)
+        expect(Object.keys(body).sort()).to.deep.equal(['accessNotices', 'error'])
+        expect(body.error.requestId).to.equal('req-7')
+        expect(body.error).to.have.property('code')
+        expect(body.error).to.have.property('message')
+        expect(body).to.not.have.property('status')
+        expect(JSON.stringify(body)).to.not.contain('hidden')
+      })
+    }
+
+    it('adds nothing to the envelope of a 404 or 503 that carries no notices', async () => {
+      const handler = search(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 404,
+        data: { status: 'accessible_records_not_found', message: 'none' },
+      } as any)
+      const next = createMockNext()
+
+      await handler(
+        createMockRequest({ body: { query: 'q', limit: 10 }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+        createMockResponse(),
+        next,
+      )
+
+      const { body } = bodyOf(next.firstCall.args[0])
+      expect(Object.keys(body)).to.deep.equal(['error'])
     })
 
     it('logs a 402 refusal as a warning, not an error', async () => {
@@ -4532,6 +4614,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
@@ -4562,6 +4645,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB error')),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -5227,6 +5311,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain1 as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
 
@@ -5257,6 +5342,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -5295,6 +5381,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves(mockConversations),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(1)
       stubUsersFindForSharedBy([
@@ -5347,6 +5434,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -5382,6 +5470,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub(),
       }
+      restoreIfStubbed(ChatSession, 'find')
       const findStub = sinon.stub(ChatSession, 'find')
       findChain.exec.resolves(mockConversations)
       const findChain2: any = {
@@ -8437,7 +8526,7 @@ describe('Enterprise Search Controller', () => {
       expect(next.called).to.be.false
     })
 
-    it('should return empty agents when backend responds non-200', async () => {
+    it('should pass a non-200 backend answer on as an error, never as empty agents', async () => {
       const handler = getModelUsage(createMockAppConfig())
       const req = createMockRequest({
         params: { model_key: 'model-1' },
@@ -8453,9 +8542,9 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      expect(res.status.calledOnceWith(200)).to.be.true
-      expect(res.json.calledOnceWith({ success: true, agents: [] })).to.be.true
-      expect(next.called).to.be.false
+      expect(res.json.called).to.be.false
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].statusCode).to.equal(503)
     })
 
     it('should call next when AI backend throws', async () => {
@@ -8955,6 +9044,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().rejects(new Error('DB error')),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -10278,6 +10368,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -12135,6 +12226,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -12599,6 +12691,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -12633,6 +12726,7 @@ describe('Enterprise Search Controller', () => {
         lean: sinon.stub().returnsThis(),
         exec: sinon.stub().resolves([]),
       }
+      restoreIfStubbed(ChatSession, 'find')
       sinon.stub(ChatSession, 'find').returns(findChain as any)
       sinon.stub(ChatSession, 'countDocuments').resolves(0)
 
@@ -14196,6 +14290,47 @@ describe('Enterprise Search Controller', () => {
 
         fetchStub.restore()
       })
+
+      it("sends the request's id and writes its call line", async () => {
+        const fetchStub = sinon.stub(globalThis, 'fetch').resolves({ status: 204, ok: true } as Response)
+        const debug = sinon.stub(Logger.prototype, 'debug')
+        const req = createMockRequest({
+          params: { recordId: 'my-record-id' },
+          headers: { authorization: 'Bearer tok', 'x-request-id': 'rq bad!' },
+        })
+
+        await runWithRequestContext({ rootId: 'rqbad' }, () =>
+          deleteChatAttachment(createMockAppConfig())(req, createMockResponse(), createMockNext()),
+        )
+
+        const headers = (fetchStub.firstCall.args[1] as RequestInit).headers as Record<string, string>
+        expect(headers['x-request-id']).to.equal('rqbad')
+        const lines = debug.getCalls().filter((c) => c.args[0] === 'upstream.call.end')
+        expect(lines.map((c) => [c.args[1].method, c.args[1].status])).to.deep.equal([['DELETE', 204]])
+      })
+
+      for (const [name, aiBackend, reason] of [
+        ['an AI backend that is not a registered service', 'http://169.254.169.254', 'not a registered PipesHub service'],
+        ['an AI backend with embedded credentials', 'http://user:pass@localhost:8000', 'must not contain embedded credentials'],
+      ] as const) {
+        it(`sends nothing to ${name}, and hands the refusal to the error middleware`, async () => {
+          const fetchStub = sinon.stub(globalThis, 'fetch').resolves({ status: 204, ok: true } as Response)
+          const res = createMockResponse()
+          const next = createMockNext()
+
+          await deleteChatAttachment({ ...createMockAppConfig(), aiBackend })(
+            createMockRequest({ params: { recordId: 'my-record-id' }, headers: { authorization: 'Bearer tok' } }),
+            res,
+            next,
+          )
+
+          expect(fetchStub.called, 'fetch reached').to.equal(false)
+          expect(next.calledOnce).to.equal(true)
+          expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+          expect(next.firstCall.args[0].message).to.include(reason)
+          expect(res.status.called).to.equal(false)
+        })
+      }
     })
   })
 

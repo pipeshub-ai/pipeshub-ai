@@ -16,7 +16,8 @@ from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
-from app.agents.actions.knowledge_graph.views import CITE_NOTE
+from app.agents.actions.knowledge_graph.navigator import cursor_keeps_to
+from app.agents.actions.knowledge_graph.views import CITE_NOTE, PREPARING
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
@@ -32,7 +33,9 @@ from app.connectors.sources.localKB.handlers.kh_bounded import (
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.demo_data.chat import excluded_app_ids
+from app.modules.retrieval.selection_scope import unavailable_message
 from app.services.graph_db.interface.graph_db_provider import ALLOWED_FILTER_KEYS
 
 if TYPE_CHECKING:
@@ -97,6 +100,12 @@ def _normalize_list(value: Any) -> list[str] | None:
     return None
 
 
+_NOT_THIS_LISTING_CURSOR = (
+    "That cursor is not a page of this listing. Call knowledgegraph__list_files again "
+    "without a cursor, with the same query and source_ids."
+)
+
+
 def _next_page_hint(page: int) -> str:
     return f"(More items follow: call again with page={page + 1}.)"
 
@@ -124,6 +133,8 @@ def _render_flat_text(
         return f"Error: {error}"
 
     items = response.items or []
+    if not items and getattr(response, "preparing", None) is True:
+        return PREPARING
     if not items:
         if query:
             return f'No items found matching "{query}".'
@@ -161,7 +172,9 @@ def _render_flat_text(
         lines.append(f"({remaining} more items — increase page or limit to see them)")
         lines.append("")
     elif getattr(getattr(response, "pagination", None), "hasNext", False):
-        lines.append(_next_page_hint(page))
+        next_cursor = getattr(response.pagination, "nextCursor", None)
+        # The cursor resumes where this page ended; page numbers stop at 50.
+        lines.append(f'(More items follow: call again with cursor="{next_cursor}".)' if next_cursor else _next_page_hint(page))
         lines.append("")
 
     lines.append(
@@ -213,7 +226,8 @@ async def _page_inside_bounds(
         )
     else:
         hint = None
-    return KnowledgeHubNodesResponse(success=True, items=items), hint
+    # A source still being prepared answers an empty first page with no cursor: say so, not that nothing matched.
+    return KnowledgeHubNodesResponse(success=True, items=items, preparing=read.first.preparing if not items else None), hint
 
 
 def _asks_for_contents(node_types: list[str] | None, record_types: list[str] | None) -> bool:
@@ -285,6 +299,7 @@ async def execute_list_files(
         from app.modules.retrieval.selection_scope import (
             has_selection,
             resolve_request_scopes,
+            resolve_user_key,
         )
 
         # Input normalization
@@ -350,8 +365,7 @@ async def execute_list_files(
         parent_id: str | None = None
         parent_type: str | None = None
         if selection_search or any(key in filters for key in ALLOWED_FILTER_KEYS):
-            user = await graph_provider.get_user_by_user_id(user_id=user_id)
-            bound_user_key = (user.get("_key") or user.get("id")) if user else None
+            bound_user_key = await resolve_user_key(graph_provider, user_id)
             if not bound_user_key:
                 return False, "User not found."
         if selection_search:
@@ -421,6 +435,7 @@ async def execute_list_files(
             logger=logger_instance,
             graph_provider=graph_provider,
             excluded_app_ids=excluded_app_ids(state),
+            config_service=state.get("config_service"),
         )
 
         async def fetch(service_page: int, service_limit: int) -> KnowledgeHubNodesResponse:
@@ -439,18 +454,26 @@ async def execute_list_files(
                 record_types=record_types,
                 connector_ids=use_connector_ids or None,
                 flattened=flattened,
+                cursor=service_cursor,
             )
 
         hint: str | None = None
+        service_cursor: str | None = None
         if bound_user_key and (partial_ids or selection_search):
-            # This service hands out no cursors, so a batch is read by page number.
+            if cursor:
+                return False, _NOT_THIS_LISTING_CURSOR
+            # Batches are read by page number; the rows a bound drops leave no keyset to resume from.
             response, hint = await _page_inside_bounds(
                 lambda position, **_: fetch(position.page, BOUNDED_BATCH),
                 lambda ids: ids_within_scope(state, graph_provider, bound_user_key, org_id, ids),
                 page=page, limit=limit, in_selection=selection_search and parent_id is None,
             )
         else:
+            service_cursor = cursor
             response = await fetch(page, limit)
+            if cursor and use_connector_ids and response.success and not cursor_keeps_to(response, use_connector_ids):
+                # The cursor's own filters decide the page, so one issued for wider sources must not resume here.
+                return False, _NOT_THIS_LISTING_CURSOR
 
         from app.modules.agents.qna.chat_state import remember_record_ids
         fetchable = _record_ids_in_items(response.items)
@@ -471,4 +494,6 @@ async def execute_list_files(
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger
         logger_instance.error("knowledgegraph__list_files error: %s", exc, exc_info=True)
-        return False, json.dumps({"status": "error", "message": f"Listing error: {exc}"})
+        # The graph's own error text is never shown: a store failure says only "try again".
+        said = unavailable_message() if isinstance(exc, PermissionVerificationUnavailableError) else f"Listing error: {exc}"
+        return False, json.dumps({"status": "error", "message": said})

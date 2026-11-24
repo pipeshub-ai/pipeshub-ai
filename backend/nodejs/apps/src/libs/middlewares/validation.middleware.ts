@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { Request, Response, NextFunction } from 'express';
 
-import { Logger } from '../services/logger.service';
 import { ValidationUtils } from '../utils/validation.utils';
 import { ValidationError } from '../errors/validation.error';
+import { BaseError } from '../errors/base.error';
 import {
   ArrayGuardViolation,
   findArrayLengthViolation,
@@ -33,9 +33,65 @@ function describeGuardViolation(violation: ArrayGuardViolation): string {
   }
 }
 
-export class ValidationMiddleware {
-  private static logger = Logger.getInstance();
+/** A refusal the middleware words itself: no zod issue to format, and never the value sent. */
+function refusal(
+  field: string,
+  message: string,
+  code: string,
+): ValidationError {
+  const errors = [{ field, message, code, value: '' }];
+  return new ValidationError(
+    ValidationUtils.formatValidationErrorMessage(errors),
+    errors,
+  );
+}
 
+export const UNREADABLE_REQUEST_MESSAGE =
+  "A value in the request can't be read. Check that each field has the type the API expects.";
+
+/** Parses the request; every throw from the parse leaves as a classified error. */
+async function parseRequest(
+  schema: z.ZodObject,
+  req: Request,
+): Promise<z.output<z.ZodObject>> {
+  try {
+    // reportInput keeps the offending value on each issue so the messages
+    // and codes can tell a missing value from a wrong one.
+    return await schema.parseAsync(
+      {
+        body: req.body,
+        query: req.query,
+        params: req.params,
+        headers: req.headers,
+      },
+      { reportInput: true },
+    );
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const errors = ValidationUtils.formatZodError(error);
+      throw new ValidationError(
+        ValidationUtils.formatValidationErrorMessage(errors),
+        errors,
+      );
+    }
+    if (error instanceof RangeError && /call stack/i.test(error.message)) {
+      // Safety net: zod overflows the stack once a request produces about a
+      // million issues. The array guard should stop that first.
+      throw refusal(
+        '',
+        'The request holds too many invalid values to check.',
+        'TOO_BIG',
+      );
+    }
+    // Our own classified error keeps its status (a 503 stays a 503).
+    if (error instanceof BaseError) throw error;
+    // A schema callback threw on the value sent: zod lets such throws through.
+    // The text is fixed; the thrown message could quote the value.
+    throw refusal('', UNREADABLE_REQUEST_MESSAGE, 'VALIDATION_ERROR');
+  }
+}
+
+export class ValidationMiddleware {
   // First modify the validation method to include headers
   static validate(schema: z.ZodObject, options: ValidatorOptions = {}) {
     return async (req: Request, _res: Response, next: NextFunction) => {
@@ -57,24 +113,11 @@ export class ValidationMiddleware {
           },
         );
         if (violation) {
-          const message = describeGuardViolation(violation);
-          const errors = [
-            {
-              field: violation.path,
-              message,
-              code: violation.reason === 'too_deep' ? 'TOO_DEEP' : 'TOO_BIG',
-              value: '',
-            },
-          ];
-          this.logger.error('Validation failed', {
-            path: req.path,
-            method: req.method,
-            errors,
-          });
           next(
-            new ValidationError(
-              ValidationUtils.formatValidationErrorMessage(errors),
-              errors,
+            refusal(
+              violation.path,
+              describeGuardViolation(violation),
+              violation.reason === 'too_deep' ? 'TOO_DEEP' : 'TOO_BIG',
             ),
           );
           return;
@@ -85,18 +128,7 @@ export class ValidationMiddleware {
           ? schema.strip()
           : schema.loose();
 
-        // Validate request data against schema, now including headers
-        // reportInput keeps the offending value on each issue so the messages
-        // and codes can tell a missing value from a wrong one.
-        const validatedData = await finalSchema.parseAsync(
-          {
-            body: req.body,
-            query: req.query,
-            params: req.params,
-            headers: req.headers, // Add headers validation
-          },
-          { reportInput: true },
-        );
+        const validatedData = await parseRequest(finalSchema, req);
 
         // Replace request properties with validated data
         req.body = validatedData.body;
@@ -105,54 +137,10 @@ export class ValidationMiddleware {
         // Note: req.headers is read-only, so we can't replace it
         // but we can still validate it
 
-        this.logger.debug('Validation successful', {
-          path: req.path,
-          method: req.method,
-        });
-
         next();
       } catch (error) {
-        if (error instanceof RangeError && /call stack/i.test(error.message)) {
-          // Safety net: zod overflows the stack once a request produces about a
-          // million issues. The guard above should stop that first.
-          const errors = [
-            {
-              field: '',
-              message: 'The request holds too many invalid values to check.',
-              code: 'TOO_BIG',
-              value: '',
-            },
-          ];
-          this.logger.error('Validation failed', {
-            path: req.path,
-            method: req.method,
-            errors,
-          });
-          next(
-            new ValidationError(
-              ValidationUtils.formatValidationErrorMessage(errors),
-              errors,
-            ),
-          );
-          return;
-        }
-        if (error instanceof z.ZodError) {
-          const errors = ValidationUtils.formatZodError(error);
-          const validationError = new ValidationError(
-            ValidationUtils.formatValidationErrorMessage(errors),
-            errors,
-          );
-
-          this.logger.error('Validation failed', {
-            path: req.path,
-            method: req.method,
-            errors,
-          });
-
-          next(validationError);
-        } else {
-          next(error);
-        }
+        // Express 4 does not catch a rejected promise from an async handler.
+        next(error);
       }
     };
   }

@@ -783,7 +783,10 @@ async def approve_candidate(request: Request, candidate_id: str) -> JSONResponse
 @router.post("/candidates/{candidate_id}/reject", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
 async def reject_candidate(request: Request, candidate_id: str) -> JSONResponse:
     manager, _ctx = await _build_manager(request)
-    await manager.reject_candidate(candidate_id)
+    try:
+        await manager.reject_candidate(candidate_id)
+    except RegistryError as e:
+        raise _handle_registry_error(e) from e
     return JSONResponse(status_code=200, content={"status": "success"})
 
 

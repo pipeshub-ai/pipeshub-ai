@@ -38,6 +38,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
 )
+from app.services.resource_governor.kinds import ParseKind
 from app.utils.user_errors import (
     PARSE_WORKER_OUT_OF_MEMORY,
     PASSWORD_PROTECTED,
@@ -276,7 +277,7 @@ class TestSettings:
         await inspect_untrusted_pdf(ORIGINAL, label="report.pdf")
 
         for _name, content, _args, kwargs in jobs.jobs:
-            assert kwargs == {"label": "report.pdf", "size": len(content), "timeout": 45.0}
+            assert kwargs == {"label": "report.pdf", "size": len(content), "timeout": 45.0, "kind": ParseKind.INSPECT}
         assert [args for name, _, args, _ in jobs.jobs if name == "detect_ocr"] == [(7,)]
 
     @pytest.mark.parametrize(("raw", "expected"), [("0.01", 1.0), ("99999", 3600.0), ("soon", 120.0)])
@@ -478,3 +479,39 @@ class TestRealFilesInWorkers:
             await inspect_untrusted_pdf(content)
 
         assert to_user_reason(raised.value) == UNREADABLE_FILE
+
+
+class TestInspectForClassKeepsTheRetry:
+    """The class inspection is best effort, except for the first kill of the record's worker: that is the retry."""
+
+    @staticmethod
+    def _fails_with(monkeypatch: pytest.MonkeyPatch, error: Exception) -> None:
+        async def failing(*args: object, **kwargs: object) -> object:
+            raise error
+
+        monkeypatch.setattr(untrusted_pdf, "_in_worker", failing)
+
+    async def test_the_first_kill_of_the_worker_reaches_the_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        killed = ParseWorkerError("killed", "crashed", retrying=True)
+        self._fails_with(monkeypatch, killed)
+
+        with pytest.raises(ParseWorkerError) as raised:
+            await untrusted_pdf.inspect_for_class(b"%PDF-1.4", label="big.pdf")
+
+        assert raised.value is killed
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ParseWorkerError(PARSE_WORKER_OUT_OF_MEMORY, "crashed"),  # a second death
+            ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out"),
+            ParseAbandonedError("parse abandoned"),
+            ValueError("not a pdf"),
+        ],
+    )
+    async def test_any_other_failure_still_leaves_the_class_on_its_size_prior(
+        self, monkeypatch: pytest.MonkeyPatch, error: Exception
+    ) -> None:
+        self._fails_with(monkeypatch, error)
+
+        assert await untrusted_pdf.inspect_for_class(b"%PDF-1.4", label="big.pdf") is None

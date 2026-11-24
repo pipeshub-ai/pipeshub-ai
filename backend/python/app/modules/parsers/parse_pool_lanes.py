@@ -54,6 +54,7 @@ from app.modules.parsers.parse_pool import (
     _Worker,
 )
 from app.services.messaging.config import messaging_env
+from app.services.resource_governor.kinds import SCALES, ParseKind
 from app.services.resource_governor.lanes import (
     REAP_MIN_IDLE_SECONDS,
     REAP_REQUEST_FRESH_SECONDS,
@@ -99,6 +100,7 @@ _WAIT_LOG_SECONDS = 30.0
 _UNREAPED_ERROR_SECONDS = 30.0
 _SETTLE_SECONDS = 1.0
 _ADMIT_POLL_SECONDS = 0.05
+_NEVER_IN_PARENT = frozenset({ParseKind.PDF_LAYOUT, ParseKind.EXCEL_LOAD, ParseKind.RENDER, ParseKind.INSPECT})
 
 
 class _Lease(Protocol):
@@ -203,6 +205,29 @@ def group_has_live_member(pgid: int) -> bool:
     return False
 
 
+def group_rss_bytes(pgids: set[int]) -> dict[int, int]:
+    """Resident bytes of every live process in each of the process groups *pgids* (one /proc scan)."""
+    sums: dict[int, int] = {}
+    try:
+        names = os.listdir("/proc")
+        page = os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError):
+        return sums
+    wanted = {str(g).encode(): g for g in pgids}
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", "rb") as handle:
+                fields = handle.read().rsplit(b")", 1)[-1].split()
+            if len(fields) < 22 or fields[0] == b"Z" or fields[2] not in wanted:
+                continue
+            sums[wanted[fields[2]]] = sums.get(wanted[fields[2]], 0) + int(fields[21]) * page
+        except (OSError, ValueError):
+            continue
+    return sums
+
+
 def group_gone(worker: _WorkerLike) -> bool:
     """The leader has exited and no live process remains in its group."""
     check = getattr(worker, "group_gone", None)
@@ -288,9 +313,21 @@ class WorkerState(Enum):
 class _Entry:
     """A pooled worker and what the pool tracks about it."""
 
-    def __init__(self, worker: _WorkerLike, ticket: _Ticket, now: float) -> None:
+    def __init__(
+        self,
+        worker: _WorkerLike,
+        ticket: _Ticket,
+        now: float,
+        charged_bytes: int = 0,
+        kind: object | None = None,
+        charged_scale: float = 1.0,
+    ) -> None:
         self.worker = worker
         self.ticket = ticket
+        # The largest charge admitted for this worker (its high-water mark), and the kind it was for.
+        self.charged_bytes = charged_bytes
+        self.kind = kind
+        self.charged_scale = charged_scale
         self.state = WorkerState.CHECKED_OUT  # born checked out by the runner that starts it
         self.last_used = now
         self.unreaped_since: float | None = None
@@ -315,20 +352,22 @@ class _LaneRunner(_Lane):
         if entry is not None:
             self._entry, self._worker = entry, entry.worker
 
-    def finish(self) -> None:
-        """Give a surviving worker back to the pool, or stop it."""
+    def finish(self, *, retire: bool = False) -> None:
+        """Give a surviving worker back to the pool, or stop it (always, for a *retire* job)."""
         entry, self._entry = self._entry, None
         self._worker = None
-        if entry is not None and not self._lane_pool.checkin(entry):
+        if entry is not None and (retire or not self._lane_pool.checkin(entry)):
             self._lane_pool.retire(entry)
 
     def _new_worker(self) -> _Worker:
         return self._lane_pool.make_worker()
 
     def _start_worker(self, job: _Job) -> _Worker:
-        ticket = self._lane_pool.admit(job, self._abandoned)
+        ticket, charged = self._lane_pool.admit(job, self._abandoned)
         if isinstance(ticket, _Entry):  # a worker came free while the spawn was refused: use it
             self._entry, self._worker = ticket, ticket.worker
+            # It was charged for the job it last ran; the pre-run growth check saw no worker yet.
+            self.grow(job)
             return ticket.worker
         try:
             worker = super()._start_worker(job)
@@ -336,8 +375,14 @@ class _LaneRunner(_Lane):
             ticket.release(started=False)
             raise
         ticket.release(started=True)
-        self._entry = self._lane_pool.born(worker, ticket)
+        self._entry = self._lane_pool.born(worker, ticket, charged, job.kind)
         return worker
+
+    def grow(self, job: _Job) -> None:
+        """Admit the extra memory a heavier job brings to a worker that already holds less."""
+        entry = self._entry
+        if entry is not None:
+            self._lane_pool.grow(entry, job, self._abandoned)
 
     def _drop_worker(self) -> None:
         entry, self._entry = self._entry, None
@@ -390,6 +435,7 @@ class LanePool:
         self.died_idle = 0
         self.reaped = {"timer": 0, "request": 0, "brake": 0}
         self.reaped_for_other = 0
+        self._by_kind: dict[str, int] = {}
         self._stop_reaper = threading.Event()
         self._reaper: threading.Thread | None = None
         self._threads = [
@@ -403,6 +449,11 @@ class LanePool:
     # -- submitting ---------------------------------------------------------------
 
     def enqueue(self, job: _Job) -> None:
+        if self.admitting and job.kind in _NEVER_IN_PARENT:
+            # Under the lane budget these kinds are charged as worker memory and the permit
+            # prices only the parent, so a parent-thread fallback would hold the worker's
+            # memory unpriced: it fails (retryable) instead.
+            job.require_worker = True
         with self._submit_lock:
             if self.closed.is_set():
                 raise _PoolClosed
@@ -481,13 +532,14 @@ class LanePool:
             # budget call made by the job rides on this lease instead of waiting for one.
             with lane_scope():
                 runner.checkout(job)
+                runner.grow(job)
                 result = runner._run(job)
         except BaseException as exc:  # handed to the waiting caller
             error = exc
         finally:
             self._unpin(job)
             try:
-                runner.finish()
+                runner.finish(retire=job.kind is ParseKind.EXCEL_LOAD and self.admitting)
             except Exception:
                 _logger.exception("Could not settle a parse worker")
             finally:
@@ -504,8 +556,12 @@ class LanePool:
             return self._worker_factory()
         return _Worker(self._worker_env)
 
-    def admit(self, job: _Job, abandoned: Callable[[_Job], bool]) -> _Ticket | _Entry:
-        """A ticket for one spawn, polling while admission refuses. Every spawn comes through here.
+    def admit(self, job: _Job, abandoned: Callable[[_Job], bool]) -> tuple[_Ticket | _Entry, int]:
+        """A ticket for one spawn and the worker's charge, polling while admission refuses.
+
+        Every spawn comes through here. The spawn adds the job's charge by kind to the domain's
+        in-flight window; an Excel loader, retired after its job, does not count toward the spawn
+        allowance (it loads no models).
 
         The job stays pinned until the spawn is admitted, and each refused poll looks at the idle
         list again: a worker another job just returned is taken instead of waiting for headroom.
@@ -513,7 +569,8 @@ class LanePool:
         budget = self.budget
         if not self.admitting or budget is None:
             self._unpin(job)
-            return _FREE_TICKET
+            return _FREE_TICKET, 0
+        charged, window = budget.charge_for(job.kind, job.size, job.covered)
         deadline = time.monotonic() + lane_wait_seconds()
         with self._lock:
             self._spawn_waiters += 1
@@ -522,15 +579,16 @@ class LanePool:
                 if abandoned(job):
                     raise ParseAbandonedError("parse abandoned while waiting to start a worker")
                 try:
-                    ticket = budget.admit_spawn()
+                    ticket = budget.admit_spawn(window, count_spawn=job.kind is not ParseKind.EXCEL_LOAD)
                 except LaneBudgetClosed as exc:
                     raise ParseAbandonedError("parse abandoned: the lane budget closed") from exc
                 if ticket is not None:
                     self._unpin(job)
-                    return ticket
+                    self._note_spawn(job.kind)
+                    return ticket, charged
                 idle = self.checkout(job)
                 if idle is not None:
-                    return idle
+                    return idle, 0
                 if time.monotonic() >= deadline:
                     _logger.error("No worker could be started for %s in time", job.label)
                     raise ParseWorkerError(PARSE_WORKER_UNAVAILABLE, "unavailable")
@@ -539,8 +597,51 @@ class LanePool:
             with self._lock:
                 self._spawn_waiters -= 1
 
-    def born(self, worker: _WorkerLike, ticket: _Ticket) -> _Entry:
-        entry = _Entry(worker, ticket, self._clock())
+    def _note_spawn(self, kind: object | None) -> None:
+        key = (kind or ParseKind.UNKNOWN).value  # type: ignore[attr-defined]
+        with self._lock:
+            self._by_kind[key] = self._by_kind.get(key, 0) + 1
+
+    def grow(self, entry: _Entry, job: _Job, abandoned: Callable[[_Job], bool]) -> None:
+        """Charge the growth of a warm worker handed a heavier job, polling while admission refuses.
+
+        The job already holds its lease and the worker its token; growth takes neither. The worker's
+        high-water charge is raised once, so a later job of the same weight pays nothing.
+        """
+        budget = self.budget
+        if not self.admitting or budget is None:
+            return
+        charged, _ = budget.charge_for(job.kind, job.size, job.covered)
+        if charged <= entry.charged_bytes:
+            return
+        deadline = time.monotonic() + lane_wait_seconds()
+        delta = charged - entry.charged_bytes
+        with self._lock:
+            self._spawn_waiters += 1
+        try:
+            while True:
+                if abandoned(job):
+                    raise ParseAbandonedError("parse abandoned while waiting for worker memory")
+                try:
+                    admitted = budget.admit_growth(delta)
+                except LaneBudgetClosed as exc:
+                    raise ParseAbandonedError("parse abandoned: the lane budget closed") from exc
+                if admitted:
+                    entry.charged_bytes = charged
+                    entry.kind = job.kind
+                    entry.charged_scale = SCALES.scale(job.kind)  # type: ignore[arg-type]
+                    budget.note_growth(job.kind, delta)
+                    return
+                if time.monotonic() >= deadline:
+                    _logger.error("No memory was admitted for %s in time", job.label)
+                    raise ParseWorkerError(PARSE_WORKER_UNAVAILABLE, "unavailable")
+                self.closed.wait(_ADMIT_POLL_SECONDS)
+        finally:
+            with self._lock:
+                self._spawn_waiters -= 1
+
+    def born(self, worker: _WorkerLike, ticket: _Ticket, charged: int = 0, kind: object | None = None) -> _Entry:
+        entry = _Entry(worker, ticket, self._clock(), charged, kind, SCALES.scale(kind))  # type: ignore[arg-type]
         with self._lock:
             self._out.add(entry)
             self.spawns += 1
@@ -551,7 +652,9 @@ class LanePool:
         dead: list[_Entry] = []
         found: _Entry | None = None
         with self._lock:
-            while self._idle:
+            # A loader that is stopped after its job never takes a warm worker: that one holds
+            # a layout parse's heap and the loader sets its own data limit.
+            while self._idle and not (self.admitting and job.kind is ParseKind.EXCEL_LOAD):
                 entry = self._idle.pop(0)
                 if entry.worker.alive():
                     entry.state = WorkerState.CHECKED_OUT
@@ -659,6 +762,8 @@ class LanePool:
         """One reaper tick. Only ``IDLE`` workers are reaped, never one a queued job needs."""
         now = self._clock() if now is None else now
         self._retry_unreaped()
+        if self.admitting:
+            self.observe_charges()
         signals = self._read_signals()
         chosen: list[tuple[_Entry, str]] = []
         dead: list[_Entry] = []
@@ -695,6 +800,23 @@ class LanePool:
             if reason == "request" and not waiting_here:
                 self.reaped_for_other += 1
             self.retire(entry)
+
+    def observe_charges(self) -> None:
+        """Compare each charged worker's measured tree with its charge; a kind that holds more raises its scale."""
+        with self._lock:
+            entries = [e for e in (*self._idle, *self._out) if e.charged_bytes > 0 and e.kind is not None]
+        pids = {}
+        for entry in entries:
+            pid = getattr(getattr(entry.worker, "process", None), "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                pids[id(entry)] = pid
+        if not pids:
+            return
+        sums = group_rss_bytes(set(pids.values()))
+        for entry in entries:
+            rss = sums.get(pids.get(id(entry), -1))
+            if rss:
+                SCALES.observe(entry.kind, rss, entry.charged_bytes, entry.charged_scale)  # type: ignore[arg-type]
 
     def _read_signals(self) -> dict[str, Any] | None:
         budget = self.budget
@@ -772,6 +894,8 @@ class LanePool:
     def stats(self) -> dict[str, Any]:
         with self._lock:
             idle, busy, unreaped, pending = len(self._idle), len(self._out), len(self._unreaped), self._pending
+            charged = sum(e.charged_bytes for e in (*self._idle, *self._out))
+            by_kind = {k: {"spawns": n} for k, n in self._by_kind.items()}
         reaper = self._reaper
         return {
             "kind": self.kind,
@@ -781,6 +905,9 @@ class LanePool:
             "busy": busy,
             "pending": pending,
             "spawns": self.spawns,
+            "charged_resident_bytes": charged,
+            "by_kind": by_kind,
+            "charged": self.admitting,
             "reaped": dict(self.reaped),
             "reaped_for_other": self.reaped_for_other,
             "died_idle": self.died_idle,

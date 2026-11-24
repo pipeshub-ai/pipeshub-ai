@@ -1,10 +1,13 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 describe('tokens_manager/config/config', () => {
   afterEach(() => {
     sinon.restore()
+    // A load that succeeds registers the services process-wide; later files in this worker must not see them.
+    registerUpstreams({})
   })
 
   it('should export AppConfig interface and loadAppConfig function', async () => {

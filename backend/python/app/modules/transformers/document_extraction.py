@@ -14,6 +14,7 @@ from app.agents.agent_loop.prompt_cache import (
     family_cache_strategy,
     forget_cache_params,
 )
+from app.config import file_types
 from app.config.constants.arangodb import DepartmentNames
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, BlockGroup, BlocksContainer, SemanticMetadata
@@ -37,7 +38,8 @@ from app.services.llm_gateway.gateway import (
     provider_key,
 )
 from app.services.model_identity.errors import policy_error_from_exception
-from app.utils.aimodels import coerce_message_content_to_text
+from app.utils import error_class
+from app.utils.aimodels import INDEXING_SDK_RETRIES, coerce_message_content_to_text
 from app.utils.image_utils import to_llm_image_format
 from app.utils.llm import (
     LLMNotConfiguredError,
@@ -45,7 +47,10 @@ from app.utils.llm import (
     get_llm_for_role,
 )
 from app.utils.opik import get_llm_invoke_config
-from app.utils.streaming import invoke_with_structured_output_and_reflection
+from app.utils.streaming import (
+    answer_error_class,
+    invoke_with_structured_output_and_reflection,
+)
 from app.utils.user_errors import provider_error_code
 
 if TYPE_CHECKING:
@@ -260,6 +265,10 @@ class SubCategories(BaseModel):
     level2: str = Field(description="Level 2 subcategory")
     level3: str = Field(description="Level 3 subcategory")
 
+# Organisations kept per record; more is a listing, not what the record is about.
+MAX_EXTRACTED_ORGANIZATIONS = 10
+
+
 class DocumentClassification(BaseModel):
     departments: list[str] = Field(
         description=(
@@ -279,6 +288,14 @@ class DocumentClassification(BaseModel):
             "2 to 5 (usually 2 or 3) reusable subjects a reader would look for across documents, lowercase except "
             "acronyms; never a person, company, document title, date, amount or id"
         )
+    )
+    organizations: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Organizations the document names as parties, customers, vendors, "
+            "partners, employers, regulators or institutions, verbatim. Not "
+            "people, products, teams or the application the document came from."
+        ),
     )
     summary: str = Field(
         description=(
@@ -306,6 +323,22 @@ class DocumentClassification(BaseModel):
         names = (canonical_language(v) for v in values if isinstance(v, str))
         return list(dict.fromkeys(n for n in names if n))
 
+    @field_validator("organizations", mode="before")
+    @classmethod
+    def _clean_organizations(cls, value: object) -> list[str]:
+        # Capped here rather than with max_items: a rejected list would fail
+        # the whole parse and lose every other field to the summary fallback.
+        if not isinstance(value, list):
+            return []
+        seen: set[str] = set()
+        names: list[str] = []
+        for raw in value:
+            name = raw.strip() if isinstance(raw, str) else ""
+            if name and name.casefold() not in seen:
+                seen.add(name.casefold())
+                names.append(name)
+        return names[:MAX_EXTRACTED_ORGANIZATIONS]
+
 
 def semantic_metadata_from_classification(classification: DocumentClassification) -> SemanticMetadata:
     """Map the LLM's schema onto the stored model. A blank name means "not known"."""
@@ -321,6 +354,7 @@ def semantic_metadata_from_classification(classification: DocumentClassification
         departments=names(classification.departments),
         languages=names(classification.languages),
         topics=names(classification.topics),
+        organizations=list(getattr(classification, "organizations", None) or []),
         summary=classification.summary,
         categories=[category] if category else [],
         sub_category_level_1=optional_name(classification.subcategories.level1),
@@ -333,6 +367,19 @@ class ExtractionLLMError(Exception):
     """The model call failed, or produced neither a classification nor a fallback summary."""
 
     code = "LLM_FAILED"
+
+
+def extraction_error_class(exc: BaseException) -> str | None:
+    """The class of a classification failure for its log line; None lets ``classify_error`` read the chain.
+
+    A cause that is an answer not fitting the schema is ``bad_request``. Without a cause there is no provider error
+    to read: an ``LLMUnavailableError`` is then an open circuit, and an ``ExtractionLLMError`` a model that twice
+    gave nothing usable. None of these is a bug of ours."""
+    if exc.__cause__ is not None:
+        return answer_error_class(exc.__cause__)
+    if isinstance(exc, LLMUnavailableError):
+        return "unavailable"
+    return "bad_request" if isinstance(exc, ExtractionLLMError) else None
 
 
 # A closed set, enforced by the schema rather than only by the prompt: an open
@@ -437,6 +484,7 @@ def find_code_summary_block(blocks: list[Block]) -> Optional[Block]:
             return block
     return None
 
+
 class DocumentExtraction(Transformer):
     def __init__(
         self, logger: logging.Logger, graph_provider: IGraphDBProvider, config_service: "ConfigurationService",
@@ -465,7 +513,10 @@ class DocumentExtraction(Transformer):
         except (ExtractionLLMError, LLMUnavailableError) as e:
             # The record is already searchable: an LLM failure fails extraction only
             # (no metadata → extractionStatus FAILED), not the record.
-            self.logger.error("❌ Document extraction failed for record %s: %s", record.id, e)
+            error_class.log_failure(
+                self.logger, "document_extraction.failed", e, include_error_text=False,
+                error_class=extraction_error_class(e), record_id=record.id,
+            )
             record.semantic_metadata = None
             return
         self.logger.debug("🎯 Document extraction completed successfully")
@@ -635,6 +686,8 @@ class DocumentExtraction(Transformer):
         DepartmentNames defaults. A code file takes the code prompt (or none, see
         ``_classify_code``), whichever path calls this.
         """
+        if not file_types.classifies(record_name):
+            return None  # indexed for search only (a .log/.cfg): no model call, on any path
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:
             return code
@@ -690,7 +743,9 @@ class DocumentExtraction(Transformer):
                 summary produced anything.
         """
         # A local, not an attribute: one instance classifies documents of different orgs at once.
-        llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+        llm, config = await get_llm_for_role(
+            self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
         self.logger.debug(f"Context length: {context_length}")
         # Off the loop: PIL resizing and tiktoken on a large deck stall it for seconds.
@@ -747,7 +802,8 @@ class DocumentExtraction(Transformer):
             if not dropped or not has_text or not _images_rejected(e):
                 raise
             self.logger.warning(
-                "⚠️ Model rejected the document with %d image(s); classifying its text alone: %s", dropped, e,
+                "Model rejected the document with %d image(s); classifying its text alone", dropped,
+                extra={"error_type": type(e).__name__},
             )
             document = text_only
             parsed_response = await classify(document)
@@ -814,7 +870,7 @@ class DocumentExtraction(Transformer):
             # An outage is the provider's, not the document's: the caller waits instead of failing it.
             raise
         except Exception as e:
-            self.logger.error(f"❌ Fallback summary call failed: {e}")
+            error_class.log_failure(self.logger, "extraction.fallback_failed", e, include_error_text=False, kind="document")
             return None
 
     async def process_document(
@@ -827,6 +883,8 @@ class DocumentExtraction(Transformer):
         *,
         allow_remote_image_uri: bool,
     ) -> SemanticMetadata | None:
+        if not file_types.classifies(record_name):
+            return None  # indexed for search only (a .log/.cfg): no model call, on any path
         self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
         code = await self._classify_code(blocks, block_groups, record_type)
         if code is not _NOT_CODE:
@@ -877,7 +935,9 @@ class DocumentExtraction(Transformer):
         or ``ExtractionLLMError`` when neither the structured call nor the fallback answered.
         """
         # A local, not an attribute: one instance classifies documents of different orgs at once.
-        llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
+        llm, config = await get_llm_for_role(
+            self.config_service, "indexing", reasoning_effort="low", sdk_retries=INDEXING_SDK_RETRIES,
+        )
         context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
         summary_data = summary_block.data if isinstance(summary_block.data, dict) else {}
         file_path = summary_data.get("file_path") or summary_block.name or "unknown"
@@ -1058,6 +1118,6 @@ class DocumentExtraction(Transformer):
         except (NonRetryableError, LLMUnavailableError):
             raise
         except Exception as e:
-            self.logger.error(f"❌ Code fallback summary call failed: {e}")
+            error_class.log_failure(self.logger, "extraction.fallback_failed", e, include_error_text=False, kind="code")
             return None
 

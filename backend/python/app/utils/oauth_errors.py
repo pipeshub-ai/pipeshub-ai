@@ -13,6 +13,18 @@ PERMANENT_GRANT_ERROR_CODES = frozenset({
     "bad_refresh_token", "incorrect_client_credentials", "invalid_refresh_token",
 })
 
+# The provider refuses our OAuth client (unknown, wrong secret, or not allowed this grant): an admin's or a
+# new registration's fix, not the user's grant.
+CLIENT_REJECTED_ERROR_CODES = frozenset({"invalid_client", "unauthorized_client", "incorrect_client_credentials"})
+
+# A code exchange's refusal of the code itself (Slack's ok=false, GitHub's form `error`): the user's code was wrong, expired
+# or used, which RFC 6749 providers say with invalid_grant. A refresh never sends a code, so it never sees these.
+CODE_REFUSED_ERROR_CODES = frozenset({"invalid_code", "code_already_used", "bad_verification_code"})
+
+# A token lifetime past this is malformed: created_at + timedelta(seconds=v) must stay inside datetime's range
+# (10**12 s already overflows), and no provider issues a token for a century.
+MAX_TOKEN_LIFETIME_S = 100 * 365 * 24 * 3600
+
 # Providers that only say it in prose (Atlassian's "refresh_token is invalid").
 PERMANENT_REFRESH_TEXT_MARKERS = (
     "invalid_grant",
@@ -24,10 +36,60 @@ PERMANENT_REFRESH_TEXT_MARKERS = (
 )
 
 
+# The `error` an authorization endpoint redirects back with (RFC 6749 §4.1.2.1, OpenID Connect
+# Core §3.1.2.6), as a log error_class. The redirect is unauthenticated input, so nothing here is
+# an ERROR class: a query parameter must not be able to write ERROR lines.
+_AUTHORIZATION_ERROR_CLASS = {
+    "access_denied": "cancelled",  # the user pressed Cancel (or a policy said no)
+    "server_error": "upstream_5xx",
+    "temporarily_unavailable": "unavailable",
+    **dict.fromkeys((
+        "invalid_request", "unauthorized_client", "unsupported_response_type", "invalid_scope",
+        "interaction_required", "login_required", "account_selection_required", "consent_required",
+        "invalid_request_uri", "invalid_request_object", "request_not_supported", "request_uri_not_supported",
+        "registration_not_supported",
+    ), "bad_request"),
+}
+
+
+# Codes a provider answers (Slack: with HTTP 200, ok=false) when it is down or throttling, so a retry can work.
+# Slack's names, but no provider uses them to mean "your configuration".
+TEMPORARY_ERROR_CODES = frozenset({"fatal_error", "internal_error", "service_unavailable", "request_timeout"})
+RATE_LIMITED_ERROR_CODES = frozenset({"ratelimited", "rate_limited"})
+
+_TRANSIENT_ERROR_CLASS = {
+    **dict.fromkeys(TEMPORARY_ERROR_CODES, "unavailable"),
+    **dict.fromkeys(RATE_LIMITED_ERROR_CODES, "rate_limited"),
+    "server_error": "upstream_5xx", "temporarily_unavailable": "unavailable",  # RFC 6749's names, classed as in the redirect map
+}
+
+
+def transient_error_class(code: Optional[str]) -> Optional[str]:
+    """The error_class of a provider `error` that says it is busy or down; None for any other code."""
+    return _TRANSIENT_ERROR_CLASS.get((code or "").lower())
+
+
+def authorization_error_class(code: Optional[str]) -> str:
+    """The error_class of an authorization response's `error`; `forbidden` for a code no spec defines."""
+    return _AUTHORIZATION_ERROR_CLASS.get(code or "", "forbidden")
+
+
+def authorization_error_code(code: Optional[str]) -> str:
+    """`code` if a spec defines it, else `other`: safe to log, unlike the raw parameter."""
+    return code if code in _AUTHORIZATION_ERROR_CLASS else "other"
+
+
 def oauth_error_code(body: Any) -> Optional[str]:  # noqa: ANN401
     """The RFC 6749 `error` string of a token endpoint's JSON object body, if it sent one."""
     code = body.get("error") if isinstance(body, dict) else None
     return code if isinstance(code, str) and code else None
+
+
+def is_transient_status(status: Optional[int]) -> bool:
+    """An overloaded or rate-limiting endpoint: a retry can succeed, whatever error code it sent."""
+    return status is not None and (
+        status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value or status == HttpStatusCode.TOO_MANY_REQUESTS.value
+    )
 
 
 def is_permanent_grant_rejection(
@@ -39,9 +101,7 @@ def is_permanent_grant_rejection(
 ) -> bool:
     """True for a permanent `error_code`, or a text marker even when the code itself is not permanent."""
     # An overloaded or rate-limiting endpoint can answer with any code; only a 4xx (or 200) refusal is final.
-    if status is not None and (
-        status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value or status == HttpStatusCode.TOO_MANY_REQUESTS.value
-    ):
+    if is_transient_status(status):
         return False
     if error_code and error_code.lower() in permanent_codes:
         return True

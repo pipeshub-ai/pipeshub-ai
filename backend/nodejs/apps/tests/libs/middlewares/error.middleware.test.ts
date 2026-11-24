@@ -6,18 +6,22 @@ import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import {
   BadRequestError,
   UnauthorizedError,
+  WrongCredentialError,
   ForbiddenError,
   NotFoundError,
   InternalServerError,
   ServiceUnavailableError,
 } from '../../../src/libs/errors/http.errors'
 import { ValidationError } from '../../../src/libs/errors/validation.error'
+import { StorageUrlParseError } from '../../../src/libs/errors/storage.errors'
 import { markClientSafe } from '../../../src/libs/errors/reader-friendly'
 import { KafkaError } from '../../../src/libs/errors/kafka.errors'
 import { RedisServiceNotInitializedError } from '../../../src/libs/errors/redis.errors'
 import { ConnectionError } from '../../../src/libs/errors/database.errors'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../src/libs/errors/backend-error'
+import { INVALID_PATH_SEGMENT_MESSAGE } from '../../../src/libs/middlewares/safe-path-params.middleware'
 import { Logger } from '../../../src/libs/services/logger.service'
+import { MongoNetworkError, MongoServerSelectionError } from 'mongodb'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,6 +48,7 @@ function createMockResponse(): any {
     send: sinon.stub(),
     setHeader: sinon.stub(),
     getHeader: sinon.stub(),
+    destroy: sinon.stub(),
     headersSent: false,
   }
   res.status.returns(res)
@@ -95,16 +100,45 @@ describe('ErrorMiddleware', () => {
   // headersSent guard
   // -----------------------------------------------------------------------
   describe('headersSent guard', () => {
-    it('should do nothing when headers have already been sent', () => {
-      const error = new Error('test')
+    it('closes the started response instead of answering, and still logs the failure once', () => {
+      const error = new Error('stream broke')
       const req = createMockRequest()
       const res = createMockResponse()
       res.headersSent = true
+      res.statusCode = 200
       const next = createMockNext()
 
       handler(error, req, res, next)
 
+      expect(res.destroy.calledOnceWithExactly()).to.be.true
       expect(res.status.called).to.be.false
+      expect(res.json.called).to.be.false
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerErrorStub.firstCall.args[0]).to.equal('http.request.error')
+      expect(loggerErrorStub.firstCall.args[1]).to.include({ status: 200, error_class: 'internal', error })
+    })
+
+    it('leaves a response that has already ended alone', () => {
+      const res = createMockResponse()
+      res.headersSent = true
+      res.writableEnded = true
+
+      handler(new Error('after the answer'), createMockRequest(), res, createMockNext())
+
+      expect(res.destroy.called).to.be.false
+      expect(res.json.called).to.be.false
+    })
+
+    // logRequestError catches its own failures, so this never happens today; the stub only reaches the defensive catch.
+    it('defensive catch: still closes a started response if handling the error throws', () => {
+      const res = createMockResponse()
+      res.headersSent = true
+      sinon.stub(ErrorMiddleware as any, 'logRequestError').throws(new Error('boom'))
+      sinon.stub(console, 'error')
+
+      handler(new Error('stream broke'), createMockRequest(), res, createMockNext())
+
+      expect(res.destroy.calledOnceWithExactly()).to.be.true
       expect(res.json.called).to.be.false
     })
   })
@@ -127,7 +161,14 @@ describe('ErrorMiddleware', () => {
 
         expect(loggerWarnStub.calledOnce).to.be.true
         expect(loggerErrorStub.called).to.be.false
-        expect(loggerWarnStub.firstCall.args[1].error).to.not.have.property('stack')
+        expect(loggerWarnStub.firstCall.args[0]).to.equal('http.request.error')
+        expect(loggerWarnStub.firstCall.args[1]).to.include({
+          method: 'GET',
+          status: error.statusCode,
+          error_type: error.name,
+          outcome: 'failure',
+          error,
+        })
         expect(res.status.calledWith(error.statusCode)).to.be.true
         expect(res.json.firstCall.args[0].error.message).to.equal(error.message)
       })
@@ -138,7 +179,20 @@ describe('ErrorMiddleware', () => {
 
       expect(loggerErrorStub.calledOnce).to.be.true
       expect(loggerWarnStub.called).to.be.false
-      expect(loggerErrorStub.firstCall.args[1].error).to.have.property('stack')
+      expect(loggerErrorStub.firstCall.args[1]).to.include({ status: 500, error_class: 'internal' })
+    })
+
+    it('names the class of each answer the same way the Python side does', () => {
+      const cases: [Error, string][] = [
+        [new BadRequestError('x'), 'bad_request'],
+        [new UnauthorizedError('x'), 'auth_expired'],
+        [new WrongCredentialError('x'), 'bad_request'],
+        [new ForbiddenError('x'), 'forbidden'],
+        [new NotFoundError('x'), 'not_found'],
+        [new ServiceUnavailableError('x'), 'unavailable'],
+      ]
+      for (const [error] of cases) handler(error, createMockRequest(), createMockResponse(), createMockNext())
+      expect(loggerWarnStub.getCalls().map((call) => call.args[1].error_class)).to.deep.equal(cases.map(([, cls]) => cls))
     })
 
     it('logs an error that is not ours at error', () => {
@@ -218,6 +272,57 @@ describe('ErrorMiddleware', () => {
       const res = createMockResponse()
 
       handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+    })
+  })
+
+  describe('a path segment Express cannot decode', () => {
+    const RAW = 'n5nc-fake%40example.com%ZZ'
+    // Built as Express 4's Layer.match builds it from decode_param's URIError.
+    const routerError = (): Error =>
+      Object.assign(new URIError(`Failed to decode param '${RAW}'`), { status: 400, statusCode: 400 })
+
+    it('answers 400 with a fixed sentence and does not echo the segment', () => {
+      const res = createMockResponse()
+
+      handler(routerError(), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(400)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.error.code).to.equal('HTTP_BAD_REQUEST')
+      expect(response.error.message).to.equal(INVALID_PATH_SEGMENT_MESSAGE)
+      expect(JSON.stringify(response)).to.not.include(RAW)
+    })
+
+    it('logs it once at warn as bad_request, without the router error or its text', () => {
+      const error = routerError()
+
+      handler(error, createMockRequest(), createMockResponse(), createMockNext())
+
+      expect(loggerErrorStub.called).to.be.false
+      expect(loggerWarnStub.calledOnce).to.be.true
+      const fields = loggerWarnStub.firstCall.args[1]
+      expect(fields).to.include({ status: 400, error_class: 'bad_request', error_type: 'BadRequestError' })
+      expect(fields.error).to.not.equal(error)
+      expect(fields.error.cause).to.equal(undefined)
+      expect(fields.error.message).to.not.include(RAW)
+    })
+
+    it('keeps a URIError without a status (our own decode) on the 500 path', () => {
+      const res = createMockResponse()
+
+      handler(new URIError('URI malformed'), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerErrorStub.firstCall.args[1]).to.include({ error_class: 'internal' })
+    })
+
+    it('keeps a 400-status error that is not a URIError on the 500 path', () => {
+      const res = createMockResponse()
+
+      handler(Object.assign(new Error('boom'), { status: 400 }), createMockRequest(), res, createMockNext())
 
       expect(res.status.calledWith(500)).to.be.true
     })
@@ -347,6 +452,36 @@ describe('ErrorMiddleware', () => {
       expect(response.error.metadata).to.deep.equal({ extra: 'info' })
     })
 
+    it("never answers a storage vendor's text, in development either", () => {
+      process.env.NODE_ENV = 'development'
+      const error = new StorageUrlParseError('Invalid S3 URL format', { originalError: 'n5o-vendor-text bucket/org/report.pdf', code: 'ERR_INVALID_URL' })
+      const res = createMockResponse()
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(400)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.error.metadata).to.include({ code: 'ERR_INVALID_URL' })
+      expect(JSON.stringify(response)).to.not.contain('n5o-vendor-text')
+    })
+
+    for (const mode of ['development', 'production']) {
+      it(`sends the access notices once, at the top level, in ${mode} (never as "[Circular]")`, () => {
+        process.env.NODE_ENV = mode
+        const notices = [{ code: 'connector_syncing', connectorId: 'c1' }]
+        const error = new BadRequestError('test', { extra: 'info', accessNotices: notices })
+        const res = createMockResponse()
+
+        handler(error, createMockRequest(), res, createMockNext())
+
+        const response = res.json.firstCall.args[0]
+        expect(response.accessNotices).to.deep.equal(notices)
+        expect(response.error.metadata?.accessNotices).to.equal(undefined)
+        expect(response.error.metadata).to.deep.equal(mode === 'development' ? { extra: 'info' } : undefined)
+        expect(JSON.stringify(response)).to.not.contain('[Circular]')
+      })
+    }
+
     it('should include metadata in dev mode (short alias)', () => {
       process.env.NODE_ENV = 'dev'
 
@@ -468,18 +603,46 @@ describe('ErrorMiddleware', () => {
       const body = res.json.firstCall.args[0]
       expect(body.error.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
       expect(body.error.message).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
-      expect(loggerErrorStub.calledOnce).to.be.true
+      // Degraded, not our bug: one WARN, and no ERROR line from anywhere.
+      expect(loggerWarnStub.calledOnce).to.be.true
+      expect(loggerErrorStub.called).to.be.false
     })
 
-    it('logs the cause it could not show the reader', () => {
+    it('logs one line with the cause it could not show the reader', () => {
       const logged = sinon.stub(Logger.prototype, 'error')
+      const original = refused()
 
-      handler(refused(), createMockRequest({ method: 'GET', path: '/api/v1/teams/user/teams' }), createMockResponse(), createMockNext())
+      handler(original, createMockRequest({ method: 'GET', path: '/api/v1/teams/user/teams' }), createMockResponse(), createMockNext())
 
-      const call = logged.getCalls().find((c) => (c.args[0] as string).includes('Could not reach the service'))
-      expect(call, 'cause logged').to.exist
-      expect(call!.args[0]).to.include('GET /api/v1/teams/user/teams')
-      expect(call!.args[1]).to.deep.equal({ cause: 'ECONNREFUSED' })
+      expect(logged.called, 'no "Could not reach" line').to.be.false
+      const fields = loggerWarnStub.firstCall.args[1]
+      expect(fields).to.include({ status: 503, error_class: 'unavailable', error_type: 'ServiceUnavailableError' })
+      expect(fields.error.cause).to.equal(original)
+    })
+
+    it('logs our own database being down as one ERROR with the stack, not as an unreachable upstream', () => {
+      const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:27017'), { code: 'ECONNREFUSED' })
+      const network = new MongoNetworkError('connect ECONNREFUSED 127.0.0.1:27017', { cause: refused })
+      const mongoDown = new MongoServerSelectionError('connect ECONNREFUSED 127.0.0.1:27017', { error: network } as never)
+      const res = createMockResponse()
+
+      handler(mongoDown, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(500)).to.be.true
+      expect(loggerWarnStub.called).to.be.false
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerErrorStub.firstCall.args[1]).to.include({
+        status: 500,
+        error_class: 'internal',
+        error_type: 'MongoServerSelectionError',
+        error: mongoDown,
+      })
+    })
+
+    it('logs a timed-out call as timeout at warn', () => {
+      handler(new DOMException('The operation was aborted due to timeout', 'TimeoutError'), createMockRequest(), createMockResponse(), createMockNext())
+
+      expect(loggerWarnStub.firstCall.args[1]).to.include({ status: 504, error_class: 'timeout' })
     })
 
     it('answers a host that does not resolve with 503 too', () => {
@@ -536,12 +699,13 @@ describe('ErrorMiddleware', () => {
       expect(JSON.stringify(body)).to.not.include('ECONNREFUSED')
     })
 
-    it('does nothing once the response has started', () => {
+    it('closes the started response and answers nothing', () => {
       const res = createMockResponse()
       res.headersSent = true
 
       handler(refused(), createMockRequest(), res, createMockNext())
 
+      expect(res.destroy.calledOnce).to.be.true
       expect(res.status.called).to.be.false
     })
   })
@@ -714,6 +878,24 @@ describe('ErrorMiddleware', () => {
   // Error middleware failure
   // -----------------------------------------------------------------------
   describe('Error middleware failure', () => {
+    it('answers the mapped status even when logging the error throws', () => {
+      ;(ErrorMiddleware as any).logger = {
+        error: sinon.stub().throws(new Error('provider hook broke')),
+        warn: sinon.stub().throws(new Error('provider hook broke')),
+        info: sinon.stub(),
+        debug: sinon.stub(),
+      }
+      const consoleError = sinon.stub(console, 'error')
+      const res = createMockResponse()
+
+      handler(new NotFoundError('Document not found'), createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(404)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal('Document not found')
+      expect(consoleError.calledWithMatch('Logging the request error failed:')).to.be.true
+    })
+
+
     it('should send 500 with MIDDLEWARE_ERROR if the error handler itself throws', () => {
       // Force an error inside the handler by making logger throw
       const error = new BadRequestError('test')
@@ -742,7 +924,7 @@ describe('ErrorMiddleware', () => {
   // Request context logging
   // -----------------------------------------------------------------------
   describe('Request context', () => {
-    it('should sanitize authorization and cookie headers before logging', () => {
+    it('logs no request header at all', () => {
       const error = new BadRequestError('test')
       const req = createMockRequest({
         headers: {
@@ -760,7 +942,7 @@ describe('ErrorMiddleware', () => {
       const logged = JSON.stringify(loggerWarnStub.firstCall.args)
       expect(logged).to.not.contain('secret-token')
       expect(logged).to.not.contain('session=abc')
-      expect(logged).to.contain('application/json')
+      expect(logged).to.not.contain('application/json')
     })
 
     // A Google connector callback that failed auth: the request's query and its
@@ -803,9 +985,11 @@ describe('ErrorMiddleware', () => {
         ]) {
           expect(logged).to.not.contain(secret)
         }
-        expect(logged).to.contain('/api/v1/connectors/oauth/callback')
-        expect(logged).to.contain('/connectors/oauth/callback/Drive')
-        expect(logged).to.contain('mocha')
+        // The route template stands in for the URL; no query, Referer or header is logged.
+        expect(calls[0]!.args[1]).to.include({ method: 'GET', route: 'unmatched' })
+        expect(logged).to.not.contain('/connectors/oauth/callback/Drive')
+        // (the error's own stack names mocha's files, so the user agent is checked on the fields)
+        expect(JSON.stringify({ ...calls[0]!.args[1], error: undefined })).to.not.contain('mocha')
       })
     }
   })

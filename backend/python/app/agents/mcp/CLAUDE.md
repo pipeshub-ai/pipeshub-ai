@@ -45,7 +45,7 @@ flowchart LR
 | `servers/*.py` | One catalog entry per file |
 | `mcp_server_decorator.py` | `@mcp_server` registers a template; a duplicate `type_id` raises |
 | `registry.py` | `MCPRegistry`: imports `servers/`, looks templates up by `type_id` |
-| `catalog.py` | Search and paging for `GET /catalog` |
+| `catalog.py` | Ranked search (name, then capabilities, category and description, with `SYNONYMS`), the category filter and paging for `GET /catalog` |
 | `models.py` | `MCPServerTemplate`, `MCPTransport`, `MCPAuthMode`, instance, token and DCR models |
 | `service.py` | Loads instances; decides whose credential backs a caller (`resolve_effective_user_auth`) |
 | `discovery.py` | Connects and lists tools. `build_auth_env_and_headers` turns a credential into env vars or headers |
@@ -196,7 +196,7 @@ Create `servers/<type_id>.py`, starting from the closest existing entry:
 ```python
 """Acme MCP server template — official remote server (Streamable HTTP), OAuth + DCR."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import MCPAuthMode, MCPCategory, MCPServerTemplate, MCPTransport
 
 
 @mcp_server(
@@ -217,6 +217,12 @@ from app.agents.mcp.models import MCPAuthMode, MCPServerTemplate, MCPTransport
         supports_dcr=True,
         documentation_url="https://docs.acme.com/mcp",
         tags=["issues", "project-management"],
+        category=MCPCategory.PROJECTS,
+        capabilities=[
+            "Create and update tickets",
+            "Plan projects",
+            "Comment on tickets",
+        ],
     )
 )
 class AcmeMCPServer:
@@ -224,6 +230,35 @@ class AcmeMCPServer:
 ```
 
 That is all the registration there is: no list to edit, and no route or Node change. The registry imports every module in `servers/` at startup, and the connectors service logs how many templates it loaded. A module that fails to import is logged ("Failed to import MCP server template module …") and left out. So is a module whose `type_id` is already taken: the decorator raises "Duplicate MCP server template type_id".
+
+#### Make it searchable and discoverable
+
+People look for a server by the job they want done ("schedule meetings", "sign a contract") more often than by its product name. The search on Workspace → MCP servers, its category chips, and the agent builder's "From the catalog" list all read the fields below. **Every new entry needs them**: an entry with only a name and a description is found only by people who already know the product.
+
+| Field | Set it to | What people get |
+| --- | --- | --- |
+| `category` | The one `MCPCategory` the server belongs to. | The server under that category chip. Without one, it shows under "All" but no category lists it. |
+| `capabilities` | Two to four jobs, written the way someone would search for them: "Schedule meetings", "Manage support tickets". Capitalized, no full stop, 60 characters at most. List only what its tools do through PipesHub, not the vendor's whole product. | Search ranks these first after the name, and each result shows the job it matched. |
+| `read_only` | `True` only when every tool only looks things up. Leave it out if any tool creates, changes or deletes something. | "Read-only" or "Reads and changes data" on the server's details panel. |
+
+- **How search matches.** The name matches anywhere in it ("hub" finds GitHub). Capabilities, the category and the description match only where a word starts ("sign" doesn't find "assign"), and the description only when every word of the search is in it.
+- **Synonyms.** When people would use a word the capabilities don't (say "ticket" for "issue"), add it to `catalog.SYNONYMS` instead of padding the capabilities. A synonym ranks below the word itself.
+- **Language.** Capabilities are English only, like descriptions. Category names are translated, so a new `MCPCategory` also needs its English label in `catalog.CATEGORY_LABELS` (searched; `test_every_category_has_a_label` checks), its id in the frontend's `McpCategory` (`workspace/mcp-servers/types.ts`) and `MCP_CATEGORIES` (`categories.ts`, which sets its order and icon), and a name under `workspace.mcpServers.categories` in every locale.
+
+Check that the jobs you wrote find the server, from `backend/python` with the venv active:
+
+```bash
+python -c "
+from app.agents.mcp.catalog import rank_templates
+from app.agents.mcp.registry import get_mcp_registry
+registry = get_mcp_registry()
+registry.auto_discover_templates()
+for query in ['create tickets', 'plan projects']:
+    print(query, '->', [(m.template.type_id, m.capability) for m in rank_templates(registry.list_templates(), query)[:3]])
+"
+```
+
+Each query should list your `type_id` with the capability it matched. If a job someone would type doesn't find it, reword the capability or add a synonym.
 
 #### Template fields
 
@@ -248,6 +283,9 @@ That is all the registration there is: no list to edit, and no route or Node cha
 | `documentation_url` | A link shown in the setup and sign-in dialogs. |
 | `auth_hint` | `label`, `placeholder` and `help_text` for the API token field. The UI doesn't show it for OAuth sign-in. |
 | `tags` | Words catalog search matches. |
+| `category` | The one `MCPCategory` the catalog lists it under, so people can browse by kind of tool. |
+| `capabilities` | What people get done with it, in their own words: two to four short jobs such as "Schedule meetings" or "Manage support tickets", capitalized, no full stop, 60 characters at most. Search ranks by them (`catalog.py`) and the catalog shows them, so write the job someone would type, not the API's name for it. |
+| `read_only` | Set when every tool only looks things up. |
 | `replaced_by` | The `type_id` of the entry that replaces this one. A replaced entry makes no new instances; the ones already made keep working. |
 
 #### Rules a template has to follow
@@ -259,6 +297,7 @@ That is all the registration there is: no list to edit, and no route or Node cha
 - **Pin STDIO packages to an exact version**, such as `exa-mcp-server@3.4.1`, never `@latest`. `npx -y` and `uvx` run whatever was published last.
 - **Env var names must pass `stdio_policy.is_allowed_env_name`.** That means upper case, and not a name that changes how a process loads (`PATH`, `HOME`, `LD_*`, `NODE_*`, `NPM_CONFIG_*`, `PYTHON*`, `UV_*`, …). A name that fails is dropped at launch without an error.
 - **The test checks these** (`test_auto_discover_templates_are_well_formed`): `default_auth_mode` is in `supported_auth_modes`; an HTTP entry has `default_url` unless `url_editable`; a STDIO entry has `command`; a STDIO entry whose default is `API_TOKEN` lists `required_env`; an OAuth entry has `authorization_url` and `token_url` unless `url_editable` (those come from discovery).
+- **Category and capabilities.** Every entry in use has a `category` and at least two `capabilities`, written as short jobs (`test_catalog_search.py` checks). See "Make it searchable and discoverable" above.
 - **Say where each fact came from**, in a comment such as "Confirmed live via …", as the existing templates do, so a later reader can check it again.
 - **No per-server code.** Routes, the client and sign-in never branch on a `type_id`. Anything specific to one server is a template field. If a server needs something no field covers, that is a change to the framework (`models.py` and everything that reads it): raise it in the issue before writing it.
 
@@ -272,17 +311,18 @@ The UI finds logos in two ways, so there are two places to update:
 ### 4. Test it
 
 - **Catalog test.** From `backend/python`, run `pytest tests/unit/agents/mcp/test_registry.py`. Add the new `type_id` to `test_auto_discover_templates_loads_builtin_servers`.
+- **Search test.** Run `pytest tests/unit/agents/mcp/test_catalog_search.py`. It fails when an entry has no category, too few capabilities, or capabilities that don't read as short jobs. When the server is the obvious answer to a common job, add that query to `test_a_job_finds_the_server_that_does_it_and_says_why`.
 - **Logo test.** Add a case to `frontend/app/(main)/workspace/mcp-servers/__tests__/mcp-server-icon.test.tsx`. From `frontend`, run `npx vitest run "app/(main)/workspace/mcp-servers/__tests__/mcp-server-icon.test.tsx"`.
-- **In the running app.** Start PipesHub ([CONTRIBUTING.md](../../../../../CONTRIBUTING.md)), sign in as an admin and open Workspace → MCP servers. Add the server from the catalog, sign in to it, and check that its tools are listed. Then attach it to an agent, or use it in chat, and make one tool call. For an OAuth server without DCR, first create the OAuth app at the provider with the redirect URI the form shows.
+- **In the running app.** Start PipesHub ([CONTRIBUTING.md](../../../../../CONTRIBUTING.md)), sign in as an admin and open Workspace → MCP servers. Search for one of its jobs and check that it comes up under Discover with the job it matched, and under its category. Add the server from the catalog, sign in to it, and check that its tools are listed. Then attach it to an agent, or use it in chat, and make one tool call. For an OAuth server without DCR, first create the OAuth app at the provider with the redirect URI the form shows.
 
 ## Re-enabling a disabled entry
 
-Twelve modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry` and `servicenow`.
+Nine modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `dropbox`, `greenhouse`, `outreach`, `pagerduty`, `redshift`, `sentry` and `servicenow`.
 
 To bring one back, uncomment it and run the discovery from step 1 again. Vendors change their servers, and the "Confirmed live" comments are only as current as the day they were written. Fix whatever changed, then do steps 3 and 4. Two things to watch for:
 
 - `servicenow.py`'s URLs are per-customer placeholders, so it can't work as a catalog entry (see "One URL for everyone").
-- The comments in `datadog.py` and `gitlab.py` about overriding `default_url` can only mean adding a custom server: a catalog instance always uses the template's URL.
+- The comment in `datadog.py` about overriding `default_url` can only mean adding a custom server: a catalog instance always uses the template's URL.
 
 ## Settings
 

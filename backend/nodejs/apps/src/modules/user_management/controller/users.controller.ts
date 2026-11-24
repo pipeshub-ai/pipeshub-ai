@@ -3,9 +3,19 @@ import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
-import { isValidId } from '../../../libs/repositories/ids';
+import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { UniqueConstraintError } from '../../../libs/repositories/errors';
 import { getUserRepository } from '../../../libs/repositories/user';
+import { audit } from '../../../libs/services/audit';
+import { classifyError, levelFor } from '../../../libs/utils/error-class';
+import { withCause } from '../../../libs/errors/base.error';
+import {
+  auditMemberships,
+  auditUserChange,
+  auditUserRefusal,
+  foundGroupIds,
+  userRefusal,
+} from '../utils/user-audit';
 import type {
   UserDto,
   DirectoryQuery,
@@ -65,8 +75,11 @@ import {
   resolveOptionalUserRole,
   saveUserEnsuringOrgRetainsAdmin,
   saveUserEnsuringAdminCap,
+  createUserEnsuringAdminCap,
   assertCanPromoteAdmin,
+  writeEnsuringAdminCap,
 } from '../services/user-admin.service';
+import type { Tx } from '../../../libs/repositories/uow';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { AuthService } from '../services/auth.service';
@@ -103,6 +116,7 @@ import {
 } from '../../../utils/xss-sanitization';
 import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { getOAuthAppRepository } from '../../../libs/repositories/oauth-app';
+import { getOAuthTokenRepository } from '../../../libs/repositories/oauth-token';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
@@ -110,6 +124,16 @@ import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.
 // What the auth service reads from an email lookup: the session and refresh
 // tokens it issues, the sign-in checks, and the first-login update.
 export const USER_LOOKUP_FIELDS = '_id orgId email fullName role hasLoggedIn';
+
+/**
+ * With HIDE_EMAIL=true no read of other users carries their email: the single read, the
+ * directory list and the bulk lookup alike, or the list would give away what the single read hides.
+ */
+export function withoutHiddenEmail<T extends object>(user: T): T {
+  if (process.env.HIDE_EMAIL !== 'true') return user;
+  const { email: _email, ...rest } = user as T & { email?: unknown };
+  return rest as T;
+}
 
 export const USER_LOOKUP_EMAIL_MISMATCH_MESSAGE =
   'This lookup token was issued for a different email address.';
@@ -136,8 +160,11 @@ function assertEmailChangeIsSelf(
     isValidId(actor) &&
     actor.toLowerCase() === target.toLowerCase();
   if (!isSelf) {
-    throw new ForbiddenError(
-      'Only the account owner can change its email address. To fix an invitation sent to the wrong address, delete it and invite again.',
+    throw userRefusal(
+      new ForbiddenError(
+        'Only the account owner can change its email address. To fix an invitation sent to the wrong address, delete it and invite again.',
+      ),
+      'not_self',
     );
   }
 }
@@ -160,6 +187,8 @@ function timeRange(from: unknown, to: unknown): TimeRange | undefined {
 export const MAX_BULK_INVITE = 1000;
 export const USER_DELETE_NOT_RECORDED =
   "We couldn't delete this user just now. They are still a member; please try again in a moment.";
+export const USER_PROMOTED_DURING_DELETE =
+  'This user was made an admin while being deleted, so the account was kept. Cleanup that had already run is not undone.';
 
 // Linear-time email check: each segment excludes its following separator
 // (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS). The local
@@ -176,6 +205,12 @@ export function isValidEmail(email: unknown): boolean {
     email.length <= MAX_EMAIL_LENGTH &&
     EMAIL_REGEX.test(email)
   );
+}
+
+/** The accounts an invite's grant restored and created. */
+interface InviteGrant {
+  restoredUsers: UserDto[];
+  newUsers: UserDto[];
 }
 
 export interface InviteResult {
@@ -197,6 +232,33 @@ function isDuplicateEmailKeyError(error: unknown): boolean {
       .split(',')
       .includes('email')
   );
+}
+
+/**
+ * Refuses an email change to an address the organisation cannot give this account. An account
+ * removed from the organisation still holds its address (the unique index covers removed rows),
+ * so the confirmation link could never be applied: say so here, before one is mailed.
+ */
+async function assertEmailFreeForChange(
+  orgId: string,
+  newEmail: string,
+  userId: string,
+): Promise<void> {
+  const users = getUserRepository();
+  if (await users.emailTakenByOther(orgId, newEmail, userId)) {
+    throw userRefusal(
+      new BadRequestError('Email already exists for another user'),
+      'email_taken',
+    );
+  }
+  if (await users.hasRemovedAccount(orgId, newEmail)) {
+    throw userRefusal(
+      new BadRequestError(
+        'This email belongs to an account that was removed. Restore that account or use another address.',
+      ),
+      'email_taken',
+    );
+  }
 }
 
 @injectable()
@@ -373,7 +435,7 @@ export class UserController {
     });
 
     res.status(200).json({
-      users: enrichedUsers,
+      users: enrichedUsers.map(withoutHiddenEmail),
       pagination: buildPaginationMetadata(totalCount, page, limit),
     });
   }
@@ -413,9 +475,6 @@ export class UserController {
     const userId = req.params.id;
     const orgId = req.user?.orgId;
     try {
-      // Check if email should be included based on environment variable
-      const hideEmail = process.env.HIDE_EMAIL === 'true';
-
       const user = await getUserRepository().getLive(
         orgId as string,
         userId as string,
@@ -441,11 +500,7 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
 
-      if (hideEmail) {
-        delete (user as any)?.email;
-      }
-
-      res.json(user);
+      res.json(withoutHiddenEmail(user));
     } catch (error) {
       next(error);
     }
@@ -477,6 +532,12 @@ export class UserController {
         throw new BadRequestError('User not found or not blocked');
       }
 
+      audit('auth.account.unlock', {
+        target: userId,
+        targetIsUser: true,
+        outcome: 'success',
+        reason: 'admin',
+      });
       res.status(200).json({
         message: 'User unblocked successfully',
       });
@@ -567,10 +628,9 @@ export class UserController {
         }
       }
 
-      const enrichedUsers = users.map((u) => ({
-        ...u,
-        profilePicture: dpMap.get(u._id),
-      }));
+      const enrichedUsers = users.map((u) =>
+        withoutHiddenEmail({ ...u, profilePicture: dpMap.get(u._id) }),
+      );
 
       res.status(200).json(enrichedUsers);
     } catch (error) {
@@ -637,8 +697,11 @@ export class UserController {
       };
       if (password !== undefined) {
         if (!isDemoAccountEmail(userFields.email)) {
-          throw new BadRequestError(
-            `A starting password can only be set for demo accounts (@${DEMO_ACCOUNT_DOMAIN}); invite real users so they choose their own`,
+          throw userRefusal(
+            new BadRequestError(
+              `A starting password can only be set for demo accounts (@${DEMO_ACCOUNT_DOMAIN}); invite real users so they choose their own`,
+            ),
+            'password_not_allowed',
           );
         }
         if (!passwordValidator(password)) {
@@ -669,9 +732,16 @@ export class UserController {
           : '';
       if (email !== '') {
         if (await users.existsLiveEmail(email)) {
-          throw new BadRequestError('A user with this email already exists');
+          throw userRefusal(
+            new BadRequestError('A user with this email already exists'),
+            'email_taken',
+          );
         }
         if (isDemoAccountEmail(email)) {
+          // The cleanup hard-deletes a removed sample account, so a create the
+          // cap will refuse must not get this far. The locked check at the
+          // write stays the one that counts.
+          if (fields.role === 'admin') await assertCanPromoteAdmin(orgId);
           await clearRemovedSampleAccount(email, orgId);
         }
       }
@@ -685,10 +755,104 @@ export class UserController {
       // before it, there is nothing to take back.
       let groupWriteAttempted = false;
       let newUser!: UserDto;
+      const rsAvailable = this.config.rsAvailable === 'true';
+      // The undo could not safely remove a live account, so it stays: a create
+      // that failed, but an account that exists, possibly as an admin.
+      const keepAccount = (
+        reason: 'admin_now' | 'restored' | 'remove_failed',
+        grantStands: boolean,
+        error?: unknown,
+      ): void => {
+        const errorClass =
+          error === undefined ? undefined : classifyError(error);
+        this.logger[errorClass === undefined ? 'warn' : levelFor(errorClass)](
+          'Account kept after a failed create',
+          { target_user_id: newUser._id, reason, error_class: errorClass },
+        );
+        audit('user.create', {
+          target: newUser._id,
+          targetIsUser: true,
+          outcome: 'partial',
+          reason: 'kept_after_failure',
+        });
+        if (grantStands) {
+          auditUserChange('user.role.change', newUser._id, 'new_admin');
+        }
+      };
       const undoSavedAccount = async (reason: string): Promise<void> => {
-        // Membership goes first, so nothing is left pointing at a user that is
-        // about to go, and in its own try: when the group write is what failed,
-        // this is likely to fail too, and the account still has to go.
+        // Taking an admin back is a demotion first. Under the admin lock it is
+        // refused when another admin was demoted meanwhile on the strength of
+        // this one; the conditional removal below then keeps the account.
+        let demoted = false;
+        if (fields.role === 'admin') {
+          try {
+            await saveUserEnsuringOrgRetainsAdmin(
+              orgId,
+              newUser._id,
+              { role: 'member' },
+              rsAvailable,
+            );
+            demoted = true;
+          } catch (demoteError) {
+            const errorClass = classifyError(demoteError);
+            this.logger[levelFor(errorClass)](
+              'Account could not be made a member before its removal',
+              { target_user_id: newUser._id, error_class: errorClass },
+            );
+          }
+        }
+        const grantStands = fields.role === 'admin' && !demoted;
+        // Only a member goes: the store judges the role at the moment of the
+        // write, since the account may have been made an admin since it was
+        // saved. Nothing is taken apart before this decides.
+        let removed: UserDto | null;
+        try {
+          removed = await users.markDeleted(newUser.orgId, newUser._id, {
+            onlyMember: true,
+          });
+        } catch (removeError) {
+          // A refused demotion does not make the account an admin: another
+          // request may have demoted it already. Read the role back, and
+          // record no grant when that read fails too.
+          const isAdmin =
+            grantStands &&
+            (await users
+              .getRoleSnapshot(newUser.orgId, newUser._id)
+              .then((s) => normalizeUserRole(s?.role) === 'admin')
+              .catch(() => false));
+          keepAccount('remove_failed', isAdmin, removeError);
+          return;
+        }
+        if (!removed) {
+          keepAccount('admin_now', grantStands);
+          return;
+        }
+        // The hard delete decides before anything else is taken apart. False:
+        // an invite brought the account back meanwhile (it may have re-added
+        // it to the everyone group), or (demo addresses) a sample-account
+        // cleanup already deleted it. Either way nothing more is taken.
+        try {
+          if (!(await users.deleteRemoved(newUser.orgId, newUser._id))) {
+            keepAccount('restored', false);
+            return;
+          }
+        } catch (cleanupError) {
+          this.logger.error(
+            `Account was saved but ${reason}, and removing it failed too`,
+            {
+              userId: newUser._id,
+              error:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : String(cleanupError),
+            },
+          );
+          return;
+        }
+        // Only then what pointed at it (PostgreSQL drops the credential with
+        // the row). Each in its own try: when the group write is what failed,
+        // this is likely to fail too. A row left behind only names an account
+        // that no longer exists, which is better than stripping a live one.
         try {
           if (groupWriteAttempted) {
             await getGroupRepository().removeFromEveryone(
@@ -715,23 +879,20 @@ export class UserController {
               newUser.email,
             );
           }
-          await users.deleteById(newUser._id);
-        } catch (cleanupError) {
-          this.logger.error(
-            `Account was saved but ${reason}, and removing it failed too`,
-            {
-              userId: newUser._id,
-              error:
-                cleanupError instanceof Error
-                  ? cleanupError.message
-                  : String(cleanupError),
-            },
+        } catch (credentialError) {
+          const errorClass = classifyError(credentialError);
+          this.logger[levelFor(errorClass)](
+            'Account was removed, but discarding its credential failed',
+            { target_user_id: newUser._id, error_class: errorClass },
           );
         }
       };
 
       try {
-        newUser = await users.create(orgId, fields);
+        newUser =
+          fields.role === 'admin'
+            ? await createUserEnsuringAdminCap(orgId, fields, rsAvailable)
+            : await users.create(orgId, fields);
       } catch (saveError) {
         // The check above only sees live accounts, but the unique index covers
         // every row, so the email can still collide here: two concurrent
@@ -739,7 +900,10 @@ export class UserController {
         // refused duplicate, not a server error. Only the email key -- slug is
         // unique too, and a collision there is not a duplicate address.
         if (isDuplicateEmailKeyError(saveError)) {
-          throw new BadRequestError('A user with this email already exists');
+          throw userRefusal(
+            new BadRequestError('A user with this email already exists'),
+            'email_taken',
+          );
         }
         throw saveError;
       }
@@ -790,16 +954,17 @@ export class UserController {
       } finally {
         await this.eventService.stop();
       }
-      if (hashedPassword !== undefined) {
-        this.logger.info('Demo account created with a starting password', {
-          orgId: newUser.orgId,
-          createdBy: req.user?.userId,
-          email: newUser.email,
-        });
+      auditUserChange(
+        'user.create',
+        newUser._id,
+        hashedPassword !== undefined ? 'demo_password' : undefined,
+      );
+      if (fields.role === 'admin') {
+        auditUserChange('user.role.change', newUser._id, 'new_admin');
       }
-      this.logger.debug('user created');
       res.status(201).json(newUser);
     } catch (error) {
+      auditUserRefusal('user.create', error);
       next(error);
     }
   }
@@ -815,7 +980,7 @@ export class UserController {
     provider: 'google' | 'microsoft' | 'azureAd' | 'oauth',
     logger: Logger,
   ) {
-    logger.info(`Auto-provisioning user from ${provider}`, { email, orgId });
+    logger.info(`Auto-provisioning user from ${provider}`, { orgId });
     if (await getUserRepository().hasRemovedAccount(orgId, email)) {
       throw new BadRequestError(
         'User account deleted by admin. Please contact your admin to restore your account.',
@@ -860,7 +1025,6 @@ export class UserController {
 
     logger.info(`User auto-provisioned successfully via ${provider}`, {
       userId: newUser._id,
-      email,
     });
 
     return newUser;
@@ -997,10 +1161,13 @@ export class UserController {
             req.user.orgId as string,
           ));
         if (!requesterIsAdmin) {
-          throw new ForbiddenError(
-            adminOnlyFieldsSent.includes('role')
-              ? 'Only admins can change user roles'
-              : 'Only admins can change whether a user has signed in',
+          throw userRefusal(
+            new ForbiddenError(
+              adminOnlyFieldsSent.includes('role')
+                ? 'Only admins can change user roles'
+                : 'Only admins can change whether a user has signed in',
+            ),
+            'not_admin',
           );
         }
       }
@@ -1082,15 +1249,11 @@ export class UserController {
           // Stored addresses are lowercased and the unique index is
           // case-sensitive, so the raw request value can miss an existing
           // lowercase match and the change would only fail later on save.
-          if (
-            await getUserRepository().emailTakenByOther(
-              req.user.orgId as string,
-              newEmail as string,
-              id as string,
-            )
-          ) {
-            throw new BadRequestError('Email already exists for another user');
-          }
+          await assertEmailFreeForChange(
+            req.user.orgId as string,
+            newEmail as string,
+            id as string,
+          );
 
           const emailSentResponse = await this.emailChange(
             email as string,
@@ -1102,6 +1265,7 @@ export class UserController {
             emailChangeRequested = 'failed';
           } else {
             emailChangeRequested = 'sent';
+            auditUserChange('user.email_change.request', id as string);
           }
         }
       }
@@ -1134,6 +1298,26 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
       const updatedUser = saved;
+      if (roleChanging) {
+        auditUserChange(
+          'user.role.change',
+          id as string,
+          updateFields.role === 'admin' ? 'promote' : 'demote',
+        );
+      }
+      // A user's own first sign-in is told by auth.sign_in, not here.
+      const writtenFields = Object.keys(otherUpdateFields).filter(
+        (field) =>
+          field !== 'role' &&
+          !(field === 'hasLoggedIn' && isSelfMarkedLoggedIn),
+      );
+      if (writtenFields.length > 0) {
+        auditUserChange(
+          'user.update',
+          id as string,
+          writtenFields.includes('hasLoggedIn') ? 'sign_in_state' : 'profile',
+        );
+      }
 
       // Role change: same as password change — invalidate every workspace
       // session for this email, then push force_logout to each connected tab.
@@ -1204,6 +1388,13 @@ export class UserController {
         },
       });
     } catch (error) {
+      const who = { target: req.params.id as string, targetIsUser: true };
+      auditUserRefusal(
+        req.body?.role !== undefined ? 'user.role.change' : 'user.update',
+        error,
+        who,
+      );
+      auditUserRefusal('user.email_change.request', error, who);
       next(error);
     }
   }
@@ -1227,6 +1418,7 @@ export class UserController {
       if (!user) {
         throw new NotFoundError('User not found');
       }
+      auditUserChange('user.update', id as string, 'profile');
 
       await this.eventService.start();
       const event: Event = {
@@ -1271,6 +1463,7 @@ export class UserController {
       if (!user) {
         throw new NotFoundError('User not found');
       }
+      auditUserChange('user.update', id as string, 'profile');
 
       await this.eventService.start();
       const event: Event = {
@@ -1315,6 +1508,7 @@ export class UserController {
       if (!user) {
         throw new NotFoundError('User not found');
       }
+      auditUserChange('user.update', id as string, 'profile');
 
       await this.eventService.start();
       const event: Event = {
@@ -1359,6 +1553,7 @@ export class UserController {
       if (!user) {
         throw new NotFoundError('User not found');
       }
+      auditUserChange('user.update', id as string, 'profile');
 
       await this.eventService.start();
       const event: Event = {
@@ -1416,15 +1611,11 @@ export class UserController {
         return;
       }
       assertEmailChangeIsSelf(req.user.userId, id);
-      if (
-        await getUserRepository().emailTakenByOther(
-          req.user.orgId as string,
-          newEmail,
-          id as string,
-        )
-      ) {
-        throw new BadRequestError('Email already exists for another user');
-      }
+      await assertEmailFreeForChange(
+        req.user.orgId as string,
+        newEmail,
+        id as string,
+      );
       const emailSentResponse = await this.emailChange(
         requested,
         newEmail,
@@ -1435,29 +1626,60 @@ export class UserController {
           'Could not send the verification email to the new address',
         );
       }
+      auditUserChange('user.email_change.request', id as string);
       res.json({ email: user.email, emailChangeMailStatus: 'sent' });
     } catch (error) {
+      auditUserRefusal('user.email_change.request', error, {
+        target: req.params.id as string,
+        targetIsUser: true,
+      });
       next(error);
     }
   }
 
   /**
-   * Soft-delete all OAuth apps owned by a user and revoke their tokens (when OAuth is initialized).
+   * What a deleted person leaves behind in OAuth.
+   *
+   * Every token they hold is revoked, under every client: personal access
+   * tokens are access tokens of the org's personal-token app, and restoring
+   * the account (a re-invite) reuses this id, so anything left live would
+   * start working again.
+   *
+   * The apps they registered move to the administrator deleting them, so
+   * colleagues who connected through one keep working. Except an app whose
+   * own `client_credentials` tokens act as this person (no service account
+   * named): handing it over would make those tokens act as the administrator,
+   * so it is deleted with its tokens, as it always was.
    */
-  protected async softDeleteOAuthAppsForUser(
+  protected async handOverOAuthOfDeletedUser(
     orgId: unknown,
-    createdByUserId: unknown,
+    deletedUserId: unknown,
     actorUser: Record<string, unknown>,
   ): Promise<void> {
     const orgOid = String(orgId);
-    const creatorOid = String(createdByUserId);
+    const userOid = String(deletedUserId);
+    const actorIdRaw = actorUser.userId ?? actorUser._id;
+    if (actorIdRaw == null) {
+      throw new UnauthorizedError('Unauthorized to delete the user');
+    }
+    const actorId = idOf(actorIdRaw);
+
+    // Through the repository, not OAuthTokenService: that service is
+    // registered only once the OAuth provider is up, and a deletion must not
+    // go through without this.
+    const tokens = getOAuthTokenRepository();
+    await tokens.revokeAllForUser(userOid);
+    await tokens.revokeAgentRegistrationsForUser(userOid);
+    await tokens.deleteUnusedCodesForUser(userOid);
+
     const apps = getOAuthAppRepository();
-
-    const clientIds = await apps.listClientIdsCreatedBy(orgOid, creatorOid);
-
+    const actingAsUser = await apps.listClientIdsActingAsCreator(
+      orgOid,
+      userOid,
+    );
     const oauthTokenService = resolveOAuthTokenService();
-    if (oauthTokenService && clientIds.length > 0) {
-      for (const clientId of clientIds) {
+    if (oauthTokenService) {
+      for (const clientId of actingAsUser) {
         if (!clientId) {
           continue;
         }
@@ -1466,16 +1688,14 @@ export class UserController {
         } catch (err) {
           this.logger.error(
             'Failed to revoke OAuth tokens when deleting user',
-            { clientId, err },
+            { clientId, error: err },
           );
         }
       }
     }
+    await apps.softDeleteActingAsCreator(orgOid, userOid, actorId);
 
-    const actorIdRaw = actorUser.userId ?? actorUser._id;
-    const deletedBy = actorIdRaw != null ? String(actorIdRaw) : creatorOid;
-
-    await apps.softDeleteCreatedBy(orgOid, creatorOid, deletedBy);
+    await apps.transferCreatedBy(orgOid, userOid, actorId);
   }
 
   async deleteUser(
@@ -1506,8 +1726,11 @@ export class UserController {
 
       // Fail closed: only explicit members may be deleted (unset/legacy ≠ deletable).
       if (user.role !== 'member') {
-        throw new BadRequestError(
-          'User cannot be deleted. Please demote the user from admin first.',
+        throw userRefusal(
+          new BadRequestError(
+            'User cannot be deleted. Please demote the user from admin first.',
+          ),
+          'not_member',
         );
       }
 
@@ -1524,21 +1747,17 @@ export class UserController {
           ipAddress: req.ip ?? '',
         });
       } catch (activityError) {
-        this.logger.error('Deletion not recorded; the user was not deleted', {
-          userId: userId,
-          error:
-            activityError instanceof Error
-              ? activityError.message
-              : String(activityError),
-        });
         throw markClientSafe(
-          new ServiceUnavailableError(USER_DELETE_NOT_RECORDED),
+          withCause(
+            new ServiceUnavailableError(USER_DELETE_NOT_RECORDED),
+            activityError,
+          ),
         );
       }
 
       await getGroupRepository().removeFromAll(orgId, userId);
 
-      await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
+      await this.handOverOAuthOfDeletedUser(orgId, userId, req.user);
 
       // Revoke KB permissions BEFORE pulling memberships so a failed
       // revocation leaves the membership row intact — a retry of
@@ -1557,10 +1776,21 @@ export class UserController {
       await ProjectService.removeUserFromAllProjects(orgId, userId);
 
       await getCredentialRepository().clearPassword(userId, user.email);
-      await getUserRepository().markDeleted(orgId, userId, {
+      // Only while still a member: someone promoted since the check above may be
+      // the admin a concurrent demotion counted on, and removing them could
+      // leave the organisation with none.
+      const removed = await getUserRepository().markDeleted(orgId, userId, {
         signedOut: true,
         deletedBy: req.user?.userId ?? req.user?._id,
+        onlyMember: true,
       });
+      if (!removed) {
+        throw userRefusal(
+          new BadRequestError(USER_PROMOTED_DURING_DELETE),
+          'not_member',
+        );
+      }
+      auditUserChange('user.delete', userId);
 
       await this.eventService.start();
       const event: Event = {
@@ -1577,6 +1807,10 @@ export class UserController {
 
       res.json({ message: 'User deleted successfully' });
     } catch (error) {
+      auditUserRefusal('user.delete', error, {
+        target: req.params.id as string,
+        targetIsUser: true,
+      });
       next(error);
     }
   }
@@ -1747,10 +1981,6 @@ export class UserController {
           },
         });
         if (result.statusCode !== 200) {
-          this.logger.error('Sending the invitation failed', {
-            statusCode: result.statusCode,
-            reason: result.data,
-          });
           throw mailFailureError(result, 'send the invitation');
         }
       } else {
@@ -1769,14 +1999,11 @@ export class UserController {
           },
         });
         if (result.statusCode !== 200) {
-          this.logger.error('Sending the invitation failed', {
-            statusCode: result.statusCode,
-            reason: result.data,
-          });
           throw mailFailureError(result, 'send the invitation');
         }
       }
 
+      auditUserChange('user.invite', id, 'resend');
       res.status(200).json({ message: 'Invite sent successfully' });
       return;
     } catch (error) {
@@ -1806,9 +2033,15 @@ export class UserController {
       return;
     }
     if (wantsAdminRole) {
-      throw new ForbiddenError('Members can only invite users as member');
+      throw userRefusal(
+        new ForbiddenError('Members can only invite users as member'),
+        'not_admin',
+      );
     }
-    throw new ForbiddenError('Members cannot assign groups when inviting');
+    throw userRefusal(
+      new ForbiddenError('Members cannot assign groups when inviting'),
+      'not_admin',
+    );
   }
 
   async addManyUsers(
@@ -1888,6 +2121,7 @@ export class UserController {
         alreadyActive: result.alreadyActive,
       });
     } catch (error) {
+      auditUserRefusal('user.invite', error);
       next(error);
     }
   }
@@ -1996,11 +2230,12 @@ export class UserController {
           // container's dispose()). Stopping it here would drop the connection
           // for concurrent requests and the notification producer.
         } catch (error) {
-          this.logger.error('Bulk invite from file failed', error);
+          this.logger.error('Bulk invite from file failed', { error });
           await this.notifyInviteFailure(inviterUserId, orgId);
         }
       });
     } catch (error) {
+      auditUserRefusal('user.invite', error);
       next(error);
     }
   }
@@ -2084,6 +2319,11 @@ export class UserController {
 
     const users = getUserRepository();
     const groups = getGroupRepository();
+    const hasGroups = groupIds !== undefined && groupIds.length > 0;
+    // addMemberToGroups writes deleted groups too, so they count as found.
+    const foundGroups = hasGroups
+      ? await foundGroupIds(groupIds, (id) => groups.get(orgId, id))
+      : new Set<string>();
     const existingUsers = (await users.listByEmails(orgId, emails)).filter(
       (user) => user.kind !== 'service',
     );
@@ -2109,17 +2349,25 @@ export class UserController {
         !activeEmails.includes(email) && !deletedEmails.includes(email),
     );
 
-    if (inviteRole === 'admin') {
-      const additionalAdmins =
-        emailsForNewAccounts.length +
-        deletedUsers.length +
-        pendingUsersToReinvite.filter(
-          (user) => normalizeUserRole(user.role) !== 'admin',
-        ).length;
-      await assertCanPromoteAdmin(orgId, additionalAdmins);
-    }
+    // The pending accounts this invite makes admins: one list for the count,
+    // the promotion and the undo, so an account that already was an admin is
+    // never demoted by a refused batch.
+    const pendingToPromote =
+      inviteRole === 'admin'
+        ? pendingUsersToReinvite.filter(
+            (user) => normalizeUserRole(user.role) !== 'admin',
+          )
+        : [];
+    const additionalAdmins =
+      inviteRole === 'admin'
+        ? emailsForNewAccounts.length +
+          deletedUsers.length +
+          pendingToPromote.length
+        : 0;
+    // Fast refusal before anything is written; the count that holds is the
+    // one writeEnsuringAdminCap makes after the grant.
+    await assertCanPromoteAdmin(orgId, additionalAdmins);
 
-    let restoredUsers: UserDto[] = [];
     if (deletedUsers.length > 0) {
       // Recorded before the accounts come back, and nothing is restored without it:
       // it ends every token issued before the restore, including any minted while
@@ -2133,38 +2381,94 @@ export class UserController {
           ipAddress: 'system',
         })),
       );
-      restoredUsers = await users.restoreByEmails(orgId, deletedEmails);
+    }
+
+    // Every write that can make an admin, with the role granted last in one
+    // statement: without a replica set, a batch that fails partway has made
+    // nobody an admin.
+    const grant = async (tx?: Tx): Promise<InviteGrant> => {
+      const restored =
+        deletedUsers.length > 0
+          ? await users.restoreByEmails(orgId, deletedEmails, tx)
+          : [];
+      const created =
+        emailsForNewAccounts.length > 0
+          ? await users.createMany(
+              orgId,
+              emailsForNewAccounts.map((email) => ({
+                email,
+                isDeleted: false,
+                hasLoggedIn: false,
+                role: 'member' as const,
+              })),
+              tx,
+            )
+          : [];
+      if (inviteRole === 'admin') {
+        const ids = [...restored, ...created, ...pendingToPromote]
+          .map((user) => user._id)
+          .filter(Boolean);
+        if (ids.length > 0) await users.promoteToAdmin(orgId, ids, tx);
+      }
+      return { restoredUsers: restored, newUsers: created };
+    };
+    // Without a replica set, a batch that went over the cap (or whose re-count
+    // failed, see writeEnsuringAdminCap) is taken back: new accounts deleted,
+    // promoted accounts demoted, restored accounts demoted and then removed
+    // again (only members are ever removed, and setRole skips removed rows).
+    const undoGrant = async ({
+      restoredUsers: restored,
+      newUsers: created,
+    }: InviteGrant): Promise<void> => {
+      for (const user of created) await users.deleteById(user._id);
+      for (const user of pendingToPromote) {
+        await users.setRole(orgId, user._id, 'member');
+      }
+      for (const user of restored) {
+        await users.setRole(orgId, user._id, 'member');
+        await users.markDeleted(orgId, user._id);
+      }
+    };
+    const { restoredUsers, newUsers } =
+      additionalAdmins > 0
+        ? await writeEnsuringAdminCap(
+            orgId,
+            this.config.rsAvailable === 'true',
+            grant,
+            undoGrant,
+          )
+        : await grant();
+
+    for (const restored of restoredUsers) {
+      auditUserChange('user.restore', restored._id, 'invite');
     }
 
     for (let i = 0; i < existingUsers.length; ++i) {
       const userId = existingUsers[i]?._id;
-      if (groupIds && groupIds.length > 0) {
+      if (hasGroups) {
         await groups.addMemberToGroups(orgId, groupIds, userId as string);
+        auditMemberships(
+          'group.member.add',
+          [userId as string],
+          groupIds,
+          foundGroups,
+        );
       }
       await groups.addToEveryone(orgId, userId as string);
     }
 
-    let newUsers: UserDto[] = [];
-    if (emailsForNewAccounts.length > 0) {
-      newUsers = await users.createMany(
-        orgId,
-        emailsForNewAccounts.map((email) => ({
-          email,
-          isDeleted: false,
-          hasLoggedIn: false,
-          role: inviteRole,
-        })),
-      );
+    for (const created of newUsers) {
+      auditUserChange('user.invite', created._id, 'new');
+      if (inviteRole === 'admin') {
+        auditUserChange('user.role.change', created._id, 'new_admin');
+      }
     }
-
-    // Apply invite role to restored / re-invited pending users when promoting to admin
     if (inviteRole === 'admin') {
-      const promoteIds = [
-        ...restoredUsers.map((u) => u._id),
-        ...pendingUsersToReinvite.map((u) => u._id),
-      ].filter(Boolean);
-      if (promoteIds.length > 0) {
-        await users.promoteToAdmin(orgId, promoteIds);
+      const restoredMembers = restoredUsers.filter(
+        (user) => normalizeUserRole(user.role) !== 'admin',
+      );
+      for (const promoted of [...restoredMembers, ...pendingToPromote]) {
+        auditUserChange('user.role.change', promoted._id, 'promote');
       }
     }
 
@@ -2215,8 +2519,9 @@ export class UserController {
         );
       }
       if (!pendingUser) {
-        if (groupIds && groupIds.length > 0) {
+        if (hasGroups) {
           await groups.addMemberToGroups(orgId, groupIds, userId);
+          auditMemberships('group.member.add', [userId], groupIds, foundGroups);
         }
         await groups.addToEveryone(orgId, userId);
         const event: Event = {
@@ -2247,6 +2552,8 @@ export class UserController {
       if (statusCode !== 200) {
         mailFailed.push(email);
         mailErrorCode = statusCode;
+      } else if (pendingUser) {
+        auditUserChange('user.invite', userId, 'reinvite');
       }
     }
 
@@ -2335,7 +2642,7 @@ export class UserController {
       });
       return result.statusCode;
     } catch (error) {
-      this.logger.error(`Failed to send invite mail to ${email}`, error);
+      this.logger.error('Sending the invitation failed', { error });
       return 500;
     }
   }
@@ -2410,7 +2717,9 @@ export class UserController {
         } as unknown as NotificationEventPayload,
       });
     } catch (error) {
-      this.logger.error('Failed to publish bulk invite notification', error);
+      this.logger.error('Failed to publish bulk invite notification', {
+        error,
+      });
     }
   }
 
@@ -2419,7 +2728,6 @@ export class UserController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const requestId = req.context?.requestId;
     try {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
@@ -2547,11 +2855,6 @@ export class UserController {
 
       res.status(HTTP_STATUS.OK).json(data);
     } catch (error: any) {
-      this.logger.error('Error getting users', {
-        requestId,
-        message: 'Error getting users',
-        error: error.message,
-      });
       next(error);
     }
   }

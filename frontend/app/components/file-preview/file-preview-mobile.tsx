@@ -38,6 +38,7 @@ export function FilePreviewMobile({
   highlightBox,
   citations,
   initialCitationId,
+  jumpSeq,
   hideFileDetails,
   showDownload,
   onDownload,
@@ -109,6 +110,7 @@ export function FilePreviewMobile({
     initialHighlightBox: highlightBox,
     initialPage,
     initialCitationId,
+    jumpSeq,
   });
 
   // Auto-scroll active citation into view in bottom sheet

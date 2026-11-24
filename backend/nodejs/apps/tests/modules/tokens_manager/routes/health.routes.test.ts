@@ -19,6 +19,8 @@ describe('tokens_manager/routes/health.routes', () => {
   let router: any
   let mockConfigService: any
   let savedRedisMode: string | undefined
+  let savedKvStoreType: string | undefined
+  let savedMessageBroker: string | undefined
 
   beforeEach(() => {
     // Default cases assert standalone labels. The cluster integration job
@@ -26,6 +28,11 @@ describe('tokens_manager/routes/health.routes', () => {
     // change serviceNames.redis to "Redis (Cluster)".
     savedRedisMode = process.env.REDIS_MODE
     delete process.env.REDIS_MODE
+    // With both set to postgres an unset REDIS_MODE means the PostgreSQL cache.
+    savedKvStoreType = process.env.KV_STORE_TYPE
+    savedMessageBroker = process.env.MESSAGE_BROKER
+    delete process.env.KV_STORE_TYPE
+    delete process.env.MESSAGE_BROKER
 
     mockConfigService = {
       readDeploymentConfig: sinon.stub().callsFake(() => Promise.resolve({ ...mockAppConfig.deployment })),
@@ -74,10 +81,13 @@ describe('tokens_manager/routes/health.routes', () => {
   afterEach(() => {
     (ConfigService as any).instance = undefined
     sinon.restore()
-    if (savedRedisMode === undefined) {
-      delete process.env.REDIS_MODE
-    } else {
-      process.env.REDIS_MODE = savedRedisMode
+    for (const [name, saved] of [
+      ['REDIS_MODE', savedRedisMode],
+      ['KV_STORE_TYPE', savedKvStoreType],
+      ['MESSAGE_BROKER', savedMessageBroker],
+    ] as const) {
+      if (saved === undefined) delete process.env[name]
+      else process.env[name] = saved
     }
   })
 
@@ -215,6 +225,49 @@ describe('tokens_manager/routes/health.routes', () => {
       })
     })
 
+    describe('weight-precision warning', () => {
+      const PRECISION_KEY = '/services/vectordb/precision_verdict'
+      let savedReplicas: string | undefined
+      beforeEach(() => {
+        savedReplicas = process.env.PIPESHUB_APP_MAX_REPLICAS
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '1'
+      })
+      afterEach(() => {
+        if (savedReplicas === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+        else process.env.PIPESHUB_APP_MAX_REPLICAS = savedReplicas
+      })
+
+      it('warns, naming the setting to restore, while indexing waits for the precision to match', async () => {
+        mockKV.get = sinon.stub().callsFake(async (key: string) =>
+          key === PRECISION_KEY ? { mismatch: true, holds: ['fp32'] } : null)
+        sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+        const res = mockRes()
+        await findHandler('/', 'get')({}, res, sinon.stub())
+        const body = res.json.firstCall.args[0]
+        expect(body.status).to.equal('healthy')
+        expect(body.warnings).to.have.length(1)
+        expect(body.warnings[0]).to.contain('EMBEDDING_SERVER_PRECISION=fp32')
+      })
+
+      it('answers without the warning when the precision read stalls', async () => {
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          mockKV.get = sinon.stub().callsFake((key: string) =>
+            key === PRECISION_KEY ? new Promise(() => undefined) : Promise.resolve(null))
+          sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+          const res = mockRes()
+          const answered = findHandler('/', 'get')({}, res, sinon.stub())
+          await clock.tickAsync(2000)
+          await answered
+          const body = res.json.firstCall.args[0]
+          expect(body.status).to.equal('healthy')
+          expect(body.warnings).to.equal(undefined)
+        } finally {
+          clock.restore()
+        }
+      })
+    })
+
     it('should include deployment info in response', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()
@@ -269,7 +322,7 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.deployment.redisMode).to.equal('cluster')
     })
 
-    it('names the PostgreSQL queue and the in-process cache when no Redis or Kafka is used', async () => {
+    it('names the PostgreSQL queue and the PostgreSQL cache when no Redis or Kafka is used', async () => {
       process.env.REDIS_MODE = 'postgres'
       mockAppConfig.deployment.messageBrokerType = 'postgres'
       router = createHealthRouter(container, cmContainer)
@@ -281,7 +334,51 @@ describe('tokens_manager/routes/health.routes', () => {
 
       const names = res.json.firstCall.args[0].serviceNames
       expect(names.messageBroker).to.equal('PostgreSQL queue')
-      expect(names.redis).to.equal('In-process cache')
+      expect(names.redis).to.equal('PostgreSQL cache')
+    })
+
+    it('publishes the postgres cache mode when REDIS_MODE is unset and the KV store and broker are PostgreSQL', async () => {
+      process.env.KV_STORE_TYPE = 'postgres'
+      process.env.MESSAGE_BROKER = 'postgres'
+      mockAppConfig.deployment.messageBrokerType = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.serviceNames.redis).to.equal('PostgreSQL cache')
+      expect(body.deployment.redisMode).to.equal('postgres')
+    })
+
+    it('keeps an explicit REDIS_MODE=standalone on Redis when the KV store and broker are PostgreSQL', async () => {
+      process.env.REDIS_MODE = 'standalone'
+      process.env.KV_STORE_TYPE = 'postgres'
+      process.env.MESSAGE_BROKER = 'postgres'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.serviceNames.redis).to.equal('Redis')
+      expect(body.deployment.redisMode).to.equal('standalone')
+    })
+
+    it('names the in-process cache when REDIS_MODE is inprocess', async () => {
+      process.env.REDIS_MODE = 'inprocess'
+      router = createHealthRouter(container, cmContainer)
+
+      const res = mockRes()
+      sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+
+      await findHandler('/', 'get')({}, res, sinon.stub())
+
+      expect(res.json.firstCall.args[0].serviceNames.redis).to.equal('In-process cache')
     })
 
     it('should show Redis (MemoryDB) in serviceNames when REDIS_MODE is memorydb', async () => {
@@ -779,6 +876,7 @@ describe('tokens_manager/routes/health.routes', () => {
 
       const timeoutErr: any = new Error('timeout of 5000ms exceeded')
       timeoutErr.code = 'ECONNABORTED'
+      timeoutErr.request = {} // as axios sets it: the request was sent, no answer came
 
       const axiosModule = require('axios')
       sinon.stub(axiosModule, 'get').callsFake((url: string) => {
@@ -789,20 +887,17 @@ describe('tokens_manager/routes/health.routes', () => {
       })
 
       const LoggerModule = require('../../../../src/libs/services/logger.service')
-      const errorStub = sinon.stub(
-        LoggerModule.Logger.getInstance({ service: 'HealthStatus' }),
-        'error',
-      )
+      // The router's logger is the one its module got at load: stub the class, not one instance.
+      const warnStub = sinon.stub(LoggerModule.Logger.prototype, 'warn')
 
       await handler({}, res, next)
 
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.services.graphDb).to.equal('unhealthy')
-      expect(
-        errorStub.getCalls().some(
-          (c: any) => c.args[0] === 'graph-db health check timed out',
-        ),
-      ).to.equal(true)
+      const changed = warnStub.getCalls().filter((c: any) => c.args[0] === 'health.check.changed')
+      expect(changed.map((c: any) => [c.args[1].check, c.args[1].state, c.args[1].reason, c.args[1].error_class])).to.deep.equal([
+        ['graph_db', 'unhealthy', 'timeout', 'timeout'],
+      ])
     })
 
     it('should mark graphDb unhealthy when connector /health/graph-db returns non-200 (neo4j or arangodb)', async () => {
@@ -970,13 +1065,14 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.deployment).to.have.property('redisMode')
     })
 
-    it('should call next() on unexpected top-level exception', async () => {
+    it('passes an unexpected top-level exception to the error middleware', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()
-      res.json = sinon.stub().throws(new Error('unexpected serialization error'))
+      const failure = new Error('unexpected serialization error')
+      res.json = sinon.stub().throws(failure)
       const next = sinon.stub()
       await handler({}, res, next)
-      expect(next.calledOnce).to.be.true
+      expect(next.calledOnceWithExactly(failure)).to.be.true
     })
 
     it('should report healthy overall when only vectorDb is unhealthy', async () => {

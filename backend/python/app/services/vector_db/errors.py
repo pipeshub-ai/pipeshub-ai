@@ -19,3 +19,13 @@ class OrgMismatch(VectorOrgError):
 
 class SpaceMismatch(VectorOrgError):
     pass
+
+
+class VectorsNotFetchable(NotImplementedError):
+    """The store cannot return the stored vectors of a point (``IVectorDBService.scroll_with_vectors``). A caller that wanted to move a
+    point to a new id without embedding its text again falls back to embedding it."""
+
+
+class PartialResult(RuntimeError):
+    """A store answered a read with fewer results than it holds (a query that ran out of time, a shard that failed), or said so. A caller
+    that acts on "every point of these records" must treat it as a failure: the missing points would keep whatever they carry."""

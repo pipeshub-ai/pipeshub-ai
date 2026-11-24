@@ -25,7 +25,7 @@ BEGIN
   IF p_leg IS NULL THEN RAISE EXCEPTION 'search_sparse: p_leg is required' USING ERRCODE = '22023'; END IF;
   IF p_leg NOT BETWEEN 1 AND 1000 THEN RAISE EXCEPTION 'search_sparse: p_leg must be 1..1000' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
-  DECLARE v_space smallint; v_n bigint; v_k int; v_sks bigint[]; v_scs double precision[]; v_total bigint;
+  DECLARE v_space smallint; v_n bigint; v_k int; v_sks bigint[]; v_scs double precision[]; v_total bigint; v_kept boolean;
   BEGIN
     IF cardinality(p_terms) < 1 OR cardinality(p_weights) <> cardinality(p_terms) THEN
       RAISE EXCEPTION 'search_sparse: invalid arguments' USING ERRCODE = '22023';
@@ -37,6 +37,10 @@ BEGIN
          + coalesce((SELECT sum(d.d) FROM retrieval.lexical_df_delta d
                       WHERE d.org_id = v_org AND d.collection_id = p_collection AND d.space_id = v_space AND d.term = -1), 0)
       INTO v_n;
+    -- a term's frequency is kept (retrieval_0005: folded + deltas, in this statement's snapshot) unless the collection's postings
+    -- predate it and recount has not run: then it is the number of the term's postings, counted
+    SELECT NOT EXISTS (SELECT 1 FROM retrieval.lexical_df_pending x
+                        WHERE x.org_id = v_org AND x.collection_id = p_collection AND x.space_id = v_space) INTO v_kept;
       -- check the best points first (a top-N sort of the sums, not a full sort), best first, until p_leg pass: the point must exist
       -- and carry no tombstone whatever the filter, and pass the membership arms when there are any (all four NULL: the whole org);
       -- if the best v_k are not enough and there are more, go again over all of them
@@ -46,17 +50,25 @@ BEGIN
             FROM unnest(p_terms, p_weights) AS t(term, qw) WHERE t.term IS NOT NULL AND t.qw IS NOT NULL),
         idf AS MATERIALIZED (
           SELECT q.term, q.qw * (ln(greatest(v_n, d.c) + 1) - ln(d.c + 0.5)) AS f
-            FROM q CROSS JOIN LATERAL (SELECT count(*) AS c FROM retrieval.postings p
-                                        WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) d
+            FROM q CROSS JOIN LATERAL (SELECT CASE WHEN v_kept
+              THEN coalesce((SELECT f.df FROM retrieval.lexical_df f
+                              WHERE f.org_id = v_org AND f.collection_id = p_collection AND f.space_id = v_space AND f.term = q.term), 0)
+                 + coalesce((SELECT sum(t.d) FROM retrieval.lexical_term_delta t
+                              WHERE t.org_id = v_org AND t.collection_id = p_collection AND t.space_id = v_space AND t.term = q.term), 0)
+              ELSE (SELECT count(*) FROM retrieval.postings p
+                     WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = q.term) END AS c
+              LIMIT 1) d        -- LIMIT keeps it from being pulled up: d.c is used three times below and is read once per term
            WHERE d.c > 0),
-        agg AS MATERIALIZED (
+        agg AS (
           SELECT x.point_sk, sum(i.f * x.w) AS sc
             FROM idf i CROSS JOIN LATERAL (
               SELECT p.point_sk, p.w FROM retrieval.postings p
                WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = i.term) x
            GROUP BY x.point_sk),
+        -- the sums go straight into the top-N sort, unstored; only the best v_k are kept, for the checks and the count
+        top AS MATERIALIZED (SELECT a.point_sk, a.sc FROM agg a ORDER BY a.sc DESC, a.point_sk LIMIT v_k),
         kept AS (
-          SELECT b.point_sk, b.sc FROM (SELECT a.point_sk, a.sc FROM agg a ORDER BY a.sc DESC, a.point_sk LIMIT v_k) b JOIN LATERAL (
+          SELECT b.point_sk, b.sc FROM top b JOIN LATERAL (
             SELECT 1 AS ok FROM retrieval.points p
              WHERE p.org_id = v_org AND p.point_sk = b.point_sk
                AND (p_must_vrids IS NULL OR p.group_key = ANY(p_must_vrids))
@@ -71,9 +83,9 @@ BEGIN
           ORDER BY b.sc DESC, b.point_sk
           LIMIT p_leg)
         SELECT coalesce(array_agg(k.point_sk ORDER BY k.sc DESC, k.point_sk), '{}'), coalesce(array_agg(k.sc ORDER BY k.sc DESC, k.point_sk), '{}'),
-               (SELECT count(*) FROM (SELECT 1 FROM agg LIMIT coalesce(v_k + 1, 2147483647)) c)   -- only 'more than v_k?' is asked
+               (SELECT count(*) FROM top)   -- fewer than v_k: there are no more
           INTO v_sks, v_scs, v_total FROM kept k;
-        IF cardinality(v_sks) >= p_leg OR v_k IS NULL OR v_total <= v_k THEN
+        IF cardinality(v_sks) >= p_leg OR v_k IS NULL OR v_total < v_k THEN
           RETURN QUERY SELECT u.sk, u.sc FROM unnest(v_sks, v_scs) AS u(sk, sc) ORDER BY u.sc DESC, u.sk;
           RETURN;
         END IF;

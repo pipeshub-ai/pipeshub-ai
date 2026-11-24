@@ -23,13 +23,18 @@ const speech = vi.hoisted(() => ({
   onError: null as null | ((error: string) => void),
 }));
 const device = vi.hoisted(() => ({ isMobile: false }));
-const mentionField = vi.hoisted(() => ({ rendered: vi.fn<(mentionsOff: boolean | undefined) => void>() }));
+const webSearchSetup = vi.hoisted(() => ({ configured: null as boolean | null }));
+const mentionField = vi.hoisted(() => ({
+  rendered: vi.fn<(mentionsOff: boolean | undefined) => void>(),
+  setMentions: null as null | ((mentions: import('@/chat/utils/node-mentions').MentionNode[]) => void),
+}));
 
 vi.mock('@/chat/components/mention-composer-field', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/chat/components/mention-composer-field')>();
   type FieldProps = Omit<React.ComponentProps<typeof actual.MentionComposerField>, 'ref'>;
   const Spy = React.forwardRef<HTMLTextAreaElement, FieldProps>(function MentionComposerFieldSpy(props, ref) {
     mentionField.rendered(props.mentionsOff);
+    mentionField.setMentions = props.onMentionsChange;
     return <actual.MentionComposerField {...props} ref={ref} />;
   });
   return { ...actual, MentionComposerField: Spy };
@@ -55,6 +60,7 @@ vi.mock('@/lib/hooks/use-chat-speech-recognition', () => ({
 }));
 
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => device.isMobile }));
+vi.mock('@/chat/hooks/use-web-search-configured', () => ({ useWebSearchConfigured: () => webSearchSetup.configured }));
 
 vi.mock('@/chat/components/chat-panel', async () => {
   const plus = await vi.importActual<typeof import('../chat-panel/plus-menu-button')>(
@@ -138,6 +144,8 @@ import { DRAFT_SAVE_DEBOUNCE_MS } from '@/chat/hooks/use-composer-draft';
 import { loadDraft, saveDraft } from '@/chat/utils/composer-draft';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import type { AttachmentRef } from '@/chat/types';
+import { formatQuotedSelection } from '@/chat/utils/quoted-selection';
+import { insertMention, type MentionNode } from '@/chat/utils/node-mentions';
 
 const initialChatState = useChatStore.getState();
 
@@ -165,6 +173,7 @@ beforeEach(() => {
   speech.stop.mockReset();
   speech.resetTranscript.mockReset();
   device.isMobile = false;
+  webSearchSetup.configured = null;
   vi.stubGlobal('ResizeObserver', FakeResizeObserver);
 });
 
@@ -1568,6 +1577,40 @@ describe('ChatInput — keeping an unsent message', () => {
     expect(loadDraft(KEY_NEW)).toBe('A question for a new chat');
   });
 
+  it('puts the unsent draft back when Quote leaves edit mode', () => {
+    openConversation('conv-1');
+    renderInput({ persistDraft: true });
+    type('typed follow-up');
+    pause();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    expect(composer().value).toBe('Original question');
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    expect(composer().value).toBe('typed follow-up');
+    expect(screen.getByTestId('quoted-excerpt-chip').textContent).toContain('the SLA is 99.9%');
+  });
+
+  it('puts the quote chip back with the typed follow-up', () => {
+    openConversation('conv-1');
+    const first = renderInput({ persistDraft: true });
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    type('What does this cover?');
+    pause();
+    first.unmount();
+
+    renderInput({ persistDraft: true });
+    expect(composer().value).toBe('What does this cover?');
+    expect(screen.getByTestId('quoted-excerpt-chip').textContent).toContain('the SLA is 99.9%');
+  });
+
   it('forgets the draft once the message is sent', () => {
     const { onSend } = renderInput({ persistDraft: true });
     type('Which vendors renew in Q4?');
@@ -1982,5 +2025,250 @@ describe('ChatInput — a sent message is not kept as a draft', () => {
     await settleHost();
 
     expect(loadDraft(KEY_NEW)).toBe('the next question, typed during the answer');
+  });
+});
+
+describe('ChatInput — quote selected text', () => {
+  it('puts the excerpt on a chip and sends it with the follow-up', () => {
+    const { onSend } = renderInput();
+
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', {
+        text: 'the SLA is 99.9%',
+      });
+    });
+
+    expect(screen.getByTestId('quoted-excerpt-chip').textContent).toContain('the SLA is 99.9%');
+    expect(sendButton().getAttribute('aria-disabled')).toBe('false');
+
+    type('What does this cover?');
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', 'What does this cover?'),
+      undefined,
+      undefined,
+    );
+    expect(screen.queryByTestId('quoted-excerpt-chip')).toBeNull();
+  });
+
+  it('sends the excerpt alone when the box is empty', () => {
+    const { onSend } = renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'only this' });
+    });
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(formatQuotedSelection('only this', ''), undefined, undefined);
+  });
+
+  it('dismisses the quote chip without clearing the typed question', () => {
+    const { onSend } = renderInput();
+    type('Keep this');
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'quoted bit' });
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove quote' }));
+    expect(screen.queryByTestId('quoted-excerpt-chip')).toBeNull();
+    expect(composer().value).toBe('Keep this');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith('Keep this', undefined, undefined);
+  });
+
+  it('clears the quote when regenerate starts', () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'quoted bit' });
+    });
+    expect(screen.getByTestId('quoted-excerpt-chip')).toBeTruthy();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', {
+        messageId: 'msg-7',
+        text: 'Which vendors renewed?',
+      });
+    });
+    expect(screen.queryByTestId('quoted-excerpt-chip')).toBeNull();
+    expect(screen.getByText('Regenerate response')).toBeTruthy();
+  });
+
+  it('keeps the original follow-up when Edit is switched to Regenerate before Quote', () => {
+    const { onSend } = renderInput();
+    type('typed follow-up');
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', {
+        messageId: 'msg-7',
+        text: 'Which vendors renewed?',
+      });
+    });
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    expect(composer().value).toBe('typed follow-up');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', 'typed follow-up'),
+      undefined,
+      undefined,
+    );
+  });
+
+  it('restores @mention metadata with the follow-up when Quote leaves edit', () => {
+    const { onSend } = renderInput();
+    const node: MentionNode = {
+      id: 'q3',
+      name: 'Q3 Report',
+      nodeType: 'record',
+      connector: 'KB',
+    };
+    const drafted = `${insertMention('', 0, 0, node)}please`;
+    type(drafted);
+    act(() => {
+      mentionField.setMentions?.([node]);
+    });
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', 'Q3 Report please'),
+      undefined,
+      [node],
+    );
+  });
+
+  it('keeps a just-typed follow-up when Quote leaves edit before the draft saves', () => {
+    const { onSend } = renderInput();
+    type('typed follow-up');
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    expect(composer().value).toBe('Original question');
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    expect(composer().value).toBe('typed follow-up');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', 'typed follow-up'),
+      undefined,
+      undefined,
+    );
+  });
+
+  it('does not keep the edited question as the quote follow-up', () => {
+    const { onSend } = renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: 'Original question',
+      });
+    });
+    expect(composer().value).toBe('Original question');
+    act(() => {
+      useCommandStore.getState().dispatch('showQuoteBar', { text: 'the SLA is 99.9%' });
+    });
+    expect(screen.queryByText('Edit query')).toBeNull();
+    expect(composer().value).toBe('');
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledWith(
+      formatQuotedSelection('the SLA is 99.9%', ''),
+      undefined,
+      undefined,
+    );
+  });
+
+  it('restores a stored quote when editing that question', () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    renderInput();
+    const stored = formatQuotedSelection('the SLA is 99.9%', 'What does this cover?');
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', {
+        messageId: 'msg-3',
+        text: stored,
+      });
+    });
+    expect(screen.getByTestId('quoted-excerpt-chip').textContent).toContain('the SLA is 99.9%');
+    expect(composer().value).toBe('What does this cover?');
+  });
+});
+
+describe('ChatInput — web search before an admin has set it up', () => {
+  function openPlusMenu() {
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Attach files and capabilities' }), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Attach files and capabilities' }));
+  }
+  const webSearchSwitch = () => screen.getByRole('switch', { name: 'Web search' });
+
+  it('shows the switch off and explains why when it is turned on', () => {
+    webSearchSetup.configured = false;
+    renderInput();
+    openPlusMenu();
+
+    expect(webSearchSwitch().getAttribute('data-state')).toBe('unchecked');
+    fireEvent.click(webSearchSwitch());
+
+    expect(screen.getByTestId('web-search-setup-dialog')).toBeTruthy();
+    expect(useChatStore.getState().settings.agentCapabilities.webSearch).toBe(true);
+  });
+
+  it('does not mark the + button as filtered when the only difference is the missing setup', () => {
+    webSearchSetup.configured = false;
+    renderInput();
+
+    expect(screen.queryByTestId('plus-menu-filter-badge')).toBeNull();
+  });
+
+  it('is on, and turns off without a dialog, once web search is set up', () => {
+    webSearchSetup.configured = true;
+    renderInput();
+    openPlusMenu();
+
+    expect(webSearchSwitch().getAttribute('data-state')).toBe('checked');
+    fireEvent.click(webSearchSwitch());
+
+    expect(screen.queryByTestId('web-search-setup-dialog')).toBeNull();
+    expect(useChatStore.getState().settings.agentCapabilities.webSearch).toBe(false);
+  });
+
+  it('keeps the current behaviour while it cannot tell (still loading, or the read failed)', () => {
+    webSearchSetup.configured = null;
+    renderInput();
+    openPlusMenu();
+
+    expect(webSearchSwitch().getAttribute('data-state')).toBe('checked');
+  });
+
+  it('leaves a chat with its own agent alone: the agent brings its own search provider', () => {
+    webSearchSetup.configured = false;
+    useChatStore.setState({ agentHasWebSearch: true });
+    renderInput({ isAgentChat: true, agentId: 'agent-1' });
+    openPlusMenu();
+    fireEvent.click(webSearchSwitch());
+
+    expect(screen.queryByTestId('web-search-setup-dialog')).toBeNull();
   });
 });

@@ -4,7 +4,13 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from app.services.graph_db.postgres.kg import drainer, legacy
+from app.services.graph_db.postgres.kg import (
+    bootstrap,
+    counts,
+    drainer,
+    legacy,
+    restamp,
+)
 from app.services.graph_db.postgres.kg import worker as worker_mod
 from app.services.graph_db.postgres.kg.worker import KgWorker
 
@@ -181,3 +187,99 @@ async def test_no_unit_is_opened_for_the_gauges_once_the_worker_is_stopping(monk
     holder["w"] = w
     await w.run_once()
     assert published["n"] == 0 and _NoUow.opened == 0
+
+
+async def test_a_stop_during_a_restamp_batch_ends_the_job_between_batches_and_opens_no_unit_for_the_gauges(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"claim": 0, "batch": 0}
+    published = {"n": 0}
+    _NoUow.opened = 0
+    holder: dict[str, KgWorker] = {}
+    job = restamp.Job(1, 5, "rows", "reach", True, 0, 1, "7")
+
+    async def no_rows(_db: object, _org: str, *, limit: int) -> int:
+        return 0
+
+    async def claim(_db: object, _org: str, _worker: str, **_k: object) -> restamp.Job:
+        calls["claim"] += 1
+        return job
+
+    async def one_batch(_db: object, _org: str, j: restamp.Job, _worker: str, **_k: object) -> tuple[bool, restamp.Job]:
+        calls["batch"] += 1
+        holder["w"]._stop.set()                         # the stop arrives while a batch is running: the batch ends, no other starts
+        await asyncio.sleep(0.01)
+        return False, j
+
+    async def orgs() -> list[str]:
+        return ["org-a", "org-b"]
+
+    async def publish(_tx: object, _org: str) -> None:
+        published["n"] += 1
+    monkeypatch.setattr(drainer, "drain", no_rows)
+    monkeypatch.setattr(restamp, "claim", claim)
+    monkeypatch.setattr(restamp, "run_batch", one_batch)
+    monkeypatch.setattr(legacy, "publish", publish)
+    w = KgWorker(_NoUow(), orgs, dsn=None, poll_s=0.05)  # type: ignore[arg-type]
+    holder["w"] = w
+    await w.run_once()
+    assert calls == {"claim": 1, "batch": 1}                      # one job claimed, one batch, no second batch, no second organisation
+    assert published["n"] == 0 and _NoUow.opened == 0
+
+
+async def test_each_pass_folds_the_counters_of_every_org_and_a_failing_fold_holds_up_nothing_else(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The counters' deltas are folded by the worker, org by org (kg.counts); a fold that fails is logged and the pass goes on to the bootstrap, the gauges and the next org."""
+    seen: list[tuple[str, str]] = []
+
+    async def no_rows(_db: object, _org: str, *, limit: int) -> int:
+        return 0
+
+    async def no_jobs(*_a: object, **_k: object) -> int:
+        return 0
+
+    async def fold(_db: object, org: str, *, stop: asyncio.Event | None = None) -> int:
+        seen.append(("counts", org))
+        if org == "org-a":
+            raise ConnectionError("the database went away for a moment")
+        return 3
+
+    async def bring(_db: object, org: str, *_a: object) -> int:
+        seen.append(("bootstrap", org))
+        return 0
+
+    async def publish(_tx: object, org: str) -> None:
+        seen.append(("gauges", org))
+
+    async def orgs() -> list[str]:
+        return ["org-a", "org-b"]
+    monkeypatch.setattr(drainer, "drain", no_rows)
+    monkeypatch.setattr(restamp, "run_jobs", no_jobs)
+    monkeypatch.setattr(counts, "run", fold)
+    monkeypatch.setattr(bootstrap, "bring_to_enforce", bring)
+    monkeypatch.setattr(legacy, "publish", publish)
+    w = KgWorker(_NoUow(), orgs, dsn=None, poll_s=0.05)  # type: ignore[arg-type]
+    assert await w.run_once() == 3                                                               # what the fold took counts as work done: the loop looks again at once
+    assert seen == [(step, org) for org in ("org-a", "org-b") for step in ("counts", "bootstrap", "gauges")]
+
+
+async def test_the_verify_task_works_at_most_its_share_of_the_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.graph_db.postgres.kg import net
+    monkeypatch.setattr(net, "VERIFY_TICK_S", 0.01)
+    starts: list[float] = []
+
+    async def one_org() -> list[str]:
+        return ["o"]
+
+    async def busy(db, org, states, stop=None) -> int:
+        starts.append(asyncio.get_running_loop().time())
+        await asyncio.sleep(0.1)                       # a pass that works 0.1 s
+        return 0
+    monkeypatch.setattr(net, "verify_due", busy)
+    w = KgWorker(None, one_org, dsn=None, poll_s=60)  # type: ignore[arg-type]
+    w._verify_task = asyncio.get_running_loop().create_task(w._verify_loop())
+    try:
+        assert await until(lambda: len(starts) >= 3, 10)
+    finally:
+        w._stop.set()
+        await w._verify_task
+    gaps = [b - a for a, b in zip(starts, starts[1:], strict=False)]
+    assert min(gaps) >= 0.1 / net.VERIFY_SHARE * 0.9, gaps      # 0.1 s of work, then a rest of 0.4 s: a gap of 0.5 s, not the 0.11 s of the bare tick
+    assert net.verify_rest(0.0) == net.VERIFY_TICK_S

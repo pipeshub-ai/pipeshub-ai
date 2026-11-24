@@ -22,6 +22,22 @@ export interface McpAuthHint {
 }
 
 /** A catalog entry — pure metadata, never carries credentials. */
+/** The catalog shelf a server sits on (the backend's `MCPCategory`). */
+export type McpCategory =
+  | 'communication'
+  | 'meetings'
+  | 'docs'
+  | 'projects'
+  | 'developer'
+  | 'data'
+  | 'sales'
+  | 'support'
+  | 'finance'
+  | 'design'
+  | 'automation'
+  | 'search'
+  | 'security';
+
 export interface McpServerTemplate {
   typeId: string;
   displayName: string;
@@ -57,6 +73,21 @@ export interface McpServerTemplate {
   tags: string[];
   /** The entry that took this one's place: no new servers from it, existing ones keep running. */
   replacedBy?: string | null;
+  category?: McpCategory | null;
+  /** What people get done with it, in plain words ("Schedule meetings"). English, like `description`. */
+  capabilities?: string[];
+  /** Every tool only looks things up. */
+  readOnly?: boolean;
+  /** Only in search results: the capability the search matched. */
+  matchedCapability?: string;
+}
+
+/** An organization server and how many people signed in to it (`GET /popular`). */
+export interface McpPopularServer {
+  instanceId: string;
+  typeId?: string | null;
+  name: string;
+  people: number;
 }
 
 /** Request body for creating/updating an instance. */

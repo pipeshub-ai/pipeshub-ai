@@ -5,11 +5,17 @@ event through the request's `EventSink` before each retry sleep."""
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.transport.base import RetryConfig
 from app.agents.agent_loop.hooks.retry_with_status import retry_with_status
+from app.utils.logger import log_record_fields
+from app.utils.logging_fields import current_log_fields
 
 
 class _RecordingSink:
@@ -178,3 +184,92 @@ class TestRetryWithStatus:
         result = await middleware(_next)
         assert result == "ok"
         assert "temporary connection issue" in sink.events[0]["data"]["message"]
+
+
+def _retry_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.getMessage() == "llm_call.retry"]
+
+
+def _failing(*errors: TransportError, seen: list[object] | None = None):  # noqa: ANN202
+    remaining = list(errors)
+
+    async def _next() -> str:
+        if seen is not None:
+            seen.append(current_log_fields().get("attempt"))
+        if remaining:
+            raise remaining.pop(0)
+        return "ok"
+
+    return _next
+
+
+class TestRetriesAreLogged:
+    async def test_a_429_then_success_logs_one_retry_with_what_was_slept(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        sink = _RecordingSink()
+        config = RetryConfig(initial_delay=1.0)
+        sleep = AsyncMock()
+        with (
+            patch("app.agents.agent_loop.hooks.retry_with_status.asyncio.sleep", new=sleep),
+            patch("app.agents.agent_loop.hooks.retry_with_status.random.uniform", return_value=0.043),
+            caplog.at_level(logging.DEBUG),
+        ):
+            result = await retry_with_status(sink, config)(
+                _failing(TransportError("rate limited", status_code=429, retryable=True)),
+            )
+
+        assert result == "ok"
+        assert len(sink.events) == 1  # the client is still told
+        [record] = _retry_lines(caplog)
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record) == {
+            "attempt": 1, "max_attempts": 4, "status": 429, "error_class": "rate_limited", "delay_ms": 1043,
+        }
+        sleep.assert_awaited_once_with(1.043)
+
+    async def test_a_non_retryable_failure_logs_no_retry(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.DEBUG), pytest.raises(TransportError):
+            await retry_with_status(None, _fast_config())(
+                _failing(TransportError("bad key", status_code=401)),
+            )
+
+        assert _retry_lines(caplog) == []
+
+    async def test_exhausted_retries_log_one_line_per_retry_then_raise(self, caplog: pytest.LogCaptureFixture) -> None:
+        errors = [TransportError("down", status_code=503, retryable=True) for _ in range(3)]
+        with caplog.at_level(logging.DEBUG), pytest.raises(TransportError):
+            await retry_with_status(None, _fast_config(max_retries=2))(_failing(*errors))
+
+        assert [log_record_fields(r)["attempt"] for r in _retry_lines(caplog)] == [1, 2]
+        assert {log_record_fields(r)["error_class"] for r in _retry_lines(caplog)} == {"unavailable"}
+
+    async def test_the_attempt_is_bound_during_each_call_and_not_after(self) -> None:
+        seen: list[object] = []
+
+        await retry_with_status(None, _fast_config())(
+            _failing(TransportError("rate limited", status_code=429, retryable=True), seen=seen),
+        )
+
+        assert seen == [1, 2]
+        assert "attempt" not in current_log_fields()
+
+    async def test_concurrent_calls_keep_their_own_attempt(self) -> None:
+        seen_a: list[object] = []
+        seen_b: list[object] = []
+        middleware = retry_with_status(None, _fast_config())
+
+        await asyncio.gather(
+            middleware(_failing(TransportError("rate limited", status_code=429, retryable=True), seen=seen_a)),
+            middleware(_failing(seen=seen_b)),
+        )
+
+        assert (seen_a, seen_b) == ([1, 2], [1])
+
+    async def test_work_started_after_a_retried_call_carries_no_attempt(self) -> None:
+        await retry_with_status(None, _fast_config())(
+            _failing(TransportError("rate limited", status_code=429, retryable=True)),
+        )
+
+        later = asyncio.create_task(asyncio.sleep(0, result=current_log_fields().get("attempt")))
+        assert await later is None

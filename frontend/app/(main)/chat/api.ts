@@ -8,6 +8,8 @@ import {
   Conversation,
   ConversationMessage,
   ConversationPagination,
+  ForkChild,
+  ForkOrigin,
   ConversationsListResponse,
   ConversationApiResponse,
   ConversationSource,
@@ -84,6 +86,8 @@ export interface StreamMessageCallbacks {
    * straight into slot state. No legacy equivalent; safe to no-op.
    */
   onParts?: (parts: MessagePart[]) => void;
+  /** Compare mode: the question is saved and its id known, so the branch for the second model can start. */
+  onTurnStarted?: (data: { conversationId?: string; userMessageId?: string }) => void;
   onError?: (error: Error) => void;
   signal?: AbortSignal;
 }
@@ -288,6 +292,8 @@ export const ChatApi = {
       modelInfo: ModelInfo;
       isShared: boolean;
       sharedWith: SharedWithEntry[];
+      forkedFrom?: ForkOrigin;
+      forks?: ForkChild[];
       access: {
         isOwner: boolean;
         accessLevel: string;
@@ -307,6 +313,8 @@ export const ChatApi = {
         status: string;
         messages: ConversationMessage[];
         modelInfo: ModelInfo;
+        forkedFrom?: ForkOrigin;
+        forks?: ForkChild[];
         /** Optional: older API versions may not include this field. */
         pagination?: ConversationPagination;
         access: {

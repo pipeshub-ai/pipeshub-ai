@@ -68,6 +68,7 @@ def _make_connector():
     dep.org_id = "org-notion-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_record_deleted = AsyncMock()
     dep.reindex_existing_records = AsyncMock()

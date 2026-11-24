@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# Pinned to a patch release: 3.12.11 fixed tarfile's 'data' filter bypasses
+# (CVE-2025-4517 and related). Bump deliberately, never below 3.12.11.
+FROM python:3.12.16-slim
 
 LABEL maintainer="pipeshub" \
       description="Unified sandbox for Python, TypeScript, SQLite, and PostgreSQL code execution"
@@ -22,8 +24,8 @@ RUN apt-get update && \
         iptables \
     && rm -rf /var/lib/apt/lists/*
 
-# Node.js 20 via nodesource
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+# Node.js 24 via nodesource
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
     rm -rf /var/lib/apt/lists/*
 

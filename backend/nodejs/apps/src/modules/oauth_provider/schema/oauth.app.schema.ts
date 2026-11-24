@@ -42,7 +42,8 @@ export interface IOAuthApp extends Document {
   termsOfServiceUrl?: string
   isConfidential: boolean
   /** RFC 7591 Dynamic Client Registration. Hidden from the developer-apps UI. */
-  isDynamic?: boolean
+  isDynamic?: boolean;
+  ownerFormat?: number;
   /** What every token of this app may reach, picked by its creator. Absent
    * means everything the connecting user can see. */
   knowledgeLimit?: KnowledgeLimit;
@@ -128,6 +129,8 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
     termsOfServiceUrl: { type: String },
     isConfidential: { type: Boolean, default: true },
     isDynamic: { type: Boolean, default: false, index: true },
+    // No default: an app an older release stored has none (see APP_OWNER_FORMAT).
+    ownerFormat: { type: Number },
     knowledgeLimit: knowledgeLimitField,
     accessTokenLifetime: { type: Number, default: 3600 },
     refreshTokenLifetime: { type: Number, default: 2592000 },

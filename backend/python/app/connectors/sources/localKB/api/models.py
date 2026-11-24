@@ -5,8 +5,6 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.config.constants.arangodb import ProgressStatus
-
 
 class PermissionRole(str, Enum):
     """Roles a stored KB grant may carry.
@@ -28,19 +26,6 @@ class GrantablePermissionRole(str, Enum):
     OWNER = "OWNER"
     WRITER = "WRITER"
     READER = "READER"
-
-
-class RecordType(str, Enum):
-    """Valid record types"""
-    FILE = "FILE"
-    DRIVE = "DRIVE"
-    WEBPAGE = "WEBPAGE"
-    COMMENT = "COMMENT"
-    MESSAGE = "MESSAGE"
-    MAIL = "MAIL"
-    OTHERS = "OTHERS"
-
-
 
 
 class SortOrder(str, Enum):
@@ -115,16 +100,6 @@ class DeleteRecordRequest(BaseModel):
     recordIds: List[str] = Field(..., description="List of user IDs to grant permissions to",min_items=1)
 
 # Response Models
-class FileRecordResponse(BaseModel):
-    """Response model for file record information"""
-    id: str = Field(..., description="File record ID")
-    name: str = Field(..., description="File name")
-    extension: Optional[str] = Field(None, description="File extension")
-    mimeType: Optional[str] = Field(None, description="MIME type")
-    sizeInBytes: Optional[int] = Field(None, description="File size in bytes")
-    isFile: bool = Field(..., description="Whether this is a file")
-    webUrl: Optional[str] = Field(None, description="Web URL")
-
 class FolderResponse(BaseModel):
     """Response model for folder information"""
     id: str = Field(..., description="Folder ID")
@@ -132,36 +107,6 @@ class FolderResponse(BaseModel):
     createdAtTimestamp: Optional[int] = Field(None, description="Creation timestamp")
     # path: Optional[str] = Field(None, description="Folder path")
     webUrl: Optional[str] = Field(None, description="Web URL")
-
-class PermissionContents(BaseModel):
-    """Response model for permission information"""
-    role: Optional[PermissionRole] = Field(None, description="Permission role (None for team permissions)")
-    type: str = Field(..., description="Permission type")
-
-
-class RecordResponse(BaseModel):
-    """Response model for record information"""
-    id: str = Field(..., description="Record ID")
-    externalRecordId: str = Field(..., description="External record ID")
-    externalRevisionId: Optional[str] = Field(None, description="External revision ID")
-    recordName: str = Field(..., description="Record name")
-    recordType: RecordType = Field(..., description="Record type")
-    origin: str = Field(..., description="Origin")
-    connectorName: Optional[str] = Field(..., description="Connector name")
-    indexingStatus: ProgressStatus = Field(..., description="Indexing status")
-    createdAtTimestamp: int = Field(..., description="Creation timestamp")
-    updatedAtTimestamp: int = Field(..., description="Update timestamp")
-    sourceCreatedAtTimestamp: Optional[int] = Field(None, description="Source creation timestamp")
-    sourceLastModifiedTimestamp: Optional[int] = Field(None, description="Source modification timestamp")
-    orgId: str = Field(..., description="Organization ID")
-    version: int = Field(..., description="Version")
-    isDeleted: bool = Field(..., description="Deletion status")
-    deletedByUserId: Optional[str] = Field(None, description="User who deleted")
-    isLatestVersion: Optional[bool] = Field(..., description="Whether this is the latest version")
-    webUrl: Optional[str] = Field(None, description="Web URL")
-    fileRecord: Optional[FileRecordResponse] = Field(None, description="Associated file record")
-    folder: Optional[FolderResponse] = Field(None, description="Folder information")
-    permission: Optional[PermissionContents] = Field(None, description="Permission information")
 
 class KnowledgeBaseResponse(BaseModel):
     """Response model for knowledge base information"""
@@ -191,9 +136,14 @@ class KnowledgeBaseFiltersResponse(BaseModel):
     available: Dict[str, List[str]] = Field(..., description="Available filter options")
 
 
+class KnowledgeBaseListItem(KnowledgeBaseResponse):
+    """A knowledge base in the list: at most 100 of its folders, the first by id"""
+    foldersTruncated: bool = Field(False, description="Whether the knowledge base has more folders than the list returns")
+
+
 class ListKnowledgeBaseResponse(BaseModel):
     """Response model for paginated knowledge base listing"""
-    knowledgeBases: List[KnowledgeBaseResponse] = Field(..., description="List of knowledge bases")
+    knowledgeBases: List[KnowledgeBaseListItem] = Field(..., description="List of knowledge bases")
     pagination: KnowledgeBasePaginationResponse = Field(..., description="Pagination information")
     filters: KnowledgeBaseFiltersResponse = Field(..., description="Filter information")
 
@@ -216,40 +166,6 @@ class PaginationResponse(BaseModel):
     limit: int = Field(..., description="Records per page")
     totalCount: int = Field(..., description="Total number of records")
     totalPages: int = Field(..., description="Total number of pages")
-
-
-class AppliedFiltersResponse(BaseModel):
-    """Response model for applied filters"""
-    search: Optional[str] = Field(None, description="Search term")
-    recordTypes: Optional[List[str]] = Field(None, description="Applied record type filters")
-    origins: Optional[List[str]] = Field(None, description="Applied origin filters")
-    connectors: Optional[List[str]] = Field(None, description="Applied connector filters")
-    indexingStatus: Optional[List[str]] = Field(None, description="Applied indexing status filters")
-    permissions: Optional[List[str]] = Field(None, description="Applied permission filters")
-    source: Optional[str] = Field(None, description="Applied source filter")
-    dateRange: Optional[Dict[str, Optional[int]]] = Field(None, description="Applied date range")
-
-
-class AvailableFiltersResponse(BaseModel):
-    """Response model for available filters"""
-    recordTypes: List[str] = Field(..., description="Available record types")
-    origins: List[str] = Field(..., description="Available origins")
-    connectors: List[str] = Field(..., description="Available connectors")
-    indexingStatus: List[str] = Field(..., description="Available indexing statuses")
-    permissions: List[str] = Field(..., description="Available permissions")
-
-
-class FiltersResponse(BaseModel):
-    """Response model for filters"""
-    applied: AppliedFiltersResponse = Field(..., description="Applied filters")
-    available: AvailableFiltersResponse = Field(..., description="Available filters")
-
-
-class ListRecordsResponse(BaseModel):
-    """Response model for listing records"""
-    records: List[RecordResponse] = Field(..., description="List of records")
-    pagination: PaginationResponse = Field(..., description="Pagination information")
-    filters: FiltersResponse = Field(..., description="Filter information")
 
 
 class CreateKnowledgeBaseResponse(BaseModel):
@@ -283,7 +199,7 @@ class UpdateRecordResponse(BaseModel):
     location: str = Field(..., description="The location of the record, e.g., 'kb_root' or 'folder'.")
     folderId: Optional[str] = Field(None, description="The ID of the parent folder, if the record is in a folder.")
     kb: Dict[str, Any] = Field(..., description="Information about the knowledge base containing the record.")
-    userPermission: str = Field(..., description="The permission role of the user who performed the update.")
+    userPermission: Optional[str] = Field(None, description="The permission role of the user who performed the update. Null when it could not be read.")
 
 class DeleteRecordResponse(BaseModel):
     """Response model for deleting a record"""
@@ -412,11 +328,17 @@ class TrashRetention(BaseModel):
     minAgeMs: int = Field(..., description="Items stay at least this long before the cleanup may remove them")
 
 
+class TrashPagination(PaginationResponse):
+    """Paging of the recently deleted list, whose total stops counting at a cap"""
+    totalCapped: bool = Field(False, description="More items than the cap; totalCount is the cap")
+    nextCursor: Optional[str] = Field(None, description="Pass as cursor for the next page; null on the last page")
+
+
 class ListTrashResponse(BaseModel):
     """One page of a collection's recently deleted items"""
     success: bool = Field(True, description="Success status")
     items: list[TrashItem] = Field(..., description="Deleted items, newest first")
-    pagination: PaginationResponse = Field(..., description="Pagination information")
+    pagination: TrashPagination = Field(..., description="Pagination information")
     retention: TrashRetention | None = Field(None, description="Retention; none when it can't be read")
 class FileUploadResponse(BaseModel):
     """Response model for file upload"""

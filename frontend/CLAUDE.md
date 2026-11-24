@@ -47,7 +47,7 @@ The `/knowledge-base` page has two modes: Collections (folder tree) and All Reco
 
 ## Routing
 
-- There are no dynamic route segments. Identify entities with query params (`/chat?conversationId=…`, `/agents?agentId=…`, `/knowledge-base?nodeType=kb&nodeId=…`). The desktop build uses `output: 'export'` (`next.config.mjs`), which cannot emit per-id pages.
+- There are no dynamic route segments. Identify entities with query params (`/chat?conversationId=…`, `/agents?agentId=…`, `/knowledge-base?nodeType=app&nodeId=…` for a collection; `nodeType` is the Knowledge Hub parent type `app`, `recordGroup`, `folder` or `record`, never `kb`). The desktop build uses `output: 'export'` (`next.config.mjs`), which cannot emit per-id pages.
 - Pages and components that use hooks or browser APIs start with `'use client'`.
 
 ## Page co-location

@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from collections.abc import Set as AbstractSet
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,21 @@ class FeedbackWindow:
     @property
     def is_empty(self) -> bool:
         return not (self.incident or self.timeouts)
+
+    def without(self, services: AbstractSet[str]) -> FeedbackWindow:
+        """This window minus what *services* reported."""
+        if not services:
+            return self
+
+        def keep(counts: Mapping[str, int]) -> Mapping[str, int]:
+            return MappingProxyType({name: n for name, n in counts.items() if name not in services})
+
+        return FeedbackWindow(
+            throttles=keep(self.throttles),
+            timeouts=keep(self.timeouts),
+            pool_exhaustions=keep(self.pool_exhaustions),
+            unavailable=keep(self.unavailable),
+        )
 
     def describe(self) -> str:
         parts = []

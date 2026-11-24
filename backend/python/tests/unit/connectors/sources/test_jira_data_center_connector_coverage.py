@@ -17,6 +17,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import IndexingFilterKey, ListOperator, SyncFilterKey
 from app.models.blocks import ChildRecord, ChildType, GroupSubType
+from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     GroupMemberships,
     GroupPickerPage,
@@ -60,7 +61,10 @@ def _make_connector() -> JiraDataCenterConnector:
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
-    return JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-cov", "team", "u1")
+    conn = JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-cov", "team", "u1")
+    # These tests do not serve issue security: a project without a scheme.
+    conn._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    return conn
 
 
 def _list_unavailable_resp() -> MagicMock:
@@ -467,12 +471,11 @@ async def test_check_and_fetch_updated_record_unsupported_returns_none():
     "raw, expected",
     [
         ({}, None),
-        # On DC, name is the canonical group identifier; fall back to name
-        # as groupId when neither groupId nor id is exposed by the server.
+        # On DC, the name is the group's only identifier: an id in a row is not a second key.
         ({"name": "g"}, {"name": "g", "groupId": "g"}),
         ({"groupId": "1"}, None),
-        ({"name": "gn", "groupId": "gid"}, {"name": "gn", "groupId": "gid"}),
-        ({"name": "gn", "id": "i2"}, {"name": "gn", "groupId": "i2"}),
+        ({"name": "gn", "groupId": "gid"}, {"name": "gn", "groupId": "gn"}),
+        ({"name": "gn", "id": "i2"}, {"name": "gn", "groupId": "gn"}),
     ],
 )
 def test_normalize_jira_dc_group_row(raw, expected):
@@ -608,7 +611,8 @@ async def test_run_sync_happy_path_heavy_mock():
         new_callable=AsyncMock,
         return_value=(None, None),
     ):
-        with patch.object(conn, "_fetch_users", new_callable=AsyncMock, return_value=[u]):
+        with patch.object(conn, "_fetch_users", new_callable=AsyncMock, return_value=[u]), \
+                patch.object(conn, "_eligible_users", new_callable=AsyncMock, side_effect=lambda users: users):
             with patch.object(conn, "_sync_user_groups", new_callable=AsyncMock, return_value=GroupMemberships({})):
                 with patch.object(
                     conn, "_fetch_projects", new_callable=AsyncMock, return_value=([], []),
@@ -915,8 +919,12 @@ async def test_fetch_project_permission_scheme_dc_branches():
     app_map = {
         "jira-software": [{"groupId": "expanded-g", "name": "E"}],
     }
+    user_by_key = {"acc": AppUser(
+        app_name=Connectors.JIRA_DATA_CENTER, connector_id="conn-dc-cov", source_user_id="acc",
+        org_id="org-dc-cov", email="u@example.com", full_name="U", is_active=True,
+    )}
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-        perms = await conn._fetch_project_permission_scheme("PROJ", app_map)
+        perms = await conn._fetch_project_permission_scheme("PROJ", app_map, user_by_key)
     ds.get_permission_scheme_grants_v2.assert_awaited_once()
     types = {(p.entity_type, p.email, p.external_id) for p in perms}
     assert (EntityType.GROUP, None, "gid1") in types
@@ -925,6 +933,40 @@ async def test_fetch_project_permission_scheme_dc_branches():
     assert (EntityType.ORG, None, "anyone_authenticated") in types
     assert (EntityType.ROLE, None, "PROJ_10400") in types
     assert (EntityType.ROLE, None, "PROJ_projectLead") in types
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parameter", "unfinished", "licensed", "granted"),
+    [
+        pytest.param("acc", False, None, False, id="not in a complete user list"),
+        # The grants read does not expand holders, so the email on one is never read: on a list cut short the
+        # project's stored access is kept instead.
+        pytest.param("acc", True, None, False, id="user list cut short"),
+        pytest.param("acc", True, {"other"}, False, id="user list cut short, no product access"),
+        pytest.param("acc", True, {"acc"}, False, id="user list cut short, product access"),
+        pytest.param("ann", False, None, False, id="a username is never read as a key"),
+    ],
+)
+async def test_a_user_holder_outside_the_synced_users_is_never_granted_by_the_email_on_the_holder(
+    parameter: str, unfinished: bool, licensed: set[str] | None, granted: bool,
+) -> None:
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn._user_read_unfinished, conn._licensed_keys = unfinished, licensed
+    conn._dc_name_to_source_id = {"ann": "ann-key"}
+    users = {"ann-key": MagicMock(email="ann@example.com")}
+    sch, grants = MagicMock(status=HttpStatusCode.OK.value), MagicMock(status=HttpStatusCode.OK.value)
+    sch.json = MagicMock(return_value={"id": 10})
+    grants.json = MagicMock(return_value={"permissions": [{"permission": "BROWSE_PROJECTS", "holder": {
+        "type": "user", "parameter": parameter, "user": {"emailAddress": f"{parameter}@example.com", "active": True},
+    }}]})
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("PROJ", {}, users)
+    assert bool(perms) is granted
 
 
 @pytest.mark.asyncio
@@ -1001,6 +1043,29 @@ async def test_fetch_project_permission_scheme_user_resolved_via_user_by_key():
     assert len(perms) == 1
     assert perms[0].entity_type == EntityType.USER
     assert perms[0].email == "darshan@example.com"
+
+
+@pytest.mark.asyncio
+async def test_fetch_project_permission_scheme_inline_email_alone_grants_nothing() -> None:
+    """A user holder outside the synced directory (an account withdrawn this sync, say) gets no project grant,
+    even when the holder carries its email inline."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(return_value={"id": 10000})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(return_value={"permissions": [{
+        "permission": "BROWSE_PROJECTS",
+        "holder": {"type": "user", "parameter": "bob-key", "user": {"key": "bob-key", "emailAddress": "bob@x.com"}},
+    }]})
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("TEST", {}, {})
+    assert perms == []
 
 
 @pytest.mark.asyncio
@@ -1152,7 +1217,7 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
         conn,
         "_fetch_groups",
         new_callable=AsyncMock,
-        return_value=GroupPickerPage([{"groupId": "g1", "name": "G1"}]),
+        return_value=GroupPickerPage([{"groupId": "G1", "name": "G1"}]),
     ):
         with patch.object(
             conn,
@@ -1162,8 +1227,7 @@ async def test_sync_user_groups_batches_groups_and_maps_members():
         ):
             mmap = (await conn._sync_user_groups([u])).members
     conn.data_entities_processor.on_new_user_groups.assert_awaited()
-    assert mmap["g1"][0].email == "member@example.com"
-    assert mmap["G1"] == mmap["g1"]
+    assert mmap == {"G1": [u]}  # by name, the only key a Data Center group has
 
 
 @pytest.mark.asyncio
@@ -1223,7 +1287,7 @@ async def test_sync_project_roles_user_and_group_actors():
                     "type": "atlassian-user-role-actor",
                     "actorUser": {"accountId": "u1", "emailAddress": "actor@example.com"},
                 },
-                {"type": "atlassian-group-role-actor", "groupId": "gx", "name": "GX"},
+                {"type": "atlassian-group-role-actor", "name": "GX"},
             ],
         }
     )
@@ -1237,7 +1301,7 @@ async def test_sync_project_roles_user_and_group_actors():
         await conn._sync_project_roles(
             ["P"],
             [u],
-            {"gx": gmember},
+            {"GX": gmember},
         )
     conn.data_entities_processor.on_new_app_roles.assert_awaited()
     args = conn.data_entities_processor.on_new_app_roles.call_args[0][0]
@@ -1270,6 +1334,62 @@ async def test_sync_project_lead_roles_with_and_without_lead_user():
     assert batch[0][1] == [u]
     assert batch[1][1] == []
     assert batch[2][1] == []
+
+
+def _renamed_and_new_alice(conn) -> tuple[AppUser, AppUser]:
+    """Alice was renamed to alice.old and kept "alice" as her key; a newer account took the username "alice"."""
+    conn._dc_name_to_source_id = {"alice": "JIRAUSER10100", "alice.old": "alice"}
+    return tuple(
+        AppUser(app_name=Connectors.JIRA_DATA_CENTER, connector_id=conn.connector_id, source_user_id=key,
+                org_id="org-dc-cov", email=email, full_name=key, is_active=True)
+        for key, email in (("alice", "old-alice@example.com"), ("JIRAUSER10100", "new-alice@example.com"))
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_project_lead_named_by_username_is_the_account_holding_that_username() -> None:
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    renamed, newer = _renamed_and_new_alice(conn)
+    await conn._sync_project_lead_roles([{"key": "K1", "lead": {"name": "alice"}}], [renamed, newer])
+    batch = conn.data_entities_processor.on_new_app_roles.call_args[0][0]
+    assert batch[0][1] == [newer]
+
+
+@pytest.mark.asyncio
+async def test_a_group_member_named_by_username_is_the_account_holding_that_username() -> None:
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    _renamed_and_new_alice(conn)
+    page = MagicMock()
+    page.status = HttpStatusCode.OK.value
+    page.json = MagicMock(return_value={"values": [{"name": "alice"}, {"name": "unlisted"}], "isLast": True})
+    ds = MagicMock()
+    ds.get_users_from_group_v2 = AsyncMock(return_value=page)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        assert await conn._fetch_group_members("g1", "G") == ["JIRAUSER10100"]
+
+
+@pytest.mark.asyncio
+async def test_a_project_user_grant_parameter_is_a_key_never_a_username() -> None:
+    """The renamed account (key "alice") is not synced; the newer account holding the username "alice" is."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    _, newer = _renamed_and_new_alice(conn)
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(return_value={"id": 10000})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(return_value={"permissions": [
+        {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "alice"}},
+    ]})
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("TEST", {}, {"JIRAUSER10100": newer})
+    assert perms == []
 
 
 @pytest.mark.asyncio
@@ -2877,6 +2997,31 @@ async def test_fetch_users_paginates_two_pages():
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             users = await conn._fetch_users()
     assert len(users) == 51
+
+
+@pytest.mark.asyncio
+async def test_fetch_users_keeps_every_account_that_shares_an_email() -> None:
+    """Only one of two accounts sharing an email may have product access, so neither may replace the other."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    batch = [
+        {"key": "licensed", "emailAddress": "same@example.com", "active": True},
+        {"key": "unlicensed", "emailAddress": "Same@example.com", "active": True},
+    ]
+    ok = MagicMock()
+    ok.status = HttpStatusCode.OK.value
+    ok.json = MagicMock(return_value=batch)
+    empty = MagicMock()
+    empty.status = HttpStatusCode.OK.value
+    empty.json = MagicMock(return_value=[])
+    ds = MagicMock()
+    ds.get_user_list_v2 = AsyncMock(return_value=_list_unavailable_resp())
+    ds.get_user_search_v2 = AsyncMock(side_effect=[ok, empty])
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        users = await conn._fetch_users()
+    assert {(u.source_user_id, u.email) for u in users} == {
+        ("licensed", "same@example.com"), ("unlicensed", "same@example.com"),
+    }
 
 
 @pytest.mark.asyncio

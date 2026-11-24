@@ -42,10 +42,12 @@ if TYPE_CHECKING:
 logger = create_logger(__name__)
 
 CALLER_ROLE_PATH = "/api/v1/users/me/role"
+KNOWLEDGE_LIMIT_FIELD = "knowledgeLimit"
 _TIMEOUT_SECONDS = 5.0
-# Node authenticates the caller from the Authorization header alone, so nothing else is
-# sent; cookies in particular can carry a long-lived refresh token.
-_FORWARDED_HEADERS = ("authorization",)
+# Node authenticates the caller from the Authorization header, plus the /mcp relay header for a
+# token issued for /mcp, which Node accepts elsewhere only as part of an /mcp call. Nothing else
+# is sent; cookies in particular can carry a long-lived refresh token.
+_FORWARDED_HEADERS = ("authorization", "x-pipeshub-mcp-relay")
 SERVICE_AUTHORIZATION_HEADER = "x-service-authorization"
 _SERVICE_TOKEN_TTL = timedelta(minutes=5)
 
@@ -69,6 +71,11 @@ class CallerRoleStatus(Enum):
 class CallerRole:
     status: CallerRoleStatus
     role: Role = "member"
+    # A personal access token's limit as stored now: its owner can change it after
+    # the token is issued, so the signed claim may be stale. ``knowledge_limit_given``
+    # is False when Node sent none (an OAuth app's token), and the claim then stands.
+    knowledge_limit: dict[str, object] | None = None
+    knowledge_limit_given: bool = False
 
     @property
     def is_admin(self) -> bool:
@@ -173,7 +180,46 @@ async def fetch_caller_role(
     except ValueError:
         logger.warning("Caller role lookup returned a non-JSON body")
         return _UNKNOWN
-    return CallerRole(CallerRoleStatus.VALID, normalize_auth_role(_str_field(body, "role")))
+    role = normalize_auth_role(_str_field(body, "role"))
+    if not isinstance(body, dict) or KNOWLEDGE_LIMIT_FIELD not in body:
+        return CallerRole(CallerRoleStatus.VALID, role)
+    limit = body[KNOWLEDGE_LIMIT_FIELD]
+    if limit is not None and not isinstance(limit, dict):
+        # Read as "no limit", a malformed answer would widen the token to everything.
+        logger.warning("Caller role lookup returned an unreadable knowledge limit")
+        return _UNKNOWN
+    return CallerRole(
+        CallerRoleStatus.VALID,
+        role,
+        knowledge_limit=cast("dict[str, object] | None", limit),
+        knowledge_limit_given=True,
+    )
+
+
+async def fetch_own_identity(
+    config_service: ConfigurationService, org_id: str, user_id: str, path: str
+) -> dict[str, object] | None:
+    """One of Node's internal identity reads (``/api/v1/users/internal/<id>``, ``/api/v1/org/internal``) for exactly this user and org.
+
+    The USER_LOOKUP service token carries both, and Node takes the org from the token, so the answer cannot describe
+    another org's records. None when Node has no live record (404); any other failure raises.
+    """
+    secret = _str_field(
+        await config_service.get_config(config_node_constants.SECRET_KEYS.value, use_cache=True), "scopedJwtSecret"
+    )
+    if not isinstance(secret, str) or not secret:
+        raise RuntimeError("the scoped JWT secret is not configured")
+    token = mint_service_token(
+        secret, {"userId": user_id, "orgId": org_id, "scopes": [TokenScopes.USER_LOOKUP.value]}, ttl=_SERVICE_TOKEN_TTL
+    )
+    url = f"{await _nodejs_endpoint(config_service)}{path}"
+    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, verify=_ssl_context()) as client:
+        response = await client.get(url, headers={"authorization": f"Bearer {token}"})
+    if response.status_code == HttpStatusCode.NOT_FOUND.value:
+        return None
+    response.raise_for_status()
+    body: object = response.json()
+    return cast("dict[str, object]", body) if isinstance(body, dict) else None
 
 
 class CallerRoleCache:

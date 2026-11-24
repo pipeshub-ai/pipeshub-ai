@@ -37,6 +37,7 @@ services:
       # Core environment settings
       - NODE_ENV=${NODE_ENV:-production}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FORMAT=${LOG_FORMAT:-text}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
@@ -44,7 +45,7 @@ services:
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
 
       # Security settings - allow override with custom secret
-      - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -74,7 +75,7 @@ services:
       - ARANGO_URL=http://arango:8529
       - ARANGO_DB_NAME=es
       - ARANGO_USERNAME=root
-      - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
+      - ARANGO_PASSWORD=${ARANGO_PASSWORD:?set ARANGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
       # Ensure we use the same password as configured for the ArangoDB service
 
       # Message broker config
@@ -117,13 +118,13 @@ services:
       - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-}
 
       # MongoDB config
-      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:?set MONGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}@mongodb:27017/?authSource=admin
       - MONGO_DB_NAME=es
       # Standalone mongod — multi-document transactions unavailable. App branches on this.
       - REPLICA_SET_AVAILABLE=false
 
       # Qdrant config
-      - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT_API_KEY=${QDRANT_API_KEY:?set QDRANT_API_KEY in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
       - QDRANT_HOST=qdrant
       - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-4G}
       - QDRANT_GRPC_PORT=6334
@@ -171,6 +172,11 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Stored-record cache: memory (default, per worker, up to 512 MiB) | redis.
+      - PIPESHUB_RECORD_CACHE_BACKEND=${PIPESHUB_RECORD_CACHE_BACKEND:-memory}
+      - PIPESHUB_RECORD_CACHE_BYTES=${PIPESHUB_RECORD_CACHE_BYTES:-}
+      # ripgrep threads per search; blank = half the container's CPUs (also the cap).
+      - GREP_THREADS=${GREP_THREADS:-}
       # Most characters one agent turn may stream before it is stopped as a
       # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
       - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
@@ -216,11 +222,13 @@ services:
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
       - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
       - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
+      - PDF_DOCLING_TABLE_MODE=${PDF_DOCLING_TABLE_MODE:-accurate}
       # CONNECTOR_SYNC_MAX_CONCURRENT caps how many syncs run at once.
       - CONNECTOR_SYNC_MAX_CONCURRENT=${CONNECTOR_SYNC_MAX_CONCURRENT:-8}
       # How long a delete waits for a running sync to stop.
       - CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC=${CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC:-15}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
+      - INDEXING_TABLE_ROW_BATCH_SIZE=${INDEXING_TABLE_ROW_BATCH_SIZE:-50}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
@@ -243,12 +251,69 @@ services:
       - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-false}
       # Generated code gets no network unless set to true; even then private,
       # link-local and cloud-metadata addresses are firewalled. CIDRs in
-      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt,
+      # except the sandbox bridge, its gateway and metadata, which stay blocked.
       - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
       - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
       # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
       # the storage driver supports it; logs a warning once otherwise.
       - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
+      # The most seconds one code run may take (10..3600); a larger timeout
+      # asked for by the model is lowered to it.
+      - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
+      # Code sandbox capacity, shared by every query worker. Empty = sized
+      # from the machine: min(25% of memory / 512 MB, 75% of CPUs / 0.5, processes),
+      # at least SANDBOX_MIN_TOTAL (2). SANDBOX_MAX_TOTAL replaces it; set it when
+      # several stacks share one Docker host.
+      - SANDBOX_MAX_TOTAL=${SANDBOX_MAX_TOTAL:-}
+      - SANDBOX_MAX_PER_ORG=${SANDBOX_MAX_PER_ORG:-}
+      - SANDBOX_MAX_PER_REQUEST=${SANDBOX_MAX_PER_REQUEST:-}
+      - SANDBOX_MIN_TOTAL=${SANDBOX_MIN_TOTAL:-}
+      - SANDBOX_MEMORY_SHARE=${SANDBOX_MEMORY_SHARE:-}
+      - SANDBOX_CPU_FACTOR=${SANDBOX_CPU_FACTOR:-}
+      # How long a run waits for a free sandbox before it is refused (default 120).
+      - SANDBOX_SLOT_WAIT_S=${SANDBOX_SLOT_WAIT_S:-}
+      # The sandbox host's size, when the daemon is remote and cannot be read.
+      - SANDBOX_HOST_MEMORY_BYTES=${SANDBOX_HOST_MEMORY_BYTES:-}
+      - SANDBOX_HOST_CPU_MILLIS=${SANDBOX_HOST_CPU_MILLIS:-}
+      # Live limit: holds new runs back while the host is short of memory or CPU
+      # (off disables it). Empty = defaults; see env.template.
+      - SANDBOX_LIVE_LIMIT=${SANDBOX_LIVE_LIMIT:-}
+      - SANDBOX_LIVE_INTERVAL_S=${SANDBOX_LIVE_INTERVAL_S:-}
+      - SANDBOX_HOST_MEM_FLOOR_MB=${SANDBOX_HOST_MEM_FLOOR_MB:-}
+      - SANDBOX_HOST_MEM_SOFT_MB=${SANDBOX_HOST_MEM_SOFT_MB:-}
+      - SANDBOX_HOST_CPU_BRAKE=${SANDBOX_HOST_CPU_BRAKE:-}
+      - SANDBOX_HOST_CPU_PSI_BRAKE=${SANDBOX_HOST_CPU_PSI_BRAKE:-}
+      - SANDBOX_MEMORY_OVERCOMMIT=${SANDBOX_MEMORY_OVERCOMMIT:-}
+      # Runs waiting for memory ask indexing to slow down (off disables it).
+      - SANDBOX_YIELD_INDEXING=${SANDBOX_YIELD_INDEXING:-}
+      - SANDBOX_YIELD_TTL_S=${SANDBOX_YIELD_TTL_S:-}
+      - SANDBOX_ALERTS=${SANDBOX_ALERTS:-}
+      - SANDBOX_ALERT_WINDOW_S=${SANDBOX_ALERT_WINDOW_S:-}
+      - SANDBOX_ALERT_EVAL_S=${SANDBOX_ALERT_EVAL_S:-}
+      - SANDBOX_ALERT_WARN_BUSY_PCT=${SANDBOX_ALERT_WARN_BUSY_PCT:-}
+      - SANDBOX_ALERT_WARN_MIN_WAITED=${SANDBOX_ALERT_WARN_MIN_WAITED:-}
+      - SANDBOX_ALERT_CRIT_MIN_REFUSED=${SANDBOX_ALERT_CRIT_MIN_REFUSED:-}
+      - SANDBOX_ALERT_CRIT_REFUSED_PCT=${SANDBOX_ALERT_CRIT_REFUSED_PCT:-}
+      - SANDBOX_ALERT_COOLDOWN_S=${SANDBOX_ALERT_COOLDOWN_S:-}
+      - SANDBOX_ALERT_SCOPE=${SANDBOX_ALERT_SCOPE:-}
+      # Shared state place, disk checks, container log rotation and output caps
+      # (empty: the app's defaults; see ADVANCED_DEPLOYMENT.md).
+      - SANDBOX_STATE_DIR=${SANDBOX_STATE_DIR:-}
+      - SANDBOX_DISK_WATCHDOG=${SANDBOX_DISK_WATCHDOG:-}
+      - SANDBOX_DISK_WATCH_CHECK_TIMEOUT_S=${SANDBOX_DISK_WATCH_CHECK_TIMEOUT_S:-}
+      - SANDBOX_DISK_WATCH_MAX_FAILURES=${SANDBOX_DISK_WATCH_MAX_FAILURES:-}
+      - SANDBOX_LOG_MAX_SIZE=${SANDBOX_LOG_MAX_SIZE:-}
+      - SANDBOX_LOG_MAX_FILES=${SANDBOX_LOG_MAX_FILES:-}
+      - SANDBOX_EGRESS_DNS_SERVERS=${SANDBOX_EGRESS_DNS_SERVERS:-}
+      - SANDBOX_STDIO_HEAD_BYTES=${SANDBOX_STDIO_HEAD_BYTES:-}
+      - SANDBOX_STDIO_TAIL_BYTES=${SANDBOX_STDIO_TAIL_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_FILE_BYTES=${SANDBOX_OUTPUT_MAX_FILE_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_TOTAL_BYTES=${SANDBOX_OUTPUT_MAX_TOTAL_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_FILES=${SANDBOX_OUTPUT_MAX_FILES:-}
+      - SANDBOX_OUTPUT_MAX_SANDBOX_BYTES=${SANDBOX_OUTPUT_MAX_SANDBOX_BYTES:-}
+      - SANDBOX_OUTPUT_MAX_SANDBOX_FILES=${SANDBOX_OUTPUT_MAX_SANDBOX_FILES:-}
+      - SANDBOX_DEPS_MAX_TOTAL_BYTES=${SANDBOX_DEPS_MAX_TOTAL_BYTES:-}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
       - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
       # The app never sees the Docker socket; sandbox containers are created
@@ -316,6 +381,16 @@ services:
     environment:
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
       - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      # Same value as the app's, so the reaper never removes a run still in time.
+      - SANDBOX_MAX_RUN_TIMEOUT_S=${SANDBOX_MAX_RUN_TIMEOUT_S:-300}
+      # All interfaces of this container, which is only on the internal
+      # sandbox-control network (the proxy itself defaults to loopback).
+      - DOCKER_PROXY_HOST=0.0.0.0
+      # Names this stack on the containers it creates. Blank: the Compose project (compose:<project>).
+      - DOCKER_PROXY_INSTANCE=${DOCKER_PROXY_INSTANCE:-compose:${COMPOSE_PROJECT_NAME}}
+      # Also remove leftover sandbox containers that carry no stack name (from a
+      # proxy before this one). Off: another stack on the daemon may still run one.
+      - DOCKER_PROXY_REAP_UNLABELED=${DOCKER_PROXY_REAP_UNLABELED:-false}
       - PYTHONDONTWRITEBYTECODE=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -345,7 +420,7 @@ services:
     command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "${MONGO_CACHE_GB:-1}"]
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_USERNAME:-admin}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-password}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:?set MONGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
       - GLIBC_TUNABLES=${MONGO_GLIBC_TUNABLES:-glibc.pthread.rseq=0}
     volumes:
       - mongodb_data:/data/db
@@ -379,11 +454,11 @@ services:
     container_name: arango
     restart: always
     environment:
-      - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-your_password}
+      - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:?set ARANGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
     volumes:
       - arango_data:/var/lib/arangodb3
     healthcheck:
-      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-your_password}' --javascript.execute-string 'db._version()' || exit 1"]
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:?set ARANGO_PASSWORD in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}' --javascript.execute-string 'db._version()' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -456,7 +531,7 @@ services:
     container_name: qdrant
     restart: always
     environment:
-      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:?set QDRANT_API_KEY in .env (upgrading? see ADVANCED_DEPLOYMENT.md)}
       # Performance optimizations
       - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
       - QDRANT__SERVICE__GRPC_PORT=6334

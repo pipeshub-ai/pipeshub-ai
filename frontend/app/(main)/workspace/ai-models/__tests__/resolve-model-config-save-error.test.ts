@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { TFunction } from 'i18next';
-import { ErrorType, type ProcessedError } from '@/lib/api/api-error';
+import { AxiosError, AxiosHeaders } from 'axios';
+import { ErrorType, processError, type ProcessedError } from '@/lib/api/api-error';
 import {
   extractErrorCode,
   resolveModelConfigSaveError,
@@ -35,6 +36,23 @@ describe('extractErrorCode', () => {
 });
 
 describe('resolveModelConfigSaveError', () => {
+  it("shows the model check's out-of-credit reason as the server wrote it", () => {
+    // What the Node API answers when the provider account has no credit left: a 400 with the AI service's sentence.
+    const reason =
+      'The OpenAI account for GPT is out of credit, so the test call was turned down. The API key is fine: ' +
+      "add credit or raise the usage limit in the provider's billing settings, then try again. " +
+      'OpenAI said: "You exceeded your current quota, please check your plan and billing details."';
+    const error = new AxiosError('Request failed with status code 400');
+    error.response = {
+      status: 400,
+      statusText: '',
+      data: { error: { status: 'error', message: reason } },
+      headers: new AxiosHeaders(),
+      config: { headers: new AxiosHeaders() },
+    } as never;
+    expect(resolveModelConfigSaveError(processError(error as never), t)).toBe(reason);
+  });
+
   it('uses the outbound i18n key when outbound_connectivity is nested on the axios body', () => {
     const pythonMessage = 'Cannot reach cloud LLM providers from PipesHub.';
     const err = processed({

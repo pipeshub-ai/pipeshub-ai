@@ -25,6 +25,7 @@ from app.core.db import (
     ProfileEpochMismatch,
     PrologueFailed,
     SerializationConflict,
+    TooManyConnections,
     UowUsageError,
     catalog,
     safe_request_id,
@@ -400,22 +401,35 @@ def test_the_guard_fails_closed_on_what_it_cannot_resolve() -> None:
         assert NOT_RESOLVABLE in rules(unmodelled), unmodelled
 
 
-def test_the_sql_start_check_is_linear_on_hostile_comments() -> None:
-    import time
+class _CountingText(str):
+    """Text that counts the characters the scan touches: each one indexed, each one a slice copies, and each one a
+    ``find`` passes over. Counted, not timed, so a busy runner cannot change the answer."""
 
-    def seconds(unit: str, n: int) -> float:
-        text = unit * n + "x"
-        best = float("inf")
-        for _ in range(3):                                                      # the best of three runs: a scheduling pause hits one, not all
-            start = time.perf_counter()
-            assert not sql_lint._starts_sql(text)
-            best = min(best, time.perf_counter() - start)
-        return best
+    touched = 0
+
+    def __getitem__(self, key: object) -> str:
+        part = _CountingText(str.__getitem__(self, key))  # type: ignore[index]  # a copy keeps counting
+        _CountingText.touched += len(part)
+        return part
+
+    def find(self, sub: str, start: int | None = None, end: int | None = None) -> int:  # type: ignore[override]
+        found = str.find(self, sub, start, end)
+        begin = 0 if start is None else start
+        _CountingText.touched += (found if found >= 0 else len(self)) - begin + len(sub)
+        return found
+
+
+def test_the_sql_start_check_is_linear_on_hostile_comments() -> None:
+    def touched(unit: str, n: int) -> int:
+        _CountingText.touched = 0
+        assert not sql_lint._starts_sql(_CountingText(unit * n + "x"))
+        return _CountingText.touched
 
     for unit in ("-- ", "/* ", "--", "/**/ ", "/**/\n"):
-        big = seconds(unit, 200_000)
-        assert big < 5                                                          # quadratic copying would take minutes
-        assert big < 12 * max(seconds(unit, 50_000), 0.05)                      # 4x the input, far less than 16x the time
+        small, big = touched(unit, 50_000), touched(unit, 200_000)
+        # 4x the input touches about 4x the characters; copying the rest of the text, or scanning it again, at each
+        # comment would touch about 16x (quadratic copying took minutes on the timed version of this test).
+        assert big <= 5 * small, (unit, small, big)
     assert sql_lint._starts_sql("-- a\n/* b */ -- c\n  SET x = 1") and not sql_lint._starts_sql("/* open SET x")
 
 
@@ -579,6 +593,29 @@ async def test_transaction_control_is_refused_at_runtime(sql: str) -> None:
     with pytest.raises(UowUsageError):
         await tx.execute(sql)
     assert not tx.failed
+
+
+@pytest.mark.parametrize("sql", ["COMMIT", "SELECT 1; ROLLBACK", "SELECT set_config('role', 'x', false)"])
+async def test_a_refused_custom_plan_statement_leaves_the_plan_mode_alone(sql: str) -> None:
+    class Con:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def fetchval(self, q: str, *a: object) -> str:
+            self.sent.append(q)
+            return "auto"
+
+        async def execute(self, q: str, *a: object) -> str:
+            self.sent.append(q)
+            return "SELECT 1"
+
+        def is_in_transaction(self) -> bool:
+            return True
+    con = Con()
+    tx = Tx(con, _db(), klass="query", idempotent=False, request_id="r")  # type: ignore[arg-type]
+    with pytest.raises(UowUsageError):
+        await tx.fetch_custom_plan(sql)
+    assert con.sent == [] and not tx.failed      # refused before the mode was read or set, so there is nothing to put back
 
 
 def test_transaction_control_check_ignores_bodies_and_literals() -> None:
@@ -804,3 +841,256 @@ def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
     started = time.monotonic()
     sql_lint._starts_sql("/*" + "*//*" * 20000 + "x")
     assert time.monotonic() - started < 5.0
+
+
+# ---- Opening a connection fails: no statement exists to record it, so _open stamps it text-hidden itself ------------
+
+def _refusing_pool(error: BaseException) -> object:
+    from unittest.mock import AsyncMock, MagicMock
+
+    pool = MagicMock()
+    pool.acquire = AsyncMock(side_effect=error)
+    return pool
+
+
+async def _open_with(pool: object) -> BaseException:
+    from app.core.db.config import TIMEOUT_CLASSES
+
+    with pytest.raises(BaseException) as raised:
+        async with _db()._open(pool, role="r", org_id="", request_id="q", klass=next(iter(TIMEOUT_CLASSES)), write=False):
+            pass
+    return raised.value
+
+
+def _logged(exc: BaseException) -> list:
+    import logging
+
+    from app.utils.error_class import log_failure
+
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    probe = logging.getLogger("test.runtime_unit.connect")
+    probe.addHandler(handler)
+    probe.setLevel(logging.DEBUG)
+    try:
+        log_failure(probe, "search.access_unreadable", exc)  # any handler's default line, text included unless hidden
+    finally:
+        probe.removeHandler(handler)
+    return records
+
+
+async def test_a_refused_connection_is_connection_lost_with_no_host_in_any_line() -> None:
+    from app.utils.error_class import classify_error
+    from app.utils.logger import log_record_fields
+    from tests.support.log_capture import assert_text_free
+
+    refused = OSError(111, "Connect call failed ('10.0.0.7', 5432)")
+    lost = await _open_with(_refusing_pool(refused))
+    assert isinstance(lost, ConnectionLost) and lost.retry_safe
+    assert str(lost) == "cannot connect" and lost.__cause__ is refused
+    assert classify_error(lost) == "unavailable"
+    records = _logged(lost)
+    assert "error_message" not in log_record_fields(records[0])
+    assert_text_free(records, "10.0.0.7", "5432")
+
+
+_E = asyncpg.exceptions
+# What the server (or a pooler) sends while a new connection opens, by SQLSTATE. Messages as PostgreSQL words them, with a user and host.
+_OUTAGES = {
+    "57P03": _E.CannotConnectNowError("the database system is starting up (pipeshub_app@10.0.0.7)"),
+    "57P03-shutdown": _E.CannotConnectNowError("the database system is shutting down (pipeshub_app@10.0.0.7)"),
+    "57P01": _E.AdminShutdownError("terminating connection due to administrator command (pipeshub_app@10.0.0.7)"),
+    "57P02": _E.CrashShutdownError("terminating connection because of crash of another server process (10.0.0.7)"),
+    "08000": _E.PostgresConnectionError("connection exception (10.0.0.7)"),
+    "08001": _E.ClientCannotConnectError("could not connect to 10.0.0.7"),
+    "08003": _E.ConnectionDoesNotExistError("connection was closed in the middle of operation (10.0.0.7)"),
+    "08004": _E.ConnectionRejectionError("server rejected pipeshub_app"),
+    "08006": _E.ConnectionFailureError("connection failure (10.0.0.7)"),
+    "08P01": _E.ProtocolViolationError("pgbouncer cannot connect to server 10.0.0.7"),
+}
+_FULL = _E.TooManyConnectionsError('sorry, too many clients already for "pipeshub_app" on 10.0.0.7')
+_CONFIGURATION = {
+    "28P01": _E.InvalidPasswordError('password authentication failed for user "pipeshub_app" at 10.0.0.7'),
+    "28000": _E.InvalidAuthorizationSpecificationError('no pg_hba.conf entry for host "10.0.0.7", user "pipeshub_app"'),
+    "3D000": _E.InvalidCatalogNameError('database "pipeshub" does not exist (pipeshub_app@10.0.0.7)'),
+}
+
+
+@pytest.mark.parametrize("refusal", [*_OUTAGES.values(), _FULL], ids=[*_OUTAGES, "53300"])
+async def test_a_server_outage_on_connect_is_connection_lost_and_unavailable(refusal: asyncpg.PostgresError) -> None:
+    from app.utils.error_class import classify_error, is_stamped
+    from tests.support.log_capture import assert_text_free
+
+    lost = await _open_with(_refusing_pool(refusal))
+    assert isinstance(lost, ConnectionLost) and str(lost) == "cannot connect" and lost.__cause__ is refusal
+    assert classify_error(lost) == "unavailable"
+    assert lost.retry_safe is (refusal is not _FULL)
+    assert isinstance(lost, TooManyConnections) is (refusal is _FULL)
+    assert not is_stamped(lost), "hidden only: no client recorded it, so check_access still writes its line"
+    assert_text_free(_logged(lost), "pipeshub_app", "10.0.0.7")
+
+
+@pytest.mark.parametrize("refusal", list(_CONFIGURATION.values()), ids=list(_CONFIGURATION))
+async def test_a_configuration_refusal_on_connect_is_reraised_text_hidden(refusal: asyncpg.PostgresError) -> None:
+    from app.utils.error_class import is_stamped
+    from tests.support.log_capture import assert_text_free
+
+    raised = await _open_with(_refusing_pool(refusal))
+    assert raised is refusal
+    assert not is_stamped(raised)
+    assert_text_free(_logged(raised), "pipeshub_app", "10.0.0.7")
+
+
+def _refusing_run_db(pool: object, monkeypatch: pytest.MonkeyPatch, *, write: bool) -> tuple[KernelDB, object]:
+    from unittest.mock import AsyncMock
+
+    from app.core.db import uow as uow_mod
+    from app.core.db.config import TIMEOUT_CLASSES
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(uow_mod.asyncio, "sleep", sleep)
+    db = _db()
+    db.uow = lambda **_: db._open(pool, role="r", org_id="", request_id="q", klass=next(iter(TIMEOUT_CLASSES)), write=write)
+    return db, sleep
+
+
+async def _no_connection(_tx: object) -> None:
+    raise AssertionError("no connection was opened")
+
+
+@pytest.mark.parametrize("write", [False, True], ids=["read", "write"])
+@pytest.mark.parametrize("refusal", [OSError(111, "Connect call failed"), *_OUTAGES.values()], ids=["os", *_OUTAGES])
+async def test_an_outage_on_connect_is_retried_even_for_a_write(refusal, write, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.db import uow as uow_mod
+
+    pool = _refusing_pool(refusal)
+    db, sleep = _refusing_run_db(pool, monkeypatch, write=write)
+    with pytest.raises(ConnectionLost):
+        await db.run(_no_connection, write=write)   # no statement ran: a retry cannot repeat an effect
+    assert pool.acquire.await_count == uow_mod.RETRIES_MAX + 1 and sleep.await_count == uow_mod.RETRIES_MAX
+
+
+async def test_a_full_server_is_not_retried_and_stays_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.utils.error_class import classify_error
+
+    pool = _refusing_pool(_FULL)
+    db, sleep = _refusing_run_db(pool, monkeypatch, write=True)
+    with pytest.raises(ConnectionLost) as raised:
+        await db.run(_no_connection, write=True)
+    assert pool.acquire.await_count == 1 and not sleep.await_count  # every attempt would fork a backend on a full server
+    assert classify_error(raised.value) == "unavailable"
+
+
+async def test_a_configuration_refusal_on_connect_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = _refusing_pool(_CONFIGURATION["28P01"])
+    db, _ = _refusing_run_db(pool, monkeypatch, write=False)
+    with pytest.raises(asyncpg.InvalidPasswordError):
+        await db.run(_no_connection)
+    assert pool.acquire.await_count == 1
+
+
+async def test_a_unit_refused_while_the_server_starts_runs_once_it_is_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    pool = _refusing_pool(_OUTAGES["57P03"])
+    db, _ = _refusing_run_db(pool, monkeypatch, write=True)
+    refused = db.uow
+
+    @asynccontextmanager
+    async def up(**_: object) -> AsyncIterator[str]:
+        yield "tx"
+
+    attempts = iter([refused, up])
+    db.uow = lambda **kw: next(attempts)(**kw)
+
+    async def unit(tx: str) -> str:
+        return tx
+
+    assert await db.run(unit, write=True) == "tx"
+    assert pool.acquire.await_count == 1
+
+
+@pytest.mark.parametrize("refusal", [*_OUTAGES.values(), _FULL, OSError(111, "Connect call failed (10.0.0.7)")],
+                         ids=[*_OUTAGES, "53300", "os"])
+async def test_a_pool_that_cannot_open_its_first_connection_raises_connection_lost(refusal, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.core.db import pool as pool_mod
+    from app.utils.error_class import classify_error
+
+    monkeypatch.setattr(pool_mod.asyncpg, "create_pool", AsyncMock(side_effect=refusal))
+    with pytest.raises(ConnectionLost) as raised:
+        await pool_mod.create_pool("postgresql://x@h/db", max_size=2, statement_cache_size=0, application_name="t")
+    assert raised.value.__cause__ is refusal and classify_error(raised.value) == "unavailable"
+    assert raised.value.retry_safe is (refusal is not _FULL)
+    assert isinstance(raised.value, TooManyConnections) is (refusal is _FULL)
+
+
+@pytest.mark.parametrize("refusal", [*_CONFIGURATION.values(), TimeoutError()], ids=[*_CONFIGURATION, "timeout"])
+async def test_a_pool_refused_for_its_configuration_or_timing_out_raises_the_error_itself(refusal, monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.core.db import pool as pool_mod
+
+    monkeypatch.setattr(pool_mod.asyncpg, "create_pool", AsyncMock(side_effect=refusal))
+    with pytest.raises(type(refusal)) as raised:
+        await pool_mod.create_pool("postgresql://x@h/db", max_size=2, statement_cache_size=0, application_name="t")
+    assert raised.value is refusal
+
+
+def test_a_side_pool_refused_while_the_server_starts_is_retried_by_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.core.db import pool as pool_mod
+    from app.core.db import uow as uow_mod
+
+    side = _FakePool()
+    driver = AsyncMock(side_effect=[_OUTAGES["57P03"], side])   # asyncpg is faked; the runtime's own create_pool maps the refusal
+    monkeypatch.setattr(pool_mod.asyncpg, "create_pool", driver)
+    monkeypatch.setattr(uow_mod.asyncio, "sleep", AsyncMock())
+    db = KernelDB(DbConfig(service="indexing", dsn="postgresql://x@h/db"))
+    db._pool = _FakePool()  # type: ignore[assignment]
+    db._home_loop = asyncio.new_event_loop()
+
+    @asynccontextmanager
+    async def uow(**_: object) -> AsyncIterator[object]:
+        yield await db._pool_here(jobs=False)      # where _open_org gets its pool, before _open
+
+    db.uow = uow
+
+    async def unit(pool: object) -> object:
+        return pool
+
+    loop = asyncio.new_event_loop()
+    try:
+        assert loop.run_until_complete(db.run(unit)) is side    # the first unit on this loop retried the pool's creation
+        assert driver.await_count == 2
+    finally:
+        loop.close()
+        db._home_loop.close()
+
+
+# ---- statement time: the write-safety rules stay as they are -----------------------------------------------------------
+@pytest.mark.parametrize("err", [_OUTAGES["57P01"], _OUTAGES["57P03"], _OUTAGES["08006"]], ids=["57P01", "57P03", "08006"])
+def test_a_loss_after_a_statement_of_a_non_idempotent_unit_is_not_retry_safe(err) -> None:
+    lost = _db().map_error(err, _tx(completed=1))
+    assert isinstance(lost, ConnectionLost) and lost.retry_safe is False
+    assert _db().map_error(err, _tx(commit_sent=True, idempotent=True)).retry_safe is False
+
+
+@pytest.mark.parametrize("err", [_E.DiskFullError("x"), _E.OutOfMemoryError("x"), _E.ConfigurationLimitExceededError("x"), _FULL],
+                         ids=["53100", "53200", "53400", "53300"])
+def test_insufficient_resources_at_statement_time_is_not_connection_loss(err) -> None:
+    assert _db().map_error(err, _tx()) is err
+
+
+@pytest.mark.parametrize(("state", "lost"), [("25P03", True), (None, False), ("57P04", False), ("57P05", False), ("57014", False)])
+def test_lost_states_the_connect_tests_do_not_reach(state, lost) -> None:
+    from app.core.db.pool import lost_state
+
+    assert lost_state(state) is lost
+
+
+async def test_a_pool_timeout_is_unchanged() -> None:
+    from app.core.db.errors import PoolTimeout
+
+    assert isinstance(await _open_with(_refusing_pool(TimeoutError())), PoolTimeout)

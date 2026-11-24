@@ -27,14 +27,23 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
+import math
 import os
 import random
 import threading
 import time
+import types
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
+from app.capacity.budget_policy import Family
+from app.capacity.classes import BIG_CLASSES, CostClass
+from app.config import file_types
+from app.modules.parse_engine import pools as class_pools
+from app.modules.parse_engine import wiring
 from app.services.messaging.config import messaging_env
 from app.services.messaging.distributed_concurrency import (
     DistributedLeaseSet,
@@ -42,17 +51,42 @@ from app.services.messaging.distributed_concurrency import (
     lease_kind,
 )
 from app.services.messaging.redis_errors import report_redis_error
+from app.services.parsing.remote_concurrency import (
+    remote_parse_concurrency,
+    remote_parse_slots,
+)
 from app.services.resource_governor import classify, gate_pool, index_pool, parse_cost
-from app.services.resource_governor.memory_budget import record_memory_cost
+from app.services.resource_governor.kinds import (
+    EXCESS_WAIT_SECONDS,
+    ParseKind,
+    classify_kind,
+    permit_excess_bytes,
+)
+from app.services.resource_governor.memory_budget import kind_reservation_cost
+from app.services.resource_governor.memory_domain import (
+    reset_permit_covers,
+    set_permit_covers,
+)
 from app.services.resource_governor.models import ParseTier, Pool
+from app.services.resource_governor.policy import SERVICE_POOL
 from app.services.resource_governor.probe import memory_domain_id
+from app.utils.error_class import log_failure
 from app.utils.loop_bridge import run_on_loop
 from app.utils.request_context import reset_admitted_in, set_admitted_in
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Coroutine,
+        Generator,
+        Mapping,
+    )
     from logging import Logger
 
+    from app.modules.indexing.record_progress import RecordProgress
+    from app.modules.parse_engine.cost import CostEstimate
     from app.services.distributed.interface import (
         IDistributedLeaseManager,
         IRetryTracker,
@@ -134,6 +168,232 @@ class StageAdmission:
         return self.limit * self.workers
 
 
+@dataclass(frozen=True)
+class PriorityLane:
+    """Admission for the consumer of the priority topic: its own caps and its own lease pools.
+
+    The lane runs the same handler as the record consumer, but a record on it is waited for by
+    a reader, so it must neither queue behind the backlog nor be able to crowd it out. It keeps
+    the governor's gates (their limits still protect memory) but asks for them ahead of queued
+    normal waiters, and it counts its in-flight records against these two small caps. Its
+    cluster leases are pools of their own, for the same reason: the backlog holds the normal ones.
+    """
+
+    # This process's records in flight, per tier.
+    heavy_limit: int
+    light_limit: int
+    # Worker processes running this consumer side by side (INDEXING_UVICORN_WORKERS).
+    workers: int = 1
+
+    def __post_init__(self) -> None:
+        if self.heavy_limit < 1 or self.light_limit < 1:
+            raise ValueError("priority lane limits must be >= 1")
+        if self.workers < 1:
+            raise ValueError("priority lane worker count must be >= 1")
+
+    @property
+    def limit(self) -> int:
+        return self.heavy_limit + self.light_limit
+
+    def tier_limit(self, tier: ParseTier) -> int:
+        return self.heavy_limit if tier is ParseTier.HEAVY else self.light_limit
+
+    @property
+    def index_lease_pool(self) -> str:
+        return "indexing:priority"
+
+    @property
+    def index_lease_limit(self) -> int:
+        """Every worker process takes the same lease, so it is sized for all of them."""
+        return self.limit * self.workers
+
+    def parse_lease_pool(self, tier: ParseTier | None) -> str:
+        return "parsing:light:priority" if tier is ParseTier.LIGHT else "parsing:priority"
+
+    def parse_lease_limit(self, tier: ParseTier | None) -> int:
+        return self.tier_limit(ParseTier.LIGHT if tier is ParseTier.LIGHT else ParseTier.HEAVY) * self.workers
+
+
+# -- admission backlog (read-only observability) -------------------------------
+
+# Where a spawned record can be waiting, in the order it meets them. A record is counted from the
+# moment it starts waiting on one until that wait ends, so retry backoff is never counted.
+PHASE_GATE = "atGate"
+PHASE_LEASE = "atLease"
+PHASE_DOWNLOAD = "atDownload"
+PHASE_PARSE = "atParse"
+_PHASES = (PHASE_GATE, PHASE_LEASE, PHASE_DOWNLOAD, PHASE_PARSE)
+# One slot per tier and phase, heavy first.
+_SLOT = {
+    (tier, phase): index * len(_PHASES) + offset
+    for index, tier in enumerate((ParseTier.HEAVY, ParseTier.LIGHT))
+    for offset, phase in enumerate(_PHASES)
+}
+_SUM = 8
+
+
+def _backlog_tier(level: "ParseTier | CostClass") -> ParseTier:
+    """Under ``PARSE_ADMISSION=classes`` a heavy-format record's dispatch level is its cost class; the backlog counts
+    those records in the heavy tier's slots."""
+    return ParseTier.HEAVY if isinstance(level, CostClass) else level
+
+
+class AdmissionBacklog:
+    """Live counts of records waiting at each admission stage, per tier, and of waiters per lease pool.
+
+    ``add``/``remove`` are O(1) and take one short lock. An optional *observer* is told about every entry and exit
+    with the message concerned, so a deployment can keep a breakdown of its own; with none, the cost is one
+    attribute test. An observer that raises is ignored (and reported once): it can neither lose a count nor fail
+    the record that is waiting.
+    """
+
+    __slots__ = ("_lock", "_totals", "_lease_waiting", "observer", "_observer_reported")
+
+    def __init__(self, observer: Any = None) -> None:  # noqa: ANN401 - any object with entered/left
+        self._lock = threading.Lock()
+        self._totals = [0] * _SUM
+        self._lease_waiting: dict[str, int] = {}
+        self.observer = observer
+        self._observer_reported = False
+
+    def _observed(self, call: str, tier: ParseTier, phase: str, message: Any) -> None:  # noqa: ANN401
+        try:
+            getattr(self.observer, call)(tier, phase, message)
+        except Exception:
+            if not self._observer_reported:
+                self._observer_reported = True
+                logging.getLogger(__name__).exception("admission backlog observer failed; its errors are ignored")
+
+    def add(self, tier: ParseTier, phase: str, pool: str | None = None, message: Any = None) -> None:  # noqa: ANN401
+        tier = _backlog_tier(tier)
+        with self._lock:
+            self._totals[_SLOT[tier, phase]] += 1
+            if pool is not None:
+                self._lease_waiting[pool] = self._lease_waiting.get(pool, 0) + 1
+        if self.observer is not None:
+            self._observed("entered", tier, phase, message)
+
+    def remove(self, tier: ParseTier, phase: str, pool: str | None = None, message: Any = None) -> None:  # noqa: ANN401
+        tier = _backlog_tier(tier)
+        with self._lock:
+            self._totals[_SLOT[tier, phase]] -= 1
+            if pool is not None:
+                left = self._lease_waiting.get(pool, 0) - 1
+                if left > 0:
+                    self._lease_waiting[pool] = left
+                else:
+                    self._lease_waiting.pop(pool, None)
+        if self.observer is not None:
+            self._observed("left", tier, phase, message)
+
+    def totals(self) -> dict[ParseTier, dict[str, int]]:
+        with self._lock:
+            counts = list(self._totals)
+        return {
+            tier: {phase: counts[_SLOT[tier, phase]] for phase in _PHASES} for tier in (ParseTier.HEAVY, ParseTier.LIGHT)
+        }
+
+    def lease_waiting(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._lease_waiting)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._totals = [0] * _SUM
+            self._lease_waiting.clear()
+
+
+@types.coroutine
+def _counted(
+    awaitable: "Awaitable[T]",
+    backlog: "AdmissionBacklog | None",
+    tier: ParseTier,
+    phase: str,
+    pool: str | None,
+    message: "StreamMessage | None",
+    token: "GateWaiterToken | None" = None,
+) -> "Generator[Any, Any, T]":
+    """Await *awaitable*, counting a wait only if it really has to wait.
+
+    The awaitable runs until its first suspension before anything is counted: an acquire that is granted at once (the
+    common case) never touches the backlog. Only on the transition into waiting is the count entered, and it is left
+    when the wait ends however it ends (granted, timed out, cancelled or failed). Values, exceptions and cancellation
+    pass through unchanged.
+    """
+    steps = awaitable.__await__()
+    try:
+        yielded = next(steps)
+    except StopIteration as done:
+        return done.value
+    if token is not None:
+        token.enter_gate()
+    else:
+        backlog.add(tier, phase, pool, message)  # type: ignore[union-attr]
+    try:
+        while True:
+            try:
+                sent = yield yielded
+            except GeneratorExit:
+                steps.close()  # type: ignore[attr-defined]
+                raise
+            except BaseException as error:
+                yielded = steps.throw(error)  # type: ignore[attr-defined]
+            else:
+                yielded = steps.send(sent)  # type: ignore[attr-defined]
+    except StopIteration as done:
+        return done.value
+    finally:
+        if token is None:
+            backlog.remove(tier, phase, pool, message)  # type: ignore[union-attr]
+
+
+def in_phase(
+    host: object,
+    phase: str,
+    tier: "ParseTier | None",
+    message: "StreamMessage | None",
+    awaitable: "Awaitable[T]",
+    *,
+    pool: str | None = None,
+) -> "Awaitable[T]":
+    """*awaitable*, counted as waiting at *phase* for as long as it actually waits.
+
+    A host without a backlog gets the awaitable back untouched."""
+    backlog = getattr(host, "admission_backlog", None)
+    if not isinstance(backlog, AdmissionBacklog):
+        return awaitable
+    return _counted(awaitable, backlog, tier if tier is not None else ParseTier.HEAVY, phase, pool, message)
+
+
+def at_gate(token: "GateWaiterToken | None", awaitable: "Awaitable[T]") -> "Awaitable[T]":
+    """*awaitable* (the index permit), with *token* entered into the gate only if it has to wait. The token leaves
+    the gate in ``admit()`` or ``release()``, as before."""
+    if token is None:
+        return awaitable
+    return _counted(awaitable, None, ParseTier.HEAVY, PHASE_GATE, None, None, token)
+
+
+class LocalPermits:
+    """Holders and waiters of a governor-less consumer's local index semaphore.
+
+    Counted around the acquire and release rather than read from ``Semaphore._value``, which
+    a cancelled waiter leaves wrong.
+    """
+
+    __slots__ = ("name", "in_use", "waiting")
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.in_use = 0
+        self.waiting = 0
+
+
+
+def _lane(host: object) -> "PriorityLane | None":
+    # getattr: consumers and test hosts built without the lane have no such attribute.
+    return getattr(host, "priority_lane", None)
+
+
 class ConcurrencyHost(Protocol):
     """Structural type for the attributes these helpers rely on."""
 
@@ -155,6 +415,8 @@ class ConcurrencyHost(Protocol):
     governor: "ResourceGovernor | None"
     # Set only on pipeline-stage consumers, which never have a governor.
     stage_admission: "StageAdmission | None"
+    # Set only on the consumer of the priority topic.
+    priority_lane: "PriorityLane | None"
     parsing_semaphore: Any
     indexing_semaphore: Any
     # Created inside the consumer's worker thread and dropped with its loop,
@@ -237,9 +499,8 @@ async def acquire_distributed_slot(
 
     With ``deadline_seconds`` set, gives up (returning False) after that many
     seconds instead of waiting indefinitely — used for the per-record lease,
-    which is contended by duplicate in-flight deliveries of the *same* record
-    and must not convoy the whole pipeline while already holding the outer
-    indexing permit.
+    which is contended only by other work on the *same* record and must not
+    convoy the whole pipeline while already holding the outer indexing permit.
 
     Contention and failure are backed off separately, and only failure is
     budgeted. Contention is normal: the pool is full and this record waits its
@@ -373,9 +634,8 @@ async def clear_retry_tracking(host: ConcurrencyHost, message_id: str) -> None:
     try:
         await host.retry_manager.clear(message_id)
     except Exception as e:
-        host.logger.error(
-            "Failed to clear retry tracking for %s: %s", message_id, e
-        )
+        # Swallowed: what this delivery settled stands; only the count is left behind.
+        log_failure(host.logger, "index.retry_clear_failed", e, level=logging.WARNING, tracking_id=message_id)
 
 
 async def get_retry_count(host: ConcurrencyHost, message_id: str) -> int:
@@ -490,6 +750,9 @@ def effective_index_tier(
     the result down, or re-resolve locally.
     """
     resolved = tier if tier is not None else ParseTier.HEAVY
+    if isinstance(resolved, CostClass):
+        # PARSE_ADMISSION=classes: a cost class is a heavy-format record's level, and routes to the heavy pool.
+        return ParseTier.HEAVY
     governor = host.governor
     if (
         resolved is ParseTier.LIGHT
@@ -513,6 +776,14 @@ def dispatch_tier(host: ConcurrencyHost, message: "StreamMessage | None") -> Par
     if message is None:
         return effective_index_tier(host, ParseTier.HEAVY)
     payload = message.payload
+    if wiring.classes_enabled():
+        level = wiring.level_for(
+            str(payload.get("extension") or ""), str(payload.get("mimeType") or ""), _payload_size(payload)
+        )
+        if is_light := level is ParseTier.LIGHT:
+            level = effective_index_tier(host, ParseTier.LIGHT)
+        # A light-format record on a host with no light budget joins the heavy pool as a small one.
+        return CostClass.SMALL if is_light and level is ParseTier.HEAVY else level
     return effective_index_tier(
         host,
         classify(
@@ -520,6 +791,12 @@ def dispatch_tier(host: ConcurrencyHost, message: "StreamMessage | None") -> Par
             str(payload.get("mimeType") or ""),
         ),
     )
+
+
+def _payload_size(payload: "Mapping[str, object]") -> int | None:
+    """The size a record event carries, when it does (most say nothing: the size is learned at download)."""
+    raw = payload.get("sizeInBytes")
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else None
 
 
 def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
@@ -536,6 +813,8 @@ def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     """
     if host.stage_admission is not None:
         return host.stage_admission.lease_limit
+    if (lane := _lane(host)) is not None:
+        return lane.index_lease_limit
     governor = host.governor
     if governor is not None:
         tier = effective_index_tier(host, tier)
@@ -591,6 +870,12 @@ def slot_pool_limit(host: ConcurrencyHost, pool: str) -> int:
     if host.stage_admission is not None:
         # A stage consumer's one pool is its own permits.
         return host.stage_admission.limit
+    lane = _lane(host)
+    if lane is not None:
+        # The lane's own caps, so each org's share of them is what the share planner divides.
+        if pool == Pool.INDEX_LIGHT.value:
+            return lane.light_limit
+        return lane.heavy_limit if pool == Pool.INDEX_HEAVY.value else lane.limit
     governor = host.governor
     if governor is None:
         return messaging_env.max_concurrent_indexing
@@ -626,7 +911,18 @@ def admission_lease_pool(host: ConcurrencyHost, tier: ParseTier | None) -> str:
     """The cluster-wide lease pool this host's index permit counts against."""
     if host.stage_admission is not None:
         return host.stage_admission.lease_pool
+    if (lane := _lane(host)) is not None:
+        return lane.index_lease_pool
     return index_lease_pool(tier)
+
+
+def local_index_permits(host: ConcurrencyHost) -> int:
+    """Records the legacy (governor-less) index semaphore admits at once."""
+    if host.stage_admission is not None:
+        return host.stage_admission.limit
+    if (lane := _lane(host)) is not None:
+        return lane.limit
+    return messaging_env.max_concurrent_indexing
 
 
 def work_key(payload: "Mapping[str, object]", fallback: str) -> str:
@@ -654,7 +950,16 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     RSS, and a Jira/Slack/Markdown parse waiting on it will never occupy
     more than a handful of local LIGHT_PARSE slots, so the node-local
     gate never sees demand and stays on its floor.
+
+    With a remote parsing service the two tiers share one cluster lease (the non-lane ``parsing``
+    pool) sized to ``PARSING_SERVICE_CONCURRENCY`` itself, whatever the local CPU ceilings are, so
+    the fleet-wide cap on parses in flight is that number, not twice it. The priority lane keeps its
+    own tier pools and limits: an interactive parse never queues behind another tier's lease.
     """
+    if (lane := _lane(host)) is not None:
+        return lane.parse_lease_limit(tier)
+    if (remote := remote_parse_concurrency()) is not None:
+        return remote
     governor = host.governor
     if governor is not None:
         if tier is ParseTier.LIGHT:
@@ -663,14 +968,33 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     return messaging_env.max_concurrent_parsing
 
 
-def parse_lease_pool(tier: ParseTier | None) -> str:
+def parse_lease_pool(tier: ParseTier | None, host: "ConcurrencyHost | None" = None) -> str:
     """Redis pool name for the cluster-wide parsing lease of *tier*.
 
     Split by tier because the two ceilings differ: a light record must not
     consume one of the few heavy-parse leases a Docling PDF holds for
-    minutes.
+    minutes. The priority lane's parses count against pools of their own and keep their tier split.
+    With a remote parsing service the other parses take the one ``parsing`` pool, so
+    ``PARSING_SERVICE_CONCURRENCY`` caps the fleet.
     """
+    lane = _lane(host) if host is not None else None
+    if lane is not None:
+        return lane.parse_lease_pool(tier)
+    if remote_parse_concurrency() is not None:
+        tier = ParseTier.HEAVY
     return "parsing:light" if tier is ParseTier.LIGHT else "parsing"
+
+
+def admission_parse_lease_pool(host: ConcurrencyHost, tier: ParseTier | None) -> str:
+    """The cluster lease pool a record of *tier* waits on for its parse.
+
+    The one place that decides it: the message wrappers take the pool from here and the admission explain
+    lists the pools from here, so the two cannot disagree. Without a governor every tier shares the single
+    ``parsing`` pool (its limit was never split by tier); with one, the tier and the priority lane choose.
+    """
+    if host.governor is None:
+        return "parsing"
+    return parse_lease_pool(tier, host)
 
 
 class GateWaiters:
@@ -689,11 +1013,15 @@ class GateWaiters:
     loop and admitted or released on the worker loop.
     """
 
-    __slots__ = ("_lock", "_counts")
+    __slots__ = ("_lock", "_counts", "_retained")
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._counts: dict[ParseTier, int] = dict.fromkeys(ParseTier, 0)
+        # Keyed by tier; under PARSE_ADMISSION=classes also by cost class (added on first use).
+        self._counts: defaultdict[ParseTier | CostClass, int] = defaultdict(int, dict.fromkeys(ParseTier, 0))
+        # Of the counted tasks, those already admitted through the gate that stay counted until they end (the
+        # priority lane counts records in flight). Read only to tell them from tasks that are still waiting.
+        self._retained: defaultdict[ParseTier | CostClass, int] = defaultdict(int, dict.fromkeys(ParseTier, 0))
 
     def add(self, tier: ParseTier) -> None:
         with self._lock:
@@ -703,15 +1031,32 @@ class GateWaiters:
         with self._lock:
             self._counts[tier] -= 1
 
-    def count(self, tier: ParseTier | None = None) -> int:
+    def count(self, tier: ParseTier | CostClass | None = None) -> int:
         with self._lock:
             if tier is None:
                 return sum(self._counts.values())
             return self._counts[tier]
 
-    def snapshot(self) -> dict[ParseTier, int]:
+    def snapshot(self) -> dict[ParseTier | CostClass, int]:
         with self._lock:
             return dict(self._counts)
+
+    def retain(self, tier: ParseTier) -> None:
+        with self._lock:
+            self._retained[tier] += 1
+
+    def unretain(self, tier: ParseTier) -> None:
+        with self._lock:
+            self._retained[tier] -= 1
+
+    def retained_snapshot(self) -> dict[ParseTier, int]:
+        with self._lock:
+            return dict(self._retained)
+
+    def view(self) -> tuple[dict[ParseTier, int], dict[ParseTier, int]]:
+        """``(snapshot, retained_snapshot)`` taken together."""
+        with self._lock:
+            return dict(self._counts), dict(self._retained)
 
     def reset(self) -> None:
         """Forget every waiter. For consumer shutdown, after the worker loop
@@ -720,6 +1065,7 @@ class GateWaiters:
         with self._lock:
             for tier in self._counts:
                 self._counts[tier] = 0
+                self._retained[tier] = 0
 
 
 class GateWaiterToken:
@@ -741,14 +1087,43 @@ class GateWaiterToken:
     waiter against one gate while it queues on the other.
     """
 
-    __slots__ = ("_host", "_tier", "_admitted", "_released")
+    __slots__ = ("_host", "_tier", "_message", "_lock", "_admitted", "_released", "_in_gate", "_retained")
 
-    def __init__(self, host: ConcurrencyHost, tier: ParseTier) -> None:
+    def __init__(self, host: ConcurrencyHost, tier: ParseTier, message: "StreamMessage | None" = None) -> None:
         self._host = host
         self._tier = tier
+        self._message = message
+        # The worker loop enters the gate and admits; the done callback releases, and a cancel runs that on
+        # the cancelling thread. Every transition below happens under this lock, with its counter updates, so
+        # each counter moves exactly once per token whatever the order of the two sides.
+        self._lock = threading.Lock()
         self._admitted = False
         self._released = False
+        self._in_gate = False
+        self._retained = False
         host.gate_waiters.add(tier)
+
+    def _backlog(self) -> "AdmissionBacklog | None":
+        backlog = getattr(self._host, "admission_backlog", None)
+        return backlog if isinstance(backlog, AdmissionBacklog) else None
+
+    def enter_gate(self) -> None:
+        """Call just before awaiting the index permit: the record counts as waiting at the gate."""
+        with self._lock:
+            if self._in_gate or self._admitted or self._released:
+                return
+            backlog = self._backlog()
+            if backlog is not None:
+                self._in_gate = True
+                backlog.add(self._tier, PHASE_GATE, None, self._message)
+
+    def _leave_gate(self) -> None:
+        """Caller holds the lock."""
+        if self._in_gate:
+            self._in_gate = False
+            backlog = self._backlog()
+            if backlog is not None:
+                backlog.remove(self._tier, PHASE_GATE, None, self._message)
 
     @property
     def tier(self) -> ParseTier:
@@ -756,20 +1131,34 @@ class GateWaiterToken:
 
     def admit(self) -> None:
         """Call once the local indexing gate/semaphore has been acquired."""
-        if self._admitted or self._released:
-            return
-        self._admitted = True
-        self._host.gate_waiters.remove(self._tier)
+        with self._lock:
+            if self._admitted or self._released:
+                return
+            self._leave_gate()
+            if _lane(self._host) is not None:
+                # The lane's cap is on records in flight, not on records waiting, so it counts
+                # a record until the task ends. It is no longer waiting, which the explain needs to know.
+                if not self._retained:
+                    self._retained = True
+                    self._host.gate_waiters.retain(self._tier)
+                return
+            self._admitted = True
+            self._host.gate_waiters.remove(self._tier)
 
     def release(self) -> None:
         """Idempotent cleanup for the task's terminal state (call from the
         future-done callback). A no-op if ``admit()`` already ran — the
         waiter count was already decremented then."""
-        if self._released:
-            return
-        self._released = True
-        if not self._admitted:
-            self._host.gate_waiters.remove(self._tier)
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+            self._leave_gate()
+            if self._retained:
+                self._retained = False
+                self._host.gate_waiters.unretain(self._tier)
+            if not self._admitted:
+                self._host.gate_waiters.remove(self._tier)
 
 
 def index_gates_saturated(host: ConcurrencyHost) -> bool:
@@ -789,12 +1178,86 @@ def index_gates_saturated(host: ConcurrencyHost) -> bool:
     only signal — matching pre-governor behaviour exactly.
     """
     governor = host.governor
-    if governor is None:
+    # The priority lane is not held back by the backlog filling the pools: its own caps and
+    # the gates' priority acquire are what bound it.
+    if governor is None or _lane(host) is not None:
         return False
     return all(
         governor.gate(pool).in_use >= governor.gate(pool).limit
         for pool in (Pool.INDEX_HEAVY, Pool.INDEX_LIGHT)
     )
+
+
+def downstream_read_pause(host: ConcurrencyHost, *, scoped: bool) -> float:
+    """Seconds every read and dispatch must still wait out a downstream 429.
+
+    *scoped* is a consumer with the fair scheduler, which can pass over a record: it ignores the services only one
+    index tier calls (``SERVICE_POOL``), whose records ``held_downstream`` holds instead. A broker-order consumer
+    cannot pass over its head, so every pause stops it.
+    """
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    if coordinator is None:
+        return 0.0
+    return coordinator.pause_remaining(ignoring=SERVICE_POOL.keys() if scoped else ())
+
+
+def read_pausing_services(host: ConcurrencyHost, *, scoped: bool) -> list[str]:
+    """The services whose pause ``downstream_read_pause`` waits for, for the log line that names them."""
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    if coordinator is None:
+        return []
+    paused = coordinator.paused_services
+    return sorted(paused - SERVICE_POOL.keys() if scoped else paused)
+
+
+def held_pools(host: ConcurrencyHost) -> frozenset[Pool]:
+    """The index pools whose records wait this turn: those of a paused service that only that tier calls.
+
+    None on a stage consumer: its jobs take no index permit and never call such a service.
+    """
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    if coordinator is None or host.stage_admission is not None:
+        return frozenset()
+    return frozenset(SERVICE_POOL[name] for name in coordinator.paused_services if name in SERVICE_POOL)
+
+
+def held_downstream(host: ConcurrencyHost, message: "StreamMessage", pools: frozenset[Pool]) -> bool:
+    """Whether this record calls a service whose pause holds *pools*: Docling, by its heavy pool or its PDF route."""
+    if not pools:
+        return False
+    if index_pool(dispatch_tier(host, message)) in pools:
+        return True
+    # shortcut: the PDF route is Docling's, the one SERVICE_POOL entry; a second tier-scoped service needs its own test
+    payload = message.payload
+    dispatch = file_types.labels_route(
+        payload.get("extension"), payload.get("mimeType"),
+        file_path=payload.get("filePath"), record_name=payload.get("recordName"),
+    )
+    return dispatch is not None and dispatch.route is file_types.Route.PDF
+
+
+async def wait_out_held_service(
+    host: ConcurrencyHost, tier: ParseTier | None, message: "StreamMessage", wait: "AdmissionWait", *, scoped: bool,
+) -> None:
+    """A record the dispatch could not judge calls a held service: wait that service's pause out before the parse permit.
+
+    The dispatch judged the event's labels; a stored PDF sent with light ones is known only at START_PARSING, by its
+    raised *tier*. The wait runs inside START_PARSING's own parse wait (*wait*), so the budget is paused once and the
+    bound is that wait's. A pause that outlasts it hands the record back: returning would not, since a gate with room
+    admits whatever the timeout.
+    """
+    if not scoped:  # a broker-order consumer already stops for every pause
+        return
+    pools = held_pools(host)
+    pool = index_pool(effective_index_tier(host, tier))
+    if pool not in pools or held_downstream(host, message, pools):
+        return
+    coordinator = host.backpressure_coordinator  # type: ignore[attr-defined]
+    holding = {name for name, owner in SERVICE_POOL.items() if owner is pool}
+    while (left := coordinator.pause_remaining(ignoring=coordinator.paused_services - holding)) > 0:
+        if wait.remaining() <= 0:
+            raise wait.timed_out("docling")
+        await asyncio.sleep(min(left, wait.remaining()))
 
 
 def get_gate_waiter_count(
@@ -827,6 +1290,8 @@ def pending_task_ceiling(host: ConcurrencyHost) -> int:
     stream entries a node cannot start on only delays their redelivery
     elsewhere.
     """
+    if (lane := _lane(host)) is not None:
+        return lane.limit
     if os.getenv("MAX_PENDING_INDEXING_TASKS"):
         return messaging_env.max_pending_indexing_tasks
     governor = host.governor
@@ -874,9 +1339,9 @@ class DispatchBudget:
 
     total_ceiling: int
     total_waiters: int
-    tiers: "Mapping[ParseTier, TierBudget]"
+    tiers: "Mapping[ParseTier | CostClass, TierBudget]"
 
-    def allows(self, tier: ParseTier) -> bool:
+    def allows(self, tier: ParseTier | CostClass) -> bool:
         budget = self.tiers.get(tier)
         return (
             budget is not None
@@ -932,7 +1397,11 @@ def _tier_ceiling(
     ``_PENDING_TASKS_PER_INDEX_SLOT`` times the tier's *current* limit,
     floored so a braked pool still refills its gate from the queue.
     """
+    if (lane := _lane(host)) is not None:
+        return lane.tier_limit(wiring.as_tier(tier))
     governor = host.governor
+    if isinstance(tier, CostClass):
+        return _class_ceiling(governor, tier, total_ceiling)
     if (
         governor is None
         or tier not in _READ_AHEAD_BOUNDED_TIERS
@@ -942,6 +1411,20 @@ def _tier_ceiling(
     derived = governor.limit(index_pool(tier)) * _PENDING_TASKS_PER_INDEX_SLOT
     floor = min(_MIN_PENDING_PER_TIER, total_ceiling)
     return max(floor, min(total_ceiling, derived))
+
+
+def _class_ceiling(governor: "ResourceGovernor | None", cls: CostClass, total_ceiling: int) -> int:
+    """How many tasks of a cost class may queue for the heavy index gate (``PARSE_ADMISSION=classes``).
+
+    Small work takes the total: it turns over in seconds and is what read-ahead is for. Big work parks for
+    minutes, so it is held to its own share of the pool's limit, never the read-ahead small work needs.
+    """
+    if governor is None or cls not in BIG_CLASSES:
+        return total_ceiling
+    numbers = wiring.current_numbers()
+    share = numbers.large_cap if cls is CostClass.LARGE else min(numbers.large_cap, numbers.huge_cap)
+    derived = max(1, math.ceil(governor.limit(Pool.INDEX_HEAVY) * share)) * _PENDING_TASKS_PER_INDEX_SLOT
+    return max(min(_MIN_PENDING_PER_TIER, total_ceiling), min(total_ceiling, derived))
 
 
 def dispatch_budget(host: ConcurrencyHost, *, tiered: bool = True) -> DispatchBudget:
@@ -955,7 +1438,7 @@ def dispatch_budget(host: ConcurrencyHost, *, tiered: bool = True) -> DispatchBu
     total_ceiling = pending_task_ceiling(host)
     waiters = host.gate_waiters.snapshot()
     governor = host.governor
-    present = [
+    present: list[ParseTier | CostClass] = [
         tier
         for tier in ParseTier
         if not (
@@ -964,9 +1447,12 @@ def dispatch_budget(host: ConcurrencyHost, *, tiered: bool = True) -> DispatchBu
             and governor.ceilings.index_light == 0
         )
     ]
+    if wiring.classes_enabled():
+        # Heavy-format work is dispatched by cost class, so one class never takes the read-ahead of another.
+        present = [t for t in present if t is not ParseTier.HEAVY] + list(CostClass)
     tiers = {
         tier: TierBudget(
-            waiters=waiters[tier],
+            waiters=waiters.get(tier, 0),
             ceiling=(
                 total_ceiling
                 if not tiered
@@ -1001,8 +1487,16 @@ class Admission:
     released: bool = False
 
 
+def _priority_kwargs(host: ConcurrencyHost) -> dict[str, bool]:
+    """Gate arguments of the priority lane; none for any other consumer."""
+    return {"priority": True} if _lane(host) is not None else {}
+
+
 async def acquire_index_slot(
-    host: ConcurrencyHost, tier: ParseTier | None
+    host: ConcurrencyHost,
+    tier: "ParseTier | CostClass | None",
+    *,
+    ctx: "wiring.ClassContext | None" = None,
 ) -> "Admission":
     """Acquire an active-pipeline permit for *tier*, routing heavy vs. light
     through the governor when one is configured, else falling back to the
@@ -1018,16 +1512,35 @@ async def acquire_index_slot(
     governor = host.governor
     if governor is not None:
         gate = governor.gate(index_pool(resolved_tier))
+        # PARSE_ADMISSION=classes: the class gate orders the waiters first (small ahead of large), the governor's
+        # gate behind it keeps the limit, the brakes and the statistics.
+        ordered = await wiring.order_index(governor, tier, ctx) if isinstance(tier, CostClass) else None
         # Checked, not discarded: acquire() returns False on timeout rather
         # than raising, so ignoring it would build an admission for a permit
         # the gate never issued and release it later, freeing someone else's.
         # No timeout is passed here, so False is unreachable today — the point
         # is that adding one can't silently corrupt the gate's accounting.
-        if not await gate.acquire():
+        try:
+            granted = await gate.acquire(**_priority_kwargs(host))
+        except BaseException:
+            if ordered is not None:
+                ordered.release()
+            raise
+        if not granted:
+            if ordered is not None:
+                ordered.release()
             raise RuntimeError(
                 f"Index admission denied for pool {index_pool(resolved_tier).value}"
             )
         admitted_at = time.monotonic()
+        if ordered is not None:
+            admission = Admission(
+                tier=resolved_tier,
+                _release=lambda: (gate.release(held_seconds=time.monotonic() - admitted_at), ordered.release()),
+            )
+            # Not a dataclass field: the class gate's permit, so the index permit can move to its class in place.
+            admission.ordered = ordered  # type: ignore[attr-defined]
+            return admission
         # The hold is reported with the release so the governor can judge the
         # pool's typical record by its median rather than its mean, which a
         # few very large records would drag up (policy._track_hold_time).
@@ -1039,8 +1552,23 @@ async def acquire_index_slot(
     legacy_semaphore = host.indexing_semaphore
     if legacy_semaphore is None:
         raise RuntimeError("No indexing concurrency primitive configured")
-    await legacy_semaphore.acquire()
-    return Admission(tier=resolved_tier, _release=legacy_semaphore.release)
+    permits = getattr(host, "local_permits", None)
+    if not isinstance(permits, LocalPermits):
+        permits = LocalPermits(_local_permits_name(host))
+        with contextlib.suppress(AttributeError):
+            host.local_permits = permits  # type: ignore[attr-defined]
+    permits.waiting += 1
+    try:
+        await legacy_semaphore.acquire()
+    finally:
+        permits.waiting -= 1
+    permits.in_use += 1
+
+    def _release_local() -> None:
+        permits.in_use -= 1
+        legacy_semaphore.release()
+
+    return Admission(tier=resolved_tier, _release=_release_local)
 
 
 def release_admission(admission: "Admission | None") -> bool:
@@ -1058,6 +1586,19 @@ def release_admission(admission: "Admission | None") -> bool:
     return True
 
 
+def reclass_index_slot(
+    admission: "Admission | None", ctx: "wiring.ClassContext | None", size_bytes: int | None
+) -> CostClass | None:
+    """Move a record's index permit to the class its size now says, in place; never a requeue.
+
+    A no-op without ``PARSE_ADMISSION=classes`` (the permit has no class gate behind it).
+    """
+    ordered = getattr(admission, "ordered", None)
+    if admission is None or admission.released or ordered is None:
+        return None
+    return wiring.reclass(ordered, ctx, size_bytes)
+
+
 class RequeueWithoutAttempt(Exception):
     """Hand the message back to the broker without counting a delivery attempt.
 
@@ -1068,11 +1609,60 @@ class RequeueWithoutAttempt(Exception):
     # Whether hand-backs count toward the delivery backstop, which stops a message from
     # being handed back forever.
     counts_toward_backstop = True
+    # Names the kind of hand-back in the reason the backstop gives up with (None: the admission wording).
+    give_up_label: str | None = None
+    # Whether the reason holds for the whole stage (a paused dependency), so a consumer that
+    # can stop claiming does; False when only this message has to wait.
+    pauses_consumer = True
 
-    def __init__(self, message: str = "", *, delay_s: float | None = None) -> None:
+    def __init__(self, message: str = "", *, delay_s: float | None = None, log_level: int = logging.WARNING) -> None:
         super().__init__(message)
         # How long the broker holds it before redelivery; None for the first retry backoff.
         self.delay_s = delay_s
+        # The level the consumer logs the hand-back at: lower for a wake that only repeats what was already reported.
+        self.log_level = log_level
+
+
+def backstop_give_up_reason(error: RequeueWithoutAttempt, cycles: int, backstop: int) -> str:
+    """The reason a message is given up on when its hand-backs reach the delivery backstop."""
+    if error.give_up_label:
+        return f"{error.give_up_label}: handed back {cycles} times (backstop {backstop})"
+    return f"handed back {cycles} times without being admitted (backstop {backstop})"
+
+
+class ProgressRequeue(RequeueWithoutAttempt):
+    """A record's attempt ran out of time after embedding part of it: it resumes where it stopped.
+
+    Not a failure and not queue time, so it is not counted as an attempt, and it does not count
+    toward the delivery backstop either: what bounds it is the embedding time kept on the record.
+    """
+
+    counts_toward_backstop = False
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, delay_s=messaging_env.embed_cut_requeue_delay_seconds)
+
+
+async def requeue_after_productive_cut(
+    host: ConcurrencyHost,
+    progress: "RecordProgress | None",
+    lease_handle: "LeaseHandle | None",
+    message_id: str,
+) -> None:
+    """Raise ``ProgressRequeue`` when the attempt's timeout ended it after progress; otherwise return.
+
+    Called from the ``except TimeoutError`` of a consumer, after the handler has unwound. The
+    decision is made here and not in the handler because only the consumer knows why the handler
+    stopped: a shutdown or a lost lease cancels it too, and neither is a reason to requeue.
+    """
+    if progress is None:
+        return
+    lease_intact = lease_handle is None or not lease_handle.lost.is_set()
+    counted = await progress.settle_cut(lease_intact=lease_intact, running=bool(host.running))
+    if counted is None:
+        raise ProgressRequeue(
+            f"{message_id} ran out of time at {progress.done} of {progress.total} points and resumes"
+        )
 
 
 class ParseAdmissionTimeout(RequeueWithoutAttempt):
@@ -1089,6 +1679,21 @@ class ParseAdmissionTimeout(RequeueWithoutAttempt):
         self.waited = waited
 
 
+class BigAdmissionTimeout(ParseAdmissionTimeout):
+    """A large or huge record's wait for its turn ran out (``PARSE_ADMISSION=classes``).
+
+    Nothing is wrong with the record and the whole stage is not paused: it goes back to the broker, uncounted
+    toward the delivery backstop, and carries ``parseEnqueuedAtMs`` so its aging starts from its first wait.
+    """
+
+    counts_toward_backstop = False
+    pauses_consumer = False
+
+    def __init__(self, pool: str, waited: float, *, parse_enqueued_at_ms: int | None = None) -> None:
+        super().__init__(pool, waited)
+        self.parse_enqueued_at_ms = parse_enqueued_at_ms
+
+
 class MemoryAdmissionTimeout(ParseAdmissionTimeout):
     """No memory came free for a big record within the admission wait.
 
@@ -1096,6 +1701,18 @@ class MemoryAdmissionTimeout(ParseAdmissionTimeout):
     reservations ahead of it do, and one bigger than the whole budget runs
     once nothing else is reserved, so counting it would fail a big record only
     for being big.
+    """
+
+    counts_toward_backstop = False
+
+
+class RecordLeaseHeld(RequeueWithoutAttempt):
+    """Something else held the record's lease past the wait: a stage, a retention
+    sweep, an unexpired lease of a dead replica, a duplicate delivery, or Redis is down.
+
+    Not counted toward the delivery backstop: a live holder can outlast every
+    hand-back (a long record takes minutes), and failing the record for that would
+    be worse than the wait. The lease ends with its holder or its term.
     """
 
     counts_toward_backstop = False
@@ -1172,17 +1789,22 @@ async def _wait_for_heavy_parse_slots(
     """The heavy-parse slots shared by this container's workers, or ``None``
     once *timeout* has passed without room."""
     deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
-    while True:
-        slots = governor.try_acquire_heavy_parse_slots(cost)
-        if slots is not None:
-            return slots
-        if deadline is not None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            await asyncio.sleep(min(HEAVY_PARSE_SLOT_POLL_SECONDS, remaining))
-        else:
-            await asyncio.sleep(HEAVY_PARSE_SLOT_POLL_SECONDS)
+    slots = governor.try_acquire_heavy_parse_slots(cost)
+    if slots is not None:
+        return slots
+    # Only a caller that has to wait is counted as waiting.
+    with getattr(governor, "slot_wait", contextlib.nullcontext)():
+        while True:
+            slots = governor.try_acquire_heavy_parse_slots(cost)
+            if slots is not None:
+                return slots
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                await asyncio.sleep(min(HEAVY_PARSE_SLOT_POLL_SECONDS, remaining))
+            else:
+                await asyncio.sleep(HEAVY_PARSE_SLOT_POLL_SECONDS)
 
 
 async def reserve_record_memory(
@@ -1193,6 +1815,8 @@ async def reserve_record_memory(
     *,
     downloaded: bool = False,
     current: "Admission | None" = None,
+    kind: ParseKind | None = None,
+    ctx: "wiring.ClassContext | None" = None,
 ) -> "Admission | None":
     """Reserve what a record too big for the governor's count limits is
     expected to hold, until it finishes; ``None`` when it needs no reservation
@@ -1205,18 +1829,34 @@ async def reserve_record_memory(
     when it covers the size downloaded, else given back and the larger one
     reserved (a document's ``sizeInBytes`` can be stale). With *timeout*,
     raises ``MemoryAdmissionTimeout`` instead of waiting on.
+
+    With *kind*, the reservation is the larger of the file estimate and the part of the kind's
+    parent working set that the parse permit's base does not cover, so the permit takes no
+    memory of its own and nothing waits for memory while it holds one.
     """
     governor = host.governor
     if governor is None:
         return current
-    cost = record_memory_cost(tier if tier is not None else ParseTier.HEAVY, size_bytes)
+    level = tier if isinstance(tier, CostClass) else None
+    tier = wiring.as_tier(tier)
+    cost = kind_reservation_cost(
+        tier if tier is not None else ParseTier.HEAVY, size_bytes, kind, governor.heavy_working_set
+    )
     if current is not None and not current.released and current.cost >= cost:
         return current
     release_admission(current)
     if not cost:
         return None
     budget = governor.memory_budget
-    if not await budget.reserve(cost, timeout, held=(size_bytes or 0) if downloaded else 0):
+    if ctx is not None:
+        level = wiring.class_of(ctx, size_bytes)
+    held_bytes = (size_bytes or 0) if downloaded else 0
+    if wiring.classes_enabled():
+        # A small record's reservation (<= 1 GiB) is served ahead of the big ones queued for memory.
+        reserved = await budget.reserve(cost, timeout, held=held_bytes, ahead=wiring.memory_goes_ahead(level, cost))
+    else:
+        reserved = await budget.reserve(cost, timeout, held=held_bytes)
+    if not reserved:
         raise MemoryAdmissionTimeout("record_memory", timeout or 0.0)
     return Admission(tier=tier, cost=cost, _release=lambda: budget.release(cost))
 
@@ -1225,6 +1865,9 @@ async def acquire_download_slot(
     host: ConcurrencyHost,
     tier: ParseTier | None,
     timeout: float | None = None,
+    *,
+    ctx: "wiring.ClassContext | None" = None,
+    size_bytes: int | None = None,
 ) -> "Admission | None":
     """Take a place among the heavy records allowed to hold downloaded content
     without a parse permit; ``None`` when the record needs none (a light
@@ -1235,12 +1878,55 @@ async def acquire_download_slot(
     *timeout*, raises ``ParseAdmissionTimeout`` instead of waiting on.
     """
     governor = host.governor
-    if governor is None or effective_index_tier(host, tier) is not ParseTier.HEAVY:
+    # The priority lane's own cap on heavy records bounds the content it holds; sharing the
+    # backlog's first-come places would put it behind records waiting minutes for a parse slot.
+    if governor is None or _lane(host) is not None or effective_index_tier(host, tier) is not ParseTier.HEAVY:
         return None
-    ahead = governor.download_ahead
+    # PARSE_ADMISSION=classes: places per class, so a small record's download is not held behind big ones.
+    level = wiring.class_of(ctx, size_bytes) if ctx is not None else None
+    ahead = wiring.download_ahead(level) if level is not None else governor.download_ahead
     if not await ahead.acquire(timeout):
         raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
-    return Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+    admission = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+    admission.download_class = level  # type: ignore[attr-defined]
+    return admission
+
+
+async def reclass_download_slot(
+    admission: "Admission | None", ctx: "wiring.ClassContext | None", size_bytes: int | None, timeout: float | None
+) -> "Admission | None":
+    """Move a record's download place to the class its inspection now says. Returns the admission to hold from here on.
+
+    A small PDF that inspection turns into a huge one keeps holding a place of the small pool while it waits for its
+    parse slot, which blocks the next small PDF's download. A free place of the new pool is taken without waiting and the
+    old one given back; when none is free the old place is given back first and the record queues for the new one (never
+    waiting while holding the old). If none comes free in *timeout*, ``ParseAdmissionTimeout`` is raised.
+    A no-op without ``PARSE_ADMISSION=classes`` or when the class did not change."""
+    if admission is None or admission.released or ctx is None:
+        return admission
+    old = getattr(admission, "download_class", None)
+    new = wiring.class_of(ctx, size_bytes)
+    if old is None or new is old:
+        return admission
+    ahead = wiring.download_ahead(new)
+    if ahead is wiring.download_ahead(old):
+        admission.download_class = new  # type: ignore[attr-defined]  # large and huge share the big pool: the place is right
+        return admission
+    if await ahead.try_acquire():
+        # A place of the new pool is free now: take it, then give the old one back.
+        moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+        moved.download_class = new  # type: ignore[attr-defined]
+        release_admission(admission)
+        return moved
+    # None is free. Never wait while holding the old place: two records crossing between full pools would wait on each
+    # other. Give it back, then queue for the new one through the ordinary path (its content is in hand, so the excess
+    # is bounded by the records moving).
+    release_admission(admission)
+    if not await ahead.acquire(timeout):
+        raise ParseAdmissionTimeout("download_ahead", timeout or 0.0)
+    moved = Admission(tier=ParseTier.HEAVY, _release=ahead.release)
+    moved.download_class = new  # type: ignore[attr-defined]
+    return moved
 
 
 async def acquire_parsing_slot(
@@ -1248,6 +1934,11 @@ async def acquire_parsing_slot(
     tier: ParseTier | None,
     size_bytes: int | None,
     timeout: float | None = None,
+    kind: ParseKind | None = None,
+    reserved_bytes: int = 0,
+    *,
+    ctx: "wiring.ClassContext | None" = None,
+    spaced: bool = True,
 ) -> "Admission":
     """Acquire a parsing permit, routing heavy vs. light through the
     governor when one is configured, else falling back to the single legacy
@@ -1258,15 +1949,44 @@ async def acquire_parsing_slot(
     they run no more Docling conversions than free memory holds.
 
     With *timeout*, raises ``ParseAdmissionTimeout`` instead of waiting on.
+
+    *kind* and *reserved_bytes* (what the record reserved before the permit, see
+    ``reserve_record_memory``) cover a caller that reserved nothing, such as the parsing route: the
+    part of the kind's excess still missing is reserved here, but a permit holder never waits for
+    memory longer than ``EXCESS_WAIT_SECONDS``: it gives the permit back and the caller queues again.
     """
+    remote = remote_parse_concurrency()
+    if remote is not None:
+        # The parse runs in the parsing service, so this process's CPUs do not bound it: the
+        # configured concurrency does. Memory reserved for the record and the download gates
+        # were taken before this call and still apply.
+        if ctx is not None:
+            # PARSE_ADMISSION=classes: the remote places are ordered by class (small first, large keeps its share
+            # and ages up, the priority lane ahead). EVERY remote parse takes its one place here (a light format as
+            # small work), so the configured concurrency is held once: the FIFO pool below is not entered.
+            est = wiring.estimate_for(ctx.extension, ctx.mime_type, size_bytes, **ctx.facts())
+            return await _acquire_remote_by_class(host, tier, est, ctx, remote, timeout)
+        slots = remote_parse_slots(remote)
+        if not await slots.acquire(timeout, priority=_lane(host) is not None):
+            raise ParseAdmissionTimeout("remote_parsing", timeout or 0.0)
+        return Admission(tier=tier, cost=1, _release=slots.release)
+
     governor = host.governor
+    if ctx is not None and governor is not None and (tier is None or tier is ParseTier.HEAVY):
+        est = wiring.estimate_for(ctx.extension, ctx.mime_type, size_bytes, **ctx.facts())
+        if est is not None:
+            return await _acquire_parsing_slot_by_class(
+                host, governor, est, ctx, size_bytes, timeout, kind, reserved_bytes
+            )
     if governor is not None:
         resolved_tier = tier if tier is not None else ParseTier.HEAVY
         cost = parse_cost(resolved_tier, size_bytes)
         pool = gate_pool(resolved_tier)
         gate = governor.gate(pool)
         started = time.monotonic()
-        if not await gate.acquire(cost=cost, timeout=timeout):
+        # Only the class path passes spaced=False (a small CPU parse skips the start-rate limiter).
+        unspaced = {} if spaced else {"spaced": False}
+        if not await gate.acquire(cost=cost, timeout=timeout, **_priority_kwargs(host), **unspaced):
             raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
         # Braked here: the parsing and Docling services, when they share this memory,
         # admit the parse without braking it again.
@@ -1290,12 +2010,34 @@ async def acquire_parsing_slot(
         if slots is None:
             gate.release(cost)
             raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
+        missing = 0
+        if kind is not None:
+            ws = governor.heavy_working_set
+            missing = max(0, permit_excess_bytes(kind, ws.gb, ws.source, size_bytes) - reserved_bytes)
+        extra = 0
+        if missing:
+            budget = governor.memory_budget
+            try:
+                got = await budget.reserve(missing, EXCESS_WAIT_SECONDS)
+            except BaseException:
+                slots.release()
+                gate.release(cost)
+                raise
+            if not got:
+                slots.release()
+                gate.release(cost)
+                raise ParseAdmissionTimeout("record_memory", EXCESS_WAIT_SECONDS)
+            extra = missing
         stamp = set_admitted_in(memory_domain_id())
+        covers = set_permit_covers()
 
         def _release() -> None:
             slots.release()
             gate.release(cost)
+            if extra:
+                governor.memory_budget.release(extra)
             reset_admitted_in(stamp)
+            reset_permit_covers(covers)
 
         return Admission(tier=resolved_tier, cost=cost, _release=_release)
 
@@ -1309,6 +2051,133 @@ async def acquire_parsing_slot(
     return Admission(cost=1, _release=legacy_semaphore.release)
 
 
+
+
+async def _acquire_remote_by_class(
+    host: ConcurrencyHost,
+    tier: ParseTier | None,
+    est: "CostEstimate | None",
+    ctx: "wiring.ClassContext",
+    remote: int,
+    timeout: float | None,
+) -> "Admission":
+    """A remote parse's place, ordered by class over ``PARSING_SERVICE_CONCURRENCY`` places. A record with no heavy-format
+    estimate (a light format) is small work."""
+    from app.modules.parse_engine.budget_port import AdmissionTimeout
+    from app.modules.parse_engine.class_gate import GateRequest
+
+    await wiring.refresh_numbers()
+    gate = wiring.remote_gate(remote)
+    if est is not None:
+        request = wiring.request_for(ctx, est, family=Family.PARSE, cpu=1, tokens=1)
+    else:
+        request = GateRequest(
+            cls=CostClass.SMALL, family=Family.PARSE, cpu=1, tokens=1, org=ctx.org, priority=ctx.priority,
+            first_seen_s=ctx.first_seen_s(),
+        )
+    request = dataclasses.replace(request, mem_bytes=0, priority=request.priority or _lane(host) is not None)
+    started = time.monotonic()
+    cls = est.cls if est is not None else CostClass.SMALL
+    big = cls in BIG_CLASSES
+    if big:
+        bound = wiring.big_wait_seconds()
+        timeout = bound if timeout is None else min(timeout, bound)
+    try:
+        ticket = await gate.acquire(request, deadline_s=timeout, cancel=wiring.NEVER)
+    except AdmissionTimeout:
+        waited = time.monotonic() - started
+        if big:
+            raise BigAdmissionTimeout(
+                "remote_parsing", waited, parse_enqueued_at_ms=ctx.first_seen_ms or int(time.time() * 1000 - waited * 1000)
+            ) from None
+        raise ParseAdmissionTimeout("remote_parsing", waited) from None
+    class_pools.set_class(cls, est.est_seconds if est is not None else None)  # the embedding request reads it
+    return Admission(tier=tier, cost=1, _release=ticket.release)
+
+
+async def _acquire_parsing_slot_by_class(
+    host: ConcurrencyHost,
+    governor: "ResourceGovernor",
+    est: "CostEstimate",
+    ctx: "wiring.ClassContext",
+    size_bytes: int | None,
+    timeout: float | None,
+    kind: ParseKind | None,
+    reserved_bytes: int,
+) -> "Admission":
+    """The parse permit of a heavy-format record under ``PARSE_ADMISSION=classes``.
+
+    * A small PDF that Docling converts queues for a Docling permit and takes no CPU parse slot: it never
+      waits behind a large layout parse, and the Docling service reserves the conversion itself.
+    * Every other parse is a CPU step. The class gate orders it (small ahead of large, org round-robin in big)
+      and, with the member budget on, reserves its token once; the governor's gate, the shared heavy slots
+      and the memory excess behind it are the legacy ones. The parse pool adopts the permit through
+      ``class_pools.parse_scope``, so the step is reserved exactly once.
+    """
+    from app.capacity.runtime import member_budget
+    from app.modules.parse_engine.budget_port import AdmissionTimeout
+    from app.modules.parse_engine.class_gate import route_gate
+
+    await wiring.refresh_numbers()
+    budget = member_budget()
+    cpu_gate = wiring.parse_gate(governor, budget)
+    gate = route_gate(est, cpu_gate, wiring.docling_gate(governor))
+    cost = 1 if est.needs_docling_permit else parse_cost(ParseTier.HEAVY, size_bytes)  # in the pool's own unit
+    request = wiring.request_for(
+        ctx, est, family=None if est.needs_docling_permit else Family.PARSE, cpu=cost, tokens=1
+    )
+    request = dataclasses.replace(request, mem_bytes=0)  # memory is admitted by the record reservation (the governor's budget)
+    started = time.monotonic()
+    big = est.cls in BIG_CLASSES
+    if big:
+        # A big record waits at most PARSE_BIG_WAIT_SECONDS for its turn (at the class gate and the governor's gate
+        # together), then goes back to the broker uncounted and keeps its first-wait time.
+        bound = wiring.big_wait_seconds()
+        timeout = bound if timeout is None else min(timeout, bound)
+
+    def _handed_back(pool: str) -> ParseAdmissionTimeout:
+        waited = time.monotonic() - started
+        if big:
+            return BigAdmissionTimeout(
+                pool, waited, parse_enqueued_at_ms=ctx.first_seen_ms or int(time.time() * 1000 - waited * 1000)
+            )
+        return ParseAdmissionTimeout(pool, waited)
+
+    try:
+        ticket = await gate.acquire(request, deadline_s=timeout, cancel=wiring.NEVER)
+    except AdmissionTimeout:
+        raise _handed_back(gate.name) from None
+    inner: Admission | None = None
+    if not est.needs_docling_permit:
+        try:
+            # What is left of the wait goes to the governor's own gate behind the class gate.
+            inner = await acquire_parsing_slot(
+                host, ParseTier.HEAVY, size_bytes,
+                None if timeout is None else max(0.0, timeout - (time.monotonic() - started)),
+                kind, reserved_bytes,
+                # A small parse is light: the heavy start-rate limiter exists to space memory-heavy starts.
+                spaced=est.cls is not CostClass.SMALL,
+            )
+        except ParseAdmissionTimeout as exc:
+            ticket.release()
+            if big:
+                raise _handed_back(exc.pool) from None
+            raise
+        except BaseException:
+            ticket.release()
+            raise
+    class_pools.set_class(est.cls, est.est_seconds)  # downstream (the embedding request) reads it; it ends with the task
+    undo = class_pools.enter_permit(ticket if not est.needs_docling_permit else None)
+
+    def _release() -> None:
+        undo()
+        if inner is not None:
+            release_admission(inner)
+        ticket.release()
+
+    admission = Admission(tier=ParseTier.HEAVY, cost=1, _release=_release)
+    admission.ordered = ticket  # type: ignore[attr-defined]
+    return admission
 
 
 def report_memory_incident_if_applicable(
@@ -1328,3 +2197,133 @@ def report_memory_incident_if_applicable(
     if host.governor is None or not isinstance(error, MemoryError):
         return
     host.governor.report_memory_incident(f"MemoryError processing {message_id}")
+
+
+def class_context(host: ConcurrencyHost, payload: "Mapping[str, Any] | None") -> "wiring.ClassContext | None":
+    """The class context of a record event under ``PARSE_ADMISSION=classes``; ``None`` (the legacy path) otherwise."""
+    return wiring.class_context(payload, priority=_lane(host) is not None)
+
+
+def class_kwargs(ctx: "wiring.ClassContext | None", **extra: Any) -> dict[str, Any]:  # noqa: ANN401
+    """Keyword arguments of the admission calls that only the class path takes: none when classes are off."""
+    return {} if ctx is None else {"ctx": ctx, **extra}
+
+
+def first_admission_kwargs(error: BaseException) -> dict[str, int]:
+    """``parse_enqueued_at_ms`` for the requeue of a big record that waited out its turn; nothing for any other
+    hand-back, so their requeue is unchanged."""
+    at = getattr(error, "parse_enqueued_at_ms", None) if isinstance(error, BigAdmissionTimeout) else None
+    return {"parse_enqueued_at_ms": at} if at else {}
+
+
+def record_parse_kind(payload: "dict[str, Any] | None") -> ParseKind:
+    """The kind of a record from its own ``extension`` and ``mimeType``; anything else is ``UNKNOWN``."""
+    data = payload or {}
+    return classify_kind(data.get("extension"), data.get("mimeType"))
+
+
+def _local_permits_name(host: ConcurrencyHost) -> str:
+    return host.stage_admission.stage if host.stage_admission is not None else "legacy"
+
+
+def _read_paused_for_admission(host: object) -> bool:
+    probe = getattr(host, "read_paused_for_admission", None)
+    return bool(probe()) if callable(probe) else False
+
+
+def consumer_id(host: object) -> str | None:
+    """The prefix of this consumer's lease owners (``<id>:<message id>:<uuid>``)."""
+    value = getattr(host, "consumer_name", None) or getattr(host, "_consumer_instance_id", None)
+    return value if isinstance(value, str) else None
+
+
+def _lease_pools(host: ConcurrencyHost) -> dict[str, int]:
+    """Every cluster lease pool this consumer takes, with the limit it asks for."""
+    if host.concurrency_manager is None:
+        return {}
+    pools: dict[str, int] = {}
+    if host.stage_admission is not None:
+        pools[host.stage_admission.lease_pool] = host.stage_admission.lease_limit
+        return pools
+    for tier in ParseTier:
+        pools[admission_lease_pool(host, tier)] = index_ceiling(host, tier)
+        pools[admission_parse_lease_pool(host, tier)] = parse_ceiling(host, tier)
+    return pools
+
+
+def admission_explain(host: ConcurrencyHost) -> dict[str, Any]:
+    """Why this consumer is, or is not, admitting records: read-only, no I/O, never awaits.
+
+    Safe from any thread. It carries counts only: nothing that identifies a message or who sent it.
+    """
+    backlog = getattr(host, "admission_backlog", None)
+    if isinstance(backlog, AdmissionBacklog):
+        totals = backlog.totals()
+        lease_waiting = backlog.lease_waiting()
+    else:
+        totals = {tier: dict.fromkeys(_PHASES, 0) for tier in (ParseTier.HEAVY, ParseTier.LIGHT)}
+        lease_waiting = {}
+    waiters, retained = host.gate_waiters.view()
+    tiers = {
+        tier.value: {
+            **totals[tier],
+            # Spawned and neither at the gate nor already through it: waiting in back-off, for a lease or its turn.
+            "buffered": max(0, waiters.get(tier, 0) - totals[tier][PHASE_GATE] - retained.get(tier, 0)),
+        }
+        for tier in (ParseTier.HEAVY, ParseTier.LIGHT)
+    }
+    coordinator = getattr(host, "backpressure_coordinator", None)
+    paused: list[str] = []
+    held: list[str] = []
+    remaining = reads_held = 0.0
+    if coordinator is not None:
+        # Raw: every signalled pause. `downstream` is whether reads wait (a Docling pause on a fair consumer holds
+        # only `heldPools`' records), so `downstream: false` beside a non-zero `pauseRemainingSec` is expected.
+        remaining = coordinator.pause_remaining()
+        paused = sorted(coordinator.paused_services)
+        held = sorted(pool.value for pool in held_pools(host))
+        probe = getattr(host, "downstream_read_pause", None)
+        reads_held = probe() if callable(probe) else remaining
+    explain: dict[str, Any] = {
+        "v": 2,
+        "consumerId": consumer_id(host),
+        "readPause": {
+            "admission": _read_paused_for_admission(host),
+            "downstream": reads_held > 0.0,
+            "pauseRemainingSec": remaining,
+            "pausedServices": paused,
+            "heldPools": held,
+        },
+        "leases": {
+            pool: {"limit": limit, "waiting": lease_waiting.get(pool, 0)}
+            for pool, limit in _lease_pools(host).items()
+        },
+        "suspectsWaiting": int(getattr(host, "_suspects_waiting", 0)),
+        "backlog": {"tiers": tiers},
+    }
+    dispatch = getattr(host, "dispatch_stats", None)
+    if callable(dispatch):
+        explain["dispatch"] = dispatch()
+    lane = _lane(host)
+    if lane is not None:
+        explain["priority"] = {
+            tier.value: {
+                "inFlight": waiters.get(tier, 0),
+                "limit": lane.tier_limit(tier),
+                # Records of this tier waiting for an index permit. Records the cap holds back are not read yet, so not counted.
+                "gateWaiting": totals[tier][PHASE_GATE],
+            }
+            for tier in (ParseTier.HEAVY, ParseTier.LIGHT)
+        }
+    permits = getattr(host, "local_permits", None)
+    if host.governor is None and not isinstance(permits, LocalPermits):
+        # Nothing has waited yet; a governor-less consumer still admits through its local permits.
+        permits = LocalPermits(_local_permits_name(host))
+    if isinstance(permits, LocalPermits):
+        explain["localPermits"] = {
+            "name": permits.name,
+            "limit": local_index_permits(host),
+            "inUse": permits.in_use,
+            "waiting": permits.waiting,
+        }
+    return explain

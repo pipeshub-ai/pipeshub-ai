@@ -43,8 +43,8 @@ export function WebSearchProviderRow({
 }: WebSearchProviderRowProps) {
   const { t } = useTranslation();
   const isConfigurable = meta.configurable;
-  // DuckDuckGo is always considered "configured" (built-in)
-  const isConfigured = isConfigurable ? !!configured : true;
+  // DuckDuckGo needs no settings, but it counts as set up only once an admin has chosen it.
+  const isConfigured = !!configured;
 
   const renderBadge = () => {
     if (isDefault) {
@@ -129,6 +129,14 @@ export function WebSearchProviderRow({
         >
           {meta.description}
         </Text>
+        {meta.warningKey && (
+          <Flex align="start" gap="1" style={{ marginTop: 4 }}>
+            <MaterialIcon name="warning" size={13} color="var(--amber-11)" />
+            <Text size="1" style={{ color: 'var(--amber-11)', lineHeight: '16px' }}>
+              {t(meta.warningKey)}
+            </Text>
+          </Flex>
+        )}
       </Box>
 
       {/* Right side: badge + set-default + configure + delete */}
@@ -138,7 +146,7 @@ export function WebSearchProviderRow({
         {/* Set as Default */}
         {/* A provider that only reads pages backs up page reading; it is never the default search. */}
         {/* Hidden until configured: the "Not configured" badge and the gear already say what to do. */}
-        {meta.searches && isConfigured && !isDefault && !(inherited && isConfigurable) && (
+        {meta.searches && (isConfigured || !isConfigurable) && !isDefault && !(inherited && isConfigurable) && (
           <Button
             variant="outline"
             color="gray"
@@ -177,7 +185,7 @@ export function WebSearchProviderRow({
         )}
 
         {/* Delete */}
-        {isConfigurable && isConfigured && (
+        {isConfigured && (
           <Tooltip content={deleteLabel}>
             <IconButton
               variant="ghost"

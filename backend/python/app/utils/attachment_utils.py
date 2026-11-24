@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.modules.artifacts.reader import record_artifact_reader
-from app.modules.retrieval.selection_scope import outside_connection
+from app.modules.retrieval.selection_scope import outside_connection, resolve_user_key
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import ImageBudget, is_base64_image
 from app.utils.image_admission import (
@@ -85,8 +85,7 @@ async def keep_accessible_attachments(
             if record_id and is_chat_attachment(row, org_id):
                 record_by_vrid.setdefault(row["virtualRecordId"], record_id)
     elif vrids:
-        user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
-        user_key = (user_doc or {}).get("id") or (user_doc or {}).get("_key")
+        user_key = await resolve_user_key(graph_provider, user_id) if user_id else None
         # A failed check raises: answering as if nothing were attached would hide
         # the outage from the user.
         if user_key:

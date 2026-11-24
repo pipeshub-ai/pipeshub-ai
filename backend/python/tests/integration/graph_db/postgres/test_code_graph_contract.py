@@ -20,6 +20,7 @@ from tests.integration.graph_db.postgres.pg_support import (
     new_org,
 )
 from tests.integration.graph_db.test_code_graph_real_backends import (  # noqa: F401
+    test_a_code_group_is_stamped_with_its_synced_commit_and_read_back,
     test_a_deleted_files_names_are_kept_and_served_once,
     test_a_rebuild_replaces_edges_in_place_and_keeps_their_creation_time,
     test_an_agent_tool_answers_from_the_built_graph,

@@ -1,7 +1,9 @@
 import { config } from "dotenv";
 import { applyStoreUmbrella } from "../../../libs/config/storeUmbrella";
+import { checkStartup } from '../../../edition';
 config({ quiet: true }); // Load environment variables first
 applyStoreUmbrella(); // PIPESHUB_STORE=postgres fills in the per-store settings
+checkStartup();
 
 import { json, urlencoded, Request, Response } from "express";
 import { connect, dropLegacyThreadBotIndex } from "./utils/db";

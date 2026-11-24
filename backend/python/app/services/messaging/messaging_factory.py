@@ -17,6 +17,7 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.fail_safe_retry_tracker import FailSafeRetryTracker
+from app.services.messaging.inbox import shared_inbox
 from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -44,6 +45,7 @@ from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.interface import (
     FairnessKeyExtractor,
     FairSchedulerConfig,
+    IndexingFairness,
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
@@ -57,9 +59,10 @@ from app.services.redis.connection_provider_factory import (
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
     from app.services.messaging.connector_off import ConnectorOffFilter
-    from app.services.messaging.consumer_concurrency import StageAdmission
+    from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
     from app.services.messaging.lanes.interface import LaneRouter
+    from app.services.messaging.precision_check import PrecisionHandBack
     from app.services.messaging.worker_loop import WorkerLoop
     from app.services.resource_governor import ResourceGovernor
 
@@ -337,8 +340,11 @@ class MessagingFactory:
         weight_provider: WeightProvider | None = None,
         disposition_sink: "AbandonedMessageSink | None" = None,
         connector_off_filter: "ConnectorOffFilter | None" = None,
+        precision_filter: "PrecisionHandBack | None" = None,
         stage_admission: "StageAdmission | None" = None,
+        priority_lane: "PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
+        fairness: IndexingFairness | None = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -374,6 +380,14 @@ class MessagingFactory:
             connector_off_filter: Optional (INDEXING consumers only). Settles, as they
                       are read, the record events the handler would only skip because
                       their connector is turned off or removed.
+            precision_filter: Optional (INDEXING consumers only). Hands back, as they are read, the
+                      events that write vectors while the embedding server's weight precision and
+                      the indexes disagree.
+            priority_lane: Optional (INDEXING consumers only). Makes this the consumer of
+                      the priority topic: records are admitted ahead of the queued
+                      backlog but under the lane's own caps and lease pools.
+
+            fairness: Optional parts for the record consumer; ignored unless INDEXING with default key fields and no explicit extractor, weights, priority lane or stage admission.
 
         Returns:
             IMessagingConsumer instance
@@ -382,6 +396,23 @@ class MessagingFactory:
             broker_type = get_message_broker_type()
 
         effective_fair_config = fair_scheduler_config or _fair_scheduler_config_from_env()
+        if fairness is not None:
+            if consumer_type != ConsumerType.INDEXING or any(x is not None for x in (key_extractor, weight_provider, stage_admission, priority_lane)):
+                fairness = None
+            elif not effective_fair_config.enabled or effective_fair_config.key_fields != FairSchedulerConfig().key_fields:
+                logger.warning("Ignoring the record consumer's extra parts: fair scheduling is off or key fields are set")
+                fairness = None
+        if fairness is not None:
+            effective_fair_config = dataclasses.replace(effective_fair_config, key_fields=fairness.key_fields)
+            key_extractor, weight_provider = fairness.key_extractor, fairness.weights
+            if fairness.extra_topics and config is not None:
+                topics = [*config.topics, *(t for t in fairness.extra_topics if t not in config.topics)]
+                config = (dataclasses.replace(config, topics=topics) if dataclasses.is_dataclass(config)
+                          else config.model_copy(update={"topics": topics}))
+        if priority_lane is not None:
+            # The lane's per-org share is the fair scheduler's, and a priority record is not
+            # ordered against its partition's others: its cap, not the partition, bounds it.
+            effective_fair_config = dataclasses.replace(effective_fair_config, enabled=True, parallel_partitions=True)
         if stage_admission is not None:
             # Stage jobs are independent and serialised per job, so one partition may run
             # several at once; the stage's admission limit bounds concurrency, not the
@@ -403,7 +434,11 @@ class MessagingFactory:
                 disposition_sink=disposition_sink,
                 concurrency_manager=concurrency_manager,
                 stage_admission=stage_admission,
+                priority_lane=priority_lane,
                 worker=worker if consumer_type == ConsumerType.INDEXING else None,
+                precision_filter=precision_filter if consumer_type == ConsumerType.INDEXING else None,
+                fairness=fairness,
+                inbox=None if consumer_type == ConsumerType.INDEXING else shared_inbox(),
             )
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
@@ -433,10 +468,13 @@ class MessagingFactory:
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
                     connector_off_filter=connector_off_filter,
+                    precision_filter=precision_filter,
                     stage_admission=stage_admission,
+                    priority_lane=priority_lane,
                     worker=worker,
+                    fairness=fairness,
                 )
-            return KafkaMessagingConsumer(logger, config, retry_manager)
+            return KafkaMessagingConsumer(logger, config, retry_manager, inbox=shared_inbox())
         else:
             if config is None:
                 raise ValueError("Redis Streams config is required")
@@ -458,7 +496,10 @@ class MessagingFactory:
                     weight_provider=weight_provider,
                     disposition_sink=disposition_sink,
                     connector_off_filter=connector_off_filter,
+                    precision_filter=precision_filter,
                     stage_admission=stage_admission,
+                    priority_lane=priority_lane,
                     worker=worker,
+                    fairness=fairness,
                 )
-            return RedisStreamsConsumer(logger, config, retry_manager)
+            return RedisStreamsConsumer(logger, config, retry_manager, inbox=shared_inbox())

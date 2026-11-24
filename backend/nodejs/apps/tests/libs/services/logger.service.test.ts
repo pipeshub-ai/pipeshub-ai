@@ -57,10 +57,10 @@ describe('Logger', () => {
       expect(logger).to.be.instanceOf(Logger);
     });
 
-    it('should return the same instance on subsequent calls (singleton)', () => {
+    it('returns one logger per service name', () => {
       const logger1 = new Logger({ service: 'service1' });
-      const logger2 = new Logger({ service: 'service2' });
-      expect(logger1).to.equal(logger2);
+      expect(new Logger({ service: 'service1' })).to.equal(logger1);
+      expect(new Logger({ service: 'service2' })).to.not.equal(logger1);
     });
 
     it('should use default service name when not provided', () => {
@@ -77,8 +77,8 @@ describe('Logger', () => {
 
     it('should return existing instance', () => {
       const logger1 = Logger.getInstance({ service: 'test' });
-      const logger2 = Logger.getInstance();
-      expect(logger1).to.equal(logger2);
+      expect(Logger.getInstance({ service: 'test' })).to.equal(logger1);
+      expect(Logger.getInstance()).to.equal(Logger.getInstance());
     });
 
     it('takes its level from LOG_LEVEL when created without a config', () => {
@@ -93,11 +93,11 @@ describe('Logger', () => {
       expect((logger as any).logger.level).to.equal('info');
     });
 
-    it('should update config on existing instance', () => {
+    it('applies a configured level to every logger', () => {
       const logger = Logger.getInstance({ service: 'test', level: 'info' });
       Logger.getInstance({ service: 'updated', level: 'debug' });
-      // The instance should be the same object
-      expect(logger).to.equal(Logger.getInstance());
+      expect((logger as any).logger.level).to.equal('debug');
+      expect((Logger.getInstance() as any).logger).to.equal((logger as any).logger);
     });
   });
 
@@ -337,6 +337,21 @@ describe('Logger', () => {
       expect(result.at).to.equal('2026-10-13T10:00:00.000Z');
       expect(result.error.message).to.equal('mongo down');
       expect(result.error.stack).to.be.a('string');
+    });
+
+    it('logs binary data by its size, never its bytes', () => {
+      const logger = new Logger({ service: 'test' });
+      const sanitize = (logger as any).sanitizeForLogging.bind(logger);
+
+      const result = sanitize({
+        file: Buffer.from('document body'),
+        nested: { bytes: new Uint8Array(4), raw: new ArrayBuffer(8) },
+      });
+
+      expect(result.file).to.equal('[binary 13 bytes]');
+      expect(result.nested.bytes).to.equal('[binary 4 bytes]');
+      expect(result.nested.raw).to.equal('[binary 8 bytes]');
+      expect(JSON.stringify(result)).to.not.include('document body');
     });
 
     it('should redact secrets carried in an error message and stack', () => {

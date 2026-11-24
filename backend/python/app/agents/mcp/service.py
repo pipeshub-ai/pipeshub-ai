@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Optional
 
 from app.agents.constants.mcp_server_constants import (
     get_mcp_credentials_path,
+    get_mcp_instance_credentials_prefix,
     get_mcp_instance_path,
     get_mcp_instances_prefix,
     get_mcp_org_user_instances_prefix,
@@ -102,51 +104,103 @@ def _owned_by(instance: dict[str, Any], user_id: Optional[str]) -> bool:
 _PREFIX_READ_CONCURRENCY = 16
 
 
-async def _load_instance_key(config_service: ConfigurationService, key: str) -> Optional[dict[str, Any]]:
+# `strict` raises a failed read instead of leaving the record out: a check that must see every
+# record (no two servers share a name) can't pass on a partial list.
+async def _load_instance_key(
+    config_service: ConfigurationService, key: str, *, strict: bool = False,
+) -> Optional[dict[str, Any]]:
     try:
-        data = await config_service.get_config(key, default=None, use_cache=False)
+        # The service answers `default` for a failed store read unless asked to raise; only a
+        # strict read asks, so every other caller and test double keeps the plain call.
+        if strict:
+            data = await config_service.get_config(key, default=None, use_cache=False, raise_on_error=True)
+        else:
+            data = await config_service.get_config(key, default=None, use_cache=False)
     except Exception as e:
+        if strict:
+            raise
         logger.warning(f"Failed to load MCP instance at {key}: {e}")
         return None
     return data if isinstance(data, dict) else None
 
 
-async def _load_prefix(config_service: ConfigurationService, prefix: str) -> list[dict[str, Any]]:
+async def _load_prefix(config_service: ConfigurationService, prefix: str, *, strict: bool = False) -> list[dict[str, Any]]:
     try:
         keys = await config_service.list_keys_in_directory(prefix)
     except Exception as e:
+        if strict:
+            raise
         logger.error(f"Failed to list MCP instance keys under {prefix}: {e}", exc_info=True)
         return []
     records = await gather_with_concurrency(
-        _PREFIX_READ_CONCURRENCY, *[_load_instance_key(config_service, key) for key in keys],
+        _PREFIX_READ_CONCURRENCY, *[_load_instance_key(config_service, key, strict=strict) for key in keys],
     )
     return [record for record in records if record is not None]
 
 
-async def load_org_instances(config_service: ConfigurationService, org_id: str) -> list[dict[str, Any]]:
+async def load_org_instances(
+    config_service: ConfigurationService, org_id: str, *, strict: bool = False,
+) -> list[dict[str, Any]]:
     """Every org-wide MCP instance of `org_id` (no secrets)."""
-    records = await _load_prefix(config_service, get_mcp_instances_prefix())
+    records = await _load_prefix(config_service, get_mcp_instances_prefix(), strict=strict)
     return [r for r in records if belongs_to_org(r, org_id) and not is_personal(r)]
 
 
 async def load_user_instances(
-    config_service: ConfigurationService, org_id: str, user_id: str,
+    config_service: ConfigurationService, org_id: str, user_id: str, *, strict: bool = False,
 ) -> list[dict[str, Any]]:
     """`user_id`'s own personal instances. Stored under the user, so this reads only theirs."""
-    records = await _load_prefix(config_service, get_mcp_user_instances_prefix(org_id, user_id))
+    records = await _load_prefix(config_service, get_mcp_user_instances_prefix(org_id, user_id), strict=strict)
     return [r for r in records if belongs_to_org(r, org_id) and is_personal(r) and _owned_by(r, user_id)]
 
 
 async def load_visible_instances(
-    config_service: ConfigurationService, org_id: str, user_id: Optional[str],
+    config_service: ConfigurationService, org_id: str, user_id: Optional[str], *, strict: bool = False,
 ) -> list[dict[str, Any]]:
     """What `user_id` may see and use: the org's instances plus their own personal ones."""
     if not user_id:
-        return await load_org_instances(config_service, org_id)
+        return await load_org_instances(config_service, org_id, strict=strict)
     org_instances, own = await asyncio.gather(
-        load_org_instances(config_service, org_id), load_user_instances(config_service, org_id, user_id),
+        load_org_instances(config_service, org_id, strict=strict),
+        load_user_instances(config_service, org_id, user_id, strict=strict),
     )
     return [*org_instances, *own]
+
+
+# A person's id has the shape of a MongoDB ObjectId in either document store (`newObjectId`);
+# an agent's own credential is keyed by its UUID, and the shared slot by `_shared`.
+_PERSON_ID = re.compile(r"[0-9a-f]{24}")
+
+
+async def count_signed_in_people(config_service: ConfigurationService, instance_id: str) -> int:
+    """How many people keep their own sign-in for `instance_id`. Never says who."""
+    marker = f"/credentials/{instance_id}/"
+    try:
+        keys = await config_service.list_keys_in_directory(get_mcp_instance_credentials_prefix(instance_id))
+    except Exception as e:
+        logger.warning(f"Failed to list MCP credential keys for {instance_id}: {e}")
+        return 0
+    # One owner can have several keys (the credential, its OAuth tokens, a registered client).
+    owners = {key.split(marker, 1)[1].split("/", 1)[0] for key in keys if marker in key}
+    return sum(1 for owner in owners if _PERSON_ID.fullmatch(owner))
+
+
+async def popular_org_servers(
+    config_service: ConfigurationService, visible: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Of the `visible` instances, the org's servers that people signed in to, most used first,
+    with how many people."""
+    instances = [i for i in visible if not is_personal(i)]
+    counts = await gather_with_concurrency(
+        _PREFIX_READ_CONCURRENCY, *[count_signed_in_people(config_service, i["_id"]) for i in instances],
+    )
+    rows = [
+        {"instanceId": i["_id"], "typeId": i.get("typeId"), "name": i.get("name") or "", "people": n}
+        for i, n in zip(instances, counts)
+        if n > 0
+    ]
+    rows.sort(key=lambda r: (-r["people"], r["name"].casefold()))
+    return rows
 
 
 async def load_personal_instances_for_admin(config_service: ConfigurationService, org_id: str) -> list[dict[str, Any]]:

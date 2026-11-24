@@ -9,10 +9,13 @@ import { createKnowledgeBaseRouter } from '../../../../src/modules/knowledge_bas
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
+import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
+import { accessLog } from '../../../../src/libs/middlewares/access-log.middleware'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema'
-import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
+import { AppConfig, registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import { EncryptionService } from '../../../../src/libs/encryptor/encryptor'
@@ -131,6 +134,7 @@ export const startKbHarness = async (): Promise<KbHarness> => {
     aiBackend: backend.url,
     storage: { storageType: 'local', endpoint: backend.url },
   } as unknown as AppConfig
+  registerAppUpstreams(config)
 
   const kv = new FakeKeyValueStore()
   kv.values.set(ENDPOINTS_KEY, JSON.stringify({ storage: { endpoint: backend.url } }))
@@ -165,6 +169,8 @@ export const startKbHarness = async (): Promise<KbHarness> => {
 
   const router = createKnowledgeBaseRouter(container)
   const app = express()
+  app.use(requestContextMiddleware)
+  app.use(accessLog())
   app.use(express.json())
   app.use('/api/v1/knowledgeBase', router)
   app.use(ErrorMiddleware.handleError())
@@ -193,6 +199,7 @@ export const startKbHarness = async (): Promise<KbHarness> => {
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()))
       await backend.stop()
+      registerUpstreams({})
       if (previousConnectorBackend === undefined) delete process.env.CONNECTOR_BACKEND
       else process.env.CONNECTOR_BACKEND = previousConnectorBackend
       if (previousSecretKey === undefined) delete process.env.SECRET_KEY

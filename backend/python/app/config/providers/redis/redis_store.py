@@ -265,8 +265,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return True
 
         except Exception as e:
-            logger.error("Failed to create key %s: %s", key, str(e))
-            raise ConnectionError(f"Failed to create key: {str(e)}")
+            raise ConnectionError(f"Failed to create key: {e}") from e
 
     async def update_value(
         self, key: str, value: T, ttl: Optional[int] = None
@@ -294,8 +293,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         except KeyError:
             raise
         except Exception as e:
-            logger.error("Failed to update key %s: %s", key, str(e))
-            raise ConnectionError(f"Failed to update key: {str(e)}")
+            raise ConnectionError(f"Failed to update key: {e}") from e
 
     async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         """Get value for key from Redis."""
@@ -320,17 +318,16 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     raise ValueError("Stored value could not be decoded")
                 return deserialized
             except json.JSONDecodeError as e:
-                logger.error("Failed to deserialize value: %s", str(e))
                 # A stored value that cannot be read is not an absent one.
                 # Surfaces as ConnectionError via the handler below, as every
                 # failed read from this store does.
                 if raise_on_error:
                     raise
+                logger.error("Failed to deserialize value: %s", str(e))
                 return None
 
         except Exception as e:
-            logger.error("Failed to get key %s: %s", key, str(e))
-            raise ConnectionError(f"Failed to get key: {str(e)}")
+            raise ConnectionError(f"Failed to get key: {e}") from e
 
     async def delete_key(self, key: str) -> bool:
         """Delete a key from Redis."""
@@ -347,8 +344,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return result > 0
 
         except Exception as e:
-            logger.error("Failed to delete key %s: %s", key, str(e))
-            raise ConnectionError(f"Failed to delete key: {str(e)}")
+            raise ConnectionError(f"Failed to delete key: {e}") from e
 
     async def get_all_keys(self) -> List[str]:
         """Get all keys from Redis with the configured prefix."""
@@ -368,8 +364,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return keys
 
         except Exception as e:
-            logger.error("Failed to get all keys: %s", str(e))
-            raise ConnectionError(f"Failed to get all keys: {str(e)}")
+            raise ConnectionError(f"Failed to get all keys: {e}") from e
 
     async def _notify_watchers(self, key: str, value: Optional[T]) -> None:
         """Notify all watchers of a key about value changes."""
@@ -446,10 +441,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             return keys
 
         except Exception as e:
-            logger.error(
-                "Failed to list keys in directory (%s)", type(e).__name__
-            )
-            raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
+            raise ConnectionError(f"Failed to list keys in directory: {e}") from e
 
     async def close(self) -> None:
         """Clean up resources and close connection."""

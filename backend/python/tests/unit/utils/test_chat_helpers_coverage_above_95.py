@@ -383,6 +383,24 @@ class TestBuildMessageContentArrayGrouped:
         assert "cell" in flattened_text
         assert isinstance(mapper, CitationRefMapper)
 
+    def test_a_comment_hit_names_its_author_in_the_group_header(self) -> None:
+        flat = [{
+            "virtual_record_id": "vr_c",
+            "block_type": GroupType.TEXT_SECTION.value,
+            "group_caption": "Comment by Tammy Moreno",
+            "block_index": 1,
+            "block_group_index": 3,
+            "content": ("", [{"content": "within threshold", "block_index": 1,
+                              "block_type": BlockType.TEXT.value}]),
+            "metadata": {},
+        }]
+        vmap = {"vr_c": {"id": "c", "frontend_url": "https://fe.example", "context_metadata": "ctx"}}
+
+        parts, _ = build_message_content_array(flat, vmap, is_multimodal_llm=False, from_tool=True)
+
+        text = "".join(c.get("text", "") for sub in parts for c in sub if c.get("type") == "text")
+        assert "[text_section #3: Comment by Tammy Moreno]" in text
+
 
 # ---------------------------------------------------------------------------
 # record_to_message_content — multimodal image + FK footer

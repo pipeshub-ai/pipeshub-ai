@@ -54,6 +54,7 @@ def _make_connector():
     dep.org_id = "org-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
@@ -1272,7 +1273,7 @@ class TestConvertImageBlocksToBase64:
     async def test_image_svg_conversion(self, mock_parser_cls):
         conn = _make_connector()
         mock_parser_instance = MagicMock()
-        mock_parser_instance.svg_base64_to_png_base64.return_value = "cG5nZGF0YQ=="
+        mock_parser_instance.svg_base64_to_png_base64_async = AsyncMock(return_value="cG5nZGF0YQ==")
         mock_parser_cls.return_value = mock_parser_instance
 
         conn._fetch_image = AsyncMock(return_value=PublicFetchResponse(

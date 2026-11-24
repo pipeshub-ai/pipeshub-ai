@@ -6,6 +6,7 @@ import {
   RESYNC_NOT_QUEUED_MESSAGE,
 } from '../../../../src/modules/knowledge_base/services/kb.relation.service'
 import { InternalServerError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors'
+import { captureLogRecords } from '../../../helpers/log-capture'
 
 describe('RecordRelationService', () => {
   let mockSyncEventProducer: any
@@ -227,7 +228,8 @@ describe('RecordRelationService', () => {
   // resyncConnectorRecords
   // -----------------------------------------------------------------------
   describe('resyncConnectorRecords', () => {
-    it('should publish resync event and return success', async () => {
+    it('should publish resync event and return success, with no line naming the connector', async () => {
+      const records = captureLogRecords()
       const service = new RecordRelationService(
         mockSyncEventProducer,
         mockDefaultConfig,
@@ -244,10 +246,14 @@ describe('RecordRelationService', () => {
 
       expect(result.success).to.be.true
       expect(mockSyncEventProducer.publishEvent.calledOnce).to.be.true
+      // The producer's DEBUG line has the event type; nothing here names the connector.
+      expect(JSON.stringify(records)).to.not.include('Google Drive')
     })
 
-    it('throws a 503 with a plain message when the event cannot be published', async () => {
-      mockSyncEventProducer.publishEvent.rejects(new Error('publish failed'))
+    it('throws a 503 with a plain message when the event cannot be published, carrying why as its cause', async () => {
+      const publishFailed = new Error('publish failed')
+      mockSyncEventProducer.publishEvent.rejects(publishFailed)
+      const records = captureLogRecords()
 
       const service = new RecordRelationService(
         mockSyncEventProducer,
@@ -270,6 +276,9 @@ describe('RecordRelationService', () => {
       expect(thrown).to.be.instanceOf(ServiceUnavailableError)
       expect((thrown as ServiceUnavailableError).statusCode).to.equal(503)
       expect((thrown as Error).message).to.equal(RESYNC_NOT_QUEUED_MESSAGE)
+      // Not logged here: the error middleware's line reports it once, with this cause.
+      expect((thrown as { cause?: unknown }).cause).to.equal(publishFailed)
+      expect(records.filter((r) => String(r.message).includes('resync'))).to.deep.equal([])
     })
   })
 

@@ -6,7 +6,7 @@ import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import axios from 'axios';
 import nock from 'nock';
-import { LoginTicket, OAuth2Client } from 'google-auth-library';
+import { LoginTicket } from 'google-auth-library';
 import type { NextFunction, RequestHandler, Response } from 'express';
 import { Container } from 'inversify';
 import {
@@ -45,6 +45,7 @@ import type { AuthenticatedServiceRequest } from '../../../../src/libs/middlewar
 import { createMockRedisService } from '../../../helpers/mock-redis';
 import { createMockQuery } from '../../../helpers/mock-mongo';
 import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
+import { stubGoogleIdTokenCheck } from '../../../helpers/google-id-token';
 
 // Drives the real controller and the real SessionService through whole
 // sign-ins, step after step, the way the /initAuth and /authenticate routes do.
@@ -395,7 +396,7 @@ describe('UserAccountController sign-in flow', () => {
   }
 
   function googleSignsInAs(email: string | undefined) {
-    return sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({
+    return stubGoogleIdTokenCheck().resolves({
       getPayload: () => (email ? { email, name: 'Someone' } : { name: 'Someone' }),
     } as unknown as LoginTicket);
   }
@@ -530,13 +531,34 @@ describe('UserAccountController sign-in flow', () => {
 
       expect(error).to.be.undefined;
       expect(res.body?.message).to.equal('Fully authenticated');
-      expect(verify.firstCall.args[0]).to.deep.include({
-        idToken: 'alice-google-id-token',
-        audience: 'google-client',
-      });
+      expect(verify.firstCall.args[0]).to.equal('alice-google-id-token');
+      expect(verify.firstCall.args[2]).to.equal('google-client');
       expect(
         (jwt.verify(String(res.body?.accessToken), JWT_SECRET) as TokenClaims).userId,
       ).to.equal(alice._id);
+    });
+
+    it("signs Alice in when step two is her Google account sent as Google's { credential } response", async () => {
+      await givePassword(alice);
+      configService.getConfig.resolves({ data: { clientId: 'google-client' } });
+      const token = await initAuth([['password'], ['google']]);
+      await authenticate(token, {
+        method: 'password',
+        credentials: { password: PASSWORD },
+      });
+      const verify = googleSignsInAs(alice.email);
+
+      const { res, error } = await authenticate(token, {
+        method: 'google',
+        credentials: { credential: 'alice-google-id-token', select_by: 'btn' },
+      });
+
+      expect(error).to.be.undefined;
+      expect(res.body?.message).to.equal('Fully authenticated');
+      expect(verify.args.map((a) => a[0])).to.deep.equal([
+        'alice-google-id-token',
+        'alice-google-id-token',
+      ]);
     });
   });
 
@@ -840,7 +862,7 @@ describe('UserAccountController sign-in flow', () => {
     describe('when the account lookup is the real IAM client', () => {
       beforeEach(() => {
         const realIam = new IamService(
-          ...([{ iamBackend: IAM_BACKEND }, logger] as unknown as ConstructorParameters<typeof IamService>),
+          ...([{ iamBackend: IAM_BACKEND }] as unknown as ConstructorParameters<typeof IamService>),
         );
         iamService.getUserById.callsFake((id: string, token: string) =>
           realIam.getUserById(id, token),
@@ -893,7 +915,9 @@ describe('UserAccountController sign-in flow', () => {
         expect(error).to.be.instanceOf(InternalServerError);
         expect(error.message).to.include('refresh your session');
         expect(error.message).to.not.include('ECONNREFUSED');
-        expect(logger.error.calledWithMatch('Looking up the account to refresh a session failed')).to.be.true;
+        // Logged once, by the error middleware, with the network error as the cause.
+        expect((error as { cause?: Error }).cause?.name).to.equal('AxiosError');
+        expect(logger.error.called).to.be.false;
       });
     });
   });
@@ -1143,7 +1167,7 @@ describe('UserAccountController sign-in flow', () => {
 
     beforeEach(() => {
       const realIam = new IamService(
-        ...([{ iamBackend: IAM_BACKEND }, logger] as unknown as ConstructorParameters<typeof IamService>),
+        ...([{ iamBackend: IAM_BACKEND }] as unknown as ConstructorParameters<typeof IamService>),
       );
       iamService.getUserByEmail.callsFake((email: string, token: string) =>
         realIam.getUserByEmail(email, token),

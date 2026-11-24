@@ -76,7 +76,12 @@ def _endpoints_are_web_urls(as_metadata: dict[str, Any]) -> bool:
 
 
 class DCRError(Exception):
-    """Raised when dynamic client registration or metadata discovery fails."""
+    """Raised when dynamic client registration or metadata discovery fails. ``status_code`` is the
+    provider's error status, when it answered one."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class DiscoveryBlockedError(DCRError):
@@ -393,7 +398,9 @@ async def register_dynamic_client(
         async with _discovery_client(DCR_REQUEST_TIMEOUT_SECONDS, policy) as client:
             resp = await client.post(registration_endpoint, json=payload)
             if resp.status_code >= 400:
-                raise DCRError(f"DCR registration failed with status {resp.status_code}: {resp.text}")
+                raise DCRError(
+                    f"DCR registration failed with status {resp.status_code}: {resp.text}", status_code=resp.status_code,
+                )
             data = resp.json()
     except DCRError:
         raise

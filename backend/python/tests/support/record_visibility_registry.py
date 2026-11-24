@@ -62,6 +62,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.LIVE, "the batch access check behind every open, listing and search hit: trashed means no access",
     ),
     "check_record_access_with_details": (Rule.LIVE, "the access check: trashed means no access"),
+    "get_organization_record_reach": (Rule.LIVE, "a trashed record does not make an extracted organisation searchable"),
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
     "filter_accessible_record_ids": (Rule.LIVE, "search permission check"),
@@ -84,6 +85,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_records_linking_to_weburls": (Rule.LIVE, "joins a newly indexed record to the records that pasted its address"),
     "get_linked_records": (Rule.LIVE, "shown to users"),
     "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
+    "page_record_ids_by_type": (Rule.LIVE, "the record-people backfill links live records only"),
     "get_permitted_entity_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     "get_records_for_named_entities": (Rule.LIVE, "entity filters and find_records_by_value list these records to users"),
     "filter_nodes_with_permission_role": (
@@ -93,7 +95,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.LIVE, "the reconcile sweep copies taxonomy onto duplicates; a trashed record gets none",
     ),
     # Browse surfaces, already filtered.
-    "list_kb_records": (Rule.LIVE, "KB record list"),
     "get_kb_children": (Rule.LIVE, "KB browse"),
     "get_folder_children": (Rule.LIVE, "folder browse"),
     "get_knowledge_hub_connector_page_v3": (
@@ -103,6 +104,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     # Returned whatever their state.
     "get_record_by_id": (Rule.ALL, _BY_KEY + "; content access is gated by TieredRecordAuthorizer"),
     "get_typed_records_batch": (Rule.ALL, _BY_KEY),
+    "get_user_granted_records": (
+        Rule.ALL,
+        "per-user sync drops grants a user lost and deletes records nobody holds; a trashed record's grant goes too",
+    ),
     "get_file_record_by_id": (Rule.ALL, _BY_KEY),
     "get_record_by_path": (Rule.ALL, _SYNC_LOOKUP),
     "get_records_by_file_path": (
@@ -123,6 +128,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_file_paths_for_records": (Rule.ALL, _BY_KEY + "; the code graph maps block owners to their paths"),
     "get_child_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
+    # The people a record names; returns no record.
+    "get_record_people": (Rule.ALL, _STRUCTURE),
+    # The CRM accounts a record belongs to (KG-13); returns no record.
+    "get_record_organizations": (Rule.ALL, _STRUCTURE),
     "get_record_parent_adjacency": (
         Rule.ALL, _STRUCTURE + "; Location drops a trashed ancestor through the access check",
     ),
@@ -158,6 +167,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "find_legacy_taxonomy_nodes": (
         Rule.ALL, "counts a trashed record's legacy edges, which migrate-legacy must move as well",
     ),
+    "find_merged_taxonomy_nodes_with_edges": (
+        Rule.ALL, "counts a trashed record's edges on a merged node, which the sweep must move as well",
+    ),
     "get_record_path": (Rule.ALL, _STRUCTURE),
     "get_record_path_segments": (Rule.ALL, "storage path of a record the caller already resolved"),
     "get_records_in_delete_batch": (
@@ -187,6 +199,8 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),
+    "update_record_fields_for_ids": (Rule.WRITE, "the request of a Force reindex, by id, whatever the record's status"),
+    "get_records_with_refresh_intent": (Rule.LIVE, "the intent sweep's read leaves the trash out; it re-reads each record under its lease"),
     "claim_push_record": (Rule.WRITE, "claims a push of a live record only: a trashed record never matches"),
     "retag_push_record": (Rule.WRITE, "retags a live pushed record only"),
     "set_record_properties": (Rule.WRITE, "writes projected values onto a record the caller read live; on a trashed one they are inert"),
@@ -218,4 +232,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "record_purge_failure": (Rule.WRITE, "counts only on records still in the trash"),
     "delete_blocks_for_records": (Rule.WRITE, ""),
     "batch_upsert_node_relations": (Rule.WRITE, ""),
+    "delete_record_entity_relations": (Rule.WRITE, "one record's own edges, whatever its state"),
+    "replace_record_entity_relations": (Rule.WRITE, "one record's own edges, whatever its state"),
 }

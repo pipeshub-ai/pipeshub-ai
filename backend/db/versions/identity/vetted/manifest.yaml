@@ -30,3 +30,40 @@ functions:
     test:
       checks: [privileges, catalog, shadowing]
       args: [true]
+
+  # The organisation gauges (the jobs role): exactly the columns they chart, for every live organisation.
+  - name: identity.gauge_user_counts
+    class: jobs
+    scope: global
+    args: []
+    returns: "TABLE (org_id text, n bigint)"
+    reads: [identity.users]
+    body: |
+      RETURN QUERY SELECT u.org_id, count(*) FROM identity.users u WHERE NOT u.is_deleted GROUP BY u.org_id;
+    test:
+      checks: [privileges, catalog]
+      args: []
+
+  - name: identity.gauge_live_orgs
+    class: jobs
+    scope: global
+    args: []
+    returns: "TABLE (org_id text, account_type text, domain text)"
+    reads: [identity.orgs]
+    body: |
+      RETURN QUERY SELECT o.org_id, o.account_type, o.domain FROM identity.orgs o WHERE NOT o.is_deleted;
+    test:
+      checks: [privileges, catalog]
+      args: []
+
+  - name: identity.gauge_auth_configs
+    class: jobs
+    scope: global
+    args: []
+    returns: "TABLE (org_id text, auth_steps jsonb)"
+    reads: [identity.org_auth_config]
+    body: |
+      RETURN QUERY SELECT c.org_id, c.auth_steps FROM identity.org_auth_config c WHERE NOT c.is_deleted;
+    test:
+      checks: [privileges, catalog]
+      args: []

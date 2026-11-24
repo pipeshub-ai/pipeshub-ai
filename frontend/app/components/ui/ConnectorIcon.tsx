@@ -62,6 +62,7 @@ export type ConnectorType =
   // Project & Issue Tracking
   | 'jira'
   | 'linear'
+  | 'monday'
   | 'gitlab'
   | 'github'
   | 'servicenow'
@@ -96,10 +97,24 @@ export type ConnectorType =
   | 'posthog'
   | 'brave'
   | 'stripe'
+  | 'paypal'
   | 'vercel'
   | 'docusign'
   | 'okta'
+  | 'hubspot'
   | 'zapier'
+  | 'trello'
+  | 'cloudflare'
+  | 'egnyte'
+  | 'intercom'
+  | 'granola'
+  | 'fireflies'
+  | 'fathom'
+  | 'lucid'
+  | 'miro'
+  | 'instantly'
+  | 'apollo'
+  | 'zapmail'
   // Generic / Fallback
   | 'web'
   | 'api'
@@ -168,6 +183,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'gitlab': { svg: svg('gitlab'), fallback: 'code' },
   'jira': { svg: svg('jira'), fallback: 'bug_report' },
   'linear': { svg: svg('linear'), fallback: 'view_kanban', needDarkModeInvert: true },
+  'monday': { svg: svg('monday'), fallback: 'view_kanban' },
   'servicenow': { svg: svg('servicenow'), fallback: 'build' },
   'zendesk': { svg: svg('zendesk'), fallback: 'support' },
   'zammad': { svg: svg('zammad'), fallback: 'support_agent' },
@@ -197,13 +213,28 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'huggingface': { svg: svg('huggingface'), fallback: 'smart_toy' },
   'atlassian': { svg: svg('atlassian'), fallback: 'account_tree' },
   'discord': { svg: null, fallback: 'forum' },
-  'posthog': { svg: null, fallback: 'insights' },
+  'posthog': { svg: svg('posthog'), fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
   'stripe': { svg: svg('stripe'), fallback: 'payments' },
+  'paypal': { svg: svg('paypal'), fallback: 'payments' },
   'vercel': { svg: svg('vercel'), fallback: 'code' },
   'docusign': { svg: svg('docusign'), fallback: 'draw' },
   'okta': { svg: svg('okta'), fallback: 'badge' },
+  'hubspot': { svg: svg('hubspot'), fallback: 'hub' },
   'zapier': { svg: svg('zapier'), fallback: 'bolt' },
+  'trello': { svg: svg('trello'), fallback: 'view_kanban' },
+  'cloudflare': { svg: svg('cloudflare'), fallback: 'cloud' },
+  'egnyte': { svg: svg('egnyte'), fallback: 'folder_shared', needDarkModeInvert: true },
+  'intercom': { svg: svg('intercom'), fallback: 'support_agent', needDarkModeInvert: true },
+  'granola': { svg: svg('granola'), fallback: 'sticky_note_2' },
+  // Fireflies publishes its logomark as a PNG only
+  'fireflies': { svg: `${CONNECTOR_ICONS_BASE_PATH}/fireflies.png`, fallback: 'graphic_eq' },
+  'fathom': { svg: svg('fathom'), fallback: 'videocam' },
+  'lucid': { svg: svg('lucid'), fallback: 'schema', needDarkModeInvert: true },
+  'miro': { svg: svg('miro'), fallback: 'dashboard', needDarkModeInvert: true },
+  'instantly': { svg: svg('instantly'), fallback: 'mail' },
+  'apollo': { svg: svg('apollo'), fallback: 'search' },
+  'zapmail': { svg: svg('zapmail'), fallback: 'mail', needDarkModeInvert: true },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
   // API toolsets (admin-uploaded OpenAPI specs)
@@ -216,7 +247,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
  * More specific patterns come first to prevent false matches.
  * Patterns are matched via .includes() against normalized input.
  */
-const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
+const FUZZY_MATCH_RULES: Array<[string, ConnectorType, boolean?]> = [
   // Chat groups of API actions (`api_action:<instanceId>`).
   ['api-action:', 'api'],
   // Google suite — specific first (google-cloud-storage before google-cloud)
@@ -249,6 +280,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['cifs', 'cifs'],
   // Dev tools & project tracking
   ['linear', 'linear'],
+  ['monday.com', 'monday'],
   ['jira', 'jira'], ['confluence', 'confluence'],
   ['gitlab', 'gitlab'], ['slack', 'slack'],
   ['servicenow', 'servicenow'], ['service-now', 'servicenow'],
@@ -268,9 +300,24 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['hugging-face', 'huggingface'], ['huggingface', 'huggingface'],
   ['brave', 'brave'],
   ['stripe', 'stripe'],
+  ['paypal', 'paypal'],
   ['vercel', 'vercel'],
   ['docusign', 'docusign'], ['okta', 'okta'],
+  ['hubspot', 'hubspot'],
   ['zapier', 'zapier'],
+  ['trello', 'trello'],
+  ['cloudflare', 'cloudflare'],
+  ['egnyte', 'egnyte'],
+  // Whole-word only (third item), so `fathom` doesn't match inside "Unfathomable Drive".
+  ['intercom', 'intercom', true],
+  ['granola', 'granola', true],
+  ['fireflies', 'fireflies', true],
+  ['fathom', 'fathom', true],
+  ['lucid', 'lucid'],
+  ['miro', 'miro'],
+  ['instantly', 'instantly', true],
+  ['apollo', 'apollo', true],
+  ['zapmail', 'zapmail', true],
   // Broad fallbacks (last — only match if nothing specific matched)
   // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
   ['docs', 'google-docs'], ['sheets', 'google-sheets'],
@@ -300,8 +347,9 @@ export function resolveConnectorType(input: string): ConnectorType {
   if (normalized in CONNECTOR_ICONS) return normalized as ConnectorType;
 
   // Fuzzy match
-  for (const [pattern, type] of FUZZY_MATCH_RULES) {
-    if (normalized.includes(pattern)) return type;
+  const words = normalized.split(/[^a-z0-9]+/);
+  for (const [pattern, type, wholeWord] of FUZZY_MATCH_RULES) {
+    if (wholeWord ? words.includes(pattern) : normalized.includes(pattern)) return type;
   }
 
   return 'generic';

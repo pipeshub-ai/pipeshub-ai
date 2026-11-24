@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { Flex, Text, Badge, Spinner, RadioGroup, Button } from '@radix-ui/themes';
+import { Flex, Text, Badge, Spinner, RadioGroup, Button, Checkbox } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useRouter } from 'next/navigation';
@@ -25,6 +25,9 @@ import {
 } from '@/chat/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { ModelSelectorExtraOptions } from '@/config';
+import { CompareToggle, useCompareAvailable } from '@/chat/compare/components/compare-picker-toggle';
+import { useCompareStore } from '@/chat/compare/compare-store';
+import { MAX_COMPARE_MODELS } from '@/chat/compare/types';
 
 // Exported so other chat surfaces (e.g. the chat-input toolbar trigger) can
 // render a matching "· High" style indicator without redefining labels.
@@ -88,6 +91,8 @@ interface ModelSelectorPanelProps {
   agentId?: string | null;
   /** Show the edition's entries beside the configured models. Off where a configured model must be chosen. */
   allowExtraOptions?: boolean;
+  /** Enables Compare picks. Pass only where a model click should start a compare turn. */
+  allowCompare?: boolean;
 }
 
 function ModelLogo({ provider }: { provider: string }) {
@@ -108,6 +113,7 @@ export function ModelSelectorPanel({
   hideHeader = false,
   agentId,
   allowExtraOptions = true,
+  allowCompare = false,
 }: ModelSelectorPanelProps) {
   const { t } = useTranslation();
   const router = useRouter();
@@ -179,8 +185,24 @@ export function ModelSelectorPanel({
   // to leak between contexts (e.g. picking default in assistant silently
   // locked that model into every agent the user visited).
 
+  const compareAvailableForCtx = useCompareAvailable(ctxKey);
+  const compareAvailable = allowCompare && compareAvailableForCtx;
+  const compareOn = useCompareStore((s) => s.enabled) && compareAvailable;
+  const comparePicked = useCompareStore((s) => s.models);
+  const toggleCompareModel = useCompareStore((s) => s.toggleModel);
+
   const handleSelect = useCallback(
     (model: AvailableLlmModel) => {
+      const override = {
+        modelKey: model.modelKey,
+        modelName: model.modelName,
+        modelFriendlyName: model.modelFriendlyName || model.modelName,
+        modelProvider: model.provider,
+      };
+      if (compareOn) {
+        toggleCompareModel(override);
+        return;
+      }
       onModelSelect({
         modelKey: model.modelKey,
         modelName: model.modelName,
@@ -188,7 +210,7 @@ export function ModelSelectorPanel({
         modelProvider: model.provider,
       });
     },
-    [onModelSelect]
+    [onModelSelect, compareOn, toggleCompareModel]
   );
 
   // Determine which model is "active" — match on both modelKey and modelName
@@ -239,6 +261,10 @@ export function ModelSelectorPanel({
             </span>
           )}
         </Flex>
+      )}
+
+      {!isLoading && !error && compareAvailable && (
+        <CompareToggle models={models} selectedModel={selectedModel} />
       )}
 
       {/* Reasoning effort selector — rendered above the scrollable list so it
@@ -308,14 +334,20 @@ export function ModelSelectorPanel({
           <ModelSelectorExtraOptions models={models} selectedModel={selectedModel} onModelSelect={onModelSelect} />
         )}
 
-        {!isLoading && !error && models.map((model) => (
-          <ModelItem
-            key={`${model.modelKey}::${model.modelName}`}
-            model={model}
-            isSelected={model.modelKey === activeKey && model.modelName === activeName}
-            onSelect={handleSelect}
-          />
-        ))}
+        {!isLoading && !error && models.map((model) => {
+          const picked = comparePicked.some((m) => m.modelKey === model.modelKey && m.modelName === model.modelName);
+          return (
+            <ModelItem
+              key={`${model.modelKey}::${model.modelName}`}
+              model={model}
+              isSelected={compareOn ? picked : model.modelKey === activeKey && model.modelName === activeName}
+              multi={compareOn}
+              // At the limit the rest stay off; deselecting one frees a slot to swap.
+              disabled={compareOn && !picked && comparePicked.length >= MAX_COMPARE_MODELS}
+              onSelect={handleSelect}
+            />
+          );
+        })}
       </Flex>
     </Flex>
   );
@@ -410,9 +442,12 @@ interface ModelItemProps {
   model: AvailableLlmModel;
   isSelected: boolean;
   onSelect: (model: AvailableLlmModel) => void;
+  /** Compare mode: several models can be picked, so the row is a checkbox. */
+  multi?: boolean;
+  disabled?: boolean;
 }
 
-function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
+function ModelItem({ model, isSelected, onSelect, multi = false, disabled = false }: ModelItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   // Provider always comes through from the API. If we don't have a curated
   // friendly name for it in PROVIDER_FRIENDLY_NAMES, fall back to splitting
@@ -431,13 +466,28 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
     <Flex
       align="center"
       justify="between"
-      onClick={() => onSelect(model)}
+      onClick={() => !disabled && onSelect(model)}
+      {...(multi
+        ? {
+            role: 'checkbox',
+            'aria-checked': isSelected,
+            'aria-disabled': disabled,
+            tabIndex: disabled ? -1 : 0,
+            onKeyDown: (e: React.KeyboardEvent) => {
+              if (!disabled && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                onSelect(model);
+              }
+            },
+          }
+        : {})}
       style={{
         padding: 'var(--space-3) var(--space-4)',
         borderRadius: 'var(--radius-1)',
         border: '1px solid var(--olive-3)',
         backgroundColor: 'var(--olive-2)',
-        cursor: 'pointer',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
       }}
     >
       {/* Left: all content left-aligned */}
@@ -492,6 +542,14 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       </Flex>
 
       {/* Right: Radio indicator — vertically centered */}
+      {multi ? (
+        <Checkbox
+          checked={isSelected}
+          tabIndex={-1}
+          aria-hidden="true"
+          style={{ flexShrink: 0, marginLeft: 'var(--space-3)', pointerEvents: 'none' }}
+        />
+      ) : (
       <RadioGroup.Root
         value={isSelected ? 'selected' : ''}
         style={{
@@ -503,6 +561,7 @@ function ModelItem({ model, isSelected, onSelect }: ModelItemProps) {
       >
         <RadioGroup.Item value="selected" />
       </RadioGroup.Root>
+      )}
     </Flex>
   );
 }

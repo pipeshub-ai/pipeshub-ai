@@ -6,6 +6,7 @@ came back as a plain `found: False`, which reads as "no path exists".
 """
 import pytest
 
+from app.agents.actions.code_graph import code_graph as cg
 from app.agents.actions.code_graph import path as path_mod
 from app.agents.actions.code_graph.ops import STRUCTURAL_RELATIONS
 from app.agents.actions.code_graph.path import MAX_PATH_DEPTH, find_symbol_path_impl
@@ -87,7 +88,7 @@ class TestDepth:
 
             async def get_neighbors_for_nodes_by_relationship_types(
                 self, node_keys, node_collection, relationship_types, direction,
-                limit=5000, transaction=None, raise_on_error=False
+                limit=5000, transaction=None, raise_on_error=False, after=None
             ) -> list[dict]:
                 # A directed walk asks for outbound edges once per hop, plus inbound
                 # containment while it climbs out of the start symbol; count the hops.
@@ -117,6 +118,9 @@ class TestDepth:
 class TestFrontierCap:
     async def test_hitting_the_cap_is_reported_not_silent(self, graph, monkeypatch) -> None:
         monkeypatch.setattr(path_mod, "_FRONTIER_LIMIT", 1)
+        # Two readable steps from the start: more than one row to keep.
+        graph.edges.append({"_from": f"{BLOCKS}/k_caller", "_to": f"{BLOCKS}/k_client",
+                            "relationshipType": "CALLS"})
         result = await _path(graph, b=PANEL)
         assert result["found"] is False
         assert result["capped"] is True
@@ -136,6 +140,31 @@ class TestUnprovenMiss:
                             "relationshipType": "CALLS"})
         note = (await _path(graph, b=PANEL))["note"]
         assert note.startswith("No chain of linked calls joins them")
+
+    async def test_a_target_only_handed_over_as_a_value_says_so(self, graph) -> None:
+        graph.edges.append({"_from": f"{BLOCKS}/k_client", "_to": f"{BLOCKS}/k_panel",
+                            "relationshipType": "INDIRECT_CALL"})
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("Nothing in the graph calls the second symbol directly, but it is handed over")
+
+    async def test_a_handover_from_a_file_the_caller_cannot_read_is_not_counted(self) -> None:
+        graph = FakeGraphProvider(deny_records=["rec-d"])
+        graph.edges.append({"_from": f"{BLOCKS}/k_client", "_to": f"{BLOCKS}/k_panel",
+                            "relationshipType": "INDIRECT_CALL"})
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("Nothing in the graph calls the second symbol, so")
+
+    async def test_unreadable_handovers_filling_the_scan_limit_leave_it_open(self, monkeypatch) -> None:
+        """A scan spent on handovers the caller cannot read proves neither a handover nor its absence."""
+        monkeypatch.setattr(path_mod, "_CALLER_PROBE", 2)
+        monkeypatch.setattr(path_mod, "_CALLER_SCAN_LIMIT", 2)
+        graph = FakeGraphProvider(deny_records=["rec-d"])
+        for i in range(3):  # k_client's file, rec-d, is unreadable
+            graph.blocks[f"k_hidden{i}"] = {**graph.blocks["k_client"], "_key": f"k_hidden{i}"}
+            graph.edges.append({"_from": f"{BLOCKS}/k_hidden{i}", "_to": f"{BLOCKS}/k_panel",
+                                "relationshipType": "INDIRECT_CALL"})
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("Nothing in the graph calls the second symbol directly, and the scan limit")
 
     async def test_a_caller_in_a_file_the_caller_cannot_read_is_not_counted(self) -> None:
         """"Something calls it" from a hidden file would reveal that the file calls it."""
@@ -168,7 +197,7 @@ async def test_a_provider_failure_is_not_reported_as_no_path() -> None:
         async def get_neighbors_for_nodes_by_relationship_types(self, **kwargs: object) -> list:
             raise RuntimeError("neo4j is down")
 
-    with pytest.raises(RuntimeError, match="neo4j is down"):
+    with pytest.raises(RuntimeError, match="Failed to walk"):
         await _bfs_edges(_Broken(), "a", "b", max_depth=2, relations=["CALLS"])
 
 
@@ -181,7 +210,7 @@ class TestDirectedWalkAsksOnlyForEdgesItCanTake:
 
             async def get_neighbors_for_nodes_by_relationship_types(
                 self, node_keys, node_collection, relationship_types, direction,
-                limit=5000, transaction=None, raise_on_error=False
+                limit=5000, transaction=None, raise_on_error=False, after=None
             ) -> list[dict]:
                 self.asked.append((direction, tuple(relationship_types), limit))
                 return []
@@ -191,5 +220,98 @@ class TestDirectedWalkAsksOnlyForEdgesItCanTake:
         assert {d for d, _, _ in graph.asked} == {"outbound", "inbound"}
         inbound_calls = [(r, n) for d, r, n in graph.asked
                          if d == "inbound" and not set(r) <= set(STRUCTURAL_RELATIONS)]
-        # The miss's note probes the target's callers once, bounded; the walk asks for none.
-        assert inbound_calls == [(("CALLS",), path_mod._CALLER_PROBE)]
+        # The miss's note probes the target's callers, then (none found) its handovers, each bounded; the walk
+        # asks for none.
+        assert inbound_calls == [(("CALLS",), path_mod._CALLER_PROBE), (("INDIRECT_CALL",), path_mod._CALLER_PROBE)]
+
+
+class TestCallsToFollow:
+    """A path search that found nothing names the first symbol's calls and what each could run:
+    the missing link is usually one of them, on a value whose type the graph could not tell."""
+
+    @staticmethod
+    def _tool() -> cg.CodeGraph:
+        return cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                             "graph_provider": FakeGraphProvider(), "blob_store": object()})
+
+    async def test_a_miss_lists_the_calls_and_their_definitions(self, monkeypatch) -> None:
+        tool = self._tool()
+        searched = []
+
+        async def read(**_kwargs) -> dict:
+            return {"code": "def handle(self, req):\n    if len(req):\n        self.loader.fetch(req)\n"
+                            "        print(req)\n        return render(req)\n"}
+
+        async def search(**kwargs) -> dict:
+            searched.append(kwargs["pattern"])
+            hits = {"fetch": [{"file_path": "src/l.py", "qualified_name": "method:Loader.fetch", "kind": "method"},
+                              {"file_path": "src/c.py", "qualified_name": "method:Cache.fetch", "kind": "method"}],
+                    "render": [{"file_path": "src/v.py", "qualified_name": "function:render", "kind": "function"}]}
+            return {"matches": hits.get(kwargs["pattern"], [])}
+
+        monkeypatch.setattr(cg, "read_code_impl", read)
+        monkeypatch.setattr(cg, "search_code_impl", search)
+        out = await tool._with_next_calls({"found": False}, "c1", None, "src/h.py", "method:H.handle",
+                                          include_tests=False)
+        assert searched == ["fetch", "render"], "builtins and the definition's own name are not leads"
+        calls = out["calls_to_follow"]["calls"]
+        assert calls[0] == {"call": "self.loader.fetch(req)",
+                            "could_run": ["src/l.py::Loader.fetch", "src/c.py::Cache.fetch"]}
+        assert calls[1]["could_run"] == ["src/v.py::render"]
+        assert "untrusted" in out
+
+    async def test_one_line_of_many_calls_stays_within_the_lookup_cap(self, monkeypatch) -> None:
+        tool = self._tool()
+        searched = []
+
+        async def read(**_kwargs) -> dict:
+            return {"code": "def h():\n    " + " + ".join(f"f{i}()" for i in range(20)) + "\n"}
+
+        async def search(**kwargs) -> dict:
+            searched.append(kwargs["pattern"])
+            return {"matches": []}
+
+        monkeypatch.setattr(cg, "read_code_impl", read)
+        monkeypatch.setattr(cg, "search_code_impl", search)
+        await tool._with_next_calls({"found": False}, "c1", None, "src/h.py", "function:h", include_tests=False)
+        assert len(searched) == cg._NEXT_CALLS * 2
+
+    async def test_same_named_non_callables_do_not_hide_the_definition(self, monkeypatch) -> None:
+        tool = self._tool()
+
+        async def read(**_kwargs) -> dict:
+            return {"code": "def h(self):\n    return self.fetch()\n"}
+
+        async def search(**kwargs) -> dict:
+            assert kwargs["limit"] > cg._NEXT_CANDIDATES, "filter by kind before taking two"
+            return {"matches": [{"file_path": "src/a.py", "qualified_name": "field:A.fetch", "kind": "field"},
+                                {"file_path": "src/b.py", "qualified_name": "field:B.fetch", "kind": "field"},
+                                {"file_path": "src/l.py", "qualified_name": "method:L.fetch", "kind": "method"}]}
+
+        monkeypatch.setattr(cg, "read_code_impl", read)
+        monkeypatch.setattr(cg, "search_code_impl", search)
+        out = await tool._with_next_calls({"found": False}, "c1", None, "src/h.py", "method:H.h",
+                                          include_tests=False)
+        assert out["calls_to_follow"]["calls"][0]["could_run"] == ["src/l.py::L.fetch"]
+
+    async def test_a_capped_search_adds_no_leads(self, monkeypatch) -> None:
+        tool = self._tool()
+
+        async def read(**_kwargs) -> dict:
+            raise AssertionError("a capped search may have missed a linked chain; nothing to read")
+
+        monkeypatch.setattr(cg, "read_code_impl", read)
+        out = await tool._with_next_calls({"found": False, "capped": True}, "c1", None, "src/h.py",
+                                          "method:H.handle", include_tests=False)
+        assert "calls_to_follow" not in out
+
+    async def test_the_miss_stands_when_the_source_cannot_be_read(self, monkeypatch) -> None:
+        tool = self._tool()
+
+        async def read(**_kwargs) -> dict:
+            raise RuntimeError("blob store down")
+
+        monkeypatch.setattr(cg, "read_code_impl", read)
+        out = await tool._with_next_calls({"found": False}, "c1", None, "src/h.py", "method:H.handle",
+                                          include_tests=False)
+        assert out == {"found": False}

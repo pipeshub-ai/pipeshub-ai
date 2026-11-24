@@ -12,8 +12,10 @@ import {
   PresignedUrlError,
 } from '../../../../src/libs/errors/storage.errors'
 import { StorageError } from '../../../../src/libs/errors/storage.errors';
+import { forgetVerifiedContainers } from '../../../../src/modules/storage/providers/azure.provider'
 
 describe('AzureBlobStorageAdapter', () => {
+  beforeEach(() => { forgetVerifiedContainers() })
   afterEach(() => { sinon.restore() })
 
   // -------------------------------------------------------------------------
@@ -845,7 +847,7 @@ describe('AzureBlobStorageAdapter', () => {
           .onFirstCall().returns(blobClient)
           .returns(exactBlobClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.deleteTree('records/conn-1')
 
@@ -864,7 +866,7 @@ describe('AzureBlobStorageAdapter', () => {
         listBlobsFlat: sinon.stub().returns([][Symbol.iterator]()),
         getBlockBlobClient: sinon.stub().returns(exactBlobClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       await proto.deleteTree('records/conn-1/single-file.json')
 
@@ -880,7 +882,7 @@ describe('AzureBlobStorageAdapter', () => {
         listBlobsFlat: sinon.stub().throws(new Error('container error')),
         getBlockBlobClient: sinon.stub(),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       try {
         await proto.deleteTree('records/conn-1')
@@ -898,7 +900,7 @@ describe('AzureBlobStorageAdapter', () => {
       const create = sinon.stub().resolves({ succeeded: false })
       const deleteIfExists = sinon.stub().resolves()
       adapter.containerName = 'container'
-      adapter.logger = { info: sinon.stub(), error: sinon.stub() }
+      adapter.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
       adapter.containerClient = {
         createIfNotExists: create,
         listBlobsFlat: () => ({ async *[Symbol.asyncIterator]() {} }),
@@ -936,7 +938,7 @@ describe('AzureBlobStorageAdapter', () => {
           .onFirstCall().returns(srcClient)
           .onSecondCall().returns(dstClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.copyObject('records/src.json', 'records/dst.json')
 
@@ -960,7 +962,7 @@ describe('AzureBlobStorageAdapter', () => {
           .onFirstCall().returns(srcClient)
           .onSecondCall().returns(dstClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.copyObject('records/src.json', 'records/dst.json')
 
@@ -982,7 +984,7 @@ describe('AzureBlobStorageAdapter', () => {
           .onFirstCall().returns(srcClient)
           .onSecondCall().returns(dstClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       try {
         await proto.copyObject('records/src.json', 'records/dst.json')
@@ -1019,7 +1021,7 @@ describe('AzureBlobStorageAdapter', () => {
         getBlockBlobClient: sinon.stub()
           .callsFake((name: string) => name.startsWith('org1/new/') ? mockDstClient : mockSrcClient),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.copyTree('org1/old/doc1', 'org1/new/doc1')
 
@@ -1038,7 +1040,7 @@ describe('AzureBlobStorageAdapter', () => {
         }),
         getBlockBlobClient: sinon.stub(),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       const result = await proto.copyTree('org1/empty', 'org1/dst')
       expect(result.statusCode).to.equal(200)
@@ -1053,7 +1055,7 @@ describe('AzureBlobStorageAdapter', () => {
         listBlobsFlat: sinon.stub().throws(new Error('container error')),
         getBlockBlobClient: sinon.stub(),
       }
-      proto.logger = { info: sinon.stub(), error: sinon.stub() }
+      proto.logger = { info: sinon.stub(), error: sinon.stub(), debug: sinon.stub() }
 
       try {
         await proto.copyTree('org1/old', 'org1/new')
@@ -1382,6 +1384,9 @@ describe('AzureBlobStorageAdapter - branch coverage', () => {
 })
 
 describe('AzureBlobStorageAdapter - additional coverage', () => {
+  beforeEach(() => {
+    forgetVerifiedContainers()
+  })
   afterEach(() => {
     sinon.restore()
   })
@@ -1613,6 +1618,16 @@ describe('AzureBlobStorageAdapter - additional coverage', () => {
       })
     }
 
+    it('logs the creation of the adapter once per container, not once per request', async () => {
+      const { Logger } = require('../../../../src/libs/services/logger.service')
+      const info = sinon.stub(Logger.prototype, 'info')
+      const { ContainerClient } = require('@azure/storage-blob')
+      sinon.stub(ContainerClient.prototype, 'createIfNotExists').resolves({ succeeded: true })
+      for (let i = 0; i < 25; i++) { newAdapter() }
+      const created = info.getCalls().filter((c: any) => c.args[0] === 'Azure Blob Storage adapter initialized')
+      expect(created.length).to.equal(1)
+    })
+
     it('makes the first upload wait until the container exists', async () => {
       const { ContainerClient, BlockBlobClient } = require('@azure/storage-blob')
       let finishCreate: (value: { succeeded: boolean }) => void = () => undefined
@@ -1661,6 +1676,25 @@ describe('AzureBlobStorageAdapter - additional coverage', () => {
         expect(create.callCount).to.equal(2)
       } finally {
         process.off('unhandledRejection', onUnhandled)
+      }
+    })
+
+    it('checks a container again once its verification has expired, so a deleted container is recreated', async () => {
+      const { ContainerClient } = require('@azure/storage-blob')
+      const create = sinon.stub(ContainerClient.prototype, 'createIfNotExists').resolves({ succeeded: true })
+      const clock = sinon.useFakeTimers({ now: Date.now(), toFake: ['Date'] })
+      try {
+        newAdapter()
+        await new Promise((resolve) => setImmediate(resolve))
+        newAdapter()                                           // within the verification: no second check
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(create.callCount).to.equal(1)
+        clock.tick(6 * 60 * 1000)
+        newAdapter()                                           // expired: the container is asked about again
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(create.callCount).to.equal(2)
+      } finally {
+        clock.restore()
       }
     })
 

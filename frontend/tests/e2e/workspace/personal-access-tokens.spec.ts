@@ -47,9 +47,17 @@ async function openCreatePanel(page: Page): Promise<Locator> {
   await page.getByRole('button', { name: 'New token' }).first().click();
   const panel = page.getByRole('dialog', { name: 'New personal access token' });
   await expect(panel).toBeVisible();
-  // Every scope starts selected, so "Clear all" means the scopes have loaded.
-  await expect(panel.getByRole('button', { name: 'Clear all' })).toBeEnabled({ timeout: 15_000 });
+  // The select-all toggle stays disabled until the scopes have loaded. Only the read scopes start
+  // selected (defaultPatScopes), so it reads "Select all" until every scope is ticked.
+  await expect(panel.getByRole('button', { name: /^(Select all|Clear all)$/ })).toBeEnabled({ timeout: 15_000 });
   return panel;
+}
+
+/** Untick every scope, whatever the panel started with. */
+async function clearAllScopes(panel: Locator): Promise<void> {
+  const selectAll = panel.getByRole('button', { name: 'Select all' });
+  if (await selectAll.isVisible()) await selectAll.click();
+  await panel.getByRole('button', { name: 'Clear all' }).click();
 }
 
 /** The checkbox on one scope's row; the row has no label of its own. */
@@ -84,7 +92,7 @@ test.describe('Personal access tokens', () => {
     await nameField.fill(`e2e-pat-validation-${Date.now()}`);
     await expect(create).toBeEnabled();
 
-    await panel.getByRole('button', { name: 'Clear all' }).click();
+    await clearAllScopes(panel);
     await expect(panel.getByText('Select at least one scope.', { exact: true })).toBeVisible();
     await expect(create, 'a token with no scopes should not be creatable').toBeDisabled();
 
@@ -104,7 +112,7 @@ test.describe('Personal access tokens', () => {
       const panel = await openCreatePanel(page);
       await panel.getByPlaceholder('e.g. MCP server').fill(name);
       await panel.getByRole('radio', { name: '90 days' }).check();
-      await panel.getByRole('button', { name: 'Clear all' }).click();
+      await clearAllScopes(panel);
       const scopeBox = scopeCheckbox(panel, SCOPE);
       await scopeBox.click();
       await expect(scopeBox).toBeChecked();

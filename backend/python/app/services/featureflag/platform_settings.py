@@ -299,3 +299,24 @@ async def is_kh_scope_listing_enabled(config_service: Optional["ConfigurationSer
     return await read_platform_feature_flag(
         CONFIG.ENABLE_KH_SCOPE_LISTING, config_service, default=False, use_cache=True,
     )
+
+
+PARSE_NOW_DEFAULT_WAIT_SECONDS = 55
+# A read that waits must still answer inside a minute.
+PARSE_NOW_MAX_WAIT_SECONDS = 55
+
+
+async def parse_now_wait_seconds(config_service: ConfigurationService | None = None) -> int:
+    """How long a read of a record that is not indexed waits for it to be parsed;
+    0 means the feature is off. ``parseNowEnabled: false`` turns it off, and
+    ``parseNowWaitSeconds`` sets the wait (zero or less = off, else 1..55). A missing or
+    unusable value is the default, 55. Read through the config cache."""
+    blob = await _artifact_blob(config_service)
+    if blob.get("parseNowEnabled") is False:
+        return 0
+    raw = blob.get("parseNowWaitSeconds")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return PARSE_NOW_DEFAULT_WAIT_SECONDS
+    if raw <= 0:
+        return 0
+    return int(max(1, min(PARSE_NOW_MAX_WAIT_SECONDS, raw)))

@@ -3,8 +3,8 @@ import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { UserController, USER_DELETE_NOT_RECORDED, isValidEmail } from '../../../../src/modules/user_management/controller/users.controller';
-import { ConflictError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
+import { UserController, USER_DELETE_NOT_RECORDED, USER_PROMOTED_DURING_DELETE, isValidEmail } from '../../../../src/modules/user_management/controller/users.controller';
+import { BadRequestError, ConflictError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
@@ -12,6 +12,7 @@ import { UserDisplayPicture } from '../../../../src/modules/user_management/sche
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { MongoUserRepository } from '../../../../src/libs/repositories/user/mongo';
 import { DEFAULT_BRAND, setBrandResolver } from '../../../../src/libs/branding';
 import { NotificationContainer } from '../../../../src/modules/notification/container/notification.container';
 import { userActivitiesType } from '../../../../src/libs/utils/userActivities.utils';
@@ -23,9 +24,14 @@ import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-
 import * as XLSX from 'xlsx';
 import { UniqueConstraintError } from '../../../../src/libs/repositories/errors';
 import { getUserRepository, setUserRepository } from '../../../../src/libs/repositories/user';
+import type { UserRepository } from '../../../../src/libs/repositories/user';
+import { setGroupRepository } from '../../../../src/libs/repositories/group';
+import * as auditService from '../../../../src/libs/services/audit';
+import { setOAuthTokenRepository } from '../../../../src/libs/repositories/oauth-token';
+import type { OAuthTokenRepository } from '../../../../src/libs/repositories/oauth-token';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 
-/** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
+/** Query chain stub for OAuthApp.find(...).select().lean().exec() used in handOverOAuthOfDeletedUser */
 function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
   const chain = {
     select: sinon.stub(),
@@ -36,6 +42,29 @@ function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
   chain.lean.returns(chain);
   sinon.stub(OAuthApp, 'find').returns(chain as unknown as ReturnType<typeof OAuthApp.find>);
   sinon.stub(OAuthApp, 'updateMany').resolves({ modifiedCount: 0 } as any);
+}
+
+/**
+ * The removal `deleteUser` ends with: one conditional `Users.findOneAndUpdate(...).exec()`. `removed` is what the
+ * store answers (the row, or null when it no longer matched).
+ */
+function stubRemoval(removed: unknown) {
+  return sinon.stub(Users, 'findOneAndUpdate').returns({
+    exec: sinon.stub().resolves(removed),
+  } as any);
+}
+
+/**
+ * The removal a failed create ends with: the conditional soft removal (`removed`: the row, or null when the account is
+ * no longer a member), then `Users.findOneAndDelete(...).select().lean()` (`deleted`: the row, or null when it was
+ * restored meanwhile). Returns the hard delete, whose first argument is its filter.
+ */
+function stubUndoRemoval(removed: unknown = { _id: 'saved' }, deleted: unknown = { _id: 'saved' }) {
+  stubRemoval(removed);
+  return sinon.stub(Users, 'findOneAndDelete').returns({
+    select: sinon.stub().returnsThis(),
+    lean: sinon.stub().resolves(deleted),
+  } as any);
 }
 
 /** isUserOrgAdmin uses Users.findOne().select('role').lean() when invite has groupIds or role=admin. */
@@ -74,8 +103,22 @@ describe('UserController', () => {
   let req: any;
   let res: any;
   let next: sinon.SinonStub;
+  let tokenRepo: {
+    revokeAllForUser: sinon.SinonStub;
+    revokeAgentRegistrationsForUser: sinon.SinonStub;
+    deleteUnusedCodesForUser: sinon.SinonStub;
+  };
 
   beforeEach(() => {
+    // The standalone admin-role lease has its own tests; here it only runs the change.
+    sinon.stub(MongoUserRepository.prototype, 'withAdminLease').callsFake((_orgId, fn) => fn({ confirm: async () => true }));
+    // deleteUser revokes the person's tokens; no test here reaches a real store.
+    tokenRepo = {
+      revokeAllForUser: sinon.stub().resolves(),
+      revokeAgentRegistrationsForUser: sinon.stub().resolves(),
+      deleteUnusedCodesForUser: sinon.stub().resolves(),
+    };
+    setOAuthTokenRepository(tokenRepo as unknown as OAuthTokenRepository);
     mockConfig = {
       frontendUrl: 'http://localhost:3000',
       scopedJwtSecret: 'test-secret',
@@ -159,6 +202,7 @@ describe('UserController', () => {
   afterEach(() => {
     sinon.restore();
     setUserRepository();
+    setOAuthTokenRepository();
   });
 
   describe('getAllUsers', () => {
@@ -186,6 +230,7 @@ describe('UserController', () => {
     } as unknown as ReturnType<typeof UserDisplayPicture.find>);
     sinon.stub(UserGroups, 'find').returns({
       select: sinon.stub().returns({
+        sort: sinon.stub().returnsThis(),
         lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
       }),
     } as unknown as ReturnType<typeof UserGroups.find>);
@@ -202,6 +247,23 @@ describe('UserController', () => {
       .resolves(total as unknown as never);
   }
 
+
+    it('leaves emails out of the directory list when HIDE_EMAIL is true', async () => {
+      process.env.HIDE_EMAIL = 'true';
+      try {
+        stubUsersFind([{ _id: '507f1f77bcf86cd799439011', fullName: 'Ada', email: 'ada@test.com' }]);
+        stubUsersCount(1);
+        stubUserEnrichment();
+
+        await controller.getAllUsers(req, res);
+
+        const [user] = res.json.firstCall.args[0].users;
+        expect(user.name).to.equal('Ada');
+        expect(user).to.not.have.property('email');
+      } finally {
+        delete process.env.HIDE_EMAIL;
+      }
+    });
 
     it('should return all non-deleted users', async () => {
       sinon.stub(Users, 'find').returns({
@@ -617,6 +679,7 @@ describe('UserController', () => {
 
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().returns({
+          sort: sinon.stub().returnsThis(),
           lean: sinon.stub().returns({
             exec: sinon.stub().resolves([
               {
@@ -691,6 +754,7 @@ describe('UserController', () => {
 
       sinon.stub(UserGroups, 'find').returns({
         select: sinon.stub().returns({
+          sort: sinon.stub().returnsThis(),
           lean: sinon.stub().returns({
             exec: sinon.stub().resolves([
               {
@@ -1268,6 +1332,218 @@ describe('UserController', () => {
     });
   });
 
+  describe('createUser undo: an account the org may rely on is kept, never removed', () => {
+    const orgId = '507f1f77bcf86cd799439012';
+    const savedId = '507f1f77bcf86cd7994390aa';
+    let calls: string[];
+    let auditLines: Array<{ event: string; outcome?: string; reason?: string }>;
+    let demote: sinon.SinonStub;
+    let markDeleted: sinon.SinonStub;
+    let deleteRemoved: sinon.SinonStub;
+    let roleSnapshot: sinon.SinonStub;
+
+    /** A create whose everyone-group write fails, over a fake user store; `role` is what was asked for. */
+    const failedCreate = async (role: 'admin' | 'member') => {
+      req.body = { fullName: 'New User', email: 'new@test.com', role };
+      const saved = { _id: savedId, orgId, email: 'new@test.com', role };
+      setUserRepository({
+        existsLiveEmail: async () => false,
+        create: async () => saved,
+        markDeleted,
+        deleteRemoved,
+        getRoleSnapshot: roleSnapshot,
+      } as unknown as UserRepository);
+      sinon.stub(userAdminService, 'createUserEnsuringAdminCap').resolves(saved as any);
+      setGroupRepository({
+        addToEveryone: async () => { calls.push('group'); throw new Error('group write failed'); },
+        removeFromEveryone: async () => { calls.push('membership'); },
+      } as never);
+      await controller.createUser(req, res, next);
+      setGroupRepository();
+    };
+    const kept = () => auditLines.filter((l) => l.event === 'user.create');
+
+    beforeEach(() => {
+      calls = [];
+      auditLines = [];
+      sinon.stub(auditService, 'audit').callsFake((event: string, fields: { outcome?: string; reason?: string }) => {
+        auditLines.push({ event, outcome: fields.outcome, reason: fields.reason });
+      });
+      demote = sinon.stub(userAdminService, 'saveUserEnsuringOrgRetainsAdmin').callsFake(async () => {
+        calls.push('demote');
+        return {} as any;
+      });
+      markDeleted = sinon.stub().callsFake(async () => { calls.push('markDeleted'); return { _id: savedId }; });
+      deleteRemoved = sinon.stub().callsFake(async () => { calls.push('deleteRemoved'); return true; });
+      roleSnapshot = sinon.stub().resolves({ role: 'admin' });
+    });
+
+    it('an admin create is demoted under the admin lock, removed only as a member, and its membership goes only once it is deleted', async () => {
+      await failedCreate('admin');
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(calls).to.deep.equal(['group', 'demote', 'markDeleted', 'deleteRemoved', 'membership']);
+      expect(demote.firstCall.args).to.deep.equal([orgId, savedId, { role: 'member' }, false]);
+      expect(markDeleted.firstCall.args).to.deep.equal([orgId, savedId, { onlyMember: true }]);
+      expect(deleteRemoved.firstCall.args).to.deep.equal([orgId, savedId]);
+      expect(kept()).to.deep.equal([]);
+      expect(res.status.called).to.be.false;
+    });
+
+    it('a refused demotion (another admin was demoted on the strength of this one) keeps the account whole, audited partial', async () => {
+      demote.rejects(Object.assign(new BadRequestError('Cannot demote the last admin.'), { reason: 'last_admin' }));
+      markDeleted.callsFake(async () => { calls.push('markDeleted'); return null; });
+
+      await failedCreate('admin');
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(calls).to.deep.equal(['group', 'markDeleted']);
+      expect(mockLogger.warn.firstCall.args).to.deep.equal([
+        'Account could not be made a member before its removal',
+        { target_user_id: savedId, error_class: 'bad_request' },
+      ]);
+      expect(mockLogger.warn.secondCall.args).to.deep.equal([
+        'Account kept after a failed create',
+        { target_user_id: savedId, reason: 'admin_now', error_class: undefined },
+      ]);
+      expect(JSON.stringify(mockLogger.warn.args)).to.not.include('Cannot demote');
+      expect(auditLines).to.deep.equal([
+        { event: 'user.create', outcome: 'partial', reason: 'kept_after_failure' },
+        { event: 'user.role.change', outcome: 'success', reason: 'new_admin' },
+      ]);
+    });
+
+    it('a demotion that fails on our own bug is logged at ERROR, and the conditional removal still decides', async () => {
+      demote.rejects(new TypeError('bug'));
+
+      await failedCreate('admin');
+
+      expect(mockLogger.error.firstCall.args).to.deep.equal([
+        'Account could not be made a member before its removal',
+        { target_user_id: savedId, error_class: 'internal' },
+      ]);
+      expect(calls).to.deep.equal(['group', 'markDeleted', 'deleteRemoved', 'membership']);
+      expect(kept()).to.deep.equal([]);
+    });
+
+    it('a refused demotion of an account someone already demoted still removes it: it is a member', async () => {
+      demote.rejects(Object.assign(new BadRequestError('Cannot demote the last admin.'), { reason: 'last_admin' }));
+
+      await failedCreate('admin');
+
+      expect(calls).to.deep.equal(['group', 'markDeleted', 'deleteRemoved', 'membership']);
+      expect(auditLines).to.deep.equal([]);
+    });
+
+    it('a member create is not demoted; promoted meanwhile, it is kept with one partial line and no new_admin', async () => {
+      markDeleted.callsFake(async () => { calls.push('markDeleted'); return null; });
+
+      await failedCreate('member');
+
+      expect(demote.called).to.be.false;
+      expect(calls).to.deep.equal(['group', 'markDeleted']);
+      expect(auditLines).to.deep.equal([{ event: 'user.create', outcome: 'partial', reason: 'kept_after_failure' }]);
+      expect(mockLogger.warn.firstCall.args[1]).to.include({ reason: 'admin_now' });
+    });
+
+    it('an account an invite restored meanwhile is kept whole (its membership is not taken back), with one partial line', async () => {
+      deleteRemoved.callsFake(async () => { calls.push('deleteRemoved'); return false; });
+
+      await failedCreate('member');
+
+      expect(calls).to.deep.equal(['group', 'markDeleted', 'deleteRemoved']);
+      expect(auditLines).to.deep.equal([{ event: 'user.create', outcome: 'partial', reason: 'kept_after_failure' }]);
+      expect(mockLogger.warn.firstCall.args[1]).to.include({ reason: 'restored' });
+    });
+
+    it('a soft removal the store fails is a kept live account, logged at its class and with no error text', async () => {
+      markDeleted.rejects(new ServiceUnavailableError('connection reset by peer'));
+
+      await failedCreate('admin');
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(calls).to.deep.equal(['group', 'demote']);
+      expect(mockLogger.warn.args).to.deep.equal([[
+        'Account kept after a failed create',
+        { target_user_id: savedId, reason: 'remove_failed', error_class: 'unavailable' },
+      ]]);
+      expect(mockLogger.error.called).to.be.false;
+      expect(JSON.stringify(mockLogger.warn.args)).to.not.include('connection reset');
+      // Demoted before the store failed: the grant does not stand, and there is nothing to read back.
+      expect(auditLines).to.deep.equal([{ event: 'user.create', outcome: 'partial', reason: 'kept_after_failure' }]);
+      expect(roleSnapshot.called).to.be.false;
+    });
+
+    describe('a refused demotion, then a soft removal the store fails: new_admin only for an account read back as an admin', () => {
+      beforeEach(() => {
+        demote.rejects(Object.assign(new BadRequestError('Cannot demote the last admin.'), { reason: 'last_admin' }));
+        markDeleted.rejects(new ServiceUnavailableError('connection reset by peer'));
+      });
+
+      it('another request had already demoted it: kept, with no new_admin', async () => {
+        roleSnapshot.resolves({ role: 'member' });
+
+        await failedCreate('admin');
+
+        expect(roleSnapshot.firstCall.args).to.deep.equal([orgId, savedId]);
+        expect(auditLines).to.deep.equal([{ event: 'user.create', outcome: 'partial', reason: 'kept_after_failure' }]);
+        expect(mockLogger.warn.secondCall.args).to.deep.equal([
+          'Account kept after a failed create',
+          { target_user_id: savedId, reason: 'remove_failed', error_class: 'unavailable' },
+        ]);
+      });
+
+      it('still an admin: kept, with new_admin', async () => {
+        await failedCreate('admin');
+
+        expect(auditLines).to.deep.equal([
+          { event: 'user.create', outcome: 'partial', reason: 'kept_after_failure' },
+          { event: 'user.role.change', outcome: 'success', reason: 'new_admin' },
+        ]);
+      });
+
+      it('the role cannot be read back either: kept, with no new_admin, and the request still fails with its own error', async () => {
+        roleSnapshot.rejects(new ServiceUnavailableError('connection reset by peer'));
+
+        await failedCreate('admin');
+
+        expect(next.firstCall.args[0].message).to.equal('group write failed');
+        expect(auditLines).to.deep.equal([{ event: 'user.create', outcome: 'partial', reason: 'kept_after_failure' }]);
+      });
+    });
+
+    it('a hard delete that fails takes nothing else apart: the account stays removed with its membership', async () => {
+      deleteRemoved.callsFake(async () => { calls.push('deleteRemoved'); throw new Error('db down'); });
+
+      await failedCreate('member');
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(calls).to.deep.equal(['group', 'markDeleted', 'deleteRemoved']);
+      expect(mockLogger.error.firstCall.args[0]).to.include('removing it failed too');
+      expect(kept()).to.deep.equal([]);
+    });
+
+    it('a soft removal that fails on our own bug is a kept account logged at ERROR', async () => {
+      markDeleted.rejects(new TypeError('bug'));
+
+      await failedCreate('member');
+
+      expect(mockLogger.error.args).to.deep.equal([[
+        'Account kept after a failed create',
+        { target_user_id: savedId, reason: 'remove_failed', error_class: 'internal' },
+      ]]);
+      expect(auditLines).to.deep.equal([{ event: 'user.create', outcome: 'partial', reason: 'kept_after_failure' }]);
+    });
+
+    it('with a replica set, the demotion runs as a transaction', async () => {
+      mockConfig.rsAvailable = 'true';
+
+      await failedCreate('admin');
+
+      expect(demote.firstCall.args).to.deep.equal([orgId, savedId, { role: 'member' }, true]);
+    });
+  });
+
   describe('updateUser', () => {
     it('removes the saved user again when the everyone-group update fails', async () => {
       // Two collections and no transaction. Without the undo the address is
@@ -1277,7 +1553,7 @@ describe('UserController', () => {
       sinon.stub(Users, 'findOne').resolves(null);
       sinon.stub(Users.prototype, 'save').resolves();
       sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
-      const deleteOne = sinon.stub(Users, 'deleteOne').resolves({} as any);
+      const deleteOne = stubUndoRemoval();
 
       await controller.createUser(req, res, next);
 
@@ -1293,7 +1569,7 @@ describe('UserController', () => {
       sinon.stub(Users, 'findOne').resolves(null);
       sinon.stub(Users.prototype, 'save').resolves();
       sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
-      sinon.stub(Users, 'deleteOne').rejects(new Error('undo failed'));
+      stubUndoRemoval().returns({ select: sinon.stub().returnsThis(), lean: sinon.stub().rejects(new Error('undo failed')) } as any);
 
       await controller.createUser(req, res, next);
 
@@ -2037,7 +2313,6 @@ describe('UserController', () => {
         isDeleted: false,
         hasLoggedIn: true,
         role: 'member',
-        save: sinon.stub().resolves(),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
@@ -2045,12 +2320,16 @@ describe('UserController', () => {
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       const recordActivity = sinon.stub(UserActivities, 'create').resolves({} as any);
+      const removal = stubRemoval({ ...mockUser, isDeleted: true, hasLoggedIn: false });
 
       await controller.deleteUser(req, res, next);
 
-      expect(mockUser.isDeleted).to.be.true;
-      expect(mockUser.hasLoggedIn).to.be.false;
-      expect(mockUser.save.calledOnce).to.be.true;
+      expect(removal.calledOnce).to.be.true;
+      const [filter, update] = removal.firstCall.args as any[];
+      // Removed only while still a member, so a promotion since the check cannot be undone by it.
+      expect(filter.role).to.deep.equal({ $ne: 'admin' });
+      expect(String(filter._id)).to.equal(String(mockUser._id));
+      expect(update.$set).to.deep.equal({ isDeleted: true, hasLoggedIn: false, deletedBy: req.user.userId });
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
       expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
       expect(
@@ -2063,7 +2342,32 @@ describe('UserController', () => {
       ).to.be.true;
       // Recorded before anything is changed, so a deletion always leaves one.
       expect(recordActivity.calledBefore(UserGroups.updateMany as sinon.SinonStub)).to.be.true;
-      expect(recordActivity.calledBefore(mockUser.save)).to.be.true;
+      expect(recordActivity.calledBefore(removal)).to.be.true;
+    });
+
+    it('keeps the account, publishes nothing and says what was already removed when the person was made an admin meanwhile', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      sinon.stub(Users, 'findOne').resolves({
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'test@test.com',
+        isDeleted: false,
+        role: 'member',
+      } as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      // The store no longer finds a member to remove: someone promoted them since the check.
+      stubRemoval(null);
+
+      await controller.deleteUser(req, res, next);
+
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(BadRequestError);
+      expect(error.message).to.equal(USER_PROMOTED_DURING_DELETE);
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.json.called).to.be.false;
     });
 
     it('deletes nothing, and says to retry, when the deletion cannot be recorded', async () => {
@@ -2074,21 +2378,20 @@ describe('UserController', () => {
         email: 'test@test.com',
         isDeleted: false,
         role: 'member',
-        save: sinon.stub().resolves(),
       };
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').rejects(new Error('mongo timeout'));
+      const removal = stubRemoval(mockUser);
 
       await controller.deleteUser(req, res, next);
 
       const error = next.firstCall.args[0];
       expect(error).to.be.instanceOf(ServiceUnavailableError);
       expect(error.message).to.equal(USER_DELETE_NOT_RECORDED);
-      expect(mockUser.isDeleted).to.be.false;
-      expect(mockUser.save.called).to.be.false;
+      expect(removal.called).to.be.false;
       expect((UserGroups.updateMany as sinon.SinonStub).called).to.be.false;
       expect((UserCredentials.updateOne as sinon.SinonStub).called).to.be.false;
       expect(mockEventService.publishEvent.called).to.be.false;
@@ -3607,6 +3910,46 @@ describe('UserController', () => {
     });
   });
 
+  // The single read hid the email while the list and the bulk lookup returned it to the same caller.
+  describe('HIDE_EMAIL reaches every read of other users', () => {
+    afterEach(() => {
+      delete process.env.HIDE_EMAIL;
+    });
+
+    it('leaves emails out of the by-ids lookup', async () => {
+      process.env.HIDE_EMAIL = 'true';
+      const id = new mongoose.Types.ObjectId().toString();
+      req.body = { userIds: [id] };
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([{ _id: id, fullName: 'Ada', email: 'ada@test.com' }]) }),
+      } as any);
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      } as any);
+
+      await controller.getUsersByIds(req, res, next);
+
+      const [user] = res.json.firstCall.args[0];
+      expect(user.fullName).to.equal('Ada');
+      expect(user).to.not.have.property('email');
+    });
+
+    it('keeps emails when HIDE_EMAIL is not set', async () => {
+      const id = new mongoose.Types.ObjectId().toString();
+      req.body = { userIds: [id] };
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([{ _id: id, fullName: 'Ada', email: 'ada@test.com' }]) }),
+      } as any);
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      } as any);
+
+      await controller.getUsersByIds(req, res, next);
+
+      expect(res.json.firstCall.args[0][0].email).to.equal('ada@test.com');
+    });
+  });
+
   describe('deleteUser - admin check', () => {
     // The deletion is recorded before anything else changes; these tests are
     // about what follows, so the record succeeds.
@@ -4078,7 +4421,7 @@ describe('UserController', () => {
       sinon.stub(Users.prototype, 'save').resolves();
       sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
       sinon.stub(UserCredentials, 'deleteOne').resolves();
-      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+      const userDelete = stubUndoRemoval();
 
       await controller.createUser(req, res, next);
 
@@ -4101,7 +4444,7 @@ describe('UserController', () => {
       sinon.stub(Users.prototype, 'save').resolves();
       sinon.stub(UserCredentials.prototype, 'save').rejects(new Error('credential save failed'));
       sinon.stub(UserCredentials, 'deleteOne').resolves();
-      sinon.stub(Users, 'deleteOne').rejects(new Error('db down'));
+      stubUndoRemoval().returns({ select: sinon.stub().returnsThis(), lean: sinon.stub().rejects(new Error('db down')) } as any);
 
       await controller.createUser(req, res, next);
 
@@ -4121,7 +4464,7 @@ describe('UserController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
       const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
-      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+      const userDelete = stubUndoRemoval();
 
       await controller.createUser(req, res, next);
 
@@ -4147,7 +4490,7 @@ describe('UserController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
       const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
-      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+      const userDelete = stubUndoRemoval();
       mockEventService.publishEvent.rejects(new Error('outbox insert failed'));
 
       await controller.createUser(req, res, next);
@@ -4173,7 +4516,7 @@ describe('UserController', () => {
       sinon.stub(UserCredentials.prototype, 'save').resolves();
       sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
       const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
-      const userDelete = sinon.stub(Users, 'deleteOne').resolves();
+      const userDelete = stubUndoRemoval();
 
       await controller.createUser(req, res, next);
 
@@ -4181,6 +4524,52 @@ describe('UserController', () => {
       expect(credentialDelete.calledOnce).to.be.true;
       expect(userDelete.calledOnce).to.be.true;
       expect(mockLogger.warn.called).to.be.true;
+    });
+
+    it('leaves the demo credential and the membership of an account an invite restored before the hard delete', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      const groupUpdate = sinon.stub(UserGroups, 'updateOne').resolves();
+      const credentialDelete = sinon.stub(UserCredentials, 'deleteOne').resolves();
+      stubUndoRemoval({ _id: 'saved' }, null);
+      mockEventService.publishEvent.rejects(new Error('outbox insert failed'));
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('outbox insert failed');
+      expect(credentialDelete.called).to.be.false;
+      expect(groupUpdate.getCalls().some((call) => '$pull' in call.args[1])).to.be.false;
+    });
+
+    it('a credential that cannot be discarded after the delete is logged at its class, without error text', async () => {
+      req.body = {
+        email: 'alice@acme-demo.example',
+        fullName: 'Alice Chen',
+        password: 'Str0ng-pass!',
+      };
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').rejects(new Error('group write failed'));
+      sinon.stub(UserCredentials, 'deleteOne').rejects(new ServiceUnavailableError('connection reset by peer'));
+      const userDelete = stubUndoRemoval();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.firstCall.args[0].message).to.equal('group write failed');
+      expect(userDelete.calledOnce).to.be.true;
+      expect(mockLogger.warn.lastCall.args).to.deep.equal([
+        'Account was removed, but discarding its credential failed',
+        { target_user_id: String(userDelete.firstCall.args[0]._id), error_class: 'unavailable' },
+      ]);
+      expect(JSON.stringify(mockLogger.warn.lastCall.args)).to.not.include('connection reset');
+      expect(mockLogger.error.called).to.be.false;
     });
 
     it('publishes the creation event only after the user and credential are saved', async () => {
@@ -4362,34 +4751,55 @@ describe('UserController', () => {
         isDeleted: false,
         hasLoggedIn: true,
         role: 'member',
-        save: sinon.stub().resolves(),
       };
 
       sinon.stub(Users, 'findOne').resolves(mockUser as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      const removal = stubRemoval({ ...mockUser, isDeleted: true, hasLoggedIn: false });
 
       await controller.deleteUser(req, res, next);
 
       expect(res.json.calledOnce).to.be.true;
       const jsonArg = res.json.firstCall.args[0];
       expect(jsonArg.message).to.equal('User deleted successfully');
-      expect(mockUser.isDeleted).to.be.true;
-      expect(mockUser.hasLoggedIn).to.be.false;
+      expect((removal.firstCall.args as any[])[1].$set).to.include({ isDeleted: true, hasLoggedIn: false });
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
     });
   });
 
   // -----------------------------------------------------------------------
-  // deleteUser - OAuth apps soft-delete cascade
+  // deleteUser - what the person leaves behind in OAuth
   // -----------------------------------------------------------------------
-  describe('deleteUser - OAuth apps cascade', () => {
+  describe('deleteUser - OAuth hand-over', () => {
     // The deletion is recorded before anything else changes; these tests are
     // about what follows, so the record succeeds.
     beforeEach(() => {
       sinon.stub(UserActivities, 'create').resolves({} as any);
     });
+
+    const orgOid = new mongoose.Types.ObjectId('507f1f77bcf86cd799439012');
+    const deletedUserOid = new mongoose.Types.ObjectId(
+      '507f1f77bcf86cd799439013',
+    );
+
+    function stubDeletedMember() {
+      req.params = { id: String(deletedUserOid) };
+      const member = {
+        _id: deletedUserOid,
+        orgId: orgOid,
+        email: 'oauth-owner@test.com',
+        fullName: 'OAuth Owner',
+        isDeleted: false,
+        hasLoggedIn: true,
+        role: 'member',
+      };
+      sinon.stub(Users, 'findOne').resolves(member as any);
+      stubRemoval({ ...member, isDeleted: true });
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+    }
 
     function stubOAuthAppQueryChain(appsFromExec: unknown[]) {
       const chain = {
@@ -4402,246 +4812,125 @@ describe('UserController', () => {
       return chain;
     }
 
-    it('should query and soft-delete OAuth apps by orgId and createdBy', async () => {
-      req.params = { id: '507f1f77bcf86cd799439013' };
-      const orgOid = new mongoose.Types.ObjectId('507f1f77bcf86cd799439012');
-      const deletedUserOid = new mongoose.Types.ObjectId(
-        '507f1f77bcf86cd799439013',
-      );
-
-      const mockUser = {
-        _id: deletedUserOid,
-        orgId: orgOid,
-        email: 'oauth-owner@test.com',
-        fullName: 'OAuth Owner',
-        isDeleted: false,
-        hasLoggedIn: true,
-        role: 'member',
-        save: sinon.stub().resolves(),
-      };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'standard' }]),
-      } as any);
-      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
-
-      const findStub = sinon.stub(OAuthApp, 'find');
-      findStub.callsFake(() => stubOAuthAppQueryChain([]) as any);
-      const updateManyStub = sinon.stub(OAuthApp, 'updateMany').resolves({
-        modifiedCount: 0,
-      } as any);
-
-      sinon
-        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
-        .returns(null);
-      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+    it('revokes every token the person holds, personal access tokens included', async () => {
+      stubDeletedMember();
+      stubOAuthAppsForDeletedUser([]);
 
       await controller.deleteUser(req, res, next);
 
-      expect(findStub.calledOnce).to.be.true;
-      const findFilter = findStub.firstCall.args[0] as {
-        orgId: mongoose.Types.ObjectId;
-        createdBy: mongoose.Types.ObjectId;
-        isDeleted: boolean;
-      };
-      expect(findFilter.isDeleted).to.equal(false);
-      expect(String(findFilter.orgId)).to.equal(String(orgOid));
-      expect(String(findFilter.createdBy)).to.equal(String(deletedUserOid));
-
-      expect(updateManyStub.calledOnce).to.be.true;
-      const [updFilter, updDoc] = updateManyStub.firstCall.args as [
-        Record<string, unknown>,
-        { $set: Record<string, unknown> },
-      ];
-      expect((updFilter as { isDeleted: boolean }).isDeleted).to.equal(false);
-      expect(String((updFilter as { orgId: unknown }).orgId)).to.equal(String(orgOid));
-      expect(String((updFilter as { createdBy: unknown }).createdBy)).to.equal(
-        String(deletedUserOid),
-      );
-      expect(updDoc.$set.isDeleted).to.equal(true);
-      expect(updDoc.$set.status).to.equal(OAuthAppStatus.REVOKED);
-      expect(String(updDoc.$set.deletedBy)).to.equal(String(req.user.userId));
-
-      expect(res.json.calledOnce).to.be.true;
+      expect(next.called).to.be.false;
+      expect(tokenRepo.revokeAllForUser.calledOnceWith(String(deletedUserOid))).to.be.true;
+      expect(
+        tokenRepo.revokeAgentRegistrationsForUser.calledOnceWith(String(deletedUserOid)),
+      ).to.be.true;
+      expect(tokenRepo.deleteUnusedCodesForUser.calledOnceWith(String(deletedUserOid))).to.be.true;
+      expect(res.json.firstCall.args[0].message).to.equal('User deleted successfully');
     });
 
-    it('should revoke tokens per app when OAuth token service is registered', async () => {
-      req.params = { id: '507f1f77bcf86cd799439013' };
-
-      const mockUser = {
-        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439013'),
-        orgId: new mongoose.Types.ObjectId(req.user.orgId),
-        email: 'owner@test.com',
-        fullName: 'Owner',
-        isDeleted: false,
-        hasLoggedIn: true,
-        role: 'member',
-        save: sinon.stub().resolves(),
-      };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'standard' }]),
-      } as any);
-      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
-
-      const revokeStub = sinon.stub().resolves();
-      sinon
-        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
-        .returns({ revokeAllTokensForApp: revokeStub } as any);
-
-      const findStub = sinon.stub(OAuthApp, 'find');
-      findStub.callsFake(
-        () =>
-          stubOAuthAppQueryChain([
-            { clientId: 'client-a' },
-            { clientId: 'client-b' },
-          ]) as any,
-      );
-      sinon.stub(OAuthApp, 'updateMany').resolves({ modifiedCount: 2 } as any);
-      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+    it('is not deleted when their tokens cannot be revoked', async () => {
+      stubDeletedMember();
+      stubOAuthAppsForDeletedUser([]);
+      tokenRepo.revokeAllForUser.rejects(new Error('store down'));
+      const markDeleted = sinon.spy(getUserRepository(), 'markDeleted');
 
       await controller.deleteUser(req, res, next);
 
-      expect(revokeStub.calledTwice).to.be.true;
-      expect(revokeStub.firstCall.args[0]).to.equal('client-a');
-      expect(revokeStub.secondCall.args[0]).to.equal('client-b');
+      expect(next.calledOnce).to.be.true;
+      expect(markDeleted.called).to.be.false;
+      expect(res.json.called).to.be.false;
+    });
+
+    it('hands the apps they registered to the administrator instead of deleting them', async () => {
+      stubDeletedMember();
+      sinon.stub(OAuthApp, 'find').callsFake(() => stubOAuthAppQueryChain([]) as any);
+      const updateMany = sinon.stub(OAuthApp, 'updateMany').resolves({} as any);
+      const revokeApp = sinon.stub().resolves();
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns({ revokeAllTokensForApp: revokeApp } as any);
+
+      await controller.deleteUser(req, res, next);
+
+      const transfer = updateMany
+        .getCalls()
+        .find((c) => (c.args[1] as any)?.$set?.createdBy !== undefined);
+      expect(transfer, 'apps were not handed over').to.not.equal(undefined);
+      const [filter, update] = transfer!.args as [any, any];
+      expect(String(filter.orgId)).to.equal(String(orgOid));
+      expect(String(filter.createdBy)).to.equal(String(deletedUserOid));
+      expect(filter.isDeleted).to.equal(false);
+      expect(String(update.$set.createdBy)).to.equal(req.user.userId);
+      // Nobody else's connection is cut: no app has its tokens revoked.
+      expect(revokeApp.called).to.be.false;
+      const deletesEveryApp = updateMany
+        .getCalls()
+        .some(
+          (c) =>
+            (c.args[1] as any)?.$set?.isDeleted === true &&
+            (c.args[0] as any)?.allowedGrantTypes === undefined,
+        );
+      expect(deletesEveryApp).to.be.false;
+      expect(res.json.firstCall.args[0].message).to.equal('User deleted successfully');
+    });
+
+    it('deletes, with its tokens, an app whose own tokens act as the person', async () => {
+      stubDeletedMember();
+      const find = sinon
+        .stub(OAuthApp, 'find')
+        .callsFake(() => stubOAuthAppQueryChain([{ clientId: 'acts-as-them' }, {}]) as any);
+      const updateMany = sinon.stub(OAuthApp, 'updateMany').resolves({} as any);
+      const revokeApp = sinon.stub().resolves();
+      sinon
+        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
+        .returns({ revokeAllTokensForApp: revokeApp } as any);
+
+      await controller.deleteUser(req, res, next);
+
+      const listFilter = find.firstCall.args[0] as any;
+      expect(listFilter.allowedGrantTypes).to.equal('client_credentials');
+      expect(listFilter.tokenIdentityUserId).to.equal(null);
+      expect(revokeApp.calledOnceWith('acts-as-them')).to.be.true;
+      const softDelete = updateMany
+        .getCalls()
+        .find((c) => (c.args[1] as any)?.$set?.isDeleted === true);
+      expect(softDelete, 'the app was not deleted').to.not.equal(undefined);
+      const [filter, update] = softDelete!.args as [any, any];
+      expect(filter.allowedGrantTypes).to.equal('client_credentials');
+      expect(filter.tokenIdentityUserId).to.equal(null);
+      expect(update.$set.status).to.equal(OAuthAppStatus.REVOKED);
+      expect(String(update.$set.deletedBy)).to.equal(req.user.userId);
+      // Deleted before the hand-over, which skips deleted apps.
+      expect(softDelete!.calledBefore(
+        updateMany.getCalls().find((c) => (c.args[1] as any)?.$set?.createdBy !== undefined)!,
+      )).to.be.true;
       expect(res.json.calledOnce).to.be.true;
     });
 
-    it('should skip revoke for rows without clientId and still complete delete', async () => {
-      req.params = { id: '507f1f77bcf86cd799439013' };
-
-      const mockUser = {
-        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439013'),
-        orgId: new mongoose.Types.ObjectId(req.user.orgId),
-        email: 'owner@test.com',
-        fullName: 'Owner',
-        isDeleted: false,
-        hasLoggedIn: true,
-        role: 'member',
-        save: sinon.stub().resolves(),
-      };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'standard' }]),
-      } as any);
-      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
-
-      const revokeStub = sinon.stub().resolves();
+    it('still completes when revoking such an app\'s tokens fails', async () => {
+      stubDeletedMember();
       sinon
-        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
-        .returns({ revokeAllTokensForApp: revokeStub } as any);
-
-      const findStub = sinon.stub(OAuthApp, 'find');
-      findStub.callsFake(
-        () =>
-          stubOAuthAppQueryChain([
-            {},
-            { clientId: 'only-valid' },
-          ]) as any,
-      );
+        .stub(OAuthApp, 'find')
+        .callsFake(() => stubOAuthAppQueryChain([{ clientId: 'client-x' }]) as any);
       sinon.stub(OAuthApp, 'updateMany').resolves({} as any);
-      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
-
-      await controller.deleteUser(req, res, next);
-
-      expect(revokeStub.calledOnce).to.be.true;
-      expect(revokeStub.firstCall.args[0]).to.equal('only-valid');
-      expect(res.json.calledOnce).to.be.true;
-    });
-
-    it('should complete user delete when token revocation fails', async () => {
-      req.params = { id: '507f1f77bcf86cd799439013' };
-
-      const mockUser = {
-        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439013'),
-        orgId: new mongoose.Types.ObjectId(req.user.orgId),
-        email: 'owner@test.com',
-        fullName: 'Owner',
-        isDeleted: false,
-        hasLoggedIn: true,
-        role: 'member',
-        save: sinon.stub().resolves(),
-      };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'standard' }]),
-      } as any);
-      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
-
-      const revokeStub = sinon.stub().rejects(new Error('revoke failed'));
       sinon
         .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
-        .returns({ revokeAllTokensForApp: revokeStub } as any);
-
-      const findStub = sinon.stub(OAuthApp, 'find');
-      findStub.callsFake(
-        () => stubOAuthAppQueryChain([{ clientId: 'client-x' }]) as any,
-      );
-      const updateManyStub = sinon.stub(OAuthApp, 'updateMany').resolves(
-        {} as any,
-      );
-      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+        .returns({ revokeAllTokensForApp: sinon.stub().rejects(new Error('revoke failed')) } as any);
 
       await controller.deleteUser(req, res, next);
 
       expect(mockLogger.error.called).to.be.true;
-      expect(updateManyStub.calledOnce).to.be.true;
-      expect(res.json.calledOnce).to.be.true;
-      expect(res.json.firstCall.args[0].message).to.equal(
-        'User deleted successfully',
-      );
+      expect(res.json.firstCall.args[0].message).to.equal('User deleted successfully');
     });
 
-    it('should set deletedBy to creator when actor has no userId or _id', async () => {
-      req.params = { id: '507f1f77bcf86cd799439013' };
-      req.user = {
-        orgId: '507f1f77bcf86cd799439012',
-        fullName: 'Actor',
-      };
-
-      const orgOid = new mongoose.Types.ObjectId(req.user.orgId);
-      const deletedUserOid = new mongoose.Types.ObjectId(
-        '507f1f77bcf86cd799439013',
-      );
-
-      const mockUser = {
-        _id: deletedUserOid,
-        orgId: orgOid,
-        email: 'owner@test.com',
-        fullName: 'Owner',
-        isDeleted: false,
-        hasLoggedIn: true,
-        role: 'member',
-        save: sinon.stub().resolves(),
-      };
-
-      sinon.stub(Users, 'findOne').resolves(mockUser as any);
-      sinon.stub(UserGroups, 'find').returns({
-        select: sinon.stub().resolves([{ type: 'standard' }]),
-      } as any);
-      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
-
-      const findStub = sinon.stub(OAuthApp, 'find');
-      findStub.callsFake(() => stubOAuthAppQueryChain([]) as any);
-      const updateManyStub = sinon.stub(OAuthApp, 'updateMany').resolves({} as any);
-      sinon
-        .stub(oauthTokenServiceProvider, 'resolveOAuthTokenService')
-        .returns(null);
-      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+    it('refuses without an acting user to hand the apps to', async () => {
+      req.user = { orgId: '507f1f77bcf86cd799439012', fullName: 'Actor' };
+      stubDeletedMember();
+      stubOAuthAppsForDeletedUser([]);
 
       await controller.deleteUser(req, res, next);
 
-      const [, updDoc] = updateManyStub.firstCall.args as [
-        unknown,
-        { $set: { deletedBy: mongoose.Types.ObjectId } },
-      ];
-      expect(String(updDoc.$set.deletedBy)).to.equal(String(deletedUserOid));
-      expect(res.json.calledOnce).to.be.true;
+      expect(next.calledOnce).to.be.true;
+      expect(res.json.called).to.be.false;
     });
   });
 

@@ -54,11 +54,14 @@ jobs:
       PIPESHUB_TEST_ENV: local
       PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
       PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-      # Azure OpenAI is where the credits are. The helper prefers it over
-      # OpenAI when its credentials are present, and TEST_AI_MODEL_PROVIDER
-      # stops a failure here quietly falling back to a key we no longer fund.
-      TEST_AI_MODEL_PROVIDER: azureOpenAI
+      # The AI model provider is the repository variable TEST_AI_MODEL_PROVIDER
+      # (openAI or azureOpenAI; openAI when unset). Both providers' settings are
+      # always passed, so switching provider is that one variable. The model setup,
+      # the evals and judge, and the browser tests all use only the named provider.
+      TEST_AI_MODEL_PROVIDER: ${{ vars.TEST_AI_MODEL_PROVIDER || 'openAI' }}
+      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
+      TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL || 'gpt-5.6-luna' }}
+      TEST_OPENAI_EMBEDDING_MODEL: ${{ vars.TEST_OPENAI_EMBEDDING_MODEL }}
       TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
       TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
       TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
@@ -224,6 +227,16 @@ jobs:
             --container "$CONTAINER" \
             --output reports/perf/query.json \
             --summary reports/perf/summary.md
+
+      # The conditional read of a stored record: the 304 p95 at 1 and 16 clients against its budget, and a
+      # history file (perf/history/citation-viewer.jsonl) whose median a run may not exceed by 10 %.
+      - name: Run citation viewer benchmark
+        if: ${{ !cancelled() }}
+        working-directory: integration-tests
+        run: |
+          source .venv/bin/activate
+          python perf/citation_viewer/bench_stream_conditional.py \
+            --output reports/perf/citation-viewer.json
 
       # Reports only: compare.py exits 0 on a regression until the thresholds
       # have a few weeks of CI history behind them (see perf/README.md).

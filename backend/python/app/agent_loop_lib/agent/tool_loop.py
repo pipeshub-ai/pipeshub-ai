@@ -17,6 +17,7 @@ from app.agent_loop_lib.core.scope import StateSlot, ToolScope
 from app.agent_loop_lib.core.types import Artifact, Confidence, Goal, Message, ToolCall, ToolResult
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
 from app.agent_loop_lib.tools.budget import MAX_TOOLS_PER_REQUEST
+from app.agent_loop_lib.tools.executor import log_tool_call_end
 from app.agent_loop_lib.tools.special_route import RouteContext, SpecialRouteRegistry
 from app.agent_loop_lib.tools.tags import TAG_DEDUP_EXACT, TAG_LIFECYCLE_TERMINAL
 
@@ -376,6 +377,9 @@ async def execute_tool_call(
             f"Arguments received (truncated): {str(raw_args)[:300]!r}"
         )
         tr = ToolResult(tool_call_id=call.id, name=call.name, content=content, is_error=True)
+        log_tool_call_end(
+            outcome="failure", reason="malformed_args", error_class="bad_request", tool=call.name, tool_call_id=call.id,
+        )
         if not _silent:
             await agent.emit(EventType.TOOL_RESULT, {
                 "tool": tr.name, "is_error": True, "content": _result_preview(content), "tool_call_id": call.id,
@@ -398,6 +402,7 @@ async def execute_tool_call(
             ),
             is_error=False,
         )
+        log_tool_call_end(outcome="skipped", reason="duplicate", tool=call.name, tool_call_id=call.id)
         if not _silent:
             await agent.emit(EventType.TOOL_RESULT, {
                 "tool": tr.name, "is_error": tr.is_error,

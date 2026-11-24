@@ -2,9 +2,16 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
+import fs from 'fs'
+import path from 'path'
+import {
+  QUOTED_SELECTION_FOOTER,
+  QUOTED_SELECTION_HEADER,
+} from '../../../../src/modules/enterprise_search/utils/quoted-selection'
 import {
   extractModelInfo,
   buildUserQueryMessage,
+  conversationTitleFromQuery,
   buildAIFailureResponseMessage,
   buildAIResponseMessage,
   formatPreviousConversations,
@@ -288,6 +295,64 @@ describe('Enterprise Search Utils', () => {
   // -----------------------------------------------------------------------
   // buildUserQueryMessage
   // -----------------------------------------------------------------------
+  describe('conversationTitleFromQuery', () => {
+    it('uses the follow-up when the query wraps a quoted excerpt', () => {
+      const query = 'Quoted excerpt:\n"""\nthe SLA is 99.9%\n"""\n\nWhat does this cover?'
+      expect(conversationTitleFromQuery(query)).to.equal('What does this cover?')
+    })
+
+    it('falls back to the excerpt when there is no follow-up', () => {
+      const query = 'Quoted excerpt:\n"""\nonly this\n"""\n\n'
+      expect(conversationTitleFromQuery(query)).to.equal('only this')
+    })
+
+    it('falls back to the wrapped raw query when excerpt and follow-up are empty', () => {
+      const query = `${QUOTED_SELECTION_HEADER}${QUOTED_SELECTION_FOOTER}`
+      expect(conversationTitleFromQuery(query)).to.equal(
+        query.replace(/\s+/g, ' ').trim().slice(0, 100),
+      )
+    })
+
+    it('treats a header without a closing footer as a plain query', () => {
+      const query = `${QUOTED_SELECTION_HEADER}no closing footer`
+      expect(conversationTitleFromQuery(query)).to.equal(
+        query.replace(/\s+/g, ' ').trim().slice(0, 100),
+      )
+    })
+
+    it('returns an empty title when the query is not a string', () => {
+      expect(conversationTitleFromQuery(null as unknown as string)).to.equal('')
+      expect(conversationTitleFromQuery(undefined as unknown as string)).to.equal('')
+    })
+
+    it('truncates a long follow-up to 100 characters', () => {
+      const question = 'q'.repeat(120)
+      const query = `${QUOTED_SELECTION_HEADER}excerpt${QUOTED_SELECTION_FOOTER}${question}`
+      expect(conversationTitleFromQuery(query)).to.equal(question.slice(0, 100))
+    })
+
+    it('leaves a normal query unchanged aside from trimming', () => {
+      expect(conversationTitleFromQuery('  Plain question  ')).to.equal('Plain question')
+    })
+
+    it('is not the raw content prefix, so an edit title must use the helper', () => {
+      const query = 'Quoted excerpt:\n"""\nthe SLA is 99.9%\n"""\n\nWhat does this cover?'
+      expect(conversationTitleFromQuery(query)).to.equal('What does this cover?')
+      expect(conversationTitleFromQuery(query)).to.not.equal(query.slice(0, 100))
+    })
+
+    it('uses the same quote markers as the frontend helper', () => {
+      const frontend = fs.readFileSync(
+        path.resolve(process.cwd(), '../../../frontend/app/(main)/chat/utils/quoted-selection.ts'),
+        'utf8',
+      )
+      expect(QUOTED_SELECTION_HEADER).to.equal('Quoted excerpt:\n"""\n')
+      expect(QUOTED_SELECTION_FOOTER).to.equal('\n"""\n\n')
+      expect(frontend).to.include("QUOTED_SELECTION_HEADER = 'Quoted excerpt:\\n\"\"\"\\n'")
+      expect(frontend).to.include("QUOTED_SELECTION_FOOTER = '\\n\"\"\"\\n\\n'")
+    })
+  })
+
   describe('buildUserQueryMessage', () => {
     it('should build a user query message with correct structure', () => {
       const result = buildUserQueryMessage('What is AI?')
@@ -1389,6 +1454,16 @@ describe('Enterprise Search Utils', () => {
       expect(searchDegradedMeta({})).to.deep.equal({})
       expect(searchDegradedMeta(null)).to.deep.equal({})
     })
+
+    it('carries the access notice codes when there are some, and no key when there are none', () => {
+      const notices = [{ code: 'permissions_updating', connectorId: 'c1' }]
+      expect(searchDegradedMeta({ accessNotices: notices })).to.deep.equal({ accessNotices: notices })
+      expect(searchDegradedMeta({ searchDegraded: true, accessNotices: notices })).to.deep.equal({
+        searchDegraded: true,
+        accessNotices: notices,
+      })
+      expect(searchDegradedMeta({ accessNotices: [] })).to.deep.equal({})
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -1573,7 +1648,6 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
-        'req-1',
         res,
         (data) => { capturedData = data },
       )
@@ -1581,29 +1655,6 @@ describe('Enterprise Search Utils', () => {
       expect(res.write.calledOnce).to.be.true
       expect(capturedData).to.be.null
       expect(newBuffer).to.equal('')
-    })
-
-    it('should capture complete event data and not forward it', () => {
-      const res = createMockResponse()
-      const data = JSON.stringify({ answer: 'Hello', citations: [] })
-      const chunk = Buffer.from(`event: complete\ndata: ${data}\n\n`)
-      let capturedData: any = null
-
-      handleRegenerationStreamData(
-        chunk,
-        '',
-        null,
-        null,
-        null,
-        'req-1',
-        res,
-        (d) => { capturedData = d },
-      )
-
-      expect(capturedData).to.not.be.null
-      expect(capturedData.answer).to.equal('Hello')
-      // Complete events should not be forwarded
-      expect(res.write.called).to.be.false
     })
 
     it('should handle incomplete buffer', () => {
@@ -1616,7 +1667,6 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
-        'req-1',
         res,
         () => {},
       )
@@ -1624,94 +1674,6 @@ describe('Enterprise Search Utils', () => {
       // Incomplete event should be kept in buffer
       expect(newBuffer).to.include('event: token')
       expect(res.write.called).to.be.false
-    })
-
-    it('should forward event if complete data fails to parse', () => {
-      const res = createMockResponse()
-      const chunk = Buffer.from('event: complete\ndata: {invalid json}\n\n')
-
-      handleRegenerationStreamData(
-        chunk,
-        '',
-        null,
-        null,
-        null,
-        'req-1',
-        res,
-        () => {},
-      )
-
-      // Should forward because parse failed
-      expect(res.write.calledOnce).to.be.true
-    })
-
-    it('should handle error events and forward them', () => {
-      const res = createMockResponse()
-      const errorData = JSON.stringify({ error: 'Something failed', message: 'Details here' })
-      const chunk = Buffer.from(`event: error\ndata: ${errorData}\n\n`)
-
-      handleRegenerationStreamData(
-        chunk,
-        '',
-        null,
-        null,
-        null,
-        'req-1',
-        res,
-        () => {},
-      )
-
-      expect(res.write.calledOnce).to.be.true
-      const writeArg = res.write.firstCall.args[0]
-      expect(writeArg).to.include('error')
-    })
-
-    it('should handle error events with conversation and messageId', () => {
-      const res = createMockResponse()
-      const errorData = JSON.stringify({ error: 'AI failed' })
-      const chunk = Buffer.from(`event: error\ndata: ${errorData}\n\n`)
-      const messageId = new mongoose.Types.ObjectId()
-
-      const mockConversation: any = {
-        _id: 'conv-1',
-        status: 'Inprogress',
-        conversationErrors: [],
-        save: sinon.stub().resolves({}),
-      }
-      // The error branch fires-and-forgets `replaceMessageWithError`, which
-      // calls `updateMessageById` -> `ChatSessionMessage.findById`/`.findOneAndReplace`.
-      stubUpdateMessageById({ _id: messageId, sessionId: 'conv-1', orgId: 'org-1', seq: 2 })
-
-      handleRegenerationStreamData(
-        chunk,
-        '',
-        mockConversation,
-        messageId,
-        null,
-        'req-1',
-        res,
-        () => {},
-      )
-
-      expect(res.write.calledOnce).to.be.true
-    })
-
-    it('should handle error events with unparseable data', () => {
-      const res = createMockResponse()
-      const chunk = Buffer.from('event: error\ndata: {bad json}\n\n')
-
-      handleRegenerationStreamData(
-        chunk,
-        '',
-        null,
-        null,
-        null,
-        'req-1',
-        res,
-        () => {},
-      )
-
-      expect(res.write.calledOnce).to.be.true
     })
 
     it('should handle multiple events in a single chunk', () => {
@@ -1726,7 +1688,6 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
-        'req-1',
         res,
         () => {},
       )
@@ -1747,7 +1708,6 @@ describe('Enterprise Search Utils', () => {
         null,
         null,
         null,
-        'req-1',
         res,
         () => {},
       )
@@ -1756,36 +1716,6 @@ describe('Enterprise Search Utils', () => {
       expect(newBuffer).to.equal('')
     })
 
-    it('should handle error event with metadata', () => {
-      const res = createMockResponse()
-      const errorData = JSON.stringify({
-        error: 'Custom error',
-        metadata: { retryCount: 3, region: 'us-east' },
-      })
-      const chunk = Buffer.from(`event: error\ndata: ${errorData}\n\n`)
-      const messageId = new mongoose.Types.ObjectId()
-
-      const mockConversation: any = {
-        _id: 'conv-1',
-        status: 'Inprogress',
-        conversationErrors: [],
-        save: sinon.stub().resolves({}),
-      }
-      stubUpdateMessageById({ _id: messageId, sessionId: 'conv-1', orgId: 'org-1', seq: 1 })
-
-      handleRegenerationStreamData(
-        chunk,
-        '',
-        mockConversation,
-        messageId,
-        null,
-        'req-1',
-        res,
-        () => {},
-      )
-
-      expect(res.write.calledOnce).to.be.true
-    })
   })
 
   // -----------------------------------------------------------------------
@@ -2111,6 +2041,7 @@ describe('Enterprise Search Utils', () => {
   // handleRegenerationError
   // -----------------------------------------------------------------------
   describe('handleRegenerationError', () => {
+    const reader = { appConfig: {} as any, userId: 'author-1', orgId: 'o' }
 
     before(() => {
     })
@@ -2120,7 +2051,7 @@ describe('Enterprise Search Utils', () => {
       const error = new Error('Stream broke')
 
       await handleRegenerationError(
-        res, error, null, null, 'conv-1', null, 'req-1', 'stream_error'
+        res, error, null, null, 'conv-1', null, 'req-1', 'stream_error', undefined, reader
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -2141,7 +2072,7 @@ describe('Enterprise Search Utils', () => {
       }
 
       await handleRegenerationError(
-        res, error, mockConv, null, VALID_OID, null, 'req-1', 'regen_error'
+        res, error, mockConv, null, VALID_OID, null, 'req-1', 'regen_error', undefined, reader
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -2168,7 +2099,7 @@ describe('Enterprise Search Utils', () => {
       ])
 
       await handleRegenerationError(
-        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'regen_error', undefined, 'author-1'
+        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'regen_error', undefined, reader
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -2195,7 +2126,7 @@ describe('Enterprise Search Utils', () => {
       stubGetMessagesChain([])
 
       await handleRegenerationError(
-        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'stream_error'
+        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'stream_error', undefined, reader
       )
 
       const saved = JSON.stringify(findOneAndReplaceStub.firstCall.args)
@@ -3830,35 +3761,44 @@ describe('AG-UI Protocol', () => {
       let capturedData: any = null
 
       handleRegenerationStreamData(
-        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
+        chunk, '', null, null, null, res, (d) => { capturedData = d },
       )
 
       expect(capturedData).to.deep.equal(result)
       expect(res.write.called).to.be.false
     })
 
-    it('should fall back to the raw payload when RUN_FINISHED has no result field', () => {
+    it('should forward, not capture, a RUN_FINISHED that has no result field', () => {
       const res = createMockResponse()
-      const payload = { type: 'RUN_FINISHED', answer: 'direct' }
-      const chunk = Buffer.from(`event: RUN_FINISHED\ndata: ${JSON.stringify(payload)}\n\n`)
-      let capturedData: any = null
+      const text = `event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', answer: 'direct' })}\n\n`
+      const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(
-        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
-      )
+      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, res, onComplete)
 
-      expect(capturedData).to.deep.equal(payload)
+      expect(onComplete.called).to.be.false
+      expect(res.write.calledOnceWithExactly(text)).to.be.true
     })
 
-    it('should forward RUN_FINISHED when its data fails to parse', () => {
+    it("should forward, not capture, a sub-agent's RUN_FINISHED even when it carries a result", () => {
+      const res = createMockResponse()
+      const text = `event: RUN_FINISHED\ndata: ${JSON.stringify({ type: 'RUN_FINISHED', runId: 'child', parentRunId: 'root', result: { answer: 'x' } })}\n\n`
+      const onComplete = sinon.stub()
+
+      handleRegenerationStreamData(Buffer.from(text), '', null, null, null, res, onComplete)
+
+      expect(onComplete.called).to.be.false
+      expect(res.write.calledOnceWithExactly(text)).to.be.true
+    })
+
+    it('should neither capture nor forward a RUN_FINISHED whose data fails to parse', () => {
       const res = createMockResponse()
       const chunk = Buffer.from('event: RUN_FINISHED\ndata: {invalid json}\n\n')
       const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', null, null, null, res, onComplete)
 
       expect(onComplete.called).to.be.false
-      expect(res.write.calledOnce).to.be.true
+      expect(res.write.called).to.be.false
     })
 
     it('should replace the message with the error and forward RUN_ERROR', () => {
@@ -3874,7 +3814,7 @@ describe('AG-UI Protocol', () => {
         `event: RUN_ERROR\ndata: ${JSON.stringify({ type: 'RUN_ERROR', message: 'boom' })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, res, sinon.stub())
 
       expect(res.write.calledOnce).to.be.true
       expect(res.write.firstCall.args[0]).to.include('event: RUN_ERROR')
@@ -3895,7 +3835,7 @@ describe('AG-UI Protocol', () => {
       )
 
       handleRegenerationStreamData(
-        chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL,
+        chunk, '', mockConv, null, null, res, sinon.stub(),
         undefined, undefined, onAskUserQuestion,
       )
       await Promise.resolve()
@@ -3914,7 +3854,7 @@ describe('AG-UI Protocol', () => {
         `event: CUSTOM\ndata: ${JSON.stringify({ type: 'CUSTOM', name: 'artifact', value: {} })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', mockConv, null, null, res, sinon.stub())
 
       expect(res.write.calledOnce).to.be.true
       expect(findByIdAndUpdateStub.called).to.be.false
@@ -3923,14 +3863,25 @@ describe('AG-UI Protocol', () => {
     it('should not treat legacy complete/error/ask_user_question event names as agui frames', () => {
       const res = createMockResponse()
       const onComplete = sinon.stub()
-      const chunk = Buffer.from('event: complete\ndata: {"answer":"legacy"}\n\n')
+      const onUpstreamError = sinon.stub()
+      const onAskUserQuestion = sinon.stub()
+      const mockConv: any = { _id: 'c1' }
+      const legacy =
+        'event: complete\ndata: {"answer":"legacy"}\n\n' +
+        'event: error\ndata: {"error":"legacy"}\n\n' +
+        'event: ask_user_question\ndata: {"status":"success","toolData":{"question":"legacy"}}\n\n'
 
-      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
+      handleRegenerationStreamData(
+        Buffer.from(legacy), '', mockConv, 'm1', null, res, onComplete,
+        undefined, onUpstreamError, onAskUserQuestion,
+      )
 
-      // Under `agui`, the legacy `complete` name has no special handling and
-      // is forwarded through unchanged rather than being parsed as a completion.
+      // No producer sends these names; they have no special handling and are forwarded unchanged.
       expect(onComplete.called).to.be.false
+      expect(onUpstreamError.called).to.be.false
+      expect(onAskUserQuestion.called).to.be.false
       expect(res.write.calledOnce).to.be.true
+      expect(res.write.firstCall.args[0]).to.equal(legacy)
     })
   })
 

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useInlineRename, INLINE_RENAME_MAX_LENGTH } from '../utils/use-inline-rename';
+import { PermissionLockIcon } from '@/config';
 
 interface InlineEditableNameProps {
   connectorId: string;
@@ -21,6 +22,8 @@ interface InlineEditableNameProps {
   truncate?: boolean;
   /** Additional inline styles on the root container. */
   style?: React.CSSProperties;
+  /** The caller may not rename: the name is shown with a lock instead of the edit icon. */
+  locked?: boolean;
 }
 
 export function InlineEditableName({
@@ -32,6 +35,7 @@ export function InlineEditableName({
   iconSize = 14,
   truncate = false,
   style,
+  locked = false,
 }: InlineEditableNameProps) {
   const { t } = useTranslation();
   const {
@@ -94,10 +98,10 @@ export function InlineEditableName({
           gap="2"
           onClick={(e) => {
             e.stopPropagation();
-            startEditing();
+            if (!locked) startEditing();
           }}
           style={{
-            cursor: 'pointer',
+            cursor: locked ? 'default' : 'pointer',
             minHeight: 28,
             minWidth: 0,
             maxWidth: '100%',
@@ -119,12 +123,16 @@ export function InlineEditableName({
           >
             {name}
           </Text>
-          <MaterialIcon
-            name="edit"
-            size={iconSize}
-            color="var(--gray-9)"
-            style={{ flexShrink: 0 }}
-          />
+          {locked ? (
+            <PermissionLockIcon />
+          ) : (
+            <MaterialIcon
+              name="edit"
+              size={iconSize}
+              color="var(--gray-9)"
+              style={{ flexShrink: 0 }}
+            />
+          )}
         </Flex>
       )}
     </Flex>

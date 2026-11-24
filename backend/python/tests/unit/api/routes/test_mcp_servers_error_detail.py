@@ -15,6 +15,13 @@ from app.agents.mcp.errors import (
 )
 from app.api.routes import mcp_servers
 from app.api.routes.mcp_servers import get_instance_tools, get_my_mcp_servers
+from app.utils.user_messages import action_failed
+from tests.unit.agents.mcp.refresh_failures import (
+    BODY_SECRET,
+    TOKEN_HOST,
+    lock_contention_error,
+    token_endpoint_error,
+)
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 _STDERR = "server: EXA_API_KEY=sk-live-123 rejected"
@@ -184,3 +191,82 @@ async def test_a_healthy_listing_has_no_code() -> None:
         result = await get_my_mcp_servers(route_request(_store()), include_tools=True)
 
     assert result["instances"][0]["toolsErrorCode"] is None
+
+
+# A refresh the sign-in provider or another process stopped: no Reconnect, which wouldn't help.
+_RENEWAL_UNAVAILABLE = (
+    "The sign-in couldn't be renewed because this server's sign-in provider is down or busy. Try again in a few minutes."
+)
+
+
+def _oauth_store() -> FakeConfigService:
+    return FakeConfigService({
+        "/services/mcp/instances/inst-1": {
+            "_id": "inst-1", "orgId": "org-1", "createdBy": "admin-1", "name": "Jira", "typeId": None,
+            "transport": "streamable_http", "url": "https://mcp.example.com/mcp", "authMode": "oauth",
+            "isCustom": True, "createdAt": 1, "updatedAt": 1,
+        },
+        "/services/mcp/credentials/inst-1/admin-1": {
+            "isAuthenticated": True,
+            "oauthTokens": {"accessToken": "a", "refreshToken": "r", "tokenUrl": f"https://{TOKEN_HOST}/token"},
+        },
+    })
+
+
+async def _outage() -> Exception:
+    return await token_endpoint_error(503, {"error": "temporarily_unavailable", "trace": BODY_SECRET})
+
+
+async def _rate_limited() -> Exception:
+    return await token_endpoint_error(429, {"error": "slow_down", "trace": BODY_SECRET})
+
+
+_REFRESH_COULDNT_RUN = [
+    pytest.param(_outage, id="provider-503"),
+    pytest.param(_rate_limited, id="provider-429"),
+    pytest.param(lock_contention_error, id="lock-held"),
+]
+
+
+def _refresh_fails(failure: Exception) -> Any:  # noqa: ANN401
+    return patch.object(mcp_servers, "discover_tools_for_owner", new=AsyncMock(side_effect=failure))
+
+
+@pytest.mark.parametrize("make_failure", _REFRESH_COULDNT_RUN)
+async def test_the_listing_says_the_sign_in_couldnt_be_renewed(make_failure: Any) -> None:  # noqa: ANN401
+    with _refresh_fails(await make_failure()), \
+         patch.object(mcp_servers, "_check_user_is_admin", new=AsyncMock(return_value=False)):
+        result = await get_my_mcp_servers(route_request(_oauth_store()), include_tools=True)
+
+    entry = result["instances"][0]
+    assert entry["toolsErrorCode"] == "unreachable"
+    assert entry["toolsError"] == _RENEWAL_UNAVAILABLE
+
+
+async def test_the_listing_still_asks_for_a_reconnect_when_the_refresh_is_refused() -> None:
+    with _refresh_fails(await token_endpoint_error(400, {"error": "invalid_grant"})), \
+         patch.object(mcp_servers, "_check_user_is_admin", new=AsyncMock(return_value=False)):
+        result = await get_my_mcp_servers(route_request(_oauth_store()), include_tools=True)
+
+    entry = result["instances"][0]
+    assert entry["toolsErrorCode"] == "auth_expired"
+    assert entry["toolsError"] == "Authentication with this MCP server has expired. Reconnect it to continue."
+
+
+@pytest.mark.parametrize("make_failure", _REFRESH_COULDNT_RUN)
+async def test_instance_tools_answers_a_refresh_that_couldnt_run_as_a_server_error(make_failure: Any) -> None:  # noqa: ANN401
+    """502, as for a server error: a 409 is read as "reauthenticate" by the panel."""
+    with _refresh_fails(await make_failure()), pytest.raises(HTTPException) as exc:
+        await get_instance_tools(route_request(_oauth_store()), "inst-1")
+
+    assert exc.value.status_code == 502
+    assert exc.value.detail == action_failed("load this MCP server's tools")
+
+
+async def test_instance_tools_still_asks_for_a_reconnect_when_the_refresh_is_refused() -> None:
+    with _refresh_fails(await token_endpoint_error(400, {"error": "invalid_grant"})), \
+         pytest.raises(HTTPException) as exc:
+        await get_instance_tools(route_request(_oauth_store()), "inst-1")
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "Authentication with this MCP server has expired. Reconnect it to continue."

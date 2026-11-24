@@ -15,6 +15,7 @@ from app.services.messaging.config import RedisStreamsConfig, messaging_env
 from app.services.messaging.error_classifier import MessageErrorType
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.retry_manager import RetryManager
+from tests.unit.services.messaging.message_log_helpers import in_delivery
 
 
 @pytest.fixture
@@ -221,11 +222,11 @@ class TestProcessMessageWithClassificationRetryManager:
         with patch("app.services.messaging.redis_streams.consumer.MessageErrorClassifier.classify_by_exception") as mock_classify:
             mock_classify.return_value = MessageErrorType.TERMINAL
 
-            success, is_terminal = await consumer_with_retry_manager._process_message_with_classification(
+            success, is_terminal = await in_delivery(consumer_with_retry_manager._process_message_with_classification(
                 "test-topic",
                 "msg-1",
                 {"value": json.dumps({"eventType": "TEST", "payload": {}})}
-            )
+            ))
 
             assert success is False
             assert is_terminal is True

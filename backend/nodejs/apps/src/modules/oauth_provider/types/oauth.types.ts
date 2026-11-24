@@ -20,6 +20,8 @@ export interface OAuthTokenPayload {
   client_id: string;
   tokenType: 'oauth';
   isRefreshToken?: true;
+  /** Not a claim: the stored token's id, which token lists and revocation use. Set by verifyAccessToken. */
+  tokenRowId?: string;
   fullName?: string;
   accountType?: string;
   createdBy?: string;
@@ -33,6 +35,15 @@ export interface OAuthTokenPayload {
    * calling.
    */
   act?: { sub: string };
+  /**
+   * The identity in `createdBy` is a service account, not a person.
+   *
+   * Present only on a client_credentials token whose application names the
+   * service account it acts as. Nothing authorises on it: it is there so that
+   * code which has to treat a machine identity differently from a colleague
+   * can tell them apart without a second lookup.
+   */
+  actsAsServiceAccount?: true;
   /** Absent when the app may see everything its user can. */
   knowledgeLimit?: KnowledgeLimit;
   /** Access tokens: the resource (RFC 8707) the token is for, when its client named one. */
@@ -255,6 +266,11 @@ export interface OAuthAppResponse {
    * administrator still has to move.
    */
   tokenIdentityUserId?: string;
+  /** The person who registered the app and manages it. */
+  createdBy: string;
+  /** Name and address of `createdBy`, on an administrator's list of every app in the org. */
+  createdByName?: string;
+  createdByEmail?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -275,6 +291,8 @@ export interface ConsentData {
     isDynamic?: boolean;
     /** Host of a client metadata document client id: the only part of the app's identity it cannot choose. */
     clientIdHost?: string;
+    /** Who registered an app that was not dynamically registered: a member can name an app anything. */
+    registeredBy?: string;
     /** What the app's creator let it see; absent for everything the user can. */
     knowledgeLimit?: KnowledgeLimit;
   };
@@ -365,6 +383,8 @@ export interface ListAppsQuery {
   limit?: number;
   status?: string;
   search?: string;
+  /** Only the apps this person created. */
+  createdBy?: string;
 }
 
 // Paginated Response
@@ -394,12 +414,16 @@ export interface TokenListItem {
 }
 
 // Personal Access Tokens
+/** Body of PATCH /personal-access-tokens/:tokenId; null lifts the limit. */
+export interface UpdatePatKnowledgeLimitBody {
+  knowledgeLimit: KnowledgeLimit | null;
+}
+
 export interface CreatePatRequest {
   name: string;
   scopes?: string[];
-  /** Days until expiry, or 'never' for a non-expiring token (stored as a
-   * far-future expiresAt — the schema's expiresAt is required). */
-  expiryDays?: 30 | 90 | 365 | 'never';
+  /** Days until expiry; defaults to 30. */
+  expiryDays?: 7 | 30 | 90 | 365;
   /** What the token may see; omit for everything the user can. */
   knowledgeLimit?: KnowledgeLimit;
 }
