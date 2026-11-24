@@ -34,7 +34,7 @@ SHARE_TARGET_USER_ID = os.getenv("PIPESHUB_TEST_SHARE_TARGET_USER_ID", "").strip
 # Search history is a single per-user collection that every test here writes to,
 # and the delete-history test wipes all of it. Under ``--dist loadgroup`` this
 # keeps the whole module on one worker.
-pytestmark = pytest.mark.xdist_group("search-history")
+pytestmark = [pytest.mark.xdist_group("search-history"), pytest.mark.live_model]
 
 
 class SearchTestBase:

@@ -1,0 +1,698 @@
+# Feature map: projects (flows `projects-artifacts`, `notifications-mail`, `chat-citations`). Projects, artifacts, notifications and the home and sidebar pages.
+
+[[feature]]
+id = "projects.crud"
+title = "Projects"
+flow = "projects-artifacts"
+what = "A user creates a project with a name, description, icon and color, lists, opens, renames and deletes it, and pins it to their own list. The Projects switch under Workspace > Labs must be on, and an OAuth token needs project:read, project:write or project:delete."
+routes = [
+  "POST /api/v1/projects",
+  "GET /api/v1/projects",
+  "GET /api/v1/projects/{projectId}",
+  "PATCH /api/v1/projects/{projectId}",
+  "DELETE /api/v1/projects/{projectId}",
+  "POST /api/v1/projects/{projectId}/pin",
+  "POST /api/v1/projects/{projectId}/unpin",
+]
+pages = ["frontend/app/(main)/projects/page.tsx", "frontend/app/(main)/@sidebar/projects/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/projects/routes/**",
+  "backend/nodejs/apps/src/modules/projects/controller/**",
+  "backend/nodejs/apps/src/modules/projects/services/project.service.ts",
+  "backend/nodejs/apps/src/modules/projects/validators/**",
+  "backend/nodejs/apps/src/modules/projects/schema/**",
+  "frontend/app/(main)/projects/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.crud.lifecycle"
+  says = "A project can be created, listed with the caller's role and conversation count, read by id, updated, pinned, unpinned and deleted; the create and read responses match the spec."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectCrudLifecycle::test_create_get_update_archive_pin_delete",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectResponseOpenApiContract::test_create_project_response",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectResponseOpenApiContract::test_list_projects_response",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectResponseOpenApiContract::test_get_project_by_id_response_includes_role",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectCrudLifecycle::test_list_projects_includes_created_project_with_role_and_conversation_count",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.crud.validation"
+  says = "Create rejects a missing name and an unknown field with 400; a malformed project id gets 400 and an unknown one 404; an empty name on update is refused with 400."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectRequestOpenApiContract::test_create_project_rejects_missing_name",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectRequestOpenApiContract::test_create_project_rejects_unknown_field",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectCrudLifecycle::test_get_nonexistent_project_returns_404",
+    "node:tests/modules/projects/validators/project.validators.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.crud.non-member-404"
+  says = "A user who is not a member gets 404, not 403, for a project, so its existence is not revealed; a member with too low a role gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectAccessMatrix::test_non_member_gets_404_not_403",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectAccessMatrix::test_viewer_member_can_read_but_not_update",
+    "node:tests/modules/projects/services/project.service.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.crud.sharing-settings-owner-only"
+  says = "An editor can change the name, description, icon and color, but only the owner can change visibility or chat sharing; those fields from an editor get 403."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectAccessMatrix::test_editor_member_cannot_manage_members_or_change_visibility",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectRequestOpenApiContract::test_update_project_accepts_owner_only_fields_alongside_others",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.crud.delete-owner-only"
+  says = "Only the owner can delete a project; the delete unlinks its chats first and repeating the delete by the owner succeeds; another user cannot see a deleted project."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/projects/controller/project.controller.test.ts",
+    "node:tests/modules/projects/services/project.service.transactions.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.crud.labs-switch"
+  says = "While the Projects switch in Workspace > Labs is off, every project route is refused with a message that says an admin can turn Projects on; turning it on applies within seconds."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectsLabsSwitch::test_projects_are_refused_while_the_labs_switch_is_off",
+    "node:tests/modules/projects/utils/projects-feature.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.crud.scopes"
+  says = "An OAuth token or PAT without project:read gets 403 from GET /api/v1/projects, without project:write from POST and PATCH, and without project:delete from DELETE."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "projects.crud.ui"
+  says = "The projects page lists the user's projects as cards with pin, archive and delete actions that depend on the user's role, and a user opens a project to see its workspace."
+  priority = "P1"
+  tests = [
+    "e2e:tests/e2e/chat/chat-projects.spec.ts",
+    "fe:app/(main)/projects/components/__tests__/project-list.test.tsx",
+    "fe:app/(main)/projects/components/__tests__/project-helpers.test.ts",
+    "fe:app/(main)/chat/sidebar/dialogs/__tests__/create-project-dialog.test.tsx",
+  ]
+
+[[feature]]
+id = "projects.archive"
+title = "Archive a project"
+flow = "projects-artifacts"
+what = "The owner archives a project to make it read-only, and restores it later. While a project is archived, edits and new chats in it are refused."
+routes = [
+  "POST /api/v1/projects/{projectId}/archive",
+  "POST /api/v1/projects/{projectId}/unarchive",
+]
+code = [
+  "backend/nodejs/apps/src/modules/projects/services/project.service.ts",
+  "backend/nodejs/apps/src/modules/projects/controller/project.controller.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.archive.owner-only"
+  says = "Only the owner can archive or unarchive a project; an editor or viewer gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/projects/services/project.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.archive.read-only"
+  says = "An archived project refuses updates and member changes with a message that tells the user to unarchive it, and new chats cannot start in it."
+  priority = "P1"
+  tests = ["node:tests/modules/projects/services/project.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.archive.restore"
+  says = "Archiving then unarchiving returns the project to its earlier state, and the archive sets archivedBy to the owner."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectCrudLifecycle::test_create_get_update_archive_pin_delete",
+    "node:tests/modules/projects/services/project.service.test.ts",
+  ]
+
+[[feature]]
+id = "projects.members"
+title = "Project members"
+flow = "projects-artifacts"
+what = "The owner adds users or teams to a project as viewer or editor, changes their role and removes them. A member can leave on their own."
+routes = [
+  "GET /api/v1/projects/{projectId}/members",
+  "PUT /api/v1/projects/{projectId}/members",
+  "DELETE /api/v1/projects/{projectId}/members/{memberUserId}",
+]
+code = [
+  "backend/nodejs/apps/src/modules/projects/services/project.service.ts",
+  "backend/nodejs/apps/src/modules/projects/utils/team-membership.ts",
+  "backend/nodejs/apps/src/modules/projects/controller/project.controller.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.members.upsert"
+  says = "PUT members adds or updates members with a viewer or editor role, rejects any other role with 400, and rejects a user that does not exist."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectRequestOpenApiContract::test_upsert_project_members",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectRequestOpenApiContract::test_upsert_project_members_rejects_bad_role",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectAccessMatrix::test_upsert_members_rejects_unknown_iam_user",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.members.owner-only"
+  says = "Only the owner can add, change or remove other members; an editor gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectAccessMatrix::test_editor_member_cannot_manage_members_or_change_visibility"]
+
+  [[feature.behavior]]
+  id = "projects.members.remove-revokes"
+  says = "After a member is removed, the project returns 404 for them, and their access to the project's files collection is revoked before the removal is stored."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectAccessMatrix::test_remove_member_revokes_access",
+    "node:tests/modules/projects/services/project-kb.service.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.members.leave"
+  says = "A member who is not the owner can remove only their own user row, which is how they leave; removing someone else gets 403, and a removal that matches no row reports that nothing was removed."
+  priority = "P1"
+  tests = ["node:tests/modules/projects/services/project.service.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.members.team-access"
+  says = "A user in a team that is a project member gets that team's role, resolved from the graph, and does not get it after leaving the team."
+  priority = "P1"
+  tests = ["node:tests/modules/projects/utils/team-membership.test.ts"]
+
+[[feature]]
+id = "projects.chats"
+title = "Chats in a project"
+flow = "projects-artifacts"
+what = "A user lists the conversations of a project, links a chat to a project or unlinks it, and starts a chat in a project. A project's instructions and its files and sources narrow what the chat uses."
+routes = ["GET /api/v1/projects/{projectId}/conversations"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/project-context.ts",
+  "backend/nodejs/apps/src/modules/projects/controller/project.controller.ts",
+  "backend/python/app/agents/agent_loop/**",
+  "frontend/app/(main)/chat/project-api.ts",
+  "frontend/app/(main)/chat/sidebar/project-conversations-sidebar.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.chats.list"
+  says = "GET project conversations lists the chats linked to a project for a member, and answers 404 for a project the caller cannot see."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectConversationLinking::test_link_and_list_conversation_in_project",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectConversationLinking::test_link_to_project_caller_cannot_see_returns_404",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.chats.link"
+  says = "A chat's project can be set and cleared with null, the field is required, and a bad visibility value gets 400; a chat started with a project id is linked on creation."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectRequestOpenApiContract::test_set_conversation_project_link",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectRequestOpenApiContract::test_set_conversation_project_unlink_with_null",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectRequestOpenApiContract::test_set_conversation_project_requires_the_field",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectRequestOpenApiContract::test_set_conversation_project_visibility_rejects_bad_enum",
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectScopedStream::test_new_conversation_with_project_id_is_linked_on_creation",
+    "node:tests/modules/enterprise_search/controller/set-conversation-project.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.chats.scope"
+  says = "A chat in a project gets the project's instructions, and its source filters default to the project's scope and the hidden files collection; a request can narrow the scope but never widen it."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/enterprise_search/utils/project-context.test.ts",
+    "py:tests/unit/agents/adapter/test_agent_context_project_instructions.py",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.chats.token-scope"
+  says = "An OAuth token needs project:read to start a chat in a project, and a caller who cannot see the project gets 404 before anything reaches the AI service."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "projects.files"
+title = "Project files"
+flow = "projects-artifacts"
+what = "A project has a hidden collection for its files, created on first use. Members upload files to it, and chats in the project search those files."
+routes = ["POST /api/v1/projects/{projectId}/knowledge-base"]
+code = [
+  "backend/nodejs/apps/src/modules/projects/services/project-kb.service.ts",
+  "frontend/app/(main)/projects/hooks/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.files.ensure"
+  says = "POST knowledge-base creates the project's hidden collection if absent and returns the same one on a repeat call; the response matches the spec."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectResponseOpenApiContract::test_ensure_project_knowledge_base_response",
+    "node:tests/modules/projects/services/project-kb.service.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.files.scopes"
+  says = "An OAuth token needs both project:write and kb:write to create the files collection; with either missing it gets 403 naming the scopes."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "projects.files.upload"
+  says = "A file uploaded to a project lands in its knowledge base and is listed in the project's Files card."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/projects/integration_test_project.py::TestProjectFileLifecycle::test_files_upload_into_the_projects_knowledge_base",
+    "fe:app/(main)/projects/components/__tests__/files-card-session.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.files.hidden"
+  says = "The project's collection does not appear in the knowledge base list; a member removed from the project loses access to it."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+[[feature]]
+id = "projects.artifacts"
+title = "Artifacts gallery"
+flow = "projects-artifacts"
+what = "A user lists the files the AI created for them across chats, opens one and its versions, and sees who it is shared with. Only artifacts the user owns or was given access to are listed."
+routes = [
+  "GET /api/v1/artifacts",
+  "GET /api/v1/artifacts/{artifactId}",
+  "GET /api/v1/artifacts/{artifactId}/versions",
+  "GET /api/v1/artifacts/{artifactId}/permissions",
+]
+pages = ["frontend/app/(main)/artifacts/page.tsx", "frontend/app/(main)/@sidebar/artifacts/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/artifacts/**",
+  "backend/python/app/connectors/api/artifacts_router.py",
+  "backend/python/app/services/artifact_registry/**",
+  "frontend/app/(main)/artifacts/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.artifacts.routes"
+  says = "The artifact routes match the OpenAPI spec, and the controller forwards the caller's identity to the connectors service and passes its errors through."
+  priority = "P0"
+  tests = [
+    "node:tests/modules/artifacts/artifacts-match-the-spec.test.ts",
+    "node:tests/modules/artifacts/controllers/artifacts.controller.test.ts",
+    "node:tests/modules/artifacts/validators/artifacts.validators.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifacts.scopes"
+  says = "A token needs kb:read or connector:read to list and read artifacts; without one it gets 403."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/artifacts/artifacts-match-the-spec.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.artifacts.access"
+  says = "The gallery lists only artifacts the caller owns or was shared, within the caller's org; an artifact id the caller cannot access answers 404."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/services/artifact_registry/test_access.py",
+    "py:tests/unit/services/artifact_registry/test_gallery_service.py",
+    "py:tests/unit/services/graph_db/test_arango_list_accessible_artifacts_query_shape.py",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifacts.versions"
+  says = "An artifact edited in a chat keeps its earlier versions, listed newest first, and an edit made in a forked chat becomes a new version of the fork's copy."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/services/artifact_registry/test_versioning.py",
+    "py:tests/unit/services/artifact_registry/test_artifact_edited_from_a_fork.py",
+    "fe:app/(main)/chat/utils/__tests__/artifact-version-after-fork.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifacts.ui"
+  says = "The gallery shows artifacts in a grid or list with thumbnails and type labels, shows loading, empty and error states, and opens an artifact's chat from a row."
+  priority = "P1"
+  tests = [
+    "e2e:tests/e2e/artifacts/artifacts-gallery.spec.ts",
+    "fe:app/(main)/artifacts/components/__tests__/data-table-states.test.tsx",
+    "fe:app/(main)/artifacts/__tests__/open-in-chat.test.tsx",
+    "fe:app/(main)/artifacts/__tests__/deep-link.test.tsx",
+  ]
+
+[[feature]]
+id = "projects.artifacts-share"
+title = "Share and delete an artifact"
+flow = "projects-artifacts"
+what = "The owner of an artifact shares it with users in the same org, takes the share back, or deletes it. Nobody else can share or delete it."
+routes = [
+  "POST /api/v1/artifacts/{artifactId}/share",
+  "POST /api/v1/artifacts/{artifactId}/unshare",
+  "DELETE /api/v1/artifacts/{artifactId}",
+]
+code = [
+  "backend/python/app/services/artifact_registry/sharing.py",
+  "backend/python/app/services/artifact_registry/registry.py",
+  "backend/nodejs/apps/src/modules/artifacts/services/conversation-artifacts.service.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.artifacts-share.owner-only"
+  says = "Only the owner can share or unshare an artifact, only with users of the same org and at most 100 per request; others get 404 or 403 and a bad target gets 400."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/connectors/api/test_artifacts_router_sharing.py",
+    "py:tests/unit/services/artifact_registry/test_sharing_service.py",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifacts-share.unshare"
+  says = "Unshare removes only direct shares; the owner's access stays, and access that came from a shared chat stays."
+  priority = "P1"
+  tests = ["py:tests/unit/services/artifact_registry/test_sharing_service.py"]
+
+  [[feature.behavior]]
+  id = "projects.artifacts-share.delete"
+  says = "DELETE returns 204 for the owner and removes the artifact from the gallery and storage; a non-owner gets 403 and an unknown id 404; a storage outage returns 503."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/connectors/api/test_artifacts_router_delete.py",
+    "py:tests/unit/services/artifact_registry/test_registry_delete.py",
+    "e2e:tests/e2e/artifacts/artifacts-delete.spec.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifacts-share.delete-scope"
+  says = "DELETE needs the conversation:write scope; a token with only kb:write gets 403."
+  priority = "P1"
+  kind = "security"
+  tests = ["node:tests/modules/artifacts/artifacts-match-the-spec.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.artifacts-share.notify"
+  says = "Sharing an artifact sends the recipient an in-app notification."
+  priority = "P2"
+  tests = ["py:tests/unit/connectors/api/test_artifacts_router_sharing.py"]
+
+[[feature]]
+id = "projects.artifact-store"
+title = "Artifact creation, storage and retention"
+flow = "projects-artifacts"
+what = "Files the AI writes in a chat or through the sandbox are stored as artifacts with metadata, versions and signed download links, shown in the chat's artifact panel, and removed on schedule or with their chat."
+code = [
+  "backend/python/app/modules/artifacts/**",
+  "backend/python/app/sandbox/artifact_upload.py",
+  "backend/python/app/sandbox/artifact_cleanup.py",
+  "backend/python/app/agents/actions/artifacts/**",
+  "backend/nodejs/apps/src/modules/artifacts/services/**",
+  "backend/nodejs/apps/src/modules/storage/**",
+  "frontend/app/(main)/chat/components/message-area/artifacts-panel.tsx",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.write-read"
+  says = "A record's parsed content is stored as one artifact set per revision and read back with the same content; a pointer to a missing, tampered or different revision is not served, and the read falls back instead of failing."
+  priority = "P0"
+  tests = [
+    "py:tests/unit/modules/artifacts/test_writer.py",
+    "py:tests/unit/modules/artifacts/test_artifact_reader.py",
+    "py:tests/integration/test_artifact_stale_pointer_e2e.py",
+    "py:tests/integration/test_artifact_stored_write_e2e.py",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.signed-urls"
+  says = "Storage signs the URLs for artifact files and gives none when it cannot sign; an upload grant is single-use, tied to the actor, size-capped and expires, and the storage route does not serve another organisation's files or paths outside the mount."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "py:tests/unit/services/artifact_registry/test_signed_urls.py",
+    "node:tests/modules/storage/providers/artifact-object-urls.provider.test.ts",
+    "node:tests/modules/storage/routes/storage.artifacts.http.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.path-safety"
+  says = "An artifact's properties path cannot escape its own directory."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/storage/validators/artifact-properties-path.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.retention"
+  says = "The cleanup job removes artifact-set revisions that are neither the current nor the previous one nor held by a record, after a grace period, and keeps every revision while a holder is in the trash."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/modules/artifacts/test_retention.py",
+    "py:tests/unit/modules/artifacts/test_stored_retention.py",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.conversation-delete"
+  says = "Deleting a conversation deletes its artifacts with it, leaving no edges behind and never touching a neighbouring artifact; if the artifacts cannot be deleted the chat is not deleted."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/artifacts/services/conversation-artifacts.service.test.ts",
+    "py:tests/integration/graph_db/test_artifact_delete_real_backends.py",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.sandbox-upload"
+  says = "A file the coding sandbox writes becomes an artifact of the conversation, uploaded in the background; a file over 25 MB, an unreadable one, or one whose upload fails is skipped and the others still upload."
+  priority = "P1"
+  tests = ["py:tests/unit/sandbox/test_artifact_upload.py"]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.sandbox-read-safety"
+  says = "Only regular files inside the sandbox directories are read as artifacts: a path outside them and a symlink, even one inside, are refused, so a script cannot publish a host file; a file that grows past the size cap while being read is dropped."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/sandbox/test_artifact_upload.py"]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.sandbox-cleanup"
+  says = "A background job removes sandbox working directories older than ARTIFACT_TEMP_TTL_HOURS (default 1 hour) every ARTIFACT_CLEANUP_INTERVAL_MINUTES (default 30); an invalid value falls back to the default, recent directories and stray files are kept."
+  priority = "P2"
+  tests = ["py:tests/unit/sandbox/test_artifact_cleanup.py"]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.reconcile"
+  says = "An artifact whose new version reached storage but not the database is repaired by the same job: it re-reads the stored bytes, records the new version, size and hash, and clears the marker only after both writes succeed, so a failure is retried next sweep."
+  priority = "P1"
+  tests = ["py:tests/unit/sandbox/test_artifact_cleanup.py"]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.agent-tools"
+  says = "The agent saves, updates, lists, reads and links artifacts of its chat: a new save returns an id, unchanged content is reported as a duplicate, an update on a stale expected version is refused rather than overwritten, a missing or forbidden artifact gives a clear error, and a file named .docx or .pdf must be a real document. What the agent makes belongs to the person chatting."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/agents/actions/artifacts/test_artifacts.py",
+    "py:tests/unit/agents/actions/artifacts/test_service_account_artifact_owner.py",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.fork"
+  says = "Forking a chat copies its artifacts to the new chat, so deleting one chat does not delete the other's files."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/enterprise_search/controller/fork-artifact-copier.test.ts",
+    "node:tests/modules/enterprise_search/controller/fork-artifact-flow.test.ts",
+    "py:tests/unit/services/artifact_registry/test_copy_to_conversation.py",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.artifact-store.panel"
+  says = "A chat's artifact panel shows the files of the answer with thumbnails and previews, and marks an artifact that was deleted."
+  priority = "P2"
+  tests = [
+    "fe:app/(main)/chat/components/message-area/__tests__/artifacts-panel.test.tsx",
+    "fe:app/(main)/chat/components/message-area/__tests__/chat-response-artifact-preview.test.tsx",
+  ]
+
+[[feature]]
+id = "projects.notifications"
+title = "In-app notifications"
+flow = "notifications-mail"
+what = "A user sees their own notifications, filters them by read, unread or archived, marks them read or unread, archives, restores and dismisses them. Notifications are kept for 30 days."
+routes = [
+  "GET /api/v1/notifications",
+  "GET /api/v1/notifications/stats",
+  "PATCH /api/v1/notifications/read-all",
+  "PATCH /api/v1/notifications/{id}/read",
+  "PATCH /api/v1/notifications/{id}/unread",
+  "PATCH /api/v1/notifications/{id}/archive",
+  "PATCH /api/v1/notifications/{id}/unarchive",
+  "DELETE /api/v1/notifications/{id}",
+]
+code = [
+  "backend/nodejs/apps/src/modules/notification/controllers/**",
+  "backend/nodejs/apps/src/modules/notification/routes/**",
+  "backend/nodejs/apps/src/modules/notification/validators/**",
+  "backend/nodejs/apps/src/modules/notification/schema/**",
+  "frontend/app/(main)/notifications/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.notifications.own-only"
+  says = "A user lists, counts and changes only their own notifications; another user's notification id answers 404."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/notification/controllers/notification.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.notifications.auth"
+  says = "Every notification route needs a valid token and answers 401 without one."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/notification/routes/notification.routes.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.notifications.list"
+  says = "GET notifications pages with a cursor and a limit of 1 to 100 (default 20), filters by status read, unread or archived, and rejects any other status with 400; stats returns the notification counts."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/notification/controllers/notification.controller.test.ts",
+    "node:tests/modules/notification/notification-api.utils.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.notifications.state"
+  says = "Read, unread, archive, unarchive and read-all change the state they name, a malformed id gets 400 and an unknown id 404, and dismiss soft-deletes it so it no longer lists."
+  priority = "P1"
+  tests = ["node:tests/modules/notification/controllers/notification.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.notifications.retention"
+  says = "Notifications expire 30 days after they were created."
+  priority = "P2"
+  tests = ["node:tests/modules/notification/notification-api.utils.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.notifications.panel"
+  says = "The notification panel lists notifications with a link to the item, filters, and a mobile layout; chat-shared notifications read correctly in every language."
+  priority = "P2"
+  tests = [
+    "fe:app/(main)/notifications/__tests__/notification-row.test.tsx",
+    "fe:app/(main)/notifications/__tests__/notification-row.chat-shared.test.tsx",
+    "fe:app/(main)/notifications/__tests__/panel-mobile.test.tsx",
+    "fe:app/(main)/notifications/__tests__/store.test.ts",
+  ]
+
+[[feature]]
+id = "projects.notification-delivery"
+title = "Notification delivery"
+flow = "notifications-mail"
+what = "Services publish notification events to a queue; a consumer resolves the recipients (users or roles), stores the notification and pushes it live to the user's open sessions over a socket."
+code = [
+  "backend/nodejs/apps/src/modules/notification/service/**",
+  "backend/nodejs/apps/src/modules/notification/utils/**",
+  "backend/nodejs/apps/src/modules/notification/container/**",
+  "frontend/lib/socket/notification-socket.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.notification-delivery.consume"
+  says = "The consumer stores a notification for each resolved recipient in the event's org, and skips an event with an invalid org id or type."
+  priority = "P1"
+  tests = [
+    "node:tests/modules/notification/service/notification.consumer.test.ts",
+    "node:tests/modules/notification/notification-recipient.resolver.test.ts",
+    "node:tests/modules/notification/notification-payload.resolver.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.notification-delivery.socket-auth"
+  says = "The notification socket accepts a connection only with a valid token, puts the user in their own room, and tells a user without a role or an ended session to sign out."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "node:tests/modules/notification/service/notification.service.socket.test.ts",
+    "node:tests/modules/notification/service/notification.service.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.notification-delivery.recipients"
+  says = "A notification for a role reaches only the users of that role (admin, or a group type) in the same org."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/notification/notification-recipient.resolver.test.ts"]
+
+  [[feature.behavior]]
+  id = "projects.notification-delivery.client"
+  says = "The browser socket connects with the session token, reconnects, and adds each pushed notification to the panel once."
+  priority = "P2"
+  tests = [
+    "fe:lib/socket/__tests__/notification-socket.test.ts",
+    "fe:app/(main)/notifications/__tests__/useNotificationSocket.test.tsx",
+  ]
+
+  [[feature.behavior]]
+  id = "projects.notification-delivery.producer"
+  says = "Notification events (for example upload status) are published to the notification topic with the org, recipients and payload."
+  priority = "P2"
+  tests = ["node:tests/modules/notification/service/notification.producer.test.ts"]
+
+[[feature]]
+id = "projects.chat-sidebar"
+title = "Chat sidebar"
+flow = "chat-citations"
+what = "The sidebar beside the chat and artifacts pages lists the user's conversations by time group, pinned chats, agents and project chats, with menus to rename, pin and delete."
+pages = ["frontend/app/(main)/@sidebar/chat/page.tsx"]
+code = ["frontend/app/(main)/chat/sidebar/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "projects.chat-sidebar.list"
+  says = "The sidebar lists the user's own chats grouped by time, with pinned chats first, and loads more on request."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "projects.chat-sidebar.project-chats"
+  says = "Under a project the sidebar shows only that project's chats."
+  priority = "P1"
+  tests = ["fe:app/(main)/chat/sidebar/__tests__/project-conversations-sidebar.test.tsx"]
+
+  [[feature.behavior]]
+  id = "projects.chat-sidebar.actions"
+  says = "The item menu renames, pins and deletes a chat, and a delete asks for confirmation."
+  priority = "P2"
+  tests = []
+
+[ignore]
+pages = [
+  "frontend/app/(main)/page.tsx",
+  "frontend/app/(main)/@sidebar/page.tsx",
+  "frontend/app/(main)/@sidebar/connectors/page.tsx",
+]

@@ -38,7 +38,7 @@ from helper.clients.conversations_client import ConversationsClient
 from helper.clients.kb_client import KBClient
 from helper.indexing_progress import wait_until_enriched, wait_until_finished
 
-pytestmark = [pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.ai_models]
+pytestmark = [pytest.mark.live_model, pytest.mark.integration, pytest.mark.ai_agents, pytest.mark.ai_models]
 
 # Node refuses a new chat's query past this many characters (es_validators.ts).
 _QUERY_MAX_CHARS = 100_000

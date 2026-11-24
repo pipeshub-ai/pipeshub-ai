@@ -550,7 +550,7 @@ def render_summary(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--docs", type=int, default=120, help="files to seed before asking anything")
     parser.add_argument("--seed", type=int, default=1337)
@@ -580,7 +580,11 @@ def main() -> None:
     parser.add_argument("--keep-kb", action="store_true", help="leave the benchmark KB in place afterwards")
     parser.add_argument("--output", type=Path, default=_IT_DIR / "reports" / "perf" / "query.json")
     parser.add_argument("--summary", type=Path, default=None, help="also write the Markdown summary here")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     args.kinds_tuple = tuple(args.kinds.split(",")) if args.kinds else None
     if args.users < 1:
         raise SystemExit("--users must be at least 1")

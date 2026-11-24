@@ -25,7 +25,7 @@ export interface AuditRoute {
   notFound?: boolean;
 }
 
-const SETTLE_MS = 800;
+export const SETTLE_MS = 800;
 // Actions look for one control; a missing one is a finding, not a 15 s wait.
 export const ACTION_TIMEOUT = 5_000;
 
@@ -53,7 +53,7 @@ async function appAccessToken(browser: Browser, testInfo: TestInfo): Promise<str
   }
 }
 
-async function seedOnce(browser: Browser, testInfo: TestInfo): Promise<SeedIds> {
+export async function seedOnce(browser: Browser, testInfo: TestInfo): Promise<SeedIds> {
   const outputDir = path.dirname(testInfo.outputDir);
   const file = path.join(outputDir, 'responsive-seed.json');
   const lock = `${file}.lock`;
@@ -204,7 +204,7 @@ function measure(touch: boolean): Measurement {
  * loaded. While they are not, ligature text ("tune", "expand_mo") is laid out
  * as plain words and falsely trips the clipped and squeezed checks.
  */
-async function iconFontsLoaded(page: Page): Promise<boolean> {
+export async function iconFontsLoaded(page: Page): Promise<boolean> {
   return page.evaluate(async () => {
     await document.fonts.ready;
     const usesSymbols = [...document.querySelectorAll('span, i')].some((el) =>

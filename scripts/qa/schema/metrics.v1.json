@@ -1,0 +1,279 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "qa metrics (metrics.json on the qa-history branch)",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated",
+    "window_days",
+    "coverage",
+    "trend",
+    "flake",
+    "duration",
+    "bugs",
+    "enforcement"
+  ],
+  "properties": {
+    "schema": {
+      "const": "qa-metrics/v1"
+    },
+    "generated": {
+      "type": "string"
+    },
+    "window_days": {
+      "type": "integer"
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "modules",
+        "flows",
+        "line",
+        "api_operations"
+      ],
+      "properties": {
+        "modules": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "tests"
+            ],
+            "properties": {
+              "tests": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "flows": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "tests",
+              "priority"
+            ],
+            "properties": {
+              "tests": {
+                "type": "integer"
+              },
+              "priority": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "line": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "api_operations": {
+          "type": "object",
+          "required": [
+            "hit_rate",
+            "source"
+          ],
+          "properties": {
+            "hit_rate": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "source": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "trend": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "date",
+          "trigger",
+          "runs",
+          "pass",
+          "fail",
+          "error",
+          "flaky",
+          "not_run"
+        ],
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "trigger": {
+            "type": "string"
+          },
+          "runs": {
+            "type": "integer"
+          },
+          "pass": {
+            "type": "integer"
+          },
+          "fail": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "integer"
+          },
+          "flaky": {
+            "type": "integer"
+          },
+          "not_run": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "flake": {
+      "type": "object",
+      "required": [
+        "rate",
+        "by_suite",
+        "quarantined"
+      ],
+      "properties": {
+        "rate": {
+          "type": "number"
+        },
+        "by_suite": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "quarantined": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "duration": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "runs",
+          "p50",
+          "p95"
+        ],
+        "properties": {
+          "runs": {
+            "type": "integer"
+          },
+          "p50": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "p95": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "bugs": {
+      "type": "object",
+      "properties": {
+        "caught": {
+          "type": "integer"
+        },
+        "escaped": {
+          "type": "integer"
+        },
+        "unlinked": {
+          "type": "integer"
+        },
+        "escaped_by_flow": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "enforcement": {
+      "type": "object",
+      "required": [
+        "ready",
+        "status",
+        "recall",
+        "failures",
+        "caught",
+        "reason",
+        "families",
+        "population"
+      ],
+      "properties": {
+        "ready": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "not_ready",
+            "insufficient"
+          ]
+        },
+        "recall": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "failures": {
+          "type": "integer"
+        },
+        "caught": {
+          "type": "integer"
+        },
+        "missed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "since": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "families": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "population": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -238,3 +238,4 @@ node_modules
 !/.claude/rules/
 !/.claude/skills/
 !/.claude/agents/
+qa-out/

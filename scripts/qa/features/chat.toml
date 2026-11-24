@@ -1,0 +1,560 @@
+# Feature map: chat (flow `chat-citations`). Conversations, streaming answers, citations, archive, speech.
+
+[[feature]]
+id = "chat.conversations"
+title = "Conversations"
+flow = "chat-citations"
+what = "A user starts a conversation, lists them, opens one, renames it, pins it and deletes it. Only the owner reads and changes a conversation, unless it was shared."
+routes = [
+  "GET /api/v1/conversations",
+  "* /api/v1/conversations/{conversationId}",
+  "PATCH /api/v1/conversations/{conversationId}/title",
+  "PATCH /api/v1/conversations/{conversationId}/pin",
+  "PATCH /api/v1/conversations/{conversationId}/unpin",
+]
+pages = ["frontend/app/(main)/chat/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/routes/es.routes.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/schema/conversation.schema.ts",
+  "frontend/app/(main)/chat/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.conversations.ownership"
+  says = "Another user in the same org gets 404 on every conversation route (read, add message, rename, archive, pin, share, delete, fork, cancel, regenerate), a read-only recipient gets 404 on every route that changes or extends it, and a user from another org gets 404 on read; nothing is written or sent to the AI service."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.conversations.auth"
+  says = "Conversation routes answer 401 or 403 without a valid token; an OAuth token needs conversation:read to read, conversation:write to change and conversation:chat to ask."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_missing_auth_returns_401_or_403",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_stream_conversation_missing_auth_returns_401_or_403",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.conversations.read"
+  says = "GET /api/v1/conversations lists the caller's conversations and rejects an invalid source with 400; GET by id matches the spec, honors limit and sort order, and answers 400 for a malformed id and 404 for an unknown one."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_conversations_includes_two_stream_created",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_conversations_invalid_source_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_conversation_by_id_response_matches_spec",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_conversation_by_id_with_limit_caps_messages",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_conversation_by_id_with_sort_order_variants",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_conversation_by_id_invalid_conversation_id_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_conversation_by_id_nonexistent_returns_404",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.conversations.title"
+  says = "PATCH title renames the conversation, and rejects an invalid payload with 400, a malformed id with 400 and an unknown conversation with 404."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_patch_conversation_title_response_matches_spec",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_patch_conversation_title_invalid_payload_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_patch_conversation_title_invalid_conversation_id_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_patch_conversation_title_nonexistent_returns_404",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.conversations.delete"
+  says = "DELETE removes the conversation so it can no longer be read, answers 404 for an unknown id and 400 for a malformed one."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_delete_conversation_lifecycle",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_delete_conversation_nonexistent_returns_404",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_delete_conversation_invalid_conversation_id_returns_400",
+    "node:tests/modules/enterprise_search/controller/es_controller.delete-conversation.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.conversations.pin"
+  says = "The owner pins a conversation and it is listed first; pinning twice is safe, an archived chat cannot be pinned, and pinning does not change the chat's activity time."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.pin.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.conversations.page"
+  says = "The chat page loads, shows the input and the sidebar list, and keeps pinned and unread conversations in order."
+  priority = "P1"
+  tests = ["e2e:tests/e2e/chat/chat-basic.spec.ts", "fe:app/(main)/chat/__tests__/chat-page.test.tsx"]
+
+[[feature]]
+id = "chat.answers"
+title = "Streaming and non-streaming answers"
+flow = "chat-citations"
+what = "A user asks a question and gets an answer grounded in their knowledge, streamed as events or returned in one reply. They can add follow-ups, edit the last question, regenerate the answer, stop a running answer and rate it."
+routes = [
+  "POST /api/v1/conversations/create",
+  "POST /api/v1/conversations/stream",
+  "POST /api/v1/conversations/{conversationId}/messages",
+  "POST /api/v1/conversations/{conversationId}/messages/stream",
+  "POST /api/v1/conversations/{conversationId}/message/{messageId}/regenerate",
+  "POST /api/v1/conversations/{conversationId}/cancel",
+  "POST /api/v1/conversations/{conversationId}/message/{messageId}/feedback",
+]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/non-streaming-chat.controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/stream-lifecycle.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/agui.ts",
+  "backend/python/app/api/routes/chatbot.py",
+  "backend/python/app/agents/agent_loop/**",
+  "frontend/app/(main)/chat/streaming.ts",
+  "frontend/app/(main)/chat/agui-event-handler.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.answers.stream"
+  says = "POST /api/v1/conversations/stream answers with events that end in a complete answer and a saved conversation, and the response matches the spec."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_stream_conversation_chat_mode_returns_answer",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_stream_conversation_response_matches_spec",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_stream_add_message_updates_conversation",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.answers.validation"
+  says = "A stream request with an invalid payload or an unsupported chat mode gets 400, and a follow-up on a malformed id gets 400; a follow-up on an unknown conversation emits an error event."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_stream_conversation_invalid_payload_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_stream_add_message_invalid_payload_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_stream_add_message_invalid_conversation_id_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_stream_add_message_nonexistent_conversation_emits_error_event",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversationStreamOpenApiRequestContract::test_rejects_missing_or_unsupported_chat_mode",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.answers.non-streaming"
+  says = "POST create and POST messages return the persisted conversation with a grounded answer in one reply, a follow-up appends one turn and reports the records used, and an unknown conversation is 404."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation_non_streaming.py::TestConversationNonStreaming::test_create_returns_the_persisted_conversation_and_a_grounded_answer",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation_non_streaming.py::TestConversationNonStreaming::test_follow_up_appends_one_turn_and_reports_records_used",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation_non_streaming.py::TestConversationNonStreaming::test_follow_up_on_unknown_conversation_returns_404",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation_non_streaming.py::TestConversationNonStreaming::test_invalid_payload_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation_non_streaming.py::TestConversationNonStreaming::test_missing_auth_returns_401_or_403",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.answers.regenerate"
+  says = "Regenerate streams a new answer for the last bot message to completion; a message that is not the last one emits an error event, and a missing token gets 401 or 403."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_regenerate_last_bot_message_streams_to_complete",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_regenerate_non_last_message_id_emits_sse_error",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_regenerate_missing_auth_returns_401_or_403",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_regenerate_invalid_body_returns_400",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.answers.cancel"
+  says = "Cancel stops an in-flight answer for its owner, answers cancelled false for a run that is gone, and refuses another user's run with 403."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_chatbot_cancel.py", "node:tests/modules/enterprise_search/utils/stream-lifecycle.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.answers.edit-question"
+  says = "Editing the last question replaces that turn and asks again; the old answer does not remain."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.edit-question.test.ts", "e2e:tests/e2e/chat/chat-edit-question.spec.ts"]
+
+  [[feature.behavior]]
+  id = "chat.answers.feedback"
+  says = "The owner and a recipient of a shared chat rate a bot answer; rating a user question is 400, and sharing with one person does not let the rest of the org rate it."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_post_message_feedback_on_bot_response_matches_spec",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_post_message_feedback_on_user_query_returns_400",
+    "node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.answers.browser-stream"
+  says = "In the browser the answer streams in, can be stopped, and a stream error shows a readable message."
+  priority = "P1"
+  tests = ["e2e:tests/e2e/chat/chat-streaming.spec.ts", "fe:app/(main)/chat/__tests__/streaming-stop.test.ts", "fe:app/(main)/chat/__tests__/stream-error.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.answers.error-text"
+  says = "A failed chat turn shows plain advice: server stack traces saved with a failed answer never reach the browser, and raw text of a 5xx error is replaced."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.error-stacks.test.ts", "node:tests/modules/enterprise_search/utils/chat-error-messages.test.ts"]
+
+[[feature]]
+id = "chat.attachments"
+title = "Chat attachments"
+flow = "chat-citations"
+what = "A user attaches files to a question and removes them. Image bytes are checked, so a file labelled as PNG that is not a PNG is refused."
+routes = ["POST /api/v1/conversations/attachments/upload", "DELETE /api/v1/conversations/attachments/{recordId}"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/python/app/agents/chat_modes/attachments.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.attachments.image-check"
+  says = "SVG bytes labelled as PNG, a PNG whose pixels do not decode, and an image over 50 megapixels are rejected; a real image is stored as the type its bytes are."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.attachment-validation.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.attachments.upload-ask"
+  says = "A user uploads a document and the answer to a question about it cites it; DOCX, XLSX and CSV attachments are read."
+  priority = "P1"
+  tests = ["e2e:tests/e2e/chat/chat-cited-answer.spec.ts", "e2e:tests/e2e/chat/chat-document-attachment.spec.ts"]
+
+  [[feature.behavior]]
+  id = "chat.attachments.permissions"
+  says = "Sharing a conversation grants read on its attachments to the recipients and unsharing revokes it; a user who was not given access cannot read the attachment."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.agent-share.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.attachments.delete"
+  says = "DELETE /api/v1/conversations/attachments/{recordId} relays to the AI service with the caller's token and answers 204 when the attachment is removed."
+  priority = "P1"
+  tests = []
+
+  [[feature.behavior]]
+  id = "chat.attachments.limits"
+  says = "An upload takes at most 10 files of 5 MB each in PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV or TSV; a generic content type falls back to the file extension and an upload with no file gets 400."
+  priority = "P1"
+  tests = []
+
+[[feature]]
+id = "chat.sharing"
+title = "Sharing a conversation"
+flow = "chat-citations"
+what = "The owner shares a conversation with users and revokes access. A recipient reads it but sees a placeholder for every citation, excerpt or attachment they cannot read themselves."
+routes = ["POST /api/v1/conversations/{conversationId}/share", "POST /api/v1/conversations/{conversationId}/unshare"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/viewer-redaction.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/share-notification.ts",
+  "frontend/app/(main)/chat/share-adapter.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.sharing.share"
+  says = "The owner shares with users and unshares; an invalid payload gets 400, an unknown conversation 404 and a missing token 401 or 403."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_post_share_conversation_response_matches_spec",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_post_unshare_conversation_response_matches_spec",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_post_share_conversation_invalid_payload_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_post_unshare_conversation_invalid_payload_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_post_share_conversation_nonexistent_returns_404",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_post_share_conversation_missing_auth_returns_401_or_403",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.sharing.viewer-redaction"
+  says = "A viewer gets a placeholder for each citation, excerpt and attachment they cannot read; if the access check fails, answers non-200 or is malformed, every record reference is hidden."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.viewer-redaction.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.sharing.read-only"
+  says = "A read-only recipient cannot add messages to, rename or delete the shared conversation."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.sharing.notify"
+  says = "Each newly added recipient gets one unread notification that a chat was shared with them that opens the chat; sharing again with someone who already has access does not notify them again, and a failed notification does not fail the share."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.share-notify-archive.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.sharing.archived-hidden"
+  says = "When the owner archives a shared chat, recipients get 404 and it leaves their shared list; unarchiving gives it back."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.share-notify-archive.test.ts"]
+
+[[feature]]
+id = "chat.archive"
+title = "Archived chats"
+flow = "chat-citations"
+what = "A user archives a conversation to hide it from the list, finds it again in the archived chats page by search or date range, and unarchives it."
+routes = [
+  "PATCH /api/v1/conversations/{conversationId}/archive",
+  "PATCH /api/v1/conversations/{conversationId}/unarchive",
+  "GET /api/v1/conversations/show/archives",
+  "GET /api/v1/conversations/show/archives/search",
+]
+pages = ["frontend/app/(main)/workspace/archived-chats/page.tsx", "frontend/app/(main)/@sidebar/workspace/archived-chats/page.tsx"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "frontend/app/(main)/workspace/archived-chats/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.archive.lifecycle"
+  says = "An archived conversation appears in the archived list and leaves the normal one; unarchiving a conversation that is not archived is 400, and an unknown id is 404."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_patch_archive_conversation_lifecycle",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_includes_newly_archived_conversation",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_patch_unarchive_conversation_not_archived_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_patch_archive_conversation_nonexistent_returns_404",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_patch_archive_conversation_invalid_conversation_id_returns_400",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.archive.search"
+  says = "Archived search finds a conversation after it is created and archived, ignores active conversations, caps rows with limit, and answers 400 for an empty or missing search."
+  priority = "P1"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_search_finds_after_create_and_archive",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_search_active_not_in_results",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_search_with_limit_caps_rows",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_search_empty_search_returns_400",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_search_missing_search_returns_400",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.archive.auth"
+  says = "The archived list and archived search answer 401 or 403 without a token, and an invalid start date is 400."
+  priority = "P0"
+  kind = "security"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_missing_auth_returns_401_or_403",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_search_missing_auth_returns_401_or_403",
+    "it:response-validation/enterprise-search/conversations/integration_test_conversation.py::TestConversations::test_get_archived_conversations_invalid_start_date_returns_400",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.archive.page"
+  says = "The archived chats page lists archived conversations, works on a phone and on touch."
+  priority = "P2"
+  tests = [
+    "fe:app/(main)/workspace/archived-chats/__tests__/archived-chat-view.test.ts",
+    "fe:app/(main)/workspace/archived-chats/__tests__/archived-chats-mobile.test.tsx",
+  ]
+
+[[feature]]
+id = "chat.fork"
+title = "Fork a conversation"
+flow = "chat-citations"
+what = "A user copies a conversation up to a chosen message into a new conversation they own, including its artifacts, and continues from there."
+routes = ["POST /api/v1/conversations/{conversationId}/message/{messageId}/fork"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/fork-conversation.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/fork-artifacts.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.fork.copy"
+  says = "The owner gets their own copy and the original is untouched; the copy keeps the history up to the chosen message."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/utils/fork-conversation.test.ts", "node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.fork.access"
+  says = "A project member cannot fork a chat the owner made visible to the project, and another user gets 404."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.fork.artifacts"
+  says = "Artifacts are copied under the new chat's id and the original keeps its own; when the fork fails, the copies already made are removed."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/fork-artifact-flow.test.ts", "node:tests/modules/enterprise_search/controller/fork-artifact-copier.test.ts", "node:tests/modules/enterprise_search/utils/fork-artifacts.test.ts"]
+
+[[feature]]
+id = "chat.compare"
+title = "Compare models"
+flow = "chat-citations"
+what = "When an admin turns on Compare models in Labs, a user re-asks a saved question with a second model in a hidden branch, sees both answers, and keeps one."
+routes = [
+  "POST /api/v1/conversations/{conversationId}/compare/branch",
+  "GET /api/v1/conversations/{conversationId}/compare",
+  "POST /api/v1/conversations/{conversationId}/compare/choose",
+]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/compare.controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/chat-compare-feature.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/compare-turn.ts",
+  "frontend/app/(main)/chat/compare/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.compare.flag"
+  says = "With the Labs flag off, the branch, list and choose routes all answer 403 with the message that Compare models is turned off; with an unreadable settings store it stays off."
+  priority = "P0"
+  kind = "security"
+  tests = ["node:tests/modules/enterprise_search/utils/chat-compare.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.compare.branches"
+  says = "A branch is created for a saved question, stale branches are swept, a second branch for the same question is dropped and reported, an agent chat is refused, and an unknown conversation or question is 404."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/compare.controller.test.ts", "node:tests/modules/enterprise_search/controller/compare.controller.mongo.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.compare.choose"
+  says = "Choosing keeps the chosen answer as the turn and releases the run locks; an unknown branch is 404, a branch with no answer yet is 409, and an empty retry counts as already chosen."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/compare.controller.test.ts", "node:tests/modules/enterprise_search/controller/es_controller.compare-turn.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.compare.ui"
+  says = "The compare view shows two columns, each with its own state, and lets the user choose one."
+  priority = "P2"
+  tests = [
+    "fe:app/(main)/chat/compare/__tests__/column-state.test.ts",
+    "fe:app/(main)/chat/compare/__tests__/compare-flow.test.ts",
+    "fe:app/(main)/chat/compare/__tests__/compare-ui.test.tsx",
+  ]
+
+[[feature]]
+id = "chat.projects"
+title = "Move a chat into a project"
+flow = "chat-citations"
+what = "A user links a conversation to a project or unlinks it, and sets whether project members can see it. Both changes need project write as well as conversation write."
+routes = ["PUT /api/v1/conversations/{conversationId}/project", "PATCH /api/v1/conversations/{conversationId}/project-visibility"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts",
+  "backend/nodejs/apps/src/modules/enterprise_search/utils/project-context.ts",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.projects.scopes"
+  says = "An OAuth token needs both conversation:write and project:write to link, unlink or change visibility; one of them is not enough."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "chat.projects.link"
+  says = "The owner links a conversation to a project they can write to and unlinks it; a project member reads a chat only when its owner made it visible to the project."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/set-conversation-project.test.ts", "node:tests/modules/enterprise_search/controller/es_controller.ownership.test.ts"]
+
+[[feature]]
+id = "chat.citations"
+title = "Citations and source links"
+flow = "chat-citations"
+what = "An answer cites its sources with numbered links. A cited block opens its source page with the cited text highlighted through a text-fragment link, and a citation never points at a record the viewer cannot read."
+code = [
+  "backend/python/app/utils/citations.py",
+  "backend/python/app/utils/chat_helpers.py",
+  "backend/python/app/utils/text_fragments/**",
+  "backend/python/app/agents/agent_loop/hooks/citations.py",
+  "backend/nodejs/apps/src/modules/enterprise_search/citations/citations.schema.ts",
+  "frontend/app/(main)/chat/components/message-area/response-tabs/citations/**",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.citations.grounded"
+  says = "A grounded answer cites its sources, and every cited record can be retrieved again."
+  priority = "P0"
+  tests = [
+    "it:response-validation/enterprise-search/conversations/integration_test_retrieval_integrity.py::TestRetrievalIntegrity::test_grounded_turn_cites_its_sources",
+    "it:response-validation/enterprise-search/conversations/integration_test_retrieval_integrity.py::TestRetrievalIntegrity::test_cited_records_are_retrievable",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.citations.renumber"
+  says = "Citation badges are numbered per answer and written as links; a ref copied into a later turn becomes its URL or 'earlier-turn source', never another record."
+  priority = "P1"
+  tests = ["py:tests/unit/utils/test_citations.py", "py:tests/unit/agents/agent_loop/hooks/test_citations.py"]
+
+  [[feature.behavior]]
+  id = "chat.citations.fragment-url"
+  says = "A text-fragment link is built with each term percent-encoded (a hyphen as %2D), placed after any existing anchor, never spanning two rendered blocks, and never raises."
+  priority = "P1"
+  tests = [
+    "py:tests/unit/utils/text_fragments/test_generator.py",
+    "py:tests/unit/utils/text_fragments/test_codec.py",
+    "py:tests/unit/utils/text_fragments/test_golden_corpus.py",
+  ]
+
+  [[feature.behavior]]
+  id = "chat.citations.fragment-unchanged"
+  says = "When no highlight can be built, or the URL already carries a text directive, the citation keeps the plain working URL."
+  priority = "P1"
+  tests = ["py:tests/unit/utils/text_fragments/test_url.py", "py:tests/unit/utils/test_citations_text_fragments.py"]
+
+  [[feature.behavior]]
+  id = "chat.citations.web"
+  says = "Web search and fetched pages are cited by their URL with a fragment built from the snippet, and the link opens the source page."
+  priority = "P1"
+  tests = ["py:tests/unit/web/test_web_citations.py", "e2e:tests/e2e/chat/chat-web-tools.spec.ts"]
+
+  [[feature.behavior]]
+  id = "chat.citations.ui"
+  says = "Citation chips show the source label and a popover, and open the source."
+  priority = "P2"
+  tests = [
+    "fe:app/(main)/chat/components/message-area/__tests__/inline-citation-group.test.tsx",
+    "fe:app/(main)/chat/components/message-area/response-tabs/citations/__tests__/citation-actions.test.ts",
+  ]
+
+[[feature]]
+id = "chat.speech"
+title = "Conversational speech"
+flow = "chat-citations"
+what = "A user dictates a question (speech to text) and hears an answer read aloud (text to speech). The UI asks which providers are configured first."
+routes = ["POST /api/v1/chat/transcribe", "POST /api/v1/chat/speak", "GET /api/v1/chat/speech/capabilities"]
+code = [
+  "backend/nodejs/apps/src/modules/enterprise_search/controller/speech.controller.ts",
+  "backend/python/app/api/routes/speech.py",
+]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "chat.speech.unconfigured"
+  says = "Transcribe and speak answer 409 when no provider is configured, and capabilities reports none."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_speech.py"]
+
+  [[feature.behavior]]
+  id = "chat.speech.limits"
+  says = "An empty audio file is 400, audio over 25 MB is 413, missing text is 400 and text over 4096 characters is 413."
+  priority = "P1"
+  tests = ["py:tests/unit/api/routes/test_speech.py"]
+
+  [[feature.behavior]]
+  id = "chat.speech.no-leak"
+  says = "An upstream provider error is not echoed to the caller, and capabilities never include a secret."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/api/routes/test_speech.py", "node:tests/modules/enterprise_search/controller/speech.controller.test.ts"]
+
+  [[feature.behavior]]
+  id = "chat.speech.scope"
+  says = "An OAuth token needs conversation:chat on all three speech routes."
+  priority = "P0"
+  kind = "security"
+  tests = []
+
+  [[feature.behavior]]
+  id = "chat.speech.relay"
+  says = "The Node API forwards upstream JSON and status, keeps a 4xx message, hides a 5xx message behind plain advice, and answers unavailable when the service is down."
+  priority = "P1"
+  tests = ["node:tests/modules/enterprise_search/controller/speech.controller.test.ts"]

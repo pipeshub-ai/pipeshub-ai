@@ -1,0 +1,1317 @@
+# Toolset actions: what the tools of each agent toolset do (flow agents-toolsets-mcp). The platform (APIs, credentials, OAuth) is in toolsets.toml.
+
+[[feature]]
+id = "toolset-actions.airtable"
+title = "Airtable tools"
+flow = "agents-toolsets-mcp"
+what = "An agent creates, reads, lists, updates, deletes and searches records in an Airtable base. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["airtable"]
+code = ["backend/python/app/agents/actions/airtable/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.airtable.tools"
+  says = "The module defines 6 tools (create_records, get_record, list_records, update_records, delete_records, search_records), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.azure"
+title = "Azure Blob Storage tools"
+flow = "agents-toolsets-mcp"
+what = "An agent creates, reads and deletes containers and blobs, and searches blobs by tag. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["azure"]
+code = ["backend/python/app/agents/actions/azure/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.azure.tools"
+  says = "The module defines 7 tools (create_container, get_container, delete_container, upload_blob, get_blob, delete_blob, search_blobs_by_tags), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.bookstack"
+title = "BookStack tools"
+flow = "agents-toolsets-mcp"
+what = "An agent creates, reads, updates and deletes pages and searches all content in a BookStack wiki. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["bookstack"]
+code = ["backend/python/app/agents/actions/bookstack/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.bookstack.tools"
+  says = "The module defines 5 tools (create_page, get_page, update_page, delete_page, search_all), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.box"
+title = "Box tools"
+flow = "agents-toolsets-mcp"
+what = "An agent reads, uploads, updates and deletes files and searches content in Box. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["box"]
+code = ["backend/python/app/agents/actions/box/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.box.tools"
+  says = "The module defines 5 tools (get_file, update_file, delete_file, upload_file, search_content), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.discord"
+title = "Discord tools"
+flow = "agents-toolsets-mcp"
+what = "An agent sends messages and direct messages, reads messages, and manages channels, guild members and roles in Discord. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["discord"]
+code = ["backend/python/app/agents/actions/discord/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.discord.tools"
+  says = "The module defines 10 tools (send_message, get_channel, create_channel, delete_channel, get_messages, and more), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.freshdesk"
+title = "Freshdesk tools"
+flow = "agents-toolsets-mcp"
+what = "An agent creates, reads, updates, deletes and searches tickets, adds notes and replies, and creates agents in Freshdesk. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["freshdesk"]
+code = ["backend/python/app/agents/actions/freshdesk/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.freshdesk.tools"
+  says = "The module defines tools for Freshdesk tickets, but the module fails to import (ParameterType has no NUMBER) and it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.gitlab"
+title = "GitLab tools"
+flow = "agents-toolsets-mcp"
+what = "An agent manages projects, issues and merge requests in GitLab, including merging. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["gitlab"]
+code = ["backend/python/app/agents/actions/gitlab/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.gitlab.tools"
+  says = "The module defines tools for GitLab projects, but the module fails to import (a tool that is not async) and it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.linkedin"
+title = "LinkedIn tools"
+flow = "agents-toolsets-mcp"
+what = "An agent reads the signed-in profile, creates, reads, updates and deletes posts, and searches people on LinkedIn. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["linkedin"]
+code = ["backend/python/app/agents/actions/linkedin/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.linkedin.tools"
+  says = "The module defines tools for LinkedIn posts, but the module fails to import (a tool that is not async) and it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.posthog"
+title = "PostHog tools"
+flow = "agents-toolsets-mcp"
+what = "An agent captures events, reads and searches events, and reads, updates and deletes persons in PostHog. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["posthog"]
+code = ["backend/python/app/agents/actions/posthog/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.posthog.tools"
+  says = "The module defines tools for PostHog events, but the module fails to import (a tool that is not async) and it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.s3"
+title = "AWS S3 tools"
+flow = "agents-toolsets-mcp"
+what = "An agent creates and deletes buckets and lists, reads, writes, copies and deletes objects in S3. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["s3"]
+code = ["backend/python/app/agents/actions/s3/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.s3.tools"
+  says = "The module defines 8 tools (list_buckets, create_bucket, delete_bucket, list_objects, get_object, put_object, delete_object, copy_object), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.zendesk"
+title = "Zendesk tools"
+flow = "agents-toolsets-mcp"
+what = "An agent lists, reads, creates, updates, deletes and searches tickets and reads users in Zendesk. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["zendesk"]
+code = ["backend/python/app/agents/actions/zendesk/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.zendesk.tools"
+  says = "The module defines tools for Zendesk tickets, but the module fails to import (a tool that is not async) and it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+[[feature]]
+id = "toolset-actions.clickup"
+title = "ClickUp tools"
+flow = "agents-toolsets-mcp"
+what = "An agent reads workspaces, spaces, folders, lists, tasks, comments, checklists and docs in ClickUp, and creates and updates most of them."
+toolsets = ["clickup"]
+code = ["backend/python/app/agents/actions/clickup/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.clickup.tools"
+  says = "The ClickUp toolset registers its tools (get_spaces, get_tasks, create_task, update_task, create_task_comment, create_checklist, create_doc_page, and more (26 tools)) so an agent can call them, and every tool carries a type tag that sets its approval rule."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.clickup.auth"
+  says = "ClickUp uses OAuth; every call carries the connecting user's bearer token, and the token never appears in a failure message."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_clickup_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.clickup.call"
+  says = "A tool call reaches the ClickUp API with the user's credential and returns the result as JSON text."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_clickup_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.clickup.failure"
+  says = "When the ClickUp call fails or the credential is missing, the tool returns a failed result carrying the error message, not an exception."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_clickup_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.github"
+title = "GitHub tools"
+flow = "agents-toolsets-mcp"
+what = "An agent works with repositories, issues, pull requests, reviews and comments on GitHub, including merging a pull request."
+toolsets = ["github"]
+code = ["backend/python/app/agents/actions/github/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.github.tools"
+  says = "The GitHub toolset registers its tools (create_repository, list_issues, create_issue, close_issue, create_pull_request, merge_pull_request, create_pull_request_review, search_repositories, and more (23 tools)) so an agent can call them, and every tool carries a type tag that sets its approval rule."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.github.auth"
+  says = "GitHub uses OAuth; calls run with the connecting user's token, and the token never appears in a failure message."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_github_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.github.call"
+  says = "A tool call reaches the GitHub API with the user's credential and returns the result as JSON text."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_github_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.github.failure"
+  says = "When the GitHub call fails or the credential is missing, the tool returns a failed result carrying the error message, not an exception."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_github_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.github.input-checks"
+  says = "An update with nothing to change is refused, a page size is clamped and a missing repository is reported with GitHub's message."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_github_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.linear"
+title = "Linear tools"
+flow = "agents-toolsets-mcp"
+what = "An agent reads the viewer, users, teams and issues in Linear, and creates, updates and deletes issues. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["linear"]
+code = ["backend/python/app/agents/actions/linear/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.linear.tools"
+  says = "The module defines 9 tools (get_viewer, get_user, get_teams, get_team, get_issues, get_issue, create_issue, update_issue, delete_issue), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolset-actions.linear.call"
+  says = "A tool call reaches the Linear API with the user's credential and returns the result as JSON text."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_linear_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.linear.failure"
+  says = "When the Linear call fails or the credential is missing, the tool returns a failed result carrying the error message, not an exception."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_linear_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.linear.filter-input"
+  says = "An unparsable issue filter is refused, and a team list that cannot be read in full fails instead of returning part of it."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_linear_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.notion"
+title = "Notion tools"
+flow = "agents-toolsets-mcp"
+what = "An agent searches, reads, creates, updates and deletes pages, and creates and queries databases, in Notion. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["notion"]
+code = ["backend/python/app/agents/actions/notion/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.notion.tools"
+  says = "The module defines 11 tools (search, get_page, get_page_content, create_page, update_page, delete_page, create_database, query_database, get_database, list_users, retrieve_user), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolset-actions.notion.call"
+  says = "A tool call reaches the Notion API with the user's credential and returns the result as JSON text."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_notion_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.notion.failure"
+  says = "When the Notion call fails or the credential is missing, the tool returns a failed result carrying the error message, not an exception."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_notion_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.notion.pagination"
+  says = "Reading page content follows the cursor to the end, and a database row is written with the data source and its title property."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_notion_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.dropbox"
+title = "Dropbox tools"
+flow = "agents-toolsets-mcp"
+what = "An agent lists folders, reads metadata, downloads, uploads, deletes, searches and shares files in Dropbox. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["dropbox"]
+code = ["backend/python/app/agents/actions/dropbox/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.dropbox.tools"
+  says = "The module defines 9 tools (get_account_info, list_folder, get_metadata, download_file, upload_file, delete_file, create_folder, search, get_shared_link), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolset-actions.dropbox.call"
+  says = "A tool call reaches the Dropbox API with the user's credential and returns the result as JSON text."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_dropbox_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.dropbox.failure"
+  says = "When the Dropbox call fails or the credential is missing, the tool returns a failed result carrying the error message, not an exception."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_dropbox_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.evernote"
+title = "Evernote tools"
+flow = "agents-toolsets-mcp"
+what = "An agent creates, reads, updates, deletes and searches notes and manages notebooks in Evernote. It is not offered to agents today: the module is not listed in STANDARD_TOOLSET_MODULES."
+toolsets = ["evernote"]
+code = ["backend/python/app/agents/actions/evernote/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.evernote.tools"
+  says = "The module defines 10 tools (create_note, get_note, update_note, delete_note, search_notes, create_notebook, get_notebook, update_notebook, get_default_notebook, get_user_info), but it is commented out of STANDARD_TOOLSET_MODULES, so agents are not offered the toolset."
+  priority = "P2"
+  tests = []
+
+  [[feature.behavior]]
+  id = "toolset-actions.evernote.call"
+  says = "A tool call reaches the Evernote API with the user's credential and returns the result as JSON text."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_evernote_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.evernote.failure"
+  says = "When the Evernote call fails or the credential is missing, the tool returns a failed result carrying the error message, not an exception."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_evernote_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.evernote.enml"
+  says = "Plain text for a note is wrapped as ENML with line breaks kept and tag text escaped, ENML given by the caller is kept, and an update without a title keeps the existing title."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_evernote_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.lumos"
+title = "Lumos tools"
+flow = "agents-toolsets-mcp"
+what = "An agent reads apps, users, groups, permissions and access requests in Lumos, and creates, updates, cancels and deletes access requests, policies and requestable permissions."
+toolsets = ["lumos"]
+code = ["backend/python/app/agents/actions/lumos/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.lumos.tools"
+  says = "The Lumos toolset registers its tools (list_platforms, list_users, list_groups, create_access_request, cancel_access_request, create_access_policy, add_user_role, and more (26 tools)) so an agent can call them, and every tool carries a type tag that sets its approval rule."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.lumos.auth"
+  says = "Lumos uses an API token sent as a bearer header, and the token never appears in a failure message."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_lumos_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.lumos.call"
+  says = "A tool call reaches the Lumos API with the user's credential and returns the result as JSON text."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_lumos_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.lumos.failure"
+  says = "When the Lumos call fails or the credential is missing, the tool returns a failed result carrying the error message, not an exception."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_lumos_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.lumos.policy-condition"
+  says = "A policy condition that is not valid JSON is refused before Lumos is called, and several status filters are sent as repeated parameters."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_lumos_tools_behaviour.py"]
+
+
+[[feature]]
+id = "toolset-actions.zoom"
+title = "Zoom tools"
+flow = "agents-toolsets-mcp"
+what = "An agent reads the profile and meetings, creates, updates and deletes meetings, and reads invitations, transcripts and contacts in Zoom."
+toolsets = ["zoom"]
+code = ["backend/python/app/agents/actions/zoom/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.zoom.tools"
+  says = "The Zoom toolset registers its tools (get_my_profile, list_meetings, create_meeting, update_meeting, delete_meeting, get_meeting_transcript, list_contacts, and more (13 tools)) so an agent can call them, and every tool carries a type tag that sets its approval rule."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.zoom.auth"
+  says = "Zoom offers OAuth; the credential fields are secrets and the toolset runs only with the connecting user's own credential."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "needs a real Zoom account and the repo has no Zoom simulator"
+
+  [[feature.behavior]]
+  id = "toolset-actions.zoom.call"
+  says = "A tool call reaches the Zoom API with the user's credential and returns the result as JSON text."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_zoom_actions.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.zoom.failure"
+  says = "When the Zoom call fails or the credential is missing, the tool returns a failed result carrying the error message, not an exception."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_zoom_actions.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.zoom.input-coercion"
+  says = "A numeric meeting id is accepted as text, and an empty recurrence is dropped from a create or update."
+  priority = "P2"
+  tests = ["py:tests/unit/agents/actions/test_zoom_actions.py"]
+
+
+[[feature]]
+id = "toolset-actions.slack"
+title = "Slack tools"
+flow = "agents-toolsets-mcp"
+what = "An agent reads channels, history, users and reactions, sends, schedules, updates and deletes messages, pins, and sets status in Slack with the user's own sign-in."
+toolsets = ["slack"]
+code = ["backend/python/app/agents/actions/slack/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.slack.tools"
+  says = "The Slack toolset registers about 37 tools (send_message, get_channel_history, search_messages, schedule_message, add_reaction, pin_message and more) and each carries a type tag that sets its approval rule."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.slack.auth"
+  says = "Slack offers OAuth and posts as the connecting user with that user's token, not as a bot."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_slack_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.slack.send"
+  says = "A message is posted as mrkdwn by channel id or name, a name is resolved across conversation pages, and an unknown channel points the agent to fetch_channels."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_slack_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.slack.direct-message"
+  says = "A direct message goes to an email or an exact name, an ambiguous or partial name sends nothing, and a directory lookup failure is not reported as an unknown user."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_slack_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.slack.multi-channel"
+  says = "Sending to several channels reports each channel's result, and an empty channel list is refused instead of reported as sent."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_slack_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.slack.schedule"
+  says = "A scheduled message converts the time to epoch seconds and refuses an unreadable time or one in the past before calling Slack."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_slack_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.slack.errors"
+  says = "A rejected sign-in, a missing scope, a rate limit (with the wait), not being in the channel and an outage each return an explained message without the SDK dump."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_slack_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.slack.attachments"
+  says = "Files named by record id are resolved and uploaded after the message is posted, and nothing is uploaded when the message itself fails."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_attachment_toolsets.py"]
+
+
+[[feature]]
+id = "toolset-actions.jira"
+title = "Jira Cloud tools"
+flow = "agents-toolsets-mcp"
+what = "An agent searches, reads, creates and updates issues, comments, attachments, users and project metadata in Jira Cloud."
+toolsets = ["jira"]
+code = ["backend/python/app/agents/actions/jira/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira.tools"
+  says = "The Jira toolset registers validate_connection, get_current_user, get_projects, get_issue, search_issues, create_issue, update_issue, add_comment, add_attachments, search_users, get_project_metadata and more, each with a type tag that sets its approval rule."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira.auth"
+  says = "Jira offers OAuth and an API token, and the site URL is resolved from the connection."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_atlassian_get_site_url.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira.input-forms"
+  says = "Tool inputs accept the aliases a model sends (project key and issue key variants, wrapped fields, nested issue type) and normalise them."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_jira_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira.assignee"
+  says = "An assignee given by name is matched exactly, several matches are refused and listed, and an unreachable lookup creates or changes nothing."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_jira_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira.status"
+  says = "A status change goes through the matching transition, and unreadable transitions are reported."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_jira_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira.attachments"
+  says = "Attachments are added only for records the user may read, and a denied file is reported in the result."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_jira_attachments.py"]
+
+
+[[feature]]
+id = "toolset-actions.jira-data-center"
+title = "Jira Data Center tools"
+flow = "agents-toolsets-mcp"
+what = "An agent searches, reads, creates and updates issues, comments, attachments and users on a self-hosted Jira Data Center."
+toolsets = ["jira_data_center"]
+code = ["backend/python/app/agents/actions/jira_data_center/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira-data-center.tools"
+  says = "The toolset registers validate_connection, get_current_user, get_projects, get_issue, search_issues, create_issue, update_issue, add_comment, add_attachments, search_users and more, each with a type tag."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira-data-center.auth"
+  says = "It offers a personal API token or basic auth against the configured base URL."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "needs a real Jira Data Center account and the repo has no Jira Data Center simulator"
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira-data-center.input-forms"
+  says = "Tool inputs accept issue key and project aliases and nested issue types and normalise them."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_jira_data_center_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.jira-data-center.failure"
+  says = "A failed Jira response is returned as a failed result with the message."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_jira_data_center_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.confluence"
+title = "Confluence Cloud tools"
+flow = "agents-toolsets-mcp"
+what = "An agent searches, reads, creates and updates pages, comments, versions, attachments and spaces in Confluence Cloud."
+toolsets = ["confluence"]
+code = ["backend/python/app/agents/actions/confluence/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.confluence.tools"
+  says = "The toolset registers create_page, update_page, get_page_content, search_pages, search_content, get_child_pages, get_page_versions, comment_on_page, attachment tools and more (17 tools), each with a type tag."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.confluence.auth"
+  says = "Confluence offers OAuth and an API token, and the site URL is resolved from the connection."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_atlassian_get_site_url.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.confluence.pages"
+  says = "Page tools take typed inputs with defaults (limit, order, labels) and reject missing required fields such as the query for user search."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_confluence_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.confluence.attachments"
+  says = "Files are added to a page or a comment only when they resolve, a name already used is never overwritten, a blank comment is refused before anything is uploaded and nothing is created when no file resolves."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_confluence_attachments.py"]
+
+
+[[feature]]
+id = "toolset-actions.confluence-data-center"
+title = "Confluence Data Center tools"
+flow = "agents-toolsets-mcp"
+what = "An agent searches, reads, creates and updates pages, comments and versions on a self-hosted Confluence Data Center."
+toolsets = ["confluence_data_center"]
+code = ["backend/python/app/agents/actions/confluence_data_center/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.confluence-data-center.tools"
+  says = "The toolset registers validate_connection, get_spaces, get_page_content, create_page, update_page, add_attachments, add_comment, search_pages and more (16 tools), each with a type tag."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.confluence-data-center.auth"
+  says = "It offers an API token or basic auth against the configured base URL."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "needs a real Confluence Data Center account and the repo has no Confluence Data Center simulator"
+
+  [[feature.behavior]]
+  id = "toolset-actions.confluence-data-center.response"
+  says = "A vendor response that is not JSON, or an error body that is not an object, still becomes a readable result."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_confluence_data_center_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.confluence-data-center.urls"
+  says = "Page links combine the base URL with the web UI path."
+  priority = "P2"
+  tests = ["py:tests/unit/agents/actions/test_confluence_data_center_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.google"
+title = "Google Workspace tools (Gmail, Calendar, Drive, Docs, Sheets)"
+flow = "agents-toolsets-mcp"
+what = "An agent reads and sends Gmail, manages Calendar events and Meet links, works with Drive files, and creates and edits Docs and Sheets as the signed-in user. Admin tools list users, groups and domains."
+toolsets = ["google"]
+code = ["backend/python/app/agents/actions/google/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.google.tools"
+  says = "Five Google toolsets (Gmail 7 tools, Calendar 7, Drive 8, Docs 5, Sheets 7) register 34 tools, each with a type tag; sending mail, replying, clearing sheet values and calendar changes that email attendees are tagged as irreversible so they ask first."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.google.auth"
+  says = "Google tools use OAuth and call Google as the connecting user; a token still rejected after refresh asks the user to reconnect without leaking credentials."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_google_calendar_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.google.gmail-send"
+  says = "An email goes out from the signed-in mailbox with every recipient, a reply threads with the original, and a reply to an unreadable message is not sent."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_gmail_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.google.gmail-attachments"
+  says = "A server file path is never attached; only records the user may read are attached, a denied one returns an error and not a 500, and a size cap raises an error."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_gmail_tools_behaviour.py", "py:tests/unit/agents/actions/google/test_gmail_path_attachments.py", "py:tests/unit/agents/actions/test_attachment_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.google.calendar"
+  says = "Calendar filters reach Google as query parameters on the primary calendar, page tokens round-trip, an unreadable time or unknown time zone is refused before the call, and an offset keeps its instant."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_google_calendar_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.google.drive"
+  says = "Drive queries wrap plain text as a name search, accept full-text and operator queries, normalise the root drive id and include shared drives."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/google/test_google_drive.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.google.docs-sheets"
+  says = "Docs and Sheets tools create, read and write documents and cell ranges, and report API errors as a message."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_google_docs_sheets_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.google.outage"
+  says = "A Google outage is reported as temporary."
+  priority = "P2"
+  tests = ["py:tests/unit/agents/actions/behaviour/test_google_calendar_tools_behaviour.py"]
+
+
+[[feature]]
+id = "toolset-actions.microsoft"
+title = "Microsoft 365 tools (Outlook, OneDrive, SharePoint, Teams, OneNote)"
+flow = "agents-toolsets-mcp"
+what = "An agent reads, sends, replies to and forwards Outlook mail, manages calendar events and recurrences, works with OneDrive and SharePoint files and pages, reads OneNote, and works in Teams chats and channels as the signed-in user."
+toolsets = ["microsoft"]
+code = ["backend/python/app/agents/actions/microsoft/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.microsoft.tools"
+  says = "Four Microsoft toolsets (Outlook 19 tools, OneDrive 21, SharePoint 19, Teams 34) register 93 tools, each with a type tag; send, reply, reply all, forward and calendar changes that notify others are tagged as irreversible."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.microsoft.auth"
+  says = "Microsoft tools use OAuth through Microsoft Graph; a tool called without a signed-in client tells the agent to authenticate instead of failing."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_teams_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.microsoft.outlook-attachments"
+  says = "If sending with attachments fails, the draft is deleted, and nothing is uploaded when every file is denied."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_attachment_toolsets.py", "py:tests/unit/agents/actions/test_outlook_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.microsoft.outlook-input"
+  says = "Calendar and search tools check required fields and bounds (range, top)."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_outlook_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.microsoft.onedrive"
+  says = "OneDrive tools serialise Graph responses to JSON, including Kiota objects, and fall back to text for odd results."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_one_drive.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.microsoft.sharepoint"
+  says = "SharePoint tools list sites, pages and drives, search files (query required), create pages and Word documents, and read notebooks."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_sharepoint_toolset.py", "py:tests/unit/agents/actions/behaviour/test_sharepoint_tools_behaviour.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.microsoft.teams"
+  says = "Teams tools cap list sizes, report unknown teams and channels with the Graph error, and add members to a private channel directly and to a standard channel through the team."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_teams_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.artifacts"
+title = "Artifact tools"
+flow = "agents-toolsets-mcp"
+what = "An agent saves, updates, lists, promotes and reads generated files (artifacts) in a conversation and gets download URLs for them."
+toolsets = ["artifacts"]
+code = ["backend/python/app/agents/actions/artifacts/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.artifacts.save"
+  says = "Saving an artifact creates it and returns its id, decodes base64 content, reports when the content is unchanged and surfaces a size cap violation as an error."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/artifacts/test_artifacts.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.artifacts.validation"
+  says = "Invalid base64, a missing registry or a missing conversation id returns an error without storing anything."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/artifacts/test_artifacts.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.artifacts.real-documents"
+  says = "A file named or typed as docx or pdf must be a real document; plain text under such a name is refused."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/artifacts/test_artifacts.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.artifacts.staging"
+  says = "A staging artifact carries a visibility, is not announced to the user over SSE and is queued as visible only when promoted."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/artifacts/test_staging_artifacts.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.artifacts.owner"
+  says = "An artifact created by a service account is owned by the right user."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/artifacts/test_service_account_artifact_owner.py"]
+
+
+[[feature]]
+id = "toolset-actions.calculator"
+title = "Calculator and date tools"
+flow = "agents-toolsets-mcp"
+what = "An agent evaluates arithmetic exactly and works out day differences, excluded dates, weekends and holidays, and text counts."
+toolsets = ["calculator"]
+code = ["backend/python/app/agents/actions/calculator/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.calculator.exact"
+  says = "Whole expressions evaluate exactly with fractions and decimals, inexact results (logs, trigonometry, inexact roots) are marked approximate, and rounding halves away from zero."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_calculator_exact.py", "py:tests/unit/agents/actions/test_calculator_exact_wiring.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.calculator.operands"
+  says = "The single-operand and two-operand tools do sqrt, cbrt, add, subtract, multiply, divide and power, and refuse an unknown operation."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_calculator_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.calculator.dates"
+  says = "Date tools return the dates excluded between two dates (weekends and weekday holidays, no double count), honour include-Saturday and include-Sunday flags and refuse a start after the end."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_date_calculator_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.calculator.bad-input"
+  says = "A malformed expression returns an error object with the expression, not an exception."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_calculator_exact.py", "py:tests/unit/agents/actions/test_calculator_exact_wiring.py"]
+
+
+[[feature]]
+id = "toolset-actions.code-graph"
+title = "Code graph tools"
+flow = "agents-toolsets-mcp"
+what = "An agent explores indexed code repositories: query the graph, search code and symbols, read code, follow callers and callees, find symbol paths, outline files, run impact analysis for a symbol or a diff, read history and find entry points."
+toolsets = ["code_graph"]
+code = ["backend/python/app/agents/actions/code_graph/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.code-graph.tools"
+  says = "The toolset registers query_code_graph, get_neighbour, read_code, find_symbol_path, search_code, search_semantic, outline, impact, impact_of_diff, history and entry_points with usable descriptions."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/code_graph/test_tool_descriptions.py", "py:tests/unit/agents/actions/code_graph/test_new_tools.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.code-graph.access"
+  says = "Every hop of a walk checks the user's access to the record, and a record the user cannot read is not returned."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/code_graph/test_acl_per_hop.py", "py:tests/unit/agents/actions/code_graph/test_external_access.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.code-graph.read"
+  says = "read_code returns file spans and pages large files, and marks what was fetched."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/code_graph/test_read_code.py", "py:tests/unit/agents/actions/code_graph/test_read_code_file_spans.py", "py:tests/unit/agents/actions/code_graph/test_read_code_marks_fetched.py", "py:tests/unit/agents/actions/code_graph/test_readable_paging.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.code-graph.impact"
+  says = "impact finds importers, overrides and implementations of a symbol, and impact_of_diff maps a parsed diff to affected symbols."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/code_graph/test_impact_importers.py", "py:tests/unit/agents/actions/code_graph/test_impact_of_diff.py", "py:tests/unit/agents/actions/code_graph/test_impact_overrides.py", "py:tests/unit/agents/actions/code_graph/test_diff_parse.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.code-graph.search"
+  says = "Search works with and without a path and semantically, and can include external code."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/code_graph/test_search_without_path.py", "py:tests/unit/agents/actions/code_graph/test_semantic_search.py", "py:tests/unit/agents/actions/code_graph/test_search_external.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.code-graph.limits"
+  says = "The number of graph connections per call is limited, and results follow one contract."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/code_graph/test_connection_limit.py", "py:tests/unit/agents/actions/code_graph/test_result_contract.py"]
+
+
+[[feature]]
+id = "toolset-actions.coding-sandbox"
+title = "Coding sandbox"
+flow = "agents-toolsets-mcp"
+what = "An agent runs Python or TypeScript in a sandbox and receives stdout, stderr and files it wrote as artifacts."
+toolsets = ["coding_sandbox"]
+code = ["backend/python/app/agents/actions/coding_sandbox/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.coding-sandbox.run"
+  says = "execute_python and execute_typescript return stdout and stderr, and a failure carries the error."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_coding_sandbox.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.coding-sandbox.redaction"
+  says = "Sandbox paths and secrets are redacted from output before it reaches the model."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_coding_sandbox.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.coding-sandbox.artifacts"
+  says = "Files the code writes come back as artifacts."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_coding_sandbox.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.coding-sandbox.exceptions"
+  says = "An executor exception is returned as a failed result."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_coding_sandbox.py"]
+
+
+[[feature]]
+id = "toolset-actions.database-sandbox"
+title = "Database sandbox"
+flow = "agents-toolsets-mcp"
+what = "An agent runs SQL in a throwaway SQLite database (with setup SQL) or against a configured PostgreSQL and gets rows back."
+toolsets = ["database_sandbox"]
+code = ["backend/python/app/agents/actions/database_sandbox/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.database-sandbox.sqlite"
+  says = "execute_sqlite runs optional setup SQL, returns rows (or an empty result) and reports a failing statement."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_database_sandbox.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.database-sandbox.postgres"
+  says = "execute_postgresql returns rows, and answers with an error when no PostgreSQL URL is configured."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_database_sandbox.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.database-sandbox.failure"
+  says = "An executor failure or exception is returned as a failed result."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_database_sandbox.py"]
+
+
+[[feature]]
+id = "toolset-actions.image-generator"
+title = "Image generator"
+flow = "agents-toolsets-mcp"
+what = "An agent generates an image from a prompt, or edits an existing record's image, and the result is saved as an artifact."
+toolsets = ["image_generator"]
+code = ["backend/python/app/agents/actions/image_generator/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.image-generator.generate"
+  says = "A prompt generates an image, falls back to a supported size, and is uploaded as an artifact owned by the artifact owner."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_image_generator.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.image-generator.config"
+  says = "With no prompt or no configured image model the tool returns an error."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_image_generator.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.image-generator.edit"
+  says = "Given a record id the tool edits that image; an unknown record, a denied record or missing storage context returns an error."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_image_generator.py"]
+
+
+[[feature]]
+id = "toolset-actions.internal-tools"
+title = "Ask the user a question"
+flow = "agents-toolsets-mcp"
+what = "An agent pauses to ask the user one or more questions with options, and the UI shows them as a structured prompt."
+toolsets = ["internal_tools"]
+code = ["backend/python/app/agents/actions/internal_tools/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.internal-tools.structured"
+  says = "ask_user_question returns structured JSON for the UI, and accepts pipe shorthand, JSON strings and plain items."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_intrim_tools_ask_user_question.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.internal-tools.validation"
+  says = "Asking nothing, or giving fewer than two options, is refused; blank questions beside a real one are dropped."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_intrim_tools_ask_user_question.py"]
+
+
+[[feature]]
+id = "toolset-actions.knowledge-graph"
+title = "Knowledge graph tools"
+flow = "agents-toolsets-mcp"
+what = "An agent searches the user's indexed knowledge: navigate, look up a record, search records and entities, find records by entity, value or person, list files and search a timeline."
+toolsets = ["knowledge_graph"]
+code = ["backend/python/app/agents/actions/knowledge_graph/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-graph.tools"
+  says = "The toolset registers navigate, lookup_record, search, search_entities, find_records_by_entity, find_records_by_value, find_co_mentioned_entities, find_records_by_person, search_by_entities, list_files and search_timeline, with schemas that match their contracts."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/knowledge_graph/test_contract_schemas.py", "py:tests/unit/agents/actions/knowledge_graph/test_wiring.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-graph.visibility"
+  says = "Search, listing and entity tools return only records the user may see, and a person's or value's visibility follows the record's."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/knowledge_graph/test_entity_search_visibility.py", "py:tests/unit/agents/actions/knowledge_graph/test_people_visibility.py", "py:tests/unit/agents/actions/knowledge_graph/test_value_visibility.py", "py:tests/unit/agents/actions/knowledge_graph/test_listing_scope.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-graph.lookup"
+  says = "lookup_record finds a record by id, exact issue key or shared web URL and respects a knowledge-base-only agent."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/knowledge_graph/test_knowledge_graph_lookup.py", "py:tests/unit/agents/actions/knowledge_graph/test_lookup_exact_issue_key.py", "py:tests/unit/agents/actions/knowledge_graph/test_lookup_kb_only.py", "py:tests/unit/agents/actions/knowledge_graph/test_lookup_shared_weburl.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-graph.search"
+  says = "Search honours time ranges and ranks title hits; the result lists citations and says what is outside the dates."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/knowledge_graph/test_search.py", "py:tests/unit/agents/actions/knowledge_graph/test_search_time_range.py", "py:tests/unit/agents/actions/knowledge_graph/test_search_title_hits.py", "py:tests/unit/agents/actions/knowledge_graph/test_outside_dates.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-graph.fetch"
+  says = "Fetching records sizes the output by characters, recovers wrong ids and reports records that are not indexed."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/knowledge_graph/test_fetch.py", "py:tests/unit/agents/actions/knowledge_graph/test_fetch_id_recovery.py", "py:tests/unit/agents/actions/knowledge_graph/test_fetch_size_by_chars.py", "py:tests/unit/agents/actions/knowledge_graph/test_not_indexed_records.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-graph.entities"
+  says = "Entity tools find entities and the records that mention them, capped in output, and find co-mentions."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/knowledge_graph/test_entity_search.py", "py:tests/unit/agents/actions/knowledge_graph/test_entity_records.py", "py:tests/unit/agents/actions/knowledge_graph/test_co_mentions.py", "py:tests/unit/agents/actions/knowledge_graph/test_entity_capped_output.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-graph.connections"
+  says = "The number of graph connections an agent opens is limited."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/knowledge_graph/test_connection_limit_agent.py"]
+
+
+[[feature]]
+id = "toolset-actions.knowledge-hub"
+title = "Knowledge hub file listing"
+flow = "agents-toolsets-mcp"
+what = "An agent lists or searches files by name inside the sources its agent is allowed to use."
+toolsets = ["knowledge_hub"]
+code = ["backend/python/app/agents/actions/knowledge_hub/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-hub.scope"
+  says = "The search is scoped to the user and the agent's sources; the caller cannot choose the user or organization."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_knowledge_hub_list_files.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-hub.narrow"
+  says = "Requested connectors and knowledge bases can only narrow the agent's sources, never widen them."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_knowledge_hub_list_files.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-hub.filters"
+  says = "Unknown node types and sort values are dropped, single strings are accepted for lists and long queries are cut."
+  priority = "P2"
+  tests = ["py:tests/unit/agents/actions/test_knowledge_hub_list_files.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.knowledge-hub.kb-only"
+  says = "An agent limited to knowledge bases gets nothing from other sources."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_knowledge_hub_list_files.py"]
+
+
+[[feature]]
+id = "toolset-actions.retrieval"
+title = "Internal knowledge retrieval"
+flow = "agents-toolsets-mcp"
+what = "An agent searches the user's internal knowledge with a query and gets ranked chunks."
+toolsets = ["retrieval"]
+code = ["backend/python/app/agents/actions/retrieval/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.retrieval.search"
+  says = "search_internal_knowledge delegates the query to retrieval with the agent's connector ids as source ids."
+  priority = "P0"
+  tests = ["py:tests/unit/agents/actions/test_retrieval.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.retrieval.errors"
+  says = "No query, no state or a retrieval error returns one clear error."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_retrieval.py"]
+
+
+[[feature]]
+id = "toolset-actions.storage-search"
+title = "Storage pattern match"
+flow = "agents-toolsets-mcp"
+what = "The query service runs a restricted set of read-only shell commands over stored files to find records by pattern. It is internal: the module is not in STANDARD_TOOLSET_MODULES, so agents cannot pick it as a toolset."
+toolsets = ["storage_search"]
+code = ["backend/python/app/agents/actions/storage_search/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.storage-search.allowlist"
+  says = "Only allowlisted binaries run; rm, awk, find -exec, rg --pre and xargs-wrapped forms of these are rejected."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_storage_search.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.storage-search.smuggle"
+  says = "Value flags that smuggle a command through xargs or a deprecated alias are rejected."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_storage_search.py"]
+
+
+[[feature]]
+id = "toolset-actions.mariadb"
+title = "MariaDB tools"
+flow = "agents-toolsets-mcp"
+what = "An agent lists tables, reads DDL and schemas, and runs queries on a MariaDB or MySQL database with basic auth."
+toolsets = ["mariadb"]
+code = ["backend/python/app/agents/actions/mariadb/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.mariadb.tools"
+  says = "The toolset registers list_tables, get_table_ddl, get_tables_schema, fetch_db_schema and execute_query."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.mariadb.read-only"
+  says = "A plain SELECT runs in a read-only transaction, and a statement the gate cannot prove to be a read is not run read-only."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_mariadb_gate_and_tool.py", "py:tests/unit/agents/actions/test_read_only_sql.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.mariadb.quoting"
+  says = "Database and table names are quoted, and no default database means nothing is touched."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_mariadb_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.mariadb.output"
+  says = "The model sees at most 100 rows with long text clipped, while a CSV export holds the full result and belongs to the artifact owner."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_mariadb_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.redshift"
+title = "Redshift tools"
+flow = "agents-toolsets-mcp"
+what = "An agent lists schemas and tables, reads DDL and schemas, and runs queries on Amazon Redshift with basic auth."
+toolsets = ["redshift"]
+code = ["backend/python/app/agents/actions/redshift/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.redshift.schema"
+  says = "list_schemas, list_tables and get_table_ddl read the catalog, and a missing table is reported."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_redshift_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.redshift.binding"
+  says = "Schema and table names are bound as parameters, never spliced into SQL."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_redshift_toolset.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.redshift.read-only"
+  says = "The read tools only read."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_redshift_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.salesforce"
+title = "Salesforce tools"
+flow = "agents-toolsets-mcp"
+what = "An agent runs SOQL and SOSL, reads and writes records, accounts, contacts, leads, opportunities, cases, products and tasks, attaches files and posts to Chatter in Salesforce."
+toolsets = ["salesforce"]
+code = ["backend/python/app/agents/actions/salesforce/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.salesforce.tools"
+  says = "The toolset registers about 30 tools (soql_query, sosl_search, get_record, create_record, update_record, attach_file_to_record, post_chatter_comment and more), each with a type tag."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/test_standard_toolset_modules.py", "py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.salesforce.auth"
+  says = "Salesforce uses OAuth."
+  priority = "P0"
+  kind = "security"
+  tests = []
+  manual = "needs a real Salesforce account and the repo has no Salesforce simulator"
+
+  [[feature.behavior]]
+  id = "toolset-actions.salesforce.path-safety"
+  says = "An object name or record id that is a path is rejected before any request, and search limits are clamped."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_salesforce_toolset_path_safety.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.salesforce.search-escaping"
+  says = "LIKE wildcards in a search term match literally."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_salesforce_toolset_path_safety.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.salesforce.attachments"
+  says = "A file that could not be attached is reported and a denied record appears in the result; a record is not reported as attached when its document id cannot be read."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_salesforce_toolset_path_safety.py", "py:tests/unit/agents/actions/test_attachment_toolsets.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.salesforce.results"
+  says = "Tools return JSON and links to the record."
+  priority = "P2"
+  tests = ["py:tests/unit/agents/actions/test_salesforce_toolset.py"]
+
+
+[[feature]]
+id = "toolset-actions.util"
+title = "Toolset helpers"
+flow = "agents-toolsets-mcp"
+what = "Shared helpers the toolsets use: attachment delivery, blob staging, file parsing, read-only SQL checks, result views and tool summaries."
+toolsets = ["util"]
+code = ["backend/python/app/agents/actions/util/**"]
+status = "draft"
+
+  [[feature.behavior]]
+  id = "toolset-actions.util.tool-kinds"
+  says = "Every external tool says what it does to data in its type tag, deleting tools are tagged as deleting, and the approval rule starts from that tag."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/test_toolset_tool_kinds.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.util.attachment-delivery"
+  says = "Attachments are fetched only for records the user may read, with a size cap, and a denied one is reported."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/util/test_attachment_delivery.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.util.parse-file"
+  says = "Files are parsed by extension (pdf, docx, pptx and more), an invalid binary is refused and an unsupported extension is reported."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/test_parse_file.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.util.read-only-sql"
+  says = "A statement is a read only if the checker can prove it; anything unsure is not a read, and hostile text is decided quickly."
+  priority = "P0"
+  kind = "security"
+  tests = ["py:tests/unit/agents/actions/test_read_only_sql.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.util.result-view"
+  says = "A tool result becomes a small view for the UI (a table of issues, a link list, an acknowledgement) and odd content never raises; tool calls and results also get one-line summaries."
+  priority = "P1"
+  tests = ["py:tests/unit/agents/actions/util/test_result_view.py", "py:tests/unit/agents/actions/test_tool_summaries_factories.py", "py:tests/unit/agents/actions/test_connector_summaries.py"]
+
+  [[feature.behavior]]
+  id = "toolset-actions.util.context"
+  says = "The caller's log fields reach the coroutine a tool runs."
+  priority = "P2"
+  tests = ["py:tests/unit/agents/actions/test_run_async_context.py"]
+
+
