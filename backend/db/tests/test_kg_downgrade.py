@@ -439,3 +439,113 @@ def test_a_copy_labelled_epoch_8_when_the_trash_columns_are_added_is_relabelled_
         assert c.execute("SELECT mode, backfill_cursor, verified_at IS NOT NULL FROM kg.projection_state WHERE org_id = %s AND app_sk = 1", (org,)).fetchone() == ("enforce", "done", True)
         assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.projection_state'::regclass").fetchone()[0] is True
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+
+
+def test_the_counters_revision_keeps_no_facet_2_and_its_downgrade_keeps_it_again(db):
+    """kg_0023: a live, decided record adds a facet 1 delta and no facet 2 delta, and the facet 2 rows kept before the upgrade are gone; down to kg_0022 a write adds facet 2
+    deltas again (kg_0015's body) and the catalog is clean."""
+    from .rls_fixture import ORG_A as org
+    from .test_kg_writers import call, rec_args, rec_values
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def write(c, sk: int) -> None:
+        rid = f"rec-{sk}"
+        call(c, "kg.w_records_upsert", org, rec_args((sk, rec_values(id=rid, deleted=False))))
+        call(c, "kg.w_stamps_set", org, ([sk], [3], [rid], [3], [b"\x00\x01"], [9], [True], [True], [False], [True], [4], [False]))
+        call(c, "kg.w_r13_set", org, ([sk], [3], [rid], [3], [False]))
+
+    def facets(c) -> list[tuple]:
+        return [tuple(r) for r in c.execute("SELECT facet, sum(n)::int FROM kg.counts WHERE org_id = %s GROUP BY facet ORDER BY facet", (org,))]
+
+    assert run_migrate(url).returncode == 0
+    r = run_migrate(url, "downgrade", "kg_0022", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        write(c, 11)
+        assert facets(c) == [(1, 1), (2, 1)]
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert facets(c) == [(1, 1)]                                         # the facet 2 rows of every org are gone
+        write(c, 12)
+        assert facets(c) == [(1, 2)]
+        assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.counts'::regclass").fetchone()[0] is True
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+
+
+def test_the_capture_only_revision_refuses_a_services_own_row_and_its_downgrade_takes_the_refusal_back(db):
+    """kg_0022: a change-log row a service inserts itself is refused; down to kg_0021 it is taken again (kg_0004's body) and the catalog is clean; an upgrade refuses it again."""
+    import psycopg
+
+    from .rls_fixture import ORG_A as org
+    from .test_vetted_pins import unit
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def takes(c) -> bool:
+        try:
+            with unit(c, "pipeshub_query", org):
+                c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:forged'])", (org,))
+        except psycopg.errors.InsufficientPrivilege:
+            return False
+        c.execute("DELETE FROM kg.graph_changes")
+        return True
+
+    assert run_migrate(url).returncode == 0
+    with connect(cluster, name) as c:
+        assert not takes(c)
+    r = run_migrate(url, "downgrade", "kg_0021", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert takes(c)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert not takes(c)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+
+
+def test_the_grant_only_revision_moves_the_floor_and_its_downgrade_takes_back_the_mark_and_the_relabel(db):
+    """kg_0021: the change log's rows carry grant_only (the capture sets it), the projection writers refuse epoch 8 (code that compiled stamps from the graph's grants) and copies
+    labelled 8 are relabelled 9; down to kg_0020, the column and the capture's mark are gone, epoch 8 is taken again, copies labelled 9 are 8 again and the catalog is clean; an
+    upgrade brings them back."""
+    import psycopg
+
+    from .rls_fixture import ORG_A as org
+    from .test_kg_writers import EPOCH, call
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def state(c) -> tuple:
+        took = []
+        for epoch in (8, EPOCH):
+            try:
+                call(c, "kg.w_changes_ack", org, (), epoch=epoch)
+                took.append(True)
+            except psycopg.errors.InvalidParameterValue:
+                took.append(False)
+        return (*took,
+                c.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'kg' AND table_name = 'graph_changes' AND column_name = 'grant_only'").fetchone()[0],
+                "grant_only" in c.execute("SELECT prosrc FROM pg_proc WHERE oid = 'kg.log_graph_change()'::regprocedure").fetchone()[0],
+                [r[0] for r in c.execute("SELECT code_epoch FROM kg.projection_state WHERE org_id = %s ORDER BY app_sk", (org,))])
+
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (False, True, 1, True, [])
+        c.execute("INSERT INTO kg.projection_state (org_id, app_sk, code_epoch, mode, backfill_cursor, verified_at) VALUES (%s, 1, 9, 'enforce', 'done', now()), (%s, 2, 0, 'legacy', NULL, NULL)",
+                  (org, org))
+    r = run_migrate(url, "downgrade", "kg_0020", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (True, True, 0, False, [8, 0])
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+        assert c.execute("SELECT count(*) FROM kernel.pin_violations").fetchone()[0] == 0
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert state(c) == (False, True, 1, True, [9, 0])
+        assert c.execute("SELECT count(DISTINCT proc) FROM kernel.vetted_write_pins WHERE rel::text LIKE 'kg.%'").fetchone()[0] == 30

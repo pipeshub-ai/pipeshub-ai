@@ -8,6 +8,12 @@ only ever says "cut off" for a provider's documented stop reason.
 from collections.abc import Mapping
 from typing import Any
 
+from langchain_core.exceptions import OutputParserException
+
+
+class TruncatedReplyError(OutputParserException):
+    """A structured reply stopped at its output-token limit: what parsed of it is incomplete."""
+
 #: (metadata field, stop reasons meaning "hit the output limit"), lowercased and stripped of an enum prefix.
 #:  * OpenAI, Azure OpenAI, Groq, Mistral and OpenAI-compatible servers: ``finish_reason == "length"``
 #:  * Anthropic: ``stop_reason == "max_tokens"``

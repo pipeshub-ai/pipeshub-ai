@@ -97,10 +97,28 @@ def _mask(fields: Optional[str], container: str) -> Optional[list[str]]:
     """Field names requested inside ``container(...)`` of a Drive ``fields`` mask."""
     if not fields:
         return None
-    match = re.search(rf"\b{container}\(([^()]*)\)", fields)
+    # Drive nests masks (``files(id, permissions(id, role))``), so the container's
+    # parentheses are matched by depth and a nested one is kept by its head name.
+    match = re.search(rf"\b{container}\(", fields)
     if match is None:
         return None
-    return [f.strip() for f in match.group(1).split(",") if f.strip()]
+    depth, start = 1, match.end()
+    for end in range(start, len(fields)):
+        depth += {"(": 1, ")": -1}.get(fields[end], 0)
+        if depth == 0:
+            break
+    else:
+        return None
+    names, depth, current = [], 0, ""
+    for ch in fields[start:end]:
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if ch == "," and depth == 0:
+            names.append(current)
+            current = ""
+        else:
+            current += ch
+    names.append(current)
+    return [n.strip().split("(", 1)[0].strip() for n in names if n.strip()]
 
 
 # Top-level properties of each Drive v3 list response. Drive rejects a ``fields``

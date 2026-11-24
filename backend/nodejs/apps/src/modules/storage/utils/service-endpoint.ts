@@ -1,4 +1,5 @@
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { endpoint } from '../constants/constants';
 
 /**
@@ -13,7 +14,7 @@ export const storedServiceEndpoint = async (
 ): Promise<string> => {
   const stored = await keyValueStoreService.get<string>(endpoint);
   const parsed: unknown =
-    typeof stored === 'string' && stored !== '' ? JSON.parse(stored) : null;
+    typeof stored === 'string' && stored !== '' ? parseKvObject(stored) : null;
   const entry: unknown =
     parsed !== null && typeof parsed === 'object'
       ? (parsed as Record<string, unknown>)[service]

@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tuple, cast
 
@@ -71,6 +72,7 @@ from app.modules.parsers.markdown.image_references import extract_and_replace_im
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
+from app.modules.parsers.pdf.page_ocr import ocr_textless_pages
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
     PDFPlumberOpenCVProcessor,
 )
@@ -91,6 +93,7 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -393,6 +396,8 @@ class Processor:
 
             # Phase 1: Parse PDF layout (no LLM calls)
             parsed_data = await processor.parse_document(record_name, pdf_binary)
+            # Pages drawn as outlines have no text layer; read them with OCR, replacing their regions.
+            await ocr_textless_pages(pdf_binary, parsed_data, self.config_service, self.logger)
             pdf_binary = None
 
             # Signal parsing complete
@@ -422,7 +427,8 @@ class Processor:
 
             self.logger.debug(f"PDF processing completed for record: {recordId}, using PdfPlumber+OpenCV processor")
             return
-        except IndexingError:
+        # A parse that waited out its slot is queue time, handed back by the consumer only as itself.
+        except (IndexingError, RequeueWithoutAttempt):
             raise
         except Exception as e:
             raise DocumentProcessingError(
@@ -1604,9 +1610,11 @@ class Processor:
 
     async def _mark_record(
         self, record_id, indexing_status: ProgressStatus, reason: str | None = None,
+        extra_fields: Mapping[str, Any] | None = None,
         *, event_type: str | None = None, prev_virtual_record_id: str | None = None,
     ) -> None:
-        """Write the record's final status.
+        """Write the record's final status. ``extra_fields`` are merged into the same single write (and win over the
+        derived fields), so a caller can land further fields together with the status.
 
         For EMPTY, pass the event's type and the VRID it kept for a diff: an update that empties
         a record reconciled in place still has its old vectors under that VRID, and they go first.
@@ -1641,6 +1649,8 @@ class Processor:
         # reads as a crashed parse and stale recovery republishes it for ever.
         if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
             status_update["parsingStatus"] = indexing_status.value
+        if extra_fields:
+            status_update.update(extra_fields)
 
         swap = keep_old_copy.current_swap(record_id) if indexing_status == ProgressStatus.EMPTY else None
         if swap is not None and getattr(self.sink_orchestrator, "swap", None) is not None:

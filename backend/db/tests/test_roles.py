@@ -3,6 +3,7 @@ import hashlib
 import os
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from db import bootstrap_roles, surface
@@ -23,6 +24,47 @@ def test_bootstrap_is_idempotent_and_creates_no_privileged_role(bare_db):
         assert c.execute("SELECT rolcanlogin FROM pg_roles WHERE rolname = 'pipeshub_restore'").fetchone()[0] is False
         assert c.execute("SELECT rolpassword IS NOT NULL FROM pg_authid WHERE rolname = 'pipeshub_jobs'").fetchone()[0] is True
         assert c.execute("SELECT NOT has_database_privilege('pipeshub_query', current_database(), 'TEMP')").fetchone()[0]
+
+
+def _scram_matches(verifier: str, password: str) -> bool:
+    """RFC 5802 / 7677 as PostgreSQL stores it: SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>."""
+    import base64
+    import hmac
+
+    head, keys = verifier.removeprefix("SCRAM-SHA-256$").split("$")
+    iterations, salt = head.split(":")
+    stored, server = (base64.b64decode(k) for k in keys.split(":"))
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode(), base64.b64decode(salt), int(iterations))
+    client_key = hmac.new(salted, b"Client Key", "sha256").digest()
+    return hashlib.sha256(client_key).digest() == stored and hmac.new(salted, b"Server Key", "sha256").digest() == server
+
+
+class _Recording:
+    """The bootstrap's connection, keeping the text of every statement it sends: what pg_stat_activity, statement statistics and the
+    statement log could show."""
+
+    def __init__(self, conn) -> None:
+        self._conn, self.sent = conn, []
+
+    def execute(self, query, *args, **kwargs):
+        self.sent.append(query if isinstance(query, str) else query.as_string(self._conn))
+        return self._conn.execute(query, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
+def test_bootstrap_sends_a_scram_verifier_never_a_password(bare_db):
+    cluster, name = bare_db
+    passwords = {"pipeshub_node_login": "node-Secret.1", "pipeshub_jobs": "jobs-Secret.2", "pipeshub_monitor": "mon-Secret.3"}
+    with cluster.admin(name) as c:
+        rec = _Recording(c)
+        bootstrap_roles.bootstrap(rec, [], passwords)
+        assert not [s for s in rec.sent for pw in passwords.values() if pw in s]
+        for role, pw in passwords.items():
+            stored = c.execute("SELECT rolpassword FROM pg_authid WHERE rolname = %s", (role,)).fetchone()[0]
+            assert stored.startswith("SCRAM-SHA-256$") and _scram_matches(stored, pw), role
+            assert stored in "\n".join(rec.sent)            # what was sent is the verifier itself, not something the server derived
 
 
 def test_bootstrap_refuses_a_login_without_password_unless_waived(bare_db):
@@ -131,7 +173,7 @@ def test_surface_matches_the_committed_text(db):
         live = surface.live_lines(c)
         version = surface.major(c)
     if update:        # lines of the other PostgreSQL majors are kept, and the reviewed sysfuncs lines of other minor releases
-        keep = [x for x in BASE.read_text(encoding="utf-8").splitlines() if x not in surface.for_major([x], version) or x.startswith("sysfuncs@")]
+        keep = [x for x in BASE.read_text(encoding="utf-8").splitlines() if x not in surface.for_major([x], version) or x.startswith(("sysfuncs@", "? "))]
         BASE.write_text("\n".join(sorted({*keep, *live})) + "\n", encoding="utf-8")
     assert surface.diff(live, surface.for_major(surface.expected_lines([BASE]), version)) == [], "the security surface changed: review the diff, then rerun with UPDATE_SURFACE=1"
 
@@ -170,3 +212,36 @@ def test_sysfuncs_rows_are_what_the_hash_is_taken_over(db):
         line = c.execute(next(t for k, t in surface.QUERIES if k == "sysfuncs")).fetchone()[0]
     digest = hashlib.md5("\n".join(rows).encode()).hexdigest()
     assert line == f"count={len(rows)} md5={digest}", line
+
+
+def test_the_monitoring_role_reads_the_statistics_and_nothing_of_ours(db):
+    cluster, name = db
+    with cluster.admin(name) as c:
+        assert c.execute("SELECT to_regrole('pipeshub_monitor') IS NULL").fetchone()[0]           # opt-in: the default bootstrap makes none
+        assert bootstrap_roles.bootstrap(c, [], {"pipeshub_monitor": "pw"}) == ["pipeshub_monitor"]
+        assert bootstrap_roles.bootstrap(c, [], {"pipeshub_monitor": "pw"}) == []                  # and a second run changes nothing
+    r = run_migrate(cluster.url(name, "pipeshub_migrate"))                                       # catalog and surface checks accept it
+    assert r.returncode == 0, r.stdout
+    with cluster.admin(name) as admin, psycopg.connect(host="127.0.0.1", port=cluster.port, user="pipeshub_monitor", dbname=name,
+                                                       autocommit=True) as mon:
+        admin.execute("SELECT 'busy'")
+        pid = admin.info.backend_pid
+        # pg_read_all_stats: another session's statement; pg_read_all_settings: a superuser-only setting; pg_monitor: the WAL directory
+        assert mon.execute("SELECT query FROM pg_stat_activity WHERE pid = %s", (pid,)).fetchone()[0] == "SELECT 'busy'"
+        assert mon.execute("SELECT current_setting('data_directory') <> '', count(*) >= 0 FROM pg_ls_waldir()").fetchone() == (True, True)
+        assert mon.execute("SELECT count(*) FROM pg_stat_user_tables WHERE schemaname = 'platform'").fetchone()[0] > 0
+        ours = [n for (n,) in admin.execute("SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' AND nspname NOT IN "
+                                            "('information_schema', 'public')")]
+        assert ours and [n for n in ours if mon.execute("SELECT has_schema_privilege(%s, 'USAGE')", (n,)).fetchone()[0]] == []
+        assert admin.execute("SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ANY(%s) "
+                             "AND has_table_privilege('pipeshub_monitor', c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')",
+                             (ours,)).fetchone()[0] == 0
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            mon.execute("SELECT * FROM platform.kv_entries LIMIT 1")
+        assert mon.execute("SELECT pg_has_role('pg_read_all_data', 'USAGE') OR pg_has_role('pg_write_all_data', 'USAGE')").fetchone()[0] is False
+    with cluster.admin(name) as c:                                     # any other membership, or that one with SET, is still a violation
+        c.execute("GRANT pg_read_all_data TO pipeshub_monitor")
+        c.execute("GRANT pg_monitor TO pipeshub_monitor WITH SET TRUE")
+        found = {rule for rule, _ in c.execute("SELECT rule, object FROM kernel.rls_violations")}
+        assert {"37 unexpected membership pipeshub_monitor -> pg_read_all_data", "37 unexpected membership pipeshub_monitor -> pg_monitor"} <= found
+        assert "member pipeshub_monitor -> pg_read_all_data inherit=true set=true admin=false" in {line for _, line in surface.violations(c)}

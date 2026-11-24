@@ -33,6 +33,7 @@ import {
   MultipartUploadError,
   PresignedUrlError,
 } from '../../../libs/errors/storage.errors';
+import { vendorFailure } from './vendor-failure';
 import { AzureBlobStorageConfig } from '../config/storage.config';
 import { encodeRFC5987 } from '../utils/utils';
 import {
@@ -142,8 +143,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageConfigurationError(
         'Failed to initialize Azure Blob Storage adapter',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -201,7 +201,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
     } catch (error) {
       throw new StorageConfigurationError('Failed to create/check container', {
         containerName: this.containerName,
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }
@@ -231,9 +231,8 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
 
       await blobClient.uploadData(documentInPayload.buffer, uploadOptions);
       if (process.env.NODE_ENV == 'development') {
-        this.logger.info('Azure Blob Storage upload successful', {
+        this.logger.debug('Azure Blob Storage upload successful', {
           path: documentInPayload.documentPath,
-          url: blobClient.url,
         });
       }
 
@@ -248,8 +247,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to upload document to Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -283,9 +281,8 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
 
       await blobClient.uploadData(bufferDataInPayLoad, uploadOptions);
       if (process.env.NODE_ENV == 'development') {
-        this.logger.info('Azure Blob Storage update successful', {
+        this.logger.debug('Azure Blob Storage update successful', {
           path: blobPath,
-          url: blobClient.url,
         });
       }
 
@@ -300,8 +297,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to update document in Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -401,7 +397,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
         downloadResponse.readableStreamBody,
       );
       if (process.env.NODE_ENV == 'development') {
-        this.logger.info('Azure Blob Storage fetch successful', {
+        this.logger.debug('Azure Blob Storage fetch successful', {
           path: blobPath,
         });
       }
@@ -416,8 +412,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageDownloadError(
         'Failed to get document from Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -473,8 +468,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new PresignedUrlError(
         'Failed to generate signed URL for Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -568,8 +562,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new PresignedUrlError(
         'Failed to generate direct upload URL for Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -616,8 +609,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new PresignedUrlError(
         'Failed to generate signed URL for Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -664,8 +656,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageDownloadError(
         'Failed to list blobs in Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -687,8 +678,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to delete blobs in Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -790,8 +780,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to delete blobs in Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -811,15 +800,14 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       // Also try to delete the exact path as a blob
       const exactClient = this.containerClient.getBlockBlobClient(storagePath);
       await exactClient.deleteIfExists();
-      this.logger.info('Azure delete successful', { path: storagePath });
+      this.logger.debug('Azure delete successful', { path: storagePath });
       return { statusCode: 200, data: undefined };
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageUploadError(
         'Failed to delete object from Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -836,7 +824,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
         this.containerClient.getBlockBlobClient(destinationPath);
       const copyPoller = await dstClient.beginCopyFromURL(srcClient.url);
       await copyPoller.pollUntilDone();
-      this.logger.info('Azure copy successful', {
+      this.logger.debug('Azure copy successful', {
         src: sourcePath,
         dst: destinationPath,
       });
@@ -846,8 +834,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to copy object in Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -883,7 +870,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
         await copyPoller.pollUntilDone();
       }
 
-      this.logger.info('Azure tree copy successful', {
+      this.logger.debug('Azure tree copy successful', {
         src: sourcePrefix,
         dst: destinationPrefix,
       });
@@ -893,8 +880,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to copy tree in Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -912,7 +898,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       const copyPoller = await dstClient.beginCopyFromURL(srcClient.url);
       await copyPoller.pollUntilDone();
       await srcClient.deleteIfExists();
-      this.logger.info('Azure rename successful', {
+      this.logger.debug('Azure rename successful', {
         src: sourcePath,
         dst: destinationPath,
       });
@@ -922,8 +908,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to rename object in Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -937,7 +922,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       await this.waitForContainer();
       await this.copyTree(sourcePrefix, destinationPrefix);
       await this.deleteTree(sourcePrefix);
-      this.logger.info('Azure tree rename successful', {
+      this.logger.debug('Azure tree rename successful', {
         src: sourcePrefix,
         dst: destinationPrefix,
       });
@@ -947,8 +932,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageUploadError(
         'Failed to rename tree in Azure Blob Storage',
         {
-          originalError:
-            error instanceof Error ? error.message : 'Unknown error',
+          ...vendorFailure(error),
         },
       );
     }
@@ -1013,7 +997,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
       throw new StorageUrlParseError('Invalid Azure Blob Storage URL format', {
         url,
         container: this.containerName,
-        originalError: error instanceof Error ? error.message : 'Unknown error',
+        ...vendorFailure(error),
       });
     }
   }

@@ -55,6 +55,9 @@ RECORD_PROPERTIES = frozenset({
     # only accepts them and writes none; the schema carries them first so a process on the older schema never
     # meets a key it rejects once a later release writes them.
     "failedAt", "firstQueuedAt", "indexingAttempts", "pageCount",
+    # Internal, optional and nullable. This release only accepts them and writes neither; a later release writes them
+    # (test_page_limit_review_round.py pins that nothing writes them yet).
+    "indexedMd5", "pendingTaxonomyRefs",
     # A record handed back to the broker for a model provider's rate-limit wait: when its delayed message fires, so the
     # recovery scans do not republish it first. Optional, internal, and written only on that hand-back.
     "deferredUntilMs", "rateLimitedSinceMs",

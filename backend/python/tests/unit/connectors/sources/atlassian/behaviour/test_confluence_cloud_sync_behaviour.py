@@ -39,13 +39,16 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
     AccessRule,
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
+    V1_EXPANSION_DEFAULT_LIMIT,
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
@@ -62,7 +65,7 @@ from app.models.entities import (
     RecordType,
     WebpageRecord,
 )
-from app.models.permission import EntityType, PermissionType
+from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 
@@ -2875,3 +2878,550 @@ class TestFoldersAboveInScopePages:
         await connector._remove_folders_gone(ENG)
 
         assert db.records["500"].id in db.kept_records
+
+
+class FullSyncUnlink:
+    """Stands in for the unlink after a full sync (#4119).
+
+    A record or user group stored before the run that the run neither wrote nor noted kept
+    loses every edge, unless the connector reports the run incomplete. Groups are keyed by
+    their Confluence id, records by their external id.
+    """
+
+    def __init__(self, db: CloudRecordsDb) -> None:
+        self.db = db
+        self.stored_records = {r.id: ext for ext, r in db.records.items()}
+        self.stored_groups = self._groups()
+        self.written: set[str] = set()
+        self.seen = FullSyncSeen()
+        db.full_sync_seen = self.seen
+        for name in ("on_new_records", "on_record_content_update", "on_record_metadata_update", "on_new_user_groups"):
+            setattr(db, name, self._noting(name, getattr(db, name)))
+
+    def _groups(self) -> set[str]:
+        return {g.source_user_group_id for g, _ in self.db.user_groups} | set(self.db.groups_by_external_id)
+
+    def _noting(self, name: str, write: Callable) -> Callable:
+        async def noted(first: Any, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+            if name == "on_new_user_groups":
+                self.seen.by_collection[CollectionNames.GROUPS.value].update(g.source_user_group_id for g, _ in first)
+            elif name == "on_new_records":
+                self.written.update(r.id for r, *_ in first)
+            else:
+                self.written.add(first.id)
+            await write(first, *args, **kwargs)
+
+        return noted
+
+    def unlinked(self, connector: ConfluenceConnector) -> set[str]:
+        if not connector.full_sync_coverage().complete:
+            return set()
+        kept = self.written | set(self.db.kept_records)
+        records = {
+            ext for ext, r in self.db.records.items() if r.id in self.stored_records and r.id not in kept
+        }
+        groups = (self.stored_groups & self._groups()) - self.seen.by_collection[CollectionNames.GROUPS.value]
+        return records | groups
+
+    def removed(self, connector: ConfluenceConnector) -> set[str]:
+        """Deleted by the run, or unlinked after it."""
+        deleted = {ext for rid, ext in self.stored_records.items() if ext not in self.db.records}
+        return deleted | set(self.db.deleted_groups) | self.unlinked(connector)
+
+
+ATT_A = {"id": "att1", "title": "a.pdf", "mediaType": "application/pdf", "fileSize": 10, "version": {"number": 1}}
+
+
+class TestFullSyncUnlinksOnlyWhatIsGone:
+    """A full sync leaves unlinked only what is gone at the source, never what it skipped writing."""
+
+    async def _space_synced(self, api, db, checkpoints, search, pages: list[dict[str, Any]]) -> None:
+        search.folders = []
+        search.blogposts = []
+        search.by_cursor = {None: search_page(pages)}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space(*(p["id"] for p in pages)))
+        api.on("GET", f"{V2}/spaces/77/blogposts", in_space())
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+    @staticmethod
+    def _comment(cid: str, parent: str, *, reply: bool = False) -> CommentRecord:
+        return CommentRecord(
+            org_id="org-1", record_name="c", record_type=RecordType.COMMENT, external_record_id=cid, id=f"{cid}-id",
+            external_record_group_id="77", parent_external_record_id=parent,
+            parent_record_type=RecordType.COMMENT if reply else RecordType.WEBPAGE,
+            connector_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+            version=0, author_source_id="acc-ana",
+        )
+
+    async def _full_sync(self, db, checkpoints) -> tuple[ConfluenceConnector, FullSyncUnlink]:
+        checkpoints.sync_points.clear()  # a full sync reads everything again
+        connector, _ = await ready_connector(db, checkpoints)
+        return connector, FullSyncUnlink(db)
+
+    async def test_a_pseudo_group_reused_from_an_earlier_sync_keeps_its_grants(self, api, db, checkpoints) -> None:
+        grant = {"principal": {"type": "user", "id": "acc-hidden"}, "operation": {"key": "read", "targetType": "space"}}
+        api.on("GET", f"{V2}/spaces", {"results": [{"id": "1", "key": "ENG", "name": "Engineering"}], "_links": {"base": WIKI}})
+        api.on("GET", f"{V2}/spaces/1/permissions", {"results": [grant]})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces()
+        await connector._create_pseudo_group("acc-left")  # its user has no grant any more
+        for account_id in ("acc-hidden", "acc-left"):
+            db.add_group(account_id)
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces()
+
+        assert unlink.unlinked(connector) & {"acc-hidden"} == set(), "the space grant it carries is still there"
+        assert unlink.removed(connector) & {"acc-left"} == {"acc-left"}
+
+    async def test_a_pseudo_group_reused_by_a_page_restriction_keeps_its_grant(
+        self, api, db, checkpoints, search
+    ) -> None:
+        db.add_group("acc-hidden")
+        api.on("GET", f"{V1}/content/10/restriction", {"results": [
+            {"operation": "read", "restrictions": {"user": {"results": [{"accountId": "acc-hidden"}]}, "group": {"results": []}}},
+        ]})
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10")])
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert unlink.unlinked(connector) & {"acc-hidden"} == set()
+        grants = {(p.entity_type, p.external_id) for p in db.record_permissions["10"]}
+        assert (EntityType.GROUP, "acc-hidden") in grants
+        assert [g.source_user_group_id for g, _ in db.user_groups] == [], "the stored group is reused, not written again"
+
+    async def test_an_incremental_sync_still_grants_to_a_reused_pseudo_group(self, api, db, checkpoints) -> None:
+        db.add_group("acc-hidden")
+        connector, _ = await ready_connector(db, checkpoints)
+
+        permission = await connector._create_permission_from_principal(
+            "user", "acc-hidden", PermissionType.READ, create_pseudo_group_if_missing=True
+        )
+
+        assert (permission.entity_type, permission.external_id) == (EntityType.GROUP, "acc-hidden")
+
+    async def test_an_archived_page_keeps_its_attachments_and_comments(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10"), v1_page("11", attachments=[SPEC]), v1_page("12")])
+        db.records["c1"] = self._comment("c1", "11")
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10", "11", archived=("11",)))  # 12 is trashed
+        search.by_cursor = {None: search_page([v1_page("10")])}  # search never returns archived content
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert unlink.unlinked(connector) & {"10", "11", "att2", "c1"} == set()
+        assert unlink.removed(connector) & {"12"} == {"12"}
+
+    async def test_comment_records_of_an_unchanged_html_page_stay_readable(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10"), v1_page("11")])
+        db.records["10"] = db.records["10"].model_copy(update={"mime_type": MimeTypes.HTML.value})
+        for comment in (self._comment("c1", "10"), self._comment("c2", "c1", reply=True), self._comment("c3", "11")):
+            db.records[comment.external_record_id] = comment
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))  # 11 is trashed
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert db.records["10"].mime_type == MimeTypes.HTML.value
+        assert unlink.unlinked(connector) & {"10", "c1", "c2"} == set(), "an HTML page has no comments of its own"
+        assert unlink.removed(connector) & {"11", "c3"} == {"11", "c3"}
+
+    async def test_comment_records_stay_readable_when_comment_indexing_is_off(
+        self, api, db, checkpoints, search, monkeypatch
+    ) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10")])
+        assert db.records["10"].mime_type == MimeTypes.BLOCKS.value
+        db.records["c1"] = self._comment("c1", "10")
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+
+        async def off(_: object) -> bool:
+            return False
+
+        monkeypatch.setattr(connector, "_comments_indexed", off)
+        await connector._sync_spaces_content([ENG])
+
+        assert "c1" in db.records
+        assert unlink.unlinked(connector) & {"10", "c1"} == set(), "the blocks carry no comments"
+
+    async def test_comment_records_of_a_blog_post_stay_readable(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10")])
+        search.blogposts = [{**v1_page("20"), "type": "blogpost"}]
+        api.on("GET", f"{V2}/spaces/77/blogposts", in_space("20"))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+        db.records["20"] = db.records["20"].model_copy(update={"mime_type": MimeTypes.HTML.value})
+        db.records["c9"] = self._comment("c9", "20")
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert unlink.unlinked(connector) & {"20", "c9"} == set()
+
+    async def test_comment_records_of_a_page_converted_to_blocks_are_removed(
+        self, api, db, checkpoints, search
+    ) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10")])
+        db.records["10"] = db.records["10"].model_copy(update={"mime_type": MimeTypes.HTML.value})
+        db.records["c1"] = self._comment("c1", "10")
+        search.by_cursor = {None: search_page([v1_page("10", version=2)])}
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert db.records["10"].mime_type == MimeTypes.BLOCKS.value
+        assert "c1" not in db.records
+        assert unlink.removed(connector) & {"c1"} == {"c1"}
+
+    async def test_an_orphan_comment_record_is_still_unlinked(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10")])
+        db.records["c5"] = self._comment("c5", "99")  # page 99 is neither stored nor listed
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert unlink.unlinked(connector) & {"c5"} == {"c5"}
+
+    async def test_attachments_of_a_current_page_are_not_kept_just_for_being_stored(
+        self, api, db, checkpoints, search
+    ) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A])])
+        db.records["att3"] = db.records["att1"].model_copy(update={"id": "att3-id", "external_record_id": "att3"})
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert "att3-id" not in db.kept_records
+        assert unlink.removed(connector) & {"att1", "att3"} == {"att3"}
+
+    async def test_a_failed_read_of_comment_records_unlinks_nothing(
+        self, api, db, checkpoints, search, monkeypatch
+    ) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10")])
+        db.records["c1"] = self._comment("c1", "10")
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        stored_content = connector._stored_content
+
+        async def failing_dependents(space_id: str, record_type: Any, **kwargs: Any) -> list:  # noqa: ANN401
+            if isinstance(record_type, tuple):
+                raise RuntimeError("graph unavailable")
+            return await stored_content(space_id, record_type, **kwargs)
+
+        monkeypatch.setattr(connector, "_stored_content", failing_dependents)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is False
+        assert any("couldn't check or remove" in p for p in connector._sync_problems)
+        assert unlink.unlinked(connector) == set()
+
+    async def test_no_dependent_scan_outside_a_full_sync(self, api, db, checkpoints, search, monkeypatch) -> None:
+        search.folders, search.blogposts = [], []
+        search.by_cursor = {None: search_page([v1_page("10")])}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))
+        api.on("GET", f"{V2}/spaces/77/blogposts", in_space())
+        connector, _ = await ready_connector(db, checkpoints)
+        db.records["c1"] = self._comment("c1", "10")
+        scanned: list[Any] = []
+        stored_content = connector._stored_content
+
+        async def counted(space_id: str, record_type: Any, **kwargs: Any) -> list:  # noqa: ANN401
+            scanned.append(record_type)
+            return await stored_content(space_id, record_type, **kwargs)
+
+        monkeypatch.setattr(connector, "_stored_content", counted)
+        await connector._sync_spaces_content([ENG])  # the first sync of the space lists it in full
+
+        assert not any(isinstance(t, tuple) for t in scanned)
+        assert db.kept_records == []
+
+    async def test_a_failed_folder_check_keeps_every_stored_folder(self, api, db, checkpoints, search) -> None:
+        search.folders = [{**v1_page("500"), "type": "folder", "title": "Specs"},
+                          {**v1_page("503"), "type": "folder", "title": "Old"}]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        db.records["10"] = db.records["500"].model_copy(update={
+            "id": "page-10", "external_record_id": "10", "parent_external_record_id": "500",
+            "record_type": RecordType.CONFLUENCE_PAGE,
+        })
+        listed = search.__call__
+
+        def folders(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q.get("cql", "").startswith("type=folder"):
+                # The filters leave both out; the check for deleted folders fails. 503 is empty.
+                return json_response({"message": "busy"}, status=503) if q.get("limit") == "250" else json_response(search_page([]))
+            return listed(request)
+
+        api.on("GET", f"{V1}/content/search", folders)
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_folders("ENG")
+        await connector._remove_folders_gone(ENG)
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlink.unlinked(connector) & {"500"} == set(), "page 10 still hangs under it"
+        assert unlink.removed(connector) & {"503"} == set(), "a failed read keeps what is stored, empty or not"
+
+    async def test_a_folder_gone_is_removed_when_the_folder_check_succeeds(self, api, db, checkpoints, search) -> None:
+        search.folders = [{**v1_page("500"), "type": "folder", "title": "Specs"},
+                          {**v1_page("503"), "type": "folder", "title": "Old"}]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        assert {"500", "503"} <= set(db.records)
+        search.folders = [{**v1_page("500"), "type": "folder", "title": "Specs"}]
+        api.on("GET", f"{V2}/folders/503", json_response({"message": "not found"}, status=404))
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_folders("ENG")
+        await connector._remove_folders_gone(ENG)
+
+        assert connector.full_sync_coverage().complete is True
+        assert "503" not in db.records
+        assert unlink.removed(connector) & {"500", "503"} == {"503"}
+
+    async def test_a_failed_folder_check_outside_a_full_sync_keeps_nothing(self, api, db, checkpoints, search) -> None:
+        search.folders = [{**v1_page("500"), "type": "folder", "title": "Specs"}]
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_folders("ENG")
+        db.records["10"] = db.records["500"].model_copy(update={
+            "id": "page-10", "external_record_id": "10", "parent_external_record_id": "500",
+            "record_type": RecordType.CONFLUENCE_PAGE,
+        })
+        listed = search.__call__
+
+        def folders(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q.get("cql", "").startswith("type=folder") and q.get("limit") == "250":
+                return json_response({"message": "busy"}, status=503)
+            return listed(request)
+
+        api.on("GET", f"{V1}/content/search", folders)
+
+        await connector._remove_folders_gone(ENG)
+
+        assert db.kept_records == []
+        assert any("couldn't check for deleted folders" in p for p in connector._sync_problems)
+        assert "500" in db.records
+
+    async def test_attachments_past_a_cut_short_v1_list_stay_readable(self, api, db, checkpoints, search) -> None:
+        # The v2 attachment list is not routed (404), so the v1 list on the page is all there is.
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC]), v1_page("11")])
+        assert {"att1", "att2"} <= set(db.records)
+        cut_short = v1_page("10")
+        cut_short["children"]["attachment"] = {
+            "results": [ATT_A], "size": 2, "_links": {"next": "/rest/api/content/10/child/attachment?start=1"},
+        }
+        search.by_cursor = {None: search_page([cut_short])}
+        api.on("GET", f"{V2}/spaces/77/pages", in_space("10"))  # 11 is trashed
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert unlink.unlinked(connector) & {"10", "att1", "att2"} == set()
+        assert unlink.removed(connector) & {"11"} == {"11"}
+        await connector._report_sync_problems()
+        (note,) = connector._notification_service.sent
+        assert "Space ENG: skipped 1 pages whose attachment list could not be read in full" in note["message"]
+
+    @pytest.mark.parametrize("v2_status", [403, 404])
+    async def test_a_full_v1_fallback_page_counts_as_cut_short(self, api, db, checkpoints, search, v2_status) -> None:
+        # Cloud's expanded children say only size and limit; a page holding `limit` results may have more.
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        full = v1_page("10", version=2)
+        full["children"]["attachment"] = {
+            "results": [ATT_A], "size": 1, "limit": 1, "_links": {"self": f"{WIKI}/rest/api/content/10/child/attachment"},
+        }
+        search.by_cursor = {None: search_page([full])}
+        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "no"}, status=v2_status))
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is False
+        assert {"att1", "att2"} <= set(db.records)
+        await connector._report_sync_problems()
+        (note,) = connector._notification_service.sent
+        assert "Space ENG: skipped 1 pages whose attachment list could not be read in full" in note["message"]
+
+    async def test_a_full_v1_fallback_page_without_a_limit_counts_as_cut_short(self, api, db, checkpoints, search) -> None:
+        # No limit in the expanded object: the connector asks for none, so Confluence's default applies.
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        full = v1_page("10", version=2)
+        results = [dict(ATT_A, id=f"att{100 + i}", title=f"f{i}.txt") for i in range(V1_EXPANSION_DEFAULT_LIMIT)]
+        full["children"]["attachment"] = {
+            "results": results, "size": len(results), "_links": {"self": f"{WIKI}/rest/api/content/10/child/attachment"},
+        }
+        search.by_cursor = {None: search_page([full])}
+        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "no"}, status=403))
+
+        connector, _ = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is False
+        assert {"att1", "att2"} <= set(db.records)
+
+    async def test_a_v1_fallback_under_its_limit_keeps_the_run_complete(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        short = v1_page("10", version=2)
+        short["children"]["attachment"] = {
+            "results": [ATT_A], "size": 1, "limit": 25, "_links": {"self": f"{WIKI}/rest/api/content/10/child/attachment"},
+        }
+        search.by_cursor = {None: search_page([short])}
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlink.unlinked(connector) & {"att1", "att2"} == {"att2"}
+
+    async def test_a_complete_v1_fallback_keeps_the_run_complete(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        search.by_cursor = {None: search_page([v1_page("10", attachments=[ATT_A])])}
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlink.unlinked(connector) & {"att1", "att2"} == {"att2"}, "the v1 list was read in full"
+
+    async def test_a_retryable_v2_failure_still_cuts_short(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        search.by_cursor = {None: search_page([v1_page("10", attachments=[ATT_A])])}
+        api.on("GET", f"{V2}/pages/10/attachments", json_response({"message": "busy"}, status=503))
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlink.unlinked(connector) == set()
+
+    async def test_a_v2_list_that_succeeds_ignores_the_v1_truncation(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        cut_short = v1_page("10", version=2)
+        cut_short["children"]["attachment"] = {
+            "results": [ATT_A], "size": 2, "_links": {"next": "/rest/api/content/10/child/attachment?start=1"},
+        }
+        search.by_cursor = {None: search_page([cut_short])}
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": [ATT_A, SPEC], "_links": {"base": WIKI}})
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is True
+        assert {db.records["att1"].id, db.records["att2"].id} <= unlink.written
+        assert unlink.unlinked(connector) == set()
+
+    async def test_a_v2_lookup_that_raises_falls_back_to_the_v1_truncation(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        cut_short = v1_page("10", version=2)
+        cut_short["children"]["attachment"] = {
+            "results": [ATT_A], "size": 2, "_links": {"next": "/rest/api/content/10/child/attachment?start=1"},
+        }
+        search.by_cursor = {None: search_page([cut_short])}
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        connector._list_current_attachments_v2 = AsyncMock(side_effect=ValueError("not JSON"))
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlink.unlinked(connector) == set()
+
+    @pytest.mark.parametrize("more", [
+        {"size": 2},
+        {"_links": {"next": "/rest/api/content/10/child/attachment?start=0"}},
+    ], ids=["size", "next-link"])
+    async def test_an_empty_v1_list_that_says_more_exist_counts_as_cut_short(
+        self, api, db, checkpoints, search, more
+    ) -> None:
+        # The v2 attachment list is not routed (404), so the v1 list on the page is all there is.
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        empty = v1_page("10", version=2)
+        empty["children"]["attachment"] = {"results": [], **more}
+        search.by_cursor = {None: search_page([empty])}
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is False
+        assert {"att1", "att2"} <= set(db.records)
+        assert unlink.unlinked(connector) == set()
+        await connector._report_sync_problems()
+        (note,) = connector._notification_service.sent
+        assert "Space ENG: skipped 1 pages whose attachment list could not be read in full" in note["message"]
+
+    async def test_an_empty_v1_list_read_through_v2_syncs_what_v2_lists(self, api, db, checkpoints, search) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A, SPEC])])
+        empty = v1_page("10", version=2)
+        empty["children"]["attachment"] = {"results": [], "size": 2}
+        search.by_cursor = {None: search_page([empty])}
+        api.on("GET", f"{V2}/pages/10/attachments", {"results": [ATT_A, SPEC], "_links": {"base": WIKI}})
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is True
+        assert {db.records["att1"].id, db.records["att2"].id} <= unlink.written
+        assert unlink.unlinked(connector) == set()
+
+    async def test_an_empty_v1_list_that_says_nothing_more_removes_a_deleted_attachment(
+        self, api, db, checkpoints, search
+    ) -> None:
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10", attachments=[ATT_A])])
+        assert "att1" in db.records
+        search.by_cursor = {None: search_page([v1_page("10", version=2)])}  # no results, no size, no next link
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlink.removed(connector) & {"10", "att1"} == {"att1"}
+
+    async def _legacy_comment_under_restricted_page(self, api, db, checkpoints, search) -> None:
+        """Page 10 is stored as HTML with comment c1 (and reply c2) granting acc-bob directly; the page now admits only acc-ana."""
+        await self._space_synced(api, db, checkpoints, search, [v1_page("10")])
+        db.records["10"] = db.records["10"].model_copy(update={"mime_type": MimeTypes.HTML.value})
+        bob = Permission(external_id="acc-bob", type=PermissionType.READ, entity_type=EntityType.USER)
+        for comment in (self._comment("c1", "10"), self._comment("c2", "c1", reply=True)):
+            db.records[comment.external_record_id] = comment.model_copy(update={"inherit_permissions": False})
+            db.record_permissions[comment.external_record_id] = [bob]
+        api.on("GET", f"{V1}/content/10/restriction", {"results": [
+            {"operation": "read", "restrictions": {"user": {"results": [{"accountId": "acc-ana"}]}, "group": {"results": []}}},
+        ]})
+
+    async def test_a_legacy_comment_takes_its_page_access_on_a_full_sync(self, api, db, checkpoints, search) -> None:
+        await self._legacy_comment_under_restricted_page(api, db, checkpoints, search)
+
+        connector, unlink = await self._full_sync(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        for cid in ("c1", "c2"):
+            assert db.record_permissions[cid] == [], f"{cid} keeps no grant of its own"
+            assert db.records[cid].inherit_permissions is True, f"{cid} inherits from the page"
+        assert unlink.unlinked(connector) & {"10", "c1", "c2"} == set()
+
+    async def test_a_legacy_comment_whose_access_cannot_be_rewritten_is_still_kept(
+        self, api, db, checkpoints, search, monkeypatch
+    ) -> None:
+        await self._legacy_comment_under_restricted_page(api, db, checkpoints, search)
+        connector, unlink = await self._full_sync(db, checkpoints)
+
+        async def failing(record: Any, permissions: list) -> None:  # noqa: ANN401
+            raise RuntimeError("graph unavailable")
+
+        monkeypatch.setattr(db, "on_updated_record_permissions", failing)
+        await connector._sync_spaces_content([ENG])
+
+        assert connector.full_sync_coverage().complete is True, "the comments are kept as stored instead"
+        assert unlink.unlinked(connector) & {"10", "c1", "c2"} == set()
+
+    async def test_no_legacy_comment_rewrite_outside_a_full_sync(self, api, db, checkpoints, search) -> None:
+        await self._legacy_comment_under_restricted_page(api, db, checkpoints, search)
+
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_spaces_content([ENG])
+
+        assert not [r for r, _ in db.permission_updates if r.external_record_id in ("c1", "c2")]
+        assert db.records["c1"].inherit_permissions is False

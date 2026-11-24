@@ -374,12 +374,20 @@ async def test_a_read_while_a_restamp_is_under_way_never_admits_what_the_graph_d
         assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], uid
 
 
+async def grants_on(pg_db, org: str, node: str) -> list[dict]:
+    """The permission edges into the record group ``node``, as the provider deletes them."""
+    async def go(tx: object) -> list:
+        return await tx.fetch("""SELECT from_coll, from_id, doc->>'type' AS type FROM graph.edges WHERE org_id = $1 AND coll = 'permission' AND to_coll = 'recordGroups' AND to_id = $2""",
+                              org, node)
+    return [{"from_collection": r["from_coll"], "from_id": r["from_id"], "to_collection": "recordGroups", "to_id": node, "type": r["type"]} for r in await pg_db.run(go)]
+
+
 @pytest.mark.timeout(300)
-@pytest.mark.parametrize("change", ["share", "narrow"])
+@pytest.mark.parametrize("change", ["unshare_last", "narrow"])
 @pytest.mark.parametrize("seed", range(4))
 async def test_a_connector_whose_rows_a_restamp_job_hides_stays_served_and_answers_exactly_what_the_graph_answers(
         w: World, pg_db, monkeypatch: pytest.MonkeyPatch, seed: int, change: str) -> None:
-    """A grant on a record group that is already granted (a share), or the group narrowed, reaches more records than the restamp threshold of 3: a rows job. kg keeps serving
+    """Every grant on a record group taken away (it is no longer granted), or the group narrowed, reaches more records than the restamp threshold of 3: a rows job. kg keeps serving
     every connector it served while the job runs one small batch at a time; the rows it has not restamped yet are the walk's, the rest are their stamps', and after every batch
     each user's search scope and per-record answers are exactly the graph's."""
     monkeypatch.setenv("PG_KG_INLINE_MAX", "3")
@@ -390,8 +398,8 @@ async def test_a_connector_whose_rows_a_restamp_job_hides_stays_served_and_answe
     assert (await flip(pg_db, w.org))[0], "the world was not promoted: the test proves nothing"
     before = await served(pg_db, w.org)
     assert LVL in before
-    if change == "share":
-        await w.p.batch_create_edges([{"from_collection": "users", "from_id": "u3", "to_collection": "recordGroups", "to_id": group, "type": "USER", "role": "READER"}], "permission")
+    if change == "unshare_last":
+        await w.p.batch_delete_edges(await grants_on(pg_db, w.org, group), "permission")
     else:
         await w.nodes("recordGroups", {"_key": group, "accessRule": "RESTRICTED" if rule != "RESTRICTED" else "OPEN"})
     await drain_org(pg_db, w.org)
@@ -412,3 +420,29 @@ async def test_a_connector_whose_rows_a_restamp_job_hides_stays_served_and_answe
     assert await pg_db.run(lambda tx: restamp.pending(tx, w.org)) == [] and await served(pg_db, w.org) == before
     for uid in MEMBERS:
         assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], uid
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("seed", range(4))
+async def test_a_share_on_a_record_group_that_stays_granted_hides_nothing_and_answers_exactly_what_the_graph_answers(
+        w: World, pg_db, monkeypatch: pytest.MonkeyPatch, seed: int) -> None:
+    """A grant on a record group that is already granted (a share) changes no stamp below it: with a restamp threshold of 3 nothing is hidden or queued, kg keeps serving every
+    connector it served, and each user's search scope and per-record answers are the graph's, before the share is taken back and after."""
+    monkeypatch.setenv("PG_KG_INLINE_MAX", "3")
+    recs = await build(w, random.Random(seed), w.org, n=40)
+    await extras(w, random.Random(seed), recs)
+    group, _ = await widest_group(pg_db, w.org, LVL)
+    await w.p.batch_create_edges([{"from_collection": "groups", "from_id": "g1", "to_collection": "recordGroups", "to_id": group, "type": "GROUP", "role": "READER"}], "permission")
+    assert (await flip(pg_db, w.org))[0], "the world was not promoted: the test proves nothing"
+    before = await served(pg_db, w.org)
+    assert LVL in before
+    u3 = [{"from_collection": "users", "from_id": "u3", "to_collection": "recordGroups", "to_id": group, "type": "USER", "role": "READER"}]
+    for change in (w.p.batch_create_edges, w.p.batch_delete_edges):
+        await change(u3, "permission")
+        await drain_org(pg_db, w.org)
+        assert await pg_db.run(lambda tx: restamp.pending(tx, w.org)) == [], change.__name__
+        assert await served(pg_db, w.org) == before, change.__name__
+        want = await walk_scopes(w, recs, MEMBERS, monkeypatch)
+        for uid in MEMBERS:
+            assert await w.p.get_accessible_virtual_record_ids(uid, w.org) == want[uid], (change.__name__, uid)
+            assert await oracle(w, uid, recs) == want[uid], (change.__name__, uid)

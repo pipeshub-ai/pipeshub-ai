@@ -23665,6 +23665,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         origin: str,
         edges: list[dict],
         transaction: str | None = None,
+        *,
+        keep_edge_types: Collection[str] = (),
     ) -> None:
         """See :meth:`IGraphDBProvider.replace_record_entity_relations`."""
         if not record_id or not to_collections or not origin:
@@ -23681,11 +23683,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR e IN {relations}
                     FILTER e._from == @from AND PARSE_IDENTIFIER(e._to).collection IN @collections
                     FILTER NOT_NULL(e.origin, @inferred) == @origin AND [e._to, e.edgeType] NOT IN @kept
+                    FILTER NOT_NULL(e.edgeType, '') NOT IN @keep
                     REMOVE e IN {relations}
                 """,
                 bind_vars={
                     "from": f"{CollectionNames.RECORDS.value}/{record_id}", "collections": to_collections,
-                    "origin": origin, "inferred": EntityOrigin.INFERRED.value,
+                    "origin": origin, "inferred": EntityOrigin.INFERRED.value, "keep": list(keep_edge_types),
                     "kept": [[e["_to"], e["edgeType"]] for e in self._translate_edges_to_arango(edges)],
                 },
                 txn_id=txn,

@@ -7,8 +7,10 @@ ownership for the REVOKEs). No role created here has SUPERUSER, CREATEROLE or BY
 
 Every login that is about to be created needs its password variable (``PG_NODE_PASSWORD``, ``PG_MIGRATE_PASSWORD`` ...), or the run stops with
 an error before it creates anything. ``PG_BOOTSTRAP_ALLOW_NO_PASSWORD=1`` waives that for peer, trust or certificate authentication.
+A password never reaches the server: each is sent as its SCRAM-SHA-256 verifier, computed here.
 ``pipeshub_ro`` and ``pipeshub_restore`` never get a password here (a restore window sets its own).
 ``PG_BOOTSTRAP_EXTENSIONS`` (comma list, e.g. ``vector,pg_trgm``) installs extensions into schema ``ext``.
+``PG_MONITOR_PASSWORD`` (optional) creates ``pipeshub_monitor``, the metrics exporter's login: a member of ``pg_monitor`` and nothing else.
 """
 import contextlib
 import os
@@ -40,7 +42,13 @@ LARGE_OBJECTS_SQL = """DO $$ DECLARE f regprocedure; BEGIN
            AND p.proname ~ '^(lo_|lo(read|write)$)' LOOP
     EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f);
   END LOOP; END $$"""
+MONITOR = "pipeshub_monitor"   # opt-in: made only with a password; kernel_0019 accepts its one membership, pg_monitor
 SHIPPED_VETTED = ("kernel", "platform", "identity", "retrieval", "graph", "kg")      # schemas of the shipped revisions that own SECURITY DEFINER functions
+def _verifier(conn: psycopg.Connection, role: str, password: str) -> str:
+    """The SCRAM-SHA-256 verifier of ``password``, computed by libpq on this side (PQencryptPasswordConn): what the server stores."""
+    return conn.pgconn.encrypt_password(password.encode(), role.encode(), b"scram-sha-256").decode()
+
+
 class MissingPassword(ValueError):
     pass
 
@@ -69,12 +77,18 @@ def bootstrap(conn: psycopg.Connection, vetted_schemas: Iterable[str] = (), pass
             f"no password for a login role that would be created: set {', '.join(bare)}, "
             "or set PG_BOOTSTRAP_ALLOW_NO_PASSWORD=1 if these roles use peer, trust or certificate authentication")
     made = []
+    # Statements carrying a verifier stay out of the statement log, the statistics and pg_stat_activity (which pg_monitor reads) where this
+    # login may switch them off; the server never gets a password in any case, only its SCRAM verifier (_verifier).
+    for setting in ("SET log_statement = 'none'", "SET log_min_error_statement = 'panic'", "SET track_activities = off",
+                    "SET pg_stat_statements.track = 'none'"):
+        with contextlib.suppress(psycopg.errors.InsufficientPrivilege):
+            conn.execute(setting)
     for name, login in [*ROLES, *[(v, False) for v in vetted]]:
         if name in existing:
             continue
         stmt = sql.SQL("CREATE ROLE {} {}").format(sql.Identifier(name), sql.SQL("LOGIN" if login else "NOLOGIN"))
         if login and passwords.get(name):
-            stmt += sql.SQL(" PASSWORD {}").format(sql.Literal(passwords[name]))
+            stmt += sql.SQL(" PASSWORD {}").format(sql.Literal(_verifier(conn, name, passwords[name])))
         conn.execute(stmt)
         made.append(name)
     # The owner may only hand out membership of a vetted role (ADMIN), never use it: a revision that creates
@@ -84,6 +98,12 @@ def bootstrap(conn: psycopg.Connection, vetted_schemas: Iterable[str] = (), pass
         conn.execute(sql.SQL("GRANT {} TO {} WITH {} INHERIT {}, SET {}").format(
             sql.Identifier(role), sql.Identifier(member), sql.SQL("ADMIN TRUE," if role in vetted else ""),
             sql.SQL(str(inherit).upper()), sql.SQL(str(set_).upper())))
+    if passwords.get(MONITOR):     # granting pg_monitor needs an administrator, so a migration cannot
+        if MONITOR not in existing:
+            conn.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(sql.Identifier(MONITOR),
+                                                                             sql.Literal(_verifier(conn, MONITOR, passwords[MONITOR]))))
+            made.append(MONITOR)
+        conn.execute(sql.SQL("GRANT pg_monitor TO {} WITH INHERIT TRUE, SET FALSE").format(sql.Identifier(MONITOR)))
     db = sql.Identifier(conn.info.dbname)
     conn.execute(sql.SQL("GRANT CREATE ON DATABASE {} TO pipeshub_owner").format(db))
     conn.execute(sql.SQL("REVOKE TEMPORARY ON DATABASE {} FROM PUBLIC").format(db))   # a warning unless we own the database
@@ -109,7 +129,7 @@ def main(argv: list[str]) -> int:
         print("usage: python -m db.bootstrap_roles [--vetted schema,schema]   (PG_BOOTSTRAP_EXTENSIONS=vector,pg_trgm installs extensions)", file=sys.stderr)
         return 2
     extensions = [e for e in os.environ.get("PG_BOOTSTRAP_EXTENSIONS", "").split(",") if e]
-    passwords = {role: os.environ[var] for role, var in PASSWORD_VARS.items() if os.environ.get(var)}
+    passwords = {role: os.environ[var] for role, var in {**PASSWORD_VARS, MONITOR: "PG_MONITOR_PASSWORD"}.items() if os.environ.get(var)}
     waived = os.environ.get("PG_BOOTSTRAP_ALLOW_NO_PASSWORD") == "1"
     with psycopg.connect(url, autocommit=True) as conn:
         try:

@@ -5,7 +5,7 @@
 # Tables, policies and grants on them come with the migrations; this creates no privileges beyond the role layout.
 #
 # The server never sees a clear-text password: the SCRAM verifiers are computed here (scram-verifier.pl, password read from the
-# environment, not argv) and sent in their place, and this session turns off statement tracking and statement logging.
+# environment, not argv) and sent in their place, and this session turns off statement tracking, activity reporting and statement logging.
 set -euo pipefail
 user="${POSTGRES_USER:-postgres}"; db="${POSTGRES_DB:-pipeshub}"
 auth_dir="${PG_AUTH_DIR:-/pgbouncer-auth}"
@@ -35,10 +35,17 @@ for entry in node:PG_NODE_PASSWORD conn:PG_CONNECTORS_PASSWORD idx:PG_INDEXING_P
   [ -n "$value" ] || { echo "pg-roles: the verifier of $var is empty; no role was created or changed" >&2; exit 1; }
   args+=(-v "$name=$value")
 done
+# Optional: the monitoring login of the metrics exporter, made only when its password is set.
+if [ -n "${PG_MONITOR_PASSWORD:-}" ]; then
+  value="$(verifier PG_MONITOR_PASSWORD)" || { echo "pg-roles: could not compute the verifier of PG_MONITOR_PASSWORD; no role was created or changed" >&2; exit 1; }
+  [ -n "$value" ] || { echo "pg-roles: the verifier of PG_MONITOR_PASSWORD is empty; no role was created or changed" >&2; exit 1; }
+  args+=(-v "mon=$value")
+fi
 psql -v ON_ERROR_STOP=1 --username "$user" --dbname "$db" "${args[@]}" <<'SQL'
 SET log_statement = 'none';
 SET log_min_error_statement = 'panic';
 SET pg_stat_statements.track = 'none';
+SET track_activities = off;   -- the verifiers below are not shown in pg_stat_activity, which the monitoring login reads
 -- no role below has SUPERUSER, CREATEROLE or BYPASSRLS
 DO $$ DECLARE r text; BEGIN
   FOREACH r IN ARRAY ARRAY[
@@ -81,6 +88,12 @@ GRANT pipeshub_vetted_kernel, pipeshub_vetted_identity, pipeshub_vetted_platform
   WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;
 SELECT format('GRANT %I TO pipeshub_owner WITH ADMIN TRUE, INHERIT FALSE, SET FALSE', format('pipeshub_vetted_%s', s))
   FROM unnest(string_to_array(:'extra', ',')) AS s WHERE s <> '' \gexec
+-- the monitoring login: pg_monitor only (statistics, settings, monitoring functions), no privilege on anything of ours
+\if :{?mon}
+SELECT format('CREATE ROLE pipeshub_monitor LOGIN PASSWORD %L', :'mon')
+  WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pipeshub_monitor') \gexec
+GRANT pg_monitor TO pipeshub_monitor WITH INHERIT TRUE, SET FALSE;
+\endif
 -- extensions are installed here, by the superuser, into schema ext (a migration cannot create an extension that is not trusted)
 CREATE SCHEMA IF NOT EXISTS ext AUTHORIZATION pipeshub_owner;
 CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA ext;
@@ -96,12 +109,14 @@ DO $$ DECLARE f regprocedure; BEGIN
   END LOOP; END $$;
 SQL
 
-# Verifier file for PgBouncer: the poolable logins only (migrate and backup connect to postgres directly). Rewritten on every run, so a
+# Verifier file for PgBouncer: the poolable logins, and the monitoring login for the console's SHOW commands (stats_users in
+# pgbouncer.ini); migrate and backup connect to postgres directly. Rewritten on every run, so a
 # lost or recreated pgbouncer_auth volume is repaired by the next start. It is written last and only when everything above succeeded,
 # so it doubles as the success marker the healthchecks of the server and the pooler require (pg-entrypoint.sh removes the old one at start).
 umask 077
 psql -v ON_ERROR_STOP=1 --username "$user" --dbname "$db" -At -c \
   "SELECT format('\"%s\" \"%s\"', rolname, rolpassword) FROM pg_authid
    WHERE rolname IN ('pipeshub_node_login','pipeshub_connectors_login','pipeshub_indexing_login',
-                     'pipeshub_query_login','pipeshub_kv_login','pipeshub_jobs') ORDER BY 1" > "$auth_dir/userlist.txt.new"
+                     'pipeshub_query_login','pipeshub_kv_login','pipeshub_jobs','pipeshub_monitor')
+     AND rolpassword IS NOT NULL ORDER BY 1" > "$auth_dir/userlist.txt.new"
 mv "$auth_dir/userlist.txt.new" "$auth_dir/userlist.txt"

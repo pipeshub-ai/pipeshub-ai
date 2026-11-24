@@ -36,6 +36,16 @@ run env
 check "with all nine verifiers the script succeeds" "$code" 0
 check "and sends them to the server as variables" "$(grep -o -- '-v [a-z]*=SCRAM' "$work/psql.log" | head -1 | wc -l | tr -d ' ')" 1
 check "and writes the verifier file" "$([ -e "$work/auth/userlist.txt" ] && echo written || echo absent)" written
+check "and makes no monitoring login without its password" "$(grep -c -- '-v mon=' "$work/psql.log")" 0
+
+run env PG_MONITOR_PASSWORD=m VERIFIER_BREAK=PG_MONITOR_PASSWORD
+check "a failing verifier for the optional PG_MONITOR_PASSWORD stops the script" "$code" 1
+check "and nothing reached the server" "$(wc -c <"$work/psql.log" | tr -d ' ')" 0
+run env PG_MONITOR_PASSWORD=m
+check "with PG_MONITOR_PASSWORD the monitoring login's verifier is sent too" "$code $(grep -c -- '-v mon=SCRAM' "$work/psql.log")" "0 1"
+# the postgres service, where pg-roles.sh runs, receives the optional password (Compose passes a container only what its environment lists)
+pg_env="$(awk '/^  postgres:$/{g=1; next} g && /^  [a-z]/{exit} g' docker-compose.yml)"
+check "the postgres service gets PG_MONITOR_PASSWORD" "$(grep -c -- '- PG_MONITOR_PASSWORD=${PG_MONITOR_PASSWORD:-}' <<<"$pg_env")" 1
 
 # The vetted owners of the extra migration modules (extra-vetted-schemas): the names reach the server as one variable, and a missing file or a
 # bad name stops the script before anything is sent, so a registered module is never left without its owner role.

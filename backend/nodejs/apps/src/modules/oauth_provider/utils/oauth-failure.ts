@@ -22,6 +22,7 @@ import {
 } from '../../../libs/errors/oauth.errors';
 import { markRequestError } from '../../../libs/middlewares/access-log.middleware';
 import { Logger } from '../../../libs/services/logger.service';
+import { ValidationErrorDetail } from '../../../libs/types/validation.types';
 import {
   classifyRequestError,
   levelFor,
@@ -89,6 +90,23 @@ export const oauthErrorBody = (
   error_description: error.message,
   ...(state !== undefined && state !== '' && { state }),
 });
+
+/**
+ * The one line for a refusal: its RFC code and, for a request the schema
+ * refused, each field and rule. Never a value the client sent.
+ */
+export const logOAuthRefusal = (
+  logger: Logger,
+  code: string,
+  errors?: ValidationErrorDetail[],
+): void => {
+  logger.debug('oauth.request.refused', {
+    code,
+    ...(errors && {
+      errors: errors.map((e) => ({ field: e.field, code: e.code })),
+    }),
+  });
+};
 
 /**
  * The one line for our own failure of an OAuth endpoint, and the access line's

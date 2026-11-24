@@ -1,7 +1,7 @@
 """Bringing every connector of an org to ``enforce``, so the typed graph is read from the start.
 
 A connector created on a PostgreSQL graph has nothing to copy: its app node is projected by the drain and the backfill finds an empty copy, verifies it and the promotion makes it
-``enforce``. A connector that already has nodes (an install that ran with the projection off) is copied, verified and promoted the same way, by the same functions
+``enforce``. A connector that already has nodes (an install that ran before the projection, or with it off in an earlier release) is copied, verified and promoted the same way, by the same functions
 (``backfill.backfill``, which promotes in the unit of its verify); nothing here writes a mode. A connector whose verify finds a difference stays on the walk (``backfill`` demotes it), is logged and counted,
 and is copied again from the first node and verified again after ``DIFFERS_RETRY_S``, doubling each time it differs again up to ``DIFFERS_RETRY_MAX_S``. A connector that cannot be verified
 only because changes were still arriving (a sync running), or because its copy was cleared meanwhile, is tried again after ``RETRY_S``. A copy larger than ``BATCHES`` batches goes on at the next

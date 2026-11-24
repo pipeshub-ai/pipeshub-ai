@@ -6,6 +6,7 @@ import {
 } from '../../../libs/middlewares/types';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { Logger } from '../../../libs/services/logger.service';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { configPaths } from '../paths/paths';
 import {
   BadRequestError,
@@ -258,8 +259,6 @@ export const createStorageConfig =
               missingFields: { [resolvedCredentials.missingField]: true },
             });
           }
-          const usingIamRole = resolvedCredentials.kind === 'iamRole';
-
           const s3Config: {
             accessKeyId?: string;
             secretAccessKey?: string;
@@ -302,10 +301,6 @@ export const createStorageConfig =
               s3: encryptedS3Config,
             }),
           );
-
-          logger.info('S3 storage configuration saved successfully', {
-            authMode: usingIamRole ? 'iamRole' : 'explicitCredentials',
-          });
           break;
         }
 
@@ -345,7 +340,6 @@ export const createStorageConfig =
               }),
             );
           }
-          logger.info('Azure Blob storage configuration saved successfully');
           break;
         }
 
@@ -365,8 +359,6 @@ export const createStorageConfig =
               local: JSON.stringify(localConfig),
             }),
           );
-
-          logger.info('Local storage configuration saved successfully');
           break;
         }
 
@@ -393,7 +385,7 @@ export const getStorageConfig =
         (await keyValueStoreService.get<string>(configPaths.storageService)) ||
         '{}';
 
-      const parsedConfig = JSON.parse(storageConfig); // Parse JSON string
+      const parsedConfig = parseKvObject(storageConfig);
       const userId =
         (_req as AuthenticatedUserRequest).user?.userId ?? null;
 
@@ -2345,7 +2337,7 @@ export const getFrontendUrl =
     try {
       const url =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      const parsedUrl = JSON.parse(url);
+      const parsedUrl = parseKvObject(url);
       if (parsedUrl?.frontend?.publicEndpoint) {
         res
           .status(200)
@@ -2389,7 +2381,7 @@ export const getDesktopFrontendUrl =
       }
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      const parsedUrls = JSON.parse(urls);
+      const parsedUrls = parseKvObject(urls);
       res.status(200).json({
         frontendUrl: resolveFrontendPublicUrl(
           parsedUrls?.frontend?.publicEndpoint,
@@ -2425,7 +2417,7 @@ export const setFrontendUrl =
       }
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      let parsedUrls = JSON.parse(urls);
+      let parsedUrls = parseKvObject(urls);
       // Preserve existing `auth` object if it exists, otherwise create a new one
       parsedUrls.frontend = {
         ...parsedUrls.frontend,
@@ -2459,7 +2451,7 @@ export const getConnectorPublicUrl =
     try {
       const url =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
-      const parsedUrl = JSON.parse(url);
+      const parsedUrl = parseKvObject(url);
       if (parsedUrl?.connectors?.publicEndpoint) {
         res
           .status(200)
@@ -2499,7 +2491,7 @@ export const setConnectorPublicUrl =
       const urls =
         (await keyValueStoreService.get<string>(configPaths.endpoint)) || '{}';
 
-      let parsedUrls = JSON.parse(urls);
+      let parsedUrls = parseKvObject(urls);
 
       // Preserve existing `auth` object if it exists, otherwise create a new one
       parsedUrls.connectors = {

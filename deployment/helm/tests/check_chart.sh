@@ -62,6 +62,7 @@ VARIANTS=(
   "local-etcd|${LOCAL[*]} --set etcd.enabled=true --set config.kvStoreType=etcd"
   "local-redis-cluster-external|${LOCAL[*]} --set redis.enabled=false --set redis.external.enabled=true --set redis.mode=cluster --set redis.external.clusterEndpoints=redis-0:6379 --set celery.brokerUrl=redis://celery:6379/0"
   "local-metrics|${LOCAL[*]}"
+  "local-postgres-exporter|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub?sslmode=require --set postgresExporter.passwordSecret.name=pg-monitor"
   "local-metrics-bind|${LOCAL[*]} --set metrics.bind=0.0.0.0"
   "local-extras|${LOCAL[*]} --set networkPolicy.enabled=true ${INGRESS[*]}"
   "local-external-secrets|${LOCAL[*]} --set secretManagement.externalSecrets.enabled=true --set secretManagement.externalSecrets.secretStoreRef.name=vault --set secretManagement.externalSecrets.remoteRefs.secretKey=pipeshub/secret-key --set secretManagement.externalSecrets.remoteRefs.mongodbPassword=pipeshub/mongo --set secretManagement.externalSecrets.remoteRefs.redisPassword=pipeshub/redis --set secretManagement.externalSecrets.remoteRefs.neo4jPassword=pipeshub/neo4j"
@@ -138,6 +139,14 @@ if [[ -f "$OUT/local-metrics.yaml" ]]; then
   expect local-metrics-bind 'name: PIPESHUB_METRICS_BIND' present
   expect local-metrics-bind 'fieldPath: status.podIP' absent
   expect local-neo4j-kafka 'name: PIPESHUB_METRICS_PORT' present
+fi
+# The PostgreSQL exporter: nothing by default; enabled, its own pods (not selected by the main Deployment) log in as the monitoring role.
+if [[ -f "$OUT/local-postgres-exporter.yaml" ]]; then
+  expect local-neo4j-kafka 'postgres-exporter' absent
+  expect local-postgres-exporter 'app.kubernetes.io/name: pipeshub-ai-postgres-exporter' present 'name: ci-pipeshub-ai-postgres-exporter'
+  expect local-postgres-exporter 'value: "pipeshub_monitor"' present 'name: DATA_SOURCE_USER'
+  expect local-postgres-exporter 'name: "pg-monitor"' present 'name: DATA_SOURCE_PASS'
+  expect local-postgres-exporter 'kind: Service' present 'port: 9187'
 fi
 if [[ -f "$OUT/cloud.yaml" ]]; then
   # shellcheck disable=SC2016 # the literal template text, not an expansion
@@ -595,6 +604,10 @@ REFUSED=(
   "neo4j community replicas|requires an Enterprise image|${LOCAL[*]} --set neo4j.replicaCount=2"
   "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local --set config.sandboxAllowLocal=true"
   "local sandbox without the dev flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set config.sandboxAllowLocal=false"
+  "postgres exporter without a server|postgresExporter.dataSource is required|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.passwordSecret.name=pg-monitor"
+  "postgres exporter name colliding with the app name|the postgres exporter name|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub --set postgresExporter.passwordSecret.name=pg-monitor --set fullnameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-postgres-exporter"
+  "postgres exporter selector colliding with the app selector|the postgres exporter pods' application name|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub --set postgresExporter.passwordSecret.name=pg-monitor --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-postgres-exporter"
+  "postgres exporter without its password|postgresExporter.passwordSecret.name is required|${LOCAL[*]} --set postgresExporter.enabled=true --set postgresExporter.dataSource=pg.example:5432/pipeshub"
   "parsing name colliding with the app name|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-parsing"
   "parsing object names colliding with the app names|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"
   "parsing object names colliding, shorter override|equals the main application's name|${LOCAL[*]} --set parsing.enabled=true --set nameOverride=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-parsing"

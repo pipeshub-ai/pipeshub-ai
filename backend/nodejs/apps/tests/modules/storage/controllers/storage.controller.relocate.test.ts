@@ -7,6 +7,8 @@ import { StorageController } from '../../../../src/modules/storage/controllers/s
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
 import { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types'
+import { StorageUploadError } from '../../../../src/libs/errors/storage.errors'
+import { vendorFailure } from '../../../../src/modules/storage/providers/vendor-failure'
 
 type Row = Record<string, any>
 type Filter = Record<string, any>
@@ -85,6 +87,7 @@ describe('StorageController shared-content handover', () => {
   let controller: StorageController
   let adapter: Record<string, sinon.SinonStub>
   let rows: Row[]
+  let logger: Record<'info' | 'error' | 'warn' | 'debug', sinon.SinonStub>
   const orgId = new mongoose.Types.ObjectId()
   const otherOrg = new mongoose.Types.ObjectId()
   const base = (org = orgId) => `${org}/PipesHub`
@@ -123,7 +126,7 @@ describe('StorageController shared-content handover', () => {
 
   beforeEach(() => {
     rows = []
-    const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
+    logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
     controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any, 's')
     adapter = {
       renameObject: sinon.stub().resolves(),
@@ -218,6 +221,18 @@ describe('StorageController shared-content handover', () => {
       expect(adapter.renameObject.called).to.be.false
     })
 
+    it('logs a copy already at the new path whose record cannot be re-tagged as one WARN with its id', async () => {
+      const row = doc({ documentName: 'record_v1', documentPath: `${base()}/records/v1`, customMetadata: tagged('conn-a') })
+      ;(DocumentModel.updateOne as sinon.SinonStub).rejects(new Error('document store down'))
+
+      const body = await relocate([{ virtualRecordId: 'v1', newPath: 'records/v1', connectorId: 'conn-b' }])
+
+      expect(body.failed).to.deep.equal(['v1'])
+      expect(logger.warn.args).to.deep.equal([
+        ['relocate: could not update a document', { document_id: String(row._id), error: 'document store down' }],
+      ])
+    })
+
     it('re-tags a copy that is already at the new path', async () => {
       const row = doc({ documentName: 'record_v1', documentPath: `${base()}/records/v1`, customMetadata: tagged('conn-a') })
 
@@ -275,6 +290,39 @@ describe('StorageController shared-content handover', () => {
       expect(body).to.deep.equal({ moved: ['v2'], failed: ['v1'], missing: [] })
       expect(find(row._id).documentPath).to.equal(`${base()}/records/conn-a/x`)
       expect(tagOf(find(row._id))).to.equal('conn-a')
+    })
+
+    it('logs a blob that could not move as one WARN with the vendor status and code, never its text or the paths', async () => {
+      const row = doc({ documentName: 'record_v1', documentPath: `${base()}/records/conn-a/x`, customMetadata: tagged('conn-a') })
+      const sdk = Object.assign(new Error('n5d-vendor-text records/conn-a/x/record_v1.json'), {
+        name: 'NoSuchKey',
+        $metadata: { httpStatusCode: 404 },
+      })
+      adapter.renameObject!.rejects(new StorageUploadError('Failed to rename object in S3', vendorFailure(sdk)))
+
+      await relocate([{ virtualRecordId: 'v1', newPath: 'records/conn-b/y', connectorId: 'conn-b' }])
+
+      expect(logger.warn.args).to.deep.equal([
+        ['moveTree: failed to relocate a blob; leaving it at its old path', { document_id: String(row._id), status: 404, code: 'NoSuchKey' }],
+      ])
+      expect(logger.error.called).to.equal(false)
+    })
+
+    it('logs a blob that moved while its record did not as one ERROR: the document needs a human', async () => {
+      const row = doc({ documentName: 'record_v1', documentPath: `${base()}/records/conn-a/x`, customMetadata: tagged('conn-a') })
+      const stored = new Error('document store down')
+      ;(DocumentModel.updateOne as sinon.SinonStub).rejects(stored)
+
+      const body = await relocate([{ virtualRecordId: 'v1', newPath: 'records/conn-b/y', connectorId: 'conn-b' }])
+
+      expect(body.failed).to.deep.equal(['v1'])
+      expect(logger.error.args).to.deep.equal([
+        [
+          'moveTree: blob relocated but the record update failed; the document needs manual repair',
+          { document_id: String(row._id), error: stored },
+        ],
+      ])
+      expect(JSON.stringify(logger.error.args[0]![0])).to.not.contain(String(row._id))
     })
 
     it('a handed-over copy survives the connector delete and is still purged by its virtual record id', async () => {

@@ -35,6 +35,8 @@ if [ "$1" = postgres ]; then
     fi
     check_password "$name" "$val"
   done
+  # optional: set only when the metrics exporter is used (the monitoring login, pg-roles.sh)
+  [ -z "${PG_MONITOR_PASSWORD:-}" ] || check_password PG_MONITOR_PASSWORD "$PG_MONITOR_PASSWORD"
   # Create what is missing of the roles on every start, once the server answers on TCP (the initialisation server listens on the
   # socket only), so a volume that was left half-set-up repairs itself and PgBouncer's verifier file is rewritten. A failure is
   # logged and retried, and until it succeeds the server and PgBouncer stay unhealthy (no verifier file).

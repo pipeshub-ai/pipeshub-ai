@@ -213,9 +213,9 @@ export class OAuthAppService {
     });
 
     this.logger.info('OAuth app created', {
-      appId: app._id,
-      clientId,
-      orgId,
+      app_id: app._id,
+      client_id: clientId,
+      org_id: orgId,
       name: data.name,
     });
 
@@ -365,10 +365,10 @@ export class OAuthAppService {
     }
 
     this.logger.info('OAuth app token identity changed', {
-      appId,
-      orgId,
-      changedBy: userId,
-      serviceAccountId,
+      app_id: appId,
+      org_id: orgId,
+      user_id: userId,
+      service_account_id: serviceAccountId,
     });
     return this.toAppResponse(updated);
   }
@@ -428,9 +428,9 @@ export class OAuthAppService {
     });
 
     this.logger.info('Dynamically registered OAuth client', {
-      clientId,
-      orgId: params.orgId,
-      isConfidential: params.isConfidential,
+      client_id: clientId,
+      org_id: params.orgId,
+      is_confidential: params.isConfidential,
     });
 
     return {
@@ -704,16 +704,16 @@ export class OAuthAppService {
         throw error;
       }
       this.logger.info('OAuth app access changed; tokens revoked', {
-        appId: updated._id,
-        orgId,
-        removedScopes,
-        limitNarrowed,
+        app_id: updated._id,
+        org_id: orgId,
+        removed_scopes: removedScopes,
+        limit_narrowed: limitNarrowed,
       });
     }
 
     this.logger.info('OAuth app updated', {
-      appId: updated._id,
-      orgId,
+      app_id: updated._id,
+      org_id: orgId,
     });
 
     return this.toAppResponse(updated);
@@ -744,9 +744,9 @@ export class OAuthAppService {
     }
 
     this.logger.info('OAuth app deleted', {
-      appId: app._id,
-      orgId,
-      userId,
+      app_id: app._id,
+      org_id: orgId,
+      user_id: userId,
     });
   }
 
@@ -773,8 +773,8 @@ export class OAuthAppService {
     }
 
     this.logger.info('OAuth app secret regenerated', {
-      appId: app._id,
-      orgId,
+      app_id: app._id,
+      org_id: orgId,
     });
 
     return {
@@ -809,8 +809,8 @@ export class OAuthAppService {
     );
 
     this.logger.info('OAuth app suspended', {
-      appId: updated._id,
-      orgId,
+      app_id: updated._id,
+      org_id: orgId,
     });
 
     return this.toAppResponse(updated);
@@ -877,8 +877,8 @@ export class OAuthAppService {
     }
 
     this.logger.info('OAuth app activated', {
-      appId: updated._id,
-      orgId,
+      app_id: updated._id,
+      org_id: orgId,
     });
 
     return this.toAppResponse(updated);

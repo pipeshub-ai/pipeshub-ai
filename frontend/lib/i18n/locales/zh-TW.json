@@ -3802,6 +3802,25 @@
         "reach": "{{connector}} 中的變更會在{{interval}}內同步到 PipesHub。",
         "reachUnknown": "{{connector}} 中的變更會在下次同步時送達 PipesHub。",
         "syncNow": "立即同步權限",
+        "filter": {
+          "label": "搜尋如何檢查存取權限",
+          "mode": {
+            "inherit": "部署預設值",
+            "legacy": "傳統檢查",
+            "scopes": "更快的搜尋"
+          },
+          "effective": {
+            "scopes": "{{connector}} 的搜尋使用更快的搜尋：在找到結果之前，就已將結果限定為每個人有權查看的內容，且每個結果仍會被檢查。",
+            "legacy": "{{connector}} 的搜尋使用傳統檢查：結果在找到後再檢查。"
+          },
+          "waiting": "{{connector}} 的權限更新完成後，更快的搜尋就會開始。",
+          "applies": "此變更會在 30 秒內套用至搜尋。",
+          "blocker": {
+            "serving_off": "此部署已關閉更快的搜尋。",
+            "store_unsupported": "此部署的向量儲存不支援更快的搜尋。"
+          },
+          "saveError": "無法變更此設定。請再試一次。"
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -3974,7 +3993,6 @@
         "unavailable": "無法使用"
       },
       "catalog": {
-        "title": "新增更多伺服器",
         "description": "現成的伺服器。新增後登入即可使用。",
         "personalDescription": "你在這裡新增的伺服器只有你看得到。",
         "added": "已新增",
@@ -4229,6 +4247,67 @@
         "signIn": "{{name}} 已新增。請在下方登入，以便執行它的工具。",
         "other": "{{name}} 已新增，但還無法使用。原因見下方。",
         "dismiss": "完成"
+      },
+      "searchYourServers": "搜尋你的伺服器",
+      "categories": {
+        "communication": "溝通",
+        "meetings": "會議與行事曆",
+        "docs": "文件與檔案",
+        "projects": "專案管理",
+        "developer": "開發者工具",
+        "data": "資料與分析",
+        "sales": "銷售與 CRM",
+        "support": "客戶支援",
+        "finance": "財務與法務",
+        "design": "設計與白板",
+        "automation": "自動化",
+        "search": "搜尋與研究",
+        "security": "安全與身分"
+      },
+      "discover": {
+        "title": "探索伺服器",
+        "searchPlaceholder": "依名稱或想做的事（英文）搜尋，例如「schedule meetings」",
+        "searchLabel": "搜尋現成的伺服器",
+        "clearSearch": "清除搜尋",
+        "categoriesLabel": "類別",
+        "all": "全部",
+        "allServers": "所有伺服器",
+        "resultsFor_one": "「{{query}}」的結果：{{count}} 個伺服器",
+        "resultsFor_other": "「{{query}}」的結果：{{count}} 個伺服器",
+        "searching": "搜尋中…",
+        "catalogLoadFailed": "無法載入目錄。",
+        "noMatch": "沒有現成的伺服器符合「{{query}}」。你仍可透過 URL 新增任何伺服器。",
+        "whatItDoes": "能做什麼",
+        "beforeYouAdd": "新增之前",
+        "readOnly": "唯讀",
+        "changesData": "讀取並變更資料",
+        "readOnlyNote": "它只查詢資訊。",
+        "changesDataNote": "會變更資料的工具在執行前會先詢問，除非你允許它們直接執行。",
+        "signIn": "登入",
+        "signInOauth": "每個人用自己的 {{name}} 帳號登入",
+        "signInToken": "API 權杖",
+        "signInNone": "不需要登入",
+        "documentation": "文件",
+        "added_one": "已新增",
+        "added_other": "已新增 {{count}} 個",
+        "addOrg": "新增到你的組織",
+        "addPersonal": "僅為自己新增",
+        "orgNote": "組織中的所有人都看得到它。每個人登入後使用。",
+        "personalNote": "只有你看得到它。",
+        "popularTitle": "你的組織中常用的伺服器",
+        "popularHint": "依登入人數",
+        "peopleUse_one": "{{count}} 人在用",
+        "peopleUse_other": "{{count}} 人在用",
+        "browse": "瀏覽 MCP 伺服器",
+        "browseHint": "新增伺服器並登入後，它會出現在清單中，可拖到畫布上。",
+        "fromCatalog": "來自目錄",
+        "add": "新增",
+        "view": "檢視",
+        "askAdmin": "共享的代理只能使用你的組織新增的伺服器。請管理員新增一個。",
+        "sharedAgentNote": "只有管理員能新增共享代理可用的伺服器。請管理員為你的組織新增 {{name}}。",
+        "addedSignIn": "已新增 {{name}}。在清單中登入後即可使用它的工具。",
+        "emptyBuilder": "還沒有 MCP 伺服器。新增一個，讓這個代理使用 Linear、Slack 或 GitHub 等應用程式的工具。",
+        "noAddedMatch": "你的伺服器中沒有符合項目。"
       }
     },
     "bots": {
@@ -5680,7 +5759,6 @@
     "mcpServerAlreadyAttachedNotify": "此代理程式已有另一個與 {{name}} 同類型的伺服器。每種類型的伺服器，一個代理程式只能使用一個。",
     "webSearchOnlyOne": "只能附加一個網路搜尋供應商",
     "mcpServerNodeSubtitle": "來自 MCP 伺服器的工具",
-    "noMcpServersAvailable": "沒有可用的 MCP 伺服器",
     "webSearchLocked": "此代理程式的網路搜尋無法變更",
     "webSearchLoading": "正在載入網路搜尋供應商…",
     "webSearchConfigureFirst": "請先設定 {{name}}",

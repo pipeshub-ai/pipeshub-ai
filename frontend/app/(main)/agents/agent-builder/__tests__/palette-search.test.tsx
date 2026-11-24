@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, screen } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from './agent-builder-harness';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
@@ -24,6 +24,29 @@ vi.mock('../components/sidebar-web-search-section', async (importOriginal) => ({
 const webSearch = vi.hoisted(() => ({ configured: [] as { provider: string }[] }));
 vi.mock('../hooks/use-web-search-config', () => ({
   useWebSearchConfig: () => ({ configuredProviders: webSearch.configured, loading: false, error: null, reload: async () => {} }),
+}));
+
+// A catalog with one server nobody added, ranked as the backend would for a search.
+const mcpApi = vi.hoisted(() => ({
+  getCatalog: vi.fn(async (params?: { search?: string }) => {
+    const linear = {
+      typeId: 'linear', displayName: 'Linear', description: 'Issues.', transport: 'streamable_http', defaultAuthMode: 'oauth',
+      supportedAuthModes: ['oauth'], args: [], requiredEnv: [], optionalEnv: [], defaultScopes: [], supportsDcr: true, tags: [],
+      category: 'projects', capabilities: ['Plan cycles and projects'],
+    };
+    const hit = params?.search?.includes('cycles');
+    return { templates: params?.search ? (hit ? [{ ...linear, matchedCapability: 'Plan cycles and projects' }] : []) : [linear], total: 1 };
+  }),
+  getPopular: vi.fn(async () => []),
+}));
+vi.mock('../../../workspace/mcp-servers/api', () => ({ McpServersApi: mcpApi }));
+// The setup form has its own tests; here it only reports a save.
+vi.mock('../../../workspace/mcp-servers/team/components/mcp-instance-config-panel', () => ({
+  McpInstanceConfigPanel: (props: { onSaved: (saved: { id: string; created: boolean }) => void }) => (
+    <button type="button" onClick={() => props.onSaved({ id: 'new-1', created: true })}>
+      Save it
+    </button>
+  ),
 }));
 
 import { AgentBuilderSidebar } from '../components/agent-builder-sidebar';
@@ -168,6 +191,32 @@ describe('palette search box', () => {
     typeQuery('zzqxv');
     expect(screen.getByText('No results found')).toBeTruthy();
     expect(screen.queryByText('Tools')).toBeNull();
+  });
+
+  it('answers a search nothing in the palette matches from the MCP catalog', async () => {
+    renderSidebar();
+    typeQuery('plan cycles');
+
+    expect(screen.getByText('No results found')).toBeTruthy();
+    expect(await screen.findByText('From the catalog')).toBeTruthy();
+    expect(screen.getByText('Linear')).toBeTruthy();
+    expect(screen.getByText('Plan cycles and projects')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Browse MCP servers' })).toBeTruthy();
+  });
+
+  it('clears the search after adding a server from the catalog, so the new one and its sign-in are in view', async () => {
+    renderSidebar();
+    // Closed before searching: adding still opens it.
+    fireEvent.click(screen.getByText('MCP servers'));
+    expect(screen.queryByText('Docs Server')).toBeNull();
+    typeQuery('plan cycles');
+
+    fireEvent.click(within(await screen.findByTestId('mcp-builder-from-catalog')).getByRole('button', { name: 'Add' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Add to your organization' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save it' }));
+
+    expect((screen.getByPlaceholderText('Search nodes…') as HTMLInputElement).value).toBe('');
+    expect(screen.getByText('Docs Server')).toBeTruthy();
   });
 
   it('restores the palette when the query is cleared', () => {
