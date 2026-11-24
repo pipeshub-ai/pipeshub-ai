@@ -71569,7 +71569,7 @@ paths:
         List the organization's OAuth configurations for one connector type.<br><br>
         <b>What comes back depends on the caller:</b><br>
         <ul>
-        <li>An admin gets each organization app's stored record in full, including `config` with the client secret in clear text</li>
+        <li>An admin gets each organization app's stored record in full, including `config`. The client secret is masked (`••••••••`) when the server sets `HIDE_SECRET_CONFIG=true`, unless the request passes `reveal=true`</li>
         <li>Any other caller gets only the credential-free fields</li>
         <li>The caller's own apps (created for their personal connectors) are listed with `personal: true` and never with `config`</li>
         </ul>

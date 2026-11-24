@@ -6,6 +6,7 @@ import socket
 from collections.abc import AsyncIterator, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 
 from app.connectors.sources.web import address_guard
@@ -108,6 +109,53 @@ class TestAllowedHosts:
         monkeypatch.setattr(resolver._resolver, "resolve", AsyncMock(return_value=answer))
         assert await resolver.resolve("web-fixtures", 80) == answer
         await resolver.close()
+
+
+class TestPublicHttpsOnly:
+    """A person's own OAuth app: its token URL is an address they typed, so every request, a
+    redirect too, is https to a public address, whatever the admin opened to the Web connector."""
+
+    @staticmethod
+    def _request(url: str) -> MagicMock:
+        request = MagicMock()
+        request.url = url
+        return request
+
+    @pytest.mark.parametrize("url", ["http://idp.example/token", "http://93.184.215.14/token"])
+    async def test_a_plain_http_request_is_refused_before_it_is_sent(self, url) -> None:
+        handler = AsyncMock()
+        with pytest.raises(UnsafeAddressError):
+            await address_guard._guard_request(self._request(url), handler, public_https_only=True)
+        handler.assert_not_awaited()
+
+    async def test_an_https_request_is_sent(self) -> None:
+        handler = AsyncMock(return_value="answer")
+        request = self._request("https://idp.example/token")
+        assert await address_guard._guard_request(request, handler, public_https_only=True) == "answer"
+        handler.assert_awaited_once_with(request)
+
+    async def test_the_session_s_middleware_refuses_http(self) -> None:
+        async with aiohttp.ClientSession(**address_guard.guarded_session_kwargs(public_https_only=True)) as session:
+            with pytest.raises(UnsafeAddressError):
+                async with session.post("http://idp.example/token", data={"client_secret": "s"}):
+                    pass
+
+    async def test_an_allowed_host_on_a_private_address_is_refused(self, monkeypatch, allowed_hosts) -> None:
+        allowed_hosts("wiki.corp.example")
+        connector = address_guard.guarded_session_kwargs(allow_private=True, public_https_only=True)["connector"]
+        resolver = connector._resolver
+        answer = [{"hostname": "wiki.corp.example", "host": "10.0.0.7", "port": 443, "family": socket.AF_INET, "proto": 0, "flags": 0}]
+        monkeypatch.setattr(resolver._resolver, "resolve", AsyncMock(return_value=answer))
+        with pytest.raises(UnsafeAddressError):
+            await resolver.resolve("wiki.corp.example", 443)
+        await connector.close()
+
+    async def test_an_allowed_host_s_ip_literal_is_refused(self, allowed_hosts) -> None:
+        allowed_hosts("10.0.0.7")
+        handler = AsyncMock()
+        with pytest.raises(UnsafeAddressError):
+            await address_guard._guard_request(self._request("https://10.0.0.7/token"), handler, public_https_only=True)
+        handler.assert_not_awaited()
 
 
 class TestGuardedResolver:

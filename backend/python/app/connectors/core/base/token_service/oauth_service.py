@@ -349,10 +349,12 @@ class OAuthProvider:
             # GitHub's token endpoint sends a ~9 KB Content-Security-Policy header;
             # aiohttp refuses any header over 8190 bytes by default.
             # An administrator's token URL gets the deployment's rule for such hosts (this server,
-            # link-local and cloud metadata never); a person's own connector, public addresses only.
-            allow_private = not private_addresses_blocked() and not self.config.public_only
+            # link-local and cloud metadata never); a person's own connector, public https only.
             self._session = ClientSession(
-                max_field_size=32 * 1024, **guarded_session_kwargs(allow_private=allow_private),
+                max_field_size=32 * 1024,
+                **guarded_session_kwargs(
+                    allow_private=not private_addresses_blocked(), public_https_only=self.config.public_only
+                ),
             )
         return self._session
 

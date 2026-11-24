@@ -24,7 +24,9 @@ from app.connectors.core.base.token_service.token_refresh_service import (
 )
 
 # Importing a connector registers its OAuth fields: client ID, secret and instance URL.
-from app.connectors.sources.gitlab_personal import connector as _gitlab_personal  # noqa: F401
+from app.connectors.sources.gitlab_personal import (
+    connector as _gitlab_personal,  # noqa: F401
+)
 from app.sources.client.gitlab.gitlab import GitLabClient
 from app.sources.external.gitlab.gitlab_data_source import GitLabDataSource
 from app.utils.oauth_config import OAUTH_APP_OWNER_FIELD, get_oauth_config
@@ -115,8 +117,8 @@ class TestTokenRequests:
         assert get_oauth_config(base).public_only is False
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("public_only", "allow_private"), [(True, False), (False, True)])
-    async def test_the_token_session_follows_it(self, public_only: bool, allow_private: bool) -> None:
+    @pytest.mark.parametrize("public_only", [True, False])
+    async def test_the_token_session_follows_it(self, public_only: bool) -> None:
         config = oauth_service.OAuthConfig("c", "s", "", "https://a.example/auth", "https://a.example/token", public_only=public_only)
         provider = OAuthProvider(config, MagicMock(), "/creds")
         with (
@@ -126,7 +128,7 @@ class TestTokenRequests:
             await provider.session
         await provider.close()
 
-        kwargs.assert_called_once_with(allow_private=allow_private)
+        kwargs.assert_called_once_with(allow_private=True, public_https_only=public_only)
 
     @pytest.mark.parametrize(
         ("scope", "app", "public_only"),

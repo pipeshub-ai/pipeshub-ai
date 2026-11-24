@@ -892,3 +892,158 @@ class TestAnUndoTakesBackOnlyThisSavesWrite:
             await remove_personal_oauth_apps(store, ORG_ID, ALICE)
 
         assert store.apps() == [_personal_app(ALICE, "alice-app")]
+
+
+def _alice_linked(store_class: type[InMemoryConfigService] = InMemoryConfigService) -> InMemoryConfigService:
+    return store_class({
+        APPS_PATH: [_personal_app(ALICE, "alice-app")],
+        CONFIG_PATH: {"auth": {"oauthConfigId": "alice-app", "clientId": f"{ALICE}-client", "connectorScope": "personal"}},
+    })
+
+
+@pytest.mark.asyncio
+class TestANewClientIdComesWithItsSecret:
+    """Else the new ID is paired with the old client's secret, and the app can't sign in."""
+
+    async def test_an_auth_save_with_only_a_new_client_id_is_refused(self) -> None:
+        store = _alice_linked()
+
+        with pytest.raises(HTTPException) as exc:
+            await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "clientId": "new-client"})
+
+        assert (exc.value.status_code, exc.value.detail) == (400, "A new client ID must be sent together with its client secret.")
+        assert store.apps() == [_personal_app(ALICE, "alice-app")]
+
+    async def test_a_create_naming_the_app_with_only_a_new_client_id_is_refused(self) -> None:
+        store = InMemoryConfigService({APPS_PATH: [_personal_app(ALICE, "alice-app")]})
+
+        with pytest.raises(HTTPException) as exc:
+            await _create(store, ALICE, {"oauthConfigId": "alice-app", "clientId": "new-client"})
+
+        assert exc.value.status_code == 400
+        assert store.apps() == [_personal_app(ALICE, "alice-app")]
+
+    async def test_a_new_client_id_with_its_secret_updates_the_app(self) -> None:
+        store = _alice_linked()
+
+        await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "clientId": "new-client", "clientSecret": "new-secret"})
+
+        [app] = store.apps()
+        assert app["config"] == {"clientId": "new-client", "clientSecret": "new-secret"}
+
+    @pytest.mark.parametrize(
+        "auth",
+        [
+            {"oauthConfigId": "alice-app"},
+            {"oauthConfigId": "alice-app", "clientId": f"{ALICE}-client"},
+            {"oauthConfigId": "alice-app", "clientSecret": "rotated"},
+        ],
+        ids=["link-only", "same-client-id", "secret-only"],
+    )
+    async def test_a_save_that_keeps_the_client_id_is_not_refused(self, auth: dict[str, Any]) -> None:
+        store = _alice_linked()
+
+        await _save_auth(store, ALICE, auth)
+
+        assert _linked_app_id(store) == "alice-app"
+        assert store.apps()[0]["config"]["clientId"] == f"{ALICE}-client"
+
+    async def test_the_full_save_passes_on_a_secret_that_repeats_the_old_one(self) -> None:
+        store = _alice_linked()
+
+        await _save_full(store, ALICE, {"oauthConfigId": "alice-app", "clientId": "new-client", "clientSecret": ALICE_SECRET})
+
+        [app] = store.apps()
+        assert app["config"] == {"clientId": "new-client", "clientSecret": ALICE_SECRET}
+
+
+class _OwnAppChangesWhileTheConnectorFails(_ConnectorConfigWriteFails):
+    """Alice saves another connector that uses her app (a new secret) while this save runs; then
+    this connector's config is refused."""
+
+    async def set_config(self, path: str, value: object) -> bool:
+        if path == CONFIG_PATH:
+            self.values[APPS_PATH] = [_alice_app_from_her_other_connector()]
+        return await super().set_config(path, value)
+
+
+def _alice_app_from_her_other_connector() -> dict[str, Any]:
+    return {**_personal_app(ALICE, "alice-app"), "config": {"clientId": f"{ALICE}-client", "clientSecret": "from-her-other-connector"}}
+
+
+class _AppWriteAnswersFailureButLands(InMemoryConfigService):
+    """The OAuth app list is written, but the store answers that it was not."""
+
+    async def set_config(self, path: str, value: object) -> bool:
+        await super().set_config(path, value)
+        return path != APPS_PATH
+
+
+@pytest.mark.asyncio
+class TestAnUndoLeavesALaterWriteAlone:
+    async def test_an_auth_save_does_not_roll_back_a_later_change_to_the_app(self) -> None:
+        store = _alice_linked(_OwnAppChangesWhileTheConnectorFails)
+
+        with pytest.raises(HTTPException):
+            await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated"})
+
+        assert store.apps() == [_alice_app_from_her_other_connector()]
+
+    async def test_the_full_save_does_not_roll_back_a_later_change_to_the_app(self) -> None:
+        store = _alice_linked(_OwnAppChangesWhileTheConnectorFails)
+
+        with pytest.raises(HTTPException):
+            await _save_full(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated"})
+
+        assert store.apps() == [_alice_app_from_her_other_connector()]
+
+    async def test_the_full_save_still_puts_back_its_own_write(self) -> None:
+        store = _alice_linked(_ConnectorConfigWriteFails)
+
+        with pytest.raises(HTTPException):
+            await _save_full(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated"})
+
+        assert store.apps() == [_personal_app(ALICE, "alice-app")]
+
+
+@pytest.mark.asyncio
+class TestAnAppWriteThatAnswersFailureIsTakenBack:
+    """It may have landed: left there, a retry with the same name is refused as a duplicate."""
+
+    async def test_an_auth_save_s_new_app_goes(self) -> None:
+        store = _AppWriteAnswersFailureButLands({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
+
+        with pytest.raises(HTTPException) as exc:
+            await _save_auth(store, ALICE, {"clientId": "alice-client", "clientSecret": ALICE_SECRET})
+
+        assert exc.value.status_code == 500
+        assert store.apps() == []
+
+    async def test_an_auth_save_s_update_is_put_back(self) -> None:
+        store = _alice_linked(_AppWriteAnswersFailureButLands)
+
+        with pytest.raises(HTTPException):
+            await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated"})
+
+        assert store.apps() == [_personal_app(ALICE, "alice-app")]
+
+    async def test_the_full_save_s_new_app_goes(self) -> None:
+        store = _AppWriteAnswersFailureButLands({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
+
+        with pytest.raises(HTTPException) as exc:
+            await _save_full(store, ALICE, {"clientId": "alice-client", "clientSecret": ALICE_SECRET})
+
+        assert exc.value.status_code == 500
+        assert store.apps() == []
+
+    async def test_a_retry_with_the_same_name_then_saves(self) -> None:
+        store = _AppWriteAnswersFailureButLands({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
+        auth = {"clientId": "alice-client", "clientSecret": ALICE_SECRET, "oauthInstanceName": "My app"}
+        with pytest.raises(HTTPException):
+            await _save_auth(store, ALICE, auth)
+
+        store.__class__ = InMemoryConfigService
+        await _save_auth(store, ALICE, auth)
+
+        [app] = store.apps()
+        assert app["oauthInstanceName"] == "My app"

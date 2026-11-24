@@ -4432,6 +4432,18 @@ async def _plan_oauth_app_write(
 
     if existing:
         owner = oauth_app_owner(existing)
+        sent = _sent_oauth_app_values(auth_config, connector_type)
+        new_client_id = sent.get(AuthFieldKeys.CLIENT_ID)
+        if (
+            new_client_id is not None
+            and new_client_id != _oauth_field_value(existing.get(OAuthConfigKeys.CONFIG) or {}, AuthFieldKeys.CLIENT_ID)
+            and not any(name in sent for name in _get_secret_oauth_field_names_from_registry(connector_type))
+        ):
+            # Else the writer pairs the new ID with the old client's secret: an app no one can sign in with.
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail="A new client ID must be sent together with its client secret.",
+            )
         existing_name = existing.get(OAUTH_INSTANCE_NAME, "")
         # No name in the request keeps the app's own.
         name = requested_name or existing_name or instance_name
@@ -4480,6 +4492,7 @@ async def _handle_oauth_config_creation(
     logger: logging.Logger,
     connector_scope: str | None = None,
     attempted_app_ids: list[str] | None = None,
+    attempted_apps: dict[str, dict[str, Any]] | None = None,
 ) -> _OAuthAppSave:
     """Create or update the OAuth app a connector save's OAuth fields describe.
 
@@ -4488,6 +4501,8 @@ async def _handle_oauth_config_creation(
     a new personal app's client, which waits on the connector for the rest). ``written`` says
     whether this call wrote the app. ``attempted_app_ids`` receives the id of the app it is about
     to write, before the write: a write that answers failure may still have landed.
+    ``attempted_apps`` receives that app as written, under its id, for an undo that must leave a
+    later write alone.
 
     Raises:
         HTTPException: 500 when the app could not be saved.
@@ -4533,6 +4548,7 @@ async def _handle_oauth_config_creation(
         connector_scope=connector_scope,
         owner_user_id=plan.owner_user_id,
         attempted_app_ids=attempted_app_ids,
+        attempted_apps=attempted_apps,
     )
     if not written_app_id:
         # Credentials were given, so None is a failed save (the helper logged why), not "no app wanted".
@@ -4655,9 +4671,6 @@ class _OAuthAppWrite(NamedTuple):
     """What a full settings save wrote to an OAuth app."""
 
     app_id: str
-    created: bool
-    # The app as it was before this save updated it; None when the save created it.
-    before_update: dict[str, Any] | None
     # Whether the app now holds a different client from the one the connector signed in with.
     client_changed: bool
 
@@ -4675,13 +4688,15 @@ async def _full_save_oauth_app(
     container: object,
     base_url: str,
     logger: logging.Logger,
+    attempted_apps: dict[str, dict[str, Any]] | None = None,
 ) -> _OAuthAppWrite | None:
     """The OAuth app a full settings save links, written as ``PUT /config/auth`` writes it.
 
     An admin's save writes the org's apps; a person saving their own personal connector writes
     their own app, built only from what they sent and from an app they may change.
 
-    Returns what was written, or None when the save writes no OAuth app.
+    Returns what was written, or None when the save writes no OAuth app. ``attempted_apps``
+    receives the app as written (see ``_handle_oauth_config_creation``).
 
     A sent value changes nothing when it repeats what the connector already holds: the
     linked app's value, or an older copy still stored on the connector. So a GET-then-PUT
@@ -4760,6 +4775,9 @@ async def _full_save_oauth_app(
     if named_app_id:
         # Only what changed, so a value echoed from an older copy cannot reach a shared app.
         app_auth: dict[str, Any] = {**changed, OAuthConfigKeys.OAUTH_CONFIG_ID: named_app_id}
+        if AuthFieldKeys.CLIENT_ID in changed:
+            # A new client ID goes with the secret sent for it, even one equal to the old secret.
+            app_auth.update({name: sent[name] for name in secret_fields if name in sent})
     else:
         app_auth = {**unchanged, **changed}
     if incoming_auth.get(OAUTH_INSTANCE_NAME):
@@ -4789,6 +4807,7 @@ async def _full_save_oauth_app(
         base_url=base_url,
         logger=logger,
         connector_scope=instance.get("scope"),
+        attempted_apps=attempted_apps,
     )
     app_id = saved.app_id
     if not app_id:
@@ -4797,43 +4816,51 @@ async def _full_save_oauth_app(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to create/update OAuth configuration"
         )
-    created = saved.written and app_id != named_app_id
     now_holds = {**unchanged, **changed}
     client_changed = any(
         now_holds.get(name) != signed_in_with.get(name) for name in {*now_holds, *signed_in_with}
     )
-    before_update = current_app if saved.written and not created else None
-    return _OAuthAppWrite(app_id, created, before_update, client_changed)
+    return _OAuthAppWrite(app_id, client_changed)
 
 
-async def _remove_oauth_app(
-    app_id: str,
+async def _take_back_oauth_app_writes(
+    attempted_apps: dict[str, dict[str, Any]],
+    apps_before: list[dict[str, Any]],
     connector_type: str,
     config_service: ConfigurationService,
     logger: logging.Logger,
 ) -> None:
-    """Take back an OAuth app this request created, when the connector it was for could not be saved."""
+    """Take back the OAuth app writes of a save whose connector settings were not stored, a write
+    that answered failure too, since it may have landed: an app the save created goes, one it
+    updated gets its copy in ``apps_before`` back.
+
+    Only an app that still holds what this save wrote. One changed since (its owner saving
+    another connector that uses it) keeps that change, or that connector's client secret would
+    be rolled back under it. The store has no compare-and-set, so this narrows the race to the
+    read and the write here.
+    """
+    if not attempted_apps:
+        return
     try:
         oauth_config_path = _get_oauth_config_path(connector_type)
-        apps = await config_service.get_config(oauth_config_path, default=[], use_cache=False)
-        if isinstance(apps, list) and any(app.get("_id") == app_id for app in apps):
-            await config_service.set_config(oauth_config_path, [app for app in apps if app.get("_id") != app_id])
+        apps = await config_service.get_config(oauth_config_path, default=[], use_cache=False, raise_on_error=True)
+        if not isinstance(apps, list):
+            return
+        before = {app.get("_id"): app for app in apps_before if isinstance(app, dict)}
+        kept: list[Any] = []
+        taken_back = False
+        for app in apps:
+            app_id = app.get("_id") if isinstance(app, dict) else None
+            if app_id in attempted_apps and app == attempted_apps[app_id]:
+                taken_back = True
+                if app_id in before:
+                    kept.append(before[app_id])
+                continue
+            kept.append(app)
+        if taken_back and not await config_service.set_config(oauth_config_path, kept):
+            logger.error(f"Could not take back the OAuth app write for {connector_type} after the connector save failed")
     except Exception as e:
-        logger.error(f"Could not remove OAuth app {app_id} after the connector save failed: {e}")
-
-
-async def _undo_oauth_app_write(
-    created_app_id: str | None,
-    app_before_update: dict[str, Any] | None,
-    connector_type: str,
-    config_service: ConfigurationService,
-    logger: logging.Logger,
-) -> None:
-    """Undo this request's OAuth app write when the connector's settings were not stored."""
-    if created_app_id:
-        await _remove_oauth_app(created_app_id, connector_type, config_service, logger)
-    elif app_before_update:
-        await _restore_oauth_app(app_before_update, connector_type, config_service, logger)
+        logger.error(f"Could not take back the OAuth app write for {connector_type} after the connector save failed: {e}")
 
 
 async def _oauth_apps_before_save(connector_type: str, config_service: ConfigurationService) -> list[dict[str, Any]]:
@@ -4844,40 +4871,6 @@ async def _oauth_apps_before_save(connector_type: str, config_service: Configura
         _get_oauth_config_path(connector_type), default=[], use_cache=False, raise_on_error=True
     )
     return copy.deepcopy(apps) if isinstance(apps, list) else []
-
-
-async def _undo_oauth_app_save(
-    app_id: str | None,
-    apps_before: list[dict[str, Any]],
-    connector_type: str,
-    config_service: ConfigurationService,
-    logger: logging.Logger,
-) -> None:
-    """Undo a save of ``app_id``: remove it when the save created it, else put back its earlier copy."""
-    if not app_id:
-        return
-    previous = next((app for app in apps_before if isinstance(app, dict) and app.get("_id") == app_id), None)
-    await _undo_oauth_app_write(None if previous else app_id, previous, connector_type, config_service, logger)
-
-
-async def _restore_oauth_app(
-    previous_app: dict[str, Any],
-    connector_type: str,
-    config_service: ConfigurationService,
-    logger: logging.Logger,
-) -> None:
-    """Put back an OAuth app this request updated, when the connector it was for could not be saved."""
-    app_id = previous_app.get("_id")
-    try:
-        oauth_config_path = _get_oauth_config_path(connector_type)
-        apps = await config_service.get_config(oauth_config_path, default=[], use_cache=False)
-        # An app the save left as it was needs no write.
-        if isinstance(apps, list) and any(app.get("_id") == app_id and app != previous_app for app in apps):
-            await config_service.set_config(
-                oauth_config_path, [previous_app if app.get("_id") == app_id else app for app in apps]
-            )
-    except Exception as e:
-        logger.error(f"Could not restore OAuth app {app_id} after the connector save failed: {e}")
 
 
 _CREATED_BUT_NOT_SAVED = (
@@ -5848,8 +5841,8 @@ async def update_connector_instance_auth_config(
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
-    # The OAuth app this save wrote, undone when the connector's config is not stored.
-    written_app_id: str | None = None
+    # The OAuth app writes this save attempted, taken back when the connector's config is not stored.
+    attempted_apps: dict[str, dict[str, Any]] = {}
     apps_before: list[dict[str, Any]] = []
     config_saved = False
 
@@ -5924,8 +5917,8 @@ async def update_connector_instance_auth_config(
                 base_url=base_url,
                 logger=logger,
                 connector_scope=instance.get("scope"),
+                attempted_apps=attempted_apps,
             )
-            written_app_id = saved.app_id if saved.written else None
             if saved.app_id:
                 oauth_app_id = saved.app_id
                 logger.info(f"Saved the OAuth app for connector {connector_id}")
@@ -6085,13 +6078,13 @@ async def update_connector_instance_auth_config(
         }
 
     except HTTPException:
-        if written_app_id and not config_saved:
-            await _undo_oauth_app_save(written_app_id, apps_before, connector_type, config_service, logger)
+        if attempted_apps and not config_saved:
+            await _take_back_oauth_app_writes(attempted_apps, apps_before, connector_type, config_service, logger)
         raise
     except Exception as e:
         logger.error(f"Error updating auth config for instance {connector_id}: {e}")
-        if written_app_id and not config_saved:
-            await _undo_oauth_app_save(written_app_id, apps_before, connector_type, config_service, logger)
+        if attempted_apps and not config_saved:
+            await _take_back_oauth_app_writes(attempted_apps, apps_before, connector_type, config_service, logger)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("save this connector's sign-in details")
@@ -6294,8 +6287,8 @@ async def update_connector_instance_config(
     # An OAuth app this save creates is taken back if the connector's settings are not
     # stored, so it is neither left unlinked nor met by a retry as a name conflict; an app
     # it updates is put back as it was.
-    created_oauth_app_id: str | None = None
-    oauth_app_before_update: dict[str, Any] | None = None
+    attempted_apps: dict[str, dict[str, Any]] = {}
+    apps_before: list[dict[str, Any]] = []
     config_saved = False
 
     try:
@@ -6455,6 +6448,7 @@ async def update_connector_instance_config(
                     and isinstance(_incoming_auth, dict)
                     and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict)
                 ):
+                    apps_before = await _oauth_apps_before_save(connector_type, config_service)
                     oauth_app = await _full_save_oauth_app(
                         incoming_auth=_incoming_auth,
                         stored_auth=_stored_auth,
@@ -6467,13 +6461,11 @@ async def update_connector_instance_config(
                         container=container,
                         base_url=base_url,
                         logger=logger,
+                        attempted_apps=attempted_apps,
                     )
                     if oauth_app:
                         oauth_app_id = oauth_app.app_id
                         new_config[OAuthConfigKeys.AUTH][OAuthConfigKeys.OAUTH_CONFIG_ID] = oauth_app_id
-                        if oauth_app.created:
-                            created_oauth_app_id = oauth_app_id
-                        oauth_app_before_update = oauth_app.before_update
                         if oauth_app.client_changed:
                             # Tokens issued to the old client no longer apply.
                             auth_credentials_changed = True
@@ -6690,17 +6682,13 @@ async def update_connector_instance_config(
         }
 
     except HTTPException:
-        if not config_saved and (created_oauth_app_id or oauth_app_before_update):
-            await _undo_oauth_app_write(
-                created_oauth_app_id, oauth_app_before_update, connector_type, config_service, logger
-            )
+        if attempted_apps and not config_saved:
+            await _take_back_oauth_app_writes(attempted_apps, apps_before, connector_type, config_service, logger)
         raise
     except Exception as e:
         logger.error(f"Error updating config for instance {connector_id}: {e}")
-        if not config_saved and (created_oauth_app_id or oauth_app_before_update):
-            await _undo_oauth_app_write(
-                created_oauth_app_id, oauth_app_before_update, connector_type, config_service, logger
-            )
+        if attempted_apps and not config_saved:
+            await _take_back_oauth_app_writes(attempted_apps, apps_before, connector_type, config_service, logger)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("save this connector's settings")
@@ -10133,6 +10121,7 @@ async def _create_or_update_oauth_config(
     connector_scope: str | None = None,
     owner_user_id: str | None = None,
     attempted_app_ids: list[str] | None = None,
+    attempted_apps: dict[str, dict[str, Any]] | None = None,
 ) -> str | None:
     """
     Create or update an OAuth config based on auth_config fields.
@@ -10152,6 +10141,7 @@ async def _create_or_update_oauth_config(
         owner_user_id: Owner of a created app (a personal app); None creates an org app
         attempted_app_ids: receives the id of the app this call is about to save, before the write (a write that answers
             failure may still have landed)
+        attempted_apps: receives that app as written, under its id
 
     Returns:
         OAuth config ID if created/updated successfully, None otherwise
@@ -10213,6 +10203,7 @@ async def _create_or_update_oauth_config(
                     oauth_cfg[OAUTH_INSTANCE_NAME] = instance_name
                     oauth_configs[idx] = oauth_cfg
                     oauth_config = oauth_cfg
+                    written_app = oauth_cfg
                     logger.info(f"Updated existing OAuth config for connector {connector_type}")
                     break
 
@@ -10268,10 +10259,14 @@ async def _create_or_update_oauth_config(
 
             oauth_configs.append(new_oauth_config)
             oauth_app_id = new_oauth_config["_id"]
+            written_app = new_oauth_config
             logger.info(f"Created new OAuth config for connector {connector_type}")
 
         if attempted_app_ids is not None:
             attempted_app_ids.append(oauth_app_id)
+        if attempted_apps is not None:
+            # As the store will hold it (JSON), so the undo can compare it with what it reads back.
+            attempted_apps[oauth_app_id] = json.loads(json.dumps(written_app))
         # Save OAuth configs. The store reports a failed write by returning False.
         if not await config_service.set_config(oauth_config_path, oauth_configs):
             logger.error(f"Failed to save OAuth config for connector {connector_type}")
