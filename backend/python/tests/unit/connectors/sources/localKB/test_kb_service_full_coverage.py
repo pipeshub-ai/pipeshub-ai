@@ -1457,6 +1457,22 @@ class TestGetKbChildren:
         assert result["userPermission"]["canUpload"] is True
         assert result["userPermission"]["canDelete"] is True
         assert result["pagination"]["totalItems"] == 3
+        assert result["pagination"]["totalCapped"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["get_kb_children", "get_folder_children"])
+    async def test_a_total_past_the_cap_is_reported_capped_and_the_next_page_still_exists(self, service, method) -> None:
+        """A listing's total stops at 10,000 and says so, as the knowledge hub's does; the pages it names stop there too, and a next page is the exact answer."""
+        service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        args = ("kb1", "f1", "user1") if method == "get_folder_children" else ("kb1", "user1")
+        for total, page, want in ((50_001, 500, (10_000, 500, True, True)), (10_000, 500, (10_000, 500, False, False)), (10_001, 501, (10_000, 500, False, True)),
+                                  (0, 1, (0, 0, False, False))):
+            setattr(service.graph_provider, method, AsyncMock(return_value={"success": True, "totalCount": total, "counts": {"folders": 0, "records": 0},
+                                                                            "availableFilters": {}}))
+            got = (await getattr(service, method)(*args, page=page, limit=20))["pagination"]
+            assert (got["totalItems"], got["totalPages"], got["hasNext"], got["totalCapped"]) == want, (total, page)
 
     @pytest.mark.asyncio
     async def test_user_not_found(self, service):

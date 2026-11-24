@@ -29,10 +29,12 @@ TABLE = "kg.records"
 COPIED = frozenset({"rule", "model", "origin", "vrid", "external_id", "record_type"})
 LISTING = "python/app/services/graph_db/postgres/kg/listing.py"
 COUNTS = "python/app/services/graph_db/postgres/kg/counts.py"
+KB_FOLDER = "python/app/services/graph_db/postgres/kg/kb_folder.py"
 
 # (source, what): the reads that may take a copied column ("*": the whole row, or anything of the source)
 ALLOWED = {
     (LISTING, "record_type"),                                                       # the listing's filter: a connector kg serves only
+    *((KB_FOLDER, c) for c in ("record_type", "origin", "external_id")),           # a knowledge-base folder's filters and search: a connector kg serves only, its own children only
     ("python/app/services/graph_db/postgres/kg/verify.py", "*"),                    # the verify compares the whole row with the graph: what must see the difference
     ("db/versions/kg/0015_counts.sql", "*"),                                        # the counter trigger takes each changed row whole; its facet keys are read as the line above says
 }
@@ -522,7 +524,14 @@ def kb_root_statements() -> list[str]:
     return [k.FOLDERS, k.RECORDS]
 
 
-RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements, TRASH: trash_statements, KB_ROOT: kb_root_statements}
+def kb_folder_statements() -> list[str]:
+    """A knowledge-base folder over the typed graph's children: composed once, at import, from the module's seek builders."""
+    k = importlib.import_module("app.services.graph_db.postgres.kg.kb_folder")
+    return [k.FOLDER, k.FOLDERS, k.RECORDS_PAGE]
+
+
+RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements, TRASH: trash_statements, KB_ROOT: kb_root_statements,
+            KB_FOLDER: kb_folder_statements}
 
 
 def sources() -> dict[str, tuple[list[str], list[str]]]:

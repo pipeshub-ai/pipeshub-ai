@@ -120,8 +120,10 @@ TRASH_NEEDS_EDIT_ACCESS_REASON = (
 )
 DEFAULT_TRASH_PAGE_SIZE = 25
 MAX_TRASH_PAGE_SIZE = 100
+# A listing's total counts this many items at most and says so (``totalCapped``), as the knowledge hub's does: past it, "10,000+".
+TOTAL_CAP = 10_000
 # The trash list counts this many delete batches at most, and page numbers reach no further; nextCursor goes on.
-TRASH_TOTAL_CAP = 10_000
+TRASH_TOTAL_CAP = TOTAL_CAP
 MAX_TRASH_CURSOR_LENGTH = 1024
 PAGE_BEYOND_LIMIT = "PAGE_BEYOND_LIMIT"
 TRASH_PAGE_BEYOND_LIMIT_REASON = (
@@ -280,6 +282,13 @@ def _provider_refusal_code(result: object) -> Optional[int]:
     except (KeyError, TypeError, ValueError):
         return None
     return code if _CLIENT_ERROR_MIN <= code < _SERVER_ERROR_MIN else None
+
+
+def _children_pagination(page: int, limit: int, total: int) -> dict:
+    """The pagination of a collection's or a folder's listing: the total and the pages stop at ``TOTAL_CAP`` (``totalCapped``); whether a next page exists is the exact answer."""
+    shown = min(total, TOTAL_CAP)
+    pages = (shown + limit - 1) // limit
+    return {"page": page, "limit": limit, "totalItems": shown, "totalPages": pages, "hasNext": page * limit < total, "hasPrev": page > 1, "totalCapped": total > TOTAL_CAP}
 
 
 def _browse_failure(result: object, missing: str, action: str) -> dict:
@@ -3199,9 +3208,6 @@ class KnowledgeBaseService:
                     )
                 return self._error_response(failure["code"], failure["reason"])
 
-            # Add pagination metadata
-            total_items = result.get("totalCount", 0)
-            total_pages = (total_items + limit - 1) // limit
 
             # Add user context
             result["userPermission"] = {
@@ -3213,14 +3219,7 @@ class KnowledgeBaseService:
                 "canManagePermissions": user_role in ["OWNER"]
             }
 
-            result["pagination"] = {
-                "page": page,
-                "limit": limit,
-                "totalItems": total_items,
-                "totalPages": total_pages,
-                "hasNext": page < total_pages,
-                "hasPrev": page > 1
-            }
+            result["pagination"] = _children_pagination(page, limit, result.get("totalCount", 0))
 
             result["filters"] = {
                 "applied": {
@@ -3317,9 +3316,6 @@ class KnowledgeBaseService:
                     )
                 return self._error_response(failure["code"], failure["reason"])
 
-            # Add pagination metadata
-            total_items = result.get("totalCount", 0)
-            total_pages = (total_items + limit - 1) // limit
 
             # Add user context
             result["userPermission"] = {
@@ -3331,14 +3327,7 @@ class KnowledgeBaseService:
                 "canManagePermissions": user_role in ["OWNER"]
             }
 
-            result["pagination"] = {
-                "page": page,
-                "limit": limit,
-                "totalItems": total_items,
-                "totalPages": total_pages,
-                "hasNext": page < total_pages,
-                "hasPrev": page > 1
-            }
+            result["pagination"] = _children_pagination(page, limit, result.get("totalCount", 0))
 
             result["filters"] = {
                 "applied": {
