@@ -159,6 +159,16 @@ class TestTheAccessCheckThatCouldNotBeMade:
         assert answer.__cause__ is unanswered
 
 
+class TestAnotherReadOfTheDetailsRoute:
+    """A graph read of the record details route outside the gated reads (here the demo refusal) that loses its connection
+    is the same 503 to retry; the details the Knowledge Hub opens are asked again, not shown as an error."""
+
+    async def test_is_503(self) -> None:
+        lost = _Down("graph restarting")
+        with patch.object(router_mod, "refuse_hidden_demo_record", AsyncMock(side_effect=lost)):
+            _assert_outage(await _details(_Graph({"records": {"id": RECORD_ID}}), open_=False))
+
+
 class TestTheUnexpectedFailure:
     """A failure that is no graph read answers 500, and the route writes no line of its own: the request log has it."""
 

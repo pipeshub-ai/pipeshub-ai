@@ -196,7 +196,8 @@ def _classify_link(link: BaseException) -> str | None:
     ):
         return _status_class(status)
     if isinstance(link, (ConnectionError, socket.gaierror, *_types("httpx", "TransportError"),
-                         *_types("aiohttp", "ClientConnectionError"), *_types("openai", "APIConnectionError"))):
+                         *_types("aiohttp", "ClientConnectionError"), *_types("openai", "APIConnectionError"),
+                         *_types("neo4j.exceptions", "ServiceUnavailable", "SessionExpired"))):
         return "unavailable"
     if isinstance(link, (*CONTENT_ERRORS, json.JSONDecodeError, UnicodeDecodeError)):
         return "bad_request"
@@ -219,6 +220,34 @@ def classify_error(exc_or_status: BaseException | int) -> str:
     except Exception:
         pass
     return "internal"
+
+
+_RETRY_LATER = frozenset({"unavailable", "timeout"})
+
+
+def retry_later(exc: BaseException) -> bool:
+    """Whether ``exc`` is a store or service that could not answer just now (``unavailable`` or ``timeout``), not a fault of
+    ours: the same request is worth sending again. The first decisive link of the chain decides, as in :func:`classify_error`;
+    an exception group in it decides by its members, and only when every one of them is retry-later, so a bug beside an
+    outage is still a bug. Never raises."""
+    seen: set[int] = set()
+
+    def walk(error: BaseException) -> bool:
+        for link in _chain(error):
+            if id(link) in seen:  # a member that points back at its group
+                return False
+            seen.add(id(link))
+            if isinstance(link, BaseExceptionGroup):
+                return bool(link.exceptions) and all(walk(member) for member in link.exceptions)
+            found = _classify_link(link)
+            if found is not None:
+                return found in _RETRY_LATER
+        return classify_error(error) in _RETRY_LATER  # no decisive link: a retryable transport error is still one
+
+    try:
+        return walk(exc)
+    except Exception:
+        return False
 
 
 def provider_code(exc: BaseException) -> str | None:

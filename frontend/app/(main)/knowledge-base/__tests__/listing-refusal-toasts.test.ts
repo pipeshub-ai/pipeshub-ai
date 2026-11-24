@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProcessedError } from '@/lib/api';
 
 const get = vi.fn();
 vi.mock('@/lib/api', () => ({ apiClient: { get: (...args: unknown[]) => get(...args) } }));
 
-import { KnowledgeHubApi } from '../api';
+import { BUSY_RETRIES, KnowledgeHubApi } from '../api';
 
 const error = (statusCode: number) => ({ statusCode, message: 'x' }) as ProcessedError;
 
@@ -32,8 +32,53 @@ describe('All Records listing refusals', () => {
     expect([quiet(error(422)), quiet(error(503)), quiet(error(500))]).toEqual([true, true, false]);
   });
 
-  it('other folder reads still toast a 503', async () => {
-    await KnowledgeHubApi.loadFolderData('app', 'a1', {});
-    expect(suppress()(error(503))).toBe(false);
+  it('does not ask a 503 again itself: the table counts it down on screen', async () => {
+    get.mockReset();
+    get.mockRejectedValue(error(503));
+    await expect(KnowledgeHubApi.loadFolderData('app', 'a1', {}, { quietRefusals: true })).rejects.toMatchObject({ statusCode: 503 });
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Collections and sidebar listings answered 503', () => {
+  const busy = (retryAfter?: string) =>
+    ({ statusCode: 503, message: 'x', originalError: { response: { headers: retryAfter ? { 'retry-after': retryAfter } : {} } } }) as unknown as ProcessedError;
+
+  beforeEach(() => {
+    get.mockReset();
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it.each([
+    ['a folder read', () => KnowledgeHubApi.loadFolderData('app', 'a1', {})],
+    ['the sidebar root', () => KnowledgeHubApi.getNavigationNodes({})],
+    ['a sidebar folder', () => KnowledgeHubApi.getNodeChildren('folder', 'f1')],
+  ])('%s is asked again quietly after the seconds the server asked for', async (_name, read) => {
+    get.mockRejectedValueOnce(busy('2')).mockResolvedValueOnce({ data: { items: [] } });
+    const answer = read();
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls[0][1].suppressErrorToast(error(503))).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(answer).resolves.toBeDefined();
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops after a few tries, and only the last can toast the 503', async () => {
+    get.mockRejectedValue(busy());
+    const answer = KnowledgeHubApi.loadFolderData('app', 'a1', {});
+    const settled = expect(answer).rejects.toMatchObject({ statusCode: 503 });
+    await vi.advanceTimersByTimeAsync(BUSY_RETRIES * 5000);
+    await settled;
+    expect(get).toHaveBeenCalledTimes(BUSY_RETRIES + 1);
+    const last = get.mock.calls[BUSY_RETRIES][1].suppressErrorToast;
+    expect(typeof last === 'function' ? last(error(503)) : !!last).toBe(false);
+  });
+
+  it('does not ask again after any other failure', async () => {
+    get.mockRejectedValue(error(500));
+    await expect(KnowledgeHubApi.loadFolderData('app', 'a1', {})).rejects.toMatchObject({ statusCode: 500 });
+    expect(get).toHaveBeenCalledTimes(1);
   });
 });

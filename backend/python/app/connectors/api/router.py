@@ -247,6 +247,7 @@ from app.utils.user_lookup import (
     get_org_or_503,
     get_record_or_503,
     get_user_or_503,
+    raise_if_unavailable,
 )
 
 logger = create_logger("connector_service")
@@ -2124,6 +2125,7 @@ async def get_record_by_id(
     except HTTPException:
         raise
     except Exception as e:
+        raise_if_unavailable(e)
         raise HTTPException(status_code=500, detail="Failed to check record access") from e
 
 @router.get(
