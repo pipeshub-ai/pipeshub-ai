@@ -583,12 +583,16 @@ async def test_a_listing_read_to_its_end_is_complete_and_names_every_person() ->
 
 @pytest.mark.asyncio
 async def test_a_person_with_a_hidden_email_leaves_the_listing_incomplete_but_named_people_count() -> None:
-    conn = _wired(_listing(
+    ds = _listing(
         {"results": [_person("u1", "Live@Corp.com"), _person("u2")], "has_more": False, "next_cursor": None},
-    ))
+    )
+    # The detail read succeeds and still shows no email: the listing is read in full, the email is not.
+    ds.retrieve_user = AsyncMock(return_value=_make_api_response(data=_person("u2")))
+    conn = _wired(ds)
 
     await conn._sync_users()
 
+    ds.retrieve_user.assert_awaited_once_with("u2")
     assert conn._users_listing_complete is False
     assert conn._listed_user_emails == {"live@corp.com"}
 

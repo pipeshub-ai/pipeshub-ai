@@ -3,6 +3,7 @@
 import logging
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime, timezone
+from functools import partial
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -10093,14 +10094,20 @@ class TestAuthenticatorLink:
     @pytest.mark.asyncio
     async def test_a_delta_whose_lookup_was_cut_before_any_record_is_incomplete(self) -> None:
         connector = self._delta()
-
-        async def cut_lookup(**_: object) -> None:
-            connector._soql_cut = True  # "more" with no URL to continue: no record arrived
-
-        connector._fetch_first_record = AsyncMock(side_effect=cut_lookup)
+        listing = connector._soql_query_paginated
+        # The listing reads to its end; the lookup runs through the real paginator and fetch helper.
+        connector._fetch_first_record = partial(SalesforceConnector._fetch_first_record, connector)
+        connector._soql_query_paginated = lambda *a, **k: (
+            SalesforceConnector._soql_query_paginated(connector, *a, **k) if "WHERE Email" in k.get("q", "")
+            else listing(*a, **k)
+        )
+        # "more" with no URL to continue, before any record arrived
+        connector.data_source.soql_query = AsyncMock(return_value=_sf_response(True, {"records": [], "done": False}))
 
         await self._run(connector)
 
+        connector.data_source.soql_query.assert_awaited_once()
+        assert "WHERE Email" in connector.data_source.soql_query.await_args.kwargs["q"]
         assert connector._users_listing_complete is False
         assert connector._listed_user_emails == set()
 
