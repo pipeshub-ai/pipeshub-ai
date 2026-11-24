@@ -52,17 +52,20 @@ RECOUNT = f"""/* pipeshub:kg.counts_recount */ SELECT coalesce(array_agg(c.id), 
   UNION ALL SELECT NULL, 1::smallint, r.class_id, r.kind, r.folder, NULL, NULL, count(*) FROM kg.records r
     WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE} AND {DECIDED} GROUP BY r.class_id, r.kind, r.folder"""
 SEEDED = "/* pipeshub:kg.counts_seeded */ SELECT EXISTS (SELECT 1 FROM kg.counts WHERE org_id = $1 AND app_sk = $2 AND facet = 0)"
-# The keys of a connector (by app id) whose counters, summed, differ from what its rows count now: one statement, so one snapshot; none until it has been counted whole.
+# The keys of a connector (by app id) whose counters, summed, differ from what its rows count now: one statement, so one snapshot. Always at least one row: ``seeded`` says
+# whether the connector has been counted whole (nothing is compared until then), and a row whose ``kept`` is NULL names no key.
 DRIFT = f"""/* pipeshub:kg.counts_drift */ WITH a AS MATERIALIZED (SELECT k.sk FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id = $2
       AND EXISTS (SELECT 1 FROM kg.counts c WHERE c.org_id = $1 AND c.app_sk = k.sk AND c.facet = 0)),
   c AS (SELECT c.class_id, c.kind, c.folder, sum(c.n)::bigint AS n FROM a JOIN kg.counts c ON c.org_id = $1 AND c.app_sk = a.sk AND c.facet = 1 GROUP BY c.class_id, c.kind, c.folder),
   r AS (SELECT r.class_id, r.kind, r.folder, count(*) AS n FROM a JOIN kg.records r ON r.org_id = $1 AND r.app_sk = a.sk WHERE {LIVE} AND {DECIDED}
-      GROUP BY r.class_id, r.kind, r.folder)
-SELECT coalesce(c.class_id, r.class_id) AS class_id, coalesce(c.kind, r.kind) AS kind, coalesce(c.folder, r.folder) AS folder, coalesce(c.n, 0) AS kept, coalesce(r.n, 0) AS counted
-  FROM c FULL JOIN r ON c.class_id = r.class_id AND c.kind = r.kind AND c.folder = r.folder WHERE coalesce(c.n, 0) <> coalesce(r.n, 0) ORDER BY 1, 2, 3 LIMIT $3"""
+      GROUP BY r.class_id, r.kind, r.folder),
+  d AS (SELECT coalesce(c.class_id, r.class_id) AS class_id, coalesce(c.kind, r.kind) AS kind, coalesce(c.folder, r.folder) AS folder, coalesce(c.n, 0) AS kept,
+      coalesce(r.n, 0) AS counted FROM c FULL JOIN r ON c.class_id = r.class_id AND c.kind = r.kind AND c.folder = r.folder WHERE coalesce(c.n, 0) <> coalesce(r.n, 0)
+      ORDER BY 1, 2, 3 LIMIT $3)
+SELECT EXISTS (SELECT 1 FROM a) AS seeded, d.class_id, d.kind, d.folder, d.kept, d.counted FROM (SELECT) one LEFT JOIN d ON true ORDER BY 2, 3, 4"""
 DRIFT_LIMIT = 20          # keys one report names
 CHECKED = METRICS_BACKEND.counter("pipeshub_kg_counts_checked_total", "Checks of a connector's counters against a recount of its rows, by what they found (same; differs: the "
-                                  "totals read from them are wrong; error: the check did not run)", ["result"])
+                                  "totals read from them are wrong; unseeded: not counted whole yet, nothing compared; error: the check did not run)", ["result"])
 CLASS_ROWS = """/* pipeshub:kg.counts_class_rows */ SELECT kind, folder, sum(n)::bigint AS n FROM kg.counts
     WHERE org_id = $1 AND app_sk = $2 AND facet = 1 AND class_id = ANY($3::bigint[]) GROUP BY kind, folder"""
 
@@ -151,7 +154,10 @@ async def check(db: KernelDB, org: str, app_id: str) -> list[dict] | None:
         CHECKED.inc("error")
         logger.warning("kg counters check of connector %s failed; nothing changes", app_id, exc_info=True)
         return None
-    diff = [dict(r) for r in rows]
+    if not rows[0]["seeded"]:
+        CHECKED.inc("unseeded")           # not counted whole yet (the worker's seed comes later): nothing was compared
+        return []
+    diff = [{k: r[k] for k in ("class_id", "kind", "folder", "kept", "counted")} for r in rows if r["kept"] is not None]
     CHECKED.inc("differs" if diff else "same")
     if diff:
         logger.error("kg counters of connector %s of org %s differ from its rows (the totals read from them are wrong): %s", app_id, org,

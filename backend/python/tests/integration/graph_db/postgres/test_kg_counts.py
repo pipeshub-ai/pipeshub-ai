@@ -106,13 +106,17 @@ async def test_a_seed_counts_a_connector_whole_repairs_a_drift_and_marks_it_read
         assert await p._q(lambda tx: counts.class_rows(tx, org, sk, []), None) == {}
 
 
-async def test_the_check_reports_the_keys_whose_counters_differ_from_a_recount_and_changes_nothing(pg_db, caplog) -> None:
+async def test_the_check_reports_the_keys_whose_counters_differ_from_a_recount_and_changes_nothing(pg_db, caplog, monkeypatch) -> None:
+    results: list[str] = []
+    monkeypatch.setattr(counts.CHECKED, "inc", lambda *labels, value=1.0: results.extend(labels))
     p, org = prov(pg_db), new_org()
     await world2(p, org)
     await run(p, org, await everything2(p, org))
     assert await counts.check(pg_db, org, "app1") == []                              # not counted whole yet: nothing to compare, nothing reported
+    assert results == ["unseeded"]                                                   # and not counted as a check that found the counters right
     await counts.run(pg_db, org)
     assert await counts.check(pg_db, org, "app1") == []                              # counted whole: the counters are the recount
+    assert results == ["unseeded", "same"]
 
     async def first_key(tx) -> asyncpg.Record:
         return await tx.fetchrow("""SELECT c.app_sk, c.class_id, c.kind, c.folder, sum(c.n)::bigint AS n FROM kg.counts c JOIN kg.node_keys k ON k.org_id = c.org_id AND k.sk = c.app_sk
@@ -130,6 +134,7 @@ async def test_the_check_reports_the_keys_whose_counters_differ_from_a_recount_a
     assert found == [{"class_id": key["class_id"], "kind": key["kind"], "folder": key["folder"], "kept": key["n"] + 5, "counted": key["n"]}]
     assert await state(p, org) == before                                             # reported, not repaired
     assert any("kg counters of connector app1" in r.getMessage() for r in caplog.records)
+    assert results == ["unseeded", "same", "differs"]
     assert await counts.check(pg_db, org, "app2") == []                              # another connector of the org is not named
     assert await counts.check(pg_db, new_org(), "app1") == []                        # nor is a connector of another org
 
