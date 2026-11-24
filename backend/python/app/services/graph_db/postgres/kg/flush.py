@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from app.core.org_context import OrgContext, bind, spawn_detached
 from app.services.graph_db.postgres.kg import guard, modes, stamp
-from app.services.graph_db.postgres.kg.project import decode, project
+from app.services.graph_db.postgres.kg.project import decode, grant_only, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
 
@@ -74,12 +74,12 @@ async def flush(tx: Tx) -> None:
     org = tx.org_id
     if not _own_role(tx):      # only the connectors role may execute the writers; the others' rows wait
         return
-    rows = await tx.fetch("/* pipeshub:kg.flush_read */ SELECT ends FROM kg.graph_changes WHERE org_id = $1 AND txid = pg_current_xact_id()", org)
+    rows = await tx.fetch("/* pipeshub:kg.flush_read */ SELECT ends, grant_only FROM kg.graph_changes WHERE org_id = $1 AND txid = pg_current_xact_id()", org)
     if not rows:
         return
     try:
         async with tx.savepoint("kg_flush"):
-            await project(tx, org, decode(rows))
+            await project(tx, org, decode(rows), grant_only=grant_only(rows))
             await KgWriter(tx).changes_ack()
         FLUSHED.inc("flush", value=sum(len(r["ends"]) for r in rows))
     except Exception:

@@ -111,6 +111,37 @@ async def test_an_edge_is_logged_by_the_end_its_rows_depend_on(pg_db) -> None:
     assert [e for _, e in await log(p, org)] == [["3:r1"], ["3:r1"], ["3:r2"]]
 
 
+async def marked(p, org: str) -> list[tuple[bool, list[str]]]:
+    async def go(tx) -> list:
+        return [(r["grant_only"], sorted(r["ends"])) for r in await tx.fetch("SELECT grant_only, ends FROM kg.graph_changes WHERE org_id = $1 ORDER BY id", org)]
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def test_a_grant_on_a_record_or_a_record_group_is_logged_in_a_row_of_its_own_marked_grant_only(pg_db) -> None:
+    """kg_0021: the rows of a grant added, removed, retyped or re-keyed on a record or record group are marked; a membership, a grant on an app and every other edge are not,
+    and one statement that changes both kinds writes each in a row of its own."""
+    p, org = prov(pg_db), new_org()
+    await world(p, org)
+    with ctx(org):
+        await p.batch_create_edges([edge("u1", "users", "r2", "records", type="USER", role="OWNER")], "permission")
+        await p.batch_create_edges([edge("t1", "teams", "g1", "recordGroups", type="TEAM", role="READER")], "permission")
+        await p.batch_create_edges([edge("u1", "users", "grp", "groups", type="USER")], "permission")              # a membership: the member
+        await p.batch_create_edges([edge("u1", "users", "c1", "apps", type="USER", role="READER")], "permission")   # a grant on an app restamps its connector whole
+        await p.batch_create_edges([edge("r1", "records", "c1", "apps")], "belongsTo")
+    assert await marked(p, org) == [(True, ["3:r2"]), (True, ["2:g1"]), (False, ["4:u1"]), (False, ["1:c1"]), (False, ["3:r1"])]
+    await clear(p, org)
+    await raw(p, org, "/* pipeshub:test.edge_role */ UPDATE graph.edges SET doc = jsonb_set(doc, '{role}', '\"WRITER\"') WHERE org_id = $1 AND coll = 'permission' AND to_id = 'r2'", org)
+    await raw(p, org, "/* pipeshub:test.rekey_edge */ UPDATE graph.edges SET ekey = ekey || 'x' WHERE org_id = $1 AND coll = 'permission' AND to_id = 'r2'", org)
+    with ctx(org):
+        await p.batch_delete_edges([edge("u1", "users", "r2", "records", type="USER")], "permission")
+    assert all(m for m, _ in await marked(p, org)) and {e for _, ends in await marked(p, org) for e in ends} == {"3:r2"}
+    await clear(p, org)
+    await raw(p, org, """/* pipeshub:test.both */ UPDATE graph.edges SET doc = doc || '{"role": "OWNER", "relationshipType": "ATTACHMENT"}'
+        WHERE org_id = $1 AND coll IN ('permission', 'nodeRelations') AND to_id IN ('r1', 'r2')""", org)
+    assert sorted(await marked(p, org)) == [(False, ["3:r2"]), (True, ["3:r1"])]
+
+
 async def test_an_edge_update_is_logged_only_when_what_the_projection_reads_changed(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await world(p, org)

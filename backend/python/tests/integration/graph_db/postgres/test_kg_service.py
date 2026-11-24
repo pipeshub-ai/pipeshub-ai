@@ -283,13 +283,13 @@ async def test_two_drains_of_one_org_never_project_at_the_same_time_and_the_log_
     active = {"now": 0, "max": 0, "calls": 0}
     real = drainer.project
 
-    async def slow(tx, o, focus) -> object:
+    async def slow(tx, o, focus, **kw) -> object:
         active["now"] += 1
         active["calls"] += 1
         active["max"] = max(active["max"], active["now"])
         try:
             await asyncio.sleep(0.5)
-            return await real(tx, o, focus)
+            return await real(tx, o, focus, **kw)
         finally:
             active["now"] -= 1
     monkeypatch.setattr(drainer, "project", slow)
