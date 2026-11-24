@@ -652,6 +652,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Who each item was shared with, as last written this run: a later read that finds the same people is not
         # written again, one that differs is.
         self._shares_linked_this_run: dict[str, frozenset] = {}
+        # Each permission id's address, as any read this run gave it: Drive leaves some addresses out of some
+        # members' lists, and the same id is the same person.
+        self._grant_emails_this_run: dict[str, str] = {}
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
         self._hidden_groups: dict[str, set[str]] = {}
@@ -928,6 +931,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_principals = {}
             self._parent_grant_cache = {}
             self._shares_linked_this_run = {}
+            self._grant_emails_this_run = {}
             self._group_people = {}
             self._warned_groups = set()
             self._hidden_groups = {}
@@ -5190,6 +5194,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         grants = getattr(permissions, "user_grants", None)
         if grants is None:
             return
+        grants = self._with_known_addresses(grants)
         people = drive_file_people(metadata, grants)
         record.authored_by, record.last_modified_by, record.owners = people
         file_id = str(metadata.get("id") or "")
@@ -5203,7 +5208,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         # and the edges would follow whichever sync ran last.
         if not details and metadata.get("ownedByMe"):
             parent_id = (metadata.get("parents") or [None])[0]
-            parent_grants = await self._parent_grants(parent_id, user_email, data_source) if parent_id else []
+            if metadata.get("inheritedPermissionsDisabled") or not parent_id:
+                # A limited-access item inherits nothing: every grant it lists was made on it.
+                parent_grants = []
+            else:
+                parent_grants = await self._parent_grants(parent_id, user_email, data_source)
         record.shared_with = drive_shared_with(
             grants,
             owner_ids={o.source_id for o in people.owners if o.source_id},
@@ -5217,6 +5226,17 @@ class GoogleDriveTeamConnector(BaseConnector):
                 record.shared_with = None
             else:
                 self._shares_linked_this_run[file_id] = shared
+
+    def _with_known_addresses(self, grants: list[dict]) -> list[dict]:
+        """The grants, each missing address filled from what an earlier read this run gave the same permission id."""
+        for grant in grants:
+            if grant.get("id") and grant.get("emailAddress"):
+                self._grant_emails_this_run[grant["id"]] = grant["emailAddress"]
+        return [
+            {**g, "emailAddress": self._grant_emails_this_run[g["id"]]}
+            if not g.get("emailAddress") and g.get("id") in self._grant_emails_this_run else g
+            for g in grants
+        ]
 
     async def _parent_grants(
         self, parent_id: str, user_email: str | None, data_source: GoogleDriveDataSource | None
@@ -7961,6 +7981,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Folder sharing may have changed since an earlier call cached it.
             self._parent_grant_cache = {}
             self._shares_linked_this_run = {}
+            self._grant_emails_this_run = {}
             if not records:
                 self.logger.info("No records to reindex")
                 return

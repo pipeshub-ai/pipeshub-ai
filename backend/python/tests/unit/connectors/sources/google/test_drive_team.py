@@ -1028,9 +1028,11 @@ class TestTeamDriveItemSharedWith:
     async def test_an_unreadable_parent_leaves_shared_with_unknown(self, connector) -> None:
         from googleapiclient.errors import HttpError
 
+        denied = b'{"error": {"errors": [{"reason": "insufficientFilePermissions"}], "code": 403}}'
+
         async def permissions_list(**params: object) -> dict:
             if params["fileId"] == "folder-1":
-                raise HttpError(MagicMock(status=403), b"forbidden")
+                raise HttpError(MagicMock(status=403), denied)
             return {"permissions": [_user_grant("p-alice", "alice@example.com", "owner"), _user_grant("p-bob", "bob@example.com", "writer")]}
 
         connector.drive_data_source.permissions_list = permissions_list
@@ -1040,6 +1042,62 @@ class TestTeamDriveItemSharedWith:
         )
 
         assert result.record.shared_with is None
+
+    async def test_a_parent_403_with_no_known_reason_fails_the_item_so_it_is_read_again(self, connector) -> None:
+        from googleapiclient.errors import HttpError
+
+        async def permissions_list(**params: object) -> dict:
+            if params["fileId"] == "folder-1":
+                raise HttpError(MagicMock(status=403), b"forbidden")
+            return {"permissions": [_user_grant("p-alice", "alice@example.com", "owner")]}
+
+        connector.drive_data_source.permissions_list = permissions_list
+        connector._sync_ledger = MagicMock()
+
+        result = await connector._process_drive_item(
+            metadata=self._my_drive_file(), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        assert result is None
+        connector._sync_ledger.fail_item.assert_called_once_with("file-1")
+        assert ("alice@example.com", "folder-1") not in connector._parent_grant_cache
+
+    async def test_a_later_read_without_an_address_keeps_the_one_an_earlier_read_gave(self, connector) -> None:
+        """Drive leaves an address out of some members' lists; the same permission id is the same person."""
+        lists = {
+            "file-1": [_user_grant("p-alice", "alice@example.com", "owner"), _user_grant("p-ext", "ext@other.test", "writer")],
+            "folder-1": [_user_grant("p-alice", "alice@example.com", "owner")],
+        }
+        connector.drive_data_source.permissions_list, _ = self._lists(lists)
+        first = await connector._process_drive_item(
+            metadata=self._my_drive_file(), user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+        lists["file-1"] = [_user_grant("p-alice", "alice@example.com", "owner"),
+                           {"id": "p-ext", "type": "user", "role": "writer"}]
+        metadata = self._my_drive_file(lastModifyingUser={"displayName": "Ext", "permissionId": "p-ext"})
+
+        again = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        assert [p.email for p in first.record.shared_with] == ["ext@other.test"]
+        assert again.record.shared_with is None
+        assert again.record.last_modified_by is not None and again.record.last_modified_by.email == "ext@other.test"
+
+    async def test_in_a_limited_folder_every_grant_on_the_item_is_its_own(self, connector) -> None:
+        bob = _user_grant("p-bob", "bob@example.com", "reader")
+        connector.drive_data_source.permissions_list, calls = self._lists({
+            "file-1": [_user_grant("p-alice", "alice@example.com", "owner"), bob],
+            "folder-1": [_user_grant("p-alice", "alice@example.com", "owner"), bob],
+        })
+
+        result = await connector._process_drive_item(
+            metadata=self._my_drive_file(inheritedPermissionsDisabled=True), user_id="u1",
+            user_email="alice@example.com", drive_id="drive-1",
+        )
+
+        assert [p.email for p in result.record.shared_with] == ["bob@example.com"]
+        assert "folder-1" not in calls
 
     async def test_a_sharee_who_cannot_see_the_parent_leaves_shared_with_unknown(self, connector) -> None:
         connector.drive_data_source.permissions_list, _ = self._lists({

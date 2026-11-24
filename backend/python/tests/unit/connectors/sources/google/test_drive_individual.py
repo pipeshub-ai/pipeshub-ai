@@ -917,6 +917,34 @@ class TestPersonalSharedDriveItemSharedWith:
         metadata["capabilities"] = {"canShare": can_share}
         return metadata
 
+    async def test_an_editor_who_cannot_share_still_reads_the_items_list(self, connector) -> None:
+        """A Content manager reads sharing even where the drive keeps sharing folders to Managers."""
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "p-bob", "type": "user", "role": "writer", "emailAddress": "bob@example.com",
+             "permissionDetails": [{"permissionType": "file", "inherited": False}]},
+        ]})
+        metadata = self._item(can_share=False)
+        metadata["capabilities"]["canEdit"] = True
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        assert [p.email for p in result.record.shared_with] == ["bob@example.com"]
+
+    async def test_a_403_with_no_known_reason_fails_the_item(self, connector) -> None:
+        from googleapiclient.errors import HttpError
+
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=HttpError(MagicMock(status=403), b"forbidden"))
+        connector._sync_ledger = MagicMock()
+
+        result = await connector._process_drive_item(
+            metadata=self._item(), user_id="u1", user_email="alice@example.com", drive_id="sd-1"
+        )
+
+        assert result is None
+        connector._sync_ledger.fail_item.assert_called_once_with("file-1")
+
     async def test_a_reader_who_cannot_share_spends_no_call_and_leaves_shares_unknown(self, connector) -> None:
         connector.drive_data_source.permissions_list = AsyncMock()
 

@@ -658,7 +658,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
         if not metadata.get("ownedByMe"):
             return None
         parent_id = (metadata.get("parents") or [None])[0]
-        parent_grants = await self._parent_grants(parent_id) if parent_id else []
+        if metadata.get("inheritedPermissionsDisabled") or not parent_id:
+            # A limited-access item inherits nothing: every grant it lists was made on it.
+            parent_grants: list[dict] | None = []
+        else:
+            parent_grants = await self._parent_grants(parent_id)
         return drive_shared_with(
             grants,
             owner_ids={o.source_id for o in owners if o.source_id},
@@ -668,8 +672,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
     async def _item_grants(self, metadata: dict) -> list[dict] | None:
         """A shared-drive item's whole permission list with its details; None when it cannot be read whole."""
-        # Only a user who can share the item sees its list; anyone else would spend a call on nothing.
-        if not (metadata.get("capabilities") or {}).get("canShare"):
+        # Viewers and Commenters cannot read detailed permissions; anyone who can edit or share the item can, a
+        # Content manager included where only Managers may share folders. Anyone else would spend a call on nothing.
+        capabilities = metadata.get("capabilities") or {}
+        if not (capabilities.get("canShare") or capabilities.get("canEdit")):
             return None
         file_id = str(metadata.get("id"))
         grants: list[dict] = []
