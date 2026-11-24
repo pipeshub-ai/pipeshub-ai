@@ -895,20 +895,59 @@ class QdrantService(IVectorDBService):
         requests: List[HybridSearchRequest],
     ) -> List[List[SearchResult]]:
         self._assert_connected()
-        qdrant_requests = [QdrantUtils.search_request_to_qdrant(req) for req in requests]
-        raw_results = await self.client.query_batch_points(  # type: ignore
-            collection_name=collection_name,
-            requests=qdrant_requests,
+        legs = [QdrantUtils.search_request_to_qdrant(req) for req in requests]
+        # One round trip for every leg of every request, fused here, then one for the payloads.
+        flat = [leg for request_legs in legs for leg in request_legs]
+        raw_results = (
+            await self.client.query_batch_points(  # type: ignore
+                collection_name=collection_name,
+                requests=flat,
+            )
+            if flat
+            else []
         )
-        results: List[List[SearchResult]] = []
-        for req, batch_result in zip(requests, raw_results):
+        answers = iter(raw_results)
+        fused: list[list[tuple[str, float]]] = [
+            QdrantUtils.fuse_legs([next(answers).points for _ in request_legs], req.limit)
+            for req, request_legs in zip(requests, legs)
+        ]
+        payloads = await self._payloads_for(collection_name, requests, fused)
+        results: list[list[SearchResult]] = []
+        for req, ranked in zip(requests, fused):
+            found = payloads.get(_payload_key(req.with_payload), {})
             results.append(
                 [
-                    QdrantUtils.qdrant_result_to_search_result(p)
-                    for p in QdrantUtils.stable_top(batch_result.points, req.limit)
+                    # A point deleted between the search and the payload read is left out.
+                    SearchResult(id=point_id, score=score, payload=found[point_id] if req.with_payload else {})
+                    for point_id, score in ranked
+                    if not req.with_payload or point_id in found
                 ]
             )
         return results
+
+    async def _payloads_for(
+        self,
+        collection_name: str,
+        requests: list[HybridSearchRequest],
+        fused: list[list[tuple[str, float]]],
+    ) -> dict[object, dict[str, dict]]:
+        """The fused points' payloads, read once per distinct payload selection."""
+        wanted: dict[object, tuple[bool | list[str], set[str]]] = {}
+        for req, ranked in zip(requests, fused):
+            if not req.with_payload or not ranked:
+                continue
+            key = _payload_key(req.with_payload)
+            wanted.setdefault(key, (req.with_payload, set()))[1].update(point_id for point_id, _ in ranked)
+        out: dict[object, dict[str, dict]] = {}
+        for key, (selection, ids) in wanted.items():
+            records = await self.client.retrieve(  # type: ignore
+                collection_name=collection_name,
+                ids=sorted(ids),
+                with_payload=selection,
+                with_vectors=False,
+            )
+            out[key] = {str(r.id): r.payload or {} for r in records}
+        return out
 
     async def upsert_points(
         self,
@@ -1090,3 +1129,8 @@ class QdrantService(IVectorDBService):
     def _assert_connected(self) -> None:
         if self.client is None:
             raise RuntimeError("Qdrant client not connected. Call connect() first.")
+
+
+def _payload_key(selection: object) -> object:
+    """A hashable key for a request's payload selection."""
+    return tuple(selection) if isinstance(selection, list) else bool(selection)

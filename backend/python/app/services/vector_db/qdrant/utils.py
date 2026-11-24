@@ -6,13 +6,10 @@ from qdrant_client.http.models import (  # type: ignore
     Batch,
     FieldCondition,
     Filter,
-    Fusion,
-    FusionQuery,
     MatchAny,
     MatchExcept,
     MatchValue,
     MinShould,
-    Prefetch,
     QuantizationSearchParams,
     QueryRequest,
     SearchParams,
@@ -22,11 +19,11 @@ from qdrant_client.http.models import (  # type: ignore
 
 from app.services.vector_db.filters import build_generic_conditions, canonical_filter_key
 from app.services.vector_db import scope_expr as sx
+from app.services.vector_db.fusion import rrf
 from app.services.vector_db.models import (
     FieldCondition as GenericFieldCondition,
     FilterExpression,
     FilterValue,
-    FusionMethod,
     HybridSearchRequest,
     SearchResult,
     SparseVector,
@@ -44,10 +41,9 @@ DEFAULT_OVERSAMPLING = 1.5
 MAX_HNSW_EF = 4096
 MAX_OVERSAMPLING = 4.0
 MAX_HNSW_EF_CONSTRUCT = 4096
-# RRF gives many results the same score (a dense-only hit and a keyword-only hit
-# of the same rank tie). Qdrant orders ties differently on every call, so the
-# request asks for a little more than the caller wants and the provider re-sorts
-# with a fixed tie-break before cutting.
+# Qdrant orders equal scores differently on every call, so each leg asks for a
+# little more than its fusion depth and is re-sorted with a fixed tie-break
+# before the cut: a tie at the cut-off is not dropped at random.
 TIE_MARGIN = 2
 
 
@@ -262,7 +258,8 @@ class QdrantUtils:
         return Filter(must_not=[QdrantUtils.scope_node(node.part)])
 
     @staticmethod
-    def search_request_to_qdrant(req: HybridSearchRequest) -> QueryRequest:
+    def search_request_to_qdrant(req: HybridSearchRequest) -> list[QueryRequest]:
+        """The request's legs (dense, then sparse) as Qdrant queries without payloads; fused by ``fuse_legs``."""
         qdrant_filter = (
             QdrantUtils.filter_expression_to_qdrant(req.filter)
             if req.filter is not None
@@ -273,44 +270,49 @@ class QdrantUtils:
             sx.check_size(req.scope_filter, "Qdrant")
             scope = QdrantUtils.scope_node(sx.admits(req.scope_filter))
             qdrant_filter = Filter(must=[scope] if qdrant_filter is None else [qdrant_filter, scope])
-        # With a scope filter each leg is filtered where it searches: the candidates of a leg are its best ``limit * 2`` AFTER the filter, not a
-        # window of the whole collection that the filter then thins (a request without one is sent exactly as before).
-        legs = {"filter": qdrant_filter} if req.scope_filter is not None else {}
-        prefetch_list = []
+        # Each leg is searched with the whole filter, as Qdrant applies a fusion
+        # query's filter to its prefetches: a leg's candidates are its best
+        # ``limit * 2`` after the filter.
+        legs: list[QueryRequest] = []
         if req.dense_query is not None:
-            prefetch_list.append(
-                Prefetch(
+            legs.append(
+                QueryRequest(
                     query=req.dense_query,
                     using="dense",
-                    limit=req.limit * 2,
+                    limit=req.limit * 2 + TIE_MARGIN,
                     params=dense_search_params(),
-                    **legs,
+                    filter=qdrant_filter,
+                    with_payload=False,
                 )
             )
         if req.sparse_query is not None:
-            prefetch_list.append(
-                Prefetch(
+            legs.append(
+                QueryRequest(
                     query=QdrantSparseVector(
                         indices=req.sparse_query.indices,
                         values=req.sparse_query.values,
                     ),
                     using="sparse",
-                    limit=req.limit * 2,
-                    **legs,
+                    limit=req.limit * 2 + TIE_MARGIN,
+                    filter=qdrant_filter,
+                    with_payload=False,
                 )
             )
+        return legs
 
+    @staticmethod
+    def fuse_legs(legs: list[list[Any]], limit: int) -> list[tuple[str, float]]:
+        """``(id, score)`` of the best ``limit`` points over the legs' answers, fused by RRF.
 
-        # Only RRF is supported; default to RRF if anything else is requested
-        fusion = Fusion.RRF
-
-        return QueryRequest(
-            prefetch=prefetch_list,
-            query=FusionQuery(fusion=fusion),
-            with_payload=req.with_payload,
-            limit=req.limit + TIE_MARGIN,
-            filter=qdrant_filter,
-        )
+        Fused here rather than by Qdrant: Qdrant orders equal scores inside a leg
+        differently on every call, and a tie that flips moves a point one place in
+        that leg and changes its fused score. Each leg is put in (-score, id)
+        order and cut to the depth Qdrant fuses (``limit * 2``) first, so the same
+        query gives the same points and scores every time. The scores are
+        Qdrant's own: ``1 / (2 + index)`` summed over the legs a point is in.
+        """
+        ranked = [[str(p.id) for p in QdrantUtils.stable_top(points, limit * 2)] for points in legs]
+        return rrf(ranked, limit)
 
     @staticmethod
     def stable_top(points: list[Any], limit: int) -> list[Any]:
