@@ -1987,7 +1987,7 @@ class TestForeignSharedDrive:
         dep.delete_permission_from_record = AsyncMock()
         pages = {None: [MagicMock(id="r1"), MagicMock(id="r2")], "r2": RuntimeError("quota")}
 
-        async def page(*_a, after_key=None, **_k):
+        async def page(*_a: object, after_key: str | None = None, **_k: object) -> list:
             result = pages[after_key]
             if isinstance(result, Exception):
                 raise result
