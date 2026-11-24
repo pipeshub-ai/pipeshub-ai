@@ -75,12 +75,8 @@ import {
 } from '../services/entity_events.service';
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
-import {
-  domainFromEmail,
-  recordEvent,
-  signupSource,
-} from '../../../libs/services/telemetry/telemetry-impl';
-import { ORG_CREATED_EVENT } from '../constants/constants';
+import { emitPlatformEvent } from '../../../libs/platform-events';
+import { signupSource } from '../../../libs/utils/request-client.utils';
 import { audit } from '../../../libs/services/audit';
 import { withCause } from '../../../libs/errors/base.error';
 import { hardenedProfile } from '../../../libs/utils/security-profile';
@@ -372,15 +368,14 @@ export class OrgController {
         org: org._id,
         outcome: 'success',
       });
-      recordEvent(ORG_CREATED_EVENT, {
+      emitPlatformEvent('org.created', {
         orgId: org._id,
-        userId: adminUserId,
-        email: contactEmail,
-        domain: domainFromEmail(contactEmail),
-        fullName: adminFullName,
-        channel: source.channel,
+        adminUserId,
+        contactEmail,
+        adminFullName,
+        signupChannel: source.channel,
         ...(source.referrerDomain !== undefined
-          ? { referrer_domain: source.referrerDomain }
+          ? { signupReferrerDomain: source.referrerDomain }
           : {}),
       });
 

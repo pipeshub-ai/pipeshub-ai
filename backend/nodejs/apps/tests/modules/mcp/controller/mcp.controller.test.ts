@@ -4,7 +4,8 @@ import sinon from 'sinon'
 import { createMockRequest, createMockResponse, createMockNext, createAuthenticatedRequest } from '../../../helpers/mock-request'
 import { createMockAppConfig } from '../../../helpers/fixtures/config.fixture'
 import { Logger } from '../../../../src/libs/services/logger.service'
-import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
+import { useTelemetryPlugin } from '../../../helpers/telemetry-plugin'
+import { eventBuffer } from '../../../../src/plugins/telemetry/event-buffer'
 import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
 import { isMcpRelay, MCP_RELAY_HEADER, relayKey } from '../../../../src/libs/middlewares/mcp-relay'
 import { makeOrgContext, runWithOrgContext } from '../../../../src/libs/context/orgContext'
@@ -108,6 +109,8 @@ describe('MCP Controller — handleMCPRequest', () => {
   // Activation events
   // =========================================================================
   describe('activation events', () => {
+    useTelemetryPlugin()
+
     // `clientInfo` is what the server reports once it has accepted initialize.
     const arm = (clientInfo?: { name: string; version: string }) => {
       mcpServerExports.createMCPServer = sinon.stub().returns({

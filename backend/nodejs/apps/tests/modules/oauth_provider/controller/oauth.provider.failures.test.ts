@@ -16,7 +16,7 @@ import { accessLog } from '../../../../src/libs/middlewares/access-log.middlewar
 import { OAuthProviderController } from '../../../../src/modules/oauth_provider/controller/oauth.provider.controller'
 import { OAuthAppService } from '../../../../src/modules/oauth_provider/services/oauth.app.service'
 import { OAUTH_SERVER_FAILURE } from '../../../../src/modules/oauth_provider/utils/oauth-failure'
-import * as telemetry from '../../../../src/libs/services/telemetry/event-buffer'
+import * as platformEvents from '../../../../src/libs/platform-events'
 import { setOrgRepository } from '../../../../src/libs/repositories/org'
 import {
   AccessDeniedError,
@@ -250,14 +250,14 @@ describe('OAuthProviderController failures', function () {
       app.verifyClientCredentials.resolves({ allowedScopes: ['org:read'], orgId: ORG })
       const c = controller()
       sinon.stub(c as any, 'handleClientCredentialsGrant').resolves({ access_token: 'a', token_type: 'Bearer' })
-      sinon.stub(telemetry, 'recordEvent').throws(new TypeError('telemetry broke'))
+      sinon.stub(platformEvents, 'emitPlatformEvent').throws(new TypeError('late failure'))
       const a = await call(await serve('post', '/oauth2/token', c.token.bind(c)), 'POST', {
         grant_type: 'client_credentials', ...CLIENT,
       })
 
       expect(a.status).to.equal(200)
       expect(failed(a).map(level)).to.deep.equal(['error'])
-      expect(loggedCause(a)).to.equal('telemetry broke')
+      expect(loggedCause(a)).to.equal('late failure')
     })
     // The client's mistake, not ours: refused before any read, instead of a TypeError from hashing nothing.
     it('answers client_credentials without client_secret 401 invalid_client, with no ERROR', async () => {

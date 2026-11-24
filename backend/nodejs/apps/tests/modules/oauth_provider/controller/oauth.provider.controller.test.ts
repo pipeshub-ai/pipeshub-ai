@@ -15,7 +15,8 @@ import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/se
 import type { z } from 'zod'
 import type { authorizeConsentSchema } from '../../../../src/modules/oauth_provider/validators/oauth.validators'
 import type { TokenRequest } from '../../../../src/modules/oauth_provider/types/oauth.types'
-import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
+import { useTelemetryPlugin } from '../../../helpers/telemetry-plugin'
+import { eventBuffer } from '../../../../src/plugins/telemetry/event-buffer'
 
 type ConsentRequest = Parameters<OAuthProviderController['authorizeConsent']>[0]
 type TokenHttpRequest = Parameters<OAuthProviderController['token']>[0]
@@ -40,6 +41,8 @@ function stubOrgLookup(org: unknown) {
 }
 
 describe('OAuthProviderController', () => {
+  useTelemetryPlugin()
+
   let controller: OAuthProviderController
   let mockLogger: any
   let mockOAuthAppService: any
