@@ -41,7 +41,10 @@ def _make_entity_service(graph_provider=None, app_container=None, logger=None):
     if app_container is None:
         app_container = MagicMock()
         # An empty store: a user's deletion removes their OAuth apps, and that step raises on failure.
-        app_container.config_service.return_value.list_keys_in_directory = AsyncMock(return_value=[])
+        store = app_container.config_service.return_value
+        store.list_keys_in_directory = AsyncMock(return_value=[])
+        # EE reads each org's keys through an org-scoped wrapper of the raw service.
+        store.get_raw_service.return_value = store
     app_container.messaging_producer = AsyncMock()
     app_container.messaging_producer.send_message = AsyncMock()
 
