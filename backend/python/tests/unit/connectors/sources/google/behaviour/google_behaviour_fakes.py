@@ -20,7 +20,7 @@ import copy
 import itertools
 import json
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -29,6 +29,11 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
 
+from app.connectors.core.base.connector.source_user_listing import Presence
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    AuthenticatorLink,
+    AuthenticatorLinkResult,
+)
 from app.models.entities import Record
 from app.models.permission import EntityType, PermissionType
 from app.services.graph_db.common.record_visibility import (
@@ -313,6 +318,11 @@ class FakeEntitiesProcessor:
         self.fail_permission_lookup = False
         self.fail_group_permission_lookup = False
         self.linked_authenticators: list[tuple[str, str, str, str]] = []
+        # The link now stored per connector: (created_by, source email, source user id); and who each creator is.
+        self.authenticator_links: dict[str, tuple[str, str, str]] = {}
+        # Per connector, the users (by id) a listing once named: the processor's listed-authenticators marker.
+        self.listed_authenticators: dict[str, set[str]] = {}
+        self.authenticator_emails: dict[str, str] = {}
         self.deleted_groups: list[str] = []
         # The record ids the running full sync wrote or noted kept; None when no full sync runs.
         self.full_sync_seen: set[str] | None = None
@@ -455,9 +465,44 @@ class FakeEntitiesProcessor:
         return True
 
     async def link_authenticator_to_source_user(
-        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object
-    ) -> None:
+        self, connector_id: str, created_by: str, email: str | None, source_user_id: str | None, app_name: object,
+        *, presence: Presence,
+    ) -> AuthenticatorLinkResult:
+        """The real processor's rule: an authenticator the listing shows PRESENT, or the marker holds, is never
+        linked and loses an existing link; only one proved ABSENT is linked."""
+        creator = (self.authenticator_emails.get(created_by) or "").strip().lower()
+        # Keyed by the user, as the marker is: an email change does not make them unlisted.
+        remembered = self.listed_authenticators.setdefault(connector_id, set())
+        if creator and (presence is Presence.PRESENT or created_by in remembered):
+            if presence is Presence.PRESENT:
+                remembered.add(created_by)
+            had = self.authenticator_links.pop(connector_id, None)
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
+        if not email or not source_user_id:
+            return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+        if creator == email.strip().lower():
+            had = self.authenticator_links.pop(connector_id, None)
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
+        if presence is not Presence.ABSENT:
+            return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
         self.linked_authenticators.append((connector_id, created_by, email, source_user_id))
+        before = self.authenticator_links.get(connector_id)
+        self.authenticator_links[connector_id] = (created_by, email, source_user_id)
+        if before == self.authenticator_links[connector_id] or not creator:
+            return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+        return AuthenticatorLinkResult(AuthenticatorLink.LINKED, created_by, email)
+
+    async def get_app_authenticator_user(self, connector_id: str, created_by: str | None) -> dict[str, Any]:
+        email = self.authenticator_emails.get(created_by or "")
+        return {"_key": created_by, "email": email} if email else {}
+
+    async def authenticator_has_source_account(self, connector_id: str, created_by: str | None) -> bool:
+        """TRANSITIONAL, as the processor's: a stored source user of this connector with the authenticator's email."""
+        creator = (self.authenticator_emails.get(created_by) or "").strip().lower()
+        return bool(creator) and creator in {
+            (u.email or "").strip().lower() for u in self.app_users.values()
+            if getattr(u, "source_user_id", None) and getattr(u, "connector_id", connector_id) == connector_id
+        }
 
     async def get_placeholder_records(self, connector_id: str, *_: object, **__: object) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]

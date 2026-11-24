@@ -381,7 +381,7 @@ class TestStubEdgesMoveOntoTheLogin:
 
         asyncio.run(_run())
 
-    def test_arango_authenticated_as_dedupes_per_connector_only(self):
+    def test_arango_authenticated_as_moves_in_place_so_it_keeps_its_connector_key(self):
         async def _run() -> None:
             provider = ArangoHTTPProvider(logger=MagicMock(), config_service=MagicMock())
             provider.http_client = MagicMock()
@@ -391,14 +391,15 @@ class TestStubEdgesMoveOntoTheLogin:
             await provider._absorb_graph_user_stub("keep-key", "stub-key", "txn")
 
             queries = [c.args[0] for c in provider.http_client.execute_aql.await_args_list]
-            moves = {
-                collection: next(q for q in queries if "INSERT" in q and f"INTO {collection}" in q)
-                for collection in STUB_EDGE_COLLECTIONS
-            }
-            assert "other.connectorId == e.connectorId" in moves[CollectionNames.AUTHENTICATED_AS.value]
-            for collection, query in moves.items():
-                if collection != CollectionNames.AUTHENTICATED_AS.value:
-                    assert "connectorId" not in query
+            link = CollectionNames.AUTHENTICATED_AS.value
+            # a copy under a new key would escape remove_authenticated_as, which finds the link by its connector id
+            assert not any("INSERT" in q and f"INTO {link}" in q for q in queries)
+            update = next(q for q in queries if "UPDATE e WITH" in q and f"IN {link}" in q)
+            assert "_from: newFrom, _to: newTo" in update and "UNSET" not in update
+            for collection in STUB_EDGE_COLLECTIONS:
+                if collection != link:
+                    move = next(q for q in queries if "INSERT" in q and f"INTO {collection}" in q)
+                    assert "connectorId" not in move
 
         asyncio.run(_run())
 

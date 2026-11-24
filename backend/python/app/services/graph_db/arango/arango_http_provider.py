@@ -54,7 +54,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
-from app.core.org_context import MissingOrgContext
+from app.core.org_context import MissingOrgContext, require_system
 from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
@@ -1585,6 +1585,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not await self.http_client.ensure_persistent_index(collection, list(fields)):
                     # Not fatal for the schema (it would hold every service's start for one feature's index); the next start retries it.
                     self.logger.error("The index %s on collection '%s' was not created", list(fields), collection)
+        # The link of a connector is found, repointed and removed by its connector id.
+        await self.http_client.ensure_persistent_index(CollectionNames.AUTHENTICATED_AS.value, ["connectorId"])
         # ==================== TAXONOMY INDEXES ====================
         # Entity resolution looks canonical category/subcategory/topic/language
         # nodes up by (orgId, normalizedName) once per record — see
@@ -8852,6 +8854,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     INTO {collection}
                 RETURN 1
             """
+            if collection == CollectionNames.AUTHENTICATED_AS.value:
+                # Moved in place, so the link keeps its _key (the connector id): a copy under a new key would
+                # escape remove_authenticated_as and keep granting the source account's access.
+                query = f"""
+                FOR e IN {collection}
+                    FILTER e._from == @stub_id OR e._to == @stub_id
+                    LET newFrom = e._from == @stub_id ? @keep_id : e._from
+                    LET newTo = e._to == @stub_id ? @keep_id : e._to
+                    FILTER newFrom != newTo
+                    UPDATE e WITH {{_from: newFrom, _to: newTo}} IN {collection}
+                    RETURN 1
+                """
             await self.http_client.execute_aql(
                 query,
                 bind_vars={"stub_id": stub_id, "keep_id": keep_id},
@@ -11755,8 +11769,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> None:
         # _key = connector_id keeps exactly one link per connector instance; UPSERT repoints on re-auth.
         ts = get_epoch_timestamp_in_ms()
+        # One link per connector: a copy an older absorb left under a random key would keep pointing at the old
+        # source account, and every access read finds links by connectorId. The drop comes first, so a failure
+        # between the two statements leaves no stale link rather than two.
+        await self.execute_query(
+            f"""
+            FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
+                FILTER link.connectorId == @connectorId AND link._key != @connectorId
+                REMOVE link IN {CollectionNames.AUTHENTICATED_AS.value}
+            """,
+            bind_vars={"connectorId": connector_id},
+            transaction=transaction,
+        )
         query = f"""
-        UPSERT {{ _key: @connectorId }}
+        UPSERT {{ connectorId: @connectorId }}
         INSERT {{
             _key: @connectorId, _from: @from, _to: @to,
             connectorId: @connectorId, orgId: @orgId,
@@ -11784,12 +11810,34 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> bool:
         query = f"""
         FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
-            FILTER link._key == @connectorId
+            FILTER link._key == @connectorId OR link.connectorId == @connectorId
             REMOVE link IN {CollectionNames.AUTHENTICATED_AS.value}
             RETURN OLD._key
         """
         removed = await self.execute_query(query, bind_vars={"connectorId": connector_id}, transaction=transaction)
         return bool(removed)
+
+    async def remove_listed_authenticator_links(self, app_types: list[str]) -> tuple[list[dict], list[str]]:
+        require_system("remove_listed_authenticator_links")
+        # A creator the connector lists as a source user has their own account there and is never linked to the account
+        # the credentials act as; a link from a user to themselves says nothing. The edge index on userAppRelation._from
+        # keeps it to one pass over the links.
+        query = f"""
+        FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
+            LET app = DOCUMENT('{CollectionNames.APPS.value}', link.connectorId)
+            FILTER app != null AND app.type IN @appTypes
+            LET listed = LENGTH(
+                FOR rel IN {CollectionNames.USER_APP_RELATION.value}
+                    FILTER rel._from == link._from AND rel._to == app._id
+                    FILTER NOT_NULL(rel.sourceUserId, "") != "" AND rel.isExternalUser != true
+                    LIMIT 1
+                    RETURN 1
+            ) > 0
+            FILTER listed OR link._from == link._to
+            REMOVE link IN {CollectionNames.AUTHENTICATED_AS.value}
+            RETURN {{connectorId: link.connectorId, org: NOT_NULL(app.orgId, link.orgId)}}
+        """
+        return await self.execute_query(query, bind_vars={"appTypes": list(app_types)}) or [], []
 
     async def batch_upsert_user_groups(
         self,

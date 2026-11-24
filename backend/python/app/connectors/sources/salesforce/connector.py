@@ -28,6 +28,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.source_user_listing import Presence, SourceUserListing
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -928,6 +929,10 @@ class SalesforceConnector(BaseConnector):
         # it was asked to (a full sync that skipped a record must not unlink it).
         self._problems = SyncProblems()
         self._read_everything = True
+        # Set when a paged query ended with "more" but no URL to continue, so what it read is a cut.
+        self._soql_cut = False
+        # This run's user listing, for the authenticator's link; None until the user sync builds one.
+        self._user_listing: SourceUserListing | None = None
 
         # Shared HTTP client; created in init(), closed in cleanup().
         # Re-using a single client avoids per-call TCP connection overhead.
@@ -978,6 +983,7 @@ class SalesforceConnector(BaseConnector):
         while not response.data.get("done", True):
             next_url = response.data.get("nextRecordsUrl")
             if not next_url:
+                self._soql_cut = True
                 break
             response = await self.data_source.soql_query_next(next_url=next_url)
             if not response.success:
@@ -2618,13 +2624,18 @@ class SalesforceConnector(BaseConnector):
             self.logger.debug("Could not read the authenticated Salesforce user: %s", e)
             return
         user = user or {}
-        await self.register_authenticated_source_user(user.get("Email"), user.get("Id"))
+        await self.register_authenticated_source_user(
+            user.get("Email"), user.get("Id"),
+            listing=self._user_listing,
+        )
 
     async def run_sync(self) -> None:
         """One sync (see _run_sync). A sync that stops tells the connector's creator and the
         org admins why, then raises; one that finished with problems sends one warning."""
         self._problems = SyncProblems()
         self._read_everything = True
+        self._user_listing = None
+        await self.drop_authenticator_link_if_listed()
         try:
             await self._run_sync()
         except Exception as e:
@@ -2726,7 +2737,6 @@ class SalesforceConnector(BaseConnector):
                     )
 
                 api_version = await self._get_api_version()
-                await self._register_authenticated_identity(api_version)
 
                 # A full sync clears every checkpoint: track what it writes (see _full_run_parents).
                 deals_point = await self.records_sync_point.read_sync_point(DEALS_SYNC_POINT_KEY) or {}
@@ -2753,10 +2763,20 @@ class SalesforceConnector(BaseConnector):
                 else:
                     soql_query = f"{base_soql} ORDER BY LastModifiedDate ASC"
                     self.logger.debug("Full user sync: no previous sync point, fetching all users")
+                self._soql_cut = False
+                # A full read lists every user whatever the status; an incremental one only the changed ones.
+                listing = self._user_listing = SourceUserListing(includes_inactive=not last_sync_ts_ms)
                 inactive_user_ids = await self._sync_users(
-                    self._soql_query_paginated(api_version=api_version, q=soql_query),
+                    self._soql_query_paginated(api_version=api_version, q=soql_query), listing,
                 )
+                if self._soql_cut:
+                    listing.cut("the user query said more follows with no way to continue")
+                else:
+                    listing.finish()
+                    if last_sync_ts_ms:
+                        await self._settle_authenticator(api_version, listing)
                 await self._withdraw_ineligible_users(api_version, inactive_user_ids)
+                await self._register_authenticated_identity(api_version)
                 await self.user_sync_point.update_sync_point(
                     USERS_SYNC_POINT_KEY,
                     {"lastSyncTimestamp": checkpoint_for(run_started_ms)},
@@ -3338,7 +3358,7 @@ class SalesforceConnector(BaseConnector):
         )
 
     async def _sync_users(
-        self, user_records_pages: SalesforceRawPageStream,
+        self, user_records_pages: SalesforceRawPageStream, listing: SourceUserListing | None = None,
     ) -> set[str]:
         """Sync users from Salesforce, committing each Salesforce page in its own
         transaction.  Per-page commit semantics: a crash mid-stream leaves earlier
@@ -3354,6 +3374,9 @@ class SalesforceConnector(BaseConnector):
                 if not page:
                     continue
                 parsed_users = [SalesforceUser.model_validate(r) for r in page]
+                if listing is not None:
+                    for u in parsed_users:
+                        listing.add_row(u.Email, u.Id)
                 app_users = []
                 for u in parsed_users:
                     if u.IsActive is not False and u.UserType in READER_USER_TYPES:
@@ -3431,6 +3454,29 @@ class SalesforceConnector(BaseConnector):
             self._problems.note(unreadable_list("active users"))
             return None
         return emails
+
+    async def _settle_authenticator(self, api_version: str, listing: SourceUserListing) -> None:
+        """An incremental user read lists only changed users, so the authenticator's own User row is
+        looked up by email, active or not: found, they are PRESENT; not found, ABSENT. A lookup that
+        fails or is cut leaves them UNKNOWN."""
+        email = await self.authenticator_email()
+        if not email or listing.presence(email) is not Presence.UNKNOWN:
+            return
+        quoted = email.replace("\\", "\\\\").replace("'", "\\'")
+        cut_before, self._soql_cut = self._soql_cut, False
+        try:
+            found = await self._fetch_first_record(
+                api_version=api_version, soql=f"SELECT Id FROM User WHERE Email = '{quoted}' LIMIT 1",
+            )
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the Salesforce users: %s", e)
+            return
+        finally:
+            lookup_cut, self._soql_cut = self._soql_cut, cut_before or self._soql_cut
+        if found:
+            listing.settle(email, Presence.PRESENT)
+        elif not lookup_cut:  # a lookup cut before any record arrived did not show they are absent
+            listing.settle(email, Presence.ABSENT)
 
     async def _withdraw_ineligible_users(self, api_version: str, inactive_user_ids: set[str]) -> None:
         """Take the connector away from users who cannot sign in to Salesforce: inactive and

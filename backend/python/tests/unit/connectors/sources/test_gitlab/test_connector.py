@@ -396,9 +396,8 @@ class TestResolveCreatorIdentity:
         c._is_auditor = False
         c._gitlab_user_id = None
 
-        creator_user = MagicMock()
-        creator_user.email = "creator@example.com"
-        c.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=creator_user)
+        # The user whose credentials it runs with: authenticatedBy, else the creator.
+        c.authenticator_email = AsyncMock(return_value="creator@example.com")
 
         me = MagicMock()
         me.is_admin = True
@@ -411,6 +410,7 @@ class TestResolveCreatorIdentity:
         await GitLabConnector._resolve_creator_identity(c)
         assert c._is_admin is True
         assert c._gitlab_user_id == 42
+        assert c.creator_email == "creator@example.com"
 
     async def test_get_user_failure_logs_warning(self) -> None:
         """When get_user fails, warning is logged and flags remain False."""
@@ -422,7 +422,7 @@ class TestResolveCreatorIdentity:
         c._is_auditor = False
         c._gitlab_user_id = None
 
-        c.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
+        c.authenticator_email = AsyncMock(return_value=None)
 
         fail_res = MagicMock(success=False, data=None, error="forbidden")
         c.runtime.ds_call = AsyncMock(return_value=fail_res)
@@ -442,7 +442,7 @@ class TestResolveCreatorIdentity:
         c._is_auditor = False
         c._gitlab_user_id = None
 
-        c.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
+        c.authenticator_email = AsyncMock(return_value=None)
         c.runtime.ds_call = AsyncMock(side_effect=Exception("API error"))
 
         from app.connectors.sources.gitlab.connector import GitLabConnector

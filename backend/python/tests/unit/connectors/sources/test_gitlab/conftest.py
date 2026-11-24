@@ -23,6 +23,7 @@ def make_mock_connector() -> MagicMock:
     """
     c = MagicMock()
     c._register_authenticated_identity = AsyncMock()
+    c.drop_authenticator_link_if_listed = AsyncMock()
     c.connector_id = "gitlab-conn-1"
     c.connector_name = "GITLAB"
     c._gitlab_base_url = "https://gitlab.com"
@@ -97,6 +98,15 @@ def make_mock_connector() -> MagicMock:
 
     # creator_user_permission
     c.creator_user_permission = MagicMock(return_value=None)
+    c.creator_token_view_permission = MagicMock(return_value=None)
+    c._decide_creator_token_view = AsyncMock()
+    c._read_token_account = AsyncMock()
+    c.authenticator_email = AsyncMock(return_value=None)
+    c._token_account_email = None
+    c._token_account_id = None
+    c._token_account_read = False
+    c._user_listing = None
+    c._creator_token_view = False
 
     return c
 

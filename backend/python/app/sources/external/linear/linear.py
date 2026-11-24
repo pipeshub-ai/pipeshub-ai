@@ -98,9 +98,12 @@ class LinearDataSource:
         first: Optional[int] = None,
         after: Optional[str] = None,
         filter: Optional[Dict[str, Any]] = None,
-        orderBy: Optional[Dict[str, Any]] = None
+        orderBy: Optional[Dict[str, Any]] = None,
+        *,
+        includeDisabled: Optional[bool] = None,
     ) -> GraphQLResponse:
-        """Get users with filtering and pagination"""
+        """Get users with filtering and pagination; includeDisabled also lists suspended users
+        (Linear's default is false)."""
         query = LinearGraphQLOperations.get_operation_with_fragments("query", "users")
         variables = {}
         if first is not None:
@@ -111,6 +114,8 @@ class LinearDataSource:
             variables["filter"] = filter
         if orderBy is not None:
             variables["orderBy"] = orderBy
+        if includeDisabled is not None:
+            variables["includeDisabled"] = includeDisabled
 
         try:
             response = await self._linear_client.get_client().execute(

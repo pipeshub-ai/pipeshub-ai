@@ -76,6 +76,10 @@ def _make_connector():
     c._channel_list_failed = False
     c._resilience_loaded = True
     c._resilience = None
+    # Read by the authenticator removal pass at the start of run_sync.
+    c.scope = "team"
+    c.created_by = None
+    c._authenticator_permission = None
 
     return c
 

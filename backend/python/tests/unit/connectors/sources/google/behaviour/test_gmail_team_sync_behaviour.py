@@ -111,12 +111,90 @@ async def test_users_and_groups_are_read_to_the_last_page(ws: Harness) -> None:
     assert {m.email for m in ws.records.user_groups["team@example.com"][1]} == {ALICE, BOB, *extra}
 
 
-async def test_the_admin_the_service_account_acts_as_is_registered_as_the_authenticated_account(ws: Harness) -> None:
+def _readable_mailboxes(ws: Harness, creator: str) -> set[str]:
+    """The mailbox groups the creator's own email reads, plus those of the account their link points at."""
+    link = ws.records.authenticator_links.get(CONNECTOR_ID)
+    emails = {creator, *([link[1]] if link else [])}
+    return {
+        group for group, perms in ws.records.record_group_permissions.items()
+        if group.startswith("mailbox:") and emails & {p.email for p in perms}
+    }
+
+
+async def test_a_listed_creator_is_never_linked_to_the_admin(ws: Harness) -> None:
+    ws.records.authenticator_emails["admin-user"] = ALICE
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == []
+    assert ws.records.authenticator_links == {}
+    assert _readable_mailboxes(ws, ALICE) == {f"mailbox:{ALICE}"}
+
+
+async def test_an_unlisted_creator_is_linked_to_the_admin(ws: Harness) -> None:
+    ws.records.authenticator_emails["admin-user"] = "vendor@elsewhere.com"
+
     await ws.sync()
 
     admin_id = ws.directory.users[ADMIN].user_id
     assert ws.records.linked_authenticators == [(CONNECTOR_ID, "admin-user", ADMIN, admin_id)]
     assert ws.records.app_users[ADMIN].source_user_id == admin_id
+    assert _readable_mailboxes(ws, "vendor@elsewhere.com") == {f"mailbox:{ADMIN}"}
+
+
+async def test_a_delegated_admins_listing_never_links_an_unlisted_creator(ws: Harness) -> None:
+    # users.list answers a delegated admin with the users of its organizational units only.
+    ws.directory.delegated_admin = True
+    ws.records.authenticator_emails["admin-user"] = "vendor@elsewhere.com"
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == []
+    assert ws.records.authenticator_links == {}
+
+
+@pytest.mark.parametrize("remembered", [True, False], ids=["marker", "control-without-marker"])
+async def test_a_creator_once_listed_is_not_linked_after_their_account_goes(ws: Harness, remembered: bool) -> None:
+    ws.records.authenticator_emails["admin-user"] = ALICE
+    await ws.sync()
+    ws.directory.users.pop(ALICE)
+    ws.records.app_users.pop(ALICE)
+    if not remembered:
+        ws.records.listed_authenticators.clear()
+
+    await ws.sync()
+
+    admin_id = ws.directory.users[ADMIN].user_id
+    expected = [] if remembered else [(CONNECTOR_ID, "admin-user", ADMIN, admin_id)]
+    assert ws.records.linked_authenticators == expected
+
+
+async def test_a_stale_link_goes_on_the_next_sync(ws: Harness) -> None:
+    ws.records.authenticator_emails["admin-user"] = ALICE
+    ws.records.authenticator_links[CONNECTOR_ID] = ("admin-user", ADMIN, ws.directory.users[ADMIN].user_id)
+
+    await ws.sync()
+
+    assert ws.records.authenticator_links == {}
+
+
+async def test_an_alias_creator_is_not_linked(ws: Harness) -> None:
+    ws.directory.aliases["alice.a@example.com"] = ALICE
+    ws.records.authenticator_emails["admin-user"] = "Alice.A@example.com"
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == []
+    assert ws.records.authenticator_links == {}
+
+
+async def test_an_admin_alias_creator_keeps_the_link(ws: Harness) -> None:
+    ws.directory.aliases["root@example.com"] = ADMIN
+    ws.records.authenticator_emails["admin-user"] = "root@example.com"
+
+    await ws.sync()
+
+    assert ws.records.authenticator_links[CONNECTOR_ID][1] == ADMIN
 
 
 async def test_a_failed_member_read_keeps_the_stored_group_and_the_rest_sync(ws: Harness, backoff_sleeps: list[float]) -> None:

@@ -27,6 +27,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
@@ -74,6 +75,7 @@ from app.connectors.sources.google.common.access_problems import (
     setup_problem_message,
 )
 from app.connectors.sources.google.common.apps import GmailTeamApp
+from app.connectors.sources.google.common.directory_listing import partial_directory_reason
 from app.connectors.sources.google.common.gmail_call_policy import GmailCallPolicy
 from app.connectors.sources.google.common.gmail_endpoint import gmail_api_base_url
 from app.connectors.sources.google.common.gmail_errors import classify
@@ -314,6 +316,9 @@ class GoogleGmailTeamConnector(BaseConnector):
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
+        # This sync's user listing: each user's primary email and aliases (but the admin's aliases: a creator using
+        # one is the admin), so a creator the directory lists is never linked to the admin.
+        self._user_listing: SourceUserListing | None = None
         self.synced_user_emails: set[str] = set()  # confirmed workspace members, used to prioritize impersonation candidates
 
         # What the current run could not do; decides its outcome and what a full sync may remove.
@@ -1382,7 +1387,7 @@ class GoogleGmailTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.debug("Could not read the Google Workspace admin %s: %s", admin_email, e)
             return
-        await self.register_authenticated_source_user(email, source_user_id)
+        await self.register_authenticated_source_user(email, source_user_id, listing=self._user_listing)
 
     async def run_sync(self) -> None:
         """
@@ -1393,6 +1398,9 @@ class GoogleGmailTeamConnector(BaseConnector):
         """
         self._sync_health = GmailSyncHealth()
         try:
+            # Needs nothing below, so a run that fails early still removes a link it should not keep.
+            await self.drop_authenticator_link_if_listed()
+
             self.logger.info("Starting Google Gmail workspace connector sync")
 
             # Load sync and indexing filters
@@ -1400,10 +1408,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.config_service, "gmail", self.connector_id, self.logger
             )
 
-            await self._register_authenticated_identity()
-
             self.logger.info("Syncing users...")
             await self._sync_users()
+            await self._register_authenticated_identity()
 
             self.logger.info("Syncing user groups...")
             await self._sync_user_groups()
@@ -1432,6 +1439,8 @@ class GoogleGmailTeamConnector(BaseConnector):
 
     async def _sync_users(self) -> None:
         """Sync all users from Google Workspace Admin API."""
+        # The directory lists suspended and archived users too.
+        listing = self._user_listing = SourceUserListing(includes_inactive=True)
         try:
             if not self.admin_data_source:
                 self.logger.error("Admin data source not initialized. Call init() first.")
@@ -1440,6 +1449,10 @@ class GoogleGmailTeamConnector(BaseConnector):
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
             page_token: Optional[str] = None
+            pages_read = 0
+            admin_address = (
+                (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail") or ""
+            ).strip().lower()
 
             while True:
                 try:
@@ -1454,7 +1467,11 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                     users_data = result.get("users", [])
                     if not users_data:
+                        # An empty page after users may be a cut listing, with or without a token.
+                        if result.get("nextPageToken") or pages_read:
+                            listing.cut("an empty user page before the end of the listing")
                         break
+                    pages_read += 1
 
                     # Transform Google user dictionaries to AppUser objects
                     for user in users_data:
@@ -1463,7 +1480,18 @@ class GoogleGmailTeamConnector(BaseConnector):
                             email = user.get("primaryEmail") or user.get("email", "")
                             if not email:
                                 self.logger.warning(f"Skipping user without email: {user.get('id')}")
+                                listing.add_row(None, user.get("id"))
                                 continue
+                            listing.add_row(email, user.get("id"))
+                            row_addresses = {
+                                a.strip().lower()
+                                for a in [*(user.get("aliases") or []), *(user.get("nonEditableAliases") or [])]
+                                if a
+                            }
+                            # An alias of the source account itself means the creator is that account's owner.
+                            if admin_address not in {email.strip().lower(), *row_addresses}:
+                                for alias in row_addresses:
+                                    listing.add_row(alias, user.get("id"))
 
                             # Get full name
                             name_info = user.get("name", {})
@@ -1507,6 +1535,8 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                         except Exception as e:
                             self.logger.error(f"Error processing user {user.get('id', 'unknown')}: {e}", exc_info=True)
+                            # The creator's own row may be the one lost, which would make them look unlisted.
+                            listing.row_failed(str(e))
                             continue
 
                     # Check for next page
@@ -1519,6 +1549,13 @@ class GoogleGmailTeamConnector(BaseConnector):
                 except Exception as e:
                     self.logger.error(f"Error fetching users page: {e}", exc_info=True)
                     raise
+
+            if not listing.is_cut:
+                partial = await partial_directory_reason(self.admin_data_source, admin_address, self.logger)
+                if partial:
+                    listing.cut(partial)
+                else:
+                    listing.finish()
 
             if not all_users:
                 self.logger.warning("No users found in Google Workspace")

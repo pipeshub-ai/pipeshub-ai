@@ -40,6 +40,10 @@ from app.connectors.core.base.connector.connector_service import (
     ConnectorInitError,
     IncompleteSyncError,
 )
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -620,6 +624,8 @@ class JiraConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # This sync's user listing, for the authenticator's link; None until _fetch_users builds one.
+        self._user_listing: SourceUserListing | None = None
         # Members of the product groups this run, by account id; None when they could not be read.
         self._licensed_account_ids: set[str] | None = None
         # True when this sync kept stored groups, roles, a lead, a project or its issues after
@@ -1040,6 +1046,9 @@ class JiraConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Main sync flow: users → groups → projects/roles → issues → deletions."""
         try:
+            # First, with no source call: it can raise outside its own try, and must not skip the removal pass.
+            self._user_listing = None
+            await self.drop_authenticator_link_if_listed()
             await self._expire_org_gate()
             # 1. Init is done by event_service / setup before run_sync is scheduled
             if not self.data_source:
@@ -1048,10 +1057,6 @@ class JiraConnector(BaseConnector):
                 )
                 init_error._notification_sent = True
                 raise init_error
-
-            await self.register_authenticated_source_user(
-                self._authenticated_jira_email, self._authenticated_jira_account_id
-            )
 
             # 2. Load latest sync/indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -1095,6 +1100,10 @@ class JiraConnector(BaseConnector):
             await self._withdraw_ineligible_app_users(
                 jira_users, unlicensed_ids | (
                     self._deactivated_account_ids if self._directory_read_complete() else self._shown_inactive_ids)
+            )
+            await self.register_authenticated_source_user(
+                self._authenticated_jira_email, self._authenticated_jira_account_id,
+                listing=self._user_listing,
             )
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
@@ -2434,6 +2443,7 @@ class JiraConnector(BaseConnector):
             raise ValueError("DataSource not initialized")
 
         self._user_read_unfinished = False
+        self._user_listing = None
 
         # ====================================================================
         # Phase 1: DB reads (0 API calls)
@@ -2572,7 +2582,61 @@ class JiraConnector(BaseConnector):
                 "every group's members and project role, and the lead and access of projects that name "
                 "a missing user, are kept as stored this sync"
             )
+        self._user_listing = self._listing_of(raw_jira_users, resolved)
+        await self._settle_authenticator(self._user_listing)
         return list(resolved.values())
+
+    def _listing_of(self, raw_jira_users: list[dict[str, Any]], resolved: dict[str, AppUser]) -> SourceUserListing:
+        """The bulk read as a listing for the authenticator's link. /users/search lists inactive and deleted
+        accounts too; an account whose email neither the read nor the reverse lookup resolved is an
+        unidentified row. A read that was refused or cut short proves no one absent."""
+        listing = SourceUserListing(includes_inactive=True)
+        for user in raw_jira_users:
+            if user.get("accountType") != "atlassian":
+                continue
+            account_id = user.get("accountId")
+            email = user.get("emailAddress") if isinstance(user.get("emailAddress"), str) else None
+            if not (email and email.strip()) and account_id in resolved:
+                email = resolved[account_id].email
+            listing.add_row(email, account_id)
+        if self._user_read_unfinished:
+            listing.cut("the user list was not read to its end")
+        elif self._user_bulk_forbidden or self._user_bulk_refused:
+            listing.cut("the user list was refused")
+        else:
+            listing.finish()
+        return listing
+
+    async def _settle_authenticator(self, listing: SourceUserListing) -> None:
+        """When the read cannot tell, look the authenticator up by email: found, they are PRESENT. The user
+        search lists active users only, so not finding them shows nothing about a deactivated account and
+        leaves them UNKNOWN."""
+        email = (await self.authenticator_email() or "").strip().lower()
+        if not email or listing.presence(email) is not Presence.UNKNOWN:
+            return
+        rows = await self._find_atlassian_accounts(email)
+        if rows is not None and self._names_email(rows, email):
+            listing.settle(email, Presence.PRESENT)
+
+    async def _find_atlassian_accounts(self, email: str) -> list[dict] | None:
+        """The user accounts the user search returns for an email; None when it gives no answer."""
+        try:
+            response = await self._call_with_retry(
+                lambda ds: ds.find_users(query=email, maxResults=50), ctx="looking up the authenticator",
+            )
+            if response.status != HttpStatusCode.OK.value:
+                return None
+            rows = self._safe_json_parse(response, "authenticator lookup")
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the Jira users: %s", e)
+            return None
+        if not isinstance(rows, list):
+            return None
+        return [r for r in rows if isinstance(r, dict) and r.get("accountType", "atlassian") == "atlassian"]
+
+    @staticmethod
+    def _names_email(rows: list[dict], email: str) -> bool:
+        return any((r.get("emailAddress") or "").strip().lower() == email for r in rows)
 
     async def _fetch_all_jira_users_bulk(self) -> list[dict[str, Any]]:
         """

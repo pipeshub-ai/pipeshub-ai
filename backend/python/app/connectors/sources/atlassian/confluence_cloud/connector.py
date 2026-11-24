@@ -42,6 +42,10 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
 )
+from app.connectors.core.base.connector.source_user_listing import (
+    Presence,
+    SourceUserListing,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -299,6 +303,12 @@ def images_not_inlined(attachments: list[dict[str, Any]]) -> set[str]:
 
 # Most users /wiki/rest/api/search/user?cql=type=user returns (Atlassian's documented cap).
 USER_SEARCH_CAP = 10_000
+# Rows asked of Jira's user search per lookup; a page this full may hide the match.
+JIRA_USER_SEARCH_PAGE = 50
+
+
+def _names_email(rows: list[dict], email: str) -> bool:
+    return any((r.get("emailAddress") or "").strip().lower() == email for r in rows)
 
 # Confluence v2 space permission access-class principals (ROLES-mode / default ACLs), as
 # normalised by _access_class_id: Cloud spells them "access-class"/"ALL_LICENSED_USERS" or
@@ -583,6 +593,8 @@ class ConfluenceConnector(BaseConnector):
         # Email from GET /wiki/rest/api/user/current (cached in init)
         self._authenticated_confluence_email: str | None = None
         self._authenticated_confluence_account_id: str | None = None
+        # This run's user listing, for the authenticator's link; None until _sync_users builds one.
+        self._user_listing: SourceUserListing | None = None
 
         # Initialize sync points for incremental sync
         def _create_sync_point(sync_data_point_type: SyncDataPointType) -> SyncPoint:
@@ -931,16 +943,17 @@ class ConfluenceConnector(BaseConnector):
         self._sync_finished = False
         self._now_blocks = {}
         try:
+            # Reset so a value left by an earlier run never counts as this run's listing. The removal
+            # pass needs no client, so a run that cannot start still removes a link it should not keep.
+            self._user_listing = None
+            await self.drop_authenticator_link_if_listed()
+
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
 
             # Ensure client is initialized
             if not self.external_client or not self.data_source:
                 raise Exception("Confluence client not initialized. Call init() first.")
-
-            await self.register_authenticated_source_user(
-                self._authenticated_confluence_email, self._authenticated_confluence_account_id
-            )
 
             # Load sync and indexing filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -950,10 +963,17 @@ class ConfluenceConnector(BaseConnector):
 
             # Step 1: Sync users
             await self._sync_users()
+            # The group sync can stop the run on Atlassian's quota: what the user search showed removes
+            # a link first.
+            await self.drop_authenticator_link_if_listed(self._user_listing)
 
             # Step 2: Sync groups and memberships
             await self._sync_user_groups()
             await self._reconcile_inactive_app_users()
+            await self.register_authenticated_source_user(
+                self._authenticated_confluence_email, self._authenticated_confluence_account_id,
+                listing=self._user_listing,
+            )
 
             # Step 3: Sync spaces
             spaces = await self._sync_spaces()
@@ -1261,6 +1281,10 @@ class ConfluenceConnector(BaseConnector):
         try:
             self.logger.info("Starting user synchronization...")
             self._held_back_users = []
+            # The user search pages by offset with no snapshot, so a user that shifts between pages is
+            # skipped: it can show the authenticator present, never absent.
+            listing = self._user_listing = SourceUserListing(includes_inactive=False)
+            listing.cut("the user search pages by offset and may skip a user")
 
             # Pagination variables
             batch_size = 100
@@ -1284,18 +1308,27 @@ class ConfluenceConnector(BaseConnector):
                     self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
                     self._note_problem("Couldn't read the Confluence user list (HTTP %s)" % (response.status if response else "no response"))
                     user_list_complete = False
+                    listing.cut("a user page could not be read")
                     break
 
                 response_data = response.json()
-                users_data = response_data.get("results", [])
+                users_data = response_data.get("results") if isinstance(response_data, dict) else None
+                if not isinstance(users_data, list):
+                    # Not a page of users: it says nothing about whether more follow.
+                    self._note_problem("The Confluence user list returned a page with no user list")
+                    user_list_complete = False
+                    listing.cut("a user page had no user list")
+                    break
 
                 if not users_data:
+                    listing.finish()
                     break
                 page_ids = {r.get("user", {}).get("accountId") or r.get("accountId") for r in users_data} - {None}
                 if not page_ids - seen_account_ids:
                     # The same page again: the offset is being ignored, so stop rather than loop.
                     self._note_problem("The Confluence user list repeated a page, so it may not have been read to the end")
                     user_list_complete = False
+                    listing.cut("the user search repeated a page")
                     break
                 seen_account_ids |= page_ids
 
@@ -1307,6 +1340,7 @@ class ConfluenceConnector(BaseConnector):
 
                     # Skip if no email
                     email = user_data.get("email", "").strip()
+                    listing.add_row(email or None, user_data.get("accountId"))
                     if not email:
                         self.logger.warning(f"Skipping user creation with name : {user_data.get('displayName')}, Reason: No email found for the user")
                         total_skipped += 1
@@ -1336,6 +1370,7 @@ class ConfluenceConnector(BaseConnector):
                 start += len(users_data)
 
             if len(seen_account_ids) >= USER_SEARCH_CAP:
+                listing.cut("the user search is capped")
                 # Atlassian: "cql=type=user will return up to 10k users".
                 self._note_problem(
                     f"Confluence's user search returns at most {USER_SEARCH_CAP:,} users, so users past that "
@@ -1344,6 +1379,7 @@ class ConfluenceConnector(BaseConnector):
             elif user_list_complete and seen_account_ids:
                 await self._withdraw_users_gone_from_source(seen_account_ids)
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
+            await self._settle_authenticator(listing)
 
             try:
                 if user_list_complete and len(seen_account_ids) < USER_SEARCH_CAP:
@@ -1386,6 +1422,57 @@ class ConfluenceConnector(BaseConnector):
             return value
         return ((shared or {}).get(OAuthConfigKeys.CONFIG) or {}).get(INCLUDE_JIRA_SCOPE)
 
+    async def _settle_authenticator(self, listing: SourceUserListing) -> None:
+        """When the user search did not show the authenticator, look them up through the site's Jira user
+        search, which matches hidden emails too: found, they are PRESENT. It lists active users only, so not
+        finding them leaves them UNKNOWN."""
+        email = (await self.authenticator_email() or "").strip().lower()
+        if not email or listing.presence(email) is Presence.PRESENT:
+            return
+        try:
+            if not await self._jira_user_search_allowed():
+                return
+        except Exception as e:
+            self.logger.warning("Could not tell whether the connector may search Jira's users: %s", e)
+            return
+        rows = await self._find_jira_accounts(email)
+        if rows is not None and _names_email(rows, email):
+            listing.settle(email, Presence.PRESENT)
+
+    async def _jira_user_search_allowed(self) -> bool:
+        """An OAuth connector reaches Jira only when its app was given Jira's scope."""
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        auth_config = (config or {}).get("auth") or {}
+        if (auth_config.get("authType") or "OAUTH").upper() != "OAUTH":
+            return True
+        return include_jira_scope_enabled(await self._include_jira_scope_setting(auth_config))
+
+    async def _find_jira_accounts(self, email: str) -> list[dict] | None:
+        """The Atlassian accounts the site's Jira user search returns for an email; None when it gives
+        no answer, or a row that is not an account."""
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.search_jira_users(email, max_results=JIRA_USER_SEARCH_PAGE)
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                return None
+            rows = response.json()
+        except AtlassianQuotaExhausted as quota_error:
+            self._forget_jira_quota(quota_error)
+            return None
+        except Exception as e:
+            self.logger.warning("Could not look up the authenticator among the Jira users: %s", e)
+            return None
+        if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+            return None
+        return [r for r in rows if r.get("accountType", "atlassian") == "atlassian"]
+
+    def _forget_jira_quota(self, error: AtlassianQuotaExhausted) -> None:
+        """A Jira call hit Jira's quota, not Confluence's: undo the pause the shared policy set for that
+        call. A pause the call did not set (Confluence's own, or one another request set meanwhile) stays."""
+        policy = self._client_policy
+        if policy is not None and error.set_by_this_call and policy.quota_reset_at == error.reset_at:
+            policy.quota_reset_at = None
+
     async def _link_platform_users_via_jira(self, confluence_account_ids: set[str] | None = None) -> None:
         """
         Link active platform users to Confluence via Jira user search.
@@ -1397,17 +1484,11 @@ class ConfluenceConnector(BaseConnector):
         Uses batch-parallel processing with bounded concurrency to efficiently handle
         large numbers of unlinked users while respecting API rate limits.
         """
-        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
-        auth_config = (config or {}).get("auth") or {}
-        auth_type = (auth_config.get("authType") or "OAUTH").upper()
-        if auth_type == "OAUTH":
-            if not include_jira_scope_enabled(await self._include_jira_scope_setting(auth_config)):
-                return
+        if not await self._jira_user_search_allowed():
+            return
 
         datasource = await self._get_fresh_datasource()
         org_id = self.data_entities_processor.org_id
-        policy = self._client_policy
-        quota_already_spent = bool(policy and policy.quota_reset_at and policy.quota_reset_at > time.time())
 
         active_users = await self.data_entities_processor.get_all_active_users()
         linked_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
@@ -1458,10 +1539,8 @@ class ConfluenceConnector(BaseConnector):
                     try:
                         account_id = await datasource.find_user_account_id_by_email(email)
                     except AtlassianQuotaExhausted as quota_error:
-                        # Jira's quota, not Confluence's: undo the mark the shared policy just set
-                        # (unless Confluence's own quota was already spent) and stop linking.
-                        if policy is not None and not quota_already_spent:
-                            policy.quota_reset_at = None
+                        # Jira's quota, not Confluence's: stop linking.
+                        self._forget_jira_quota(quota_error)
                         raise RuntimeError(f"Jira rate limit: {quota_error}") from quota_error
                     if not account_id:
                         not_found_count += 1

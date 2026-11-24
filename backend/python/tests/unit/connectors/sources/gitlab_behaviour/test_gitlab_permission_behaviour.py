@@ -31,7 +31,10 @@ async def test_project_roles_decide_which_parts_of_a_project_each_person_sees(ha
     for part in ("-confidential-work-items", "-merge-requests", "-code-repository"):
         assert "bob@example.com" not in web[part]
     for part in web.values():
-        assert {"alice@example.com", "owner@example.com"} <= part
+        assert "alice@example.com" in part
+        # The creator is not the token's account, and ops-bot's and dave's rows show no email, so the listing
+        # proves nothing about them: they get nothing from ops-bot's view.
+        assert "owner@example.com" not in part
     # dave has no public email, so his access is parked on a placeholder group for him.
     assert f"group:{DAVE}" in web["-code-repository"]
     # Access granted on a parent group reaches projects in its subgroups; not sideways.
@@ -93,13 +96,14 @@ async def test_every_member_becomes_a_user_even_when_one_profile_cannot_be_read(
 
     await harness.sync()
 
-    assert {u.email for u in db.app_users.values()} >= {"alice@example.com", "bob@example.com", "owner@example.com"}
+    assert {u.email for u in db.app_users.values()} >= {"alice@example.com", "bob@example.com"}
     # Without the profile there is no public email, so carol is parked on a placeholder group, not dropped.
     assert f"group:{CAROL}" in db.group_access(f"{API}-code-repository")
 
 
 async def test_an_admin_token_with_no_memberships_still_reaches_every_project(harness, gitlab, db) -> None:
-    gitlab.add_user(1, "root", is_admin=True)
+    # The token is the creator's own account: GitLab returns their address to it.
+    gitlab.add_user(1, "root", is_admin=True, private_email="owner@example.com")
     gitlab.add_user(ALICE, "alice", email="alice@example.com")
     gitlab.token_for(1)
     gitlab.add_group("solo")
@@ -111,6 +115,37 @@ async def test_an_admin_token_with_no_memberships_still_reaches_every_project(ha
     assert {"/solo/one/-/blob/HEAD/a.py", "/solo/two/-/blob/HEAD/b.py"} <= set(db.by_type("CODE_FILE"))
     assert "owner@example.com" in db.group_access("22-code-repository")
     assert "alice@example.com" not in db.group_access("22-code-repository")
+
+
+async def test_an_admin_token_that_is_not_the_creators_gives_a_creator_with_an_account_no_creator_only_access(
+    harness, gitlab, db,
+) -> None:
+    gitlab.add_user(1, "root", is_admin=True, private_email="root@example.com")
+    gitlab.add_user(ALICE, "alice", email="alice@example.com")
+    gitlab.add_user(7, "owner", email="owner@example.com")
+    gitlab.token_for(1)
+    gitlab.add_group("solo")
+    gitlab.add_project(21, "solo/one", members={ALICE: REPORTER, 7: REPORTER}, files={"a.py": "x = 1\n"})
+    gitlab.add_project(22, "solo/two", files={"b.py": "y = 2\n"})
+
+    await harness.sync()
+
+    assert "owner@example.com" not in db.group_access("22-code-repository")
+    assert "1" not in db.app_users, "no stub: the creator is listed under their own account"
+
+
+async def test_an_admin_token_that_is_not_the_creators_gives_an_unlisted_creator_its_view(harness, gitlab, db) -> None:
+    # Every member row names its person and none is the creator: they have no GitLab account.
+    gitlab.add_user(1, "root", is_admin=True, private_email="root@example.com")
+    gitlab.add_user(ALICE, "alice", email="alice@example.com")
+    gitlab.token_for(1)
+    gitlab.add_group("solo")
+    gitlab.add_project(21, "solo/one", members={ALICE: REPORTER}, files={"a.py": "x = 1\n"})
+    gitlab.add_project(22, "solo/two", files={"b.py": "y = 2\n"})
+
+    await harness.sync()
+
+    assert "owner@example.com" in db.group_access("22-code-repository")
 
 
 async def test_project_listing_follows_keyset_pages_to_the_end(harness, gitlab, db) -> None:

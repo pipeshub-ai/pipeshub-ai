@@ -25,6 +25,11 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from app.connectors.core.base.connector.source_user_listing import Presence
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    AuthenticatorLink,
+    AuthenticatorLinkResult,
+)
 from app.models.entities import MessageRecord, Record, RecordGroup
 from app.models.permission import EntityType
 from app.services.graph_db.common.record_visibility import is_live_record
@@ -423,6 +428,7 @@ class FakeSlackStore:
         self.authenticator_email = authenticator_email
         # (email, source user id) per link the connector asked for, and how often it unlinked.
         self.links: list[tuple[str | None, str | None]] = []
+        self.stored_link: tuple[str | None, str | None] | None = None
         self.unlinks = 0
         # Lowercased emails holding the membership an external collaborator gets on the app.
         # A member's own comes from on_new_app_users.
@@ -457,11 +463,36 @@ class FakeSlackStore:
 
     async def link_authenticator_to_source_user(
         self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object,
-    ) -> None:
+        *, presence: Presence,
+    ) -> AuthenticatorLinkResult:
+        """The real processor's rule: an authenticator the listing shows PRESENT is never linked and loses an
+        existing link; only one proved ABSENT is linked."""
+        creator = (self.authenticator_email or "").strip().lower()
+        if creator and presence is Presence.PRESENT:
+            had, self.stored_link = self.stored_link, None
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
+        if not email or not source_user_id:
+            return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+        if creator and email.strip().lower() == creator:
+            # Their own account: nothing to link, and a link to another account goes.
+            had, self.stored_link = self.stored_link, None
+            return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
+        if presence is not Presence.ABSENT:
+            return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
         self.links.append((email, source_user_id))
+        self.stored_link = (email, source_user_id)
+        return AuthenticatorLinkResult(AuthenticatorLink.UNCHANGED)
+
+    async def authenticator_has_source_account(self, connector_id: str, created_by: str | None) -> bool:
+        """TRANSITIONAL, as the processor's: a stored source user with the authenticator's email."""
+        creator = (self.authenticator_email or "").strip().lower()
+        return bool(creator) and creator in {
+            (u.email or "").strip().lower() for u in self.app_users.values() if getattr(u, "source_user_id", None)
+        }
 
     async def unlink_authenticator(self, connector_id: str) -> None:
         self.unlinks += 1
+        self.stored_link = None
 
     async def on_external_app_users(self, emails: list[str], connector_id: str) -> None:
         """Create-only, as the processor's: a member keeps the edge the user sync gave them."""

@@ -57,6 +57,11 @@ class FakeRecordsDb:
         email = self.creators.get(user_id)
         return SimpleNamespace(id=user_id, email=email) if email else None
 
+    async def get_app_authenticator_user(self, connector_id: str, created_by: str | None) -> dict[str, Any]:
+        """No instance here records authenticatedBy, so the creator authenticated it."""
+        email = self.creators.get(created_by or "")
+        return {"_key": created_by, "email": email} if email else {}
+
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         """A base Record, as both graph stores rebuild it: no subclass fields."""
         from app.models.entities import Record

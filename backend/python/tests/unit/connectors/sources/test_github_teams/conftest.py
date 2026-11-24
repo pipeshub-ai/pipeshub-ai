@@ -25,6 +25,7 @@ def make_mock_connector() -> MagicMock:
     """
     c = MagicMock()
     c._register_authenticated_identity = AsyncMock()
+    c.drop_authenticator_link_if_listed = AsyncMock()
     from app.config.constants.arangodb import Connectors
 
     c.connector_id = "github-conn-1"

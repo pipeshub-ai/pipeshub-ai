@@ -606,10 +606,12 @@ class TestInjectCreatorMemberStubNone:
 
 class TestSyncUsersFromProjectsGroups:
     async def test_creator_email_bypass(self) -> None:
-        """Creator with no public_email uses PipesHub email."""
+        """A creator who holds the token (GET /user returned their email) and has no public_email on
+        the token account's row gets their PipesHub email on it."""
         c = make_mock_connector()
         c._gitlab_user_id = 42
         c.creator_email = "creator@example.com"
+        c._token_account_email = "creator@example.com"
 
         # Member with no public_email and no email, but matches creator id
         member = SimpleNamespace(

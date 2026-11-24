@@ -191,7 +191,7 @@ class LocalFsTransactionStore(MockTransactionStore):
         self.txn = None
         self.graph_provider = _GraphProviderView(store)
 
-    async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
+    async def get_app_by_id(self, connector_id: str, *, raise_on_error: bool = False) -> AppMetadata | None:
         doc = self._s.get_node(CollectionNames.APPS.value, connector_id)
         return AppMetadata.from_db_document(doc) if doc is not None else None
 

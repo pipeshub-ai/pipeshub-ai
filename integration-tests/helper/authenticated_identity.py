@@ -3,7 +3,8 @@
 A connector that can name the source account it reads as links the PipesHub user who
 authenticated it to that account at the start of every sync, so that user also resolves
 the account's permissions for this one connector. When both carry the same email there
-is nothing to link, and none may exist.
+is nothing to link, and none may exist. A user the connector lists as one of the source's
+own users has an account there already and is never linked.
 
 The shared test tenants usually authenticate as the harness user's own address, so most
 runs check that branch; a tenant whose source account has another address checks the
@@ -41,6 +42,21 @@ async def _linked_user_keys(
     ]
 
 
+async def authenticator_is_listed(
+    graph_provider: GraphProviderProtocol, user_key: str, connector_id: str,
+) -> bool:
+    """Whether the connector's own user sync gave this user a source account on it."""
+    edges = await graph_provider.get_edges_from_node(
+        f"{CollectionNames.USERS.value}/{user_key}", CollectionNames.USER_APP_RELATION.value,
+    )
+    return any(
+        (e.get("_to") or e.get("to_id") or "").split("/")[-1] == connector_id
+        and e.get("sourceUserId")
+        and not e.get("isExternalUser")
+        for e in edges or []
+    )
+
+
 async def assert_authenticated_identity_link(
     graph_provider: GraphProviderProtocol,
     connector_id: str,
@@ -51,13 +67,23 @@ async def assert_authenticated_identity_link(
 
     ``email`` and ``source_user_id`` come from the source's own "me" call, normalised the
     way the connector normalises them. With either missing the connector has nothing to
-    link, so no link may exist.
+    link, so no link may exist. Neither may one exist for an authenticator the connector
+    lists as a user of the source.
     """
     authenticator = await _authenticator(graph_provider, connector_id)
     own_email = (authenticator.get("email") or "").lower()
     linked = await _linked_user_keys(
         graph_provider, authenticator.get("_key") or authenticator.get("id"), connector_id,
     )
+
+    if await authenticator_is_listed(
+        graph_provider, authenticator.get("_key") or authenticator.get("id"), connector_id,
+    ):
+        assert linked == [], (
+            f"connector {connector_id} links {own_email} to {linked}, but the connector lists "
+            f"that user as a user of the source, so they already have their own account there"
+        )
+        return
 
     if not email or not source_user_id or email.lower() == own_email:
         assert linked == [], (

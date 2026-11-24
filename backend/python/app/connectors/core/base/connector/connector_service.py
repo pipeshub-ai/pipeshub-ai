@@ -14,8 +14,13 @@ from pydantic import BaseModel, Field
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    LISTED_AUTHENTICATORS_KEY,
+    AuthenticatorLink,
+    AuthenticatorLinkResult,
     DataSourceEntitiesProcessor,
+    listed_authenticator_keys,
 )
+from app.connectors.core.base.connector.source_user_listing import Presence, SourceUserListing
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
@@ -816,15 +821,20 @@ class BaseConnector(ABC):
         return self._connector_group_permission
 
     async def register_authenticated_source_user(
-        self, email: str | None, source_user_id: str | None
+        self,
+        email: str | None,
+        source_user_id: str | None,
+        *,
+        listing: SourceUserListing | None = None,
     ) -> None:
         """Record which source account this connector is authenticated as, so the user who
         authenticated it resolves that account's permissions for this connector instance.
-        Connectors call this at the start of ``run_sync`` with the email and id of the
-        source "me" account; the id must be the one their user sync stores as sourceUserId.
-        Never aborts the sync."""
-        if not self.created_by:
-            return
+        Connectors call this after their user sync with the email and id of the source "me"
+        account (the id their user sync stores as sourceUserId) and the ``listing`` that sync
+        built. The link is made only when the listing proves the authenticator ABSENT, removed
+        when it shows them PRESENT; no listing is UNKNOWN, which can only remove a link. A
+        personal connector's account is its user's own, so it needs no listing. Never aborts
+        the sync."""
         if not email or not source_user_id:
             self.logger.warning(
                 "Connector %s: the authenticated source account's email or id could not be read "
@@ -832,21 +842,100 @@ class BaseConnector(ABC):
                 "email is granted",
                 self.connector_id, email, source_user_id,
             )
+        result = await self._link_authenticator(
+            email, source_user_id, presence=await self._authenticator_presence(listing),
+        )
+        if result is None or result.outcome is not AuthenticatorLink.LINKED:
             return
+        await self.notify(
+            type=NotificationType.CONNECTOR_INFO,
+            severity=NotificationSeverity.INFO,
+            title=self._notification_title("You see what the connector's account sees"),
+            message=(
+                f"You can see what {result.source_email} can see in this connector, "
+                "because it signs in as that account."
+            ),
+            recipient_user_ids=[result.authenticator_user_id],
+        )
+
+    async def authenticator_gets_token_view(self, listing: SourceUserListing | None) -> bool:
+        """Whether the user who authenticated this connector is given the connector account's view
+        (a grant on what the token reads) this sync: only when ``listing`` proves them ABSENT from the
+        source and the listed-authenticators marker does not hold them. Anything unknown, the marker
+        unreadable included, gives nothing. A grant given on an earlier sync is not taken back here:
+        a group rewritten from its members drops it, one whose members cannot be read keeps it."""
+        if listing is None:
+            return False
+        email = await self.authenticator_email()
+        if not email or listing.presence(email) is not Presence.ABSENT:
+            return False
+        return await self._marker_holds(email) is False
+
+    async def _marker_holds(self, email: str) -> bool | None:
+        """Whether the listed-authenticators marker holds this authenticator; None when it cannot be checked."""
+        try:
+            keys = listed_authenticator_keys(await self.config_service.get_config(
+                LISTED_AUTHENTICATORS_KEY.format(connector_id=self.connector_id), use_cache=False, raise_on_error=True,
+            ))
+            if not keys:
+                return False
+            user = await self.data_entities_processor.get_app_authenticator_user(self.connector_id, self.created_by)
+        except Exception as e:
+            self.logger.warning(
+                "Connector %s: could not check the listed-authenticators marker; granting nothing new: %s",
+                self.connector_id, e,
+            )
+            return None
+        if (user.get("email") or "").strip().lower() != email.strip().lower():
+            return False
+        return (user.get("_key") or user.get("id")) in keys
+
+    async def drop_authenticator_link_if_listed(self, listing: SourceUserListing | None = None) -> None:
+        """Remove the authenticator's link when the listed-authenticators marker holds them, or
+        when ``listing`` shows them PRESENT. Runs before a sync reads anything, so a sync that
+        fails early cannot leave a stale link, and lets a sync that cannot read its own account
+        still remove it. Never links and never aborts the sync."""
+        if self.scope == ConnectorScope.PERSONAL.value:
+            return
+        presence = await self._authenticator_presence(listing)
+        await self._link_authenticator(
+            None, None, presence=Presence.PRESENT if presence is Presence.PRESENT else Presence.UNKNOWN,
+        )
+
+    async def _authenticator_presence(self, listing: SourceUserListing | None) -> Presence:
+        """What ``listing`` proves about the user who authenticated this connector."""
+        if self.scope == ConnectorScope.PERSONAL.value:
+            return Presence.ABSENT
+        if listing is None:
+            return Presence.UNKNOWN
+        return listing.presence(await self.authenticator_email())
+
+    async def _link_authenticator(
+        self,
+        email: str | None,
+        source_user_id: str | None,
+        *,
+        presence: Presence,
+    ) -> AuthenticatorLinkResult | None:
+        if not self.created_by:
+            return None
         try:
             app_name = (
-                self.connector_name
+                None
+                if email is None and source_user_id is None
+                else self.connector_name
                 if isinstance(self.connector_name, Connectors)
                 else Connectors(self.connector_name)
             )
-            await self.data_entities_processor.link_authenticator_to_source_user(
-                self.connector_id, self.created_by, email, source_user_id, app_name
+            return await self.data_entities_processor.link_authenticator_to_source_user(
+                self.connector_id, self.created_by, email, source_user_id, app_name, presence=presence,
             )
         except Exception as e:
             self.logger.warning(
-                "Could not link the user who authenticated connector %s to source account %s: %s",
-                self.connector_id, email, e,
+                "Could not update the link from the user who authenticated connector %s to its source account: %s",
+                self.connector_id, e,
             )
+            return None
 
     async def authenticator_email(self) -> str | None:
         """Email of the PipesHub user whose credentials this connector runs with: the app's

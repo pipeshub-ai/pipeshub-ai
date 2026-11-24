@@ -300,10 +300,11 @@ class ProjectsSync:
                     # Unreadable for now is not gone: the stored group and its grants stay.
                     continue
             if not group_res.success or not group_res.data:
-                creator_permission = c.creator_user_permission()
+                creator_permission = c.creator_token_view_permission()
                 if creator_permission is None:
                     self.logger.error(
-                        "GitLab group %s not found/inaccessible (%s) and no creator identity; "
+                        "GitLab group %s not found/inaccessible (%s) and no creator to grant it to "
+                        "(no creator identity, or a creator with their own GitLab account); "
                         "child projects will be orphaned in the browse view.",
                         group_path, group_res.error,
                     )
@@ -347,8 +348,7 @@ class ProjectsSync:
                     if permission:
                         group_permissions.append(permission)
 
-                # Always ensure the creator has access to the group node
-                creator_permission = c.creator_user_permission()
+                creator_permission = c.creator_token_view_permission()
                 if creator_permission is not None and not any(
                     getattr(p, "email", None) == creator_permission.email for p in group_permissions
                 ):
@@ -402,12 +402,11 @@ class ProjectsSync:
                 "Members of project %s (%s) unreadable or empty; keeping its stored access.",
                 project_id, project_name,
             )
-            await c.data_entities_processor.on_new_record_groups(
-                [(group, None) for group in self._build_project_record_groups(project)]
-            )
+            kept = self._build_project_record_groups(project)
+            await c.data_entities_processor.on_new_record_groups([(group, None) for group in kept])
             return
         if listing_failed or listing_empty:
-            creator_perm = c.creator_user_permission()
+            creator_perm = c.creator_token_view_permission()
             if creator_perm is None:
                 if listing_failed:
                     self.logger.error(
@@ -444,12 +443,15 @@ class ProjectsSync:
             if new_level > old_level:
                 dict_member[member.id] = member
 
-        # Inject creator so Admin/Auditor personas (no membership row) get access.
+        # Inject creator so Admin/Auditor personas (no membership row) get access, but only
+        # when the creator gets the token's view: a creator listed under their own account
+        # gets what their own membership gives.
         # The project folder is granted to every member at Guest or above. Restricting
         # it to direct members drops people who arrive through the group, a filter
         # that omitted an ancestor, or a project/group share. Work items inherit the
         # project, so a duplicate grant is harmless and a missing one hides the folder.
-        c.users._inject_creator_member_into(dict_member)
+        if c._creator_token_view:
+            c.users._inject_creator_member_into(dict_member)
         c._project_reader_ids[int(project_id)] = project_reader_ids(dict_member.values())
 
         permission_project_level: list[Permission] = []
@@ -582,11 +584,12 @@ class ProjectsSync:
         Called when ``list_project_members_all`` fails or returns empty.
         """
         c = self.c
-        creator_permission = c.creator_user_permission()
+        creator_permission = c.creator_token_view_permission()
         if creator_permission is None:
             self.logger.error(
-                "Cannot fall back to creator-only permissions for project %s (%s): "
-                "no creator identity. Downstream records on this project will not be ingested.",
+                "Cannot fall back to creator-only permissions for project %s (%s): no creator to "
+                "grant it to (no creator identity, or a creator with their own GitLab account). "
+                "Downstream records on this project will not be ingested.",
                 project.id, project.path_with_namespace,
             )
             return

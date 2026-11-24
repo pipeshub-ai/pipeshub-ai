@@ -37,6 +37,7 @@ from app.connectors.core.base.connector.connector_service import (
     BaseConnector,
     ConnectorInitError,
 )
+from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     PERMISSION_HIERARCHY,
     DataSourceEntitiesProcessor,
@@ -74,6 +75,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GoogleDriveTeamApp
+from app.connectors.sources.google.common.directory_listing import partial_directory_reason
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_STREAM_FILE_GET_FIELDS,
     DRIVE_WORKSPACE_FILE_GET_FIELDS,
@@ -698,6 +700,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._returning_emails: set[str] = set()
         # Whether this run's user listing was cut (an empty page before its end); see _sync_users.
         self._listing_cut = False
+        # This sync's user listing: each user's primary email and aliases (but the admin's aliases: a creator using
+        # one is the admin), so a creator the directory lists is never linked to the admin.
+        self._user_listing: SourceUserListing | None = None
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
@@ -834,7 +839,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.debug("Could not read the Google Workspace admin %s: %s", admin_email, e)
             return
-        await self.register_authenticated_source_user(email, source_user_id)
+        await self.register_authenticated_source_user(email, source_user_id, listing=self._user_listing)
 
     async def run_sync(self) -> None:
         """
@@ -893,6 +898,9 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _run_sync_steps(self) -> None:
         try:
+            # Needs nothing below, so a run that fails early still removes a link it should not keep.
+            await self.drop_authenticator_link_if_listed()
+
             self.logger.info("Starting Google Drive enterprise connector sync")
             self._shortcut_cache = {}
 
@@ -956,11 +964,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
                 )
 
-            await self._register_authenticated_identity()
-
             # Step 1: Sync users
             self.logger.info("Syncing users...")
             await self._sync_users()
+            await self._register_authenticated_identity()
 
             # Step 2: Sync user groups and their members
             self.logger.info("Syncing user groups...")
@@ -1032,6 +1039,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _sync_users(self) -> None:
         """Sync all users from Google Workspace Admin API."""
+        # The directory lists suspended and archived users too.
+        listing = self._user_listing = SourceUserListing(includes_inactive=True)
         try:
             if not self.admin_data_source:
                 self.logger.error("Admin data source not initialized. Call init() first.")
@@ -1040,6 +1049,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
             alias_domains: dict[str, set[str]] = {}
+            admin_address = (
+                (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail") or ""
+            ).strip().lower()
             page_token: Optional[str] = None
             listing_complete = True
             ambiguous_end = False
@@ -1076,7 +1088,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                             email = user.get("primaryEmail") or user.get("email", "")
                             if not email:
                                 self.logger.warning(f"Skipping user without email: {user.get('id')}")
+                                listing.add_row(None, user.get("id"))
                                 continue
+                            listing.add_row(email, user.get("id"))
 
                             # Get full name
                             name_info = user.get("name", {})
@@ -1121,8 +1135,20 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 _email_domain(a) for a in [*(user.get("aliases") or []), *(user.get("nonEditableAliases") or [])]
                             }
 
+                            row_addresses = {
+                                a.strip().lower()
+                                for a in [*(user.get("aliases") or []), *(user.get("nonEditableAliases") or [])]
+                                if a
+                            }
+                            # An alias of the source account itself means the creator is that account's owner.
+                            if admin_address not in {email.strip().lower(), *row_addresses}:
+                                for alias in row_addresses:
+                                    listing.add_row(alias, user.get("id"))
+
                         except Exception as e:
                             self.logger.error(f"Error processing user {user.get('id', 'unknown')}: {e}", exc_info=True)
+                            # The creator's own row may be the one lost, which would make them look unlisted.
+                            listing.row_failed(str(e))
                             continue
 
                     # Check for next page
@@ -1146,6 +1172,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             else:
                 await self._user_status.forget_fingerprint()
             self._listing_cut = not listing_complete
+            if not listing_complete:
+                listing.cut("the user listing may be cut (an empty page before its end)")
+            elif partial := await partial_directory_reason(self.admin_data_source, admin_address, self.logger):
+                listing.cut(partial)
+            else:
+                listing.finish()
             if self._listing_cut:
                 self.logger.warning(
                     "The user listing may be cut (an empty page before its end); no account's status is changed on this run"

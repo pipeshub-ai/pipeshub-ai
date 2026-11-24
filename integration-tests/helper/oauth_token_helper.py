@@ -240,6 +240,44 @@ def _write_credentials_to_etcd(
     logger.info("Wrote OAuth credentials to etcd for connector %s", connector_id)
 
 
+async def delete_backend_kv_key(path: str) -> None:
+    """Delete ``path`` from the KV store the backend reads (not the test-only namespace the
+    ``config_service`` fixture writes to), and tell the backend to drop its cached copy."""
+    kv_type = os.getenv("KV_STORE_TYPE", "redis").lower()
+    if kv_type == "etcd":
+        import etcd3
+
+        host, _, port = os.getenv("ETCD_URL", "localhost:2379").split("://")[-1].partition(":")
+        client = etcd3.client(host=host, port=int(port or 2379),
+                              user=os.getenv("ETCD_USERNAME") or None, password=os.getenv("ETCD_PASSWORD") or None)
+        client.delete(path)
+        return
+    if kv_type != "redis":
+        raise ValueError(f"Unsupported KV_STORE_TYPE: {kv_type!r}. Expected 'redis' or 'etcd'.")
+    from app.services.redis.config import ClientOptions, RedisConnectionConfig
+    from app.services.redis.connection_provider_factory import (
+        get_prepared_redis_provider,
+    )
+
+    provider = await get_prepared_redis_provider(
+        RedisConnectionConfig.from_host_port(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            password=os.getenv("REDIS_PASSWORD") or None,
+            db=int(os.getenv("REDIS_DB", "0")),
+        )
+    )
+    client = provider.create_client(ClientOptions(decode_responses=False))
+    ns = provider.key_namespace
+    ns_prefix = f"{ns}:" if ns else ""
+    try:
+        # The backend's prefix (compose: REDIS_KV_PREFIX, default pipeshub:kv:), as _write_credentials_to_redis uses.
+        await client.delete(f"{ns_prefix}{os.getenv('REDIS_KV_PREFIX', 'pipeshub:kv:')}{path}")
+        await client.publish(f"{ns_prefix}{_CACHE_INVALIDATION_CHANNEL}", path)
+    finally:
+        await client.aclose()
+
+
 async def _write_credentials_to_kv(
     connector_id: str,
     access_token: str,
