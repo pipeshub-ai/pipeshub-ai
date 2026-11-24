@@ -53,6 +53,13 @@ def test_expected_heads_read_from_the_files(branch):
     assert epoch_lint.expected_heads([branch]) == ({"identity": (4, 3)}, {"identity_0004"})
 
 
+def test_epoch_lint_reads_annotated_revision_attributes(branch):
+    (branch / "0004_annotated.py").write_text('revision: str = "identity_0004"\ndown_revision: str = "identity_0002"\nmin_code_epoch: int = 4\n')
+    assert "expected 'identity_0003'" in "\n".join(epoch_lint.lint_branch(branch))
+    (branch / "0004_annotated.py").write_text('revision: str = "identity_0004"\ndown_revision: str = "identity_0003"\nmin_code_epoch: int = 4\n')
+    assert epoch_lint.expected_heads([branch]) == ({"identity": (4, 4)}, {"identity_0004"})
+
+
 def test_expected_heads_refuse_a_second_head(branch):
     _rev(branch, "identity", 4, 3, name="this_pr")
     (branch / "0005_other_pr.py").write_text('revision = "identity_0005"\ndown_revision = "identity_0003"\n')
@@ -340,6 +347,36 @@ def test_lint_create_if_not_exists_of_another_modules_table(tmp_path, monkeypatc
     assert lint.lint_file(f) == []
 
 
+@pytest.mark.parametrize("annotated", [False, True])                  # ONLINE_DROPS: list[str] = [...] is the same declaration
+@pytest.mark.parametrize("mark,flagged", [
+    ("", True),
+    ("min_code_epoch = 0\n", True),                                    # no mark, as for every other rule
+    ('older_code_compatible = "unused"\n', True),                      # a reason of fewer than four words is none
+    ('older_code_compatible = "no plan of any release reads these"\n', False),
+    ('older_code_compatible: str = "no plan of any release reads these"\n', False),
+    ("min_code_epoch = 1\n", False),
+    ("min_code_epoch: int = 1\n", False),
+])
+def test_lint_a_revision_that_retires_indexes_says_whether_older_code_needs_them(tmp_path, monkeypatch, mark, flagged, annotated):
+    """ONLINE_DROPS is dropped by db.migrate, not by SQL the lint reads, so the revision itself must say min_code_epoch or why older code still works."""
+    monkeypatch.setattr(lint, "version_locations", lambda: [str(tmp_path)])
+    (tmp_path / "0002_retire.py").write_text(mark + f'ONLINE_DROPS{": list[str]" if annotated else ""} = ["a.ix"]\n')
+    assert bool(lint.retiring_violations()) is flagged
+    if flagged:
+        assert "set min_code_epoch (older code plans with them) or older_code_compatible" in lint.retiring_violations()[0]
+
+
+@pytest.mark.parametrize("raw,want", [("", None), (" ", None), ("512", "512MB"), ("0", 2), ("-1", 2), ("1.5", 2), ("1GB", 2), ("9999999", 2)])
+def test_the_index_build_memory_is_a_whole_number_of_megabytes(monkeypatch, raw, want):
+    monkeypatch.setenv("PG_INDEX_BUILD_MEMORY_MB", raw)
+    if want == 2:
+        with pytest.raises(migrate.RunnerError) as e:
+            migrate.build_memory()
+        assert e.value.code == migrate.EXIT_CONFIG and "PG_INDEX_BUILD_MEMORY_MB" in str(e.value)
+    else:
+        assert migrate.build_memory() == want
+
+
 @pytest.mark.parametrize("sql,flagged", [
     ("REVOKE CREATE ON SCHEMA a FROM pipeshub_vetted_a", False),
     ("REVOKE pipeshub_vetted_a, pipeshub_vetted_b FROM pipeshub_owner", False),
@@ -434,7 +471,7 @@ def test_pooler_is_refused(monkeypatch):
 
 def test_schema_requirements_from_the_tree():
     from db import schema_requirements
-    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 18, "code": 18}}
+    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 19, "code": 19}}
     with pytest.raises(SystemExit):
         schema_requirements.requirements(["nope"])
 
@@ -576,7 +613,10 @@ def test_the_compose_image_role_script_has_the_layout_of_bootstrap_roles():
     flat = lambda s: re.sub(r"\s+", " ", s).strip()
     vetted = {f"pipeshub_vetted_{s}" for s in b.SHIPPED_VETTED}
     quoted = set(re.findall(r"'(pipeshub_\w+)'", sql))
-    assert quoted == {r for r, _ in b.ROLES} | vetted
+    assert quoted == {r for r, _ in b.ROLES} | vetted | {b.MONITOR}
+    # the opt-in monitoring login: the same one membership both ways (kernel_0019 accepts exactly this one)
+    assert "GRANT pg_monitor TO pipeshub_monitor WITH INHERIT TRUE, SET FALSE;" in flat(sql)
+    assert 'GRANT pg_monitor TO {} WITH INHERIT TRUE, SET FALSE' in Path(b.__file__).read_text()
     logins = set(re.findall(r"\('(pipeshub_\w+)', :'\w+'\)", sql)) | {"pipeshub_ro"}
     assert logins == {r for r, login in b.ROLES if login}
     assert set(re.findall(r":(PG_\w+_PASSWORD)\b", text)) | set(re.findall(r"\w+:(PG_\w+_PASSWORD)", text)) == set(b.PASSWORD_VARS.values())

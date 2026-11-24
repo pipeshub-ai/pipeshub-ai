@@ -208,10 +208,7 @@ class ParsingClient(BaseServiceClient):
         — this is retryable, unlike the other error codes.
         Raises :class:`ServiceCallError` on connection / retry exhaustion.
         """
-        if not extension:
-            extension = file_types.extension_for_mime(mime_type)
-            if not extension and "." in record_name:
-                extension = record_name.rsplit(".", 1)[-1]
+        extension = file_types.service_extension(mime_type, extension, record_name)
 
         form_data: dict[str, str] = {
             "record_name": record_name,

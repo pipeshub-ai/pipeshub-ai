@@ -9,6 +9,7 @@ import { configPaths } from '../../configuration_manager/paths/paths';
 import { DefaultMcpScopes } from '../../oauth_provider/config/scopes.config';
 import { normalizeUrl } from '../utils/utils';
 import { safeCause } from '../../../libs/errors/backend-error';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 
 // JSON.parse's message quotes the start of what it read: here, decrypted config. Log `safeCause(error)`, never the error.
 const logger = Logger.getInstance({ service: 'ConfigService' });
@@ -282,7 +283,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.auth = {
@@ -306,7 +307,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.communication = {
@@ -330,7 +331,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.kb = {
@@ -354,7 +355,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.es = {
@@ -378,7 +379,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.cm = {
@@ -402,7 +403,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.tokenBackend = {
@@ -426,7 +427,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.connectors = {
@@ -449,7 +450,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
     return normalizeUrl(parsedUrl.connectors.publicEndpoint) || normalizeUrl(process.env.CONNECTOR_PUBLIC_BACKEND!);
   }
 
@@ -458,7 +459,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.indexing = {
@@ -478,7 +479,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.iam = {
@@ -501,7 +502,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.storage = {
@@ -525,7 +526,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.frontend = {
@@ -549,7 +550,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.queryBackend = {
@@ -574,7 +575,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    let parsedUrl = JSON.parse(url);
+    let parsedUrl = parseKvObject(url);
 
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.storage = {
@@ -594,7 +595,7 @@ export class ConfigService {
         configPaths.storageService,
       )) || '{}';
 
-    const parsedConfig = JSON.parse(storageConfig); // Parse JSON string
+    const parsedConfig = parseKvObject(storageConfig);
     let storageType = parsedConfig.storageType;
     if (!storageType) {
       storageType = 'local';
@@ -711,7 +712,7 @@ export class ConfigService {
       (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
       '{}';
 
-    const parsedUrl = JSON.parse(url);
+    const parsedUrl = parseKvObject(url);
 
     parsedUrl.oauthProvider = {
       ...parsedUrl.oauthProvider,

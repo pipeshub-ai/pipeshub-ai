@@ -5,6 +5,7 @@ import { configPaths } from '../paths/paths';
 import { PLATFORM_FEATURE_FLAGS } from '../constants/constants';
 import { KB_UPLOAD_LIMITS } from '../../knowledge_base/constants/kb.constants';
 import { Logger } from '../../../libs/services/logger.service';
+import { safeCause } from '../../../libs/errors/backend-error';
 
 const logger = Logger.getInstance({
   service: 'PlatformSettingsUtil',
@@ -44,7 +45,9 @@ export async function getPlatformSettingsFromStore(
       ).decrypt(encrypted);
       stored = JSON.parse(decrypted);
     } catch (e) {
-      logger.warn('Failed to decrypt/parse platform settings; using defaults', { error: e });
+      logger.warn('Failed to decrypt/parse platform settings; using defaults', {
+        error: safeCause(e),
+      });
     }
   }
 

@@ -15,6 +15,8 @@ import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem }
 import { McpServersApi } from '../../api';
 import { McpDisabledCallout, isMcpInstanceDisabled } from '../../components';
 import { mcpConnectionState } from '../../connection-state';
+import { freeServerName, serverNameKey } from '../../server-names';
+import { LabeledTextField } from '../../../api-toolsets/components/labeled-controls';
 import { McpPanelTitle } from './mcp-panel-header';
 import { McpClientSecretPrefixHint } from './mcp-client-secret-prefix-hint';
 import { McpLogoField } from './mcp-logo-field';
@@ -205,7 +207,7 @@ export function McpInstanceConfigPanel({
       );
     } else if (prefillTemplate) {
       setShowAdvanced(false);
-      setName(prefillTemplate.displayName);
+      setName(freeServerName(prefillTemplate.displayName, instances.map((i) => i.name)));
       setDescription(prefillTemplate.description);
       setTransport(prefillTemplate.transport);
       setAuthMode(prefillTemplate.defaultAuthMode);
@@ -378,7 +380,16 @@ export function McpInstanceConfigPanel({
   const connectTimeoutInput = parseTimeout(connectTimeout, MCP_TIMEOUT_LIMITS.connect);
   const callTimeoutInput = parseTimeout(callTimeout, MCP_TIMEOUT_LIMITS.call);
 
+  // The same list the backend checks: on the team page the org's servers, on the personal page
+  // the org's and the person's own. A server keeping its own name is never flagged.
+  const nameTaken = useMemo(() => {
+    const key = serverNameKey(name);
+    if (!key || (editingInstance && key === serverNameKey(editingInstance.name))) return false;
+    return instances.some((i) => i._id !== editingInstance?._id && serverNameKey(i.name) === key);
+  }, [name, instances, editingInstance]);
+
   const isValid =
+    !nameTaken &&
     connectTimeoutInput.valid &&
     callTimeoutInput.valid &&
     name.trim().length > 0 &&
@@ -714,8 +725,17 @@ export function McpInstanceConfigPanel({
       <McpInheritedCallout instance={editingInstance} />
       <McpDisabledCallout instance={liveInstance} />
 
-      <FormField label={t('workspace.mcpServers.form.name')} required>
-        <TextField.Root size="2" value={name} onChange={(e) => setName(e.target.value)} />
+      <FormField
+        label={t('workspace.mcpServers.form.name')}
+        required
+        error={nameTaken ? t('workspace.mcpServers.form.nameTaken') : undefined}
+      >
+        <LabeledTextField
+          size="2"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          aria-invalid={nameTaken || undefined}
+        />
       </FormField>
 
       {!isTemplateBased && (

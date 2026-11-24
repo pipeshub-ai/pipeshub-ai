@@ -240,6 +240,13 @@ def unresolved_principal_permission(principal_id: str, permission_type: Permissi
     return Permission(external_id=principal_id, type=permission_type, entity_type=EntityType.GROUP)
 
 
+async def inherit_page_access(processor: DataSourceEntitiesProcessor, record: Record) -> None:
+    """Replace a stored file's or comment's own grants with its page's access, through inheritance."""
+    record.inherit_permissions = True
+    record.rewrite_permissions = True
+    await processor.on_updated_record_permissions(record, [])
+
+
 async def apply_page_access_to_dependents(
     processor: DataSourceEntitiesProcessor,
     connector_id: str,
@@ -269,9 +276,7 @@ async def apply_page_access_to_dependents(
             ):
                 continue
             seen.add(child.external_record_id)
-            child.inherit_permissions = True
-            child.rewrite_permissions = True
-            await processor.on_updated_record_permissions(child, [])
+            await inherit_page_access(processor, child)
             updated += 1
             if child.record_type in _COMMENT_TYPES:
                 parents.append(child.external_record_id)

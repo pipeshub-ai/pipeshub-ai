@@ -601,6 +601,11 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(createOpts.allowChatActions).to.be.true
     })
 
+    it('always offers the citations card: the stateless server cannot see the client\'s initialize', async () => {
+      await handleMCPRequest(appConfig)(oauthReq(['kb:read']), createMockResponse() as any, createMockNext())
+      expect(createOpts.apps).to.equal(true)
+    })
+
     it('records each tool call with who, which app and which tool, never the arguments', async () => {
       const info = sinon.stub(Logger.prototype, 'info')
       await handleMCPRequest(appConfig)(oauthReq(['kb:read']), createMockResponse() as any, createMockNext())

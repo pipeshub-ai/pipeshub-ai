@@ -1229,11 +1229,9 @@ def held_downstream(host: ConcurrencyHost, message: "StreamMessage", pools: froz
         return True
     # shortcut: the PDF route is Docling's, the one SERVICE_POOL entry; a second tier-scoped service needs its own test
     payload = message.payload
-    mime = str(payload.get("mimeType") or "unknown")
-    extension = payload.get("extension") or "unknown"
-    code_ext = file_types.code_extension(extension, payload.get("filePath"), payload.get("recordName"))
-    dispatch = file_types.legacy_route(
-        mime, extension, code_ext=code_ext, reads_as_code_file=file_types.reads_as_source(mime, code_ext)
+    dispatch = file_types.labels_route(
+        payload.get("extension"), payload.get("mimeType"),
+        file_path=payload.get("filePath"), record_name=payload.get("recordName"),
     )
     return dispatch is not None and dispatch.route is file_types.Route.PDF
 

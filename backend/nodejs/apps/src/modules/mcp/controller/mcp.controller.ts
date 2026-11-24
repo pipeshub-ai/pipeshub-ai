@@ -365,6 +365,12 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           error: logger.error.bind(logger),
         },
         dynamic: false,
+        // Always offer the citations card. This server is built per request, so it never
+        // sees the client's `initialize` and the package would guess from the last one
+        // made with this token. Claude's tool loader and its chat share a token and
+        // disagree, so the guess flips mid-chat. A client without MCP Apps gets the
+        // sources as text from the same call.
+        apps: true,
         scopes: policy.allowWriteTools ? mcpToolScopes(req.user) : ['read'],
         // Tools are listed only when the token holds every scope they need.
         grantedOAuthScopes: held,

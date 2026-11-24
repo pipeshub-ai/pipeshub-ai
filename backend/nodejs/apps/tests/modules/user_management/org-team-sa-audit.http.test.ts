@@ -185,7 +185,7 @@ describe('org, team and service-account audit lines (HTTP)', function () {
       getLiveFields: async (o: string, id: string) => liveSa(o, id),
       enableServiceAccount: async (o: string, id: string) => { const u = liveSa(o, id); if (!u || restoreInFlight) return false; u.isDisabled = false; return true; },
       updateServiceAccount: async (o: string, id: string, c: Row) => { const u = liveSa(o, id); if (!u) return false; Object.assign(u, c); return true; },
-      markDeleted: async (o: string, id: string) => { const u = live(o, id); if (u) u.isDeleted = true; },
+      markDeleted: async (o: string, id: string, extra?: Row) => { const u = users.find((x) => x._id === id && x.orgId === o); if (!u || (extra?.onlyMember && u.role !== 'member')) return null; u.isDeleted = true; return { ...u }; },
     }));
     sinon.stub(groupRepo, 'getGroupRepository').returns(fake('group', {
       addToEveryone: async () => undefined,

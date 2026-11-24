@@ -554,6 +554,10 @@ export class Logger {
     seen = new WeakSet(),
     withStack = true,
   ): any {
+    // Here, not only in the JSON console format: the text format and the log files print strings as they are.
+    if (typeof obj === 'string') {
+      return redactSecretsInText(obj);
+    }
     // Handle non-object types
     if (obj === null || typeof obj !== 'object') {
       return obj;
@@ -572,6 +576,10 @@ export class Logger {
 
     if (obj instanceof Error) {
       return this.serializeError(obj, seen, withStack);
+    }
+    // A Buffer's toJSON lists every byte, so one file in the metadata would log its whole content.
+    if (ArrayBuffer.isView(obj) || obj instanceof ArrayBuffer) {
+      return `[binary ${String(obj.byteLength)} bytes]`;
     }
     // Dates and Mongo ids have no own keys worth walking; JSON shows them through toJSON.
     const { toJSON } = obj as { toJSON?: unknown };
@@ -739,7 +747,8 @@ export class Logger {
     const { fields, rest } = splitFields(meta as unknown);
     this.logger.log({
       level,
-      message,
+      message:
+        typeof message === 'string' ? redactSecretsInText(message) : message,
       metadata:
         rest === undefined
           ? undefined

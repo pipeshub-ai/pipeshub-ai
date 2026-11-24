@@ -846,7 +846,11 @@
       "collectionExists": "Kolekci s názvem \"{{name}}\" už máte. Zvolte jiný název."
     },
     "sourcesNotReady": "Některé zdroje se ještě připravují a zatím nejsou uvedeny ({{count}}). Zkuste to za chvíli znovu.",
-    "sourcePreparing": "Připravujeme tento zdroj… Jeho položky se tu za chvíli zobrazí."
+    "sourcePreparing": "Připravujeme tento zdroj… Jeho položky se tu za chvíli zobrazí.",
+    "selectionActionsNotice": "Indexovat jako první",
+    "selectionActionsNoticeEnterprise": "Výběr, které vybrané položky se indexují jako první, je součástí edice Enterprise.",
+    "uploadExtrasNotice": "Indexovat tyto soubory jako první",
+    "uploadExtrasNoticeEnterprise": "Výběr, které nahrané soubory se indexují jako první, je součástí edice Enterprise."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -2309,12 +2313,35 @@
         "pasteBlockLabel": "Připraveno k vložení do vaší MCP konfigurace",
         "copyPasteBlockAria": "Kopírovat blok k vložení",
         "copySuccessTitle": "Zkopírováno",
-        "copyErrorTitle": "Nepodařilo se zkopírovat"
+        "copyErrorTitle": "Nepodařilo se zkopírovat",
+        "knowledgeLimitLaterHint": "Později to můžete změnit, aniž byste token nahradili."
       },
       "scopeCount_one": "{{count}} rozsah",
       "scopeCount_few": "{{count}} rozsahy",
       "scopeCount_many": "{{count}} rozsahu",
-      "scopeCount_other": "{{count}} rozsahů"
+      "scopeCount_other": "{{count}} rozsahů",
+      "access": {
+        "panelTitle": "Změnit přístup",
+        "intro": "Vyberte, co {{name}} uvidí. Token dál funguje a změna platí od jeho dalšího požadavku, takže nemusíte nic, co ho používá, aktualizovat.",
+        "save": "Uložit",
+        "savedTitle": "Přístup změněn",
+        "savedEverything": "{{name}} teď vidí všechno, co vidíte vy.",
+        "savedSome_one": "{{name}} teď vidí {{count}} vybranou položku.",
+        "savedSome_few": "{{name}} teď vidí {{count}} vybrané položky.",
+        "savedSome_many": "{{name}} teď vidí {{count}} vybrané položky.",
+        "savedSome_other": "{{name}} teď vidí {{count}} vybraných položek.",
+        "undo": "Zpět",
+        "undoneTitle": "Změna vrácena",
+        "undoErrorTitle": "Změnu se nepodařilo vrátit. Otevřete Změnit přístup a nastavte ji znovu.",
+        "errorTitle": "Přístup se nepodařilo změnit",
+        "errorDescription": "Nic se nezměnilo. Zkuste to znovu.",
+        "unknownTitle": "Změnu se nepodařilo potvrdit",
+        "unknownDescription": "Možná byla uložena. Než to zkusíte znovu, zkontrolujte zde zobrazený přístup.",
+        "unknownReloadFailedDescription": "Možná byla uložena, ale aktuální přístup se nepodařilo načíst. Než se na zobrazené údaje spolehnete, načtěte stránku znovu.",
+        "rowAction": "Změnit přístup",
+        "rowActionAria": "Změnit, co {{name}} uvidí",
+        "rowActionTooltip": "Změnit přístup: vyberte, co tento token uvidí"
+      }
     },
     "agentSignIns": {
       "title": "Přihlášení agentů",
@@ -2593,7 +2620,8 @@
         "security": "Zabezpečení",
         "personal": "Osobní",
         "people": "Lidé",
-        "developerSettings": "Nastavení pro vývojáře"
+        "developerSettings": "Nastavení pro vývojáře",
+        "help": "Nápověda"
       },
       "nav": {
         "general": "Obecné",
@@ -3897,6 +3925,25 @@
         "reach": "Změny v {{connector}} se v PipesHub projeví do {{interval}}.",
         "reachUnknown": "Změny v {{connector}} se v PipesHub projeví při další synchronizaci.",
         "syncNow": "Synchronizovat oprávnění nyní",
+        "filter": {
+          "label": "Jak vyhledávání ověřuje přístup",
+          "mode": {
+            "inherit": "Výchozí nastavení nasazení",
+            "legacy": "Klasická kontrola",
+            "scopes": "Rychlejší vyhledávání"
+          },
+          "effective": {
+            "scopes": "Vyhledávání v {{connector}} používá rychlejší vyhledávání: výsledky se ještě před nalezením zúží na to, co smí každý člověk vidět, a každý výsledek se stále kontroluje.",
+            "legacy": "Vyhledávání v {{connector}} používá klasickou kontrolu: výsledky se kontrolují až po nalezení."
+          },
+          "waiting": "Rychlejší vyhledávání začne, jakmile budou oprávnění {{connector}} aktuální.",
+          "applies": "Tato změna se do vyhledávání promítne do 30 sekund.",
+          "blocker": {
+            "serving_off": "Rychlejší vyhledávání je v tomto nasazení vypnuté.",
+            "store_unsupported": "Vektorové úložiště tohoto nasazení rychlejší vyhledávání nepodporuje."
+          },
+          "saveError": "Toto nastavení se nepodařilo změnit. Zkuste to znovu."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -4031,7 +4078,9 @@
           "cancelled": "Přihlášení jste zrušili.",
           "signInFailed": "Přihlášení nebylo dokončeno. Zkuste to znovu."
         }
-      }
+      },
+      "indexPriorityNotice": "Upřednostnit indexování pro tento konektor",
+      "indexPriorityNoticeEnterprise": "Priorita indexování je součástí edice Enterprise."
     },
     "mcpServers": {
       "searchPlaceholder": "Hledat MCP servery...",
@@ -4187,7 +4236,8 @@
           "shared": "Jeden sdílený přihlašovací údaj pro všechny",
           "sharedHint": "Přidáte ho jednou níže. Všichni pak jednají s jeho přístupem."
         },
-        "advanced": "Pokročilé"
+        "advanced": "Pokročilé",
+        "nameTaken": "Tento název už má jiný server. Zvolte jiný."
       },
       "configPanel": {
         "editTitle": "Upravit MCP server",
@@ -6559,5 +6609,163 @@
       "copyDetails": "Zkopírovat podrobnosti pro správce",
       "copied": "Podrobnosti zkopírovány"
     }
+  },
+  "support": {
+    "menuLabel": "Kontaktovat podporu",
+    "title": "Kontaktovat podporu",
+    "steps": {
+      "area": "Oblast",
+      "details": "Podrobnosti"
+    },
+    "close": "Zavřít",
+    "cancel": "Zrušit",
+    "back": "Zpět",
+    "continue": "Pokračovat",
+    "send": "Odeslat žádost",
+    "sending": "Odesílání…",
+    "changeArea": "Změnit oblast",
+    "change": "Změnit",
+    "issueOther": "Jiné (není v seznamu)",
+    "areaStep": {
+      "title": "S čím potřebujete pomoct?",
+      "subtitle": "Zvolte oblast, která nejlépe odpovídá vašemu problému.",
+      "suggested": "Navrženo",
+      "suggestion": "V oblasti {{area}} došlo v {{time}} k chybě, proto jsme ji navrhli.",
+      "idea": "Máte spíš nápad? Pošlete zpětnou vazbu"
+    },
+    "areas": {
+      "connectors": {
+        "label": "Konektory a synchronizace",
+        "hint": "Připojování aplikací, chyby synchronizace nebo chybějící data"
+      },
+      "chat": {
+        "label": "Chat a vyhledávání",
+        "hint": "Odpovědi, citace nebo výsledky hledání"
+      },
+      "agents": {
+        "label": "Agenti a akce",
+        "hint": "Vytváření, spouštění nebo sdílení agentů"
+      },
+      "files": {
+        "label": "Soubory a kolekce",
+        "hint": "Nahrávání, složky nebo náhledy souborů"
+      },
+      "access": {
+        "label": "Přihlášení a přístup",
+        "hint": "Přihlašování, hesla nebo jednotné přihlášení"
+      },
+      "people": {
+        "label": "Lidé a oprávnění",
+        "hint": "Zvaní uživatelů, role nebo skupiny"
+      },
+      "other": {
+        "label": "Něco jiného",
+        "hint": "Cokoli, co tu není uvedeno"
+      }
+    },
+    "details": {
+      "descriptionLabel": "Co se stalo?",
+      "descriptionPlaceholder": "Co jste se snažili udělat a co se stalo místo toho?",
+      "descriptionMin_one": "Alespoň {{count}} znak.",
+      "descriptionMin_few": "Alespoň {{count}} znaky.",
+      "descriptionMin_many": "Alespoň {{count}} znaku.",
+      "descriptionMin_other": "Alespoň {{count}} znaků.",
+      "descriptionMax_one": "Dosáhli jste limitu {{count}} znaku.",
+      "descriptionMax_few": "Dosáhli jste limitu {{count}} znaků.",
+      "descriptionMax_many": "Dosáhli jste limitu {{count}} znaku.",
+      "descriptionMax_other": "Dosáhli jste limitu {{count}} znaků.",
+      "attach": "Přiložit snímek obrazovky",
+      "removeFile": "Odebrat {{name}}",
+      "fileUnsupported": "{{name}}: tento typ souboru není podporován.",
+      "fileTooLarge": "{{name}} je větší než 5 MB.",
+      "tooManyFiles": "Můžete přiložit až 5 souborů.",
+      "filesTotalTooLarge": "Soubory mohou mít dohromady nejvýše 8 MB.",
+      "smtpTitle": "E-mail není pro tento pracovní prostor nastaven",
+      "smtpBody": "Připravíme vám zprávu, kterou odešlete na {{email}} ze své e-mailové aplikace.",
+      "smtpAdmin": "Chcete-li žádosti odesílat přímo, nakonfigurujte SMTP v nastavení pracovního prostoru.",
+      "smtpMember": "Chcete-li žádosti odesílat přímo, požádejte správce o konfiguraci SMTP.",
+      "includeErrors_one": "Přiložit {{count}} nedávnou chybu",
+      "includeErrors_few": "Přiložit {{count}} nedávné chyby",
+      "includeErrors_many": "Přiložit {{count}} nedávné chyby",
+      "includeErrors_other": "Přiložit {{count}} nedávných chyb",
+      "errorLine": "{{area}}: chyba {{status}} v {{time}}",
+      "errorLineUnknown": "Chyba {{status}} v {{time}}",
+      "sentWith": "Odesláno s vaší žádostí: {{list}}.",
+      "sentParts": {
+        "workspace": "váš pracovní prostor",
+        "identity": "vaše jméno a e-mail",
+        "browser": "váš prohlížeč",
+        "errors": "nedávné chyby"
+      },
+      "viewDetails": "Zobrazit podrobnosti",
+      "hideDetails": "Skrýt podrobnosti",
+      "rows": {
+        "issue": "Problém se týká",
+        "workspace": "Pracovní prostor",
+        "signedInAs": "Přihlášen(a) jako",
+        "browser": "Prohlížeč",
+        "recentErrors": "Nedávné chyby"
+      }
+    },
+    "blocked": {
+      "area": "Pro pokračování zvolte oblast.",
+      "description": "„Co se stalo?“ vyžaduje alespoň {{min}} znaků (zbývá {{left}})."
+    },
+    "result": {
+      "sentTitle": "Žádost odeslána",
+      "sentBody": "Náš tým podpory vaši žádost má. Kopii jsme vám poslali e-mailem a odpovědi přijdou do vaší schránky.",
+      "pendingTitle": "Stále se odesílá",
+      "pendingBody": "E-mail na {{email}} trvá déle než obvykle. Pokud se vám nikdo neozve, kontaktujte nás s tímto referenčním číslem.",
+      "referenceLabel": "Vaše referenční číslo",
+      "copyReference": "Kopírovat referenční číslo",
+      "quote": "Uveďte toto referenční číslo, pokud nás budete kontaktovat ohledně stejného problému.",
+      "done": "Hotovo"
+    },
+    "email": {
+      "title": "Odešlete ji ze své e-mailové aplikace",
+      "noSmtp": "E-mail zde není nastaven, takže žádost {{reference}} nebyla odeslána. Odešlete tuto zprávu ze své e-mailové aplikace, aby ji podpora dostala.",
+      "failed": "Žádost {{reference}} se nepodařilo odeslat e-mailem. Odešlete tuto zprávu ze své e-mailové aplikace, aby ji podpora dostala.",
+      "limit": "Za poslední hodinu jste odeslali několik žádostí. Tuto odešlete ze své e-mailové aplikace.",
+      "unsaved": "Vaši žádost se nepodařilo odeslat. Odešlete tuto zprávu ze své e-mailové aplikace, aby ji podpora dostala.",
+      "to": "Komu",
+      "subject": "Předmět",
+      "copy": "Kopírovat zprávu",
+      "copied": "Zkopírováno",
+      "open": "Otevřít e-mailovou aplikaci",
+      "shortened": "Vaše e-mailová aplikace dostane zkrácenou verzi. Celý text získáte pomocí Kopírovat zprávu.",
+      "attachFiles_one": "Váš {{count}} soubor není součástí této zprávy. Přiložte ho ve své e-mailové aplikaci.",
+      "attachFiles_few": "Vaše {{count}} soubory nejsou součástí této zprávy. Přiložte je ve své e-mailové aplikaci.",
+      "attachFiles_many": "Vašich {{count}} souboru není součástí této zprávy. Přiložte je ve své e-mailové aplikaci.",
+      "attachFiles_other": "Vašich {{count}} souborů není součástí této zprávy. Přiložte je ve své e-mailové aplikaci.",
+      "copyFallback": "Automatické kopírování se nezdařilo. Zpráva je označená, stiskněte Ctrl+C (na Macu ⌘C)."
+    },
+    "errors": {
+      "load": "Možnosti podpory se nepodařilo načíst.",
+      "retry": "Zkusit znovu",
+      "send": "Vaši žádost se nepodařilo odeslat. Zkuste to prosím znovu.",
+      "emailInstead": "Odeslat raději e-mailem"
+    }
+  },
+  "feedback": {
+    "menuLabel": "Poslat zpětnou vazbu",
+    "title": "Poslat zpětnou vazbu",
+    "subtitle": "Napište nám, co funguje, co ne, nebo co byste rádi viděli.",
+    "kindIssue": "Obecná zpětná vazba",
+    "kindFeedback": "Návrh funkce",
+    "descriptionPlaceholder": "Co se stalo, nebo co bychom měli zlepšit?",
+    "addFiles": "Přidat soubory",
+    "removeFile": "Odebrat",
+    "fileHint": "Volitelné. Až 5 souborů, každý do 5 MB. Obrázky, PDF, text nebo CSV.",
+    "cancel": "Zrušit",
+    "submit": "Odeslat",
+    "needReply": "Potřebujete odpověď? Kontaktujte podporu",
+    "success": "Děkujeme, vaši zpětnou vazbu jsme obdrželi.",
+    "pending": "E-mail na adresu {{email}} se odesílá déle než obvykle. Pokud se vám nikdo neozve, kontaktujte nás.",
+    "submitError": "Odeslání se nezdařilo. Zkuste to prosím znovu.",
+    "descriptionTooShort": "Přidejte prosím trochu více podrobností (alespoň 10 znaků).",
+    "invalidType": "Tento typ souboru není podporován.",
+    "fileTooLarge": "Každý soubor smí mít nejvýše 5 MB.",
+    "tooManyFiles": "Můžete přiložit až 5 souborů.",
+    "filesTotalTooLarge": "Soubory mohou mít dohromady nejvýše 8 MB."
   }
 }

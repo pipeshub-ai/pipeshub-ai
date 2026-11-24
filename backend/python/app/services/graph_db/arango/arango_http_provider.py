@@ -55,11 +55,12 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
 from app.core.org_context import MissingOrgContext
+from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
-    RecordSchemaNarrowError,
     GraphLockUnavailableError,
     GraphQueryError,
     PermissionVerificationUnavailableError,
+    RecordSchemaNarrowError,
 )
 from app.models.entities import (
     AppRole,
@@ -90,7 +91,12 @@ from app.models.entities import (
     WebpageRecord,
     substitute_user_email,
 )
-from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, best_record_access, read_role
+from app.models.permission import (
+    ORG_SHARE_PERMISSION_TYPES,
+    RETIRED_ROLES,
+    best_record_access,
+    read_role,
+)
 from app.models.source_dates import (
     DATED_ONLY_TIME_RANGE_KEY,
     SOURCE_TIMESTAMP_ORIGIN_FIELD,
@@ -100,6 +106,7 @@ from app.modules.code_graph.edge_build_trigger import is_code_record
 from app.modules.indexing.record_diagnostics import WriteKind, aql_parts
 from app.modules.indexing.record_diagnostics import reference as run_reference
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
+from app.modules.pipeline import parser_identity
 from app.schema.arango.documents import (
     APP_SCHEMA_GENERATION,
     RECORD_SCHEMA_GENERATION,
@@ -183,8 +190,8 @@ from app.services.graph_db.arango.arango_http_client import (
     ArangoQueryError,
 )
 from app.services.graph_db.arango.permission_scopes import ArangoHierarchyView
-from app.services.graph_db.arango.record_schema_guard import RecordSchemaGuard
 from app.services.graph_db.arango.permission_stamps import ArangoStampGraph
+from app.services.graph_db.arango.record_schema_guard import RecordSchemaGuard
 from app.services.graph_db.common.cascade_retry import (
     CASCADE_ATTEMPTS,
     CONNECTOR_DELETE_BASE_SECONDS,
@@ -218,6 +225,7 @@ from app.services.graph_db.common.utils import (
     KB_LIST_FOLDERS_CAP,
     KB_MAX_FOLDER_DEPTH,
     PERSON_ENTITY_TYPE,
+    RECORD_UPDATE_DROPPED_FIELDS,
     SOFT_DELETE_CHUNK,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
@@ -227,13 +235,17 @@ from app.services.graph_db.common.utils import (
     PermittedEntityRows,
     ancestor_chain_rows,
     build_connector_stats_response,
+    collapse_repeated_records,
     dedupe_agents_by_id,
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     is_full_address,
     jira_issue_browse_url_regex,
     person_query_ref,
+    record_created_at_insert_only,
+    record_insert_doc,
     record_status_field,
+    record_update_doc,
     restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
@@ -1359,8 +1371,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # 1. Create all collections (node + edge)
             apps_schema_applied = True
             edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
-            for col in CollectionNames:
-                name = col.value
+            for name in [*(col.value for col in CollectionNames), *extra_node_collections()]:
                 is_edge = name in edge_collection_names
                 col_schema = schema_by_collection.get(name)
                 if not await self.http_client.has_collection(name):
@@ -1542,6 +1553,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         if self.http_client is None:
             raise RuntimeError("ArangoDB client is not connected")
+        for collection, indexes in extra_node_collections().items():
+            for fields in indexes:
+                if not await self.http_client.ensure_persistent_index(collection, list(fields)):
+                    # Not fatal for the schema (it would hold every service's start for one feature's index); the next start retries it.
+                    self.logger.error("The index %s on collection '%s' was not created", list(fields), collection)
         # ==================== TAXONOMY INDEXES ====================
         # Entity resolution looks canonical category/subcategory/topic/language
         # nodes up by (orgId, normalizedName) once per record — see
@@ -1604,6 +1620,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # connector's links (the edge index covers only _from and _to).
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORD_LINKS.value, ["recordGroupId"], sparse=True,
+        )
+        # SPARSE: records.refreshIntentId, the intent sweep's lookup (only a record with a Force reindex pending
+        # is indexed; sweeps filter on `!= null`, which the sparse index serves).
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value, ["refreshIntentId"], sparse=True,
         )
         # SINGLE: virtualRecordToDocIdMapping.virtualRecordId, the fallback of
         # get_document_id_by_virtual_record_id when the keyed lookup misses
@@ -3153,7 +3174,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                     op="reindex_record_group_records")
             return {"success": False, "code": 500, "reason": str(e)}
 
-    async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
+    async def update_indexing_status_for_record_ids(
+        self, record_ids: list[str], status: str, *, fields: dict[str, Any] | None = None
+    ) -> None:
         """
         Update indexingStatus to the specified status for each id (deduplicated).
         Skips missing ids and isInternal records.
@@ -3161,6 +3184,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Args:
             record_ids: List of record IDs to update
             status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+            fields: Further fields set in the same statement (a Force reindex's refresh intent)
         """
         unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
         if not unique_ids:
@@ -3169,8 +3193,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             # One statement, so the run rule reads the stored record it writes. Internal and placeholder records are skipped.
             lets, patch = aql_parts("doc", WriteKind.STATUS_VAR, status="@status")
-            written = "{ indexingStatus: @status }" if patch == "{}" else f"MERGE({{ indexingStatus: @status }}, {patch})"
+            head = "{ indexingStatus: @status }" if not fields else "MERGE({ indexingStatus: @status }, @fields)"
+            written = head if patch == "{}" else f"MERGE({head}, {patch})"
             bind_vars = {"@collection": coll, "keys": unique_ids, "status": status}
+            if fields:
+                bind_vars["fields"] = dict(fields)
             if patch != "{}":
                 bind_vars["now"] = get_epoch_timestamp_in_ms()
             updated = await self.http_client.execute_aql(
@@ -3186,9 +3213,44 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if updated:
                 self.logger.debug("✅ Updated %s record(s) indexing status to %s", len(updated), status)
         except Exception as e:
-            if isinstance(e, RecordSchemaNarrowError):
-                raise
+            if isinstance(e, RecordSchemaNarrowError) or fields:
+                raise        # with ``fields`` (a Force reindex's request) a lost write must not be read as a request that was made
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
+
+    async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
+        """Set ``fields`` on each existing record that is neither internal nor a placeholder, whatever its status; the
+        statement writes nothing else (a Force reindex requested while the record runs). Returns how many were written;
+        a failure raises, so the caller does not read a lost write as a request that was made."""
+        unique_ids = [rid for rid in dict.fromkeys(record_ids) if isinstance(rid, str) and rid]
+        if not unique_ids or not fields:
+            return 0
+        rows = await self.http_client.execute_aql(
+            """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys AND doc.isInternal != true AND doc.isPlaceholder != true
+                UPDATE doc WITH @fields IN @@collection
+                RETURN 1
+            """,
+            {"@collection": CollectionNames.RECORDS.value, "keys": unique_ids, "fields": dict(fields)},
+        )
+        return len(rows or [])
+
+    async def get_records_with_refresh_intent(
+        self, org_id: str, *, after_key: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_records_with_refresh_intent`. The sparse index on ``refreshIntentId`` serves the filter."""
+        rows = await self.http_client.execute_aql(
+            """
+            FOR doc IN @@collection
+                FILTER doc.refreshIntentId != null AND doc.orgId == @org AND doc.isDeleted != true
+                    AND (@after == null OR doc._key > @after)
+                SORT doc._key
+                LIMIT @limit
+                RETURN doc
+            """,
+            {"@collection": CollectionNames.RECORDS.value, "org": org_id, "after": after_key, "limit": max(1, int(limit))},
+        )
+        return list(rows or [])
 
     async def reset_indexing_status_for_connector(
         self,
@@ -4062,6 +4124,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Translate nodes from generic format to ArangoDB format
             arango_nodes = self._translate_nodes_to_arango(nodes)
 
+            if collection == CollectionNames.RECORDS.value and record_created_at_insert_only():
+                await self._upsert_record_base_docs(arango_nodes, transaction)
+                return True
+
+            if collection == CollectionNames.RECORDS.value:
+                # the insert-only switch is off: the older write, except that an update never writes the incarnation id
+                arango_nodes = [{k: v for k, v in n.items() if k != "incarnationId"} for n in arango_nodes]
+
             result = await self.http_client.batch_insert_documents(
                 collection, arango_nodes, txn_id=transaction, overwrite=True
             )
@@ -4070,6 +4140,51 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception:
             raise
+
+    async def _upsert_record_base_docs(
+        self,
+        docs: list[dict[str, Any]],
+        transaction: str | None,
+        *,
+        known_new: Collection[str] = (),
+        promotes: Collection[str] = (),
+    ) -> None:
+        """Write ``records`` documents with the insert-only fields; see ``batch_upsert_documents`` for the call order.
+
+        ``docs`` are in ArangoDB form. ``known_new`` are keys the caller knows are not stored (inserted first). ``promotes``
+        are keys of records that replace a placeholder: they go through one conditional AQL ``UPDATE`` that takes the earlier
+        positive date while the *stored* row is still a placeholder; a row the filter does not match is written as any other.
+        """
+        if not docs:
+            return
+        remaining = docs
+        promoting = [d for d in docs if d["_key"] in promotes]
+        if promoting:
+            handled = set(await self.execute_query(
+                """
+                FOR d IN @docs
+                    LET old = DOCUMENT(@@records, d.key)
+                    FILTER old != null AND old.isPlaceholder == true AND d.patch.isPlaceholder != true
+                    LET incoming = d.created
+                    LET stored = old.createdAtTimestamp
+                    LET created = (IS_NUMBER(incoming) AND incoming > 0)
+                        ? ((IS_NUMBER(stored) AND stored > 0) ? MIN([stored, incoming]) : incoming)
+                        : null
+                    UPDATE d.key WITH MERGE(d.patch, created == null ? {} : { createdAtTimestamp: created })
+                        IN @@records OPTIONS { keepNull: false, mergeObjects: true }
+                    RETURN d.key
+                """,
+                bind_vars={
+                    "docs": [{"key": d["_key"], "created": d.get("createdAtTimestamp"), "patch": record_update_doc(d)} for d in promoting],
+                    "@records": CollectionNames.RECORDS.value,
+                },
+                transaction=transaction,
+            ) or [])
+            remaining = [d for d in docs if d["_key"] not in handled]
+        rows = [{"key": d["_key"], "insert": record_insert_doc(d), "new": d["_key"] in known_new} for d in remaining]
+        await self.http_client.batch_upsert_documents(
+            CollectionNames.RECORDS.value, rows, txn_id=transaction, drop=RECORD_UPDATE_DROPPED_FIELDS
+        )
 
     async def _upsert_record_nodes_releasing_trash(
         self, nodes: list[dict], transaction: str | None = None
@@ -4097,11 +4212,30 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             trashedExternalRecordId: external_id
                         }
             )
-            FOR doc IN APPEND(releases, @docs)
-                INSERT doc INTO @@records OPTIONS { overwriteMode: "update" }
+            LET items = APPEND(
+                (FOR r IN releases RETURN { k: r._key, full: r, upd: r, cand: null }),
+                @items
+            )
+            FOR it IN items
+                UPSERT { _key: it.k }
+                INSERT it.full
+                UPDATE MERGE(it.upd,
+                    (OLD.isPlaceholder == true AND IS_NUMBER(it.cand) AND it.cand > 0)
+                        ? { createdAtTimestamp: (IS_NUMBER(OLD.createdAtTimestamp) AND OLD.createdAtTimestamp > 0) ? MIN([OLD.createdAtTimestamp, it.cand]) : it.cand }
+                        : {})
+                IN @@records OPTIONS { keepNull: false }
                 RETURN NEW._key
             """,
             bind_vars={
+                "items": [
+                    {
+                        "k": doc["_key"],
+                        "full": record_insert_doc(doc),
+                        "upd": record_update_doc(doc),
+                        "cand": None if (doc.get("isPlaceholder") or not record_created_at_insert_only()) else doc.get("createdAtTimestamp"),
+                    }
+                    for doc in docs
+                ],
                 "docs": docs,
                 "keys": [doc["_key"] for doc in docs],
                 "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
@@ -9753,6 +9887,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         duplicates = {x for x in record_ids if x in seen or seen.add(x)}
         if duplicates:
             self.logger.warning(f"DUPLICATE RECORD IDS IN BATCH: {duplicates}")
+            records = collapse_repeated_records(records)          # written once, by the rule every store applies
 
         try:
             for record in records:
@@ -9782,6 +9917,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if release_trashed_external_ids:
                     await self._upsert_record_nodes_releasing_trash(
                         [record.to_arango_base_record()], transaction
+                    )
+                elif record_created_at_insert_only():
+                    base_docs = self._translate_nodes_to_arango([record.to_arango_base_record()])
+                    key = base_docs[0]["_key"]
+                    await self._upsert_record_base_docs(
+                        base_docs,
+                        transaction,
+                        known_new={key} if record._known_new else (),
+                        promotes={key} if record._promotes_stub else (),
                     )
                 else:
                     await self.batch_upsert_nodes(
@@ -10746,6 +10890,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 AND record.indexingStatus == @queued_status
                 AND record.orgId == @org_id
                 AND {aql_live_record("record")}
+                AND record.refreshIntentId == null /* a record holding a Force reindex request runs as a refresh of its own */
             """
 
             bind_vars = {
@@ -10784,11 +10929,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Update all queued records
             current_timestamp = get_epoch_timestamp_in_ms()
             updated_records = []
+            # A duplicate read by another parser than this copy's is not promoted: it stays QUEUED (its own event, or the
+            # stranded-record sweep, releases it).
+            parser_plan = await parser_identity.promotion_plan(
+                ref_record, queued_records, new_indexing_status, virtual_record_id, current_timestamp,
+                lambda key: self.get_document(
+                    key, CollectionNames.FILES.value, transaction, raise_on_error=True,
+                ),
+            )
 
             for queued_record in queued_records:
                 doc = dict(queued_record)
                 record_key = doc.get("_key") or doc.get("id")
-                if not record_key:
+                if not record_key or (parser_plan is not None and record_key not in parser_plan):
                     continue
 
                 dup_update = {
@@ -10800,6 +10953,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "virtualRecordId": virtual_record_id,
                     "extractionStatus": extraction_status,
                     **run_reference({}, WriteKind.STATUS_VAR, current_timestamp, status=new_indexing_status),
+                    **(parser_plan or {}).get(record_key, {}),
                 }
                 if reason:
                     dup_update["reason"] = reason
@@ -10808,38 +10962,47 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not updated_records:
                 return 0
 
-            # Same batch as the promotion: a crash after it would otherwise
-            # leave the duplicates COMPLETED with no taxonomy and nothing to
-            # trigger the copy, since a redelivery finds nothing QUEUED. Only
-            # an indexed primary has anything to copy.
+            # The reference's bookkeeping goes first: a crash between the two writes leaves a pending marker that finds no
+            # copies, never copies promoted with nothing to trigger their taxonomy. Only an indexed primary has anything to copy.
             if new_indexing_status in _RECONCILED_STATUSES:
-                updated_records.append({
+                bookkeeping_ok = await self.batch_update_nodes([{
                     "id": record_id,
                     DUPLICATE_RECONCILE_PENDING_FIELD: True,
                     DUPLICATE_RECONCILE_ATTEMPTS_FIELD: 0,
                     DUPLICATE_RECONCILE_DUE_AT_FIELD: current_timestamp + DUPLICATE_RECONCILE_GRACE_MS,
-                })
+                }], CollectionNames.RECORDS.value, transaction)
+                if not bookkeeping_ok:
+                    return -1
 
-            success = await self.batch_update_nodes(
-                updated_records, CollectionNames.RECORDS.value, transaction
-            )
-            if not success:
-                self.logger.warning(
-                    "⚠️ Failed to update queued duplicate records for %s - some records may not exist",
-                    record_id,
-                )
-                return -1
-
+            promoted = await self._promote_queued_copies(updated_records, transaction)
             self.logger.debug(
-                f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
+                f"✅ Updated {promoted} of {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
             )
 
-            return len(queued_records)
+            return promoted
 
         except Exception as e:
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
                                     op="update_queued_duplicates_status")
             return -1
+
+    async def _promote_queued_copies(self, updates: list[dict], transaction: str | None) -> int:
+        """Write each copy's new status only while it is still QUEUED and holds no Force reindex request, in the statement that
+        checks it (a request stored after the copies were read is not overwritten). Returns how many copies were written."""
+        if not updates:
+            return 0
+        rows = await self.http_client.execute_aql(
+            """
+            FOR doc IN @nodes
+                FOR cur IN @@collection
+                    FILTER cur._key == doc._key AND cur.indexingStatus == "QUEUED" AND cur.refreshIntentId == null
+                    UPDATE cur WITH UNSET(doc, "_key") IN @@collection
+                    RETURN 1
+            """,
+            {"nodes": self._translate_nodes_to_arango(updates), "@collection": CollectionNames.RECORDS.value},
+            txn_id=transaction,
+        )
+        return len(rows or [])
 
     async def batch_upsert_record_permissions(
         self,
@@ -23495,6 +23658,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         origin: str,
         edges: list[dict],
         transaction: str | None = None,
+        *,
+        keep_edge_types: Collection[str] = (),
     ) -> None:
         """See :meth:`IGraphDBProvider.replace_record_entity_relations`."""
         if not record_id or not to_collections or not origin:
@@ -23511,11 +23676,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR e IN {relations}
                     FILTER e._from == @from AND PARSE_IDENTIFIER(e._to).collection IN @collections
                     FILTER NOT_NULL(e.origin, @inferred) == @origin AND [e._to, e.edgeType] NOT IN @kept
+                    FILTER NOT_NULL(e.edgeType, '') NOT IN @keep
                     REMOVE e IN {relations}
                 """,
                 bind_vars={
                     "from": f"{CollectionNames.RECORDS.value}/{record_id}", "collections": to_collections,
-                    "origin": origin, "inferred": EntityOrigin.INFERRED.value,
+                    "origin": origin, "inferred": EntityOrigin.INFERRED.value, "keep": list(keep_edge_types),
                     "kept": [[e["_to"], e["edgeType"]] for e in self._translate_edges_to_arango(edges)],
                 },
                 txn_id=txn,
@@ -24186,7 +24352,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 FILTER parent_doc != null AND IS_SAME_COLLECTION("recordGroups", parent_doc)
                                 RETURN PARSE_IDENTIFIER(edge._to).key
                         )
-                    ) : (
+                    ) : FIRST((
+                        // A subquery: without FIRST its value is an array, which names no document,
+                        // and every connector record read as having no parent.
                         // For connector records, check nodeRelations first (for nested folders/records),
                         // then belongsTo (for immediate children of record groups),
                         // then inheritPermissions (alternative way records can be connected to record groups)
@@ -24216,7 +24384,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 RETURN PARSE_IDENTIFIER(edge._to).key
                         ) : null
                         RETURN parent_from_rel || parent_from_belongs || parent_from_inherit
-                    )
+                    ))
                 ) : null
             )
         )
@@ -25888,6 +26056,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 AND record._key != @record_id
                 AND record.indexingStatus == @queued_status
                 AND {aql_live_record("record")}
+                AND record.refreshIntentId == null /* a record holding a Force reindex request runs as a refresh of its own */
             """
 
             bind_vars = {

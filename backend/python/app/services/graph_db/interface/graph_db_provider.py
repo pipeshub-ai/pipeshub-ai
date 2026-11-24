@@ -12,6 +12,7 @@ import time
 import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 
@@ -42,6 +43,11 @@ from app.utils.kh_chain_tops import place_chain_tops
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
+
+# Set by `KnowledgeHubService._walk_pages` while it reads the rows before a numbered page, for that one request: those reads only place the
+# page, so a backend may decide its listing once for all of them and leave out what only a row on show needs. The page itself is read without it.
+# ``page_rows`` is the page's own size, for a backend that must read no more than a page at a time.
+KH_SKIP_READS: ContextVar[dict[str, Any] | None] = ContextVar("kh_skip_reads", default=None)
 
 # Set once `stamp_kh_listing_state` has covered every node written before.
 KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
@@ -2779,7 +2785,7 @@ class IGraphDBProvider(ABC):
 
     @abstractmethod
     async def update_indexing_status_for_record_ids(
-        self, record_ids: list[str], status: str
+        self, record_ids: list[str], status: str, *, fields: dict[str, Any] | None = None
     ) -> None:
         """
         Set indexingStatus to the specified status for each id (deduplicated).
@@ -2790,8 +2796,24 @@ class IGraphDBProvider(ABC):
         Args:
             record_ids: List of record IDs to update
             status: Target status (e.g., ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+            fields: Further fields set in the same statement (a Force reindex's refresh intent); a null value
+                clears the field. With ``fields`` a failed statement **raises** (a lost write must not be read as a
+                request that was made); without it errors are logged and swallowed
         """
         pass
+
+    async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
+        """Set ``fields`` on each existing record that is neither internal nor a placeholder, **whatever its status**,
+        and write nothing else. Returns how many records were written; a failure raises (the caller must not read a
+        lost write as a request that was made). Implemented for ArangoDB, Neo4j and PostgreSQL."""
+        raise NotImplementedError
+
+    async def get_records_with_refresh_intent(
+        self, org_id: str, *, after_key: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Live records of the org that carry a ``refreshIntentId``, whatever their status, in key order after
+        ``after_key``. Served by an index that holds only such records. A failure raises."""
+        raise NotImplementedError
 
     @abstractmethod
     async def reset_indexing_status_for_connector(
@@ -3322,6 +3344,10 @@ class IGraphDBProvider(ABC):
         """
         Get all child records for a parent record by parent_external_record_id.
         Optionally filter by record_type.
+
+        Matched on the child's stored ``externalParentId``, not on hierarchy
+        edges: a child whose PARENT_CHILD edge was removed is still returned,
+        which the web connector's relink after a full sync relies on.
 
         Live children only by default, so a folder whose children are all in
         the trash reads as empty.
@@ -7762,12 +7788,22 @@ class IGraphDBProvider(ABC):
     # whose connector page costs about the same for a large window as for one page: its cost is per read, not per row (and whose memory does not grow with it).
     kh_skip_rows = 0
 
+    @property
+    def kh_browse_skip_rows(self) -> int:
+        """``kh_skip_rows`` for a browse below a start (``flatten=False``), for a backend whose browse page costs otherwise than its flatten."""
+        return self.kh_skip_rows
+
     async def get_knowledge_hub_warm_samples(self) -> list[dict[str, str]]:
         """Samples for warming the listing statements' plans, in order of preference, at most one per App: each a user
         and an App, record group and record that user can browse (``userId``, ``orgId``, ``appId``, ``groupId``,
         ``recordId``). Empty when the backend has no use for it. The caller drops a sample whose App the user has
         switched off (demo data), which only it can read."""
         return []
+
+    async def kh_refresh_plans(self, max_age: float | None = None) -> int:
+        """Plan again, off the request path, the listing statements in use whose cached plan is older than ``max_age``;
+        how many were planned. 0 for a backend with no plan cache to keep."""
+        return 0
 
     async def kh_scope_enabled(self) -> bool:
         return False
@@ -9342,10 +9378,14 @@ class IGraphDBProvider(ABC):
         origin: str,
         edges: list[dict],
         transaction: str | None = None,
+        *,
+        keep_edge_types: Collection[str] = (),
     ) -> None:
         """Replace the record's ``entityRelations`` edges of ``origin`` to nodes of
         ``to_collections`` with *edges*. A failed write must leave the old edges,
         even with no transaction, or a caller that logs the failure and commits.
+        Old edges whose ``edgeType`` is in *keep_edge_types* are not deleted;
+        new edges of those types are still written.
         """
 
     @abstractmethod

@@ -237,6 +237,16 @@ def current_timeline() -> RecordTimeline | None:
     return _current.get()
 
 
+def current_record_id() -> str | None:
+    """The id of the record being indexed in this task (or one it spawned), None outside one."""
+    timeline = _current.get()
+    if timeline is None:
+        return None
+    # A noted id wins, as on index.end (PostgreSQL opens the timeline before it has parsed the record).
+    record_id = timeline.facts.get("record_id") or timeline.record_id
+    return str(record_id) if record_id else None
+
+
 def note(**facts: object) -> bool:
     """Facts for the current record's ``index.end`` line (see :meth:`RecordTimeline.note`).
     False, and nothing noted, outside a record or after it ended."""

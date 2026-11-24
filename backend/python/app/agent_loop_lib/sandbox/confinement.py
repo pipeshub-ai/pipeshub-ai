@@ -60,6 +60,24 @@ def confinement_available() -> bool:
     return False
 
 
+_reported_unconfined = False
+
+
+def report_unconfined_local_mode() -> None:
+    """Log once, at ERROR, that local-mode code runs with no confinement
+    when this host has none to offer. Called where local mode is enabled."""
+    global _reported_unconfined
+    if _reported_unconfined or confinement_available():
+        return
+    _reported_unconfined = True
+    logger.error(
+        "Local code sandbox without confinement (no bwrap/sandbox-exec): generated code "
+        "runs unconfined as this service's user, can read its files and its environment "
+        "(through /proc), and can signal its processes. Local mode is opt-in "
+        "(SANDBOX_ALLOW_LOCAL); use SANDBOX_MODE=docker or e2b for isolation."
+    )
+
+
 def confine_command(cmd: list[str], working_dir: str, allow_network: bool = False) -> list[str]:
     """Wrap `cmd` for kernel-level confinement when available; otherwise
     return it unchanged (warning once per platform string)."""

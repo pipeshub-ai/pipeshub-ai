@@ -82,9 +82,19 @@ const renderPage = () =>
     </Theme>,
   );
 
+const groupHeaders = () =>
+  screen.getAllByRole('button').filter((el) => el.getAttribute('aria-controls')?.startsWith('mcp-tool-group-'));
+
+/** Groups start closed: opens every one, for the tests that look at the tools inside. */
+const openGroups = async () => {
+  await waitFor(() => expect(groupHeaders().length).toBeGreaterThan(0));
+  for (const header of groupHeaders()) fireEvent.click(header);
+};
+
 describe('McpAccessPage', () => {
   it('shows the access switches and one switch per tool, all on by default', async () => {
     renderPage();
+    await openGroups();
     const access = await screen.findByRole('switch', { name: strings.enabled.label });
     expect(access.getAttribute('aria-checked')).toBe('true');
     expect(screen.getByRole('switch', { name: strings.writeTools.label }).getAttribute('aria-checked')).toBe('true');
@@ -96,6 +106,7 @@ describe('McpAccessPage', () => {
 
   it('explains what each tool does, next to its name', async () => {
     renderPage();
+    await openGroups();
     expect(await screen.findByText(strings.tools.descriptions.pipeshub_search)).toBeTruthy();
     expect(screen.getByText(strings.tools.descriptions.pipeshub_upload)).toBeTruthy();
     expect(screen.getByText('pipeshub_search')).toBeTruthy();
@@ -107,6 +118,7 @@ describe('McpAccessPage', () => {
       { name: 'pipeshub_find_records', title: 'Find records', writes: false },
     ]);
     renderPage();
+    await openGroups();
     expect(await screen.findByText(strings.tools.descriptions.pipeshub_entities)).toBeTruthy();
     expect(screen.getByText(strings.tools.descriptions.pipeshub_find_records)).toBeTruthy();
   });
@@ -142,6 +154,7 @@ describe('McpAccessPage', () => {
       { name: 'pipeshub_future', title: 'pipeshub_future', writes: false },
     ]);
     renderPage();
+    await openGroups();
     expect(await screen.findByRole('switch', { name: 'pipeshub_future' })).toBeTruthy();
     expect(screen.getAllByText('pipeshub_future')).toHaveLength(1);
     expect(screen.queryByText(/workspace\.mcpAccess/)).toBeNull();
@@ -149,6 +162,7 @@ describe('McpAccessPage', () => {
 
   it('saves a tool turned off', async () => {
     renderPage();
+    await openGroups();
     fireEvent.click(await screen.findByRole('switch', { name: 'Semantic search' }));
     fireEvent.click(screen.getByText('save'));
     await waitFor(() => {
@@ -162,6 +176,7 @@ describe('McpAccessPage', () => {
 
   it('shows write tools as off and locked while write tools are not allowed', async () => {
     renderPage();
+    await openGroups();
     fireEvent.click(await screen.findByRole('switch', { name: strings.writeTools.label }));
     const upload = screen.getByRole('switch', { name: 'Upload documents' });
     expect(upload.getAttribute('aria-checked')).toBe('false');
@@ -224,9 +239,11 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
   // Radix renders a tab's label twice (a hidden copy keeps its width), so its name is matched by its text.
   const tab = (label: string) => screen.getAllByRole('tab').find((el) => el.textContent?.startsWith(label))!;
   const groupSwitches = () => screen.getAllByRole('switch', { name: strings.tools.groupSwitch });
+  const groupHeader = (group: string) => groupHeaders().find((el) => el.getAttribute('aria-controls') === `mcp-tool-group-${group}`)!;
 
   it('groups the tools, and labels what each can do to data', async () => {
     renderPage();
+    await openGroups();
     expect(await screen.findByText(groupLabel('read'))).toBeTruthy();
     for (const group of ['add', 'chat', 'code', 'other'] as const) expect(screen.getByText(groupLabel(group))).toBeTruthy();
     expect(screen.queryByText(groupLabel('people')), 'a group with no tool is not shown').toBeNull();
@@ -278,6 +295,7 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
 
   it('opens a tool to show its scopes, when it is offered, its arguments and what the AI reads', async () => {
     renderPage();
+    await openGroups();
     const buttons = await screen.findAllByRole('button', { name: strings.tools.showDetails });
     fireEvent.click(buttons[0]);
     expect(screen.getByText('semantic:write')).toBeTruthy();
@@ -294,6 +312,7 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
 
   it('says a tool that calls nothing needs no scope, and when a write tool is offered', async () => {
     renderPage();
+    await openGroups();
     await screen.findByText(groupLabel('add'));
     for (const button of screen.getAllByRole('button', { name: strings.tools.showDetails })) fireEvent.click(button);
     expect(screen.getByText(strings.tools.details.noScopes)).toBeTruthy();
@@ -304,6 +323,7 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
 
   it('offers no details for a tool from a server older than this page', async () => {
     renderPage();
+    await openGroups();
     await screen.findByText(groupLabel('other'));
     expect(screen.getAllByRole('button', { name: strings.tools.showDetails })).toHaveLength(TOOLS.length - 1);
     expect(screen.getByRole('switch', { name: 'pipeshub_future' })).toBeTruthy();
@@ -348,23 +368,40 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
     expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
   });
 
-  it('folds a group while filtering, and opens it again on the next filter', async () => {
+  it('starts with every group closed, and opens one when its header is clicked', async () => {
+    renderPage();
+    await screen.findByText(groupLabel('add'));
+    for (const header of groupHeaders()) expect(header.getAttribute('aria-expanded'), header.textContent).toBe('false');
+    expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
+    expect(groupSwitches()).toHaveLength(5);
+    fireEvent.click(groupHeader('add'));
+    expect(groupHeader('add').getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('switch', { name: 'Upload documents' })).toBeTruthy();
+    expect(screen.queryByRole('switch', { name: 'Semantic search' })).toBeNull();
+  });
+
+  it('opens the groups while filtering, lets one fold, and closes them when the filter is cleared', async () => {
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: strings.tools.filters.writes }));
-    const addHeader = () =>
-      screen.getAllByRole('button').find((b) => b.getAttribute('aria-controls') === 'mcp-tool-group-add');
-    fireEvent.click(addHeader());
-    expect(addHeader().getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
-    fireEvent.click(addHeader());
     expect(screen.getByRole('switch', { name: 'Upload documents' })).toBeTruthy();
-    fireEvent.click(addHeader());
+    fireEvent.click(groupHeader('add'));
+    expect(groupHeader('add').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: strings.tools.filters.off }));
+    fireEvent.click(screen.getByRole('button', { name: strings.tools.filters.writes }));
+    expect(groupHeader('add').getAttribute('aria-expanded'), 'a new filter opens the groups again').toBe('true');
     fireEvent.click(screen.getByRole('button', { name: strings.tools.filters.all }));
-    expect(addHeader().getAttribute('aria-expanded')).toBe('true');
+    for (const header of groupHeaders()) expect(header.getAttribute('aria-expanded')).toBe('false');
+    const search = screen.getByLabelText(strings.tools.searchLabel);
+    fireEvent.change(search, { target: { value: 'upload' } });
+    expect(screen.getByRole('switch', { name: 'Upload documents' })).toBeTruthy();
+    fireEvent.change(search, { target: { value: '' } });
+    expect(screen.queryByRole('switch', { name: 'Upload documents' })).toBeNull();
   });
 
   it('turns a whole group off and saves it', async () => {
     renderPage();
+    await openGroups();
     await screen.findByText(groupLabel('read'));
     // Groups in page order: read, chat, add, code, other.
     fireEvent.click(groupSwitches()[0]);
@@ -387,6 +424,7 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
 
   it('says why a write tool is off while write tools are not allowed, but not under every tool while MCP is off', async () => {
     renderPage();
+    await openGroups();
     fireEvent.click(await screen.findByRole('switch', { name: strings.writeTools.label }));
     expect(screen.getAllByText(strings.tools.blocked.writesOff)).toHaveLength(2);
     fireEvent.click(screen.getByRole('switch', { name: strings.enabled.label }));
@@ -395,11 +433,13 @@ describe('McpAccessPage, with what the server tells about each tool', () => {
     expect(screen.getByText(strings.status.off)).toBeTruthy();
   });
 
-  it('expands and collapses every tool at once', async () => {
+  it('expands and collapses every group and tool at once', async () => {
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: strings.tools.expandAll }));
     expect(screen.getAllByRole('button', { name: strings.tools.hideDetails })).toHaveLength(TOOLS.length - 1);
+    for (const header of groupHeaders()) expect(header.getAttribute('aria-expanded')).toBe('true');
     fireEvent.click(screen.getByRole('button', { name: strings.tools.collapseAll }));
     expect(screen.queryAllByRole('button', { name: strings.tools.hideDetails })).toHaveLength(0);
+    for (const header of groupHeaders()) expect(header.getAttribute('aria-expanded')).toBe('false');
   });
 });
