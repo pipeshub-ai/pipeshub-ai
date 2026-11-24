@@ -389,3 +389,14 @@ class TestSendPageImages:
         output = await adapter.execute(url="https://example.com/report")
         view = adapter.result_view({}, ToolResult(tool_call_id="c1", name="dynamic__fetch_url", content=output.data))
         assert view is not None and view["fields"][0]["label"] == "Page"
+
+
+class TestDisplayName:
+    """Step cards label a call by its display name; the raw name reads as "Fetch Url"."""
+
+    def test_web_tools_name_what_they_did(self) -> None:
+        context = make_context()
+        search = WebToolAdapter(_web_search_tool(_web_search_payload()), "dynamic", "web_search", context)
+        fetch = WebToolAdapter(_fetch_url_tool(_url_content_payload()), "dynamic", "fetch_url", context)
+        assert search.display_name == "Searched the web"
+        assert fetch.display_name == "Read a web page"

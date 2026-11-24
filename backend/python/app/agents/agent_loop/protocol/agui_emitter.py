@@ -180,6 +180,10 @@ class AGUIEventEmitter(EventEmitter):
                 result_fields["approval"] = approval
             if result_view:
                 result_fields["resultView"] = result_view
+            # A result kept as a file: clients that show results can say so.
+            artifact_id = payload.get("artifact_id")
+            if isinstance(artifact_id, str) and artifact_id:
+                result_fields["artifactId"] = artifact_id
             return [
                 frame(AGUIEventType.TOOL_CALL_END, toolCallId=tool_call_id, runId=run_id),
                 frame(
