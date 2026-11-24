@@ -510,6 +510,19 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await users.getLive(org, s._id))!.role).to.equal('member');
     });
 
+    it('promoteToAdmin leaves removed accounts as they are, and a removed service account does not refuse the batch', async () => {
+      const org = await fx.newOrg();
+      const live = await person(org);
+      const gone = await person(org);
+      const goneService = await users.create(org, { email: svcEmail(org), fullName: 'svc', kind: 'service' });
+      await users.markDeleted(org, gone._id);
+      await users.markDeleted(org, goneService._id);
+      await users.promoteToAdmin(org, [live._id, gone._id, goneService._id]);
+      expect((await users.getLive(org, live._id))!.role).to.equal('admin');
+      expect(await users.getAny(org, gone._id)).to.include({ role: 'member', isDeleted: true });
+      expect(await users.getAny(org, goneService._id)).to.include({ role: 'member', isDeleted: true });
+    });
+
     it('group membership: addToEveryone, addMemberToGroups, removeFromEveryone, removeFromAll', async () => {
       const org = await fx.newOrg();
       const every = await groups.create(org, { name: uniq('every'), type: 'everyone' });

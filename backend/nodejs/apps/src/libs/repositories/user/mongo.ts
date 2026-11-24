@@ -811,14 +811,14 @@ export class MongoUserRepository implements UserRepository {
   }
 
   async promoteToAdmin(orgId: string, ids: string[], tx?: Tx): Promise<void> {
-    // Narrowed to people. The schema refuses to promote a service account, so
-    // without this a batch that happened to include one would fail as a whole
-    // and take the genuine invites with it.
     const session = sessionOf(tx);
     const filter = {
       _id: { $in: ids },
       orgId,
+      // Skips service accounts in the write; the schema hook still refuses a batch that names one.
       kind: { $ne: 'service' as const },
+      // Live accounts only: one removed since the caller read it stays a removed member.
+      isDeleted: { $ne: true },
     };
     const promote = { $set: { role: 'admin' as const } };
     if (session) await Users.updateMany(filter, promote, { session });

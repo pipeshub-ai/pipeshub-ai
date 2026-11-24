@@ -2439,6 +2439,9 @@ export class UserController {
           )
         : await grant();
 
+    // shortcut: the audit lines and mails below use what was read before the grant, so an account removed
+    // meanwhile (or, on standalone Mongo, created by this invite and removed before the grant) still gets its
+    // restore/promote/new_admin line, mail and reinvited count; re-read the accounts inside the grant to fix it.
     for (const restored of restoredUsers) {
       auditUserChange('user.restore', restored._id, 'invite');
     }
