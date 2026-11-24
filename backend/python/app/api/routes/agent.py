@@ -277,8 +277,9 @@ class AgentNotFoundError(AgentError):
 class AgentTemplateNotFoundError(AgentError):
     """Agent template not found"""
     def __init__(self, template_id: str) -> None:
+        # The argument stays for the callers; the detail leaves it out, as it may match nothing.
         super().__init__(
-            detail=f"Agent template '{template_id}' not found or you don't have access to it",
+            detail="Agent template not found or you don't have access to it",
             status_code=404
         )
 
