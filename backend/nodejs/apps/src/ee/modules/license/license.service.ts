@@ -44,8 +44,11 @@ export interface LicenseStore {
 
 /**
  * What the connectors read. `allowed` is the whole decision; `until` is when
- * the license in force ends its grace period (a renewal already installed may
- * carry it further), null when not allowed.
+ * the answer may next turn to not allowed, null when not allowed. Outside the
+ * upgrade grace it is when the license in force ends its grace period (a
+ * renewal already installed may carry it further). During the upgrade grace it
+ * is the later of that and the upgrade grace end, so a missing, shorter or
+ * lapsed license never shortens it.
  */
 export interface PermissionSyncAnswer {
   allowed: boolean;
