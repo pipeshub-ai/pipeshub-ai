@@ -1695,6 +1695,26 @@ class TestAFullSyncUnlinksOnlyWhatLeftConfluence:
         assert unlinked & {"p1", "a1", "c1", "p2", "10"} == set()
         assert unlinked & {"a2", "c2"} == {"a2", "c2"}, "what left Confluence loses its links"
 
+    @pytest.mark.parametrize("by_id, gone, complete", [
+        (content("p2"), False, True),
+        (json_response({"message": "No content found with id"}, status=404), True, True),
+        (json_response({"message": "busy"}, status=503), False, False),
+    ], ids=["still-there", "gone", "unreadable"])
+    async def test_a_stored_page_the_search_missed_is_read_by_id_before_the_unlink(
+        self, atlassian_api, records_db, checkpoints, search, by_id, gone, complete
+    ) -> None:
+        connector = await self._synced(
+            atlassian_api, records_db, checkpoints, search, content("p1"), content("p2", attachments=[attachment("a2")]),
+        )
+        search.add("page", "ENG", 0, listing([content("p1")]))  # the search index is behind: it misses p2
+        search.existing[("page", "ENG")] = [content("p1"), content("p2")]  # the database still lists p2 as current
+        atlassian_api.on("GET", f"{API}/content/p2", by_id)
+
+        unlinked = await self._full_sync(connector, records_db, checkpoints)
+
+        assert unlinked & {"p2", "a2"} == ({"p2", "a2"} if gone else set())
+        assert connector.full_sync_coverage().complete is complete
+
     async def test_an_archived_page_keeps_its_links_with_its_files_and_comments(
         self, atlassian_api, records_db, checkpoints, search
     ) -> None:

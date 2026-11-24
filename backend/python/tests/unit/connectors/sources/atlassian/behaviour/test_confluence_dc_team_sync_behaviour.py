@@ -3396,6 +3396,42 @@ class TestAFullSyncUnlinksOnlyWhatLeftConfluence:
         assert self._among(unlinked, {"p1"}) == set()
         assert connector.full_sync_coverage().complete is False, "a stored page left unread holds the unlink"
 
+    @pytest.mark.parametrize("by_id, gone, complete", [
+        (content("p2"), False, True),
+        (json_response({"message": "No content found with id"}, status=404), True, True),
+        (json_response({"message": "busy"}, status=503), False, False),
+    ], ids=["still-there", "gone", "unreadable"])
+    async def test_a_stored_page_the_search_missed_is_read_by_id_before_the_unlink(
+        self, atlassian_api, db, store, search, by_id, gone, complete
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1"), content("p2", attachments=[attachment("a2")])]))
+        await connector.run_sync()
+        search.add("page", 0, listing([content("p1")]))  # the search index is behind: it misses p2
+        search.existing["page"] = [content("p1"), content("p2")]  # the database still lists p2 as current
+        atlassian_api.on("GET", f"{API}/content/p2", by_id)
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert self._among(unlinked, {"p2", "a2"}) == ({"p2", "a2"} if gone else set())
+        assert connector.full_sync_coverage().complete is complete
+
+    async def test_more_missed_pages_than_it_reads_by_id_unlinks_nothing(self, atlassian_api, db, store, search) -> None:
+        pages = [content(f"m{i}") for i in range(confluence_dc_removal.MISSED_READ_CAP + 1)]
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing(pages))
+        await connector.run_sync()
+        search.add("page", 0, listing([]))
+        search.existing["page"] = pages
+        reads: list[str] = []
+        atlassian_api.on_suffix("GET", "/content/m0", lambda r: reads.append(r.url.path) or json_response(pages[0]))
+
+        unlinked = await self._full_sync(connector, db, store)
+
+        assert reads == [], "past the cap nothing is read one by one"
+        assert self._among(unlinked, {p["id"] for p in pages}) == set()
+        assert connector.full_sync_coverage().complete is False
+
     async def test_a_page_that_failed_to_save_keeps_its_links(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)
         search.add("page", 0, listing([content("p1", attachments=[attachment("a1")]), content("p2")]))

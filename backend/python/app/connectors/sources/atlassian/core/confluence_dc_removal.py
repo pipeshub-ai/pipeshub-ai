@@ -37,6 +37,9 @@ FILTER_REMOVAL_MARGIN = timedelta(hours=24)
 CONTENT_LIST_LIMIT = 100
 RECORD_SCAN_PAGE_SIZE = 500
 ID_SYNC_CHUNK = 50
+# Stored pages a full listing's search missed that are read one by one, per space and type. More than this is a
+# search far behind the database: none is read and the run unlinks nothing.
+MISSED_READ_CAP = 100
 RECORD_DELETE_CHUNK = 200
 # How many runs the checkpoint is held for pages that failed to save before they
 # are given up on, so one broken page can't stop a space from ever moving on.
@@ -311,12 +314,63 @@ class ConfluenceDataCenterRemovalMixin:
             ]
             if archived:
                 await self._note_archived_kept(archived)
+            failed_ids = {item_id for item_id, _, _ in listing.failed}
+            missed = [
+                r for r in stored
+                if r.external_record_id in existing and r.external_record_id not in leaving
+                and existing[r.external_record_id].status == "current"
+                and r.external_record_id not in listing.seen and r.external_record_id not in failed_ids
+            ]
+            if missed and listing.complete and self.data_entities_processor.full_sync_running(self.connector_id):
+                await self._keep_missed_by_search(space, record_type, missed)
         if gone or left_out:
             settled = await self._delete_content_records(gone + left_out) and settled
         return settled
 
+    async def _keep_missed_by_search(self, space: RecordGroup, record_type: RecordType, pages: list[Record]) -> None:
+        """Read by id the stored pages the database lists as current but the search did not return.
+
+        The search index can be behind the database, and a full sync unlinks what it did not write. ``GET
+        /rest/api/content/{id}`` answers 404 "if there is no content with the given id, or if the calling user
+        does not have permission to view the content" (https://docs.atlassian.com/ConfluenceServer/rest/8.5.4/,
+        https://developer.atlassian.com/server/confluence/11.1.0.swagger.v3.json), so a 404 page is left to the
+        unlink. One that is there is kept with what hangs under it, its access read again; one it can't read is
+        kept and the run unlinks nothing.
+        """
+        if len(pages) > MISSED_READ_CAP:
+            self.logger.warning(
+                f"The search missed {len(pages)} stored {record_type.value} records of space {space.short_name}; "
+                "keeping them as stored, and this full sync unlinks nothing"
+            )
+            self.data_entities_processor.note_kept_records(self.connector_id, [r.id for r in pages])
+            self._sync_read_incomplete = True
+            return
+        datasource = await self._get_fresh_datasource()
+        there: list[Record] = []
+        for page in pages:
+            page_id = page.external_record_id
+            try:
+                response = await datasource.get_content_v1(page_id, expand="space")
+                if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                    continue
+                data = response.json() if response is not None and response.status == HttpStatusCode.SUCCESS.value else None
+            except Exception as e:
+                self.logger.warning(f"Could not read {record_type.value} {page_id}, which the search missed: {e}")
+                data = None
+            if isinstance(data, dict) and str(data.get("id")) == str(page_id):
+                there.append(page)
+                continue
+            self.logger.warning(f"Keeping {record_type.value} {page_id}, which the search missed: it could not be read")
+            self.data_entities_processor.note_kept_records(self.connector_id, [page.id])
+            self._sync_read_incomplete = True
+        if there:
+            self.logger.info(
+                f"Keeping {len(there)} {record_type.value} records of space {space.short_name} the search missed"
+            )
+            await self._note_archived_kept(there)
+
     async def _note_archived_kept(self, pages: list[Record]) -> None:
-        """Note archived pages kept as stored, with the files, comments and replies under them.
+        """Note archived pages (or ones the search missed) kept as stored, with the files, comments and replies under them.
 
         The search leaves archived pages out, but Confluence still shows them to those
         allowed, so a full sync keeps them and what hangs under them rather than
