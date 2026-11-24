@@ -13,6 +13,7 @@ import {
   ServiceUnavailableError,
 } from '../../../src/libs/errors/http.errors'
 import { ValidationError } from '../../../src/libs/errors/validation.error'
+import { StorageUrlParseError } from '../../../src/libs/errors/storage.errors'
 import { markClientSafe } from '../../../src/libs/errors/reader-friendly'
 import { KafkaError } from '../../../src/libs/errors/kafka.errors'
 import { RedisServiceNotInitializedError } from '../../../src/libs/errors/redis.errors'
@@ -397,6 +398,19 @@ describe('ErrorMiddleware', () => {
 
       const response = res.json.firstCall.args[0]
       expect(response.error.metadata).to.deep.equal({ extra: 'info' })
+    })
+
+    it("never answers a storage vendor's text, in development either", () => {
+      process.env.NODE_ENV = 'development'
+      const error = new StorageUrlParseError('Invalid S3 URL format', { originalError: 'n5o-vendor-text bucket/org/report.pdf', code: 'ERR_INVALID_URL' })
+      const res = createMockResponse()
+
+      handler(error, createMockRequest(), res, createMockNext())
+
+      expect(res.status.calledWith(400)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.error.metadata).to.include({ code: 'ERR_INVALID_URL' })
+      expect(JSON.stringify(response)).to.not.contain('n5o-vendor-text')
     })
 
     for (const mode of ['development', 'production']) {

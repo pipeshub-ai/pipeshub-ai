@@ -19,15 +19,15 @@ const azureError = (code: unknown, statusCode: unknown): Error =>
 
 const payload = { buffer: Buffer.from('x'), documentPath: 'org/report.pdf', mimeType: 'application/pdf', isVersioned: false }
 
-/** The wrap's metadata without the hint every StorageUploadError adds. */
-const wrapped = async (call: () => Promise<unknown>): Promise<Record<string, unknown>> => {
+/** The wrap's metadata without the hint every StorageUploadError adds, and the vendor's text it keeps apart. */
+const wrapped = async (call: () => Promise<unknown>): Promise<{ metadata: Record<string, unknown>; vendorText?: string }> => {
   try {
     await call()
   } catch (error) {
     expect(error).to.be.instanceOf(StorageError)
     const metadata = { ...(error as StorageError).metadata }
     delete metadata.hint
-    return metadata
+    return { metadata, vendorText: (error as StorageError).vendorText }
   }
   throw new Error('expected the call to fail')
 }
@@ -126,9 +126,8 @@ describe('provider wraps keep the vendor status and code', () => {
     const adapter = s3()
     sinon.stub((adapter as any).s3, 'upload').returns({ promise: () => Promise.reject(awsError('AccessDenied', 403)) })
     expect(await wrapped(() => adapter.uploadDocumentToStorageService(payload))).to.deep.equal({
-      originalError: TEXT,
-      statusCode: 403,
-      code: 'AccessDenied',
+      metadata: { statusCode: 403, code: 'AccessDenied' },
+      vendorText: TEXT,
     })
   })
 
@@ -140,9 +139,8 @@ describe('provider wraps keep the vendor status and code', () => {
     }
     try {
       expect(await wrapped(() => proto.uploadDocumentToStorageService(payload))).to.deep.equal({
-        originalError: TEXT,
-        statusCode: 403,
-        code: 'AuthorizationFailure',
+        metadata: { statusCode: 403, code: 'AuthorizationFailure' },
+        vendorText: TEXT,
       })
     } finally {
       delete proto.containerClient
@@ -154,9 +152,9 @@ describe('provider wraps keep the vendor status and code', () => {
     const adapter = new LocalStorageAdapter({ mountName: 'PipesHub', baseUrl: 'http://localhost:3000' } as any)
     sinon.stub(adapter, 'ensureReady').resolves()
     sinon.stub(fs, 'mkdir').rejects(Object.assign(new Error(`EACCES: permission denied, mkdir '/mnt/${TEXT}'`), { code: 'EACCES' }))
-    const metadata = await wrapped(() => adapter.uploadDocumentToStorageService(payload))
-    expect(metadata).to.include({ code: 'EACCES' })
-    expect(metadata).to.not.have.property('statusCode')
+    const { metadata, vendorText } = await wrapped(() => adapter.uploadDocumentToStorageService(payload))
+    expect(metadata).to.deep.equal({ code: 'EACCES' })
+    expect(vendorText).to.contain(TEXT)
   })
 
   it('an S3 upload that succeeds writes no line at INFO or above and no object URL, in development too', async () => {
