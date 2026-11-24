@@ -109,11 +109,7 @@ class ProjectsSync:
                 # that is never linked, and it is not indexed again until it changes.
                 (
                     "code",
-                    lambda: self.c.repos.run(
-                        project_id,
-                        project_path,
-                        project.default_branch or "main",
-                    ),
+                    lambda: self.c.repos.run(project_id, project_path, project.default_branch),
                 ),
                 ("merge_requests", lambda: self.c.merge_requests.fetch_prs_batched(project_id)),
             ):
@@ -661,6 +657,8 @@ class ProjectsSync:
                     )
                     if not pseudo_group:
                         pseudo_group = await self._create_pseudo_group(principal_id)
+                    else:
+                        c.data_entities_processor.note_kept_user_groups(c.connector_id, [pseudo_group])
                     if pseudo_group:
                         self.logger.debug(
                             "Using pseudo-group for user %s (no email available)", principal_id
