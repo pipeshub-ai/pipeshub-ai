@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.registry.filters import Filter, FilterCollection
 from app.connectors.core.sql.profiling import ColumnProfile
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.mariadb.connector import (
     MAX_COLUMN_VALUES_STREAMED,
     SYNC_STATE_KEY,
@@ -236,6 +237,9 @@ class World:
             async def get_record_by_external_id(self, connector_id, external_id, raise_on_error=False) -> object:
                 return store.records.get(external_id)
 
+            async def get_user_by_user_id(self, user_id, raise_on_error=False) -> dict:
+                return {"email": f"{user_id}@example.com"}
+
             async def batch_update_nodes(self, updates, collection) -> None:
                 if store.crash_moves:
                     raise Crash()
@@ -288,6 +292,10 @@ class World:
 
     async def sync(self, filters=None, indexing=None) -> None:
         self.connector.data_source = self.catalog.source()
+        # The runner runs a full sync when no state was saved.
+        self.connector.data_entities_processor.full_sync_running = MagicMock(
+            return_value=SYNC_STATE_KEY not in self.point.data,
+        )
         with patch(
             "app.connectors.sources.mariadb.connector.load_connector_filters",
             new_callable=AsyncMock, return_value=(filters or FilterCollection(), indexing or FilterCollection()),
@@ -521,6 +529,257 @@ class TestFullSync:
         await world.sync()
         assert ("new", "shop.orders") in world.store.writes
         assert ("update", "shop.orders") not in world.store.writes
+
+
+async def full_sync_unlinks(world: World) -> tuple[set[str], set[str]]:
+    """Run a full sync and see what its end would unlink (sync_runner._unlink_what_full_sync_missed).
+
+    Returns the stored records still at the source that the sync neither wrote
+    nor noted kept, while it reports having read the whole database; and the
+    stored records gone from the source that are removed or unlinked.
+    """
+    before = {fqn: record.id for fqn, record in world.store.records.items()}
+    seen: set[str] = set()
+    processor = world.connector.data_entities_processor
+    write, update = processor.on_new_records, processor.on_record_content_update
+
+    async def on_new_records(batch) -> None:
+        await write(batch)
+        seen.update(record.id for record, _ in batch)
+
+    async def on_record_content_update(record) -> None:
+        await update(record)
+        seen.add(record.id)
+
+    processor.on_new_records = on_new_records
+    processor.on_record_content_update = on_record_content_update
+    note = processor.note_kept_records
+
+    def note_kept_records(connector_id, record_ids) -> None:
+        note(connector_id, record_ids)
+        seen.update(record_ids)
+
+    processor.note_kept_records = note_kept_records
+    world.point.data.pop(SYNC_STATE_KEY, None)  # what a full sync starts from
+    await world.sync()
+
+    coverage = getattr(world.connector, "full_sync_coverage", FullSyncCoverage)()
+    unlinks = coverage.complete and coverage.lists_everything
+    at_source = set()
+    for name, table in world.catalog.tables.items():
+        fqn = table_fqn("shop", name)
+        at_source |= {fqn} | {f"{fqn}.{Catalog.column(c)[0]}" for c in table["columns"]}
+    unlinked = {
+        fqn for fqn, record_id in before.items()
+        if fqn in world.store.records and record_id not in seen and unlinks
+    }
+    removed = {fqn for fqn in before if fqn not in world.store.records} | unlinked
+    return unlinked & at_source, removed - at_source
+
+
+class TestFullSyncUnlink:
+    """A full sync unlinks what it did not write: a table it could not write is still there."""
+
+    async def test_a_table_the_catalog_read_does_not_show_keeps_its_links(self, world) -> None:
+        for name in ("orders", "customers", "old"):
+            world.catalog.add(name)
+        await world.sync()
+        world.catalog.drop("old")
+        world.catalog.unreadable = {"customers"}
+        wrongly, gone = await full_sync_unlinks(world)
+        assert sorted(wrongly) == []
+        assert sorted(gone) == ["shop.old", "shop.old.id", "shop.old.name"]
+        # Kept by noting, not by skipping the unlink.
+        assert world.connector.full_sync_coverage().complete
+
+    async def test_a_table_whose_write_failed_keeps_its_links(self, world) -> None:
+        for name in ("orders", "customers", "old"):
+            world.catalog.add(name)
+        await world.sync()
+        world.catalog.drop("old")
+        # Its profile timed out, and the stored one could not be loaded to keep.
+        world.profile_fails = {"customers"}
+        world.connector.data_entities_processor.get_typed_records_by_ids = AsyncMock(
+            side_effect=RuntimeError("graph down"),
+        )
+        wrongly, gone = await full_sync_unlinks(world)
+        assert sorted(wrongly) == []
+        assert sorted(gone) == ["shop.old", "shop.old.id", "shop.old.name"]
+        assert world.connector.full_sync_coverage().complete
+
+    async def test_a_dropped_table_goes_and_the_rest_stay(self, world) -> None:
+        for name in ("orders", "customers", "old"):
+            world.catalog.add(name)
+        await world.sync()
+        world.catalog.drop("old")
+        noted = noting(world)
+        wrongly, gone = await full_sync_unlinks(world)
+        assert sorted(wrongly) == []
+        assert sorted(gone) == ["shop.old", "shop.old.id", "shop.old.name"]
+        assert world.connector.full_sync_coverage().complete
+        assert noted == []
+
+    async def test_only_the_unwritten_tables_records_are_noted_kept(self, world) -> None:
+        for name in ("orders", "customers"):
+            world.catalog.add(name)
+        await world.sync()
+        kept = {world.store.records[fqn].id for fqn in ("shop.customers", "shop.customers.id", "shop.customers.name")}
+        world.catalog.unreadable = {"customers"}
+        noted = noting(world)
+        world.point.data.pop(SYNC_STATE_KEY, None)
+        await world.sync()
+        assert sorted(noted) == sorted(kept)
+        assert world.connector.full_sync_coverage().complete
+
+    async def test_a_table_excluded_by_the_filter_is_not_kept(self, world) -> None:
+        for name in ("orders", "customers", "old"):
+            world.catalog.add(name)
+        await world.sync()
+        old_ids = {world.store.records[fqn].id for fqn in ("shop.old", "shop.old.id", "shop.old.name")}
+        customers = world.store.records["shop.customers"].id
+        world.catalog.unreadable = {"customers"}
+        noted = noting(world)
+        world.point.data.pop(SYNC_STATE_KEY, None)
+        excluded = FilterCollection(filters=[Filter(key="tables", value=["shop.old"], type="list", operator="not_in")])
+        await world.sync(filters=excluded)
+        assert not {"shop.old", "shop.old.id", "shop.old.name"} & world.store.records.keys()
+        assert customers in noted
+        assert not old_ids & set(noted)
+
+    async def test_a_new_table_the_catalog_read_does_not_show_needs_no_lookup_result(self, world) -> None:
+        world.catalog.add("orders")
+        await world.sync()
+        world.catalog.add("customers")
+        world.catalog.unreadable = {"customers"}
+        noted = noting(world)
+        world.store.writes.clear()
+        world.point.data.pop(SYNC_STATE_KEY, None)
+        await world.sync()
+        assert noted == []
+        assert ("update", "shop.orders") in world.store.writes
+        assert world.connector.full_sync_coverage().complete
+        assert world.connector.sync_stats.errors == 0
+
+    async def test_a_kept_table_that_cannot_be_looked_up_leaves_the_sync_incomplete(self, world) -> None:
+        for name in ("orders", "customers"):
+            world.catalog.add(name)
+        await world.sync()
+        restore = self._lookup_fails_for(world, "shop.customers")
+        world.catalog.unreadable = {"customers"}
+        noted = noting(world)
+        saves = world.point.saves
+        world.point.data.pop(SYNC_STATE_KEY, None)
+        await world.sync()
+        assert not world.connector.full_sync_coverage().complete
+        assert world.connector.sync_stats.errors >= 1
+        assert noted == []
+        assert world.point.saves > saves and "shop.orders" in world.state()
+
+        # The flag is this run's: the next one starts complete.
+        restore()
+        world.catalog.unreadable = set()
+        world.point.data.pop(SYNC_STATE_KEY, None)
+        await world.sync()
+        assert world.connector.full_sync_coverage().complete
+
+    async def test_the_table_whose_write_failed_is_written_next_sync(self, world) -> None:
+        for name in ("orders", "customers"):
+            world.catalog.add(name)
+        await world.sync()
+        processor = world.connector.data_entities_processor
+        load = processor.get_typed_records_by_ids
+        world.profile_fails = {"customers"}
+        processor.get_typed_records_by_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        world.point.data.pop(SYNC_STATE_KEY, None)
+        await world.sync()
+        assert "shop.customers" not in world.state()
+
+        processor.get_typed_records_by_ids = load
+        world.profile_fails = set()
+        world.store.writes.clear()
+        await world.sync()
+        assert {("update", "shop.customers"), ("column", "shop.customers.id"),
+                ("column", "shop.customers.name")} <= set(world.store.writes)
+
+    async def test_a_clean_full_sync_is_complete_and_notes_nothing(self, world) -> None:
+        for name in ("orders", "customers"):
+            world.catalog.add(name)
+        await world.sync()
+        noted = noting(world)
+        world.point.data.pop(SYNC_STATE_KEY, None)
+        await world.sync()
+        assert world.connector.full_sync_coverage().complete
+        assert noted == []
+        world.connector.data_entities_processor.note_kept_records.assert_not_called()
+
+    @staticmethod
+    def _lookup_fails_for(world: World, parent: str) -> object:
+        provider = world.connector.data_store_provider
+        open_tx = provider.transaction.side_effect
+
+        def transaction() -> object:
+            tx = open_tx()
+            children = tx.get_records_by_parent
+
+            async def get_records_by_parent(connector_id, fqn, record_type=None) -> list:
+                if fqn == parent:
+                    raise RuntimeError("graph down")
+                return await children(connector_id, fqn, record_type)
+
+            tx.get_records_by_parent = get_records_by_parent
+            return tx
+
+        provider.transaction = MagicMock(side_effect=transaction)
+        return lambda: setattr(provider, "transaction", MagicMock(side_effect=open_tx))
+
+
+def noting(world: World) -> list[str]:
+    """The record ids the connector notes kept from now on."""
+    noted: list[str] = []
+    processor = world.connector.data_entities_processor
+    processor.note_kept_records = MagicMock(side_effect=lambda connector_id, record_ids: noted.extend(record_ids))
+    return noted
+
+
+class TestDatabaseGrants:
+    """A personal connector's database group is granted to its creator."""
+
+    @staticmethod
+    def _personal(lookup: AsyncMock) -> World:
+        world = World(scope="personal", created_by="user-9")
+        provider = world.connector.data_store_provider
+        open_tx = provider.transaction.side_effect
+
+        def transaction() -> object:
+            tx = open_tx()
+            tx.get_user_by_user_id = lookup
+            return tx
+
+        provider.transaction = MagicMock(side_effect=transaction)
+        world.catalog.add("orders")
+        return world
+
+    @staticmethod
+    def _grants(world: World) -> object:
+        groups = world.connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+        return groups[0][1]
+
+    async def test_a_failed_creator_lookup_keeps_the_stored_grant(self) -> None:
+        world = self._personal(AsyncMock(side_effect=RuntimeError("graph down")))
+        await world.sync()
+        # None keeps the stored grants; [] would remove the creator's.
+        assert self._grants(world) is None
+
+    async def test_the_creator_is_granted_the_database(self) -> None:
+        world = World(scope="personal", created_by="user-9")
+        world.catalog.add("orders")
+        await world.sync()
+        assert [(p.email, p.external_id) for p in self._grants(world)] == [("user-9@example.com", "user-9")]
+
+    async def test_a_creator_who_is_gone_is_granted_nothing(self) -> None:
+        world = self._personal(AsyncMock(return_value=None))
+        await world.sync()
+        assert self._grants(world) == []
 
 
 class TestUpgrade:
