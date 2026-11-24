@@ -31,7 +31,7 @@ from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import counts as kg_counts
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
-from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH
+from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH, COLL_CODE
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -45,6 +45,7 @@ HIDDEN_MAX = 100_000        # rows hidden by groups that hide their children tha
 # statement over the hierarchy if a folder that large must be searched whole.
 SCOPE_MAX = 100_000
 COUNT_CAP = 10_000          # a count of what kg decides is exact up to this many rows; a listing with more reports the cap
+NAME_HITS_MAX = 10_000      # nodes a name search reads by the name index (``_kh_name_hits``); a search that matches more walks the sort order, where it meets its rows early
 UNDECIDED_MAX = 200         # rows kg does not decide that a count may hand to the walk
 CLASS_MAX = 50_000          # classes of a connector a count evaluates
 # The children of a page's rows whose classes a browse reads to decide their arrows by those classes only: up to about this many, one read of their class ids costs less than
@@ -259,6 +260,8 @@ class KhListingMixin(PgBase):
                 crumbs = self._kh_browse_scope(app_id, app_doc, start["sk"], trail, opened, set(gated_app_ids))
         elif max_depth < 50:
             scope = await self._kh_flat_within(org, app_id, app_sk, max_depth, transaction)
+        else:
+            scope = await self._kh_name_hits(org, app_id, filters, transaction)
         if filtered_out(app_id, app_doc, filters):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=True)
         base, where = where_of(org, app_sk, app_doc, filters, hidden)
@@ -385,6 +388,25 @@ class KhListingMixin(PgBase):
         if len(seen) + len(unplaced) > SCOPE_MAX:
             raise KnowledgeHubListingTooLarge
         return sorted((seen - {app_sk}) | {r["sk"] for r in unplaced})
+
+    async def _kh_name_hits(self, org: str, app_id: str, filters: dict[str, Any], transaction: str | None) -> list[int] | None:
+        """The rows of the connector a name search can match, found by the trigram index of the graph nodes' names (``kgl.name_pattern``): every row the search keeps
+        and some more, which the page's own conditions (the search's among them) drop. None, so that the page walks its sort order as before, when the search has
+        nothing the index can look up, matches more than NAME_HITS_MAX nodes, or runs as a job (the vetted read is the services' only).
+        The org is the session's: ``graph.records_by_name`` reads ``app.org_id`` itself.
+        shortcut: the candidates are the graph's names and the search's condition is kg's, so a row renamed in the graph and not yet drained into kg is found by
+        neither name until the drain reaches it; upgrade by adding the connector's rows still waiting for the drain to the candidates if that window must list it."""
+        pattern = kgl.name_pattern(filters.get("search_query"))
+        if pattern is None or current_or_system().kind == "system" or not 0 < len(app_id) <= 200:      # the function's own argument check
+            return None
+
+        async def read(tx: Any) -> list[int] | None:  # noqa: ANN401
+            nodes = await tx.fetch(kgl.NAME_NODES, app_id, pattern, NAME_HITS_MAX + 1)
+            if len(nodes) > NAME_HITS_MAX:
+                return None
+            rows = await tx.fetch(kgl.NAME_ROWS, org, [COLL_CODE[n["coll"]] for n in nodes], [n["node_id"] for n in nodes]) if nodes else []
+            return [r["sk"] for r in rows]
+        return await self._kq(read, transaction)
 
     async def _kh_not_ready(self, org: str, start_id: str, *, at_app: bool, access: dict[str, Any], transaction: str | None, include_scope: bool, include_total: bool) -> dict[str, Any]:
         """A start of a connector that holds nodes kg has not finished copying (``head``): nothing can be listed below it yet, which the caller answers as a source being prepared.

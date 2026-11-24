@@ -836,3 +836,90 @@ async def test_a_page_in_a_callers_transaction_never_admits_by_a_stamp_hidden_af
         finally:
             await p.rollback_transaction(tid)
     assert fired and [r["id"] for r in page["rows"]] == [f"r{i:04d}" for i in range(7)] and page["total"] == 7
+
+
+# The rows of kg.records a backend has read and not yet reported: those its sequential scans read and those its index and bitmap scans fetched from the table (inside a
+# function too). Counts of earlier transactions may still be pending, so a page's reads are the difference across it.
+KG_RECORDS_READ = """SELECT coalesce((SELECT seq_tup_read FROM pg_stat_xact_user_tables WHERE relid = 'kg.records'::regclass), 0)
+    + pg_stat_get_xact_tuples_fetched('kg.records'::regclass)"""
+
+
+async def _page_and_reads(p, org: str, **kw) -> tuple[dict, int]:
+    with ctx(org):
+        snap = await p.begin_snapshot()
+        try:
+            before = await p._q(lambda tx: tx.fetchval(KG_RECORDS_READ), snap)
+            page = await p.get_knowledge_hub_connector_page_v3(**asks(org, **kw), transaction=snap)
+            return page, int(await p._q(lambda tx: tx.fetchval(KG_RECORDS_READ), snap) - before)
+        finally:
+            await p.rollback_transaction(snap)
+
+
+async def test_a_search_for_a_rare_word_reads_its_matches_not_the_connector(pg_db) -> None:
+    """A connector of 20,300 rows (300 records and 20,000 rows of other names that sort before them) and a search whose one match sorts last: the page walked the
+    connector's name index from its start, filtering every row by the search, to find it (a rare word on a large connector read the connector). By the trigram index of
+    the graph nodes' names (graph.records_by_name) it finds the match's node, and the page's statements read that row by its key."""
+    p, org = prov(pg_db), new_org()
+    await seed(p, pg_db, org, 300)
+    # the other rows straight into kg (live listing rows of the connector, no graph node, never matched by the search; ASCII names, so their UTF-16 key is a zero byte
+    # before each), then the statistics the analyze job would take
+    await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, name, name_key, name_sort) SELECT $1, 9000000000 + i, 3, 'f' || i, 3, k.sk, n, n, "
+                 "decode(regexp_replace(encode(convert_to(n, 'UTF8'), 'hex'), '(..)', '00\\1', 'g'), 'hex') FROM kg.node_keys k, generate_series(1, 20000) i, LATERAL (SELECT 'a filler ' || i AS n) x WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'app1'", org)
+    await _admin("ANALYZE kg.records")
+    page, read = await _page_and_reads(p, org, granted=300, limit=50, filters={"search_query": "r0299"})
+    assert [r["id"] for r in page["rows"]] == ["r0299"] and page["total"] == 1
+    assert read <= 200, f"read {read} rows of kg.records for one match in a 20,300-row connector"
+    # as the service runs it, under its row policy: each node's row by its key (a condition that is not leakproof would have made it a scan of the organisation per node)
+    with ctx(org):
+        assert [r["node_id"] for r in await p._kq(lambda tx: tx.fetch(kgl.NAME_NODES, "app1", kgl.name_pattern("r0299"), 10001), None)] == ["r0299"]
+        plan = json.loads(await p._kq(lambda tx: tx.fetchval("EXPLAIN (FORMAT JSON) " + kgl.NAME_ROWS, org, [3], ["r0299"]), None))
+    reads = [(n["Node Type"], n.get("Index Name"), n.get("Index Cond", "")) for n in _nodes(plan) if n.get("Relation Name") == "records"]
+    assert reads and all(t == "Index Scan" and i == "records_id" and "coll = g.coll" in c and "id = g.id" in c for t, i, c in reads), reads
+
+
+NAMED = {"n00": "Printer-Jam.pdf", "n01": "printer jam notes", "n02": "printer_jam_tray.2", "n03": "ΟΣ.Α report", "n04": "νομος.txt", "n05": "Νομοσ x",
+         "n06": "100%_done\\x", "n07": "a\\%b_c%d", "n08": "Café crème", "n09": "item 1234 handle", "n10": "item 12345 handle", "n11": "item 1234-handle",
+         "n12": "xx--yy", "n13": "Report", "n14": "re port", "n15": "REPORT final", "n16": "rePort.v2", "n17": "jam printer",
+         "n18": "\u212aelvin plan", "n19": "\u0130tem 99 list", "n20": "STATE \u017ftate"}
+SEARCHES = ["printer-jam", "Printer Jam", "jam.pdf", "ΟΣ Α", "νομος", "100%_done", "\\%b", "b_c%d", "café", "item 1234 handle", "item-1234.handle", "1234 h",
+            "xx-yy", "rep", "report", "PORT", "re po", "ab", "%", "nothing here", "jam",
+            "kelvin plan", "elvin", "item 99", "tem 99 l", "state"]
+
+
+@pytest.mark.parametrize("mode", ["served", "not_served", "too_many"])
+async def test_a_name_search_by_the_trigram_index_lists_what_the_walk_listed(pg_db, monkeypatch, mode) -> None:
+    """Every search, on names with separators, sigmas, wildcard characters, accents and repeated words, lists the same rows and total by the trigram index as by the walk
+    of the sort order, for a viewer who may read some of the records: kg deciding by class (``served``), the live check (``not_served``), and a search that matches more
+    rows than the index read keeps (``too_many``: the walk). The access check is asked about the rows either way; the index only chooses which rows it is asked about."""
+    p, org = prov(pg_db), new_org()
+    await _seed_named(p, pg_db, org, NAMED)
+    readable = sorted(NAMED)[::2]
+    if mode == "not_served":
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    if mode == "too_many":
+        monkeypatch.setattr(kh_listing, "NAME_HITS_MAX", 1)
+    read: list[object] = []
+    real = kh_listing.KhListingMixin._kh_name_hits
+
+    async def spy(self, *a, **kw) -> object:
+        got = await real(self, *a, **kw)
+        read.append(got)
+        return got
+    monkeypatch.setattr(kh_listing.KhListingMixin, "_kh_name_hits", spy)
+
+    async def walked(self, *a, **kw) -> None:
+        return None
+    for q in SEARCHES:
+        for sort_dir in ("ASC", "DESC"):
+            kw = {"granted_ids": readable, "sort_dir": sort_dir, "filters": {"search_query": q}}
+            read.clear()
+            by_index, _, first = await walk(p, org, 2, **kw)
+            used = read[0] is not None
+            with monkeypatch.context() as m:
+                m.setattr(kh_listing.KhListingMixin, "_kh_name_hits", walked)
+                by_walk, _, old = await walk(p, org, 2, **kw)
+            assert by_index == by_walk and first["total"] == old["total"], (q, sort_dir, by_index, by_walk)
+            assert used == (mode != "too_many" and kgl.name_pattern(q) is not None) or (mode == "too_many" and len(read[0] or []) <= 1), (q, read)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=sorted(NAMED)), limit=50, filters={"search_query": "printer jam"})
+    assert [r["id"] for r in page["rows"]] == ["n01", "n00", "n02"]      # the separators read as spaces, as before (" " sorts before "-")

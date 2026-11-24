@@ -671,3 +671,24 @@ functions:
                 AND md5((regexp_match(n.doc->>'webUrl', '^(.*)[/]browse[/]'))[1]) > s.h
               ORDER BY n.doc->>'connectorName', 1 LIMIT 1) f)
         SELECT DISTINCT s.site FROM s WHERE s.site <> '' ORDER BY s.site LIMIT p_limit;
+
+# ---- the knowledge hub's name search (graph_0021) -------------------------------------------------------------------------------------
+# A connector's records and record groups whose name holds the pieces of a search, in order (p_pattern, ILIKE), by the trigram index nodes_record_name_trgm: the
+# candidates of the listing's own name condition, which still decides on the typed graph's rows. Row-level security keeps a trigram condition (not leakproof) out of
+# the index conditions of any statement it binds, so the read goes through this function, which applies the org itself. p_pattern is "%" and lower-case letters and
+# digits only (no i or k: a capital of another script lowercases to them in Python, and not in every PostgreSQL locale), with three in a row, so the index has a
+# trigram to look up.
+  - name: graph.records_by_name
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_pattern, type: text, length: [5, 2000], pattern: '^(?=.*[0-9a-hjl-z]{3})%([0-9a-hjl-z]+%)+$'}
+      - {name: p_limit, type: int, range: [1, 100000]}
+    returns: "TABLE (coll text, node_id text)"
+    reads: [graph.nodes]
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = v_org AND n.coll IN ('records', 'recordGroups') AND n.doc->>'connectorId' = p_connector_id
+        AND (coalesce(n.doc->>'name', '') || ' ' || coalesce(n.doc->>'recordName', '') || ' ' || coalesce(n.doc->>'groupName', '')) ILIKE p_pattern LIMIT p_limit;
