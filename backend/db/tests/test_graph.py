@@ -1582,7 +1582,7 @@ def test_the_address_and_site_lookups_read_their_keys_where_the_plain_statements
 
 # ---- indexes built and dropped outside the upgrade's transaction (db.migrate's online step) ------------------------------------------------
 ONLINE = ("nodes_record_ticket_url", "nodes_record_pending_vrid", "nodes_record_weburl", "nodes_record_ticket_site", "nodes_block_record_seek",
-          "nodes_block_name_seek", "nodes_codefile_path_seek", "nodes_record_refresh_intent")
+          "nodes_block_name_seek", "nodes_codefile_path_seek", "nodes_record_refresh_intent", "nodes_record_name_trgm")
 RETIRED = ("nodes_block_record", "nodes_block_name")
 _DDL = re.compile(r"^(CREATE (UNIQUE )?INDEX|DROP INDEX|ALTER INDEX|REINDEX)\b", re.I)
 
@@ -1619,7 +1619,7 @@ def _left_of(c, indexes) -> list[str]:
 
 
 def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_drops_none(db, monkeypatch, capsys):
-    """From graph_0013 on a populated graph: every index of graph_0014..0020 is built before the upgrade's transaction, concurrently on the leaf
+    """From graph_0013 on a populated graph: every index of graph_0014..0021 is built before the upgrade's transaction, concurrently on the leaf
     that holds rows; the indexes graph_0020 retires go after the commit; the transaction itself runs no index statement at all (one there would
     keep the writers, or for a drop every reader, of graph.nodes waiting until the commit)."""
     from sqlalchemy import Engine, event
@@ -1658,7 +1658,7 @@ def test_an_upgrade_builds_its_indexes_online_and_its_transaction_builds_and_dro
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in ONLINE)
         assert not any(_exists(c, i) for i in RETIRED) and _whole_and_valid(c, "nodes_codefile_path")
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (20, 0)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (21, 0)
 
 
 def test_an_online_build_a_stopped_run_left_invalid_is_rebuilt(db):
@@ -1750,7 +1750,7 @@ def test_an_upgrade_that_raised_keeps_its_indexes_unless_it_did_not_commit(db, m
     assert ("committed although it raised" if outcome == "committed" else "could not tell whether the upgrade committed") in out, out
     with connect(cluster, name) as c:
         assert all(_whole_and_valid(c, i) for i in ONLINE)
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == (20 if outcome == "committed" else 13)
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone()[0] == (21 if outcome == "committed" else 13)
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout + r.stderr
     with connect(cluster, name) as c:
@@ -1782,7 +1782,7 @@ def test_a_retired_index_goes_after_the_commit_and_a_drop_that_had_to_wait_is_do
         assert f"WARNING index graph.{index} was not dropped" in r.stdout, r.stdout
     with connect(cluster, name) as c:
         assert all(_exists(c, i) for i in RETIRED)
-        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (20, 0)
+        assert c.execute("SELECT epoch, min_code_epoch FROM kernel.schema_epoch WHERE branch = 'graph'").fetchone() == (21, 0)
     r = run_doctor(url)                                                 # the health check accepts them as the migrate run did
     assert r.returncode == 0 and "doctor: healthy" in r.stdout, r.stdout
     r = run_migrate(url)
