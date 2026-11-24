@@ -26,6 +26,7 @@ import {
   appClients,
   describeClients,
   readMongoFence,
+  restoreAppWrites,
   setMongoFence,
 } from './fence';
 import { storeEpochOnFreshConnection } from './online';
@@ -361,7 +362,8 @@ export const BUSY =
   'another rollback is running against this store: wait for it to finish';
 
 export type HandOver =
-  | { kind: 'done' }
+  /** `note`: what is left to do about the application's MongoDB write roles ('' when they are back). */
+  | { kind: 'done'; note: string }
   | { kind: 'not_live'; why: string }
   | { kind: 'stuck'; message: string };
 
@@ -409,13 +411,16 @@ export async function handOver(
   } catch (e) {
     // it may have committed before the error reached us
     const row = await storeEpochOnFreshConnection(rt, false).catch(() => null);
-    if (row?.backend === 'mongo') return { kind: 'done' };
+    // MongoDB is live either way, so the application's users get their write roles back
+    const note = await restoreAppWrites(rt);
+    if (row?.backend === 'mongo') return { kind: 'done', note };
     return {
       kind: 'stuck',
-      message: `MongoDB is the live store again (its fence is active), but platform.store_epoch was not updated (${errText(e)}). PostgreSQL is still read-only and was not unfrozen. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo`,
+      message: `MongoDB is the live store again (its fence is active), but platform.store_epoch was not updated (${errText(e)}). PostgreSQL is still read-only and was not unfrozen. Set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo.${note}`,
     };
   }
-  return { kind: 'done' };
+  // MongoDB is the store again: the application's users get back the write roles the switch took
+  return { kind: 'done', note: await restoreAppWrites(rt) };
 }
 
 export async function rollback(
@@ -484,7 +489,7 @@ async function rollbackLocked(
         ok: true,
         mode: 'no_pg_writes',
         verify: v,
-        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application`,
+        message: `PostgreSQL equals MongoDB (job ${String(cur?.id ?? '-')}): nothing was written there. MongoDB is the live store again: set DOC_STORE=mongo and start the application.${h.note}`,
       };
     }
     if (!o.reverse) {
@@ -526,8 +531,7 @@ async function rollbackLocked(
       mode: 'reverse',
       verify: after,
       ...r,
-      message:
-        'PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application',
+      message: `PostgreSQL was copied back and verified: set DOC_STORE=mongo and start the application.${h.note}`,
     };
   } catch (e) {
     if (!state.released) {
