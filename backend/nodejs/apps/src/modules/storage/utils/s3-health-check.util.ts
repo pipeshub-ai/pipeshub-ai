@@ -44,7 +44,7 @@ const SIGNED_URL_FETCH_TIMEOUT_MS = 15_000;
 
 function formatError(error: unknown): string {
   if (error instanceof StorageError) {
-    const underlying = error.metadata?.originalError;
+    const underlying = error.vendorText;
     if (underlying) {
       return `${error.message}: ${underlying}`;
     }

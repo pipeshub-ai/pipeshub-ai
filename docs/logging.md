@@ -1235,10 +1235,12 @@ The storage routes (`/api/v1/document`) write no line of their own for a failure
 `http.request.error` is the one failure line. When the storage vendor fails a write, a removal or a read check, the answer is
 503 (WARNING `unavailable`) and the error's `cause` is `{ status, code }`: the vendor's HTTP status and its error code
 (`AccessDenied`, `NoSuchBucket`, `SlowDown`, Azure's `AuthorizationFailure`, a local disk's `ENOENT` or `EACCES`), so a
-misconfigured bucket and a throttle read differently. The vendor's text is never logged for a write or a removal: it can
-quote the bucket, the object path and the file name. Read failures that answer 500 and the S3 settings check's WARNING lines
-still carry it (`metadata.originalError`). The providers (`storage/providers/*.ts`) keep it as `metadata.originalError` for
-the admin's S3 settings check, and read the status and code through `vendorFailure` (`storage/providers/vendor-failure.ts`).
+misconfigured bucket and a throttle read differently. A read the vendor fails still answers 500 (ERROR `internal`), with the
+vendor's status and code in the error's `metadata`. The vendor's text is never logged: it can quote the bucket, the object
+path and the file name. The providers (`storage/providers/*.ts`) read the status and code through `vendorFailure`
+(`storage/providers/vendor-failure.ts`) and hand the text to the error as `vendorText`, never its metadata; a local read's
+disk failure is wrapped the same way. Only the S3 settings check reads `vendorText`, for the admin's dialog; its WARNING lines
+still carry it.
 
 - Each upload, update, read, copy, rename and removal is DEBUG, with the object path and never its URL.
 - The S3 settings check (run when an admin saves the storage settings) writes one INFO `S3 health check completed` with each
