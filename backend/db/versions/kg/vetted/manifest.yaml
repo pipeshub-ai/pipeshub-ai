@@ -779,14 +779,14 @@ functions:
         RETURN v_n;
       END;
 
-  # kg_0025: the placement marks of grants (kg/grant_marks.py), of rows the caller has just read under the connector's lock (the writer is an upsert).
+  # kg_0025: the placement marks of grants (kg/grant_marks.py), of rows the caller has just read under the connector's lock: it updates rows, it never makes one.
   - name: kg.w_grant_marks_set
     class: write
     scope: org
     writer: pipeshub_connectors
     custom_plan: true
     callers: ["python/app/services/graph_db/postgres/kg"]
-    pins: [{"op": "upsert", "rel": "kg.scope_members", "set": ["parent_held", "node_group"]}]
+    pins: [{"op": "update", "rel": "kg.scope_members"}]
     args:
       - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
       - {"name": "p_nodes", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
@@ -797,16 +797,20 @@ functions:
     no_org: "0"
     reads: ["kg.scope_members"]
     body: |
-      DECLARE v_n integer;
+      DECLARE v_n integer := 0; v_c integer; v_p bigint; v_nd bigint; v_g text; v_h boolean; v_grp bigint;
       BEGIN
         IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) OR cardinality(p_helds) <> cardinality(p_principals) OR cardinality(p_groups) <> cardinality(p_principals) THEN
           RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
         END IF;
         -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
         SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c4 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c5 ORDER BY s.c1, s.c2, s.c3) INTO p_principals, p_nodes, p_gtypes, p_helds, p_groups FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3, k.c4, k.c5 FROM unnest(p_principals, p_nodes, p_gtypes, p_helds, p_groups) WITH ORDINALITY AS k(c1, c2, c3, c4, c5, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
-        INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype, parent_held, node_group) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_principals, p_nodes, p_gtypes, p_helds, p_groups) AS k(a, b, c, d, e)
-          ON CONFLICT (org_id, principal_sk, node_sk, gtype) DO UPDATE SET parent_held = excluded.parent_held, node_group = excluded.node_group;
-        GET DIAGNOSTICS v_n = ROW_COUNT;
+        -- An update only: a grant another unit deleted since the caller read it is not made again
+        FOR i IN 1 .. coalesce(cardinality(p_principals), 0) LOOP
+          v_p := p_principals[i]; v_nd := p_nodes[i]; v_g := p_gtypes[i]; v_h := p_helds[i]; v_grp := p_groups[i];
+          UPDATE kg.scope_members m SET parent_held = v_h, node_group = v_grp WHERE m.org_id = v_org AND m.principal_sk = v_p AND m.node_sk = v_nd AND m.gtype = v_g;
+          GET DIAGNOSTICS v_c = ROW_COUNT;
+          v_n := v_n + v_c;
+        END LOOP;
         RETURN v_n;
       END;
 

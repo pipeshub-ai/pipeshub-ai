@@ -11,7 +11,7 @@ viewer may open, else under the App. Two marks of each grant row, functions of k
 
 Both default to what lists every grant as before (false, NULL), and a mark is only ever a reason to leave a grant out: a mark that is late can cost reads, never a chain-top.
 The projection keeps them exact in the unit that changes what they read (:func:`refresh`), the bootstrap fills an older copy in place, and the verify refuses a copy that holds a
-mark its rows no longer give (:data:`BY_APP`, ``unsafe``).
+mark its rows no longer give (:data:`BY_APP`, ``unsafe``). The writer only updates grant rows that exist: a grant another unit deleted meanwhile is never made again.
 """
 from __future__ import annotations
 
@@ -38,9 +38,12 @@ ON_NODES = f"/* pipeshub:kg.grant_marks_on */ SELECT {_COLS} FROM kg.scope_membe
 BY_APP = f"""/* pipeshub:kg.grant_marks_by_app */ SELECT {_COLS} FROM (SELECT * FROM kg.scope_members m WHERE m.org_id = $1 AND m.app_sk = $2
       AND (m.app_sk, m.node_sk, m.principal_sk, m.gtype) > ($2, $3, $4, $5) ORDER BY m.app_sk, m.node_sk, m.principal_sk, m.gtype LIMIT $6) m {_WANT}
     ORDER BY m.node_sk, m.principal_sk, m.gtype"""
-# The hierarchy children of the nodes $2 that hold a grant: their parent_held reads the parents' rows and grants.
-CHILDREN = """/* pipeshub:kg.grant_marks_children */ SELECT c.sk FROM (SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.parent_sk = ANY($2::bigint[])
-      UNION SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = ANY($2::bigint[]) AND l.kind = 1) c
+# The hierarchy children of the nodes $2, of the parent's own connector, that hold a grant: their parent_held reads the parents' rows and grants. A child of another connector
+# reads nothing of this parent (parent_held counts a parent of the node's own connector only), and its grants are written under that connector's lock alone.
+CHILDREN = """/* pipeshub:kg.grant_marks_children */ SELECT c.sk FROM (SELECT r.sk, r.app_sk, r.parent_sk AS parent FROM kg.records r WHERE r.org_id = $1 AND r.parent_sk = ANY($2::bigint[])
+      UNION SELECT l.child_sk, x.app_sk, l.parent_sk FROM kg.links l JOIN kg.records x ON x.org_id = l.org_id AND x.sk = l.child_sk
+        WHERE l.org_id = $1 AND l.parent_sk = ANY($2::bigint[]) AND l.kind = 1) c
+    JOIN kg.records p ON p.org_id = $1 AND p.sk = c.parent AND p.app_sk = c.app_sk
     WHERE EXISTS (SELECT 1 FROM kg.scope_members m WHERE m.org_id = $1 AND m.node_sk = c.sk)"""
 # What of a node's own row a mark reads (of the node, or of it as a parent), before a projection writes the row.
 HELD = "/* pipeshub:kg.grant_marks_held */ SELECT sk, kind, app_sk, group_sk, deleted, placeholder, alien, rule FROM kg.records WHERE org_id = $1 AND sk = ANY($2::bigint[])"

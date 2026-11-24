@@ -27,16 +27,20 @@ BEGIN
   IF p_groups IS NULL THEN RAISE EXCEPTION 'w_grant_marks_set: p_groups is required' USING ERRCODE = '22023'; END IF;
   IF cardinality(p_groups) > 5000 THEN RAISE EXCEPTION 'w_grant_marks_set: p_groups takes at most 5000 items' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN 0; END IF;       -- no org (or someone else's): no rows, the same answer
-  DECLARE v_n integer;
+  DECLARE v_n integer := 0; v_c integer; v_p bigint; v_nd bigint; v_g text; v_h boolean; v_grp bigint;
   BEGIN
     IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) OR cardinality(p_helds) <> cardinality(p_principals) OR cardinality(p_groups) <> cardinality(p_principals) THEN
       RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
     END IF;
     -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
     SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c4 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c5 ORDER BY s.c1, s.c2, s.c3) INTO p_principals, p_nodes, p_gtypes, p_helds, p_groups FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3, k.c4, k.c5 FROM unnest(p_principals, p_nodes, p_gtypes, p_helds, p_groups) WITH ORDINALITY AS k(c1, c2, c3, c4, c5, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
-    INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype, parent_held, node_group) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_principals, p_nodes, p_gtypes, p_helds, p_groups) AS k(a, b, c, d, e)
-      ON CONFLICT (org_id, principal_sk, node_sk, gtype) DO UPDATE SET parent_held = excluded.parent_held, node_group = excluded.node_group;
-    GET DIAGNOSTICS v_n = ROW_COUNT;
+    -- An update only: a grant another unit deleted since the caller read it is not made again
+    FOR i IN 1 .. coalesce(cardinality(p_principals), 0) LOOP
+      v_p := p_principals[i]; v_nd := p_nodes[i]; v_g := p_gtypes[i]; v_h := p_helds[i]; v_grp := p_groups[i];
+      UPDATE kg.scope_members m SET parent_held = v_h, node_group = v_grp WHERE m.org_id = v_org AND m.principal_sk = v_p AND m.node_sk = v_nd AND m.gtype = v_g;
+      GET DIAGNOSTICS v_c = ROW_COUNT;
+      v_n := v_n + v_c;
+    END LOOP;
     RETURN v_n;
   END;
 END $fn$;
@@ -46,4 +50,4 @@ SET LOCAL ROLE pipeshub_owner;
 REVOKE CREATE ON SCHEMA kg FROM pipeshub_vetted_kg;
 REVOKE pipeshub_vetted_kg FROM pipeshub_owner;
 SELECT kernel.register_function('kg.w_grant_marks_set(bigint[], bigint[], text[], boolean[], bigint[])', 'write', 'pipeshub_connectors', 'org', false);
-SELECT kernel.allow_vetted_write_op('kg.w_grant_marks_set(bigint[], bigint[], text[], boolean[], bigint[])', 'kg.scope_members', 'upsert', NULL, ARRAY['parent_held', 'node_group']::name[], NULL, 5000);
+SELECT kernel.allow_vetted_write_op('kg.w_grant_marks_set(bigint[], bigint[], text[], boolean[], bigint[])', 'kg.scope_members', 'update', NULL, NULL, NULL, 5000);

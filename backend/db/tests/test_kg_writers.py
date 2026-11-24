@@ -122,7 +122,8 @@ def test_every_kg_table_requires_the_per_org_policy_and_is_plain_with_org_first_
         assert keys and [k for k in keys if k[1] != "org_id"] == [], keys
 
 
-@pytest.mark.parametrize("name", [n for n in CALLS if not n.endswith(("_delete", "_ack", "_done", "_touch", "_release"))])
+# kg.w_grant_marks_set updates rows only (it makes none): its org isolation is test_grant_marks_are_written_to_the_row_of_the_session_org_and_the_other_columns_stay
+@pytest.mark.parametrize("name", [n for n in CALLS if not n.endswith(("_delete", "_ack", "_done", "_touch", "_release")) and n != "kg.w_grant_marks_set"])
 def test_a_set_writes_the_session_org_and_leaves_the_other_orgs_row_as_it_was(pdb, name):
     args, table = CALLS[name]
     with conn(pdb) as c:
@@ -603,8 +604,12 @@ def test_grant_marks_are_written_to_the_row_of_the_session_org_and_the_other_col
         assert call(c, "kg.w_grant_marks_set", ORG_A, ([1], [11], ["USER"], [True], [7])) == [(1,)]
         assert tuple(c.execute("SELECT role, app_sk, leaf, parent_held, node_group FROM kg.scope_members WHERE org_id = %s AND principal_sk = 1 AND node_sk = 11",
                                (ORG_A,)).fetchone()) == ("READER", 5, False, True, 7)
-        call(c, "kg.w_grant_marks_set", ORG_B, ([1], [11], ["USER"], [False], [None]))                                                 # another org's call makes a row of its own
+        assert call(c, "kg.w_grant_marks_set", ORG_B, ([1], [11], ["USER"], [False], [None])) == [(0,)]                                # another org's call finds no row of its own
         assert c.execute("SELECT parent_held FROM kg.scope_members WHERE org_id = %s AND principal_sk = 1 AND node_sk = 11", (ORG_A,)).fetchone()[0] is True
+        assert c.execute("SELECT count(*) FROM kg.scope_members WHERE org_id = %s", (ORG_B,)).fetchone()[0] == 0
+        # a grant the caller read and another unit deleted since: its marks make no row (a grant with no role, connector or leaf of its own)
+        assert call(c, "kg.w_grant_marks_set", ORG_A, ([1, 2], [11, 11], ["USER", "USER"], [False, True], [None, 7])) == [(1,)]
+        assert c.execute("SELECT count(*) FROM kg.scope_members WHERE org_id = %s", (ORG_A,)).fetchone()[0] == 1
         clean(c)
 
 
