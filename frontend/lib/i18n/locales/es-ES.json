@@ -6444,6 +6444,7 @@
       "affected": "Se limitará",
       "affectedTooltip": "Este conector copia los accesos de su origen, lo que requiere una clave de licencia. Sin ella, a partir del {{date}} solo la persona que lo creó podrá ver su contenido. No se elimina nada.",
       "affectedTooltipKeyLater": "Tu clave de licencia empieza el {{start}}, después de que termine el periodo de gracia de la actualización el {{date}}. Entre ambas fechas, solo la persona que creó este conector podrá ver su contenido. No se elimina nada.",
+      "affectedTooltipKeyWithoutSync": "Tu clave de licencia empieza el {{start}}, pero no incluye copiar los accesos de los orígenes. A partir del {{date}}, cuando termina el periodo de gracia de la actualización, solo la persona que creó este conector podrá ver su contenido. No se elimina nada.",
       "limited": "Limitado",
       "limitedTooltip": "Ninguna clave de licencia permite la sincronización de permisos, así que solo la persona que creó este conector puede ver su contenido. Instala una clave para restaurar el acceso. No se ha eliminado nada.",
       "restoring": "Restaurando el acceso",

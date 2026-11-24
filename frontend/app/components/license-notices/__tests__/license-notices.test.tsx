@@ -273,7 +273,8 @@ describe('ConnectorLicenseBadge', () => {
   it.each([
     ['missing' as const, null, 'which needs a license key'],
     ['startsLater' as const, inDays(12), 'after the upgrade grace ends'],
-  ])('explains a connector that will be limited when the key is %s', async (key, keyDate, words) => {
+    ['startsLater' as const, inDays(3), 'does not include copying access'],
+  ])('explains a connector that will be limited when the key is %s (%s)', async (key, keyDate, words) => {
     // The opened tooltip measures itself; jsdom has no ResizeObserver.
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
     as('admin');
@@ -282,6 +283,7 @@ describe('ConnectorLicenseBadge', () => {
     fireEvent.focus(screen.getByText('Will be limited'));
     expect((await screen.findAllByText(new RegExp(words))).length).toBeGreaterThan(0);
     if (key === 'startsLater') expect(screen.queryAllByText(/which needs a license key/)).toHaveLength(0);
+    if (words.startsWith('does not')) expect(screen.queryAllByText(/after the upgrade grace ends/)).toHaveLength(0);
   });
 
   it('shows nothing on an unlisted connector (storage and database ones never are), nor to a member', () => {

@@ -6362,6 +6362,7 @@
       "affected": "Wird beschränkt",
       "affectedTooltip": "Dieser Connector übernimmt Zugriffsrechte aus seiner Quelle, wofür ein Lizenzschlüssel nötig ist. Ohne ihn kann ab {{date}} nur die Person, die ihn erstellt hat, seine Inhalte sehen. Es wird nichts gelöscht.",
       "affectedTooltipKeyLater": "Ihr Lizenzschlüssel gilt ab {{start}}, also erst nach dem Ende der Kulanzzeit nach dem Upgrade am {{date}}. Dazwischen kann nur die Person, die diesen Connector erstellt hat, seine Inhalte sehen. Es wird nichts gelöscht.",
+      "affectedTooltipKeyWithoutSync": "Ihr Lizenzschlüssel gilt ab {{start}}, umfasst aber nicht das Übernehmen von Zugriffsrechten aus Quellen. Ab {{date}}, wenn die Kulanzzeit nach dem Upgrade endet, kann nur die Person, die diesen Connector erstellt hat, seine Inhalte sehen. Es wird nichts gelöscht.",
       "limited": "Beschränkt",
       "limitedTooltip": "Kein Lizenzschlüssel erlaubt die Berechtigungssynchronisierung, daher kann nur die Person, die diesen Connector erstellt hat, seine Inhalte sehen. Installieren Sie einen Schlüssel, um den Zugriff wiederherzustellen. Es wurde nichts gelöscht.",
       "restoring": "Zugriff wird wiederhergestellt",
