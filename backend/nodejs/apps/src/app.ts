@@ -24,7 +24,11 @@ import {
   newSystemRoot,
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
-import { configureEnvelopeFromSecret } from './libs/context/envelope';
+import {
+  configureEnvelopeFromSecret,
+  configureInbox,
+} from './libs/context/envelope';
+import { PgInbox } from './libs/services/consumer-inbox';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { TtlSweeper } from './libs/services/ttl-sweeper.service';
@@ -378,9 +382,16 @@ export class Application {
       this.outboxDispatcher.start();
 
       // Mongo expires old notifications by itself; on PostgreSQL this does it (as the jobs role).
+      // The consumer inbox needs it too: it prunes the inbox past the replay window.
       if (docStore() === 'postgres' && process.env.PG_JOBS_URL) {
         this.ttlSweeper = new TtlSweeper(this.logger);
         this.ttlSweeper.start();
+        configureInbox(new PgInbox());
+      } else {
+        // shortcut: MESSAGE_BROKER=postgres or KV_STORE_TYPE=postgres with MongoDB documents has no jobs pool here, so no inbox; add one when that layout ships
+        this.logger.info(
+          'No consumer inbox (needs DOC_STORE=postgres and PG_JOBS_URL): a redelivered notification or mail event may be processed again',
+        );
       }
 
       this.notificationContainer
