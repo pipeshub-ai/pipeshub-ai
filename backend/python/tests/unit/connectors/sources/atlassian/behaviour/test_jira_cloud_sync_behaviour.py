@@ -2935,9 +2935,9 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
         keeps: list[tuple[str, set[str] | None]] = []
         keep = connector._keep_stored_records
 
-        async def spy(project_id: str, issue_ids: set[str] | None = None) -> None:
+        async def spy(project_id: str, issue_ids: set[str] | None = None, **kwargs: Any) -> None:  # noqa: ANN401
             keeps.append((project_id, issue_ids))
-            await keep(project_id, issue_ids)
+            await keep(project_id, issue_ids, **kwargs)
         connector._keep_stored_records = spy
 
         graph = await run_full_sync(connector, site_db)
@@ -3056,6 +3056,13 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
         assert stored["attachment_901"] in site_db.kept_records
 
     @staticmethod
+    def _no_security_schemes(api: AtlassianApiStub) -> None:
+        """No issue security scheme: the issues are open to their project."""
+        for key in ("ENG", "OPS"):
+            api.on("GET", f"{JIRA}/project/{key}/issuesecuritylevelscheme", json_response(
+                {"errorMessages": [f"Security level for project {key} does not exist."]}, status=404))
+
+    @staticmethod
     def _granted(site_db: CloudRecordsDb, external_id: str) -> None:
         from app.models.permission import EntityType, Permission, PermissionType
 
@@ -3105,9 +3112,7 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
     async def test_an_issue_built_this_sync_keeps_its_access(self, api, site_db, checkpoints, search) -> None:
         from app.config.constants.arangodb import AccessRule
 
-        for key in ("ENG", "OPS"):  # no issue security scheme: the issues are open to their project
-            api.on("GET", f"{JIRA}/project/{key}/issuesecuritylevelscheme", json_response(
-                {"errorMessages": [f"Security level for project {key} does not exist."]}, status=404))
+        self._no_security_schemes(api)
         connector, stored = await self._synced(api, site_db, checkpoints, search)
         before = (site_db.records["1"].access_rule, list(site_db.record_permissions["1"]))
         assert before[0] != AccessRule.RESTRICTED, "a close would change it"
@@ -3123,6 +3128,70 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
         assert (site_db.records["1"].access_rule, site_db.record_permissions["1"]) == before, "as its build wrote it"
         assert site_db.records["2"].access_rule == AccessRule.RESTRICTED and site_db.record_permissions["2"] == []
         assert missed_by_full_sync(site_db, graph, stored) == {"3", "8"}
+
+    async def test_a_search_cut_short_closes_an_issue_that_fails_to_build(self, api, site_db, checkpoints, search) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        self._no_security_schemes(api)
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        self._granted(site_db, "1")  # grants Jira may no longer give: its access was not read again
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")],
+                                 "warnings": ["The result set was truncated"]})
+        site_db.fail_lookup_for = {"1"}
+
+        graph = await run_full_sync(connector, site_db)
+
+        eng_1 = site_db.records["1"]
+        assert eng_1.access_rule == AccessRule.RESTRICTED and site_db.record_permissions["1"] == []
+        assert stored["1"] in site_db.kept_records, "closed, then kept with the rest of ENG"
+        assert site_db.records["2"].access_rule != AccessRule.RESTRICTED, "ENG-2 was built: it keeps its access"
+        assert missed_by_full_sync(site_db, graph, stored) == {"8"}, "the rest of ENG, ENG-3 too, keeps its edges"
+
+    async def test_a_search_cut_short_does_not_keep_an_issue_that_cannot_be_closed(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        eng_1 = self._restricted_eng_1(api)
+        connector, stored = await self._synced(api, site_db, checkpoints, search, eng_1=eng_1)
+        assert under(site_db, "attachment_901") == "comment_c1" and under(site_db, "attachment_902") == "1"
+        search.add("ENG", None, {"issues": [eng_1, issue(2, "2024-05-01T10:00:00.000+0000")],
+                                 "warnings": ["The result set was truncated"]})
+        site_db.fail_lookup_for = {"1"}
+        write = site_db.on_new_records
+
+        async def closing_fails(records: list[tuple[Any, list[Any]]]) -> None:
+            if any(r.external_record_id == "1" and r.access_rule == AccessRule.RESTRICTED for r, _ in records):
+                raise RuntimeError("graph unavailable")
+            await write(records)
+        site_db.on_new_records = closing_fails
+
+        graph = await run_full_sync(connector, site_db)
+
+        assert missed_by_full_sync(site_db, graph, stored) == {
+            "1", "comment_c1", "attachment_901", "attachment_902", "8",
+        }, "ENG-1, its comment and their files lose their edges; the rest of ENG, ENG-3 too, is kept"
+
+    async def test_an_issue_closed_after_a_failed_build_opens_again_next_sync(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._no_security_schemes(api)
+        connector, stored = await self._synced(api, site_db, checkpoints, search)
+        before = (site_db.records["1"].access_rule, list(site_db.record_permissions["1"]))
+        search.add("ENG", None, {"issues": [commented(1, "2024-05-01T10:00:00.000+0000", []),
+                                            issue(2, "2024-05-01T10:00:00.000+0000")]})
+        site_db.fail_lookup_for = {"1"}
+        await run_full_sync(connector, site_db)
+        assert site_db.records["1"].access_rule != before[0], "closed"
+        site_db.fail_lookup_for = set()
+
+        await connector.run_sync()  # incremental: ENG-1 is unchanged in Jira
+
+        assert (site_db.records["1"].access_rule, site_db.record_permissions["1"]) == before, "built with its access"
+        assert site_db.records["1"].id == stored["1"]
+        assert not any("1" in json.loads(point.get("issues_to_retry") or "[]")
+                       for point in checkpoints.sync_points.values()), "it leaves the retry list once written"
 
     async def test_a_sync_that_is_not_a_full_sync_scans_nothing(self, api, site_db, checkpoints, search) -> None:
         connector, _ = await self._synced(api, site_db, checkpoints, search)

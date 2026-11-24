@@ -3789,6 +3789,21 @@ class TestAFullSyncKeepsWhatItCouldNotWrite:
         assert db.records["1004"].access_rule == AccessRule.RESTRICTED and db.record_permissions["1004"] == []
         assert self._missed(db, graph, stored) == {"1005", "1008"}
 
+    async def test_an_issue_closed_after_a_failed_build_opens_again_next_sync(self, jira, db, store, search) -> None:
+        connector, stored = await self._synced(jira, db, store, search)
+        before = (db.records["1001"].access_rule, list(db.record_permissions["1001"]))
+        assert before[0] != AccessRule.RESTRICTED, "a close would change it"
+        db.fail_lookup_for = {"1001"}
+        await run_full_sync(connector, db)
+        assert db.records["1001"].access_rule == AccessRule.RESTRICTED, "closed"
+        db.fail_lookup_for = set()
+
+        await connector.run_sync()  # incremental: ENG-1 is unchanged in Jira
+
+        assert (db.records["1001"].access_rule, db.record_permissions["1001"]) == before, "built with its access"
+        assert db.records["1001"].id == stored["1001"]
+        assert json.loads(store.values_for("project_ENG").get("failed_issue_attempts") or "{}") == {}
+
     async def test_an_incremental_sync_scans_nothing(self, jira, db, store, search) -> None:
         connector, _ = await self._synced(jira, db, store, search)
         await connector.run_sync()

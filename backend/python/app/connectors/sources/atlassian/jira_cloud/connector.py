@@ -1000,32 +1000,41 @@ class JiraConnector(BaseConnector):
         the project's record group, even with no grants of its own, for the records' links into it. Soft-deleted
         records too: a restored issue must come back with its edges. With ``issue_ids``, only those issues, the
         files and comments filed under them and the comments' files: their sub-tasks are written when still in Jira.
-        Those of them in ``close`` (whose build failed) are first stored closed, as their access was not read again
-        (``close_kept_issues``); one that cannot be closed is not kept, nor is anything under it, so the unlink
-        takes their edges."""
+        Those in ``close`` (whose build failed) are first stored closed, as their access was not read again
+        (``close_kept_issues``), on the whole-project keep too; one that cannot be closed is not kept, nor is anything
+        under it, so the unlink takes their edges."""
         await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
+        filed_under = close if issue_ids is None else issue_ids
         page_size = 1000
         after_key: Optional[str] = None
+        every_id: list[str] = []
         stored: list[Record] = []
         while True:
             page = await self.data_entities_processor.get_records_in_record_group(
                 self.connector_id, project_id, page_size, after_key, visibility=RecordVisibility.ALL,
             )
             if issue_ids is None:
-                self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
-            else:
-                stored += [
-                    record for record in page
-                    if record.external_record_id in issue_ids
-                    or (record.parent_external_record_id in issue_ids
-                        and record.record_type in (RecordType.FILE, RecordType.COMMENT))
-                ]
+                every_id += [record.id for record in page]
+            stored += [
+                record for record in page
+                if record.external_record_id in filed_under
+                or (record.parent_external_record_id in filed_under
+                    and record.record_type in (RecordType.FILE, RecordType.COMMENT))
+            ]
             if len(page) < page_size:
                 break
             after_key = page[-1].id
+        unclosed = await close_kept_issues(self.data_entities_processor, stored, close & filed_under, self.logger)
+        unkept = [record for record in stored
+                  if record.external_record_id in unclosed or record.parent_external_record_id in unclosed]
         if issue_ids is None:
+            dropped = set(await self._with_their_files(
+                [record for record in unkept if record.record_type == RecordType.COMMENT], RecordVisibility.ALL,
+            )) | {record.id for record in unkept}
+            self.data_entities_processor.note_kept_records(
+                self.connector_id, [record_id for record_id in every_id if record_id not in dropped],
+            )
             return
-        unclosed = await close_kept_issues(self.data_entities_processor, stored, close & issue_ids, self.logger)
         kept = [record for record in stored
                 if record.external_record_id not in unclosed and record.parent_external_record_id not in unclosed]
         self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in kept])
@@ -5139,8 +5148,9 @@ class JiraConnector(BaseConnector):
         saved_retry = await self._save_issues_to_retry(project_key, saved_retry)
         if self.data_entities_processor.full_sync_running(self.connector_id) is True:
             if self._issue_search_cut_short:
-                # The issues Jira did not list are unknown, so the whole project stays as stored.
-                await self._keep_stored_records(project_id)
+                # The issues Jira did not list are unknown, so the whole project stays as stored;
+                # those that failed to build are closed first.
+                await self._keep_stored_records(project_id, close=self._issues_failed_to_build)
             elif self._issues_to_retry:
                 # Scanned rather than looked up where the write failed: that lookup is often what failed.
                 await self._keep_stored_records(project_id, self._issues_to_retry, close=self._issues_failed_to_build)

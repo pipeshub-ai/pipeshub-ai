@@ -1169,11 +1169,13 @@ def unreadable_security_notices(
 async def close_stored_issue(processor: Any, stored: Record) -> None:  # noqa: ANN401
     """Store an issue closed: ``RESTRICTED`` with no grants of its own, so no one reads it, and no one reads its files
     and comments, which read through it (a file inherits it, a comment needs it as well as its own grant). Its links
-    stay, so it opens again with its access once a sync builds it. A placeholder has no access to close."""
+    stay, so it opens again with its access once a sync builds it: it is stored with no source time, so the next read
+    takes it as changed even when Jira's ``updated`` has not moved. A placeholder has no access to close."""
     if stored.is_placeholder:
         return
     stored.access_rule = AccessRule.RESTRICTED
     stored.rewrite_permissions = True
+    stored.source_updated_at = 0
     await processor.on_new_records([(stored, [])])
 
 
