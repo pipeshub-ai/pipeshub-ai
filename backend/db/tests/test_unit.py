@@ -651,6 +651,8 @@ _BUILD = 'def upgrade():\n    ensure_partitioned_index(op.get_bind(), "graph.nod
     ("names built at run time", 'def upgrade():\n    for t, n in X:\n        ensure_partitioned_index(op.get_bind(), t, n, "c", blocking=True)\n', None, True),
     ("its table is created by the revision's .sql", _BUILD, "CREATE TABLE graph.nodes (org_id text)", False),
     ("IF NOT EXISTS of a table an earlier revision creates", _BUILD, "CREATE TABLE IF NOT EXISTS graph.nodes (org_id text)", True),
+    ("its table only in a comment of the .sql", _BUILD, "-- CREATE TABLE graph.nodes (k int)\n/* CREATE TABLE graph.nodes (k int) */\nSELECT 1", True),
+    ("its table only in a string of the .sql", _BUILD, "SELECT 'CREATE TABLE graph.nodes (k int)'", True),
     ("a reasoned waiver", 'blocking_index_ok = "the index keys a column this revision adds"\n' + _BUILD, None, False),
     ("a waiver without a reason", 'blocking_index_ok = "ok"\n' + _BUILD, None, True),
     ("online, not blocking", _BUILD.replace("blocking=True", "blocking=False"), None, False),
@@ -684,6 +686,12 @@ def test_lint_takes_an_index_a_later_revision_lists_online_as_built_ahead(tmp_pa
     ("through a name", 'def upgrade():\n    sql = "drop index %s" % n\n    op.execute(sql)\n', True),
     ("through a name assigned again after it ran", 'def upgrade():\n    sql = "DROP INDEX graph.x"\n    op.execute(sql)\n'
                                                     '    sql = "SELECT 1"\n    op.execute(sql)\n', True),
+    ("its verb built at run time", 'def upgrade():\n    verb = "DROP"\n    op.execute(f"{verb} INDEX graph.x")\n', True),
+    ("one of a name's values built at run time", 'def upgrade():\n    sql = "SELECT 1"\n    sql = f"{verb} INDEX graph.x"\n    op.execute(sql)\n', True),
+    ("a module constant", 'UPGRADE = "DROP INDEX graph.x"\n\n\ndef upgrade():\n    op.execute(UPGRADE)\n', True),
+    ("a module constant that is no drop", 'UPGRADE = "CREATE OR REPLACE VIEW graph.v AS SELECT 1"\n\n\ndef upgrade():\n    op.execute(UPGRADE)\n', False),
+    ("its verb a parameter", 'def upgrade():\n    run(op.get_bind(), "x")\n\n\ndef run(c, sql):\n    c.exec_driver_sql(sql)\n', True),
+    ("a known CREATE INDEX prefix", 'def upgrade():\n    op.execute(f"CREATE INDEX IF NOT EXISTS {n} ON graph.x (c)")\n', False),
     (".format", 'def upgrade():\n    op.get_bind().exec_driver_sql("DROP INDEX {}".format(n))\n', True),
     ("a literal in a revision without .sql", 'def upgrade():\n    op.execute("DROP INDEX graph.x")\n', True),
     ("a waiver does not clear it", 'older_code_compatible = "older code never reads that index at all"\n'

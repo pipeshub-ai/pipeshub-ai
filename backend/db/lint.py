@@ -206,7 +206,7 @@ def _call_name(f: ast.expr) -> str:
 
 def _static(node: ast.expr, env: dict[str, list[ast.expr]], depth: int = 0) -> str:
     """The text of a SQL argument with each part built at run time as ``\x00``: f-strings, ``+``, ``%`` and ``.format`` on a literal, and a name
-    assigned in the same function (every value it is assigned, one per line: which one a call sees is not followed)."""
+    assigned in the same function or at module level (every value it is assigned, each as a statement of its own: which one a call sees is not followed)."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.JoinedStr):
@@ -218,7 +218,7 @@ def _static(node: ast.expr, env: dict[str, list[ast.expr]], depth: int = 0) -> s
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
         return re.sub(r"\{[^}]*\}", "\x00", _static(node.func.value, env, depth))
     if isinstance(node, ast.Name) and node.id in env and depth < 5:
-        return "\n".join(_static(v, env, depth + 1) for v in env[node.id])
+        return ";\n".join(_static(v, env, depth + 1) for v in env[node.id])
     return "\x00"
 
 
@@ -227,7 +227,13 @@ def _upgrade_sql(py_text: str, runtime: list[str] | None = None) -> tuple[list[s
     calls, in ``upgrade()`` and every module function it calls (``downgrade()`` is not read). True when some argument is not a
     constant (not parsed); ``runtime`` collects such an argument's text as far as it is written in the file (``_static``).
     shortcut: calls through objects other than module functions are not followed."""
-    funcs = {f.name: f for f in ast.parse(py_text).body if isinstance(f, ast.FunctionDef) and f.name != "downgrade"}
+    body = ast.parse(py_text).body
+    funcs = {f.name: f for f in body if isinstance(f, ast.FunctionDef) and f.name != "downgrade"}
+    module_env: dict[str, list[ast.expr]] = {}          # module constants (UPGRADE = """...""") that a function passes by name
+    for n in body:
+        for t in (n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) and n.value else []):
+            if isinstance(t, ast.Name):
+                module_env.setdefault(t.id, []).append(n.value)
     sql, dynamic, seen, todo = [], False, set(), ["upgrade"] if "upgrade" in funcs else []
     while todo:
         fn = funcs[todo.pop()]
@@ -237,7 +243,7 @@ def _upgrade_sql(py_text: str, runtime: list[str] | None = None) -> tuple[list[s
         nodes = list(ast.walk(fn))
         alias = {t.id for n in nodes if isinstance(n, ast.Assign) and _call_name(n.value) in _EXEC_CALLS
                  for t in n.targets if isinstance(t, ast.Name)}                   # run = conn.exec_driver_sql
-        env: dict[str, list[ast.expr]] = {}
+        env = {k: list(v) for k, v in module_env.items()}
         for n in (n for n in nodes if isinstance(n, ast.Assign)):
             for t in (t for t in n.targets if isinstance(t, ast.Name)):
                 env.setdefault(t.id, []).append(n.value)
@@ -450,9 +456,10 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
     runtime: list[str] = []
     const_sql, _ = _upgrade_sql(text, runtime)
     earlier = _earlier_tables(sql_file)
-    created = {_key(m.group(2)) for s in [sql_file.read_text(encoding="utf-8") if sql_file.is_file() else "", *const_sql]
-               for m in re.finditer(rf"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(IF NOT EXISTS\s+)?({_N})", s, re.I)
-               if not (m.group(1) and _key(m.group(2)) in earlier)}
+    stmts = [s for q in [sql_file.read_text(encoding="utf-8") if sql_file.is_file() else "", *const_sql] for s in statements(q)]
+    created = {_key(m.group(2)) for s in stmts + [sub for s in stmts for sub in _do_statements(s)]          # as lint_file: statements, not comments or strings
+               if (m := re.match(rf"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(IF NOT EXISTS\s+)?({_N})", s, re.I))
+               and not (m.group(1) and _key(m.group(2)) in earlier)}
     # a later revision of the branch is pending whenever this one is, so the online step builds its ONLINE_INDEXES ahead of this one's call too
     later = [f.read_text(encoding="utf-8") for f in py.parent.glob("[0-9]*.py") if f.name[:4].isdigit() and int(f.name[:4]) > int(epoch)]
     online = {ix for t in (text, *later) for ix in _online_indexes(t)}
@@ -476,7 +483,9 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
                    "(blocking=True): list it in ONLINE_INDEXES, or set blocking_index_ok = \"<why it cannot be built ahead>\"")
     if not _contract(text):                     # a .sql's revision has its constant SQL linted by lint_file
         bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: {s.replace(chr(0), '{...}')[:60]}"
-                for s in runtime + ([] if sql_file.is_file() else const_sql) if re.search(r"\bDROP\s+(?:INDEX\b|\x00)", s, re.I)]
+                for s in runtime + ([] if sql_file.is_file() else const_sql)
+                # a statement whose verb is built at run time may be a DROP INDEX too
+                if re.search(r"\bDROP\s+(?:INDEX\b|\x00)", s, re.I) or any(q.startswith("\x00") for q in statements(s))]
     return bad
 
 
