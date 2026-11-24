@@ -319,6 +319,8 @@ class FakeEntitiesProcessor:
         self.linked_authenticators: list[tuple[str, str, str, str]] = []
         # The link now stored per connector: (created_by, source email, source user id); and who each creator is.
         self.authenticator_links: dict[str, tuple[str, str, str]] = {}
+        # Per connector, the creators a listing once named: the processor's listed-authenticators marker.
+        self.listed_authenticators: dict[str, set[str]] = {}
         self.authenticator_emails: dict[str, str] = {}
         self.deleted_groups: list[str] = []
         # The record ids the running full sync wrote or noted kept; None when no full sync runs.
@@ -472,7 +474,9 @@ class FakeEntitiesProcessor:
             (u.email or "").strip().lower() for u in self.app_users.values()
             if getattr(u, "source_user_id", None) and getattr(u, "connector_id", connector_id) == connector_id
         } | {e.strip().lower() for e in extra_present_emails}
-        if check_listing and creator and creator in listed:
+        remembered = self.listed_authenticators.setdefault(connector_id, set())
+        if check_listing and creator and (creator in listed or creator in remembered):
+            remembered.add(creator)
             had = self.authenticator_links.pop(connector_id, None)
             return AuthenticatorLinkResult(AuthenticatorLink.UNLINKED if had else AuthenticatorLink.UNCHANGED)
         if not may_link or not email or not source_user_id:

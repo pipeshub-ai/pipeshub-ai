@@ -142,6 +142,17 @@ async def test_an_unlisted_creator_is_linked_to_the_admin(ws: Harness) -> None:
     assert _readable_mailboxes(ws, "vendor@elsewhere.com") == {f"mailbox:{ADMIN}"}
 
 
+async def test_a_creator_once_listed_is_not_linked_after_their_account_goes(ws: Harness) -> None:
+    ws.records.authenticator_emails["admin-user"] = ALICE
+    await ws.sync()
+    ws.directory.users.pop(ALICE)
+    ws.records.app_users.pop(ALICE)
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == []
+
+
 async def test_a_stale_link_goes_on_the_next_sync(ws: Harness) -> None:
     ws.records.authenticator_emails["admin-user"] = ALICE
     ws.records.authenticator_links[CONNECTOR_ID] = ("admin-user", ADMIN, ws.directory.users[ADMIN].user_id)
