@@ -1001,10 +1001,36 @@ One action that saves several settings writes one line per saved setting. A comp
 write that took. A save whose later step fails (the mail service did not reload the new SMTP settings) still has its line:
 the setting was stored.
 
+Settings the connector service saves (Node proxies the request to it) are written the same way by the route's handler, once
+Node read the service's 2xx answer: `config.<section>.create`, `config.<section>.update` or `config.<section>.delete`, with
+`target` the object's id and `reason` saying which part changed. The handler writes the line, not a middleware on the
+response, so a save whose browser left before the answer still has its line. The object's id is also on every line of the
+request (`connector_id`); `target` is it only when it is a PipesHub id (otherwise `target` is null and `reason` is
+`invalid_id`). The connector routes are open to members for their own connectors (a personal connector), so
+`config.connector.*` lines include a member's own connectors; Node cannot tell personal from org-wide, and `actor` says who.
+
+| Event | Route | `reason` | `target` |
+| --- | --- | --- | --- |
+| `config.connector.create` | `POST /api/v1/connectors/` | | the new connector's id, from the service's answer |
+| `config.connector.update` | `PUT /:connectorId/config` | `settings` | the connector |
+| `config.connector.update` | `PUT /:connectorId/config/auth` | `auth` | the connector |
+| `config.connector.update` | `PUT /:connectorId/config/filters-sync`, `POST /:connectorId/filters` | `filters_sync` | the connector |
+| `config.connector.update` | `PUT /:connectorId/name` | `rename` | the connector |
+| `config.connector.update` | `POST /:connectorId/toggle` | `sync_enable`, `sync_disable`, `agent_enable`, `agent_disable`; `toggle` when the request flips the current state (no `enabled`), which Node does not know | the connector |
+| `config.connector.update` | `PATCH /:connectorId/permissions/filter` | `permission_filter` | the connector |
+| `config.connector.delete` | `DELETE /:connectorId` | | the connector |
+| `config.connector_oauth_app.create` | `POST /api/v1/oauth/:connectorType` | | the new OAuth app's id, from the service's answer |
+| `config.connector_oauth_app.update` | `PUT /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
+| `config.connector_oauth_app.delete` | `DELETE /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
+
+The line means Node read the service's 2xx. A save the service made whose answer Node did not get (a timeout, a connection
+cut after the service committed, a 2xx whose body does not parse) has no audit line; its error and access lines, and the
+connector service's own line with the same `request_id`, record the attempt. A create resent after a cut connection (the
+connector and OAuth app creates are sent up to three times) may have been made twice with one line.
+
 Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
 validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
-migrations, and settings saved through other routers (connector instances and their credentials, connector OAuth apps,
-OAuth clients, toolsets, MCP servers).
+migrations, and settings saved through other routers (OAuth clients, toolsets, MCP servers).
 
 ## Upstream calls (Node)
 
