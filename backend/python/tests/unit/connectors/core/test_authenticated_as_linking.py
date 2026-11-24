@@ -323,6 +323,24 @@ class TestCacheInvalidation:
         assert result.outcome is AuthenticatorLink.UNLINKED
         notify.assert_awaited_once_with(CONNECTOR, "org-1")
 
+    @pytest.mark.parametrize("listed_by", ["marker", "listing"])
+    async def test_the_removal_pass_drops_the_cached_maps_for_a_listed_authenticator(
+        self, monkeypatch, listed_by: str,
+    ) -> None:
+        notify = self._patch_notify(monkeypatch)
+        tx = _tx_store(source_user=SOURCE)
+        tx.remove_authenticated_as = AsyncMock(return_value=True)
+        proc = _processor(tx)
+        if listed_by == "marker":
+            proc.config_service.get_config = AsyncMock(return_value=["creator-key"])
+        extra = {"Dash@Gmail.com"} if listed_by == "listing" else ()
+
+        result = await _link(proc, None, None, may_link=False, extra_present_emails=extra)
+
+        assert result.outcome is AuthenticatorLink.UNLINKED
+        tx.upsert_authenticated_as.assert_not_called()
+        notify.assert_awaited_once_with(CONNECTOR, "org-1")
+
     async def test_a_removed_link_drops_them_too(self, monkeypatch) -> None:
         """Otherwise the source account's records keep being served after the link is gone."""
         notify = self._patch_notify(monkeypatch)
