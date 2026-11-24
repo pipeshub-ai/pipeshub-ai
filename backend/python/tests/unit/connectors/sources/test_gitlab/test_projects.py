@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.sources.gitlab.projects import (
     ProjectsSync,
     _longest_matching_group_path,
@@ -23,8 +23,12 @@ from app.connectors.sources.gitlab.projects import (
     _namespace_under_any_prefix,
 )
 from app.models.entities import AppUserGroup
+from tests.unit.connectors.core.test_has_stored_permissions import processor_over
+from tests.unit.connectors.core.test_note_kept_user_group import CopiesStore
 
 from .conftest import make_mock_connector, paged_res, failed_res
+
+GROUPS = CollectionNames.GROUPS.value
 
 pytestmark = pytest.mark.anyio
 
@@ -322,7 +326,7 @@ class TestCreatePermissionFromPrincipal:
             create_pseudo_group_if_missing=True,
         )
         assert result is not None
-        c.data_entities_processor.note_kept_user_groups.assert_not_called()
+        c.data_entities_processor.note_kept_user_group.assert_not_awaited()
 
     async def test_reused_pseudo_group_is_noted_kept(self) -> None:
         c = make_mock_connector()
@@ -351,8 +355,64 @@ class TestCreatePermissionFromPrincipal:
         assert result is not None
         assert result.entity_type == EntityType.GROUP
         assert result.external_id == "42"
-        c.data_entities_processor.note_kept_user_groups.assert_called_once_with(c.connector_id, [group])
+        c.data_entities_processor.note_kept_user_group.assert_awaited_once_with(c.connector_id, "42")
         projects_sync._create_pseudo_group.assert_not_awaited()
+        c.note_sync_problem.assert_not_called()
+
+    async def test_every_stored_copy_of_a_reused_pseudo_group_is_kept_by_a_full_sync(self) -> None:
+        # Older syncs could store several copies with one external id; the lookup returns one.
+        copies = [{"_key": "n1", "externalGroupId": "42"}, {"_key": "n2", "externalGroupId": "42"}]
+        processor = processor_over(CopiesStore(copies))
+        processor.get_user_by_source_id = AsyncMock(return_value=None)
+        processor.get_user_group_by_external_id = AsyncMock(return_value=AppUserGroup(
+            id="n1",
+            app_name=Connectors.GITLAB,
+            connector_id="c1",
+            source_user_group_id="42",
+            name="pseudo_42",
+            org_id="org-1",
+        ))
+        c = make_mock_connector()
+        c.connector_id = "c1"
+        c.data_entities_processor = processor
+        run = processor.begin_full_sync_run("c1")
+
+        from app.models.permission import EntityType, PermissionType
+        result = await ProjectsSync(c)._create_permission_from_principal(
+            EntityType.USER.value,
+            "42",
+            PermissionType.OWNER.value,
+            create_pseudo_group_if_missing=True,
+        )
+
+        assert result is not None and result.external_id == "42"
+        assert run.has(GROUPS, "n1") and run.has(GROUPS, "n2")
+        c.note_sync_problem.assert_not_called()
+
+    async def test_a_pseudo_group_that_cannot_be_kept_makes_the_run_incomplete(self) -> None:
+        c = make_mock_connector()
+        group = AppUserGroup(
+            id="g1",
+            app_name=Connectors.GITLAB,
+            connector_id=c.connector_id,
+            source_user_group_id="42",
+            name="pseudo_42",
+            org_id="org-1",
+        )
+        c.data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
+        c.data_entities_processor.get_user_group_by_external_id = AsyncMock(return_value=group)
+        c.data_entities_processor.note_kept_user_group = AsyncMock(side_effect=RuntimeError("lookup failed"))
+
+        from app.models.permission import EntityType, PermissionType
+        result = await ProjectsSync(c)._create_permission_from_principal(
+            EntityType.USER.value,
+            "42",
+            PermissionType.OWNER.value,
+            create_pseudo_group_if_missing=True,
+        )
+
+        assert result is not None and result.external_id == "42"
+        c.note_sync_problem.assert_called_once()
 
     async def test_user_found_does_not_note_a_group(self) -> None:
         c = make_mock_connector()
@@ -374,7 +434,7 @@ class TestCreatePermissionFromPrincipal:
         assert result is not None
         assert result.entity_type == EntityType.USER
         c.data_entities_processor.get_user_group_by_external_id.assert_not_awaited()
-        c.data_entities_processor.note_kept_user_groups.assert_not_called()
+        c.data_entities_processor.note_kept_user_group.assert_not_awaited()
 
     async def test_exception_returns_none(self) -> None:
         c = make_mock_connector()
