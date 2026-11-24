@@ -20,6 +20,7 @@ from app.connectors.sources.zoom.connector import (
 )
 from app.models.entities import MeetingRecord, OriginTypes, Record, RecordGroupType, RecordType
 from app.models.permission import PermissionType
+from app.sources.client.zoom.zoom import ZoomResponse
 
 
 def _make_connector(
@@ -247,6 +248,43 @@ class TestZoomConnectorPermissions:
         emails = {p.email for p in perms if p.email}
         assert emails == {"host@example.com", "alt@example.com", "invitee@example.com"}
         assert participants_read is False
+
+    @pytest.mark.asyncio
+    async def test_permissions_keep_the_participants_read_before_a_page_fails(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.report_meeting_participants = AsyncMock(side_effect=[
+            ZoomResponse(success=True, data={
+                "participants": [{"user_email": "P1@example.com"}], "next_page_token": "t2",
+            }),
+            ZoomResponse(success=False, error="rate limited", message="rate limited", status_code=429),
+        ])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        perms, participants_read = await connector._build_meeting_permissions(
+            meeting_detail=None,
+            encoded_uuid="encoded-uuid",
+            host_email="host@example.com",
+        )
+
+        assert {p.email for p in perms if p.email} == {"host@example.com", "p1@example.com"}
+        assert participants_read is False
+
+    @pytest.mark.asyncio
+    async def test_stream_participants_read_stays_strict_when_a_later_page_fails(self) -> None:
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.report_meeting_participants = AsyncMock(side_effect=[
+            ZoomResponse(success=True, data={
+                "participants": [{"user_email": "p1@example.com"}], "next_page_token": "t2",
+            }),
+            ZoomResponse(success=False, error="rate limited", message="rate limited", status_code=429),
+        ])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)  # type: ignore[method-assign]
+
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._list_meeting_participants("encoded-uuid", raise_on_error=True)
+        assert exc_info.value.status_code == 429
 
 
 class TestZoomConnectorFreshDatasource:

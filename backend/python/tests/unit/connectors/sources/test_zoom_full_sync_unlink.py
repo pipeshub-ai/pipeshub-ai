@@ -73,6 +73,9 @@ class FakeZoom:
         self.failing_report_ranges: set[tuple[str, str, str]] = set()
         self.failing_details: set[str] = set()
         self.failing_participants: set[str] = set()
+        # Meetings whose participants come one per page, and the page number (1-based) that fails.
+        self.paged_participants: set[str] = set()
+        self.failing_participant_pages: dict[str, int] = {}
         self.created_at: dict[str, str] = {}
 
     async def user(self, user_id: str) -> ZoomResponse:
@@ -124,6 +127,14 @@ class FakeZoom:
         m = next(m for m in self.meetings.values() if ZoomConnector._encode_uuid(m.uuid) == meetingId)
         if m.uuid in self.failing_participants:
             return _failed(429)
+        if m.uuid in self.paged_participants:
+            page = int(next_page_token or "1")
+            if self.failing_participant_pages.get(m.uuid) == page:
+                return _failed(429)
+            return ZoomResponse(success=True, data={
+                "participants": [{"user_email": m.participants[page - 1]}],
+                "next_page_token": str(page + 1) if page < len(m.participants) else "",
+            })
         return ZoomResponse(success=True, data={
             "participants": [{"user_email": e} for e in m.participants], "next_page_token": "",
         })
@@ -483,6 +494,37 @@ class TestZoomFullSyncUnlinksOnlyWhatIsGone:
         await _full_sync(world)
 
         assert world.wrongly_revoked_grants() == 0
+        assert world.really_gone_unlinked() == 1
+
+    async def test_a_participants_page_that_fails_adds_the_earlier_pages_and_keeps_the_stored_grants(self) -> None:
+        meeting = _recent("m-1", 1)
+        world = _world([meeting], gone=[_recent("m-gone", 2, days_ago=20)])
+        world.store.nodes["m-1"].grants.add("stored@partner.example")
+        meeting.participants = ["guest@acme.example", "new1@acme.example", "new2@acme.example"]
+        world.zoom.paged_participants = {"m-1"}
+        world.zoom.failing_participant_pages = {"m-1": 3}
+
+        await _full_sync(world)
+
+        # Pages 1-2 read before page 3 failed: new1 gains access, new2 is not read, nothing stored is removed.
+        assert world.store.nodes["m-1"].grants == {
+            "ann@acme.example", "guest@acme.example", "new1@acme.example", "stored@partner.example",
+        }
+        assert world.wrongly_revoked_grants() == 0
+        assert world.really_gone_unlinked() == 1
+
+    async def test_participants_read_in_full_across_pages_replace_the_stored_grants(self) -> None:
+        meeting = _recent("m-1", 1)
+        world = _world([meeting], gone=[_recent("m-gone", 2, days_ago=20)])
+        world.store.nodes["m-1"].grants.add("old@partner.example")
+        meeting.participants = ["guest@acme.example", "new1@acme.example"]
+        world.zoom.paged_participants = {"m-1"}
+
+        await _full_sync(world)
+
+        assert world.store.nodes["m-1"].grants == {
+            "ann@acme.example", "guest@acme.example", "new1@acme.example",
+        }
         assert world.really_gone_unlinked() == 1
 
     async def test_a_meeting_detail_read_that_fails_keeps_the_stored_grants(self) -> None:

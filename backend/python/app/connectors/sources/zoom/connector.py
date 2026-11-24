@@ -681,15 +681,20 @@ class ZoomConnector(BaseConnector):
         return meetings
 
     async def _list_meeting_participants(
-        self, encoded_uuid: str, raise_on_error: bool = False
+        self,
+        encoded_uuid: str,
+        raise_on_error: bool = False,
+        read_so_far: Optional[list[ZoomParticipant]] = None,
     ) -> list[ZoomParticipant]:
         """GET /v2/report/meetings/{uuid}/participants — paginated.
 
         Sync builds permissions best-effort and must not abort on one bad
         meeting, so failures stop pagination silently unless *raise_on_error*.
+        Pages are collected into *read_so_far* when given, so a caller still
+        has the pages read before a raise.
         """
         datasource = await self._get_fresh_datasource()
-        participants: list[ZoomParticipant] = []
+        participants: list[ZoomParticipant] = [] if read_so_far is None else read_so_far
         next_page_token: Optional[str] = None
         while True:
             res = await datasource.report_meeting_participants(
@@ -1092,15 +1097,19 @@ class ZoomConnector(BaseConnector):
                 seen_emails.add(alt_email)
 
         # 3 — participants → READ
+        # A read that fails part way still grants the participants it returned;
+        # the caller then adds these grants instead of replacing the stored ones.
         participants_read = True
+        read_so_far: list[ZoomParticipant] = []
         try:
             participants = await self._list_meeting_participants(
-                encoded_uuid, raise_on_error=True
+                encoded_uuid, raise_on_error=True, read_so_far=read_so_far
             )
-            self._add_participant_permissions(perms, participants, seen_emails)
         except Exception as exc:
+            participants = read_so_far
             participants_read = False
             self.logger.warning("Zoom: failed to fetch participants: %s", exc)
+        self._add_participant_permissions(perms, participants, seen_emails)
 
         # 4 — invitees → READ
         for inv in settings.meeting_invitees:
