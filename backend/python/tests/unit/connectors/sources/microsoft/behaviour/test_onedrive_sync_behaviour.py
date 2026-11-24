@@ -166,7 +166,9 @@ class Tenant:
         self.drive_delta: dict[str, TokenFeed] = {}
         self.groups_delta = TokenFeed("$deltatoken")
         self.groups_delta.by_token[None] = page([], delta_link=groups_link("G1"))
-        cloud.on("GET", "/v1.0/users", lambda _r: json_response(page(self.users)))
+        self.hidden_users = 0  # users the directory counts but the listing leaves out
+        cloud.on("GET", "/v1.0/users",
+                 lambda _r: json_response(page(self.users, count=len(self.users) + self.hidden_users)))
         cloud.on("GET", "/v1.0/groups", lambda _r: json_response(page(self.groups)))
         cloud.on("GET", GROUPS_DELTA_PATH, self.groups_delta)
 
@@ -3135,7 +3137,11 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         assert db.kept_user_groups == []
         assert unlinked == self.REALLY_GONE
 
-    async def test_a_deleted_users_drive_that_cannot_be_read_keeps_its_links(self, cloud, tenant, db, checkpoints) -> None:
+    async def test_a_deleted_users_drive_that_cannot_be_read_is_unlinked_not_deleted(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        # Bo is no longer listed, so his drive is outside this run's users: it is left unseen even
+        # though it cannot be read, and only a 404 with his account gone deletes it.
         connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
         tenant.users = [u for u in tenant.users if u["id"] != "u-bo"]
         cloud.on("GET", "/v1.0/users/u-bo", graph_error(404, "Request_ResourceNotFound"))
@@ -3144,8 +3150,8 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         unlinked = await run_full_sync(connector, db, checkpoints)
 
         assert "drive-bo" in db.record_groups
-        assert unlinked - self.REALLY_GONE == set()
-        assert unlinked & self.REALLY_GONE == self.REALLY_GONE
+        assert db.kept_record_groups == []
+        assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
 
     async def test_what_is_gone_at_the_source_is_unlinked_or_deleted(self, cloud, tenant, db, checkpoints) -> None:
         connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
@@ -3244,6 +3250,85 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
         assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
         assert db.kept_record_groups == []
         assert connector.full_sync_coverage().complete is True
+
+    async def test_an_inactive_users_drive_is_still_unlinked_when_it_cannot_be_read(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        db.active_users = [u for u in db.active_users if u.email != "bo@acme.com"]
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
+        assert db.kept_record_groups == []
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_an_unprovisioned_active_users_drive_that_cannot_be_read_keeps_its_links(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(404, "ResourceNotFound", "User's mysite not found."))
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_record_groups == ["drive-bo"]
+        assert unlinked == self.REALLY_GONE
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_drive_whose_owner_is_not_known_keeps_its_links_when_it_cannot_be_read(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        # The full sync drops the remembered owners, and Bo's drive id cannot be read this run.
+        connector._user_drive_ids = {}
+        cloud.on("GET", "/v1.0/users/u-bo/drive", graph_error(500, "generalException"))
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert db.kept_record_groups == ["drive-bo"]
+        assert unlinked == self.REALLY_GONE
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_an_unreadable_drive_that_is_no_active_users_known_drive_is_still_unlinked(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        db.active_users = [u for u in db.active_users if u.email != "bo@acme.com"]
+        # The full sync drops the remembered owners; Ana's drive id is read this run and is not Bo's drive.
+        connector._user_drive_ids = {}
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
+        assert db.kept_record_groups == []
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_partial_user_listing_makes_the_full_sync_incomplete(self, cloud, tenant, db, checkpoints) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        tenant.users = [u for u in tenant.users if u["id"] != "u-bo"]
+        tenant.hidden_users = 1
+        cloud.on("GET", "/v1.0/drives/drive-bo", {"id": "drive-bo", "owner": {"user": {"id": "u-bo"}}})
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is False
+        assert unlinked == set()
+
+    async def test_a_complete_user_listing_without_a_user_still_unlinks_their_drive(
+        self, cloud, tenant, db, checkpoints,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        tenant.users = [u for u in tenant.users if u["id"] != "u-bo"]
+        cloud.on("GET", "/v1.0/drives/drive-bo", {"id": "drive-bo", "owner": {"user": {"id": "u-bo"}}})
+
+        unlinked = await run_full_sync(connector, db, checkpoints)
+
+        assert connector.full_sync_coverage().complete is True
+        assert unlinked == self.REALLY_GONE | {f"{RECORD_GROUPS}/drive-bo", f"{RECORDS}/b1", f"{RECORDS}/b2"}
 
     async def test_a_locked_user_with_nothing_stored_does_not_flag(self, cloud, tenant, db, checkpoints) -> None:
         connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
@@ -3449,3 +3534,23 @@ class TestRemoveDeletedDrivesKeepsWhatItCannotVerify:
         assert db.kept_records == []
         db.get_records_in_record_group.assert_not_awaited()
         assert await ContainerTracker(connector.drive_delta_sync_point, KNOWN_DRIVES_KEY).known() == before
+
+    @pytest.mark.parametrize("scope, kept", [
+        pytest.param({"u-ana"}, [], id="owner-not-active"),
+        pytest.param({"u-ana", "u-bo"}, ["drive-bo"], id="active-owner-not-synced"),
+        pytest.param(None, ["drive-bo"], id="active-users-not-read"),
+    ])
+    async def test_an_unreadable_drive_of_a_remembered_owner_is_kept_only_when_unverified(
+        self, cloud, tenant, db, checkpoints, scope, kept,
+    ) -> None:
+        connector, _, _ = await seed_ana_and_bo(cloud, tenant, db, checkpoints)
+        assert "drive-bo|u-bo" in await ContainerTracker(connector.drive_delta_sync_point, KNOWN_DRIVES_KEY).known()
+        cloud.on("GET", "/v1.0/drives/drive-bo", graph_error(500, "generalException"))
+        connector._drives_read = {DRIVE: "u-ana"}
+        connector._drive_owners_in_scope = scope
+        db.full_sync_running = lambda connector_id: True
+
+        await connector._remove_deleted_drives()
+
+        assert db.kept_record_groups == kept
+        assert "drive-bo" in db.record_groups

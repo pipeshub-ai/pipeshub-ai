@@ -605,6 +605,8 @@ class OneDriveConnector(BaseConnector):
         self._drives_read: dict[str, str] = {}  # drive id -> owner's user id, for the drives synced in this run
         self._full_sync_incomplete = False
         self._unsynced_drive_owners: set[str] = set()  # source user ids whose drive this run skipped or failed
+        # Source user ids of the active users this run synced drives for; None until the run reads them.
+        self._drive_owners_in_scope: set[str] | None = None
         # Per drive, items written without knowing whether they inherit, until saved to be read again.
         # Kept across a run reset: a reindex running beside the sync may still be filling them.
         self._items_without_known_inheritance: dict[str, set[str]] = {}
@@ -2596,6 +2598,7 @@ class OneDriveConnector(BaseConnector):
             ]
 
             self.logger.info(f"Found {len(active_users)} active users out of {len(users)} total users")
+            self._drive_owners_in_scope = {user.source_user_id for user in active_users if user.source_user_id}
 
             users_to_sync = []
             failed_users: List[Tuple[str, OneDriveUserStatus]] = []
@@ -2819,6 +2822,22 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("❌ Error checking if user has OneDrive: %s", e)
             raise
     
+    def _keeps_unreadable_drive(self, drive_id: str, owner: str) -> bool:
+        """Whether a stored drive that could not be read is kept: when this run could not verify its
+        owner's drives (an active user whose OneDrive was skipped or failed, or any owner while the active
+        users are not read) or cannot tell its owner. A drive of an owner outside the active users is not
+        synced, so it is left unseen, as when it can be read. Without a remembered owner, a drive that is
+        none of the active users' known drives is theirs only if some active user's drive is not known."""
+        scope = self._drive_owners_in_scope
+        if scope is None:
+            return True
+        owner = owner or next((user for user, drive in self._user_drive_ids.items() if drive == drive_id), "")
+        if not owner:
+            return any(user not in self._user_drive_ids for user in scope)
+        if owner in self._unsynced_drive_owners:
+            return True
+        return owner in scope and owner not in set(self._drives_read.values())
+
     async def _remove_deleted_drives(self) -> None:
         """Remove the OneDrives no user's sync reached this run whose owner was deleted and which Graph no longer has.
 
@@ -2830,7 +2849,8 @@ class OneDriveConnector(BaseConnector):
         is gone from the directory (404 on the user: a deleted user is moved to deleted items,
         https://learn.microsoft.com/en-us/graph/api/user-delete), and a drive synced in this run still answers, so
         the app can read drives. Anything else keeps the drive, and it is read again on the next run. A drive kept
-        for an error is noted kept for a full sync in progress.
+        for an error is noted kept for a full sync in progress, unless its owner is outside the active users this
+        run synced: such a drive is left unseen, as when it can be read.
         """
         tracker = ContainerTracker(self.drive_delta_sync_point, KNOWN_DRIVES_KEY)
         owners = {drive_id: owner for drive_id, _, owner in (entry.partition("|") for entry in await tracker.known())}
@@ -2865,8 +2885,9 @@ class OneDriveConnector(BaseConnector):
                 continue
             except Exception as e:
                 if getattr(e, "response_status_code", None) != HTTPStatus.NOT_FOUND:
-                    self.logger.warning(f"Could not read OneDrive {drive_id}; keeping its records this run: {e}")
-                    await self._keep_stored_drive(drive_id)
+                    if self._keeps_unreadable_drive(drive_id, owner):
+                        self.logger.warning(f"Could not read OneDrive {drive_id}; keeping its records this run: {e}")
+                        await self._keep_stored_drive(drive_id)
                     continue
             if not owner:
                 self.logger.warning(f"OneDrive {drive_id} answers 404 and its owner is not known; keeping its records")
@@ -2963,6 +2984,8 @@ class OneDriveConnector(BaseConnector):
                 await self._withdraw_unlisted_app_users(users)
             else:
                 self.logger.warning("User listing is incomplete; no user loses access this run")
+                # The unlisted users' drives are not synced, so a full sync must not unlink them.
+                self._full_sync_incomplete = True
             self.logger.info(f"✅ Successfully synced {len(users)} users")
             return users
         except ODataError as e:
@@ -3109,6 +3132,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Syncing user drives...")
             self._drives_read = {}
             self._unsynced_drive_owners = set()
+            self._drive_owners_in_scope = None
             await self._process_users_in_batches(users)
             await self._remove_deleted_drives()
 
@@ -3220,6 +3244,7 @@ class OneDriveConnector(BaseConnector):
             users = await self.msgraph_client.get_all_users()
             self._drives_read = {}
             self._unsynced_drive_owners = set()
+            self._drive_owners_in_scope = None
             await self._process_users_in_batches(users)
             await self._remove_deleted_drives()
 
