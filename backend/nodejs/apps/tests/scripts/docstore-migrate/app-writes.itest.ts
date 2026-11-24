@@ -89,6 +89,23 @@ suite('docstore-migrate: the application loses MongoDB writes at the switch', fu
     }
   });
 
+  it('a user that writes through a custom role is reported as still writing (its privileges are read, not its role names)', async () => {
+    const admin = await as('tool', 'tool-pw');
+    await admin.db('admin').command({ createRole: 'docWriter', privileges: [{ resource: { db: 'es', collection: '' }, actions: ['find', 'insert', 'update'] }], roles: [] });
+    await admin.db('admin').command({ createUser: 'cust', pwd: 'cust-pw', roles: ['docWriter'] });
+    const rt = await open({ MIGRATE_MONGO_URI: url('tool', 'tool-pw'), MONGO_URI: url('cust', 'cust-pw') });
+    try {
+      const r = await revokeAppWrites(rt);
+      expect(r.stillWrite).to.include('cust@admin (docWriter on admin)');
+      expect(appWritesNote(r)).to.include('cust@admin');
+      expect(await restoreAppWrites(rt)).to.equal('');
+    } finally {
+      await rt.close();
+      await admin.db('admin').command({ dropUser: 'cust' });
+      await admin.db('admin').command({ dropRole: 'docWriter' });
+    }
+  });
+
   it('a login that may not manage users leaves the switch done and says what to run', async () => {
     const rt = await open({ MIGRATE_MONGO_URI: url('app', 'app-pw'), MONGO_URI: url('app', 'app-pw') });
     try {

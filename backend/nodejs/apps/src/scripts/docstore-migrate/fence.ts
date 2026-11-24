@@ -265,16 +265,28 @@ interface AppWritesRecord {
   }>;
 }
 /** Kept beside the fence: what the switch took away, so that the rollback gives exactly that back. */
-const APP_WRITES_ID = 'app_writes';
+export const APP_WRITES_ID = 'app_writes';
 /** The built-in roles that write a database when granted on it. */
 const DB_WRITE_ROLES = ['readWrite', 'dbOwner'];
-/** Built-in roles that write every database: MongoDB cannot refuse their holders one database without taking the role away. */
-const ANY_DB_WRITE_ROLES = [
-  'root',
-  'readWriteAnyDatabase',
-  'restore',
-  '__system',
-];
+/** The actions that write documents (MongoDB privilege actions). */
+const WRITE_ACTIONS = ['insert', 'update', 'remove'];
+interface Privilege {
+  resource: { db?: string; collection?: string; anyResource?: boolean };
+  actions: string[];
+}
+/**
+ * Whether a user's effective privileges (all its roles, custom ones included) write one of `dbs`. A resource names a database, or all of
+ * them with db "" (https://www.mongodb.com/docs/manual/reference/resource-document/: `{ db: "", collection: "" }` is "all collections …
+ * in all the databases"), or `anyResource`.
+ */
+const writesAny = (privs: Privilege[], dbs: string[]): boolean =>
+  privs.some(
+    (p) =>
+      (p.resource.anyResource === true ||
+        p.resource.db === '' ||
+        dbs.includes(p.resource.db ?? '')) &&
+      p.actions.some((a) => WRITE_ACTIONS.includes(a)),
+  );
 
 export interface AppWritesReport {
   /** `user@db: role on db, …` for every write role taken away (a `read` role is granted on the same database). */
@@ -303,7 +315,8 @@ const roleText = (r: RoleRef[]): string =>
  * The tool keeps its login: it writes MongoDB back at a rollback. What was taken is recorded beside the fence for restoreAppWrites.
  * MongoDB docs (fetched 2026-11-24): revokeRolesFromUser needs the `revokeRole` action, grantRolesToUser `grantRole`, and
  * `usersInfo: { forAllDBs: true }` lists every user with its roles (https://www.mongodb.com/docs/manual/reference/command/usersInfo/).
- * shortcut: custom roles are not inspected (a user writing through one keeps it); read each user's inheritedPrivileges if installs use them.
+ * Built-in write roles granted on the application's databases are taken away; a user that still writes them afterwards (an administrator,
+ * a custom role) is reported, from its effective privileges (`usersInfo` with `showPrivileges`, one user at a time).
  */
 export async function revokeAppWrites(
   rt: MigrationRuntime,
@@ -325,31 +338,53 @@ export async function revokeAppWrites(
       roles: RoleRef[];
     }>;
     const plan: AppWritesRecord['users'] = [];
+    const stillWrites = async (u: {
+      user: string;
+      db: string;
+    }): Promise<boolean> => {
+      const r = (await rt.mongo
+        .db(u.db)
+        .command({ usersInfo: u.user, showPrivileges: true })) as {
+        users?: Array<{ inheritedPrivileges?: Privilege[] }>;
+      };
+      return writesAny(r.users?.[0]?.inheritedPrivileges ?? [], dbs);
+    };
+    const others: Array<{ user: string; db: string; roles: RoleRef[] }> = [];
     for (const u of users) {
-      const any = u.roles.filter((r) => ANY_DB_WRITE_ROLES.includes(r.role));
       const own = u.roles.filter(
         (r) => DB_WRITE_ROLES.includes(r.role) && dbs.includes(r.db),
       );
       if (me.has(userKey(u))) {
         // without MIGRATE_MONGO_URI the application signs in as this login too, and it cannot be taken away from both
-        if (
-          (any.length || own.length) &&
-          rt.cfg.mongoUri === rt.cfg.appMongoUri
-        )
+        if (rt.cfg.mongoUri === rt.cfg.appMongoUri && (await stillWrites(u)))
           report.stillWrite.push(
-            `${userKey(u)} (${roleText([...any, ...own])}; the application signs in as this tool's login)`,
+            `${userKey(u)} (${roleText(u.roles)}; the application signs in as this tool's login)`,
           );
         continue;
       }
-      if (any.length)
-        report.stillWrite.push(`${userKey(u)} (${roleText(any)})`);
+      others.push(u);
       if (!own.length) continue;
       const granted = [...new Set(own.map((r) => r.db))]
         .filter((db) => !u.roles.some((r) => r.role === 'read' && r.db === db))
         .map((db) => ({ role: 'read', db }));
       plan.push({ user: u.user, db: u.db, revoked: own, granted });
     }
-    if (!plan.length) return report;
+    // after the revoke: whoever still writes, through any role
+    const reportOthers = async (): Promise<void> => {
+      for (const u of others)
+        if (await stillWrites(u)) {
+          const left = plan.some((q) => userKey(q) === userKey(u))
+            ? u.roles.filter(
+                (r) => !(DB_WRITE_ROLES.includes(r.role) && dbs.includes(r.db)),
+              )
+            : u.roles;
+          report.stillWrite.push(`${userKey(u)} (${roleText(left)})`);
+        }
+    };
+    if (!plan.length) {
+      await reportOthers();
+      return report;
+    }
     // recorded first: a revoke cut short still leaves the record that undoes it (granting a role a user holds changes nothing)
     const col = rt.db().collection<AppWritesRecord>('docstore_fence');
     const prior = (await col.findOne({ _id: APP_WRITES_ID }))?.users ?? [];
@@ -375,6 +410,7 @@ export async function revokeAppWrites(
       await on.command({ revokeRolesFromUser: u.user, roles: u.revoked });
       report.revoked.push(`${userKey(u)}: ${roleText(u.revoked)}`);
     }
+    await reportOthers();
   } catch (e) {
     report.error = e instanceof Error ? e.message : String(e);
   }

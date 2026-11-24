@@ -26,6 +26,7 @@ import {
   appClients,
   describeClients,
   readMongoFence,
+  APP_WRITES_ID,
   restoreAppWrites,
   setMongoFence,
 } from './fence';
@@ -393,9 +394,15 @@ export async function handOver(
     const seen = now
       ? `the fence reads '${now.mode}' at epoch ${String(now.epoch)}`
       : 'the fence could not be read back';
+    // MongoDB is confirmed live: the application's users get their write roles back now, as on the normal path. Unconfirmed, the
+    // operator is told how, once they have seen the fence active
+    const roles =
+      now?.mode === 'active' && now.epoch === epoch
+        ? await restoreAppWrites(rt)
+        : ` Once the fence reads active, also give the application's MongoDB users back the write roles the switch took (the ${APP_WRITES_ID} document of docstore_fence lists them; grantRolesToUser).`;
     return {
       kind: 'stuck',
-      message: `MongoDB's fence may be live (${why}; ${seen}). PostgreSQL stays read-only and was not unfrozen. If the fence is active at epoch ${String(epoch)}: set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo. If it is retired: run \`UPDATE platform.store_epoch SET readonly = false WHERE backend = 'postgres'\` to keep PostgreSQL as the store`,
+      message: `MongoDB's fence may be live (${why}; ${seen}). PostgreSQL stays read-only and was not unfrozen. If the fence is active at epoch ${String(epoch)}: set platform.store_epoch to backend mongo, readonly true and the epoch one higher by hand, then roll the application back to DOC_STORE=mongo. If it is retired: run \`UPDATE platform.store_epoch SET readonly = false WHERE backend = 'postgres'\` to keep PostgreSQL as the store.${roles}`,
     };
   }
   try {
