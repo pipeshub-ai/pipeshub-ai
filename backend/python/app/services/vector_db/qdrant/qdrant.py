@@ -942,7 +942,7 @@ class QdrantService(IVectorDBService):
         the point at the cut, Qdrant chose which of the tied points to return, and
         another call could choose others. The leg is asked again for twice as many
         until the tie ends inside the answer, or it has read ``MAX_TIE_READ`` points:
-        a tie larger than that is still Qdrant's choice. Rare: equal scores that many
+        a tie at the cut that runs past that read is still Qdrant's choice. Rare: equal scores that many
         are mostly keyword matches on the same words.
         """
         depths = [req.limit * 2 for req, request_legs in zip(requests, legs) for _ in request_legs]
