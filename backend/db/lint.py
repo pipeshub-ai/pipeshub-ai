@@ -300,9 +300,12 @@ def _earlier_tables(path: Path) -> set[str]:
 _CTRL = re.compile(r"^\s*(?:DECLARE\b.*?\bBEGIN\b|BEGIN\b|END(?:\s+IF|\s+LOOP)?\b|(?:ELS)?IF\b.*?\bTHEN\b|ELSE\b|LOOP\b|FOR\b.*?\bLOOP\b|PERFORM\b|EXCEPTION\b|WHEN\b.*?\bTHEN\b)\s*", re.I | re.S)
 
 
+_DO_BODY = re.compile(r"\s*DO\b.*?\$([A-Za-z_]*)\$(.*)\$\1\$\s*$", re.S | re.I)
+
+
 def _do_statements(stmt: str) -> list[str]:
     """The statements of a DO block's body, control words (IF ... THEN, PERFORM, BEGIN) removed."""
-    m = re.match(r"\s*DO\b.*?\$([A-Za-z_]*)\$(.*)\$\1\$\s*$", stmt, re.S | re.I)
+    m = _DO_BODY.match(stmt)
     out = []
     for raw in statements(m.group(2)) if m else []:
         sub = raw
@@ -315,9 +318,12 @@ def _do_statements(stmt: str) -> list[str]:
 
 def _drops_index(sql: str) -> bool:
     """A DROP INDEX in any statement of ``sql`` or of a DO body in it, read as ``statements()`` reads SQL (comments are spaces) and outside
-    quoted and dollar-quoted strings (data), or any EXECUTE in a DO body: its SQL is a string, so it may be one (as lint_file takes it)."""
+    quoted and dollar-quoted strings (data). Fails closed on what it does not read: any EXECUTE in a DO body (its SQL is a string, as lint_file
+    takes it), a DO whose body is not dollar-quoted, and a dollar-quoted body inside a DO body (a nested DO, a function body: one level is read)."""
     stmts = statements(sql)
     bodies = [d for q in stmts for d in _do_statements(q)]
+    if any(re.match(r"DO\b", q, re.I) and not _DO_BODY.match(q) for q in stmts) or any(_DOLLAR.search(_strip_literals(d)) for d in bodies):
+        return True
     return any(re.search(r"\bEXECUTE\b(?!\s+ON\b)", _strip_literals(_strip_bodies(d)), re.I) for d in bodies) or any(
         re.search(r"\bDROP\s+INDEX\b", _strip_literals(_strip_bodies(q)), re.I) for q in stmts + bodies)
 
