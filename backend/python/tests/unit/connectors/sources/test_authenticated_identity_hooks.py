@@ -1086,11 +1086,15 @@ class TestConfluenceDataCenter:
         if failure == "raises":
             conn._get_fresh_datasource.return_value.get_current_user_v1.side_effect = OSError("reset")
         conn.drop_authenticator_link_if_listed = AsyncMock()
+        conn._user_listing = _cut("dev@corp.com")
 
         await ConfluenceDataCenterConnector._register_authenticated_identity(conn)
 
         conn.register_authenticated_source_user.assert_not_awaited()
-        conn.drop_authenticator_link_if_listed.assert_awaited_once_with({"dev@corp.com"})
+        conn.drop_authenticator_link_if_listed.assert_awaited_once()
+        (listing,) = conn.drop_authenticator_link_if_listed.await_args.args
+        assert listing is conn._user_listing
+        assert listing.presence("dev@corp.com") is Presence.PRESENT
 
 
 class TestJiraCloud:
