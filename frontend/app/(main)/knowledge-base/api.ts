@@ -56,9 +56,22 @@ async function getRetryingBusy<T>(url: string, config: AxiosRequestConfig, retri
       const headers = ((error as ProcessedError).originalError as { response?: { headers?: Record<string, unknown> } } | undefined)
         ?.response?.headers;
       const seconds = parseRetryAfter(headers?.['retry-after']) ?? DEFAULT_BUSY_WAIT_S;
-      await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+      await waitUnlessAborted(seconds * 1000, config.signal);
     }
   }
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts; the next request then rejects as cancelled without being sent. */
+function waitUnlessAborted(ms: number, signal: AxiosRequestConfig['signal']) {
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener?.('abort', done);
+  });
 }
 
 const pendingGetNodeChildren = new Map<string, Promise<KnowledgeHubApiResponse>>();

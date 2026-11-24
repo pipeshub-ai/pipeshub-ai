@@ -76,6 +76,22 @@ describe('Collections and sidebar listings answered 503', () => {
     expect(typeof last === 'function' ? last(error(503)) : !!last).toBe(false);
   });
 
+  it('a read cancelled while it waits settles at once, without waiting out the delay', async () => {
+    const cancelled = { type: 'REQUEST_CANCELLED', message: 'Request was cancelled.' };
+    get.mockImplementation(async (_url: string, config: { signal?: AbortSignal }) => {
+      throw config.signal?.aborted ? cancelled : busy('30');
+    });
+    const reading = new AbortController();
+    const answer = KnowledgeHubApi.loadFolderData('app', 'a1', {}, { signal: reading.signal });
+    const settled = expect(answer).rejects.toBe(cancelled);
+    await vi.advanceTimersByTimeAsync(1000);
+    reading.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    await settled;
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('does not ask again after any other failure', async () => {
     get.mockRejectedValue(error(500));
     await expect(KnowledgeHubApi.loadFolderData('app', 'a1', {})).rejects.toMatchObject({ statusCode: 500 });
