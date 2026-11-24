@@ -1984,7 +1984,11 @@ class ZendeskConnector(BaseConnector):
                 self.logger.warning(f"Zendesk: show_multiple_tickets failed: {e}")
                 response = None
             payload = response.data if response is not None and response.success else None
-            if not isinstance(payload, dict) or not isinstance(payload.get("tickets"), list):
+            answered = payload.get("tickets") if isinstance(payload, dict) else None
+            # A malformed entry may be any of the requested tickets: unknown is not gone.
+            if not isinstance(answered, list) or not all(
+                isinstance(ticket, dict) and ticket.get("id") is not None for ticket in answered
+            ):
                 self.logger.warning(
                     f"Zendesk did not answer for {len(chunk)} tickets left out of the "
                     "export; keeping them as stored"
@@ -1994,10 +1998,7 @@ class ZendeskConnector(BaseConnector):
             self._cache_sideloads(payload)
             await self._add_sideloaded_org_members(payload)
             chunk_set = set(chunk)
-            tickets = [
-                ticket for ticket in self._extract_list(payload, "tickets")
-                if str(ticket.get("id")) in chunk_set
-            ]
+            tickets = [ticket for ticket in answered if str(ticket["id"]) in chunk_set]
             chunk_synced, chunk_removed, chunk_failed = await self._process_ticket_batch(tickets)
             synced += chunk_synced
             removed += chunk_removed

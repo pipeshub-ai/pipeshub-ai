@@ -6693,20 +6693,52 @@ class TestFullSyncUnlinksOnlyWhatIsGone:
             for user in users
         }
 
-    async def test_a_lookup_answer_without_a_ticket_list_unlinks_nothing_still_there(
-        self, graph
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(lambda ticket: {"users": []}, id="no-tickets-key"),
+            pytest.param(lambda ticket: {"tickets": None}, id="tickets-null"),
+            pytest.param(lambda ticket: {"tickets": ticket}, id="tickets-not-a-list"),
+            pytest.param(lambda ticket: {"tickets": [ticket, None]}, id="null-entry"),
+            pytest.param(lambda ticket: {"tickets": [ticket, "102"]}, id="non-object-entry"),
+            pytest.param(
+                lambda ticket: {"tickets": [ticket, {"subject": "x"}]}, id="entry-without-id"
+            ),
+            pytest.param(
+                lambda ticket: {"tickets": [ticket, {"id": None}]}, id="entry-with-null-id"
+            ),
+        ],
+    )
+    async def test_a_malformed_lookup_answer_unlinks_nothing_still_there(
+        self, graph, answer
     ) -> None:
+        """An answer that cannot be read whole says nothing about the tickets it was asked for."""
         await self._seed(graph)
         stored_record = graph.records["101"]
         self._change_in_the_last_minute(graph, 101)
         graph.connector.data_source.show_multiple_tickets = AsyncMock(
-            return_value=_make_response(data={"users": []})
+            return_value=_make_response(data=answer(graph.tenant.tickets[101]))
         )
 
         done, unlinked = await graph.full_sync()
 
+        # 102 is gone at the source, but this answer does not say so.
         assert (done, unlinked) == (True, set())
         assert graph.records["101"] is stored_record
+
+    async def test_an_empty_lookup_answer_means_the_tickets_are_gone(self, graph) -> None:
+        await self._seed(graph)
+        self._change_in_the_last_minute(graph, 101)
+        graph.connector.data_source.show_multiple_tickets = AsyncMock(
+            return_value=_make_response(data={"tickets": []})
+        )
+
+        done, unlinked = await graph.full_sync()
+
+        assert done is True
+        assert sorted(unlinked) == [
+            "record:101", "record:102", "record:ticket_101_comment_5_attachment_88",
+        ]
 
     async def test_a_pending_ticket_the_retry_rewrote_is_not_looked_up_again(self, graph) -> None:
         await self._seed(graph)
