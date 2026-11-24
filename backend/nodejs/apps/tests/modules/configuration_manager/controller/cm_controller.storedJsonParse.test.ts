@@ -120,7 +120,7 @@ describe('Configuration manager: a stored setting that is not JSON never puts it
   });
 
   it('a JSON.parse message passed on as a string (`{ error: e.message }`) is not in the line', () => {
-    // Four readers log `error.message` as a string (telemetry metrics config, MCP access policy, two migrations).
+    // Four readers log `error.message` as a string (metrics collection config, MCP access policy, two migrations).
     const secret = 'FAKE-pw-0123456';
     let message = '';
     try {
