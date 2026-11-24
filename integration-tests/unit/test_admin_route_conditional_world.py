@@ -8,8 +8,11 @@ replaced with a stand-in and nothing is sent anywhere.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -134,6 +137,63 @@ def test_a_personal_toolset_that_cannot_be_looked_up_is_reported(monkeypatch: py
     monkeypatch.setattr(world_module, "send", lambda *_, **__: Reply(403, "refused"))
     with pytest.raises(RuntimeError, match="HTTP 403: refused"):
         world._delete_personal_toolset("toolset-1", CREATOR)
+
+
+def _limited_world(monkeypatch: pytest.MonkeyPatch, stored_model: str | None) -> tuple[World, list[tuple[Any, ...]]]:
+    """A world whose HTTP calls and graph processor are stand-ins that log what was asked of them."""
+    world = _CountingWorld()
+    done: list[tuple[Any, ...]] = []
+
+    async def get_document(key: str, collection: str) -> dict[str, Any]:
+        return {"_key": key, "permissionModel": stored_model}
+
+    async def set_access_limit(connector_id: str, limit: Any) -> None:
+        done.append(("limit", connector_id, limit))
+
+    async def clear_access_limit(connector_id: str, model: Any) -> None:
+        done.append(("lift", connector_id, model))
+
+    processor = SimpleNamespace(
+        data_store_provider=SimpleNamespace(graph_provider=SimpleNamespace(get_document=get_document)),
+        set_access_limit=set_access_limit, clear_access_limit=clear_access_limit,
+    )
+
+    def http(caller: str, method: str, path: str, what: str, **kw: Any) -> dict[str, Any]:
+        done.append((method, path, kw.get("json")))
+        return {"agent": {"_key": "agent-1"}}
+
+    monkeypatch.setattr(world, "_on_the_graph", lambda work: asyncio.run(work(processor)))
+    monkeypatch.setattr(world, "_create_connector", lambda *_: ("connector-1", "it-cond-connector-1"))
+    monkeypatch.setattr(world, "_delete_connector", lambda connector_id, _: done.append(("delete", connector_id)))
+    monkeypatch.setattr(world, "_json", http)
+    return world, done
+
+
+def test_the_limited_group_lifts_the_limit_first_and_puts_the_model_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config.constants.arangodb import AccessLimit, PermissionModel
+
+    world, done = _limited_world(monkeypatch, PermissionModel.RECORD_LEVEL.value)
+    assert world.value("limited_agent") == "agent-1"
+    assert world.value("limited_connector_name") == "it-cond-connector-1"
+    create, limit = done
+    assert create[:2] == ("POST", "/api/v1/agents/create")
+    assert create[2]["shareWithOrg"] is True
+    assert create[2]["knowledge"] == [{"connectorId": "connector-1", "filters": {}}]
+    assert limit == ("limit", "connector-1", AccessLimit.CREATOR)
+
+    world.close()
+    assert done[2:] == [
+        ("lift", "connector-1", PermissionModel.RECORD_LEVEL),
+        ("DELETE", "/api/v1/agents/agent-1", None),
+        ("delete", "connector-1"),
+    ]
+
+
+def test_a_connector_with_no_model_to_put_back_is_not_limited(monkeypatch: pytest.MonkeyPatch) -> None:
+    world, done = _limited_world(monkeypatch, None)
+    with pytest.raises(RuntimeError, match="no permission model to put back"):
+        world.value("limited_connector")
+    assert not any(step[0] == "limit" for step in done)
 
 
 def test_the_oauth_state_carries_the_connector_id() -> None:

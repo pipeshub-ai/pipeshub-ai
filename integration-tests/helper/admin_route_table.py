@@ -392,6 +392,15 @@ PYTHON_CONDITIONAL_ADMIN = {
     # because binding spends the access an administrator granted that account.
     "api/routes/agent.py::create_agent": "only a service-account binding needs admin",
     "api/routes/agent.py::update_agent": "only a service-account binding needs admin",
+    # A connector limited to some people (accessLimit) is named only by its id
+    # among an agent's sources for a member the limit refuses; an admin sees its
+    # name. Nobody is refused the agent itself.
+    "api/routes/agent.py::get_agent": "a limited source's name is hidden from members it refuses",
+    "api/routes/agent.py::get_agents": "a limited source's name is hidden from members it refuses",
+    # Every team connector is listed for a member, except one whose access limit
+    # refuses them; an admin is shown every one.
+    "connectors/api/router.py::get_inactive_connector_instances":
+        "a limited connector is hidden from members it refuses",
     # The directory of people. Everyone gets it; an administrator asking for
     # service accounts gets those too, and nobody else does.
     "api/routes/entity.py::get_users": "admin widens the directory",

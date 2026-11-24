@@ -13,13 +13,15 @@ others, and is not tried again.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import os
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, quote, urlparse
@@ -47,7 +49,7 @@ from helper.admin_route_conditional_table import (
 )
 from helper import suite_extensions
 from helper.connector_service import CONNECTOR_URL_ENV, connector_service_url
-from helper.source_credentials import source_unavailable
+from helper.source_credentials import missing_env, source_unavailable
 
 if TYPE_CHECKING:
     from helper.second_user import SecondUser
@@ -654,9 +656,9 @@ class World:
 
     # ------------------------------------------------------------------ agents
 
-    def _create_agent(self, caller: str, what: str) -> str:
+    def _create_agent(self, caller: str, what: str, name: str | None = None, **extra: Any) -> str:
         body = self._json(caller, "POST", f"{_AGENTS}/create", f"Creating {what}",
-                          ok=(200, 201), json={"name": self._unique_name("agent")})
+                          ok=(200, 201), json={"name": name or self._unique_name("agent"), **extra})
         agent = body.get("agent")
         agent_key = str(agent.get("_key") or "") if isinstance(agent, dict) else ""
         if not agent_key:
@@ -699,6 +701,88 @@ class World:
     def _build_teams(self) -> dict[str, str]:
         # A team a member made and owns, which the other member has no role on.
         return {"creator_team": self._create_team(CREATOR, "the member's test team")}
+
+    # ------------------------------------------------------------ access limit
+
+    def _on_the_graph(self, work: Callable[[Any], Awaitable[Any]]) -> Any:
+        """``work(processor)``'s result, for a sync's own processor (DataSourceEntitiesProcessor) on the stack's graph
+        database, connected for this call only, in a loop of its own so it runs from any caller."""
+        graph = os.getenv("TEST_GRAPH_DB_TYPE", "neo4j").lower()
+        needed = ["TEST_ARANGO_URL", "TEST_ARANGO_PASSWORD"] if graph == "arango" else [
+            "TEST_NEO4J_URI", "TEST_NEO4J_USERNAME", "TEST_NEO4J_PASSWORD"]
+        missing = missing_env([*needed, "SECRET_KEY"])
+        if missing:
+            source_unavailable(
+                f"{', '.join(missing)} not set, so the graph database a connector's access limit is "
+                "written to cannot be reached.",
+                secrets=missing,
+            )
+        org_id = self.value("org")
+
+        async def run() -> Any:
+            # Imported here: they need the backend on sys.path, which conftest sets.
+            from app.connectors.core.base.data_processor.data_source_entities_processor import (
+                DataSourceEntitiesProcessor,
+            )
+            from app.connectors.core.base.data_store.graph_data_store import (
+                GraphDataStore,
+            )
+            from helper.arango_test_provider import TestArangoHTTPProvider
+            from helper.config_service_fixture import create_test_config_service
+            from helper.neo4j_integration import TestNeo4jProvider
+
+            provider_class = TestArangoHTTPProvider if graph == "arango" else TestNeo4jProvider
+            config_service = create_test_config_service()
+            provider = provider_class(config_service=config_service)
+            if not await provider.connect():
+                raise RuntimeError(f"Could not connect to the {graph} graph database.")
+            try:
+                processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, provider), config_service)
+                processor.org_id = org_id
+                return await work(processor)
+            finally:
+                await provider.disconnect()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(asyncio.run, run()).result()
+
+    def _limit_to_its_creator(self, connector_id: str) -> None:
+        """Limit the connector to its creator as an unlicensed sync does (``set_access_limit``), and lift it on close
+        with the permission model it had (``clear_access_limit``)."""
+        from app.config.constants.arangodb import (
+            AccessLimit,
+            CollectionNames,
+            PermissionModel,
+        )
+
+        async def limit(processor: Any) -> str:
+            app = await processor.data_store_provider.graph_provider.get_document(
+                connector_id, CollectionNames.APPS.value)
+            model = (app or {}).get("permissionModel")
+            if model not in {m.value for m in PermissionModel}:
+                raise RuntimeError(f"Connector {connector_id} has no permission model to put back, so it is not limited.")
+            await processor.set_access_limit(connector_id, AccessLimit.CREATOR)
+            return model
+
+        model = self._on_the_graph(limit)
+        self._later(
+            f"the access limit on connector {connector_id}",
+            lambda: self._on_the_graph(lambda p: p.clear_access_limit(connector_id, PermissionModel(model))),
+        )
+
+    def _build_limited(self) -> dict[str, str]:
+        connector_id, connector_name = self._create_connector(ADMIN, PLAIN_CONNECTOR_TYPE, "team")
+        self._later(f"team connector {connector_name}", lambda: self._delete_connector(connector_id, ADMIN))
+        agent_name = self._unique_name("agent")
+        agent_id = self._create_agent(
+            ADMIN, "the agent that searches the limited connector", agent_name,
+            shareWithOrg=True, knowledge=[{"connectorId": connector_id, "filters": {}}],
+        )
+        self._limit_to_its_creator(connector_id)
+        return {
+            "limited_connector": connector_id, "limited_connector_name": connector_name,
+            "limited_agent": agent_id, "limited_agent_name": agent_name,
+        }
 
     # ---------------------------------------------------------------- teardown
 

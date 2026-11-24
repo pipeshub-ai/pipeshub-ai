@@ -96,6 +96,10 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     "service_accounts": ("service_account", "service_account_email", "all_team"),
     # A team the creator made and owns; the other member has no role on it.
     "teams": ("creator_team",),
+    # A team connector of the admin's, limited to its creator (the admin) by the
+    # backend's own `set_access_limit`, since no route sets a limit; and an agent
+    # shared with the whole org that searches it.
+    "limited": ("limited_connector", "limited_connector_name", "limited_agent", "limited_agent_name"),
 }
 # Made new each time they are asked for: a connector, or an MCP server (the
 # admin's, or the creator's personal one) for a case that deletes it.
@@ -683,6 +687,38 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("admin_agent", ADMIN, True, 400, _NOT_A_SERVICE_AGENT, absent=(_NOT_YOURS_TO_BIND,)),
         ),
         body={"serviceAccountUserId": ABSENT_SERVICE_ACCOUNT},
+    ),
+    # A connector limited to its creator (accessLimit) is kept from a member the
+    # limit refuses: named by its id among an agent's sources, and left out of the
+    # connector list. The admin sees it either way. The agent is shared with the
+    # org, so the member is shown the agent and its source, only not the name.
+    ConditionalRoute(
+        "api/routes/agent.py::get_agent", "GET", f"{_AGENTS}/{{target}}",
+        cases=(
+            Case("limited_agent", MEMBER, False, 200, "{limited_connector}",
+                 absent=("{limited_connector_name}",)),
+            Case("limited_agent", ADMIN, True, 200, "{limited_connector_name}"),
+        ),
+    ),
+    ConditionalRoute(
+        "api/routes/agent.py::get_agents", "GET", f"{_AGENTS}/",
+        cases=(
+            Case("limited_agent", MEMBER, False, 200, "{limited_connector}",
+                 absent=("{limited_connector_name}",)),
+            Case("limited_agent", ADMIN, True, 200, "{limited_connector_name}"),
+        ),
+        params={"search": "{limited_agent_name}", "limit": "50"},
+    ),
+    # Never synced, so both connectors are on the inactive list. The unlimited
+    # team connector is the control: a member is shown every team connector but
+    # the limited one.
+    ConditionalRoute(
+        f"{_ROUTER}::get_inactive_connector_instances", "GET", f"{_CONNECTORS}/inactive",
+        cases=(
+            Case("limited_connector", MEMBER, False, 200, '"connectors":', absent=("{target}",)),
+            Case("limited_connector", ADMIN, True, 200, "{target}"),
+            Case("team", MEMBER, True, 200, "{target}"),
+        ),
     ),
     # The directory behind the people screen. Every row carries the `userId`
     # that binds an agent to a service account, and the gateway attaches the
