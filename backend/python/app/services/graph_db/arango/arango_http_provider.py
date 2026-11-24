@@ -54,7 +54,7 @@ from app.config.constants.arangodb import (
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import aql_not_a_service_account
 from app.connectors.sources.localKB.handlers.kh_merge import key_for, sort_order
-from app.core.org_context import MissingOrgContext
+from app.core.org_context import MissingOrgContext, require_system
 from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
@@ -11751,6 +11751,28 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         removed = await self.execute_query(query, bind_vars={"connectorId": connector_id}, transaction=transaction)
         return bool(removed)
+
+    async def remove_listed_authenticator_links(self, app_types: list[str]) -> tuple[list[dict], list[str]]:
+        require_system("remove_listed_authenticator_links")
+        # A creator the connector lists as a source user has their own account there and is never linked to the account
+        # the credentials act as; a link from a user to themselves says nothing. The edge index on userAppRelation._from
+        # keeps it to one pass over the links.
+        query = f"""
+        FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
+            LET app = DOCUMENT('{CollectionNames.APPS.value}', link.connectorId)
+            FILTER app != null AND app.type IN @appTypes
+            LET listed = LENGTH(
+                FOR rel IN {CollectionNames.USER_APP_RELATION.value}
+                    FILTER rel._from == link._from AND rel._to == app._id
+                    FILTER NOT_NULL(rel.sourceUserId, "") != "" AND rel.isExternalUser != true
+                    LIMIT 1
+                    RETURN 1
+            ) > 0
+            FILTER listed OR link._from == link._to
+            REMOVE link IN {CollectionNames.AUTHENTICATED_AS.value}
+            RETURN {{connectorId: link.connectorId, org: NOT_NULL(app.orgId, link.orgId)}}
+        """
+        return await self.execute_query(query, bind_vars={"appTypes": list(app_types)}) or [], []
 
     async def batch_upsert_user_groups(
         self,

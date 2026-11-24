@@ -5742,6 +5742,19 @@ class IGraphDBProvider(ABC):
         """Remove the authenticated-as link for a connector instance. True if one existed."""
         pass
 
+    async def remove_listed_authenticator_links(self, app_types: list[str]) -> tuple[list[dict], list[str]]:
+        """Remove, in every org (external ones too), the authenticated-as link of each connector instance whose app type is in
+        ``app_types`` and whose link is wrong: the user it hangs off is listed by the connector as one of the source's own users
+        (a source-user relation to the app with a source id, not an external collaborator), or the link points at that user
+        itself. A link of a user the connector does not list stays. Needs a system context. Answers the links removed,
+        ``{"connectorId", "org"}`` each, and the ids of the orgs whose removal failed (the links removed in the other orgs stay
+        removed, so the caller still drops their caches).
+
+        A store whose reads are not bound to an org makes one pass over the link collection, so the cost grows with the number
+        of links and not with orgs times apps; a store whose statements are bound to one org makes one statement per org.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     async def ensure_all_team_with_users(self, org_id: str) -> None:
         """

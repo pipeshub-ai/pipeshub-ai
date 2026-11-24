@@ -28,6 +28,11 @@ on:
       - 'backend/python/app/services/graph_db/postgres/**'
       - 'backend/python/app/modules/pipeline/parser_identity.py'
       - 'backend/python/app/services/graph_db/**'
+      # The startup removal of the creator-to-admin link, and the connectors whose credentials act as an admin account: their real-store tests.
+      - 'backend/python/app/migrations/workspace_admin_link_migration.py'
+      - 'backend/python/app/connectors/sources/google/gmail/team/**'
+      - 'backend/python/app/connectors/sources/google/drive/team/**'
+      - 'backend/python/app/connectors/sources/dropbox/**'
       - 'backend/python/app/schema/**'
       - 'backend/python/app/modules/code_graph/**'
       - 'backend/python/app/modules/indexing/vector_membership_backfill.py'

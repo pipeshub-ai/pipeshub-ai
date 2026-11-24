@@ -76,7 +76,7 @@ from app.config.constants.neo4j import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
-from app.core.org_context import MissingOrgContext, spawn_detached, spawn_in_request
+from app.core.org_context import MissingOrgContext, require_system, spawn_detached, spawn_in_request
 from app.edition import extra_node_collections
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
@@ -11084,6 +11084,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query, parameters={"connector_id": connector_id}, txn_id=transaction
         )
         return bool(rows and rows[0].get("deleted"))
+
+    async def remove_listed_authenticator_links(self, app_types: list[str]) -> tuple[list[dict], list[str]]:
+        require_system("remove_listed_authenticator_links")
+        query = """
+        MATCH (u:User)-[r:AUTHENTICATED_AS]->(s:User)
+        MATCH (a:App {id: r.connectorId})
+        WHERE a.type IN $app_types
+          AND (u = s OR EXISTS {
+            MATCH (u)-[rel:USER_APP_RELATION]->(a)
+            WHERE coalesce(rel.sourceUserId, '') <> '' AND coalesce(rel.isExternalUser, false) = false
+          })
+        WITH r, r.connectorId AS connectorId, coalesce(a.orgId, r.orgId) AS org
+        DELETE r
+        RETURN connectorId, org
+        """
+        rows = await self.client.execute_query(query, parameters={"app_types": list(app_types)})
+        return [{"connectorId": row["connectorId"], "org": row["org"]} for row in rows or []], []
 
     async def batch_upsert_user_groups(
         self,

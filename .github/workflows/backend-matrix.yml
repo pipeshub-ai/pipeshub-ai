@@ -44,6 +44,11 @@ on:
       - 'backend/python/app/services/messaging/**'
       - 'backend/python/app/services/vector_db/**'
       - 'backend/python/app/services/graph_db/**'
+      # The startup removal of the creator-to-admin link, and the connectors whose credentials act as an admin account: their real-store tests.
+      - 'backend/python/app/migrations/workspace_admin_link_migration.py'
+      - 'backend/python/app/connectors/sources/google/gmail/team/**'
+      - 'backend/python/app/connectors/sources/google/drive/team/**'
+      - 'backend/python/app/connectors/sources/dropbox/**'
       # The record schema and the validator Neo4j and PostgreSQL write through.
       - 'backend/python/app/schema/**'
       - 'backend/python/app/services/permissions/**'
