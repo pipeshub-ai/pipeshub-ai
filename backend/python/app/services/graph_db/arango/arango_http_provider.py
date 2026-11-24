@@ -15319,17 +15319,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         async def in_own_transaction() -> bool:
             txn = await self.begin_transaction(read=[], write=[collection, *edge_collections])
+            committed = False
             try:
                 deleted = await delete_in(txn)
                 if deleted:
                     await self.commit_transaction(txn)
-                else:
-                    await self.rollback_transaction(txn)
+                    committed = True
                 return deleted
-            except Exception:
-                with contextlib.suppress(Exception):
-                    await self.rollback_transaction(txn)
-                raise
+            finally:
+                if not committed:
+                    # BaseException too: a cancelled task must not leave the stream transaction holding its lock until the idle timeout.
+                    await asyncio.shield(self._abort_quietly(txn))
 
         return await self._retry_write_conflicts(in_own_transaction, None)
 

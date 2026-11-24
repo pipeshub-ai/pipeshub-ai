@@ -119,3 +119,19 @@ async def test_a_delete_bound_to_an_owner_removes_only_that_owners_candidate(pg_
         assert await pg_provider.delete_node_if_match(cid, "agentSkillCandidates", {"orgId": org_b}) is True
     assert await _pending(pg_provider, org_ctx, org_b) == []
 
+
+async def test_requeue_replaces_the_own_candidate_and_never_another_orgs(pg_provider, orgs, org_ctx) -> None:
+    org_a, org_b = orgs
+    cid = str(uuid.uuid4())
+    await _queue(pg_provider, org_ctx, org_b, cid)
+    with org_ctx(org_b):
+        await GraphSkillStore(pg_provider, org_b, "user-b").queue_candidate(
+            SkillCandidate(candidate_id=cid, name="b-renamed", description="B", body="B body", created_at="0"),
+        )
+        assert [c.name for c in await GraphSkillStore(pg_provider, org_b, "user-b").get_pending_candidates()] == ["b-renamed"]
+    with org_ctx(org_a):  # the same id in org A is a row of its own (the key includes the org)
+        await GraphSkillStore(pg_provider, org_a, "user-a").queue_candidate(
+            SkillCandidate(candidate_id=cid, name="a-own", description="A", body="A body", created_at="0"),
+        )
+    assert await _pending(pg_provider, org_ctx, org_b) == [cid]
+

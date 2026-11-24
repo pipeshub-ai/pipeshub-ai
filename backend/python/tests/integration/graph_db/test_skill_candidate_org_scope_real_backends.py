@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -166,5 +166,31 @@ async def test_a_stale_delete_bound_to_the_old_owner_cannot_remove_the_new_owner
     assert [c.candidate_id for c in await store_b.get_pending_candidates()] == [cid]
     assert await p.delete_node_if_match(cid, "agentSkillCandidates", {"orgId": org_b}) is True
     assert await store_b.get_pending_candidates() == []
+    await p.disconnect()
+
+
+@pytest.mark.parametrize("kind", ["arango", "neo4j"])
+async def test_requeue_is_one_owner_bound_replace_and_a_failed_write_keeps_the_old_candidate(kind: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    p, _org_a, org_b, store_b, cid = await _world(kind, monkeypatch)
+    deletes: list[str] = []
+    real_delete = p.delete_node_if_match
+
+    async def spy_delete(*args: Any, **kwargs: Any) -> bool:  # noqa: ANN401
+        deletes.append(args[0])
+        return await real_delete(*args, **kwargs)
+
+    monkeypatch.setattr(p, "delete_node_if_match", spy_delete)
+    await store_b.queue_candidate(_candidate(cid, name="b-renamed"))
+    assert deletes == []  # no delete-then-insert: nothing a cancellation could split
+    assert [c.name for c in await store_b.get_pending_candidates()] == ["b-renamed"]
+
+    async def failing_replace(*_args: Any, **_kwargs: Any) -> bool:  # noqa: ANN401
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(p, "update_node_if_match", failing_replace)
+    with pytest.raises(RuntimeError, match="write failed"):
+        await store_b.queue_candidate(_candidate(cid, name="b-never"))
+    assert [c.name for c in await store_b.get_pending_candidates()] == ["b-renamed"]  # the old candidate is still there
+    assert org_b
     await p.disconnect()
 

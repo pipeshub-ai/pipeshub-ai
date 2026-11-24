@@ -19389,3 +19389,43 @@ class TestTrashWalkIndexReadiness:
     async def test_an_index_of_another_definition_does_not_count(self, connected_provider, index) -> None:
         connected_provider.http_client.get_indexes = AsyncMock(return_value=[index])
         assert await connected_provider.is_trash_walk_index_ready() is False
+
+
+class TestDeleteNodeIfMatchCancellation:
+    """A cancelled delete must not leave its stream transaction open (CancelledError is a BaseException)."""
+
+    @staticmethod
+    def _wired(provider: ArangoHTTPProvider, commit: object) -> None:
+        provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
+        provider._logical_edge_collections = MagicMock(side_effect=lambda c: [c])
+        provider.begin_transaction = AsyncMock(return_value="txn-1")
+        provider.http_client.execute_aql = AsyncMock(return_value=[1])
+        provider.commit_transaction = commit
+        provider._abort_quietly = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_delete_aborts_the_transaction(self, connected_provider: ArangoHTTPProvider) -> None:
+        import asyncio
+
+        gate = asyncio.Event()
+
+        async def commit(txn: str) -> None:
+            await gate.wait()
+
+        self._wired(connected_provider, commit)
+        task = asyncio.create_task(connected_provider.delete_node_if_match("k", "agentSkillCandidates", {"orgId": "o"}))
+        await asyncio.sleep(0.05)  # inside commit_transaction
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        connected_provider._abort_quietly.assert_awaited_once_with("txn-1")
+
+    @pytest.mark.asyncio
+    async def test_a_miss_aborts_and_a_commit_does_not(self, connected_provider: ArangoHTTPProvider) -> None:
+        commit = AsyncMock()
+        self._wired(connected_provider, commit)
+        assert await connected_provider.delete_node_if_match("k", "agentSkillCandidates", {"orgId": "o"}) is True
+        connected_provider._abort_quietly.assert_not_awaited()
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])  # the owner does not match: nothing removed
+        assert await connected_provider.delete_node_if_match("k", "agentSkillCandidates", {"orgId": "o"}) is False
+        connected_provider._abort_quietly.assert_awaited_once_with("txn-1")

@@ -824,12 +824,16 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         }
         # Insert-only: the key is the bare candidate id, so a plain upsert would let one org overwrite (and take over)
         # another org's candidate that has the same id.
-        if await self._graph.create_node_if_absent(candidate.candidate_id, _CANDIDATES, {k: v for k, v in doc.items() if k != "id"}):
+        fresh = {k: v for k, v in doc.items() if k != "id"}
+        if await self._graph.create_node_if_absent(candidate.candidate_id, _CANDIDATES, fresh):
             return
-        # Re-queueing a candidate of this org replaces it: the delete is bound to this org at write time, the insert never
-        # overwrites, so a candidate another org holds under the id is neither removed nor replaced (the insert is refused).
-        await self._graph.delete_node_if_match(candidate.candidate_id, _CANDIDATES, {"orgId": self._org_id})
-        if not await self._graph.create_node_if_absent(candidate.candidate_id, _CANDIDATES, {k: v for k, v in doc.items() if k != "id"}):
+        # Re-queueing a candidate of this org replaces it in one statement that holds only while this org still owns it, so
+        # there is no point between a delete and an insert where a cancelled or failed write loses the candidate, and a
+        # candidate another org holds under the id is neither replaced nor removed.
+        if await self._graph.update_node_if_match(candidate.candidate_id, _CANDIDATES, doc, "orgId", self._org_id):
+            return
+        # The candidate went away meanwhile (this org removed it): queue it again; the insert still never overwrites.
+        if not await self._graph.create_node_if_absent(candidate.candidate_id, _CANDIDATES, fresh):
             raise RegistryError(f"Candidate {candidate.candidate_id!r} already exists")
 
     async def get_pending_candidates(self) -> list[SkillCandidate]:
