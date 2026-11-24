@@ -20,6 +20,7 @@ from app.services.graph_db.neo4j.neo4j_provider import (
     BLOCK_DELETE_BATCH_SIZE,
     Neo4jProvider,
 )
+from tests.support.log_capture import failure_line
 
 
 @pytest.fixture
@@ -2726,12 +2727,12 @@ class TestUserAndOrganizationLookups:
         assert kwargs["parameters"] == {"org_id": "org-9", "provider": "tavily"}
 
     @pytest.mark.asyncio
-    async def test_web_search_agents_return_empty_on_query_error(self, neo4j_provider: Neo4jProvider):
+    async def test_web_search_agents_raise_on_query_error(self, neo4j_provider: Neo4jProvider):
+        # a delete is refused on this answer: a failed read must never read as no agents
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("query failed"))
 
-        result = await neo4j_provider.get_agents_by_web_search_provider("org-1", "serper")
-
-        assert result == []
+        with pytest.raises(RuntimeError, match="query failed"):
+            await neo4j_provider.get_agents_by_web_search_provider("org-1", "serper")
 
     @pytest.mark.asyncio
     async def test_dedupes_rows_by_agent_key(self, neo4j_provider: Neo4jProvider):
@@ -2794,12 +2795,12 @@ class TestUserAndOrganizationLookups:
         assert kwargs["parameters"] == {"org_id": "org-9", "model_key": "model-x"}
 
     @pytest.mark.asyncio
-    async def test_returns_empty_on_query_error(self, neo4j_provider: Neo4jProvider):
+    async def test_raises_on_query_error(self, neo4j_provider: Neo4jProvider):
+        # a delete is refused on this answer: a failed read must never read as no agents
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("query failed"))
 
-        result = await neo4j_provider.get_agents_by_model_key("org-1", "model-key-1")
-
-        assert result == []
+        with pytest.raises(RuntimeError, match="query failed"):
+            await neo4j_provider.get_agents_by_model_key("org-1", "model-key-1")
 
 
 class TestDuplicateAndSyncOperations:
@@ -2961,6 +2962,7 @@ class TestDuplicateAndSyncOperations:
             side_effect=[{"_key": "rec-2"}, {"_key": "rec-3"}]
         )
         neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        neo4j_provider._promote_queued_copies = AsyncMock(side_effect=lambda updates, txn=None: len(updates))  # type: ignore[method-assign]
 
         with patch("app.services.graph_db.neo4j.neo4j_provider.get_epoch_timestamp_in_ms", return_value=101):
             updated_count = await neo4j_provider.update_queued_duplicates_status(
@@ -2971,21 +2973,23 @@ class TestDuplicateAndSyncOperations:
             )
 
         assert updated_count == 2
-        payload = neo4j_provider.batch_update_nodes.await_args.args[0]
-        # The primary's reconcile flag rides in the same write as the promotion.
-        # Re-armed with a fresh due time and attempt count, so a record that
-        # gave up before gets the full retry budget again.
-        assert payload[-1] == {
+        # The primary's reconcile flag is written first, in a batch of its own (a crash between the two writes leaves a marker
+        # that finds no copies, never copies promoted with nothing to trigger their taxonomy). Re-armed with a fresh due time
+        # and attempt count, so a record that gave up before gets the full retry budget again.
+        flag = neo4j_provider.batch_update_nodes.await_args.args[0]
+        assert flag == [{
             "id": "rec-1", "duplicateReconcilePending": True,
             "duplicateReconcileAttempts": 0, "duplicateReconcileDueAt": 101 + DUPLICATE_RECONCILE_GRACE_MS,
-        }
-        assert len(payload) == 3
+        }]
+        assert neo4j_provider.batch_update_nodes.await_args.args[1] == "records"
+        assert neo4j_provider.batch_update_nodes.await_args.args[2] == "txn-upd"
+        payload = neo4j_provider._promote_queued_copies.await_args.args[0]
+        assert len(payload) == 2
         assert payload[0]["indexingStatus"] == "COMPLETED"
         assert payload[0]["extractionStatus"] == "COMPLETED"
         assert payload[0]["virtualRecordId"] == "v-1"
         assert payload[1]["lastIndexTimestamp"] == 101
-        assert neo4j_provider.batch_update_nodes.await_args.args[1] == "records"
-        assert neo4j_provider.batch_update_nodes.await_args.args[2] == "txn-upd"
+        assert neo4j_provider._promote_queued_copies.await_args.args[1] == "txn-upd"
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_maps_failed_and_empty(self, neo4j_provider: Neo4jProvider):
@@ -2999,17 +3003,18 @@ class TestDuplicateAndSyncOperations:
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
         neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        neo4j_provider._promote_queued_copies = AsyncMock(side_effect=lambda updates, txn=None: len(updates))  # type: ignore[method-assign]
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "FAILED")
-        failed_payload = neo4j_provider.batch_update_nodes.await_args_list[0].args[0]
+        failed_payload = neo4j_provider._promote_queued_copies.await_args_list[0].args[0]
         assert failed_payload[0]["extractionStatus"] == "FAILED"
-        # A failed primary has no taxonomy to copy (KG-51).
-        assert all("duplicateReconcilePending" not in row for row in failed_payload)
+        # A failed primary has no taxonomy to copy (KG-51): no flag batch at all.
+        neo4j_provider.batch_update_nodes.assert_not_awaited()
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "EMPTY")
-        empty_payload = neo4j_provider.batch_update_nodes.await_args_list[1].args[0]
+        empty_payload = neo4j_provider._promote_queued_copies.await_args_list[1].args[0]
         assert empty_payload[0]["extractionStatus"] == "EMPTY"
-        assert empty_payload[-1]["duplicateReconcilePending"] is True
+        assert neo4j_provider.batch_update_nodes.await_args.args[0][0]["duplicateReconcilePending"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("primary_extraction", ["IN_PROGRESS"])
@@ -3032,10 +3037,11 @@ class TestDuplicateAndSyncOperations:
         neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"record": primary}], [{"record": {"id": "rec-2"}}]])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
         neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        neo4j_provider._promote_queued_copies = AsyncMock(side_effect=lambda updates, txn=None: len(updates))  # type: ignore[method-assign]
 
         assert await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1") == 1
 
-        assert neo4j_provider.batch_update_nodes.await_args.args[0][0]["extractionStatus"] == "COMPLETED"
+        assert neo4j_provider._promote_queued_copies.await_args.args[0][0]["extractionStatus"] == "COMPLETED"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("primary_extraction", ["FAILED", "NOT_STARTED"])
@@ -3050,10 +3056,11 @@ class TestDuplicateAndSyncOperations:
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
         neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        neo4j_provider._promote_queued_copies = AsyncMock(side_effect=lambda updates, txn=None: len(updates))  # type: ignore[method-assign]
 
         await neo4j_provider.update_queued_duplicates_status("rec-1", "COMPLETED", virtual_record_id="v-1")
 
-        assert neo4j_provider.batch_update_nodes.await_args.args[0][0]["extractionStatus"] == primary_extraction
+        assert neo4j_provider._promote_queued_copies.await_args.args[0][0]["extractionStatus"] == primary_extraction
 
     @pytest.mark.asyncio
     async def test_update_queued_duplicates_status_includes_reason(
@@ -3067,6 +3074,7 @@ class TestDuplicateAndSyncOperations:
         )
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "rec-2"})  # type: ignore[method-assign]
         neo4j_provider.batch_update_nodes = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        neo4j_provider._promote_queued_copies = AsyncMock(side_effect=lambda updates, txn=None: len(updates))  # type: ignore[method-assign]
 
         await neo4j_provider.update_queued_duplicates_status(
             "rec-1",
@@ -3074,7 +3082,7 @@ class TestDuplicateAndSyncOperations:
             reason="Primary duplicate indexing failed: Rate limit exceeded",
         )
 
-        payload = neo4j_provider.batch_update_nodes.await_args.args[0]
+        payload = neo4j_provider._promote_queued_copies.await_args.args[0]
         assert payload[0]["reason"] == "Primary duplicate indexing failed: Rate limit exceeded"
 
     @pytest.mark.asyncio
@@ -4126,8 +4134,9 @@ class TestNeo4jGetFilteredConnectorInstances:
         assert neo4j_provider.client.execute_query.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty_tuple(self, neo4j_provider: Neo4jProvider):
-        """DB exception returns ([], 0) and logs the error."""
+    async def test_exception_returns_empty_tuple(self, neo4j_provider: Neo4jProvider, caplog):
+        """DB exception returns ([], 0) and logs the error once, without its text."""
+        neo4j_provider.logger = logging.getLogger("tests.neo4j_provider.swallowed")
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("Neo4j down"))
         docs, total = await neo4j_provider.get_filtered_connector_instances(
             collection="App", edge_collection="orgAppRelation",
@@ -4135,7 +4144,8 @@ class TestNeo4jGetFilteredConnectorInstances:
         )
         assert docs == []
         assert total == 0
-        neo4j_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "Neo4j down")
+        assert fields["op"] == "get_filtered_connector_instances"
 
     @pytest.mark.asyncio
     async def test_empty_count_result_returns_zero_total(self, neo4j_provider: Neo4jProvider):
@@ -4696,7 +4706,8 @@ class TestBatchUpdateConnectorStatus:
         assert call_kwargs["parameters"]["is_agent_active"] is True
 
     @pytest.mark.asyncio
-    async def test_exception_returns_zero(self, neo4j_provider: Neo4jProvider):
+    async def test_exception_returns_zero(self, neo4j_provider: Neo4jProvider, caplog):
+        neo4j_provider.logger = logging.getLogger("tests.neo4j_provider.swallowed")
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=Exception("neo4j error")
         )
@@ -4709,7 +4720,8 @@ class TestBatchUpdateConnectorStatus:
         )
 
         assert result == 0
-        neo4j_provider.logger.error.assert_called_once()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "neo4j error")
+        assert fields["op"] == "batch_update_connector_status"
 
 
 class TestListUserKnowledgeBases:
@@ -6174,7 +6186,7 @@ class TestRecordMoveIsOneStatement:
             "REMOVE parent.moveLock",
             "WHERE (parent.isDeleted IS NULL OR parent.isDeleted = false)",
             "trashedExternalRecordId: holder.externalRecordId",
-            "MERGE (n:Record {id: node.id})",
+            "MERGE (n:Record {id: rest.id})",
             "MERGE (n)-[e:IS_OF_TYPE]->(t)",
             "OPTIONAL MATCH ()-[old:NODE_RELATION {relationshipType: $parent_child}]->(n)",
             "DELETE old",
@@ -6233,7 +6245,7 @@ class TestRecordMoveIsOneStatement:
 
         neo4j_provider.client.execute_query.assert_awaited_once()
         query = neo4j_provider.client.execute_query.await_args.args[0]
-        assert "MERGE (n:Record {id: node.id})" in query
+        assert "MERGE (n:Record {id: rest.id})" in query
         assert query.rstrip().endswith("RETURN n.id")
         assert "RECORD_RELATION" not in query
         assert "trashedExternalRecordId" not in query

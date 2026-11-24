@@ -367,7 +367,8 @@ async def test_a_hand_back_is_bounded_by_the_backstop_and_delayed() -> None:
 async def test_a_type_change_queued_behind_an_update_of_the_same_bytes_is_skipped_known_limit() -> None:
     """Documents a limit: the stored record and the event agree on the new type, and nothing stored says which parser
     produced the indexed copy, so the skip cannot see that a type change landed while an earlier update was queued.
-    A forced reindex repairs it. Dispatching on the stored record's type instead of the event's would close it."""
+    A forced reindex repairs it. This is the behaviour with ``RECORD_PARSER_IDENTITY_WRITE`` off (the default); with it on the
+    skip compares the parser that built the copy (``test_same_bytes_parser_identity.py``)."""
     world = _World(node={"contentRev": content_revision(NEW), "mimeType": "text/markdown", "recordName": "notes.md"})
 
     events = await world.run(world.event(NEW, mime="text/markdown", ext="md"))

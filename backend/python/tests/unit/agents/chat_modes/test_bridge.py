@@ -24,6 +24,7 @@ from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext
 from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.chat_modes.bridge import (
     _apply_mode_instructions,
     _apply_policy_to_chat_state,
@@ -412,6 +413,35 @@ class TestRunChatStream:
         assert events[0].startswith("event: error\n")
         payload = json.loads(events[0].split("data: ", 1)[1].strip())
         assert "boom" not in payload["message"]
+
+    async def test_a_failed_agent_mode_run_is_answered_from_its_raw_error(self) -> None:
+        """As in the agent route: the answer is classified from `error_detail`, not the text-free `error`."""
+        from app.agent_loop_lib.core.types import AgentResult, Goal
+
+        raw = "LLM call failed: LangChain transport error (complete): RateLimitError: Error code: 429 - slow down"
+        failed = AgentResult(goal=Goal(description="q"), success=False,
+                             error="LLM call failed: rate_limited (RateLimitError, HTTP 429)").with_error_detail(raw)
+        seen: dict[str, object] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, ...]:
+            return _stream_agent(failed), MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, **kwargs: object) -> dict[str, str]:
+            seen.update(kwargs)
+            return {"answer": "x"}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state",
+                  return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"}),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=AGENT_POLICY))]
+
+        assert (seen["agent_success"], seen["agent_error"]) == (False, raw)
 
     async def test_successful_agent_mode_run_streams_to_completion(self) -> None:
         async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
@@ -1501,6 +1531,30 @@ class TestRunChatStreamNoToolsDegradation:
         event_names = [chunk.split("\n", 1)[0] for chunk in events]
         assert "event: status" in event_names
         assert event_names[-1] == "event: complete"
+
+    async def test_a_no_tools_answer_that_raises_sends_the_user_message_not_the_error(self) -> None:
+        from tests.support.provider_errors import SECRET, SENTINELS, openai_error
+
+        prefetch_result = PrefetchResult(
+            formatted_context="ctx", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=False,
+        )
+        error = openai_error(429, {"message": f"{SENTINELS[0]} {SECRET}", "type": "requests", "code": None})
+
+        async def _raising_handle_simple_mode(**kwargs: object):  # noqa: ANN202
+            raise error
+            yield  # pragma: no cover
+
+        with (
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=prefetch_result)),
+            patch("app.agents.chat_modes.bridge.handle_simple_mode", new=_raising_handle_simple_mode),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(INTERNAL_SEARCH_POLICY))]
+
+        assert events[-1].startswith("event: error\n")
+        payload = json.loads(events[-1].split("data: ", 1)[1].strip())
+        assert payload == {"error": classify_exception(error)[1]}
+        assert SENTINELS[0] not in events[-1] and "F30SECRET" not in events[-1]
 
     async def test_a_failed_forced_prefetch_tells_the_model_to_say_so(self) -> None:
         notice = "We couldn't reach the search index just now, so no results are shown. Please try again in a minute."

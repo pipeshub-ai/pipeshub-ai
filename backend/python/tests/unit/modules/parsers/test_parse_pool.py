@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.modules.parsers import parse_pool
+from app.modules.parsers import parse_pool, worker_deaths
 from app.modules.parsers.code_parser.code_file_parser import (
     CodeFileParser,
     parse_code_to_blocks,
@@ -41,10 +41,15 @@ from app.services.messaging.error_classifier import (
 )
 from app.services.parsing.client import ParsingClientError
 from app.services.parsing.interface import ParseErrorCode
+from app.utils import indexing_timing
 from app.utils.cpu_offload import DEFAULT_OFFLOAD_THRESHOLD_BYTES
+from app.utils.indexing_timing import begin_record
 from app.utils.user_errors import (
+    PARSE_WORKER_KILLED_RETRYING,
     PARSE_WORKER_OUT_OF_MEMORY,
     PROCESSING_TIMED_OUT,
+    RETRY_SCHEDULED,
+    retry_reason,
     to_user_reason,
 )
 
@@ -420,6 +425,149 @@ class TestWorkerCrash:
         # Through the parsing service: the same message arrives in its error body.
         from_service = ParsingClientError(ParseErrorCode.PARSE_FAILED, PARSE_WORKER_OUT_OF_MEMORY)
         assert to_user_reason(from_service) == PARSE_WORKER_OUT_OF_MEMORY
+
+
+# -- a worker the kernel killed is retried once ----------------------------------
+
+
+def _killed_by_the_kernel() -> tuple:
+    """A job that ends its worker with SIGKILL, as the OOM killer or a cgroup limit does."""
+    return signal.raise_signal, int(signal.SIGKILL)
+
+
+@pytest.fixture
+def record_deaths(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Fresh memory of worker deaths, and a record being indexed in this task."""
+    monkeypatch.setattr(worker_deaths, "deaths", worker_deaths.WorkerDeaths())
+    timeline, token = begin_record("record-1")
+    try:
+        yield
+    finally:
+        indexing_timing._current.reset(token)
+
+
+def _wrapped(error: parse_pool.ParseWorkerError) -> DocumentProcessingError:
+    """As the PDF processor wraps what the pool raised."""
+    try:
+        raise DocumentProcessingError("Failed to process document") from error
+    except DocumentProcessingError as wrapped:
+        return wrapped
+
+
+class TestKilledWorkerIsRetriedOnce:
+    async def _kill(self) -> parse_pool.ParseWorkerError:
+        fn, *args = _killed_by_the_kernel()
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(fn, *args, label="big.pdf", size=5_000_000)
+        return raised.value
+
+    async def test_the_first_kill_is_retried_and_says_so(self, governor: MagicMock, record_deaths: None) -> None:
+        first = await self._kill()
+
+        assert first.cause == "crashed"
+        assert first.retrying_worker_death is True
+        assert str(first) == PARSE_WORKER_KILLED_RETRYING
+        wrapped = _wrapped(first)
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TRANSIENT
+        # What a record that will be retried shows, not the terminal advice to split the file.
+        assert retry_reason(wrapped) == PARSE_WORKER_KILLED_RETRYING
+        assert PARSE_WORKER_OUT_OF_MEMORY not in retry_reason(wrapped)
+        governor.report_memory_incident.assert_called_once()
+
+    async def test_the_second_kill_of_the_same_record_is_terminal_with_the_too_large_message(
+        self, governor: MagicMock, record_deaths: None
+    ) -> None:
+        await self._kill()
+        second = await self._kill()
+
+        assert second.retrying_worker_death is False
+        assert str(second) == PARSE_WORKER_OUT_OF_MEMORY
+        wrapped = _wrapped(second)
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL
+        assert to_user_reason(wrapped) == PARSE_WORKER_OUT_OF_MEMORY
+        assert retry_reason(wrapped) == RETRY_SCHEDULED
+        assert governor.report_memory_incident.call_count == 2
+
+    async def test_another_records_first_kill_is_still_retried(
+        self, governor: MagicMock, record_deaths: None
+    ) -> None:
+        await self._kill()
+        token = indexing_timing._current.set(None)
+        try:
+            _, other = begin_record("record-2")
+            try:
+                assert (await self._kill()).retrying_worker_death is True
+            finally:
+                indexing_timing._current.reset(other)
+        finally:
+            indexing_timing._current.reset(token)
+
+    async def test_a_kill_outside_any_record_is_terminal(self, governor: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(worker_deaths, "deaths", worker_deaths.WorkerDeaths())
+        assert indexing_timing.current_record_id() is None
+
+        error = await self._kill()
+
+        assert error.retrying_worker_death is False
+        assert str(error) == PARSE_WORKER_OUT_OF_MEMORY
+
+    async def test_a_crash_that_is_not_a_kill_is_terminal_at_once(
+        self, governor: MagicMock, record_deaths: None
+    ) -> None:
+        # A segfault, or an exit of its own: nothing says the kernel ended it.
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(signal.raise_signal, int(signal.SIGSEGV), label="odd.pdf", size=5_000_000)
+
+        assert raised.value.retrying_worker_death is False
+        assert str(raised.value) == PARSE_WORKER_OUT_OF_MEMORY
+        assert MessageErrorClassifier.classify_by_exception(_wrapped(raised.value)) == MessageErrorType.TERMINAL
+
+    async def test_a_worker_that_closes_its_pipes_and_lives_on_is_not_read_as_a_kill(
+        self, governor: MagicMock, record_deaths: None
+    ) -> None:
+        # The status is read before the worker is stopped: stopping kills it, which must not read as the kernel's kill.
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(
+                exec, "import os, time\nos.closerange(3, 4096)\ntime.sleep(30)", label="eof.pdf", size=5_000_000
+            )
+
+        assert raised.value.retrying_worker_death is False
+        assert str(raised.value) == PARSE_WORKER_OUT_OF_MEMORY
+
+    async def test_a_worker_that_closes_its_pipes_and_is_then_killed_reads_as_a_kill(
+        self, governor: MagicMock, record_deaths: None
+    ) -> None:
+        # The pipes close first, so the lane sees the end of the reply before the process has gone: the status is
+        # waited for, not polled, or this kill would read as unknown and be failed for good.
+        job = "import os, signal, time\nos.closerange(3, 4096)\ntime.sleep(0.3)\nsignal.raise_signal(signal.SIGKILL)"
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(exec, job, label="late-kill.pdf", size=5_000_000)
+
+        assert raised.value.retrying_worker_death is True
+        assert str(raised.value) == PARSE_WORKER_KILLED_RETRYING
+
+    async def test_a_worker_that_ran_out_of_time_keeps_its_behaviour(
+        self, governor: MagicMock, record_deaths: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RECORD_PROCESSING_TIMEOUT", "0.5")
+
+        with pytest.raises(parse_pool.ParseWorkerError) as raised:
+            await parse_pool.submit(time.sleep, 30, label="slow.pdf", size=5_000_000)
+
+        assert raised.value.cause == "timed_out"
+        assert raised.value.retrying_worker_death is False
+        assert str(raised.value) == PROCESSING_TIMED_OUT
+        assert MessageErrorClassifier.classify_by_exception(_wrapped(raised.value)) == MessageErrorType.TERMINAL
+        governor.report_memory_incident.assert_not_called()
+
+    async def test_a_plain_parse_error_stays_terminal(self, governor: MagicMock, record_deaths: None) -> None:
+        with pytest.raises(ValueError):
+            await parse_pool.submit(int, "not a number", label="bad.csv", size=5_000_000)
+
+        wrapped = DocumentProcessingError("Failed to process document")
+        assert MessageErrorClassifier.classify_by_exception(wrapped) == MessageErrorType.TERMINAL
+        assert retry_reason(wrapped) == RETRY_SCHEDULED
+        governor.report_memory_incident.assert_not_called()
 
 
 # -- a job nobody is waiting for does not hold a worker ------------------------

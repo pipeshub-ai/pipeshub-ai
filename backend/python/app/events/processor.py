@@ -15,6 +15,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
+from app.events.emptied_record import drop_previous_vectors_of_emptied_record
 from app.exceptions.indexing_exceptions import (
     AISettingsUnavailableError,
     DocumentProcessingError,
@@ -41,7 +42,10 @@ from app.models.entities import Record
 from app.models.record_convert import (
     convert_record_dict_to_record,  # re-exported for existing importers
 )
-from app.modules.artifacts.reader import LegacyRecordArtifactReader
+from app.modules.artifacts.reader import (
+    LegacyRecordArtifactReader,
+    record_artifact_reader,
+)
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
@@ -90,6 +94,7 @@ from app.services.messaging.config import (
 )
 from app.services.parsing.interface import (
     ParseError,
+    ParseErrorCode,
     UnreadableFileError,
     damaged_file_reason,
 )
@@ -217,6 +222,16 @@ class Processor:
             )
             return None
         return container, semantic
+
+    async def load_stored_blocks(self, virtual_record_id: str, org_id: str) -> BlocksContainer | None:
+        """The blocks stored for ``virtual_record_id``, whatever revision wrote them; ``None`` when nothing is stored.
+
+        For the row texts an update keeps (``table_row_memory``), which a stored record of any revision can give. Raises on a
+        read that fails; the caller treats that as no rows.
+        """
+        blob = await record_artifact_reader(self.sink_orchestrator.blob_storage).read_record(virtual_record_id, org_id)
+        containers = blob.get("block_containers") if isinstance(blob, dict) else None
+        return BlocksContainer.model_validate(containers) if isinstance(containers, dict) else None
 
     async def resume_from_checkpoint(
         self,
@@ -1413,7 +1428,9 @@ class Processor:
             parser = cast(ExcelParser, self.parsers[ExtensionTypes.XLSX.value])
             if not excel_binary:
                 self.logger.debug(f"No Excel binary found for record: {recordId}")
-                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                await self._mark_record(
+                    recordId, ProgressStatus.EMPTY, event_type=event_type, prev_virtual_record_id=prev_virtual_record_id
+                )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
@@ -1536,7 +1553,9 @@ class Processor:
 
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                await self._mark_record(
+                    recordId, ProgressStatus.EMPTY, event_type=event_type, prev_virtual_record_id=prev_virtual_record_id
+                )
 
                 return
 
@@ -1587,9 +1606,14 @@ class Processor:
     async def _mark_record(
         self, record_id, indexing_status: ProgressStatus, reason: str | None = None,
         extra_fields: Mapping[str, Any] | None = None,
+        *, event_type: str | None = None, prev_virtual_record_id: str | None = None,
     ) -> None:
-        """Write a terminal ``indexing_status``. ``extra_fields`` are merged into the same single write (and win over the
-        derived fields), so a caller can land further fields together with the status."""
+        """Write the record's final status. ``extra_fields`` are merged into the same single write (and win over the
+        derived fields), so a caller can land further fields together with the status.
+
+        For EMPTY, pass the event's type and the VRID it kept for a diff: an update that empties
+        a record reconciled in place still has its old vectors under that VRID, and they go first.
+        """
         record = await self.graph_provider.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )
@@ -1629,6 +1653,15 @@ class Processor:
             # the grace, as the flag-off order deletes it at the start. Without this the record stays on the old copy for good.
             success = await self.sink_orchestrator.swap.commit_document(record, swap, shape_status_write(status_update))
         else:
+            if indexing_status == ProgressStatus.EMPTY and prev_virtual_record_id and not store_only_active():
+                await drop_previous_vectors_of_emptied_record(
+                    graph_provider=self.graph_provider,
+                    pipeline=self.indexing_pipeline,
+                    orchestrator=self.sink_orchestrator,
+                    doc=record,
+                    virtual_record_id=prev_virtual_record_id,
+                    event_type=event_type,
+                )
             success = await self.graph_provider.update_node(
                 record_id,
                 CollectionNames.RECORDS.value,
@@ -1665,7 +1698,9 @@ class Processor:
 
             if not html_content:
                 try:
-                    await self._mark_record(recordId, ProgressStatus.EMPTY)
+                    await self._mark_record(
+                        recordId, ProgressStatus.EMPTY, event_type=event_type, prev_virtual_record_id=prev_virtual_record_id
+                    )
                     self.logger.debug("HTML processing completed - empty content.")
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1791,7 +1826,9 @@ class Processor:
             text = text_binary.decode("utf-8") if isinstance(text_binary, (bytes, bytearray)) else str(text_binary)
             text_binary = None
             if not text.strip():
-                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                await self._mark_record(
+                    recordId, ProgressStatus.EMPTY, event_type=event_type, prev_virtual_record_id=prev_virtual_record_id
+                )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
@@ -1898,7 +1935,9 @@ class Processor:
 
             if markdown is None or markdown == "":
                 try:
-                    await self._mark_record(recordId, ProgressStatus.EMPTY)
+                    await self._mark_record(
+                        recordId, ProgressStatus.EMPTY, event_type=event_type, prev_virtual_record_id=prev_virtual_record_id
+                    )
                     self.logger.debug("HTML processing completed successfully using markdown conversion.")
                     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -2242,7 +2281,9 @@ class Processor:
 
             if not block_containers.blocks and not block_containers.block_groups:
                 await self._drop_code_blocks(recordId)
-                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                await self._mark_record(
+                    recordId, ProgressStatus.EMPTY, event_type=event_type, prev_virtual_record_id=prev_virtual_record_id
+                )
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
@@ -2456,7 +2497,9 @@ class Processor:
 
             if not block_containers.block_groups and not block_containers.blocks:
                 self.logger.debug(f"No content to index for {record_type}: {recordId}")
-                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                await self._mark_record(
+                    recordId, ProgressStatus.EMPTY, event_type=event_type, prev_virtual_record_id=prev_virtual_record_id
+                )
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
             
@@ -2518,13 +2561,22 @@ class Processor:
             elif isinstance(file_content, str):
                 file_content = file_content.encode("utf-8")
 
-            result = await parser.parse(file_content, recordName)
-            block_containers = result.block_container
+            try:
+                result = await parser.parse(file_content, recordName)
+            except ParseError as e:
+                # Whitespace, or a YAML file of comments only: nothing to index, as for an empty text file.
+                if e.code != ParseErrorCode.EMPTY_CONTENT:
+                    raise
+                result = None
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
-            if not block_containers.block_groups and not block_containers.blocks:
+            block_containers = result.block_container if result is not None else None
+            # A top-level {} or [] parses to one group with no blocks: nothing to index either.
+            if block_containers is None or not block_containers.blocks:
                 self.logger.debug(f"No content to index for {extension}: {recordId}")
-                await self._mark_record(recordId, ProgressStatus.EMPTY)
+                await self._mark_record(
+                    recordId, ProgressStatus.EMPTY, event_type=event_type, prev_virtual_record_id=prev_virtual_record_id
+                )
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 return
 

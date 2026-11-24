@@ -26,6 +26,7 @@ import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { PermissionLockIcon, useUserPermission } from '@/config';
 
 // ========================================
 // Props
@@ -65,6 +66,8 @@ export function InstanceCard({
   const { t } = useTranslation();
   const [syncToggleBusy, setSyncToggleBusy] = useState(false);
   const [disableConfirmOpen, setDisableConfirmOpen] = useState(false);
+  const canConfigureConnector = useUserPermission('configureConnector');
+  const canManageConnectorSync = useUserPermission('manageConnectorSync');
 
   const updatedBy = useUserDirectoryEntry(instance.updatedBy);
   const enabledByName = shortUserName(updatedBy?.name);
@@ -102,7 +105,7 @@ export function InstanceCard({
           : null;
 
   const syncSwitchDisabled =
-    !canToggleSync || syncToggleBusy || !onToggleSyncActive;
+    !canToggleSync || syncToggleBusy || !onToggleSyncActive || !canManageConnectorSync;
 
   const showIndexingActions =
     Boolean(instance._key) &&
@@ -172,6 +175,7 @@ export function InstanceCard({
             textWeight="medium"
             truncate
             style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
+            locked={!canConfigureConnector}
           />
 
           <InstanceActionNeededBadge instance={instance} onOpen={onChevronClick} />
@@ -296,22 +300,25 @@ export function InstanceCard({
             >
               {t('workspace.connectors.instanceCard.syncEnabled')}
             </Text>
-            {syncToggleHelp && syncSwitchDisabled ? (
-              <Tooltip content={syncToggleHelp} side="top">
-                <span
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    verticalAlign: 'middle',
-                    cursor: 'default',
-                  }}
-                >
-                  {syncSwitchControl}
-                </span>
-              </Tooltip>
-            ) : (
-              syncSwitchControl
-            )}
+            <Flex align="center" gap="1">
+              {syncToggleHelp && syncSwitchDisabled ? (
+                <Tooltip content={syncToggleHelp} side="top">
+                  <span
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      verticalAlign: 'middle',
+                      cursor: 'default',
+                    }}
+                  >
+                    {syncSwitchControl}
+                  </span>
+                </Tooltip>
+              ) : (
+                syncSwitchControl
+              )}
+              {!canManageConnectorSync && <PermissionLockIcon />}
+            </Flex>
           </Flex>
         )}
 

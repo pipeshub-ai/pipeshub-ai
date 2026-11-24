@@ -301,12 +301,13 @@ async def test_only_what_the_old_gate_refused_and_the_new_one_reads_is_selected(
               reason="This file is too large to index"),
         _file("g-msg", "mail.msg", ext="msg"),
         _file("h-heic", "photo.heic", ext="heic"),
+        _file("i-pptm", "deck.pptm", ext="pptm"),
     ]
     graph = FakeGraph([DRIVE], records)
 
     _, _, kafka = await _run(graph)
 
-    assert sorted(kafka.ids()) == ["b-pdf", "c-gradle", "e-log", "g-msg"]
+    assert sorted(kafka.ids()) == ["b-pdf", "c-gradle", "e-log", "g-msg", "i-pptm"]
     # settings.gradle as text/plain was read before; a status it holds now is not this gate's.
     for untouched in ("a-zip", "c-gradle-text", "d-log-big", "f-code-big", "h-heic"):
         assert graph.status(untouched) == FTNS, untouched

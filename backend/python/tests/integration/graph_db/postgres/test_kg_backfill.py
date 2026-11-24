@@ -446,11 +446,7 @@ async def test_the_sweep_of_other_roles_rows_also_sends_the_connectors_back(pg_d
     monkeypatch.setattr(flush, "SWEEP_GAP_S", 0.0)
     monkeypatch.setattr(flush, "_last_sweep", {})
 
-    async def others(tx) -> None:
-        await tx.execute("/* pipeshub:test.others */ INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['3:f1'])", org)
-    with monkeypatch.context() as m:
-        m.setattr(flush, "_own_role", lambda _tx: False)
-        await run_in(pg_db, org, others, write=True)
+    await _admin("INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['3:f1'])", org)       # a row another service's committed write left
     async def no_graph(tx) -> None:
         await tx.fetchval("/* pipeshub:test.no_graph */ SELECT 1")
     await run_in(pg_db, org, no_graph, write=True)
@@ -483,9 +479,7 @@ async def test_a_connector_is_current_only_when_verified_and_nothing_waits_that_
     await drain_org(pg_db, org)
     assert await is_current(pg_db, org, "app1")
 
-    async def poison(tx) -> None:
-        await tx.execute("/* pipeshub:test.poison */ INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['nope'])", org)
-    await run_in(pg_db, org, poison, write=True)
+    await _admin("INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['nope'])", org)      # no service can log it (kg_0022): the administrator plants it
     assert not await is_current(pg_db, org, "app1")                           # a row that cannot be read may name anything
 
 
@@ -594,11 +588,10 @@ async def test_a_row_of_the_log_that_cannot_be_read_makes_the_connector_not_curr
     p, org = await fresh_world(pg_db)
     assert (await bf.backfill(pg_db, org, "app1", page=4)).flipped and (await bf.backfill(pg_db, org, "app2", page=4)).flipped
 
-    async def log_row(tx, ends: str) -> None:
-        await tx.execute("/* pipeshub:test.row */ INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, 'app2', ARRAY[$2])", org, ends)
-    await run_in(pg_db, org, lambda tx: log_row(tx, "3:x1"), write=True)
+    log_row = "INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, 'app2', ARRAY[$2])"
+    await _admin(log_row, org, "3:x1")
     assert await is_current(pg_db, org, "app1")                               # a readable change of another known connector that links nothing
-    await run_in(pg_db, org, lambda tx: log_row(tx, "nope"), write=True)
+    await _admin(log_row, org, "nope")
     assert not await is_current(pg_db, org, "app1")
 
 

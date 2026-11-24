@@ -50,11 +50,18 @@ import {
   getMyMcpToolRules,
   updateMyMcpToolRules,
 } from '../controller/mcp_servers.controller';
-import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import {
+  bindPathLogFields,
+  guardPathParams,
+} from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createMcpServersRouter(container: Container): Router {
   const router = Router();
   guardPathParams(router, 'typeId', 'instanceId', 'agentKey');
+  bindPathLogFields(router, {
+    instanceId: 'mcp_server_id',
+    agentKey: 'agent_id',
+  });
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 

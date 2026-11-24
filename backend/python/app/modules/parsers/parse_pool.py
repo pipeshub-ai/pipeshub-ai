@@ -46,13 +46,14 @@ from app.capacity.member_budget import AdmissionTimeout, Cancelled
 from app.exceptions.indexing_exceptions import IndexingError
 from app.modules.parse_engine import pools as class_pools
 from app.modules.parse_engine import wiring
-from app.modules.parsers import parse_worker
+from app.modules.parsers import parse_worker, worker_deaths
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParseError, ParseErrorCode
 from app.services.resource_governor.lanes import parse_lanes_mode
 from app.utils.cpu_offload import DEFAULT_OFFLOAD_THRESHOLD_BYTES
 from app.utils.env_config import env_int
 from app.utils.user_errors import (
+    PARSE_WORKER_KILLED_RETRYING,
     PARSE_WORKER_OUT_OF_MEMORY,
     PARSE_WORKER_UNAVAILABLE,
     PROCESSING_TIMED_OUT,
@@ -95,9 +96,12 @@ _PYTHON_ROOT = str(Path(__file__).resolve().parents[3])
 class ParseWorkerError(ParseError):
     """A parse worker died or overran. The message is the reason people see."""
 
-    def __init__(self, message: str, cause: str) -> None:
+    def __init__(self, message: str, cause: str, *, retrying: bool = False) -> None:
         super().__init__(ParseErrorCode.PARSE_FAILED, message, {"parse_worker": cause})
         self.cause = cause
+        # A worker the kernel killed, on the first death of this record's worker: the record is retried (see
+        # ``worker_deaths``), because the file may not be what ran the container out of memory.
+        self.retrying_worker_death = retrying
 
 
 class ParseAbandonedError(IndexingError):
@@ -106,6 +110,12 @@ class ParseAbandonedError(IndexingError):
     An ``IndexingError`` so that a record caught by a shutdown is retried
     rather than marked as a bad file.
     """
+
+
+def _current_record_id() -> str | None:
+    from app.utils.indexing_timing import current_record_id
+
+    return current_record_id()
 
 
 class _WorkerUnavailable(Exception):
@@ -178,6 +188,8 @@ class _Job:
     # fallback charge). ``covered`` is whether a heavy parse permit of this process covers the job.
     kind: object | None = None
     covered: bool = False
+    # The record this job parses for, read where the job is made (the record's own task).
+    record_id: str | None = field(default_factory=lambda: _current_record_id())
     future: Future = field(default_factory=Future)
     cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -364,7 +376,12 @@ class _Lane:
 
     def _crashed(self, job: _Job) -> ParseWorkerError:
         worker = self._worker
-        self._drop_worker()  # stops and reaps it, so its exit status is known
+        status = None
+        if worker is not None:
+            # Read before the worker is stopped: stopping it kills it, which would read as a kill from outside.
+            with suppress(subprocess.TimeoutExpired):
+                status = worker.process.wait(timeout=1)
+        self._drop_worker()  # stops and reaps it
         from app.services.resource_governor.kinds import ParseKind
 
         # Only an Excel load sets that limit; any other job dying of it (an operator's `ulimit -t`) is the retryable crash below.
@@ -376,16 +393,26 @@ class _Lane:
                 job.label, job.size,
             )
             return ParseWorkerError(PROCESSING_TIMED_OUT, "timed_out")
+        # The kernel's kill (the OOM killer, a cgroup limit) ends a worker with SIGKILL. The kill lands on the
+        # largest-looking worker, which need not be the one whose file used the memory, so the record gets one
+        # more try: only a second death of its worker is read as the file being too large. Any other end
+        # (a crash, a nonzero exit, an unknown status) is not retried.
+        killed = status == -signal.SIGKILL
+        retrying = killed and worker_deaths.deaths.is_first(job.record_id)
         _logger.warning(
-            "The parse worker died while parsing %s (%d bytes), most likely out of memory. "
-            "That record fails; a fresh worker takes the next file.",
+            "The parse worker died while parsing %s (%d bytes), most likely out of memory. %s",
             job.label, job.size,
+            "The record is retried once; a fresh worker takes the next file." if retrying
+            else "That record fails; a fresh worker takes the next file.",
         )
         governor = _State.governor
         if governor is not None:
             # Proof of memory exhaustion that the periodic sampler may not see
-            # for several seconds, same as a dead Docling or rasterizer worker.
+            # for several seconds, same as a dead Docling or rasterizer worker. It halves the heavy parse
+            # limit for a cooldown, so the retry runs with fewer large files beside it.
             governor.report_memory_incident("parse worker died (most likely OOM-killed)")
+        if retrying:
+            return ParseWorkerError(PARSE_WORKER_KILLED_RETRYING, "crashed", retrying=True)
         return ParseWorkerError(PARSE_WORKER_OUT_OF_MEMORY, "crashed")
 
 

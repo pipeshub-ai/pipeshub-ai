@@ -19,6 +19,7 @@ import {
 import { getIdentityLookup } from '../../../libs/repositories/identity-lookup';
 import {
   isKnowledgeLimitWithin,
+  readStoredKnowledgeLimit,
   toKnowledgeLimit,
 } from '../types/knowledge_limit';
 import {
@@ -44,6 +45,7 @@ import {
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
 import {
   FIRST_PARTY_DEVICE_CLIENT_ID,
+  isPatClientId,
   stripTokenDisplayPrefix,
 } from '../constants/constants';
 import {
@@ -463,6 +465,21 @@ export class OAuthTokenService {
         throw new InvalidTokenError('Token has been revoked');
       }
 
+      // A personal access token's owner can change its limit after it is
+      // signed, so the stored one is the limit. An OAuth app's token keeps the
+      // limit its user agreed to, which is the one it was signed with.
+      if (isPatClientId(payload.client_id)) {
+        const stored = readStoredKnowledgeLimit(storedToken.knowledgeLimit);
+        if (stored === 'unreadable') {
+          throw new InvalidTokenError("Token's access limit could not be read");
+        }
+        if (stored) {
+          payload.knowledgeLimit = stored;
+        } else {
+          delete payload.knowledgeLimit;
+        }
+      }
+
       // A registration's access tokens are not stored against it, so revoking the registration
       // (by its owner, or with the agent app) only reaches them here.
       if (
@@ -480,7 +497,7 @@ export class OAuthTokenService {
         });
       });
 
-      return payload;
+      return { ...payload, tokenRowId: storedToken._id };
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {
         throw new ExpiredTokenError('Access token has expired');
@@ -1073,6 +1090,41 @@ export class OAuthTokenService {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Replace the knowledge limit stored on one live access token, scoped to the
+   * owning client and user. Only a personal access token's limit is read back
+   * from storage on each request; every other token keeps the one it was
+   * signed with. Returns the updated token, or null when there is none.
+   */
+  async setAccessTokenKnowledgeLimit(
+    id: string,
+    clientId: string,
+    userId: string,
+    knowledgeLimit: KnowledgeLimit | null,
+  ): Promise<TokenListItem | null> {
+    const t = await getOAuthTokenRepository().setAccessKnowledgeLimit(
+      id,
+      clientId,
+      userId,
+      knowledgeLimit,
+    );
+    if (!t) {
+      return null;
+    }
+    return {
+      id: t._id,
+      tokenType: 'access' as const,
+      userId: t.userId,
+      scopes: t.scopes,
+      createdAt: t.createdAt,
+      expiresAt: t.expiresAt,
+      isRevoked: t.isRevoked,
+      name: t.name,
+      lastUsedAt: t.lastUsedAt,
+      knowledgeLimit: toKnowledgeLimit(t.knowledgeLimit),
+    };
   }
 
   /**

@@ -601,6 +601,11 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(createOpts.allowChatActions).to.be.true
     })
 
+    it('always offers the citations card: the stateless server cannot see the client\'s initialize', async () => {
+      await handleMCPRequest(appConfig)(oauthReq(['kb:read']), createMockResponse() as any, createMockNext())
+      expect(createOpts.apps).to.equal(true)
+    })
+
     it('records each tool call with who, which app and which tool, never the arguments', async () => {
       const info = sinon.stub(Logger.prototype, 'info')
       await handleMCPRequest(appConfig)(oauthReq(['kb:read']), createMockResponse() as any, createMockNext())
@@ -610,13 +615,14 @@ describe('MCP Controller — handleMCPRequest', () => {
         createOpts.onToolCall({ tool: 'pipeshub_search', durationMs: 12, isError: false, argumentNames: ['query'] }),
       )
 
-      const entry = info.getCalls().find((c) => c.args[0] === 'MCP tool call')
-      expect(entry, 'audit entry').to.exist
+      const entry = info.getCalls().find((c) => c.args[0] === 'mcp.tool_call.end')
+      expect(entry, 'tool call line').to.exist
       expect(entry!.args[1]).to.include({
-        audit: 'mcp_tool_call', orgId: 'o1', userId: 'u1', clientId: 'client-1',
-        tool: 'pipeshub_search', durationMs: 12, isError: false,
+        org_id: 'o1', user_id: 'u1', client_id: 'client-1',
+        tool: 'pipeshub_search', duration_ms: 12, outcome: 'success',
       })
-      expect(entry!.args[1].argumentNames).to.deep.equal(['query'])
+      expect(entry!.args[1].argument_names).to.deep.equal(['query'])
+      expect(entry!.args[1]).to.not.have.property('audit')
     })
   })
 
@@ -1175,6 +1181,7 @@ describe('MCP Controller — handleMCPRequest', () => {
   describe('request-ID logging', () => {
     let infoStub: sinon.SinonStub
     let errorStub: sinon.SinonStub
+    let debugStub: sinon.SinonStub
     let handle: typeof handleMCPRequest
 
     // The controller takes its logger once, at load, and under mocha's parallel
@@ -1183,7 +1190,8 @@ describe('MCP Controller — handleMCPRequest', () => {
     beforeEach(() => {
       infoStub = sinon.stub()
       errorStub = sinon.stub()
-      const recorder = { info: infoStub, error: errorStub, warn: sinon.stub(), debug: sinon.stub() } as unknown as Logger
+      debugStub = sinon.stub()
+      const recorder = { info: infoStub, error: errorStub, warn: sinon.stub(), debug: debugStub } as unknown as Logger
       const modulePath = require.resolve('../../../../src/modules/mcp/controller/mcp.controller')
       const original = require.cache[modulePath]
       delete require.cache[modulePath]
@@ -1217,11 +1225,12 @@ describe('MCP Controller — handleMCPRequest', () => {
       }))
       await handle(appConfig)(req, res as any, next)
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
-        method: 'initialize',
-        requestId: 'pilot-1',
+      // the access line is the request's INFO line; this one adds the JSON-RPC method, at DEBUG
+      expect(infoStub.called).to.be.false
+      expect(debugStub.calledOnce).to.be.true
+      expect(debugStub.firstCall.args[0]).to.equal('MCP request completed')
+      expect(debugStub.firstCall.args[1]).to.deep.equal({
+        jsonrpc_method: 'initialize',
       })
       expect(next.called).to.be.false
     })
@@ -1246,11 +1255,12 @@ describe('MCP Controller — handleMCPRequest', () => {
       requestContextMiddleware(req, res as any, () => {})
       await handle(appConfig)(req, res as any, next)
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
-        method: 'tools/call',
-        requestId: 'pilot-1',
+      // the access line is the request's INFO line; this one adds the JSON-RPC method, at DEBUG
+      expect(infoStub.called).to.be.false
+      expect(debugStub.calledOnce).to.be.true
+      expect(debugStub.firstCall.args[0]).to.equal('MCP request completed')
+      expect(debugStub.firstCall.args[1]).to.deep.equal({
+        jsonrpc_method: 'tools/call',
       })
       expect(next.called).to.be.false
     })
@@ -1278,16 +1288,17 @@ describe('MCP Controller — handleMCPRequest', () => {
         fetchStub.restore()
       }
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
-        method: 'tools/list',
-        requestId: undefined,
+      // the access line is the request's INFO line; this one adds the JSON-RPC method, at DEBUG
+      expect(infoStub.called).to.be.false
+      expect(debugStub.calledOnce).to.be.true
+      expect(debugStub.firstCall.args[0]).to.equal('MCP request completed')
+      expect(debugStub.firstCall.args[1]).to.deep.equal({
+        jsonrpc_method: 'tools/list',
       })
       expect(next.called).to.be.false
     })
 
-    it('should include requestId in error metadata when transport.handleRequest rejects', async () => {
+    it('passes a transport failure to the error middleware without logging it', async () => {
       const error = new Error('transport failure')
       sdkTransportExports.StreamableHTTPServerTransport = class {
         constructor() {}
@@ -1311,19 +1322,13 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       await handle(appConfig)(req, res as any, next)
 
-      expect(errorStub.calledOnce).to.be.true
-      expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
-      expect(errorStub.firstCall.args[1]).to.deep.include({
-        error: 'transport failure',
-        method: 'POST',
-        userId: 'user-42',
-        requestId: 'pilot-1',
-      })
+      // the error middleware logs it once
+      expect(errorStub.called).to.be.false
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.equal(error)
     })
 
-    it('should log error with requestId undefined when req.context is not set', async () => {
+    it('passes a set-up failure to the error middleware without logging it', async () => {
       const error = new Error('init failure')
       mcpServerExports.createMCPServer = sinon.stub().throws(error)
 
@@ -1337,14 +1342,7 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       await handle(appConfig)(req, res as any, next)
 
-      expect(errorStub.calledOnce).to.be.true
-      expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
-      expect(errorStub.firstCall.args[1]).to.deep.include({
-        error: 'init failure',
-        method: 'POST',
-        userId: 'user-42',
-        requestId: undefined,
-      })
+      expect(errorStub.called).to.be.false
       expect(next.calledOnce).to.be.true
     })
   })

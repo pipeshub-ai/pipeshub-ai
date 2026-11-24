@@ -21,8 +21,10 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any, override
 
 from app.core.envelope import (
+    INBOX_ERRORS,
     DuplicateEnvelope,
     EnvelopeRejected,
+    Inbox,
     configured_admission_valid,
     ctx_of,
     decode_message,
@@ -30,6 +32,7 @@ from app.core.envelope import (
     new_admission,
     open_configured,
     open_stream_message,
+    record_processed,
     refresh_envelope,
     within_lifetime,
 )
@@ -37,6 +40,7 @@ from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
 from app.modules.indexing.embed_resume import stamp_delivery_id
+from app.services.messaging import record_budget
 from app.services.messaging.config import (
     IndexingEvent,
     MessageHandler,
@@ -56,6 +60,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorType,
     is_expected_outcome,
 )
+from app.services.messaging.inbox import PgInbox
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.membership import register_group
 from app.services.messaging.message_log import bound_message
@@ -64,12 +69,13 @@ from app.services.messaging.storage_protocol import tagged
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
 from app.utils import error_class
 from app.utils import indexing_timing as timing
-from app.utils.logging_fields import log_fields
+from app.utils.logging_fields import log_fields, log_once
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Iterator
 
+    from app.core.org_context import OrgContext
     from app.services.distributed.interface import IDistributedLeaseManager
     from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
@@ -150,7 +156,9 @@ class PgMessagingConsumer(IMessagingConsumer):
         worker: "WorkerLoop | None" = None,
         precision_filter: "PrecisionHandBack | None" = None,
         fairness: "IndexingFairness | None" = None,
+        inbox: Inbox | None = None,
     ) -> None:
+        self.inbox = inbox  # simple consumers: skips events this group already finished (see app.services.messaging.inbox)
         self.precision_filter = precision_filter  # hands back events that would write vectors of the wrong precision
         self._fairness = fairness  # claim steps: which topics to claim from, in what order and amounts
         self._worker = worker  # the loop the indexing handler runs on; claims, heartbeats and settling stay on this one
@@ -451,7 +459,7 @@ class PgMessagingConsumer(IMessagingConsumer):
 
     async def _settle_timed(self, d: Delivery) -> None:
         if not self.indexing:
-            await self._decide(d)
+            await self._decide(d, {})
             return
         # One record delivery, one index.end (as the Redis and Kafka indexing consumers): the decision below notes on it,
         # and the line is written in the message's root, org and ids, as P8's bound_message gives the other two.
@@ -476,7 +484,7 @@ class PgMessagingConsumer(IMessagingConsumer):
 
     async def _decide(self, d: Delivery, seen: "dict[str, Any] | None" = None) -> str:
         """Process ``d`` and ack, nack or dead-letter it; returns the indexing timeline's outcome."""
-        group, max_attempts = self.config.group_id, messaging_env.max_delivery_attempts
+        max_attempts = messaging_env.max_delivery_attempts
         if (
             d.attempts > max_attempts
         ):  # handed out past the limit (a consumer that keeps dying mid-handler)
@@ -535,7 +543,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         self._handbacks.pop((d.topic, d.message_id), None)
         if success:
             try:
-                acked = await self.queue.ack(group, d)
+                acked = await self._ack(d, (seen or {}).get("ctx"))
             except Exception as e:
                 # Indexed: the expired claim redelivers it and the redelivery is deduped. In a record's run its index.end says it.
                 if not timing.note(disposition="retry", reason="ack_failed", exc=e):
@@ -574,6 +582,21 @@ class PgMessagingConsumer(IMessagingConsumer):
                     delay,
                 )
         return "failed"
+
+    async def _ack(self, d: Delivery, ctx: "OrgContext | None") -> bool:
+        """Ack a delivery whose handler succeeded, recording its event in the inbox in the same transaction. A record that cannot be
+        written does not hold the ack back: the message is acknowledged on its own, and a redelivery of it would run again."""
+        group = self.config.group_id
+        if not isinstance(self.inbox, PgInbox) or ctx is None or not ctx.event_id:
+            await record_processed(self.inbox, group, ctx)
+            return await self.queue.ack(group, d)
+        try:
+            return await self.inbox.record_and_ack(group, ctx, self.queue, group, d)
+        except Exception as e:
+            INBOX_ERRORS.inc("record")
+            if log_once(f"inbox-ack:{group}", 30):    # the counter carries the exact count
+                self.logger.warning("Could not record %s in the consumer inbox; acknowledging it alone: %s", d.message_id, type(e).__name__)
+            return await self.queue.ack(group, d)
 
     @staticmethod
     def _remember(parsed: StreamMessage, seen: "dict[str, Any] | None") -> None:
@@ -779,7 +802,9 @@ class PgMessagingConsumer(IMessagingConsumer):
                 await self._drive_indexing(parsed, f"message:{d.message_id}")
                 return True, False, parsed, ""
             try:
-                opened = await self._open(d, raw, lambda admitted: open_configured(d.topic, raw, admitted=admitted))
+                opened = await self._open(
+                    d, raw, lambda admitted: open_configured(d.topic, raw, inbox=self.inbox, consumer=self.config.group_id, admitted=admitted)
+                )
             except AdmissionWriteError as e:
                 return False, False, None, f"admission could not be recorded: {e}"
             except DuplicateEnvelope:
@@ -790,6 +815,8 @@ class PgMessagingConsumer(IMessagingConsumer):
             parsed.is_final_failure = final
             with bind_optional(opened.ctx):
                 ok = await self.message_handler(parsed)
+            if ok and seen is not None:
+                seen["ctx"] = opened.ctx  # recorded in the inbox with the ack
             return bool(ok), False, parsed, "" if ok else "handler returned false"
         except (RequeueWithoutAttempt, ClaimLost):
             raise
@@ -862,7 +889,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                 return complete
 
             try:
-                async with asyncio.timeout(timeout):
+                # On the claim loop, beside the lease renewal: the handler on the worker loop grows it by posting the move here.
+                async with asyncio.timeout(timeout) as budget, record_budget.armed(budget, timeout):
                     complete = await self._on_worker(drain)
             except asyncio.CancelledError:
                 if record_slot is not None and record_slot in self._lost_leases:

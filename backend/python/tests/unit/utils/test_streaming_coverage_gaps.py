@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -202,7 +201,6 @@ class TestInvokeStructuredOutputMinimal:
 def test_opik_module_reload_config_branches(monkeypatch, scenario):
     """Exercise module-level Opik init via importlib.reload."""
 
-    import types
 
     monkeypatch.delenv("OPIK_API_KEY", raising=False)
     monkeypatch.delenv("OPIK_WORKSPACE", raising=False)
@@ -212,32 +210,16 @@ def test_opik_module_reload_config_branches(monkeypatch, scenario):
     monkeypatch.setenv("OPIK_API_KEY", "k")
     monkeypatch.setenv("OPIK_WORKSPACE", "ws")
 
+    # The shared tracer is built from `opik_langchain.TextFreeOpikTracer` (imported before patching it).
+    importlib.import_module("app.agent_loop_lib.transport.opik_langchain")
     tracer_inst = MagicMock()
-    opik_mod = types.ModuleType("opik")
-    integrations_mod = types.ModuleType("opik.integrations")
-    langchain_mod = types.ModuleType("opik.integrations.langchain")
-
     if scenario == "success":
-        opik_mod.configure = MagicMock(return_value=None)
-        langchain_mod.OpikTracer = MagicMock(return_value=tracer_inst)
+        tracer_cls = MagicMock(return_value=tracer_inst)
     else:
-
-        def _boom(*_args, **_kwargs):
-            raise RuntimeError("no opik")
-
-        langchain_mod.OpikTracer = _boom
-
-    integrations_mod.langchain = langchain_mod
-    opik_mod.integrations = integrations_mod
-
-    mods = {
-        "opik": opik_mod,
-        "opik.integrations": integrations_mod,
-        "opik.integrations.langchain": langchain_mod,
-    }
+        tracer_cls = MagicMock(side_effect=RuntimeError("no opik"))
 
     try:
-        with patch.dict(sys.modules, mods, clear=False):
+        with patch("app.agent_loop_lib.transport.opik_langchain.TextFreeOpikTracer", tracer_cls):
             importlib.reload(importlib.import_module("app.utils.opik"))
             mod = importlib.reload(importlib.import_module("app.utils.streaming"))
             if scenario == "success":

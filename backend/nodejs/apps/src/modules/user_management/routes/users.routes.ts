@@ -352,7 +352,14 @@ export function createUserRouter(container: Container) {
         if (role === null) {
           throw new UnauthorizedError('User not found, please login again');
         }
-        res.status(200).json({ role });
+        // A personal access token's limit as stored now, which the Python
+        // services enforce in place of the one it was signed with.
+        const knowledgeLimit: unknown = req.user?.knowledgeLimit;
+        res
+          .status(200)
+          .json(
+            knowledgeLimit === undefined ? { role } : { role, knowledgeLimit },
+          );
       } catch (error) {
         next(error);
       }

@@ -4513,7 +4513,7 @@ class WebConnector(BaseConnector):
         for svg in soup.find_all('svg'):
             svg.decompose()
 
-    def _convert_svg_tag_to_png(self, soup: BeautifulSoup, svg) -> bool:
+    async def _convert_svg_tag_to_png(self, soup: BeautifulSoup, svg) -> bool:
         """
         Convert an SVG tag to a PNG img tag.
 
@@ -4529,8 +4529,8 @@ class WebConnector(BaseConnector):
             svg_bytes = svg_content.encode('utf-8')
             svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
 
-            # Convert SVG to PNG
-            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+            # Convert SVG to PNG off the event loop: a render can take up to its 10s deadline.
+            png_b64_str = await ImageParser.svg_base64_to_png_base64_async(svg_b64_str)
             png_b64_str = self._clean_base64_string(png_b64_str)
 
             if not png_b64_str:
@@ -4551,10 +4551,10 @@ class WebConnector(BaseConnector):
             svg.decompose()
             return False
 
-    def _process_svg_tags(self, soup: BeautifulSoup) -> None:
+    async def _process_svg_tags(self, soup: BeautifulSoup) -> None:
         """Convert all SVG tags to PNG img tags."""
         for svg in soup.find_all('svg'):
-            _ = self._convert_svg_tag_to_png(soup, svg)
+            _ = await self._convert_svg_tag_to_png(soup, svg)
 
     # Image formats supported by OpenAI vision API
     OPENAI_SUPPORTED_IMAGE_TYPES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
@@ -4606,7 +4606,7 @@ class WebConnector(BaseConnector):
 
                     # Common path for both cases
                     try:
-                        png_b64 = self._convert_svg_bytes_to_png_base64(svg_bytes, 'inline-svg-data-uri')
+                        png_b64 = await self._convert_svg_bytes_to_png_base64(svg_bytes, 'inline-svg-data-uri')
                         if png_b64:
                             img['src'] = f"data:image/png;base64,{png_b64}"
                         else:
@@ -4680,7 +4680,7 @@ class WebConnector(BaseConnector):
 
             # Convert to base64 (handle SVG and AVIF specially)
             if content_type == 'image/svg+xml':
-                b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
+                b64_str = await self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
                 if not b64_str:
                     img.decompose()
                     return
@@ -4733,11 +4733,11 @@ class WebConnector(BaseConnector):
 
         return content_type.split(';')[0].strip().lower()
 
-    def _convert_svg_bytes_to_png_base64(self, svg_bytes: bytes, url: str) -> Optional[str]:
+    async def _convert_svg_bytes_to_png_base64(self, svg_bytes: bytes, url: str) -> Optional[str]:
         """Convert SVG bytes to PNG base64 string."""
         try:
             svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
-            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+            png_b64_str = await ImageParser.svg_base64_to_png_base64_async(svg_b64_str)
             png_b64_str = self._clean_base64_string(png_b64_str)
 
             if not png_b64_str:
@@ -4865,7 +4865,7 @@ class WebConnector(BaseConnector):
             if images_enabled:
                 self._resolve_lazy_images(soup)
                 # Convert SVG tags to PNG img tags
-                self._process_svg_tags(soup)
+                await self._process_svg_tags(soup)
 
                 # Process all images: download and convert to base64
                 await self._process_all_images(soup, weburl, headers, preferred_strategy)

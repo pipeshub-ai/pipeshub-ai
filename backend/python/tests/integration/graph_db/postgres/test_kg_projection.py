@@ -74,7 +74,10 @@ async def add_edge(p, org, frm, to, coll, **props) -> set:
 
 async def update_node(p, org, coll, nid, **fields) -> set:
     with ctx(org):
-        await p.batch_upsert_nodes([{"_key": nid, **fields}], coll)
+        if coll == "records" and "isDeleted" in fields:
+            await p.batch_update_nodes([{"id": nid, **fields}], coll)      # an upsert leaves a record's trash state alone
+        else:
+            await p.batch_upsert_nodes([{"_key": nid, **fields}], coll)
     return {(coll, nid)}
 
 

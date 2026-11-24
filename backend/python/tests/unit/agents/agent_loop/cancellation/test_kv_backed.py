@@ -131,6 +131,34 @@ class TestCrossProcessCancel:
         finally:
             await owner_registry.unregister("run-1")
 
+    async def test_a_cross_process_cancel_stops_a_running_sandbox_call(self) -> None:
+        from app.agent_loop_lib.sandbox.manager import (
+            SandboxCallStopped,
+            SandboxManager,
+        )
+
+        store = _FakeKVStore()
+        owner_registry = KVBackedRunCancellationRegistry(store)
+        other_registry = KVBackedRunCancellationRegistry(store)
+        token = CancellationToken()
+        await owner_registry.register("run-1", token, _owner())
+        manager = SandboxManager(stop_token=token)
+        running = asyncio.Event()
+
+        async def sandbox_call() -> str:
+            running.set()
+            await asyncio.sleep(60)
+            return "ran"
+
+        try:
+            call = asyncio.ensure_future(manager.unless_stopped(sandbox_call, tool="run_code"))
+            await running.wait()
+            assert await other_registry.cancel("run-1", _owner()) == "cancelled"
+            with pytest.raises(SandboxCallStopped):
+                await asyncio.wait_for(call, timeout=1.5)
+        finally:
+            await owner_registry.unregister("run-1")
+
     async def test_watcher_rejects_a_mismatched_requester_then_accepts_the_real_one(self) -> None:
         store = _FakeKVStore()
         owner_registry = KVBackedRunCancellationRegistry(store)

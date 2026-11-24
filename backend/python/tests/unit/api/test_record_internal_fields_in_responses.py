@@ -250,3 +250,12 @@ def test_api_record_key_edges(key: str, dropped: bool) -> None:
 def test_api_record_keeps_only_the_names_it_is_told_to() -> None:
     shown = api_record({"failedAt": 1, "deleteSource": "USER", "republishCount": 2}, keep={"deleteSource"})
     assert shown == {"deleteSource": "USER"}
+
+
+def test_the_parser_identity_fields_are_internal() -> None:
+    """The four fields describe how a copy was built; the record endpoint and the search response never return them."""
+    from app.modules.pipeline import parser_identity as pi
+
+    assert set(pi.IDENTITY_FIELDS) <= INTERNAL_RECORD_FIELDS
+    stored = _stored(**dict.fromkeys(pi.IDENTITY_FIELDS, "x"))
+    assert not set(pi.IDENTITY_FIELDS) & api_record(stored).keys()

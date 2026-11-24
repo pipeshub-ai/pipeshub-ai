@@ -51,7 +51,7 @@ from app.edition_services import configure_app, indexing_fairness
 from app.events.dedup import will_promote_queued_copies
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
-from app.modules.indexing import keep_old_copy
+from app.modules.indexing import keep_old_copy, refresh_intent
 from app.modules.indexing.class_units_backfill import run_class_units_backfill
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
@@ -148,6 +148,7 @@ from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
+from app.services.resource_governor.yield_signal import YieldSignal
 from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.telemetry.ops_exporter import exporter_from_env
 from app.telemetry.setup import setup_telemetry
@@ -445,6 +446,10 @@ async def recover_in_progress_records(
                                     "reason": CONNECTOR_REMOVED,
                                 },
                             )
+                            # The refresh cannot run for a connector that is gone or off: its request ends here (only when it holds one).
+                            await refresh_intent.clear_intent(
+                                graph_provider, record_id, (refresh_intent.stored_intent(record) or (None,))[0]
+                            )
                             results["skipped"] += 1
                             return True
                         if not connector_instance.get("isActive", False):
@@ -463,17 +468,23 @@ async def recover_in_progress_records(
                                     "reason": CONNECTOR_OFF,
                                 },
                             )
+                            # The refresh cannot run for a connector that is gone or off: its request ends here (only when it holds one).
+                            await refresh_intent.clear_intent(
+                                graph_provider, record_id, (refresh_intent.stored_intent(record) or (None,))[0]
+                            )
                             results["skipped"] += 1
                             return True
 
-                    tracking_id = recovery_tracking_id(record_id, record.get("version", 0))
+                    recovered_intent = refresh_intent.live_intent(record, get_epoch_timestamp_in_ms())
+                    tracking_id = recovery_tracking_id(record_id, record.get("version", 0), recovered_intent)
                     # Without a sink to end it (and move its queued copies on),
                     # the record is recovered with no budget, as before.
                     if exhausted_sink is not None and await recovery_exhausted(
                         retry_tracker, tracking_id, logger
                     ):
                         await exhausted_sink.on_recovery_exhausted(
-                            record_id, resume_enrichment=resume_enrichment
+                            record_id, resume_enrichment=resume_enrichment,
+                            **({"intent_id": recovered_intent} if recovered_intent else {}),
                         )
                         logger.warning(
                             "Gave up recovering record %s (%s): it kept failing or "
@@ -506,6 +517,8 @@ async def recover_in_progress_records(
                         # A recovered record continues the run that was interrupted, so an
                         # embedding it left half done is resumed rather than started over.
                         payload[RESUME_DELIVERY_ID_KEY] = record[EMBED_DELIVERY_ID]
+                    # A Force reindex the record still holds is recovered as that refresh (which also never resumes).
+                    refresh_intent.with_intent(payload, record, get_epoch_timestamp_in_ms())
 
                     # Determine event type - default to NEW_RECORD for recovery
                     # Only treat as REINDEX if version > 0 AND virtualRecordId exists
@@ -775,6 +788,23 @@ async def recover_in_progress_records(
                     )
             except Exception as exc:
                 _org_pass_failed(logger, "stranded_republish", org_id, exc)
+
+        # The Force reindex requests whose event was lost, whatever status their record is in: the status cannot say.
+        for org_id in org_ids:
+            try:
+                with for_org(org_id, job="refresh_intent_republish"):
+                    total_records += await _republish_refresh_intents(
+                        graph_provider=graph_provider,
+                        logger=logger,
+                        producer=retry_producer,
+                        run_coordination=run_coordination,
+                        concurrency_manager=concurrency_manager,
+                        page_size=page_size,
+                        org_id=org_id,
+                        read_backlog=read_backlog,
+                    )
+            except Exception as exc:
+                _org_pass_failed(logger, "refresh_intent_republish", org_id, exc)
 
         await _upkeep_lanes(
             graph_provider=graph_provider,
@@ -1595,6 +1625,295 @@ def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
     return min(after_seconds * 2 ** min(republishes, 32), cap) * 1000
 
 
+def _intent_resend_wait_ms(record: dict[str, Any], after_seconds: float) -> float:
+    """How long after its last touch a record's Force reindex request waits before it is sent again.
+
+    The first send comes ``after_seconds`` after the request (or its hand-over); each re-send doubles the wait, up to
+    the stranded sweep's cap. Counted from the intent's own writes, which reset ``republishCount``, so a record that
+    waited long before the request does not inherit that wait.
+    """
+    at = record.get(refresh_intent.AT_FIELD)
+    last = record.get("lastRepublishedAt")
+    sent_since = _is_clock(last) and _is_clock(at) and float(last) >= float(at)
+    n = 0
+    if sent_since:
+        try:
+            n = max(1, int(record.get("republishCount") or 0))
+        except (TypeError, ValueError):
+            n = 1
+    return _republish_wait_ms(after_seconds, n)
+
+
+async def _republish_refresh_intents(
+    *,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    producer: "IMessagingProducer",
+    run_coordination: CoordinationRunner,
+    concurrency_manager: DistributedConcurrencyManager | None,
+    page_size: int,
+    org_id: str,
+    read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None,
+) -> int:
+    """Send again the Force reindex requests whose event was lost, whatever status their record is in.
+
+    A request is stored on the record when it is made (``modules/indexing/refresh_intent.py``). The event that
+    carries it can be lost (dropped, a hand-back that never came back, a publish that failed), and a plain event or
+    a twin's completion can write the record's final status before it is served; the status says nothing, so this
+    selects on the field. A record is left alone while its lease is held, while a rate-limit wait is on, and while
+    the queue still holds work older than it. The wait before the first send and between sends is the stranded
+    sweep's, counted from the request. An intent older than its life is cleared, counted and, on a row that is not
+    COMPLETED, explained in the record's reason.
+    """
+    after_seconds = messaging_env.stranded_record_republish_after_seconds
+    if after_seconds <= 0:
+        return 0
+    pass_started_ms = get_epoch_timestamp_in_ms()
+    backlog: LaneBacklog | None = None
+    backlog_read = False
+    sent = 0
+    after_key: str | None = None
+
+    async def _lanes() -> LaneBacklog | None:
+        nonlocal backlog, backlog_read
+        if not backlog_read:
+            backlog_read = True
+            if read_backlog is not None:
+                try:
+                    backlog = await read_backlog()
+                except Exception as e:
+                    logger.warning("Could not read the indexing queue's backlog for the refresh sweep: %s: %s", type(e).__name__, e)
+        return backlog
+
+    @contextlib.asynccontextmanager
+    async def _record_lease(key: str) -> AsyncGenerator[bool, None]:
+        """The per-record lease every change this sweep makes to a request is made under; False when someone holds it."""
+        owner = f"refresh-intent:{uuid4().hex}"
+        pool = f"record:{key}"
+        held = False
+        try:
+            if concurrency_manager is None:
+                yield True
+                return
+            held = await concurrency_manager.try_acquire(pool, owner, 1, messaging_env.concurrency_lease_seconds)
+            yield held
+        finally:
+            if held and concurrency_manager is not None:
+                try:
+                    await concurrency_manager.release(pool, owner)
+                except Exception as release_exc:
+                    logger.warning("Failed to release the refresh-sweep lease for %s: %s", key, release_exc)
+
+    def _due(row: dict[str, Any], now_ms: int) -> bool:
+        """Whether the request on ``row`` has waited long enough for its next send (the sweep's wait, from the request's own writes)."""
+        touched = max(_clock_or(row.get(refresh_intent.AT_FIELD), 0), _clock_or(row.get("lastRepublishedAt"), 0))
+        return now_ms - touched >= _intent_resend_wait_ms(row, after_seconds)
+
+    async def _fresh(key: str) -> dict[str, Any] | None:
+        return await graph_provider.get_document(key, CollectionNames.RECORDS.value, raise_on_error=True)
+
+    async def _expire(record: dict[str, Any], key: str) -> None:
+        held = refresh_intent.stored_intent(record)
+        if held is None:
+            return
+        try:
+            async with _record_lease(key) as leased:
+                if not leased:
+                    return
+                # Decided on the row as it is now, under the lease: a hand-over or a new request since the scan has moved the time
+                # or the id, and a run that holds the record (or still enriches it) does not age out under it.
+                fresh = await _fresh(key)
+                now_ms = get_epoch_timestamp_in_ms()
+                if (
+                    fresh is None or refresh_intent.stored_intent(fresh) is None or refresh_intent.stored_intent(fresh)[0] != held[0]  # type: ignore[index]
+                    or not refresh_intent.expired_intent(fresh, now_ms)
+                    or ProgressStatus.IN_PROGRESS.value in (fresh.get("indexingStatus"), fresh.get("extractionStatus"))
+                ):
+                    return
+                if refresh_intent.served(fresh):
+                    # Already served (a clear that did not land): it is not an expiry, so no count, no log of a refresh that never ran,
+                    # and no reason written.
+                    await refresh_intent.clear_intent(
+                        graph_provider, key, held[0], expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
+                    )
+                    return
+                updates: dict[str, Any] = {}
+                if fresh.get("indexingStatus") != ProgressStatus.COMPLETED.value and fresh.get("reason") != CONNECTOR_OFF:
+                    # Not over CONNECTOR_OFF: the stranded scan finds a row parked while its connector was off by that reason.
+                    updates["reason"] = refresh_intent.REFRESH_EXPIRED_REASON
+                if await refresh_intent.clear_intent(
+                    graph_provider, key, held[0], updates, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
+                ):
+                    refresh_intent.REFRESH_INTENT_EVENTS.inc("expired")
+                    logger.warning(
+                        "The Force reindex requested for record %s was not served within its life and is dropped (record status %s)",
+                        key, fresh.get("indexingStatus"),
+                    )
+        except Exception as exc:
+            logger.error("Failed to expire the Force reindex of record %s: %s", key, exc)
+
+    connector_state: dict[str, bool | None] = {}
+
+    async def _read_connector(connector_id: str) -> bool | None:
+        try:
+            app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+        except Exception as exc:
+            logger.warning("Could not read connector %s for the refresh sweep; leaving its requests for the next pass: %s", connector_id, exc)
+            return None
+        return bool(app and app.get("isActive", False) and app.get("status") != APP_STATUS_DELETING)
+
+    async def _connector_can_run(record: dict[str, Any]) -> bool | None:
+        """True when the record's connector is on, False when it is off, removed or being deleted, None when it could not be
+        read (the record is left for the next pass). A cached answer for this pass: advisory only, a clear reads it again."""
+        connector_id = record.get("connectorId")
+        if not connector_id or record.get("origin") != OriginTypes.CONNECTOR.value:
+            return True
+        cid = str(connector_id)
+        if cid not in connector_state:
+            connector_state[cid] = await _read_connector(cid)
+        return connector_state[cid]
+
+    async def _end_for_connector(record: dict[str, Any], key: str, intent_id: str) -> None:
+        """Ends a request whose connector looked off: confirmed under the lease, on the row and the connector as they are now."""
+        try:
+            async with _record_lease(key) as leased:
+                if not leased:
+                    return
+                fresh = await _fresh(key)
+                if fresh is None or refresh_intent.live_intent(fresh, get_epoch_timestamp_in_ms()) != intent_id:
+                    return
+                connector_id = str(fresh.get("connectorId") or "")       # the row's connector now, not the scanned row's
+                if not connector_id or await _read_connector(connector_id) is not False:
+                    connector_state.pop(connector_id, None)                   # it came back, or could not be read: keep the request
+                    return
+                if await refresh_intent.clear_intent(
+                    graph_provider, key, intent_id, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
+                ):
+                    refresh_intent.REFRESH_INTENT_EVENTS.inc("connector_off")
+                    logger.info("The Force reindex of record %s ended: its connector is off or removed", key)
+        except Exception as exc:
+            logger.error("Failed to end the Force reindex of record %s for its connector: %s", key, exc)
+
+    async def _end_served(record: dict[str, Any], key: str, intent_id: str) -> None:
+        try:
+            async with _record_lease(key) as leased:
+                if not leased:
+                    return
+                fresh = await _fresh(key)
+                if fresh is not None and refresh_intent.live_intent(fresh, get_epoch_timestamp_in_ms()) == intent_id and refresh_intent.served(fresh):
+                    await refresh_intent.clear_intent(
+                        graph_provider, key, intent_id, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
+                    )
+        except Exception as exc:
+            logger.error("Failed to end the served Force reindex of record %s: %s", key, exc)
+
+    async def _send(record: dict[str, Any], key: str, intent_id: str) -> bool:
+        try:
+            async with _record_lease(key) as leased:
+                if not leased:
+                    return False
+                # The snapshot may be old: read the record again under the lease, and send only the request it still holds, and
+                # only if it is due on the row as it is now (a hand-over or another sender since the scan has moved its clocks).
+                fresh = await _fresh(key)
+                now_ms = get_epoch_timestamp_in_ms()
+                if (
+                    fresh is None or not is_live_record(fresh) or is_deferred_until_later(fresh, now_ms)
+                    or refresh_intent.live_intent(fresh, now_ms) != intent_id or not _due(fresh, now_ms)
+                ):
+                    return False
+                # The connector of the row as it is now, read here and not taken from the pass's cache: a connector turned off since
+                # must not get a claim and an enqueue that the delivery guard cannot take back. Unreadable counts as not eligible.
+                if (
+                    fresh.get("origin") == OriginTypes.CONNECTOR.value and fresh.get("connectorId")
+                    and await _read_connector(str(fresh["connectorId"])) is not True
+                ):
+                    return False
+                republishes = int(fresh.get("republishCount") or 0) if _is_clock(fresh.get("lastRepublishedAt")) else 0
+                # Claimed before the send, and only if nobody changed the request or claimed since the read (a compare-and-set on the
+                # id, the request's time and the last send).
+                claim_expected = {
+                    refresh_intent.ID_FIELD: intent_id, refresh_intent.AT_FIELD: fresh.get(refresh_intent.AT_FIELD),
+                    "lastRepublishedAt": fresh.get("lastRepublishedAt"),
+                }
+                claim = {"lastRepublishedAt": now_ms, "republishCount": republishes + 1}
+                if not await graph_provider.update_node_fields_if_match(key, CollectionNames.RECORDS.value, claim, claim_expected):
+                    return False
+                event_type, payload = record_event(
+                    fresh, record_key=key, connector_id=str(fresh.get("connectorId") or ""), restored_upload=False,
+                )
+                try:
+                    await run_coordination(
+                        producer.send_event(topic=Topic.RECORD_EVENTS.value, event_type=event_type, payload=payload, key=str(key))
+                    )
+                except BaseException:
+                    # Any end of the send that is not an acceptance (a failure, or a shutdown that cancels the sweep): the claim is put
+                    # back, conditionally, so the next pass does not wait out a backoff for a send that did not happen; a cancellation is
+                    # re-raised. The request keeps its id on any later send, so a delivery whose acceptance was uncertain is deduplicated.
+                    with contextlib.suppress(Exception):
+                        await asyncio.shield(graph_provider.update_node_fields_if_match(
+                            key, CollectionNames.RECORDS.value,
+                            {"lastRepublishedAt": fresh.get("lastRepublishedAt"), "republishCount": fresh.get("republishCount")},
+                            {refresh_intent.ID_FIELD: intent_id, "lastRepublishedAt": now_ms},
+                        ))
+                    raise
+                refresh_intent.REFRESH_INTENT_EVENTS.inc("resent")
+                return True
+        except Exception as exc:
+            logger.error("Failed to re-send the Force reindex of record %s: %s", key, exc)
+            return False
+
+    while True:
+        page = await graph_provider.get_records_with_refresh_intent(org_id, after_key=after_key, limit=page_size)
+        if not page:
+            break
+        after_key = str(page[-1].get("_key") or page[-1].get("id") or "") or None
+        for record in page:
+            key = record.get("_key") or record.get("id")
+            if not key:
+                continue
+            if refresh_intent.expired_intent(record, pass_started_ms):
+                if record.get("indexingStatus") != ProgressStatus.IN_PROGRESS.value:
+                    await _expire(record, str(key))          # a record a run holds does not age out under it: its end serves it
+                continue
+            intent_id = refresh_intent.live_intent(record, pass_started_ms)
+            if intent_id is None or is_deferred_until_later(record, pass_started_ms):
+                continue
+            if refresh_intent.served(record):
+                # A refresh of a request at least this new has run on the record (a leftover of a clear that did not land): it is not
+                # sent again; it is cleared under the lease.
+                await _end_served(record, str(key), intent_id)
+                continue
+            if not _due(record, pass_started_ms):
+                continue
+            can_run = await _connector_can_run(record)
+            if can_run is None:
+                continue
+            if can_run is False:
+                # A Force reindex of a record whose connector is off, removed or being deleted cannot run: the request ends
+                # here, as it does when stale recovery parks the record, and the record's own state says why it did not. The
+                # state is confirmed again where the request is cleared.
+                await _end_for_connector(record, str(key), intent_id)
+                continue
+            lanes = await _lanes()
+            if lanes is not None:
+                _, preview = record_event(record, record_key=str(key), connector_id=str(record.get("connectorId") or ""))
+                oldest = lanes.oldest_waiting_for(preview)
+                touched = max(_clock_or(record.get(refresh_intent.AT_FIELD), 0), _clock_or(record.get("lastRepublishedAt"), 0))
+                if oldest is not None and oldest <= touched + STRANDED_QUEUE_CLOCK_ALLOWANCE_MS:
+                    continue
+            if await _send(record, str(key), intent_id):
+                sent += 1
+        if after_key is None or len(page) < page_size:
+            break
+    if sent:
+        logger.info("Re-sent the Force reindex of %d record(s) whose event was lost", sent)
+    return sent
+
+
+def _clock_or(value: object, default: float) -> float:
+    return float(value) if _is_clock(value) else default  # type: ignore[arg-type]
+
+
 async def _republish_stranded_records(
     *,
     graph_provider: IGraphDBProvider,
@@ -2321,25 +2640,11 @@ _TOPIC_RETRY_MAX_S = 300.0
 
 
 async def _check_redis_eviction_policy(app_container: Any, logger: logging.Logger) -> None:  # noqa: ANN401
-    """Tell the admin when Redis may evict the keys indexing keeps there (replay set, pause counters, budgets).
+    """Tell the admin when Redis may evict the keys indexing keeps there (replay set, pause counters, budgets), and
+    stop the start on an ``allkeys-*`` policy. The result is also what ``/health`` reports."""
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
 
-    Reads the Redis the replay set is written to (the configuration service's Redis config, which is also what the
-    record handler uses under the PostgreSQL broker). Best effort: a Redis that cannot be read leaves the warning
-    unset and indexing starts anyway.
-    """
-    from app.modules.indexing.replay_set import check_eviction_policy
-    from app.services.vector_db.rebuild_state import redis_from_config_service
-
-    redis = None
-    try:
-        redis = await redis_from_config_service(app_container.config_service())
-        await check_eviction_policy(redis, logger)
-    except Exception as exc:
-        logger.warning("Redis eviction policy not checked: %s", type(exc).__name__)
-    finally:
-        if redis is not None:
-            with contextlib.suppress(Exception):
-                await redis.aclose()
+    await check_main_redis_eviction_policy(app_container.config_service(), logger, "indexing")
 
 
 def warn_if_deferral_fields_write(logger: logging.Logger) -> None:
@@ -2639,7 +2944,7 @@ async def start_kafka_consumers(
         # EmbeddingServerEmbeddings instances used by this consumer's
         # pipeline default to (see app.services.messaging.backpressure) —
         # passing it explicitly here is what lets the consumer's read loop
-        # actually see their 429 signals and pause new reads.
+        # actually see their 429 signals and hold the work that calls them.
         record_kafka_consumer = MessagingFactory.create_consumer(
             fairness=indexing_fairness(lambda pool: consumer_concurrency.slot_pool_limit(record_kafka_consumer, pool)),
             broker_type=broker_type,
@@ -3001,6 +3306,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             app_container.config_service(), logger
         ),
+        # Indexing admits work first in this container, so it alone slows
+        # down for code sandbox runs waiting for memory; parsing and Docling
+        # would brake the same parse a second time.
+        yield_signal=YieldSignal.open_default(role="indexing governor"),
         remote_parse_slots=remote_parse_concurrency(),
     )
     app.state.governor = governor

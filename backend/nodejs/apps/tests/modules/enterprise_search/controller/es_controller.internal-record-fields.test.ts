@@ -34,6 +34,11 @@ const INTERNAL = {
   pendingTaxonomyRefs: [{ id: 'c1', type: 'category' }],
   republishCount: 3,
   pendingVirtualRecordId: 'vrid-replacement',
+  indexedParser: 'inproc:txt@1',
+  indexedParserAt: 1_700_000_200_000,
+  indexedParserVrid: 'vrid-copy',
+  indexedParserSource: 'parsed',
+  incarnationId: 'inc-1',
   p_color: 'red',
 }
 const stored = () => ({ ...KEPT, ...INTERNAL })

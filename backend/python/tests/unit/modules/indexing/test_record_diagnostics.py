@@ -587,6 +587,7 @@ class TestTheCountRuleOfEveryRevisionWriter:
             ("events/events.py", "EventProcessor._put_back_kept_record"): (2, "puts back the revision the event found when the parser's count keeps the index, conditional on the revision this run wrote"),
             ("events/events.py", "EventProcessor._skip_same_bytes"): (1, "the revision the skip is for, passed to the redrive; no record write"),
             ("events/events.py", "EventProcessor._restore_indexed_fields"): (1, "a match condition"),
+            ("events/events.py", "EventProcessor._adopt_parser_identity"): (1, "a match condition"),
             ("services/messaging/kafka/handlers/record.py", "RecordEventHandler._clear_membership_pending"): (2, "match conditions of a reason-only write"),
             ("services/messaging/kafka/handlers/record.py", "RecordEventHandler._repair_membership_after_give_up"): (1, "a match condition of a reason-only write"),
             ("services/messaging/kafka/handlers/record.py", "RecordEventHandler._undo_pending_reason"): (1, "a match condition of a reason-only write"),

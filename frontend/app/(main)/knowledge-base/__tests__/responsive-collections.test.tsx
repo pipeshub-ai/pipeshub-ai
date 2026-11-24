@@ -16,6 +16,12 @@ vi.mock('@/config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/config')>()),
   PermissionLockIcon: () => <span data-testid="permission-lock" />,
 }));
+// These tests are about other behaviour; group permissions grant everything. Mocked at the
+// collection hook because @/config imports these views itself, so a partial @/config mock misses them.
+vi.mock('../hooks/use-collection-group-permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/use-collection-group-permissions')>()),
+  useCollectionGroupPermissions: () => ({ canEdit: true, canDelete: true, canManageSync: true }),
+}));
 vi.mock('@/lib/hooks/use-can-hover', () => ({ useCanHover: () => env.canHover }));
 
 beforeAll(installBrowserShims);

@@ -114,3 +114,33 @@ def test_no_memory_is_a_retryable_429_and_the_permit_goes_back(monkeypatch: pyte
         assert response.json()["error"]["details"]["reason"] == "memory"  # type: ignore[attr-defined]
     assert governor.gate(Pool.HEAVY_PARSE).in_use == 0
     assert governor.memory_budget.stats()["reserved_bytes"] == int(1.5 * GIB)
+
+
+def _post_labels(client: TestClient, name: str, extension: str, mime: str) -> object:
+    return client.post(
+        "/api/v1/parse",
+        files={"file": (name, b"x" * 1000, mime)},
+        data={"mime_type": mime, "extension": extension, "provider": "default"},
+    )
+
+
+@pytest.mark.parametrize(("extension", "mime", "in_use", "expected"), [
+    # Windows labels a .csv application/vnd.ms-excel; the service reads it as xls: heavy, the Excel excess (F23i).
+    ("csv", "application/vnd.ms-excel", 1, None),
+    # A SQL table names no extension; the SQL reader is a light text parse, not the 1.5 GiB unknown-kind fallback.
+    ("", "application/vnd.sql.table", 0, 0),
+    # The service reads an image: a kindless format is charged the safe UNKNOWN figure, never the CSV's.
+    ("csv", "image/png", 1, int(1.25 * GIB)),
+], ids=["csv+xls", "sql_table", "csv+png"])
+def test_the_service_charges_the_kind_of_the_format_it_parses(
+    extension: str, mime: str, in_use: int, expected: int | None,
+) -> None:
+    seen: dict = {}
+    app, _ = _app(True, seen)
+    with TestClient(app) as client:
+        assert _post_labels(client, f"a.{extension or 'x'}", extension, mime).status_code == 200  # type: ignore[attr-defined]
+    if expected is None:
+        from app.modules.parsers.excel.limits import excel_document_memory_bytes
+
+        expected = excel_document_memory_bytes() - int(0.25 * GIB)
+    assert (seen["in_use"], seen["reserved"]) == (in_use, expected)
