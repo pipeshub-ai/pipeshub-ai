@@ -150,6 +150,8 @@ describe('uploadRecords — KB existence and write-permission pre-check', () => 
 
     expect(next.calledOnce).to.be.true
     expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+    // The path value is the caller's; the message is logged, so it names the entity only.
+    expect(next.firstCall.args[0].message).to.equal('Knowledge base not found')
   })
 
   it('does NOT call createPlaceholderDocument when KB returns 404', async () => {

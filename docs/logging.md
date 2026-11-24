@@ -302,6 +302,11 @@ the auth middleware bound.
   as on every `http.request.error`. A key the caller made up (an unknown field, a record key) is named, and a few rules quote
   an enum-like value the caller sent in `message` (a duplicate model id), as the 400 body does.
   `POST /oauth2/token` answers its own refusals (see the OAuth provider below).
+- Node: `params` on `http.request.error` names the route's params: an id as sent (letters, digits, `._:-`, at most
+  128), any other value (an email, a name, a file path) as `[not an id]`. A path param bound to a request field is
+  bound only when it fits: an id field (`connector_id`, `kb_id`, …) takes an id, `connector_type` a name (letters,
+  digits, spaces, `_.:-`). This covers `params` and the bound fields: a one-word value (`ada`, `report.pdf`) or a
+  first-and-last name still fits, and an error message the connector service wrote is passed on as written.
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
   is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
   token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.

@@ -43484,7 +43484,7 @@ paths:
         '404':
           description: |
             Record not found, not accessible to the caller, or in the trash. The message is
-            `Record <recordId> not found` in every case.
+            `Record not found` in every case.
           content:
             application/json:
               schema:
@@ -45097,7 +45097,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            - `Knowledge base <kbId> not found`: unknown knowledge base, or the caller holds no
+            - `Knowledge base not found`: unknown knowledge base, or the caller holds no
               role on it
             - `Folder <folderId> was not found in knowledge base '<name>' (<kbId>). ...`
           content:

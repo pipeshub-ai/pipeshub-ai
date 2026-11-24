@@ -174,6 +174,9 @@ const NETWORK_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
 /** An SSE frame type (`RUN_FINISHED`). */
 const FRAME_TYPE = /^[A-Z][A-Z_]{0,31}$/;
 const SHOWN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+/** An id as a log line may show it: never an email, a name, a path or free text. */
+export const isShownId = (value: unknown): value is string =>
+  typeof value === 'string' && SHOWN_ID.test(value);
 /** A dotted lowercase event name (`http.request.end`). */
 export const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
 /** The ids PipesHub issues: Mongo ObjectId, UUID, or a `sys-`/`anon-` root. */
@@ -222,8 +225,8 @@ const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
   network_code: matches(NETWORK_CODE),
   outcome: (v) => typeof v === 'string' && OUTCOMES.has(v),
   // An id as shown (raw, or a provider's hash); never an email or a name.
-  actor: matches(SHOWN_ID),
-  target: matches(SHOWN_ID),
+  actor: isShownId,
+  target: isShownId,
   group_id: isPipesHubId,
   team_id: isTeamId,
   // A service-account key's record id, never the key.
