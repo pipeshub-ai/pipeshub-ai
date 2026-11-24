@@ -1266,7 +1266,15 @@
         },
         "toolNeedsApproval": "Requiere aprobación",
         "toolNeedsApprovalHint": "Esta herramienta puede eliminar datos. En un chat de proyecto solo se ejecuta después de que alguien la apruebe.",
-        "indexingStatusLabel": "Indexación: {{status}}"
+        "indexingStatusLabel": "Indexación: {{status}}",
+        "collectionsTitle": "Colecciones",
+        "collectionsSubtitle": "Los chats de este proyecto buscan en las colecciones seleccionadas y en los archivos subidos del proyecto.",
+        "noCollectionsAvailable": "Aún no hay colecciones para agregar.",
+        "failedToLoadCollections": "Error al cargar las colecciones",
+        "updateCollectionsFailed": "Error al actualizar las colecciones",
+        "collectionsStatusCount": "{{count}} seleccionadas",
+        "collectionsStatusNone": "Ninguna",
+        "untitledCollection": "Colección sin título"
       },
       "moveDialog": {
         "title": "Mover a proyecto",
