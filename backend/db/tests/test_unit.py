@@ -718,9 +718,13 @@ def test_lint_takes_an_index_a_later_revision_lists_online_as_built_ahead(tmp_pa
     ("a procedure body the upgrade calls", 'def upgrade():\n    op.execute("CREATE PROCEDURE pg_temp.p() LANGUAGE plpgsql AS $$ BEGIN DROP INDEX graph.x; END $$; '
                                            'CALL pg_temp.p();")\n', True),
     ("a function body that runs EXECUTE", 'def upgrade():\n    op.execute("CREATE OR REPLACE FUNCTION pg_temp.f() RETURNS void LANGUAGE plpgsql AS $f$ BEGIN '
-                                          'EXECUTE \'SELECT 1\'; END $f$")\n', True),
-    ("a function body in a quoted string", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS \'SELECT 1\'")\n', True),
-    ("a function body in BEGIN ATOMIC", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END")\n', True),
+                                          'EXECUTE \'SELECT 1\'; END $f$; SELECT pg_temp.f()")\n', True),
+    ("a function body in a quoted string", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS \'SELECT 1\'; SELECT pg_temp.f()")\n', True),
+    ("a dollar-quoted default before the body", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f(a text DEFAULT $$a$$) RETURNS void '
+                                                'LANGUAGE plpgsql AS $$ BEGIN DROP INDEX graph.x; END $$; SELECT pg_temp.f()")\n', True),
+    ("a function body that runs EXECUTE, not run", 'def upgrade():\n    op.execute("CREATE OR REPLACE FUNCTION pg_temp.f() RETURNS void LANGUAGE plpgsql '
+                                                   'AS $f$ BEGIN EXECUTE \'SELECT 1\'; END $f$")\n', False),
+    ("a function body in BEGIN ATOMIC", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END; SELECT pg_temp.f()")\n', True),
     ("a function body that drops nothing", 'def upgrade():\n    op.execute("CREATE OR REPLACE FUNCTION kg.f(p jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ '
                                            'SELECT p || \'{}\'::jsonb $$")\n', False),
     ("a DO body that drops nothing", 'def upgrade():\n    op.execute("DO $$ BEGIN PERFORM 1; END $$")\n', False),
@@ -805,11 +809,24 @@ _EXEC_FN = "CREATE OR REPLACE FUNCTION graph.f() RETURNS void LANGUAGE plpgsql A
                                                       "SELECT kernel.register_function('graph.f()'::regprocedure);\n", "", False),
     ("run, its body reads nothing unsafe", "CREATE FUNCTION graph.h() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;\nSELECT graph.h();\n", "", False),
     ("run, with a contract", _PROC + "CALL graph.p();\n", "min_code_epoch = 3\n", False),
+    ("a dollar-quoted default before the body", "CREATE FUNCTION graph.f(a text DEFAULT $$a$$) RETURNS void LANGUAGE plpgsql "
+                                                "AS $$ BEGIN DROP INDEX graph.x; END $$;\nSELECT graph.f();\n", "", True),
+    ("a C function, run", "CREATE FUNCTION graph.f() RETURNS void LANGUAGE c AS 'lib', 'sym';\nSELECT graph.f();\n", "", True),
+    ("a DO with a quoted body", "DO 'BEGIN DROP INDEX graph.x; END';\n", "", True),
+    ("EXECUTE in a DO body, with a waiver", "DO $$ BEGIN EXECUTE 'DROP INDEX graph.x'; END $$;\n", "", True),
+    ("a DO body that drops nothing", "DO $$ BEGIN PERFORM 1; END $$;\n", "", False),
 ])
 def test_lint_reads_the_body_of_a_routine_the_file_runs(tmp_path, name, sql, mark, flagged):
     """A routine the .sql creates and runs in the same upgrade is code of that upgrade: its body is read with the DO-body rules. A routine it
     only creates (called later by the services) runs outside the upgrade's transaction and is not read."""
     f = tmp_path / "0003_x.sql"
     f.write_text(sql)
-    f.with_suffix(".py").write_text('revision = "graph_0003"\nolder_code_compatible = "a test revision that older code never sees"\n' + mark)
-    assert any("is run in this file" in m for m in lint.lint_file(f)) is flagged, (name, lint.lint_file(f))
+    f.with_suffix(".py").write_text('revision = "graph_9999"\nolder_code_compatible = "a test revision that older code never sees"\n' + mark)
+    assert any("runs in the upgrade" in m for m in lint.lint_file(f)) is flagged, (name, lint.lint_file(f))
+
+
+def test_lint_leaves_the_bodies_of_a_released_revision_alone(tmp_path):
+    f = tmp_path / "0003_x.sql"
+    f.write_text("DO $$ BEGIN EXECUTE 'SELECT 1'; END $$;\n")
+    f.with_suffix(".py").write_text('revision = "graph_0003"\nolder_code_compatible = "a test revision that older code never sees"\n')
+    assert not any("runs in the upgrade" in m for m in lint.lint_file(f))      # graph_0003 is in released_heads.json: it cannot change

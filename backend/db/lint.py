@@ -321,30 +321,54 @@ def _body_statements(body: str) -> list[str]:
     return out
 
 
-_CODE = re.compile(r"(?:DO|CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE))\b", re.I)    # statements whose quoted body PostgreSQL runs
-_FIRST_BODY = re.compile(r"\$([A-Za-z_]*)\$(.*?)\$\1\$", re.S)
-
-
-def _drops_index(sql: str) -> bool:
-    """A DROP INDEX in any statement of ``sql`` or of the body of a DO, function or procedure in it (code, read as one level: a routine the
-    upgrade creates may be called by it), read as ``statements()`` reads SQL (comments are spaces) and outside quoted and dollar-quoted strings
-    of other statements (data). Fails closed on what it does not read: any EXECUTE in a body (its SQL is a string, as lint_file takes it), a
-    body that is not dollar-quoted (a quoted string, BEGIN ATOMIC), and a dollar-quoted body inside a body (a nested DO or routine)."""
-    stmts = statements(sql)
-    return any(_CODE.match(q) and _body_unsafe(q) for q in stmts) or any(
-        re.search(r"\bDROP\s+INDEX\b", _strip_literals(_strip_bodies(q)), re.I) for q in stmts)
-
-
-def _body_unsafe(stmt: str) -> bool:
-    """Whether the body of a DO, function or procedure statement may DROP INDEX, read one level deep: a DROP INDEX or any EXECUTE in it, a
-    dollar-quoted body inside it, or a body that is not dollar-quoted (a quoted string, BEGIN ATOMIC)."""
-    m = _FIRST_BODY.search(stmt)
-    return m is None or any(_DOLLAR.search(q) or re.search(r"\bEXECUTE\b(?!\s+ON\b)|\bDROP\s+INDEX\b", q, re.I)
-                            for q in map(_strip_literals, _body_statements(m.group(2))))
+def _mask(stmt: str) -> tuple[str, list[str]]:
+    """The statement with each quoted string as ``''`` and each dollar-quoted string as ``$<n>$``, its text at index n of the list."""
+    out, bodies, i, n = [], [], 0, len(stmt)
+    while i < n:
+        c = stmt[i]
+        if c == "'":
+            j = i + 1
+            while j < n and not (stmt[j] == "'" and stmt[j + 1:j + 2] != "'"):
+                j += 2 if stmt[j] == "'" else 1
+            out.append("''")
+            i = j + 1
+        elif c == "$" and (m := _DOLLAR.match(stmt, i)):
+            end = stmt.find(m.group(0), m.end())
+            end = n if end < 0 else end
+            bodies.append(stmt[m.end():end])
+            out.append(f"${len(bodies) - 1}$")
+            i = end + len(m.group(0))
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out), bodies
 
 
 _ROUTINE = re.compile(rf"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+({_N})", re.I)
 _NOT_A_RUN = re.compile(r"(?:GRANT|REVOKE|COMMENT|(?:ALTER|DROP)\s+(?:FUNCTION|PROCEDURE|ROUTINE))\b", re.I)
+
+
+def _code_body(stmt: str) -> tuple[bool, str | None]:
+    """(whether PostgreSQL runs a body of this statement, that body). A DO's body is its one dollar-quoted string; a function's or procedure's
+    is the dollar-quoted string after its top-level ``AS`` (parameter defaults and other parenthesised parts skipped). The body is None
+    when it is not exactly that: a quoted string, BEGIN ATOMIC, ``AS 'file', 'symbol'``, or more than one candidate."""
+    masked, bodies = _mask(stmt)
+    if re.match(r"DO\b", masked, re.I):
+        m = re.fullmatch(r"DO\s+(?:LANGUAGE\s+\w+\s+)?\$(\d+)\$(?:\s+LANGUAGE\s+\w+)?\s*", masked, re.I)
+        return True, bodies[int(m.group(1))] if m else None
+    if not _ROUTINE.match(masked):
+        return False, None
+    while (flat := re.sub(r"\([^()]*\)", "", masked)) != masked:        # the top level: no parameter list, defaults or RETURNS TABLE (...)
+        masked = flat
+    m = re.findall(r"\bAS\s+\$(\d+)\$(\s*,)?", masked, re.I)
+    return True, bodies[int(m[0][0])] if len(m) == 1 and not m[0][1] and len(re.findall(r"\bAS\b", masked, re.I)) == 1 else None
+
+
+def _body_unsafe(body: str | None) -> bool:
+    """Whether a DO, function or procedure body may DROP INDEX, read one level deep: a DROP INDEX or any EXECUTE in it, a dollar-quoted body
+    inside it, or no body that could be read (None)."""
+    return body is None or any(_DOLLAR.search(q) or re.search(r"\bEXECUTE\b(?!\s+ON\b)|\bDROP\s+INDEX\b", q, re.I)
+                               for q in map(_strip_literals, _body_statements(body)))
 
 
 def _routines_run(stmts: list[str]) -> list[tuple[str, str]]:
@@ -352,15 +376,27 @@ def _routines_run(stmts: list[str]) -> list[tuple[str, str]]:
     statement that is not a routine's CREATE, GRANT, REVOKE, COMMENT, ALTER or DROP (a CALL, a SELECT, a PERFORM in a DO body, a trigger), or in
     the body of a routine that is run. A name matches with or without its schema (the search path), in any case."""
     routines = [(m.group(1), s) for s in stmts if (m := _ROUTINE.match(s))]
-    texts = [_strip_literals(_strip_bodies(s)) for s in stmts if not _ROUTINE.match(s) and not _NOT_A_RUN.match(s)]
+    texts = []
+    for s in stmts:
+        if not _ROUTINE.match(s) and not _NOT_A_RUN.match(s):
+            is_code, body = _code_body(s)
+            texts.append(_strip_literals(body if is_code and body is not None else _strip_bodies(s)))
 
     def named(name: str, text: str) -> bool:
         return re.search(rf'(?<![\w$])"?{re.escape(_key(name).split(".")[-1])}"?\s*\(', text, re.I) is not None
     run: list[tuple[str, str]] = []
     while new := [r for r in routines if r not in run and any(named(r[0], x) for x in texts)]:
         run += new
-        texts = [_strip_literals(" ".join(_body_statements(m.group(2)))) for _, s in new if (m := _FIRST_BODY.search(s))]
+        texts = [_strip_literals(body) for _, s in new if (body := _code_body(s)[1]) is not None]
     return run
+
+
+def unsafe_bodies(stmts: list[str]) -> list[str]:
+    """The one reader of the code an upgrade runs, for a revision's .sql and the constant SQL of its upgrade() alike: every DO, and every
+    function or procedure the statements create and run, whose body may DROP INDEX or cannot be read (``_body_unsafe``). Without
+    min_code_epoch that refuses the revision: a waiver does not clear it, the drop would hold the table's readers until the upgrade commits."""
+    run = {s for _, s in _routines_run(stmts)}
+    return [s for s in stmts if (re.match(r"\s*DO\b", s, re.I) or s in run) and _code_body(s)[0] and _body_unsafe(_code_body(s)[1])]
 
 
 def lint_file(path: Path) -> list[str]:
@@ -394,11 +430,13 @@ def lint_file(path: Path) -> list[str]:
         if not compat_ok:
             flag(f"{what} can break older code: set min_code_epoch or older_code_compatible = \"<reason>\"")
 
-    if not contract:
-        for name, s in _routines_run(stmts):
-            if _body_unsafe(s):
-                flag(f"{name} is run in this file and its body may DROP INDEX (a DROP INDEX, an EXECUTE, a nested or not dollar-quoted body): "
-                     "set min_code_epoch")
+    rev = _module_assign(py_text, "revision") if py_text else None
+    branch, _, epoch = rev.value.rpartition("_") if isinstance(rev, ast.Constant) and isinstance(rev.value, str) else ("", "", "")
+    shipped = epoch.isdigit() and int(epoch) <= _released().get(branch, 0)     # as lint_revision: a released revision cannot change
+    if not contract and not shipped:
+        for s in unsafe_bodies(statements(text) + [q for s in py_sql for q in statements(s)]):
+            flag(f"{s[:60]!r} runs in the upgrade and its body may DROP INDEX (a DROP INDEX, an EXECUTE, a nested or not dollar-quoted body): "
+                 "set min_code_epoch (older_code_compatible does not clear it)")
     if py_dynamic:
         breaks("SQL built at run time in upgrade() (not parsed)")
     for raw, full in items:
@@ -552,9 +590,11 @@ def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
     if not _contract(text):
         # fail closed: SQL the lint cannot read to the end may be a DROP INDEX, wherever the unknown part is
         bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: SQL built at run time: {s[:60]}" for s in runtime]
-        bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: {s[:60]}"     # a .sql's revision: lint_file reads its constant SQL
-                for s in ([] if sql_file.is_file() else const_sql)
-                if _drops_index(s)]
+        if not sql_file.is_file():                                                          # a .sql's revision: lint_file reads its constant SQL
+            stmts = [q for s in const_sql for q in statements(s)]
+            bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: {s[:60]}" for s in stmts
+                    if re.search(r"\bDROP\s+INDEX\b", _strip_literals(_strip_bodies(s)), re.I)]
+            bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: a body it runs: {s[:60]}" for s in unsafe_bodies(stmts)]
     return bad
 
 
