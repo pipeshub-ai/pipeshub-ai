@@ -2,8 +2,8 @@
 from alembic import op
 from db.lib.run_sql import run_sql
 
-revision = "kg_0022"
-down_revision = "kg_0021"
+revision = "kg_0023"
+down_revision = "kg_0022"
 branch_labels = None
 depends_on = None
 older_code_compatible = ("replaces kg.count_keys so that it adds no facet 2 delta and deletes the facet 2 rows; no release reads facet 2, the fold of an earlier release "

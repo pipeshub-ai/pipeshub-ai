@@ -442,7 +442,7 @@ def test_a_copy_labelled_epoch_8_when_the_trash_columns_are_added_is_relabelled_
 
 
 def test_the_counters_revision_keeps_no_facet_2_and_its_downgrade_keeps_it_again(db):
-    """kg_0022: a live, decided record adds a facet 1 delta and no facet 2 delta, and the facet 2 rows kept before the upgrade are gone; down to kg_0021 a write adds facet 2
+    """kg_0023: a live, decided record adds a facet 1 delta and no facet 2 delta, and the facet 2 rows kept before the upgrade are gone; down to kg_0022 a write adds facet 2
     deltas again (kg_0015's body) and the catalog is clean."""
     from .rls_fixture import ORG_A as org
     from .test_kg_writers import call, rec_args, rec_values
@@ -459,7 +459,7 @@ def test_the_counters_revision_keeps_no_facet_2_and_its_downgrade_keeps_it_again
         return [tuple(r) for r in c.execute("SELECT facet, sum(n)::int FROM kg.counts WHERE org_id = %s GROUP BY facet ORDER BY facet", (org,))]
 
     assert run_migrate(url).returncode == 0
-    r = run_migrate(url, "downgrade", "kg_0021", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    r = run_migrate(url, "downgrade", "kg_0022", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
         write(c, 11)
@@ -472,6 +472,39 @@ def test_the_counters_revision_keeps_no_facet_2_and_its_downgrade_keeps_it_again
         write(c, 12)
         assert facets(c) == [(1, 2)]
         assert c.execute("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'kg.counts'::regclass").fetchone()[0] is True
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+
+
+def test_the_capture_only_revision_refuses_a_services_own_row_and_its_downgrade_takes_the_refusal_back(db):
+    """kg_0022: a change-log row a service inserts itself is refused; down to kg_0021 it is taken again (kg_0004's body) and the catalog is clean; an upgrade refuses it again."""
+    import psycopg
+
+    from .rls_fixture import ORG_A as org
+    from .test_vetted_pins import unit
+    cluster, name = db
+    url = cluster.url(name, "pipeshub_migrate")
+
+    def takes(c) -> bool:
+        try:
+            with unit(c, "pipeshub_query", org):
+                c.execute("INSERT INTO kg.graph_changes (org_id, ends) VALUES (%s, ARRAY['3:forged'])", (org,))
+        except psycopg.errors.InsufficientPrivilege:
+            return False
+        c.execute("DELETE FROM kg.graph_changes")
+        return True
+
+    assert run_migrate(url).returncode == 0
+    with connect(cluster, name) as c:
+        assert not takes(c)
+    r = run_migrate(url, "downgrade", "kg_0021", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert takes(c)
+        assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
+    r = run_migrate(url)
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert not takes(c)
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
 
 

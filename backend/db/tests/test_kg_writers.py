@@ -628,7 +628,7 @@ def counters(c, org: str) -> list[tuple]:
 
 def test_a_write_of_the_records_adds_its_counter_deltas_in_the_writers_org_and_the_fold_writers_replace_them(pdb):
     """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record a listing counts by class (stamped and
-    decided) adds a facet 1 delta, an unchanged repeat adds none, its delete takes it back. kg_0022: no facet 2 delta (record type and origin) any more. The fold's writers
+    decided) adds a facet 1 delta, an unchanged repeat adds none, its delete takes it back. kg_0023: no facet 2 delta (record type and origin) any more. The fold's writers
     delete the deltas by id in the session org only and insert folded rows."""
     with conn(pdb) as c:
         clean(c)
