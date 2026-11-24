@@ -249,17 +249,34 @@ class TestArchivedAndDirectConversations:
 
         assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
 
-    async def test_a_live_private_channel_whose_members_cannot_be_read_still_grants_nobody(
+    async def test_a_live_private_channel_whose_members_cannot_be_read_keeps_its_stored_grants(
         self, workspace, store, checkpoints,
     ) -> None:
         connector, _ = await workspace_connector(store, checkpoints)
         await connector.run_sync()
+        stored = list(store.group_access[SECRET])
 
         workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
                        when=lambda p: p.get("channel") == SECRET)
         await connector.run_sync()
 
-        assert store.access_emails(SECRET) == set()
+        assert store.group_access[SECRET] == stored
+
+    async def test_a_private_channel_whose_members_cannot_be_read_does_not_gain_the_authenticator(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
+
+        store.authenticator_email = "owner@outside.com"
+        workspace.fail("conversations.members", SlackError("not_in_channel"), times=None,
+                       when=lambda p: p.get("channel") == SECRET)
+        await connector.run_sync()
+
+        assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
+        # A channel whose members were read still gets the authenticator.
+        assert "owner@outside.com" in store.access_emails(GENERAL)
 
     async def test_an_archived_channel_the_bot_is_not_in_is_not_joined(self, workspace, store, checkpoints) -> None:
         workspace.channels[GENERAL].update(is_archived=True, is_member=False)

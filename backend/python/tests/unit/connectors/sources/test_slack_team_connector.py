@@ -10123,8 +10123,11 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         c.messages_sync_point.update_sync_point.assert_awaited_once()
         _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
         assert payload == {"last_sync_time": "5.0"}
-        # Its replies were not read, so the thread's own sync point stays unwritten.
-        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+        # Its replies were not read: no thread sync point, but it is pending a retry.
+        c.audit_log_sync_point.update_sync_point.assert_awaited_once()
+        key, payload = c.audit_log_sync_point.update_sync_point.call_args[0]
+        assert "slack_pending_threads" in key
+        assert payload == {"thread_ts": ["5.0"]}
 
 
 class TestFullSyncCoverage:
@@ -10263,9 +10266,9 @@ class TestChannelMembersReadPartWay:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("error", ["channel_not_found", "not_in_channel", "missing_scope"])
-    async def test_a_skip_error_on_the_first_page_fails_closed(self, error: str) -> None:
-        """The members cannot be read with this token: nobody is granted the
-        channel, so a member removed from it never keeps access unseen."""
+    async def test_a_skip_error_on_the_first_page_keeps_the_stored_grants(self, error: str) -> None:
+        """The members cannot be read with this token: the private channel's grants
+        are unknown (None), so the stored ones stay and no authenticator grant is added."""
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
@@ -10274,7 +10277,7 @@ class TestChannelMembersReadPartWay:
         ds.conversations_members = AsyncMock(return_value=_slack_failure(error))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             assert await c._fetch_channel_members("Cpriv") == []
-            assert await c._channel_permissions({"id": "Cpriv", "is_private": True}) == []
+            assert await c._channel_permissions({"id": "Cpriv", "is_private": True}) is None
 
     @pytest.mark.asyncio
     async def test_a_channel_with_unreadable_members_is_written_with_no_grants(self) -> None:
