@@ -2086,6 +2086,17 @@ class TestRedisEvictionPolicyWiring:
         redis.aclose.assert_awaited_once()
         assert "volatile-lru" in (replay_set.eviction_policy_warning() or "")
 
+    async def test_an_allkeys_policy_stops_the_start(self) -> None:
+        from app.indexing_main import _check_redis_eviction_policy
+        from app.modules.indexing.replay_set import UnsafeEvictionPolicyError
+
+        redis = self._redis("allkeys-lru")
+        with patch(
+            "app.services.vector_db.rebuild_state.redis_from_config_service", AsyncMock(return_value=redis)
+        ), pytest.raises(UnsafeEvictionPolicyError):
+            await _check_redis_eviction_policy(MagicMock(), MagicMock())
+        redis.aclose.assert_awaited_once()
+
     async def test_an_unreachable_redis_does_not_stop_the_start(self) -> None:
         from app.indexing_main import _check_redis_eviction_policy
         from app.modules.indexing import replay_set
@@ -2106,12 +2117,12 @@ class TestRedisEvictionPolicyWiring:
             assert "redis" not in json.loads((await health_check(_make_health_request())).body)
             with patch(
                 "app.services.vector_db.rebuild_state.redis_from_config_service",
-                AsyncMock(return_value=self._redis("allkeys-lru")),
+                AsyncMock(return_value=self._redis("volatile-lru")),
             ):
                 await _check_redis_eviction_policy(MagicMock(), MagicMock())
             body = json.loads((await health_check(_make_health_request())).body)
 
-        assert "allkeys-lru" in body["redis"]["evictionPolicyWarning"]
+        assert "volatile-lru" in body["redis"]["evictionPolicyWarning"]
 
 
 class TestIndexingHealthCheck:

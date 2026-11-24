@@ -209,6 +209,8 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_USERNAME=${REDIS_USERNAME:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@${REDIS_HOST:-redis}:${REDIS_PORT:-6379}
+      # Optional separate Redis for caches (see backend/env.template).
+      - REDIS_CACHE_URL=${REDIS_CACHE_URL:-}
       - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
       - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
       - REDIS_DB=${REDIS_DB:-0}
@@ -814,6 +816,8 @@ services:
       - PG_MIGRATE_LOCK_TIMEOUT_S=${PG_MIGRATE_LOCK_TIMEOUT_S:-600}
       # key-value access by prefix per service role: shadow (logs what enforce would refuse) or enforce; empty keeps the stored mode
       - PG_KV_ACCESS=${PG_KV_ACCESS:-}
+      # maintenance_work_mem (MB) of the session that builds new indexes before the upgrade; empty keeps the server's
+      - PG_INDEX_BUILD_MEMORY_MB=${PG_INDEX_BUILD_MEMORY_MB:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -971,7 +975,7 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: ${NEO4J_MEMORY_LIMIT:-3G}
+          memory: ${NEO4J_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
           memory: ${NEO4J_MEMORY_RESERVATION:-2G}

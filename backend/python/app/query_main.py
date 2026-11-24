@@ -201,6 +201,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.debug("🚀 Starting retrieval application")
 
     await configure_envelope(app_container.config_service())
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+    await check_main_redis_eviction_policy(app_container.config_service(), logger, "query")
 
     from app.agents.actions.storage_search.storage_search import (
         sweep_orphan_views_at_startup,

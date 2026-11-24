@@ -3345,6 +3345,10 @@ class IGraphDBProvider(ABC):
         Get all child records for a parent record by parent_external_record_id.
         Optionally filter by record_type.
 
+        Matched on the child's stored ``externalParentId``, not on hierarchy
+        edges: a child whose PARENT_CHILD edge was removed is still returned,
+        which the web connector's relink after a full sync relies on.
+
         Live children only by default, so a folder whose children are all in
         the trash reads as empty.
 
@@ -7795,6 +7799,11 @@ class IGraphDBProvider(ABC):
         ``recordId``). Empty when the backend has no use for it. The caller drops a sample whose App the user has
         switched off (demo data), which only it can read."""
         return []
+
+    async def kh_refresh_plans(self, max_age: float | None = None) -> int:
+        """Plan again, off the request path, the listing statements in use whose cached plan is older than ``max_age``;
+        how many were planned. 0 for a backend with no plan cache to keep."""
+        return 0
 
     async def kh_scope_enabled(self) -> bool:
         return False

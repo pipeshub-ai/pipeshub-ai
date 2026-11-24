@@ -471,8 +471,11 @@ export abstract class BaseRedisStreamsConsumerConnection
   ): Promise<void> {
     try {
       await runWithRequestContext(contextFromEnvelope(message.value), () =>
-        runWithEnvelope(stream, message.value, (value) =>
-          handler({ ...message, value }),
+        runWithEnvelope(
+          stream,
+          message.value,
+          (value) => handler({ ...message, value }),
+          this.groupId,
         ),
       );
     } catch (error) {

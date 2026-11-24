@@ -26,6 +26,11 @@ export interface MailEventPayload {
    * notification and not an "Email delivery failed" one on top.
    */
   ifSmtpConfigured?: boolean;
+  /**
+   * The job's event id; a producer stamps a random one when unset. A job that may be published again for the same mail gives a
+   * stable one, so the mail consumer's inbox sends it once.
+   */
+  eventId?: string;
 }
 
 export interface PasswordResetLinkTarget {

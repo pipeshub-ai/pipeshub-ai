@@ -1,6 +1,7 @@
 import { Logger } from '../../../libs/services/logger.service';
 import { getNotificationRepository } from '../../../libs/repositories/notification';
 import { forOrg } from '../../../libs/context/orgContext';
+import { withDeliveryRecorded } from '../../../libs/context/envelope';
 import { isNotYetVisible } from '../../../libs/repositories/notification/dates';
 import { ValidationError } from '../../../libs/errors/validation.error';
 import { metricsBackend } from '../../../libs/services/telemetry/metrics-backend';
@@ -44,6 +45,8 @@ export const notificationEventRefused = metricsBackend.createCounter({
  * Stores one notification per recipient of *event* in its org and pushes each
  * to the user's open sockets. Returns how many were stored. Store errors are
  * thrown to the caller, which decides whether the message is redelivered.
+ * Throws DuplicateEnvelope when this delivery's event was already stored for
+ * the org (the durable consumer inbox).
  */
 export function deliverToOrg(
   event: NotificationBrokerMessage,
@@ -81,7 +84,11 @@ export function deliverToOrg(
     const docs = recipientUserIds.map((userOid) =>
       buildNotificationDocForUser(event, userOid),
     );
-    const savedDocs = await getNotificationRepository().insertMany(docs);
+    // On PostgreSQL the rows and the inbox record for this org commit together, so a redelivery cannot store them twice.
+    const savedDocs = await withDeliveryRecorded(
+      () => getNotificationRepository().insertMany(docs),
+      event.orgId,
+    );
 
     const savedIds: string[] = [];
     const dispatchedUserIds: string[] = [];

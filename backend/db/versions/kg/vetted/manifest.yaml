@@ -10,7 +10,8 @@
 # p_projector_epoch (kg_0013): the writers of stamps and fences and those that take work off the change log or the restamp queue take the caller's projection code
 # epoch and refuse one below 7. Code of an older release calls them without it and finds no such function: it wrote stamps without the access lists (kg.scopes)
 # and r13, and would take work off the log or the queue without writing them. Epoch 5 (kg_0014) is refused too: it wrote no PARENT_CHILD links (kind 3). Epoch 6
-# (kg_0017) is refused too: it read PARENT_AND_GRANT as an unknown rule. Epoch 7 (kg_0019) is refused too: it wrote no trash columns.
+# (kg_0017) is refused too: it read PARENT_AND_GRANT as an unknown rule. Epoch 7 (kg_0019) is refused too: it wrote no trash columns. Epoch 8 (kg_0021) is refused
+# too: it compiled stamps from the graph's grants instead of kg's copy of whether a node is granted.
 functions:
   - name: kg.w_nodes_upsert
     class: write
@@ -281,7 +282,7 @@ functions:
     callers: ["python/app/services/graph_db/postgres/kg"]
     pins: [{"op": "delete", "rel": "kg.graph_changes", "txn": "txid"}]
     args:
-      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
     returns: "int"
     no_org: "0"
     body: |
@@ -301,7 +302,7 @@ functions:
     pins: [{"op": "delete", "rel": "kg.graph_changes", "key": ["id"]}]
     args:
       - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
     returns: "int"
     no_org: "0"
     body: |
@@ -468,7 +469,7 @@ functions:
       - {"name": "p_under_deleted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
       - {"name": "p_legacy", "type": "smallint[]", "max_items": 5000, "item_range": [0, 8]}
       - {"name": "p_leaves", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
-      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
     returns: "int"
     no_org: "0"
     reads: ["kg.records"]
@@ -497,7 +498,7 @@ functions:
       - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
       - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
       - {"name": "p_jobs", "type": "bigint[]", "max_items": 5000}
-      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
     returns: "int"
     no_org: "0"
     reads: ["kg.records"]
@@ -550,7 +551,7 @@ functions:
       - {"name": "p_worker", "type": "text", "length": [1, 128]}
       - {"name": "p_attempts", "type": "int", "range": [0, 1000000]}
       - {"name": "p_cursor", "type": "text", "nullable": true, "length": [0, 512]}
-      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
     returns: "bigint"
     no_org: "0"
     reads: ["kg.restamp_queue"]
@@ -596,7 +597,7 @@ functions:
     pins: [{"op": "delete", "rel": "kg.restamp_queue", "key": ["id"]}]
     args:
       - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
-      - {"name": "p_projector_epoch", "type": "int", "range": [8, 1000000]}
+      - {"name": "p_projector_epoch", "type": "int", "range": [9, 1000000]}
     returns: "boolean"
     no_org: "false"
     reads: ["kg.restamp_queue"]

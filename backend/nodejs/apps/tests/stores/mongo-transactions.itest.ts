@@ -16,6 +16,8 @@ import { expect } from 'chai';
 import { randomUUID } from 'crypto';
 import mongoose from 'mongoose';
 import { MongoService } from '../../src/libs/services/mongo.service';
+import { MongoUnitOfWork } from '../../src/libs/repositories/mongo';
+import { UniqueConstraintError } from '../../src/libs/repositories/errors';
 import { Org } from '../../src/modules/user_management/schema/org.schema';
 import { Users, type User } from '../../src/modules/user_management/schema/users.schema';
 import {
@@ -25,12 +27,14 @@ import {
   saveUserEnsuringOrgRetainsAdmin,
 } from '../../src/modules/user_management/services/user-admin.service';
 import sinon from 'sinon';
+import { Logger } from '../../src/libs/services/logger.service';
 import { BadRequestError, ServiceUnavailableError } from '../../src/libs/errors/http.errors';
 import { setUserRepository, type UserRepository } from '../../src/libs/repositories/user';
 import { MongoUserRepository, adminLeaseTiming } from '../../src/libs/repositories/user/mongo';
 import { MongoOrgRepository } from '../../src/libs/repositories/org/mongo';
 import { adminInviter, withoutSideStores } from './admin-invite-race';
 import { deleteRace, gate, waitUntil, type DeleteOutcome, type DeleteRace } from './admin-delete-race';
+import { createRace, type CreateOutcome, type CreateRace } from './admin-create-race';
 import { USER_PROMOTED_DURING_DELETE } from '../../src/modules/user_management/controller/users.controller';
 
 function requireEnv(name: string): string {
@@ -311,6 +315,151 @@ describe('MongoDB code paths against a real MongoDB', function () {
         }
       }
       expect(ok).to.equal(1);
+    });
+
+    // A removed admin row is what a delete racing a promotion left behind. A restore grants nothing; only an admin
+    // invite promotes, within the cap and audited.
+    const removedAdmin = (orgId: string) =>
+      Users.create({ orgId, email: `gone-admin-${randomUUID().slice(0, 8)}@example.com`, fullName: 'Removed Admin', role: 'admin', isDeleted: true });
+
+    it(`a member invite brings a removed admin back as a member, with the org at ${MAX_ORG_ADMINS} admins`, async () => {
+      const orgId = await newOrg();
+      for (let i = 0; i < MAX_ORG_ADMINS; i += 1) await newUser(orgId, 'admin');
+      const gone = await removedAdmin(orgId);
+
+      await adminInviter(rsAvailable, 'member')(orgId, [gone.email]);
+
+      const back = await Users.findById(gone._id).lean();
+      expect([back?.isDeleted, back?.role]).to.deep.equal([false, 'member']);
+      expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+    });
+
+    it(`an admin invite of a removed admin still counts it: refused at ${MAX_ORG_ADMINS} admins, the account stays removed`, async () => {
+      const orgId = await newOrg();
+      for (let i = 0; i < MAX_ORG_ADMINS; i += 1) await newUser(orgId, 'admin');
+      const gone = await removedAdmin(orgId);
+
+      const refused = await adminInviter(rsAvailable)(orgId, [gone.email]).then(() => null, (error: unknown) => error);
+
+      expect(refused).to.be.instanceOf(BadRequestError);
+      expect((await Users.findById(gone._id).lean())?.isDeleted).to.equal(true);
+      expect(await adminCount(orgId)).to.equal(MAX_ORG_ADMINS);
+    });
+
+    it('an admin invite of a removed admin under the cap restores it, then promotes it with a role-change line', async () => {
+      const orgId = await newOrg();
+      await newUser(orgId, 'admin');
+      const gone = await removedAdmin(orgId);
+      const info = sinon.spy(Logger.prototype, 'info');
+      try {
+        await adminInviter(rsAvailable)(orgId, [gone.email]);
+        const events = info.getCalls().map((c) => c.args[0]).filter((e) => e === 'user.restore' || e === 'user.role.change');
+        expect(events).to.deep.equal(['user.restore', 'user.role.change']);
+      } finally {
+        info.restore();
+      }
+      expect((await Users.findById(gone._id).lean())?.role).to.equal('admin');
+      expect(await adminCount(orgId)).to.equal(2);
+    });
+
+    it('a restore of an address whose account is already live leaves its role alone', async () => {
+      const orgId = await newOrg();
+      const live = await newUser(orgId, 'admin');
+      await new MongoUserRepository().restoreByEmails(orgId, [live.email]);
+      expect((await Users.findById(live._id).lean())?.role).to.equal('admin');
+    });
+  });
+
+  // A profile write reads the account as live, then saves it. A removal that lands in between must not be overwritten:
+  // on a standalone server a promotion would otherwise leave a removed admin, which a member invite later restores.
+  describe('a profile write racing the removal of its account', () => {
+    const users = new MongoUserRepository();
+    afterEach(() => sinon.restore());
+
+    /** Parks `updateProfile`'s live read of `id` once it has loaded the document; `release` lets the save go on. */
+    const parkProfileRead = (id: string) => {
+      const atRead = gate();
+      const released = gate();
+      const real = Users.findOne.bind(Users) as (...args: unknown[]) => Promise<unknown>;
+      let armed = true;
+      sinon.stub(Users, 'findOne').callsFake(((filter: Record<string, unknown>, ...rest: unknown[]) => {
+        const isProfileRead = armed && String(filter?._id) === id && filter.isDeleted === false && 'orgId' in filter;
+        if (!isProfileRead) return real(filter, ...rest);
+        armed = false;
+        return real(filter, ...rest).then(async (doc) => {
+          atRead.open();
+          await released.opened;
+          return doc;
+        });
+      }) as never);
+      return { atRead: atRead.opened, release: released.open };
+    };
+    /** Waits for the park; a write that settles first means the gate matched no read, so fail at once. */
+    const reachedRead = (atRead: Promise<void>, write: Promise<unknown>) =>
+      Promise.race([
+        atRead,
+        write.then(
+          () => expect.fail('the write finished without reaching the parked read'),
+          (error: unknown) => { throw error; },
+        ),
+      ]);
+    /** Runs `run` on a new member and removes the member between its read and its write. */
+    const removedDuring = async (run: (orgId: string, id: string) => Promise<unknown>) => {
+      const orgId = await newOrg();
+      const u = await newUser(orgId, 'member');
+      const id = String(u._id);
+      const { atRead, release } = parkProfileRead(id);
+      const write = run(orgId, id);
+      await reachedRead(atRead, write);
+      await users.markDeleted(orgId, id, { signedOut: true });
+      release();
+      return { result: await write, row: await Users.findById(id).lean() };
+    };
+
+    it('writes nothing onto an account removed after the read, and answers null', async () => {
+      const { result, row } = await removedDuring((orgId, id) =>
+        users.updateProfile(orgId, id, { role: 'admin', fullName: 'Late Name' }));
+      expect(result).to.equal(null);
+      expect(row).to.include({ role: 'member', fullName: 'Test User', isDeleted: true });
+    });
+
+    it('answers null for a removed account even when the write changes nothing', async () => {
+      const { result, row } = await removedDuring((orgId, id) =>
+        users.updateProfile(orgId, id, { fullName: 'Test User' }));
+      expect(result).to.equal(null);
+      expect(row).to.include({ isDeleted: true });
+    });
+
+    it('a save that fails for another reason still throws: a taken address is a UniqueConstraintError', async () => {
+      const orgId = await newOrg();
+      const [u, other] = [await newUser(orgId, 'member'), await newUser(orgId, 'member')];
+      const err = await users.updateProfile(orgId, String(u._id), { email: other.email }).then(() => null, (e: unknown) => e);
+      expect(err).to.be.instanceOf(UniqueConstraintError);
+    });
+
+    if (rsAvailable) {
+      it('inside a transaction whose first write is the save: nothing written, null, and the unit commits', async () => {
+        const { result, row } = await removedDuring((orgId, id) =>
+          new MongoUnitOfWork(true).run((tx) => users.updateProfile(orgId, id, { role: 'admin' }, tx)));
+        expect(result).to.equal(null);
+        expect(row).to.include({ role: 'member', isDeleted: true });
+      });
+    }
+
+    it('a promotion whose account is removed after its read answers 404 and leaves a removed member', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const u = String((await newUser(orgId, 'member'))._id);
+      const { atRead, release } = parkProfileRead(u);
+      const promotion = saveUserEnsuringAdminCap(orgId, u, { role: 'admin' }, rsAvailable);
+      await reachedRead(atRead, promotion);
+      // The delete's own last write, after its member check passed.
+      await users.markDeleted(orgId, u, { signedOut: true, deletedBy: a });
+      release();
+      const outcome = await promotion.then(() => null, (error: Error) => error);
+      expect(outcome?.message).to.equal('User not found');
+      expect(await Users.findById(u).lean()).to.include({ role: 'member', isDeleted: true });
+      expect(await adminCount(orgId)).to.equal(1);
     });
   });
 
@@ -646,6 +795,123 @@ describe('MongoDB code paths against a real MongoDB', function () {
         setUserRepository();
         await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, true);
         await expectKeptAsAdmin(orgId, u, a, await del.done);
+      });
+    }
+  });
+  describe('a failed create taking back an account the org relies on', () => {
+    let race: CreateRace;
+    before(() => { race = createRace(rsAvailable); });
+    after(() => race.restore());
+    afterEach(() => setUserRepository());
+
+    const email = () => `b-${randomUUID().slice(0, 8)}@example.com`;
+    const idOf = async (address: string) => String((await Users.findOne({ email: address }).lean())?._id);
+    const expectKeptAsAdmin = async (orgId: string, address: string, outcome: CreateOutcome) => {
+      expect(outcome.status).to.equal('failed');
+      expect((outcome as { error: Error }).error.message).to.equal('everyone-group write failed');
+      expect(await Users.findOne({ email: address }).lean()).to.include({ role: 'admin', isDeleted: false });
+      expect(await adminCount(orgId)).to.equal(1);
+    };
+
+    it('an admin create the only other admin was demoted on is kept: the org keeps its admin', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const address = email();
+      const create = race.start(orgId, a, address, 'admin');
+      await create.parked;
+      // Passes: the new admin counts.
+      await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, rsAvailable);
+      create.fail();
+      await expectKeptAsAdmin(orgId, address, await create.done);
+      expect(await Users.findById(a).lean()).to.include({ role: 'member' });
+    });
+
+    it('a member create promoted meanwhile, with the other admin demoted, is kept: the org keeps its admin', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const address = email();
+      const create = race.start(orgId, a, address, 'member');
+      await create.parked;
+      await saveUserEnsuringAdminCap(orgId, await idOf(address), { role: 'admin' }, rsAvailable);
+      await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, rsAvailable);
+      create.fail();
+      await expectKeptAsAdmin(orgId, address, await create.done);
+    });
+
+    it('with nothing in the window, the account is removed and the address is free again', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const address = email();
+      const create = race.start(orgId, a, address, 'admin');
+      await create.parked;
+      create.fail();
+      expect((await create.done).status).to.equal('failed');
+      expect(await Users.findOne({ email: address }).lean()).to.equal(null);
+      const demote = await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, rsAvailable).catch((e: Error) => e);
+      expect(demote).to.be.instanceOf(BadRequestError);
+      expect(await adminCount(orgId)).to.equal(1);
+    });
+
+    it('an admin create someone already demoted is removed, though its own demotion is refused', async () => {
+      const orgId = await newOrg();
+      const a = String((await newUser(orgId, 'admin'))._id);
+      const address = email();
+      const create = race.start(orgId, a, address, 'admin');
+      await create.parked;
+      await saveUserEnsuringOrgRetainsAdmin(orgId, await idOf(address), { role: 'member' }, rsAvailable);
+      create.fail();
+      expect((await create.done).status).to.equal('failed');
+      expect(await Users.findOne({ email: address }).lean()).to.equal(null);
+      expect(await Users.findById(a).lean()).to.include({ role: 'admin' });
+    });
+
+    if (rsAvailable) {
+      it('a removal sent while a promotion of the account is uncommitted waits for it, then keeps the new admin', async () => {
+        const orgId = await newOrg();
+        const a = String((await newUser(orgId, 'admin'))._id);
+        const address = email();
+        const create = race.start(orgId, a, address, 'member');
+        await create.parked;
+        const real = new MongoUserRepository();
+        const written = gate();
+        const commit = gate();
+        // Installed after the create took its repository: only the promotion is held.
+        setUserRepository(new Proxy(real, {
+          get: (t, k: keyof UserRepository) => (k === 'updateProfile'
+            ? async (...args: Parameters<UserRepository['updateProfile']>) => {
+              const saved = await real.updateProfile(...args);
+              written.open();
+              await commit.opened; // still inside the transaction
+              return saved;
+            }
+            : (t[k] as (...x: unknown[]) => unknown).bind(t)),
+        }) as UserRepository);
+        const b = await idOf(address);
+        const promotion = saveUserEnsuringAdminCap(orgId, b, { role: 'admin' }, true);
+        let settled = false;
+        try {
+          await written.opened;
+          create.fail();
+          void create.done.then(() => { settled = true; });
+          // The conditional removal reached the server and is held there by the open transaction.
+          const admin = mongo.getConnection().getClient().db('admin');
+          await waitUntil('the removal is in flight', async () => (await admin.aggregate([
+            { $currentOp: { allUsers: true } },
+            { $match: {
+              ns: `${dbName}.users`,
+              'command.findAndModify': 'users',
+              'command.query._id': new mongoose.Types.ObjectId(b),
+              'command.query.role': { $exists: true },
+            } },
+          ]).toArray()).length > 0);
+          expect(settled, 'the removal finished before the promotion committed').to.equal(false);
+        } finally {
+          commit.open();
+        }
+        await promotion;
+        setUserRepository();
+        await saveUserEnsuringOrgRetainsAdmin(orgId, a, { role: 'member' }, true);
+        await expectKeptAsAdmin(orgId, address, await create.done);
       });
     }
   });

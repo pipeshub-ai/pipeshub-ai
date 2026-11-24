@@ -883,11 +883,7 @@ async def get_shared_signed_url_cache(config_service: Any, logger: Any) -> ISign
         client = None
         try:
             cfg = await config_service.get_redis_config()
-            provider = get_redis_provider(
-                RedisConnectionConfig.from_host_port(
-                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db, tls=cfg.tls
-                )
-            )
+            provider = get_redis_provider(RedisConnectionConfig.for_cache(cfg))
             client = provider.create_client(
                 ClientOptions(
                     decode_responses=True,
@@ -929,11 +925,7 @@ async def _record_redis_client(config_service: Any, logger: Any) -> "tuple[Any, 
         client = None
         try:
             cfg = await config_service.get_redis_config()
-            provider = get_redis_provider(
-                RedisConnectionConfig.from_host_port(
-                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db, tls=cfg.tls
-                )
-            )
+            provider = get_redis_provider(RedisConnectionConfig.for_cache(cfg))
             client = provider.create_client(
                 ClientOptions(
                     decode_responses=False,

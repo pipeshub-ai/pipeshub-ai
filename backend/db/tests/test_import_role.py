@@ -1,8 +1,11 @@
 """The import role (kernel_0012, platform_data_0002): the one login that copies an existing install's documents into PostgreSQL.
 It holds the row policy and table privileges on exactly the tables the copy writes; the jobs login and the application roles gain
 nothing from it; it cannot log in until an operator enables it."""
+import json
+
 import psycopg
 import pytest
+from psycopg import sql
 
 from .conftest import run_migrate
 from .test_integration import MIGRATE, connect
@@ -97,6 +100,35 @@ def test_the_import_login_is_allowed_only_while_a_migration_job_runs(rdb):
     with connect(cluster, name) as c:
         c.execute("ALTER ROLE pipeshub_import NOLOGIN")
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+
+
+def _checkpoint(c, role: str, job: int) -> bool:
+    c.execute(sql.SQL("SET ROLE {}").format(sql.Identifier(role)))
+    try:
+        return c.execute("SELECT platform.job_checkpoint(%s, %s)", (job, json.dumps({"by": role}))).fetchone()[0]
+    finally:
+        c.execute("RESET ROLE")
+
+
+def test_only_the_copy_saves_a_running_jobs_progress(rdb):
+    """The jobs login is held by every background process of the application; none of them may overwrite the progress the copy resumes
+    from. The copy's own login (import) still saves it, and an installed database loses the jobs role's grant on upgrade (platform_data_0006)."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        job = c.execute("SELECT platform.job_start('docstore_migration')").fetchone()[0]
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            _checkpoint(c, "pipeshub_jobs", job)
+        assert _checkpoint(c, "pipeshub_import", job) is True
+        assert c.execute("SELECT progress FROM platform.jobs WHERE id = %s", (job,)).fetchone()[0] == {"by": "pipeshub_import"}
+        c.execute("SELECT platform.job_finish(%s, 'done')", (job,))
+    r = run_migrate(cluster.url(name, MIGRATE), "downgrade", "platform_data_0005", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    assert r.returncode == 0, r.stdout
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT has_function_privilege('pipeshub_jobs', 'platform.job_checkpoint(bigint, text)', 'EXECUTE')").fetchone()[0] is True
+    assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
+    with connect(cluster, name) as c:
+        assert c.execute("SELECT has_function_privilege('pipeshub_jobs', 'platform.job_checkpoint(bigint, text)', 'EXECUTE')").fetchone()[0] is False
+        assert c.execute("SELECT has_function_privilege('pipeshub_import', 'platform.job_checkpoint(bigint, text)', 'EXECUTE')").fetchone()[0] is True
 
 
 def test_downgrade_of_the_extension_list_keeps_the_names_the_kernel_allows(rdb):

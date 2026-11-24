@@ -232,7 +232,6 @@ describe('Knowledge Base Utils', () => {
         'application/pdf',
         'https://storage.example.com/upload?sig=abc',
         'doc-1',
-        'test.pdf',
       )
     })
 
@@ -247,7 +246,6 @@ describe('Knowledge Base Utils', () => {
         'text/plain',
         'https://storage.example.com/upload',
         'doc-2',
-        'test.txt',
       )
     })
 
@@ -263,11 +261,11 @@ describe('Knowledge Base Utils', () => {
           'text/plain',
           'https://storage.example.com/upload',
           'doc-3',
-          'test.txt',
         )
         expect.fail('Should have thrown')
       } catch (error: any) {
-        expect(error.message).to.include('Upload failed with status 403')
+        expect(error.message).to.equal('Upload to the signed URL was refused')
+        expect(error.cause).to.deep.equal({ status: 403 })
       }
     })
 
@@ -282,7 +280,6 @@ describe('Knowledge Base Utils', () => {
         'image/png',
         'https://storage.example.com/upload-img',
         'doc-5',
-        'image.png',
       )
     })
   })
@@ -398,7 +395,7 @@ describe('Knowledge Base Utils', () => {
 
       expect(failed(publish)).to.have.length(1)
       expect(failed(publish)[0].stage).to.equal('index')
-      expect(counts).to.deep.equal({ succeeded: 0, failed: 1 })
+      expect(counts).to.deep.equal({ succeeded: 0, failed: 1, failure: { status: 500, error_class: 'upstream_5xx' } })
     })
 
     it('streams file:succeeded on success', async () => {
@@ -455,7 +452,6 @@ describe('Knowledge Base Utils - coverage', () => {
         'application/pdf',
         'https://storage.example.com/upload',
         'doc-1',
-        'test.pdf',
       )
 
       expect((globalThis.fetch as sinon.SinonStub).calledOnce).to.be.true
@@ -469,6 +465,7 @@ describe('Knowledge Base Utils - coverage', () => {
         ok: false,
         status: 403,
         text: sinon.stub().resolves('Forbidden'),
+        body: { cancel: sinon.stub().resolves() },
       } as any)
 
       let err: Error | undefined
@@ -478,13 +475,12 @@ describe('Knowledge Base Utils - coverage', () => {
           'application/pdf',
           'https://storage.example.com/upload',
           'doc-1',
-          'test.pdf',
         )
       } catch (e) {
         err = e as Error
       }
       expect(err).to.be.instanceOf(Error)
-      expect(err?.message).to.include('403')
+      expect((err as { cause?: unknown })?.cause).to.deep.equal({ status: 403 })
     })
 
     it('should throw when fetch itself rejects (network error)', async () => {
@@ -497,7 +493,6 @@ describe('Knowledge Base Utils - coverage', () => {
           'application/pdf',
           'https://storage.example.com/upload',
           'doc-1',
-          'test.pdf',
         )
       } catch (e) {
         err = e as Error
@@ -579,7 +574,7 @@ describe('Knowledge Base Utils - coverage', () => {
       expect(counts).to.deep.equal({ succeeded: 0, failed: 1 })
     })
 
-    it('warns and returns failed counts when zero uploads succeed', async () => {
+    it('returns failed counts and no indexing failure, and writes no line above DEBUG, when zero uploads succeed', async () => {
       const results = [
         createPlaceholderResult({ upload: () => Promise.reject(new Error('fail')) }),
       ]
@@ -593,7 +588,10 @@ describe('Knowledge Base Utils - coverage', () => {
         publish,
       )
 
-      expect(mockLogger.warn.called).to.be.true
+      // The caller writes the batch line, from the same totals as its `done` summary.
+      expect(mockLogger.info.called).to.be.false
+      expect(mockLogger.warn.called).to.be.false
+      expect(mockLogger.error.called).to.be.false
       expect(counts).to.deep.equal({ succeeded: 0, failed: 1 })
     })
 
@@ -665,7 +663,7 @@ describe('Knowledge Base Utils - coverage', () => {
 
         expect(failedEvents()).to.have.length(1)
         expect(failedEvents()[0].stage).to.equal('index')
-        expect(counts).to.deep.equal({ succeeded: 0, failed: 1 })
+        expect(counts).to.deep.equal({ succeeded: 0, failed: 1, failure: { status: 500, error_class: 'upstream_5xx' } })
       })
 
       it('returns failed counts even when the indexing call throws', async () => {
@@ -687,7 +685,10 @@ describe('Knowledge Base Utils - coverage', () => {
         )
 
         expect(counts.failed).to.be.greaterThan(0)
-        expect(mockLogger.error.called).to.be.true
+        // Returned for the caller's batch line, not logged here.
+        expect(counts.failure).to.include({ error_class: 'internal' })
+        expect((counts.failure?.error as Error).message).to.equal('network down')
+        expect(mockLogger.error.called).to.be.false
       })
 
       it('handles a mix of upload-failed, indexed, and python-failed files', async () => {
