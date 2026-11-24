@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# The long fault soak of the PostgreSQL-only stack (not run on pull requests). Starts postgres, pgbouncer, the migration job and the
+# placement and fold workers of docker-compose.postgres-only.yml (JIT off, ports published on 127.0.0.1), then runs
+# backend/python/tests/integration/pg_fault/soak.py against them: steady connector writes with their record events, a queue consumer
+# with the consumer inbox, the typed-graph worker, configuration reads and writes and permission reads, with a fault every cycle
+# (server restart fast and immediate, pooler restart, every service role's sessions terminated, the server away for 60 s). Each cycle's
+# checks and a sample a minute (connections, WAL, database size, memory, restarts) go to $OUT as JSON lines; the exit code is the driver's.
+#
+#   SOAK_HOURS=6 OUT=/tmp/soak.jsonl PYTHON=<python with backend/python's dependencies> deployment/docker-compose/tests/pg_fault_soak.sh
+#
+# PG_MAJOR (default 17), PG_IMAGE_<major> (default: built here from ./postgres as pmcompose/postgres:<major>-pmc), MIGRATE_IMAGE (default:
+# built from backend/db/Dockerfile as pmcompose/migrate:pmc), PROJECT (default pgres-soak; containers are named <PROJECT>-<service>-1),
+# CYCLE_MIN (default 15), KEEP=1 leaves the project up.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+DOCKER="${DOCKER:-docker}"
+major="${PG_MAJOR:-17}"
+proj="${PROJECT:-pgres-soak}"
+out="$(realpath -m "${OUT:?OUT names the JSON lines file}")"
+py="${PYTHON:-python3}"
+work="$(mktemp -d)"
+env_file="$work/env"
+dc() { $DOCKER compose --env-file "$env_file" -p "$proj" -f docker-compose.yml -f docker-compose.postgres-only.yml -f "$work/soak.yml" "$@"; }
+cleanup() { if [ "${KEEP:-0}" != 1 ]; then dc down -v >/dev/null 2>&1 || true; fi; rm -rf "$work"; }
+trap cleanup EXIT
+pw() { head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
+image_var="PG_IMAGE_$major"; image="${!image_var:-pmcompose/postgres:$major-pmc}"
+if [ -z "${!image_var:-}" ]; then $DOCKER build -q --build-arg "PG_MAJOR=$major" -t "$image" postgres >/dev/null; fi
+migrate_image="${MIGRATE_IMAGE:-pmcompose/migrate:pmc}"
+if [ -z "${MIGRATE_IMAGE:-}" ]; then $DOCKER build -q -f ../../backend/db/Dockerfile -t "$migrate_image" ../.. >/dev/null; fi
+
+declare -A pass
+for v in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP; do pass[$v]="$(pw)"; echo "PG_${v}_PASSWORD=${pass[$v]}"; done > "$env_file"
+{ echo "PG_MAJOR=$major"; echo "PG_IMAGE=${image%:*}"; echo "PG_IMAGE_REV=${image##*:$major-}"
+  echo "PIPESHUB_MIGRATE_IMAGE=${migrate_image%:*}"; echo "IMAGE_TAG=${migrate_image##*:}"; echo "PG_MEMORY_LIMIT=4G"; } >> "$env_file"
+cat > "$work/soak.yml" <<'YML'
+services:
+  postgres:
+    command: ["postgres", "-c", "jit=off"]
+    ports: ["127.0.0.1::5432"]
+  pgbouncer:
+    ports: ["127.0.0.1::6432"]
+YML
+
+dc up -d --no-build postgres pgbouncer pipeshub-migrate pipeshub-placement pipeshub-fold
+for _ in $(seq 120); do [ "$($DOCKER inspect -f '{{.State.Status}}' "$proj-pipeshub-migrate-1")" = exited ] && break; sleep 2; done
+[ "$($DOCKER inspect -f '{{.State.ExitCode}}' "$proj-pipeshub-migrate-1")" = 0 ] || { echo "the migration job failed"; dc logs pipeshub-migrate | tail -40; exit 1; }
+port() { $DOCKER port "$proj-$1-1" "$2" | head -1 | sed 's/.*://'; }
+
+PG_SOAK_PASSWORDS="$(printf '{"admin":"%s","node":"%s","connectors":"%s","indexing":"%s","query":"%s","kv":"%s","jobs":"%s"}' \
+  "${pass[ADMIN]}" "${pass[NODE]}" "${pass[CONNECTORS]}" "${pass[INDEXING]}" "${pass[QUERY]}" "${pass[KV]}" "${pass[JOBS]}")" \
+PG_SOAK_SERVER_PORT="$(port postgres 5432)" PG_SOAK_POOLER_PORT="$(port pgbouncer 6432)" \
+PG_SOAK_PG_CONTAINER="$proj-postgres-1" PG_SOAK_POOLER_CONTAINER="$proj-pgbouncer-1" \
+PG_SOAK_WORKERS="$proj-pipeshub-placement-1 $proj-pipeshub-fold-1" \
+  bash -c 'cd ../../backend/python && PYTHONPATH="$PWD" exec "$0" "$@"' "$py" -m tests.integration.pg_fault.soak --hours "${SOAK_HOURS:-6}" --cycle-min "${CYCLE_MIN:-15}" --out "$out"
