@@ -67,7 +67,7 @@ export const assignAgentCapabilitiesToPayload = (
 };
 
 /**
- * Forward the opt-in telemetry flag. Deliberately NOT folded into
+ * Forward the opt-in retrieval-context flag. Deliberately NOT folded into
  * `assignAgentCapabilitiesToPayload`: that one is only called in agent mode,
  * and this flag has to reach Python on every stream mode — `internal_search`
  * most of all, since that is the mode evaluations measure. Omitted when

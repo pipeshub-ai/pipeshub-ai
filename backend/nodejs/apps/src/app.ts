@@ -29,10 +29,11 @@ import {
   newSystemRoot,
 } from './libs/context/request-context';
 import {
-  metricsMiddleware,
-  startOrgMetricsRefresh,
-  startTelemetry,
-} from './libs/services/telemetry/telemetry-runtime';
+  loadPlugins,
+  pluginHttpMiddlewares,
+  shutdownPlugins,
+  startPlugins,
+} from './libs/plugins';
 import {
   configureEnvelopeFromSecret,
   configureInbox,
@@ -49,10 +50,6 @@ import { loadConfigurationManagerConfig } from './modules/configuration_manager/
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
 import { createProcessMetricsServer } from './libs/services/telemetry/process-metrics';
-import {
-  telemetryOffMessage,
-  isTelemetryEnabled,
-} from './libs/services/telemetry/telemetry-impl';
 import { KeyValueStoreService } from './libs/services/keyValueStore.service';
 // Import shared symbols from `./config` rather than `./modules/*` directly.
 import {
@@ -355,6 +352,9 @@ export class Application {
       this.logger = new Logger(loggerConfig);
       installOrgLifecycle({ orgLifecycleHook, scopedTokenGuard });
 
+      // Before any container: plug-ins listen for what start-up announces.
+      await loadPlugins();
+
       // Import REDIS_PROVIDER_MODULE (R10) before any container -- and
       // therefore any RedisService/RedisDistributedKeyValueStore/streams
       // client -- resolves REDIS_MODE against the provider registry. An EE
@@ -492,14 +492,7 @@ export class Application {
       this.setupApiDocs();
       this.configureErrorHandling();
 
-      if (isTelemetryEnabled()) {
-        startTelemetry(
-          KeyValueStoreService.getInstance(configurationManagerConfig),
-        );
-        startOrgMetricsRefresh(this.logger);
-      } else {
-        this.logger.info(telemetryOffMessage);
-      }
+      await startPlugins();
 
       // Domain events are written to the outbox by whoever makes the change;
       // this is what actually delivers them. Without it running, events queue
@@ -722,8 +715,8 @@ export class Application {
         appConfig.scopedJwtSecret,
       ),
     );
-    if (isTelemetryEnabled()) {
-      this.app.use(metricsMiddleware());
+    for (const middleware of pluginHttpMiddlewares()) {
+      this.app.use(middleware);
     }
     // Registered after the rate limiter: a rejection ends the request through
     // next(error), which skips every later middleware, so these requests would
@@ -1299,6 +1292,9 @@ export class Application {
           error: err instanceof Error ? err.message : String(err),
         });
       }
+      // After the drain, so the last requests are counted; before the
+      // containers go, while a plug-in can still reach what it started with.
+      await shutdownPlugins();
       // After the drain: an in-flight /mail/emails/sendEmail request may still be
       // queued on this pool, and close() fails queued messages.
       try {
@@ -1416,6 +1412,7 @@ export class Application {
    */
   async preInitMigration(): Promise<void> {
     const logger = Logger.getInstance(loggerConfig);
+    await loadPlugins();
     const configurationManagerConfig = loadConfigurationManagerConfig();
 
     if (
