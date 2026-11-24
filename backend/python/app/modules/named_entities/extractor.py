@@ -39,7 +39,7 @@ from app.modules.named_entities.strategies.single_call import (
     SingleCallExtractionStrategy,
 )
 from app.modules.named_entities.text import TextUnit, text_units_from_blocks
-from app.telemetry.modules.named_entity_metrics import record_fallback
+from app.plugins.telemetry.modules.named_entity_metrics import record_fallback
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel

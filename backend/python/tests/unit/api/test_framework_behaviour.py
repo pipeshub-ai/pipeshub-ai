@@ -26,7 +26,7 @@ from starlette.background import BackgroundTask
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.parsing import router as parsing_router
 from app.services.parsing.registry import ParserRegistry
-from app.telemetry.middleware import MetricsMiddleware
+from app.plugins.telemetry.middleware import MetricsMiddleware
 
 MIB = 1024 * 1024
 CHUNKS = [b"chunk-0;", b"chunk-1;", b"chunk-2;"]
@@ -45,9 +45,9 @@ class Recorder:
 def http_requests_metric(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """MetricsMiddleware otherwise writes to the process-wide collectors and seen-routes set."""
     requests_metric = MagicMock()
-    monkeypatch.setattr("app.telemetry.middleware.HTTP_REQUESTS", requests_metric)
-    monkeypatch.setattr("app.telemetry.middleware.HTTP_REQUEST_DURATION", MagicMock())
-    monkeypatch.setattr("app.telemetry.modules.http_metrics._seen_routes", set())
+    monkeypatch.setattr("app.plugins.telemetry.middleware.HTTP_REQUESTS", requests_metric)
+    monkeypatch.setattr("app.plugins.telemetry.middleware.HTTP_REQUEST_DURATION", MagicMock())
+    monkeypatch.setattr("app.plugins.telemetry.modules.http_metrics._seen_routes", set())
     return requests_metric
 
 

@@ -1,7 +1,7 @@
-"""Unit tests for app.telemetry.modules.record_storage_metrics."""
+"""Unit tests for app.plugins.telemetry.modules.record_storage_metrics."""
 
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.record_storage_metrics import record_rejected_too_large
 
 _NAME = "pipeshub_record_storage_rejected_too_large_total"
 

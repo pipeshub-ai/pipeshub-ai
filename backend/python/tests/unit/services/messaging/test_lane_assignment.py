@@ -49,7 +49,7 @@ from app.services.messaging.lanes.interface import (
 )
 from app.services.messaging.lanes.producer import LaneAwareProducer
 from app.services.messaging.messaging_factory import MessagingFactory
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
 from tests.unit.services.messaging.test_lane_aware_producer import _RecordingProducer
 

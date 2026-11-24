@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TypeVar
 
 from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
-from app.telemetry.modules import entity_resolution_metrics as metrics
+from app.plugins.telemetry.modules import entity_resolution_metrics as metrics
 from app.utils.retry import retry_async
 
 if TYPE_CHECKING:

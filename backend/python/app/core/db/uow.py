@@ -48,7 +48,7 @@ from app.core.db.errors import (
     UowUsageError,
 )
 from app.core.db.pool import connect_failure, create_pool, lost_state
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.utils import db_query_log, error_class
 
 logger = logging.getLogger(__name__)

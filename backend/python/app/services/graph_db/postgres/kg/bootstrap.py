@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from app.core.org_context import bind
 from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx

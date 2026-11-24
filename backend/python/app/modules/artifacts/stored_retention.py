@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
 from app.modules.transformers.stored_write import retired_list
-from app.telemetry.modules.record_storage_metrics import record_retention
+from app.plugins.telemetry.modules.record_storage_metrics import record_retention
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:

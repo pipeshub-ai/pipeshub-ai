@@ -2,7 +2,7 @@
 
 import asyncio
 
-from app.telemetry.modules import db_metrics
+from app.plugins.telemetry.modules import db_metrics
 from tests.unit.telemetry.test_db_metrics import _count, hist  # noqa: F401  (fixture)
 
 

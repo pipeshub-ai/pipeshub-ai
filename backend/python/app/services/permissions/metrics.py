@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 SCOPES_UNAVAILABLE = METRICS_BACKEND.counter(
     "pipeshub_viewer_scopes_unavailable_total",

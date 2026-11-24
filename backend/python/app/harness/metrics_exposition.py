@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.harness.credential_roles import scrape_only_auth
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from harness_core.telemetry.exposition import MetricsExposition
 
 if TYPE_CHECKING:

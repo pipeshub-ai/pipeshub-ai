@@ -53,7 +53,7 @@ from app.services.paid_cache.store import (
     PurgeCutoffNoMarker,
     VersionedBytes,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 T = TypeVar("T")
 

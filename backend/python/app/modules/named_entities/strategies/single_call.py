@@ -26,7 +26,7 @@ from app.services.llm_gateway.gateway import (
     get_llm_gateway,
     provider_key,
 )
-from app.telemetry.modules.named_entity_metrics import record_step_down
+from app.plugins.telemetry.modules.named_entity_metrics import record_step_down
 from app.utils.llm import is_provider_unavailable
 
 if TYPE_CHECKING:

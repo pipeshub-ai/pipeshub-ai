@@ -35,7 +35,7 @@ from uuid import uuid4
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org, system
 from app.services.graph_db.common.record_visibility import is_live_record
-from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
+from app.plugins.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 
 if TYPE_CHECKING:
     from logging import Logger

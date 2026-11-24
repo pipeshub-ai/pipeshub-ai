@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 from app.core.db.errors import TooManyConnections
 from app.modules.retrieval import degraded_notice
 from app.services.vector_db.models import SearchFailureKind
-from app.telemetry.modules.vector_search_metrics import record_search_retry
+from app.plugins.telemetry.modules.vector_search_metrics import record_search_retry
 from app.utils.request_deadline import seconds_left
 from app.utils.retry import retry_async
 from app.utils.stage_timer import span

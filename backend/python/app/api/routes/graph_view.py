@@ -31,7 +31,7 @@ from app.modules.graph_view.models import (  # noqa: TC001 -- FastAPI reads the 
 from app.modules.graph_view.policy import VisibilityPolicy
 from app.modules.graph_view.service import NOT_FOUND, GraphViewError, GraphViewService
 from app.modules.graph_view.sources.code import CodeSource
-from app.telemetry.modules import graph_view_metrics
+from app.plugins.telemetry.modules import graph_view_metrics
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

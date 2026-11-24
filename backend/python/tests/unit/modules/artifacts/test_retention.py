@@ -813,7 +813,7 @@ def test_metrics_count_by_kind_and_outcome(monkeypatch: pytest.MonkeyPatch) -> N
         def inc(self, *labels: str, value: float = 1.0) -> None:
             seen.append((*labels, value))  # type: ignore[arg-type]
 
-    from app.telemetry.modules import record_storage_metrics
+    from app.plugins.telemetry.modules import record_storage_metrics
 
     monkeypatch.setattr(record_storage_metrics, "RETENTION", Counter())
     record_storage_metrics.record_retention("stage_state", "deleted", 3)

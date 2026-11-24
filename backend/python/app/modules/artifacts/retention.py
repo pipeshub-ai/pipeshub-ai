@@ -47,7 +47,7 @@ from app.core.org_context import current_org_id, for_org
 from app.modules.artifacts.store import ARTIFACT_ROUTES, ArtifactRoutesUnavailable
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.config import messaging_env
-from app.telemetry.modules.record_storage_metrics import record_retention
+from app.plugins.telemetry.modules.record_storage_metrics import record_retention
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:

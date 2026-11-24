@@ -590,10 +590,10 @@ def test_metric_names_do_not_collide_with_the_other_telemetry_modules() -> None:
     import pkgutil
 
     import app.core.db.uow  # noqa: F401
-    import app.telemetry.modules as modules
+    import app.plugins.telemetry.modules as modules
 
     for m in pkgutil.iter_modules(modules.__path__):
-        importlib.import_module(f"app.telemetry.modules.{m.name}")
+        importlib.import_module(f"app.plugins.telemetry.modules.{m.name}")
 
 
 def test_statements_that_change_the_units_identity_are_refused_at_runtime() -> None:

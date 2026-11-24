@@ -25,7 +25,7 @@ from typing import Any
 from app.services.paid_cache.cache import ResultStore, writes_enabled
 from app.services.paid_cache.run import OPEN_PROTECTS_MS
 from app.services.paid_cache.store import MAX_FILES_PER_CALL, GuardUnsupported
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 #: Completed revisions whose objects are kept (the newest and one before it).
 KEEP_REVISIONS = 2

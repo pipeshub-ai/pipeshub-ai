@@ -18,7 +18,7 @@ from app.services.paid_cache.store import (
     NodePaidResultStore,
     PaidResultStoreError,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from tests.support.fake_paid_result_storage import FakePaidResultStorage
 
 if TYPE_CHECKING:

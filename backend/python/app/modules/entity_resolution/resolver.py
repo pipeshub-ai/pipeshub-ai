@@ -53,7 +53,7 @@ from app.modules.entity_resolution.normalizer import (
 from app.modules.entity_resolution.organizations import usable_organization_names
 from app.modules.entity_resolution.prompt import build_prompt, candidate_handles
 from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS, MERGED_INTO_FIELD
-from app.telemetry.modules import entity_resolution_metrics as metrics
+from app.plugins.telemetry.modules import entity_resolution_metrics as metrics
 from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection

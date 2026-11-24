@@ -36,7 +36,7 @@ from app.services.paid_cache.store import (
     GuardUnsupported,
     VersionedBytes,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 #: A reused object younger than this is out of the sweep's reach for a good while (``retention.GRACE_MS`` is an hour).
 #: 30 min + ``LRU_WINDOW_S`` (10 min) + a skew allowance of 10 min stays under it. Provisional: the bench sets it.

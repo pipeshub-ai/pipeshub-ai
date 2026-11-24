@@ -47,7 +47,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping

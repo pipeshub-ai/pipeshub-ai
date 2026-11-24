@@ -63,7 +63,7 @@ from app.services.spend_guard.retry_policy import (
     decide_retry,
     process_retry_budget,
 )
-from app.telemetry.modules.llm_gateway_metrics import (
+from app.plugins.telemetry.modules.llm_gateway_metrics import (
     LLM_BREAKER_OPEN,
     LLM_CALLS,
     LLM_TOKENS,

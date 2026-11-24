@@ -17,8 +17,8 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules import scheduling_metrics as metrics
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules import scheduling_metrics as metrics
 
 
 @pytest.fixture

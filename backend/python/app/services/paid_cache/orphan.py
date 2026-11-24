@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.paid_cache.locks import deleted_name
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

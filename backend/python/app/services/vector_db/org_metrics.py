@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 # A maintenance pass met a virtual record whose rows name no org; it is left alone, never run for "any".
 ORG_SKIPPED = METRICS_BACKEND.counter(

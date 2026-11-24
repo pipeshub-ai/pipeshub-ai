@@ -45,8 +45,8 @@ from app.harness.sandbox.engine_images import EngineImageAvailability
 from app.harness.sandbox.images import mcp_runner_image, sandbox_image
 from app.harness.supply_chain.images import image_trust_from_env
 from app.sandbox.docker_proxy import ENV_BROKER_CALLER_TOKEN
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.sandbox_broker_metrics import BackendBrokerMetrics
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.sandbox_broker_metrics import BackendBrokerMetrics
 from harness_core.clock import SystemClock
 from harness_core.engines.controller import (
     EngineControllerConfig,

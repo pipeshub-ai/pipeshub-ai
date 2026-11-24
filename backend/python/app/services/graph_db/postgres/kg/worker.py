@@ -26,7 +26,7 @@ from app.services.graph_db.postgres.kg import (
 )
 from app.services.graph_db.postgres.kg.drainer import PAGE, _ctx, drain_or_retry, lag
 from app.services.pg_runtime import PgListener
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

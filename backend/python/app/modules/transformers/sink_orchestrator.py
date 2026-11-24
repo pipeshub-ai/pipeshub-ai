@@ -84,8 +84,8 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.precision_flip import PrecisionFlip
-from app.telemetry.modules.activity_metrics import record_service_activity
-from app.telemetry.modules.record_storage_metrics import (
+from app.plugins.telemetry.modules.activity_metrics import record_service_activity
+from app.plugins.telemetry.modules.record_storage_metrics import (
     record_artifact_write,
     record_property_projection,
 )
@@ -1121,7 +1121,7 @@ class SinkOrchestrator(Transformer):
         from app.services.featureflag.platform_settings import (
             is_named_entity_extraction_enabled,
         )
-        from app.telemetry.modules.named_entity_metrics import observe_extract
+        from app.plugins.telemetry.modules.named_entity_metrics import observe_extract
 
         started = time.perf_counter()
         strategy = "none"

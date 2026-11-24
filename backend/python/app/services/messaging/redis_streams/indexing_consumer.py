@@ -103,7 +103,7 @@ from app.services.messaging.storage_protocol import tagged
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor import ParseTier, Pool
-from app.telemetry.modules import scheduling_metrics as metrics
+from app.plugins.telemetry.modules import scheduling_metrics as metrics
 from app.utils import error_class
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large

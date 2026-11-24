@@ -1,9 +1,9 @@
-"""Unit tests for app.telemetry.modules.activity_metrics."""
+"""Unit tests for app.plugins.telemetry.modules.activity_metrics."""
 
 import pytest
 
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.activity_metrics import record_service_activity
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.activity_metrics import record_service_activity
 
 
 class TestRecordServiceActivity:
@@ -72,7 +72,7 @@ class TestBoundedLabels:
         assert not any("x-weird" in line for line in lines)
 
     def test_distinct_kb_ids_are_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from app.telemetry.modules import activity_metrics as am
+        from app.plugins.telemetry.modules import activity_metrics as am
 
         monkeypatch.setattr(am, "_MAX_VALUES_PER_LABEL", 3)
         monkeypatch.setitem(am._seen, "kb", set())
@@ -86,7 +86,7 @@ class TestBoundedLabels:
         assert sum('kb="other"' in line for line in lines) == 1
 
     def test_shipped_cap_is_500_distinct_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from app.telemetry.modules import activity_metrics as am
+        from app.plugins.telemetry.modules import activity_metrics as am
 
         monkeypatch.setitem(am._seen, "domain", set())
         assert am._MAX_VALUES_PER_LABEL == 500

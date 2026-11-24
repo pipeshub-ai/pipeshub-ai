@@ -49,8 +49,8 @@ from app.harness.provider_gate import provider_admission
 from app.harness.run_policy.live import worker_live_layer
 from app.harness.run_policy.select import org_access_policies as policy_source
 from app.harness.telemetry import harness_tracer
-from app.telemetry.modules.harness_gateway_metrics import BackendGatewayMetrics
-from app.telemetry.pusher import MetricsPusher
+from app.plugins.telemetry.modules.harness_gateway_metrics import BackendGatewayMetrics
+from app.plugins.telemetry.pusher import MetricsPusher
 from app.utils.gc_startup import freeze_startup_heap
 from app.utils.output_limits import model_output_limits
 from harness_core.access.guard import GuardedModelAccess

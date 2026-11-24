@@ -29,7 +29,7 @@ from app.services.messaging.lanes.assignment_policy import is_large_class
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY
 from app.services.messaging.lanes.lifecycle import connector_class_of
-from app.telemetry.modules import scheduling_metrics as metrics
+from app.plugins.telemetry.modules import scheduling_metrics as metrics
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

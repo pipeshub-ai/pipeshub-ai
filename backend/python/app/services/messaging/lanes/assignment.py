@@ -60,7 +60,7 @@ from app.services.messaging.lanes.hash_router import RedisLaneRouter, stable_lan
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY, LaneHint
 from app.services.redis.config import ClientOptions
 from app.services.redis.loop_clients import LoopBoundClients
-from app.telemetry.modules import scheduling_metrics as metrics
+from app.plugins.telemetry.modules import scheduling_metrics as metrics
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping

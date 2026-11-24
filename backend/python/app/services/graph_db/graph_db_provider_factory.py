@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.telemetry.modules.db_metrics import instrument_store
+from app.plugins.telemetry.modules.db_metrics import instrument_store
 
 if TYPE_CHECKING:
     from app.services.cache.interface import IAccessibleRecordsCache

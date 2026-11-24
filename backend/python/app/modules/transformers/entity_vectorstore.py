@@ -104,7 +104,7 @@ from app.services.vector_db.sparse_embeddings import (
     SparseEmbedder,
     get_default_sparse_embedder,
 )
-from app.telemetry.modules import entity_index_metrics
+from app.plugins.telemetry.modules import entity_index_metrics
 from app.utils.aimodels import INDEXING_SDK_RETRIES, embedding_config_hash
 from app.utils.embedding_model_name import same_embedding_model
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings

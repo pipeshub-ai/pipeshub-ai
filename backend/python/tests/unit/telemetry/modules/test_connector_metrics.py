@@ -1,7 +1,7 @@
-"""Unit tests for app.telemetry.modules.connector_metrics."""
+"""Unit tests for app.plugins.telemetry.modules.connector_metrics."""
 
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.connector_metrics import set_connector_active
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.connector_metrics import set_connector_active
 
 
 class TestSetConnectorActive:

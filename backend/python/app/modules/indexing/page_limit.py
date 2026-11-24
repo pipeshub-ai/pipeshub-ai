@@ -26,7 +26,7 @@ from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     is_searchable_record,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.utils.user_errors import (
     MAX_INDEXED_PDF_PAGES,
     PDF_PAGE_LIMIT_NOTE,

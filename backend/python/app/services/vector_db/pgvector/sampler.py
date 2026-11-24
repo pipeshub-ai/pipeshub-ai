@@ -23,7 +23,7 @@ from app.core import org_context
 from app.core.db import DbError
 from app.services.vector_db.pgvector import dense
 from app.services.vector_db.pgvector.scope import org_scope
-from app.telemetry.modules import pgvector_search_metrics as telemetry
+from app.plugins.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
     from collections.abc import Callable

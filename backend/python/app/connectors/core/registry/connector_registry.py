@@ -15,8 +15,8 @@ from app.config.constants.arangodb import (
     PermissionModel,
     ProgressStatus,
 )
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
+from app.plugins.telemetry.event_buffer import record_event
+from app.plugins.telemetry.identity import domain_from_email
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer

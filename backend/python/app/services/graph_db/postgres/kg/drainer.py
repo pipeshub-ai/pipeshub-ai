@@ -21,7 +21,7 @@ from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE
 from app.services.graph_db.postgres.kg.project import decode, grant_only, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

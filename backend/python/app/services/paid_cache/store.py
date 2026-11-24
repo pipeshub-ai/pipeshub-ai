@@ -28,7 +28,7 @@ from app.modules.transformers.blob_storage import (
     _storage_status_error,
     get_shared_session,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage

@@ -38,7 +38,7 @@ from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
-from app.telemetry.modules import scheduling_metrics
+from app.plugins.telemetry.modules import scheduling_metrics
 from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
@@ -690,11 +690,11 @@ _RECORD_WAITS_SET = MagicMock()
 @pytest.fixture
 def gauge() -> Any:  # noqa: ANN401
     _RECORD_WAITS_SET.reset_mock()
-    from app.telemetry.modules import scheduling_metrics
+    from app.plugins.telemetry.modules import scheduling_metrics
 
     scheduling_metrics._record_waits_by_owner.clear()
     scheduling_metrics._record_waits_collected.clear()
-    with patch("app.telemetry.modules.scheduling_metrics.RECORD_WAITS.set", _RECORD_WAITS_SET):
+    with patch("app.plugins.telemetry.modules.scheduling_metrics.RECORD_WAITS.set", _RECORD_WAITS_SET):
         yield _RECORD_WAITS_SET
 
 
@@ -977,7 +977,7 @@ class TestReviewOfTheWaitsRoundTwo:
 _COLLECTION_INSIDE_A_PUBLICATION = """
 import gc, threading
 from unittest.mock import patch
-from app.telemetry.modules import scheduling_metrics as m
+from app.plugins.telemetry.modules import scheduling_metrics as m
 
 class Owner:
     def __init__(self):

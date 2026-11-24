@@ -28,7 +28,7 @@ from app.services.messaging.lanes.assignment import (
 )
 from app.services.messaging.lanes.backlog import LaneBacklog, StalePending
 from app.services.messaging.lanes.hash_router import stable_lane
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
 from tests.unit.services.messaging.test_lane_assignment import _colliding
 

@@ -60,7 +60,7 @@ from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
     remaining_record_keys,
 )
-from app.telemetry.modules.record_storage_metrics import (
+from app.plugins.telemetry.modules.record_storage_metrics import (
     record_reader_relookup,
     record_retire_mark,
     record_store_switch,

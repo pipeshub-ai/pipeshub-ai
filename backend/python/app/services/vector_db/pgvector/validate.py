@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from app.services.vector_db.pgvector import dense
 from app.services.vector_db.pgvector.visibility import Scope
-from app.telemetry.modules import pgvector_search_metrics as telemetry
+from app.plugins.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx

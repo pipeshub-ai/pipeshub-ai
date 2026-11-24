@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Generic, TypeVar
 
 from app.services.base_client import CircuitBreaker
-from app.telemetry.modules import web_browser_metrics as metrics
+from app.plugins.telemetry.modules import web_browser_metrics as metrics
 
 B = TypeVar("B")
 

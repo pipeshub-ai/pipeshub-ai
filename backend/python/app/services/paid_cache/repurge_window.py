@@ -45,7 +45,7 @@ from app.services.paid_cache.repurge import (
     now_s,
     publish_event,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.utils.env_config import env_seconds
 
 if TYPE_CHECKING:

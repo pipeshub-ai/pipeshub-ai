@@ -11,7 +11,7 @@ from app.modules.code_graph.edge_builder import (
     EdgeBuildTooLargeError,
     build_code_graph_edges,
 )
-from app.telemetry.modules import code_graph_metrics
+from app.plugins.telemetry.modules import code_graph_metrics
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:

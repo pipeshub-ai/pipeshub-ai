@@ -81,9 +81,9 @@ from app.agents.agent_loop.reasoning_persistence import (
 from app.agents.agent_loop.tool_approvals import PENDING_MESSAGE, RESUMING
 from app.models.citation_source import count_live_citations
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
-from app.telemetry.modules.activity_metrics import record_service_activity
+from app.plugins.telemetry.event_buffer import record_event
+from app.plugins.telemetry.identity import domain_from_email
+from app.plugins.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.citations import normalize_citations_and_chunks
 from app.utils.error_class import failure_reason
 from app.utils.log_redaction import redact_error_for_log

@@ -6,8 +6,8 @@ from typing import Never
 
 import pytest
 
-from app.telemetry.backend import PrometheusBackend
-from app.telemetry.modules import db_metrics
+from app.plugins.telemetry.backend import PrometheusBackend
+from app.plugins.telemetry.modules import db_metrics
 from tests.support.cpu_budget import thread_cpu
 
 
@@ -80,7 +80,7 @@ def test_nested_port_call_counted_once_as_outer(hist) -> None:
 
 
 def test_noop_backend_returns_store_untouched(monkeypatch) -> None:
-    from app.telemetry.backend import NoopBackend
+    from app.plugins.telemetry.backend import NoopBackend
 
     monkeypatch.setattr(db_metrics, "METRICS_BACKEND", NoopBackend())
     s = Store()
@@ -163,7 +163,7 @@ def test_factories_instrument_when_telemetry_on(monkeypatch, hist, on) -> None:
     )
 
     if not on:
-        from app.telemetry.backend import NoopBackend
+        from app.plugins.telemetry.backend import NoopBackend
 
         monkeypatch.setattr(db_metrics, "METRICS_BACKEND", NoopBackend())
     log = logging.getLogger("t")

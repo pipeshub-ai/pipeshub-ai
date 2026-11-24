@@ -25,7 +25,7 @@ from app.services.graph_db.arango.record_schema_guard import (
     FORCE_AFTER_SKIPS,
     generation_of_schema,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from tests.integration.graph_db.record_diagnostics_stall_bound import (
     STALL_BOUND_S,
     running_at_each_widening,

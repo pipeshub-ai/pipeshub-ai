@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 from app.core.db import ConnectionLost, DbError, DbTimeout, LockTimeout, PoolTimeout
 from app.core.org_context import spawn_in_request
 from app.services.vector_db.pgvector.errors import PgVectorError
-from app.telemetry.modules import pgvector_search_metrics as telemetry
+from app.plugins.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx

@@ -1,8 +1,8 @@
 """Edition constants that must stay import-free.
 
-This is the only edition switch that ``app.telemetry`` may import: the metrics
-backend is chosen at import time, and ``app.edition_config`` pulls in routers
-that import telemetry, so importing it from there would cycle.
+Read by file path from ``backend/db``, and at import time by plug-ins that pick
+their behaviour before anything else loads; ``app.edition_config`` pulls in
+routers, so neither can import that.
 """
 
 # Used when TELEMETRY_COLLECTION_FLAG is unset.

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from app.telemetry.ops_exporter import OpsExporter
+    from app.plugins.telemetry.ops_exporter import OpsExporter
 
 
 def free_port(host: str = "127.0.0.1") -> int:

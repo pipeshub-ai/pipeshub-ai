@@ -6,7 +6,7 @@ from app.config.constants.store_type import StoreType
 from app.config.key_value_store import KeyValueStore
 from app.config.providers.in_memory_store import InMemoryKeyValueStore
 from app.config.providers.postgres_store import PostgresKeyValueStore
-from app.telemetry.modules.db_metrics import instrument_store
+from app.plugins.telemetry.modules.db_metrics import instrument_store
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:

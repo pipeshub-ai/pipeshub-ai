@@ -17,7 +17,7 @@ from app.core.org_context import current_org_id, peek
 from app.services.graph_db.postgres.kg import net
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.stamp import MAX_DEPTH
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

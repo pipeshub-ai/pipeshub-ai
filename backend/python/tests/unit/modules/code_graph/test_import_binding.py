@@ -37,8 +37,8 @@ async def _package(index_file, *dirs: str) -> None:
 
 @pytest.mark.asyncio
 async def test_a_stdlib_module_never_binds_to_a_repo_file_of_the_same_name(graph, index_file) -> None:
-    await _package(index_file, "app", "app/telemetry")
-    await index_file("log", "app/telemetry/logging.py", b"def getLogger(name):\n    return name\n", "python")
+    await _package(index_file, "app", "app/plugins/telemetry")
+    await index_file("log", "app/plugins/telemetry/logging.py", b"def getLogger(name):\n    return name\n", "python")
     await index_file("svc", "app/svc.py", b"import logging\n\nlogger = logging.getLogger(__name__)\n", "python")
     await _build(graph)
 

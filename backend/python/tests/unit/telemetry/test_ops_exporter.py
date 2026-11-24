@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from prometheus_client import CollectorRegistry, generate_latest
 
-from app.telemetry import ops_exporter as ox
+from app.plugins.telemetry import ops_exporter as ox
 from tests.support.free_port import free_port
 
 if TYPE_CHECKING:

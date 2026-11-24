@@ -7,7 +7,7 @@ from app.api import connection_limit
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.entity_permissions import EntityAccessError
 from app.modules.retrieval.selection_scope import SelectionTooLargeError
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from tests.unit.agents.actions.code_graph.conftest import ORG
 from tests.unit.modules.graph_view.world import (
     World,

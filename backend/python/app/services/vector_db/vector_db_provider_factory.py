@@ -18,7 +18,7 @@ from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
 from app.services.vector_db.interface.vector_db import IVectorDBService
-from app.telemetry.modules.db_metrics import instrument_store
+from app.plugins.telemetry.modules.db_metrics import instrument_store
 
 
 class VectorDBProviderFactory:

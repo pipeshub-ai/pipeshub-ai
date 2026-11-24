@@ -143,28 +143,23 @@ async def test_a_failing_start_or_stop_hook_is_reported_and_the_others_run(monke
     assert [(f.plugin, f.stage) for f in host.failures] == [("flaky", "start"), ("flaky", "stop")]
 
 
-async def test_a_cancelled_stop_hook_propagates_and_still_closes_the_host(monkeypatch) -> None:
-    seen = []
-
+async def test_a_cancelled_stop_hook_propagates(monkeypatch) -> None:
     class Slow:
         name = "slow"
 
         def register(self, ctx) -> None:
-            async def stop() -> Never:
+            async def stop() -> None:
                 raise asyncio.CancelledError
 
-            ctx.on("test.plugins.cancel", lambda name, payload: seen.append(1))
             ctx.on_stop(stop)
 
     _module(monkeypatch, "fake_plugin_slow", Slow())
     host = plugins.load_plugins("svc", ["fake_plugin_slow"])
     with pytest.raises(asyncio.CancelledError):
         await host.stop()
-    platform_events.emit("test.plugins.cancel")
-    assert seen == []
 
 
-async def test_event_subscriptions_made_through_the_context_end_when_the_host_stops(monkeypatch) -> None:
+async def test_event_subscriptions_outlive_stop_and_end_when_the_host_is_closed(monkeypatch) -> None:
     seen = []
 
     class Listener:
@@ -177,8 +172,10 @@ async def test_event_subscriptions_made_through_the_context_end_when_the_host_st
     host = plugins.load_plugins("svc", ["fake_plugin_listener"])
     platform_events.emit("test.plugins.event", n=1)
     await host.stop()
-    platform_events.emit("test.plugins.event", n=2)
-    assert seen == [1]
+    platform_events.emit("test.plugins.event", n=2)  # a service still works while it shuts down
+    host.close()
+    platform_events.emit("test.plugins.event", n=3)
+    assert seen == [1, 2]
 
 
 def test_capabilities_are_none_when_absent_and_withdrawn_when_the_host_closes(monkeypatch) -> None:

@@ -1,7 +1,7 @@
 """Edge-build metrics: outcomes, durations, edges and the reconciler backlog (O-3)."""
 from app.modules.code_graph.edge_builder import EdgeBuildResult
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules import code_graph_metrics
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules import code_graph_metrics
 
 
 def test_a_finished_build_reports_what_it_did() -> None:

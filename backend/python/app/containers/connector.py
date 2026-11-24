@@ -37,7 +37,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.notification.notification_service import (
     NotificationService,
 )
-from app.telemetry.modules.activity_metrics import record_service_activity
+from app.plugins.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.logger import create_logger
 
 # Startup tries of ensure_schema, a second apart and then two, for a store that is briefly unavailable.

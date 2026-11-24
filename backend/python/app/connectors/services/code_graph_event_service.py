@@ -9,7 +9,7 @@ from app.connectors.core.sync.task_manager import (
     code_edge_build_task_manager,
 )
 from app.modules.code_graph import enabled as code_graph_switch
-from app.telemetry.modules import code_graph_metrics
+from app.plugins.telemetry.modules import code_graph_metrics
 
 # Chained runs in a row before what is still owed is left to the reconciler: a pending
 # flag that never clears (a stale duplicate sync point did, B3) must not rebuild forever.

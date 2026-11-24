@@ -318,7 +318,7 @@ from app.services.graph_db.vector_membership_queries import (
     build_page_records_for_vector_membership_backfill_cypher,
     can_use_membership_cleanup,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.utils import error_class
 from app.utils.env_config import env_int, env_seconds
 from app.utils.env_utils import env_bool

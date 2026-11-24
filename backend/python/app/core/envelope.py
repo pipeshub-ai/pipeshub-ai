@@ -37,7 +37,7 @@ from typing import Any, Protocol
 
 from app.core.org_context import OrgContext, enforcing, spawn_detached, validate_mode
 from app.exceptions.non_retryable import NonRetryableError
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.utils.logging_fields import log_once
 from app.utils.request_context import sanitize_root_id
 

@@ -134,7 +134,7 @@ class ImportResolution:
         # Absolute imports are rooted at a source dir (src/, backend/…), so match
         # on the tail of known paths -- but only where the first segment is a
         # top-level package. `telemetry/logging.py` inside the `app` package is
-        # `app.telemetry.logging`, never `logging`.
+        # `app.plugins.telemetry.logging`, never `logging`.
         for table, suffix in ((self._modules_by_suffix, f"/{rel}.py"),
                               (self._packages_by_suffix, f"/{rel}/__init__.py")):
             matches = [

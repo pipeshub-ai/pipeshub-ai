@@ -28,7 +28,7 @@ from app.modules.named_entities.merge import anchor_year_less_dates
 from app.modules.named_entities.normalizers.dates import NormalizationContext
 from app.modules.named_entities.resolution import NamedEntityResolver
 from app.services.messaging.precision_flip import PrecisionFlip
-from app.telemetry.modules.named_entity_metrics import observe_stage, record_run
+from app.plugins.telemetry.modules.named_entity_metrics import observe_stage, record_run
 
 _MODEL_GAVE_UP = frozenset({"no_progress", "budget_turns", "budget_tokens", "timeout"})
 

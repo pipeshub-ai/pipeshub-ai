@@ -33,7 +33,7 @@ pytestmark = [pytest.mark.stress, pytest.mark.skipif(not sys.platform.startswith
 EXPORTER = textwrap.dedent(
     """
     import sys, threading, time
-    from app.telemetry.ops_exporter import OpsExporter
+    from app.plugins.telemetry.ops_exporter import OpsExporter
     run, port, burners = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
     def burn():
         while True:

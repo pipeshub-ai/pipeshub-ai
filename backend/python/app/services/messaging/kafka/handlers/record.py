@@ -170,7 +170,7 @@ from app.services.vector_db.rebuild_state import (
 )
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
-from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
+from app.plugins.telemetry.modules.record_storage_metrics import record_rejected_too_large
 from app.utils.api_call import ResponseTooLargeError, make_api_call
 from app.utils.error_class import log_failure, quotes_content
 from app.utils.indexing_timing import current_timeline, note, stage

@@ -1,6 +1,6 @@
-"""Unit tests for app.telemetry.backend — the metrics backend abstraction."""
+"""Unit tests for app.plugins.telemetry.backend — the metrics backend abstraction."""
 
-from app.telemetry.backend import METRICS_BACKEND, MetricsBackend, PrometheusBackend
+from app.plugins.telemetry.backend import METRICS_BACKEND, MetricsBackend, PrometheusBackend
 
 
 class TestPrometheusBackendCounter:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from app.telemetry import ops_exporter as ox
+from app.plugins.telemetry import ops_exporter as ox
 from tests.support.free_port import bind_on_free_port, free_port
 
 PY = Path(__file__).resolve().parents[3]
@@ -68,7 +68,7 @@ def test_the_off_path_in_a_fresh_interpreter_reads_no_stats_and_makes_no_thread_
         import os, threading
         os.environ.pop("PIPESHUB_METRICS_ENABLED", None)
         os.environ["PIPESHUB_RUN_DIR"] = {str(tmp_path / 'run')!r}
-        from app.telemetry.ops_exporter import exporter_from_env
+        from app.plugins.telemetry.ops_exporter import exporter_from_env
         class G:
             def stats(self): raise AssertionError("stats read on the off path")
         assert exporter_from_env(G(), "indexing") is None
@@ -156,10 +156,13 @@ def _lifespan_calls() -> list[str]:
     return [ast.unparse(n) for n in ast.walk(func) if isinstance(n, ast.Call)]
 
 
-def test_the_lifespan_builds_the_exporter_from_the_env_and_starts_and_stops_it() -> None:
+def test_the_lifespan_announces_the_governor_and_the_plugin_builds_the_exporter_from_the_env() -> None:
+    """The entry module names no exporter: it says when its governor started and stopped
+    (``test_plugin.py`` covers what the plug-in does with that)."""
     calls = _lifespan_calls()
-    assert "exporter_from_env(governor, 'indexing')" in calls
-    assert "ops_exporter.start()" in calls and "ops_exporter.stop()" in calls
+    assert "platform_events.emit('resource_governor.started', service='indexing')" in calls
+    assert "platform_events.emit('resource_governor.stopped', service='indexing')" in calls
+    assert not any("exporter" in call for call in calls)
 
 
 def test_the_lifespan_does_not_read_the_switch_itself() -> None:

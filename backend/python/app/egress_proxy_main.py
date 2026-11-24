@@ -66,9 +66,9 @@ from app.harness.sandbox.egress_config import (
 from app.harness.sandbox.egress_credentials import sealed_token_source
 from app.harness.sandbox.egress_resolver import PublicHostResolver
 from app.harness.sandbox.egress_state import durable_state, egress_sealers
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.egress_metrics import PrometheusVolumeMetrics
-from app.telemetry.pusher import MetricsPusher
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.egress_metrics import PrometheusVolumeMetrics
+from app.plugins.telemetry.pusher import MetricsPusher
 from app.utils.env_flags import validate_env_flags
 from harness_core.clock import SystemClock
 from harness_core.gateway.refusal_reports import RefusalReporter

@@ -162,7 +162,7 @@ from app.services.featureflag.platform_settings import (
     is_scheduled_runs_on,
 )
 from app.services.rate_budget import priority_for_run_kind, rate_priority_for_class
-from app.telemetry.modules.harness_gateway_metrics import READ_CACHE_METRICS
+from app.plugins.telemetry.modules.harness_gateway_metrics import READ_CACHE_METRICS
 from app.utils.run_model_scope import hold_run_model_scope
 from harness_core import bindings
 from harness_core.activity import BoundedCommandActivity

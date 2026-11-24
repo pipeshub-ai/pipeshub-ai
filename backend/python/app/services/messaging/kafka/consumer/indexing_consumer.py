@@ -94,7 +94,7 @@ from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTrac
 from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
 from app.services.messaging.storage_protocol import tagged
 from app.services.resource_governor import ParseTier, Pool
-from app.telemetry.modules import scheduling_metrics as metrics
+from app.plugins.telemetry.modules import scheduling_metrics as metrics
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
 from app.utils.error_class import log_failure, logged_level, quotes_content

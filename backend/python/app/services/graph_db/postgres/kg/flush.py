@@ -19,7 +19,7 @@ from app.core.db import notify
 from app.services.graph_db.postgres.kg import guard, stamp
 from app.services.graph_db.postgres.kg.project import decode, grant_only, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx

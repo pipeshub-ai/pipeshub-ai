@@ -18,7 +18,7 @@ from app.services.graph_db.postgres.kg.registry import (
     WRITERS,
     UnclassifiedProviderWrite,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import Tx

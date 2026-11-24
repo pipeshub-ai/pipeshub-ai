@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from app.core.db.errors import CapabilityError
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

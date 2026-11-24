@@ -37,7 +37,7 @@ from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_COLL, COLL_CODE, KIND, Key
 from app.services.graph_db.postgres.kg.reader import load_sks, seeks
 from app.services.graph_db.postgres.kg.writers import CAP, KgWriter
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx

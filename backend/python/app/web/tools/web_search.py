@@ -6,7 +6,7 @@ from collections.abc import Callable
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
-from app.telemetry.modules.web_metrics import record_search
+from app.plugins.telemetry.modules.web_metrics import record_search
 from app.web.budget import Scope
 from app.web.chain import ChainFailed
 from app.web.errors import BudgetExhausted, WebError

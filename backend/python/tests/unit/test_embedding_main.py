@@ -1446,7 +1446,7 @@ class TestAbandonedRequests:
         """The route's check is ``Request.is_disconnected``, under the telemetry middleware as in the service."""
         from fastapi import FastAPI, Request
 
-        from app.telemetry.middleware import MetricsMiddleware
+        from app.plugins.telemetry.middleware import MetricsMiddleware
 
         probe = FastAPI()
         probe.add_middleware(MetricsMiddleware, service_name="probe")

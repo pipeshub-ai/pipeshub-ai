@@ -38,7 +38,7 @@ from app.modules.transformers.blob_storage import (
 )
 from app.modules.transformers.stored_write import is_none_run, run_generation
 from app.services.featureflag.platform_settings import artifact_read_state
-from app.telemetry.modules.record_storage_metrics import record_artifact_read
+from app.plugins.telemetry.modules.record_storage_metrics import record_artifact_read
 
 if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage

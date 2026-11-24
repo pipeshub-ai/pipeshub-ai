@@ -898,7 +898,7 @@ class TestMeteringIsNotInflatedByRetries:
     async def test_a_parked_entry_is_counted_once_not_once_per_retry(
         self, logger, config
     ):
-        from app.telemetry.backend import METRICS_BACKEND
+        from app.plugins.telemetry.backend import METRICS_BACKEND
 
         def deferred_total() -> float:
             for line in METRICS_BACKEND.serialize().splitlines():
@@ -926,7 +926,7 @@ class TestMeteringIsNotInflatedByRetries:
         assert deferred_total() == after_first
 
     async def test_missing_key_is_counted_once_per_message(self, logger, config):
-        from app.telemetry.backend import METRICS_BACKEND
+        from app.plugins.telemetry.backend import METRICS_BACKEND
 
         def missing_total() -> float:
             for line in METRICS_BACKEND.serialize().splitlines():

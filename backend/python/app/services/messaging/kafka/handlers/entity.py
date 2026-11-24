@@ -56,7 +56,7 @@ from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.paid_cache import access as paid_cache_access
 from app.services.paid_cache.repurge import schedule_org_repurge
-from app.telemetry.modules.schema_metrics import record_schema_rejection
+from app.plugins.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils import error_class
 from app.utils.logging_fields import log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms

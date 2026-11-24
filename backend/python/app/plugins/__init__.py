@@ -15,7 +15,8 @@ A service entry module wires them in three places::
 What a plug-in may do with its ``PluginContext``:
 
 * ``on(name, handler)``: listen to a platform event (``app.platform_events``).
-  The subscription ends when the host stops.
+  The subscription lasts as long as the process: what a service does while it
+  shuts down, after the stop hooks, is still heard. ``PluginHost.close()`` ends it.
 * ``add_asgi_middleware(cls, **options)``: instrument every request of the
   service's FastAPI app. ``on_app(fn)`` receives the app itself.
 * ``on_start(coro_fn)``: ``await coro_fn(runtime)`` at service start, in
@@ -155,19 +156,17 @@ class PluginHost:
         )
 
     async def stop(self) -> None:
-        """Run the stop hooks in reverse order, then end this host's event subscriptions and capabilities."""
-        try:
-            for plugin, hook in reversed(self._stop_hooks):
-                try:
-                    await hook()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    self._failed(plugin, "stop", exc)
-        finally:
-            self.close()
+        """Run the stop hooks in reverse order. Event subscriptions stay: see ``close``."""
+        for plugin, hook in reversed(self._stop_hooks):
+            try:
+                await hook()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._failed(plugin, "stop", exc)
 
     def close(self) -> None:
+        """End this host's event subscriptions and withdraw what its plug-ins provide."""
         for unsubscribe in reversed(self._unsubscribes):
             unsubscribe()
         self._unsubscribes.clear()

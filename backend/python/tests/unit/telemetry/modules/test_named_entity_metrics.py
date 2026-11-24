@@ -1,4 +1,4 @@
-"""Unit tests for app.telemetry.modules.named_entity_metrics."""
+"""Unit tests for app.plugins.telemetry.modules.named_entity_metrics."""
 
 import re
 
@@ -9,8 +9,8 @@ from app.modules.named_entities.domain.models import (
     NamedEntity,
     NamedEntityExtraction,
 )
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.named_entity_metrics import record_run, record_step_down
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.named_entity_metrics import record_run, record_step_down
 
 _ALLOWED_LABELS = {"kind", "strategy", "termination_reason", "outcome", "le"}
 _SURFACE = "Priya Shah"

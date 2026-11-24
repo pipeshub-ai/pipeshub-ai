@@ -49,7 +49,7 @@ from app.services.graph_db.postgres.kg.writers import (
     KgWriter,
     record_refusals,
 )
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.core.db import Tx

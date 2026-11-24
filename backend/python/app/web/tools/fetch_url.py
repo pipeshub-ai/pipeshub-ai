@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
-from app.telemetry.modules.web_metrics import record_fetch
+from app.plugins.telemetry.modules.web_metrics import record_fetch
 from app.utils.chat_helpers import CitationRefMapper
 from app.utils.citations import extract_tiny_ref
 from app.utils.text_fragments import strip_fragment_directive

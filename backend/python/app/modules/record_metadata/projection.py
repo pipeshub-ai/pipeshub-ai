@@ -57,7 +57,7 @@ from app.modules.record_metadata.builtin import builtin_properties, ticket_metad
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.graph_db.conditions import EQ, IS_NULL, NULL_OR_LE, Cond
-from app.telemetry.modules.record_storage_metrics import (
+from app.plugins.telemetry.modules.record_storage_metrics import (
     record_property_projection,
     record_property_value_dropped,
 )

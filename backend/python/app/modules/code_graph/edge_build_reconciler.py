@@ -20,7 +20,7 @@ from app.core.org_context import for_org
 from app.core.org_jobs import for_each_org
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.build_state import BuildStateStore, PendingBuild, is_due
-from app.telemetry.modules import code_graph_metrics
+from app.plugins.telemetry.modules import code_graph_metrics
 from app.utils.env_config import env_seconds
 
 if TYPE_CHECKING:

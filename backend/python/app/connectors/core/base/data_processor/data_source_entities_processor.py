@@ -122,8 +122,8 @@ from app.services.messaging.record_titles import (
     clean_record_title,
 )
 from app.schema.node_validator import SchemaValidationError
-from app.telemetry.modules.schema_metrics import record_schema_rejection
-from app.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
+from app.plugins.telemetry.modules.schema_metrics import record_schema_rejection
+from app.plugins.telemetry.modules.soft_delete_metrics import record_restored, record_soft_deleted
 from app.services.messaging.utils import MessagingUtils
 from app.services.vector_db.membership import record_group_id_from_edge, remaining_record_keys
 from app.utils.retry import retry_async

@@ -68,8 +68,8 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
+from app.plugins.telemetry.event_buffer import record_event
+from app.plugins.telemetry.identity import domain_from_email
 from app.utils.error_class import log_failure
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation

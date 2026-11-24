@@ -172,9 +172,9 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.model_identity.boundary import principal_from_request_user
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
-from app.telemetry.modules.schema_metrics import record_schema_rejection
+from app.plugins.telemetry.event_buffer import record_event
+from app.plugins.telemetry.identity import domain_from_email
+from app.plugins.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils import error_class
 from app.utils.aimodels import model_default_reasoning_effort
 from app.utils.attachment_utils import (

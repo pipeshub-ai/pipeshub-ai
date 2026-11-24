@@ -1,5 +1,5 @@
 """Counters of the move of a record's stored points to content-derived block ids (``VectorStore._move_points_to_new_ids``)."""
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 REKEYED = METRICS_BACKEND.counter(
     "pipeshub_vector_rekeyed_blocks_total",

@@ -43,7 +43,7 @@ from app.core.org_context import for_org, spawn_detached
 from app.core.org_jobs import for_each_org
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.rate_budget import RatePriority, budget_scope
-from app.telemetry.modules.activity_metrics import record_service_activity
+from app.plugins.telemetry.modules.activity_metrics import record_service_activity
 from app.utils import error_class
 from app.utils.logging_fields import bind_log_fields, log_event, reset_log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms

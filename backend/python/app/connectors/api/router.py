@@ -240,7 +240,7 @@ from app.utils.oauth_config import (
     oauth_app_usable_by,
     pin_oauth_urls,
 )
-from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
+from app.plugins.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.credential_refresh_log import token_endpoint_error_class
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code

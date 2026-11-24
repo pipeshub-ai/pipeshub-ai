@@ -95,6 +95,11 @@ def has_listeners(name: str) -> bool:
     return name in _listeners or WILDCARD in _listeners
 
 
+def is_listening(name: str, handler: Handler) -> bool:
+    """True when this very ``handler`` is subscribed to ``name``."""
+    return any(candidate is handler for candidate in _listeners.get(name, ()))
+
+
 def listener_errors() -> dict[str, int]:
     """Exceptions raised by listeners since the process started, by event name."""
     with _lock:
@@ -120,4 +125,4 @@ def _count_error(name: str) -> None:
         _errors[name] = _errors.get(name, 0) + 1
 
 
-__all__ = ["WILDCARD", "Handler", "emit", "has_listeners", "listener_errors", "on", "reset"]
+__all__ = ["WILDCARD", "Handler", "emit", "has_listeners", "is_listening", "listener_errors", "on", "reset"]

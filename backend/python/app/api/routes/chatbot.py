@@ -122,8 +122,8 @@ from app.services.opik_traces import erase_conversation_traces, opik_trace_store
 from app.services.org_erasure import ORG_ERASE_PAGE, erase_org_page
 from app.services.parsing.interface import ParseError
 from app.services.resource_governor.kinds import ParseKind
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
+from app.plugins.telemetry.event_buffer import record_event
+from app.plugins.telemetry.identity import domain_from_email
 from app.utils.attachment_mime_types import (
     DELIMITED_MIME_TYPES,
     DOCX_MIME_TYPES,

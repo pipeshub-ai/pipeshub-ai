@@ -1,7 +1,7 @@
-"""Unit tests for app.telemetry.modules.collection_metrics."""
+"""Unit tests for app.plugins.telemetry.modules.collection_metrics."""
 
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.collection_metrics import set_metric_collection_enabled
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.collection_metrics import set_metric_collection_enabled
 
 
 class TestSetMetricCollectionEnabled:

@@ -15,7 +15,7 @@ import time
 from typing import TYPE_CHECKING
 
 from app.core.db import ConnectionLost, DbError, DbTimeout
-from app.telemetry.modules import pgvector_search_metrics as telemetry
+from app.plugins.telemetry.modules import pgvector_search_metrics as telemetry
 
 if TYPE_CHECKING:
     from app.core.db import KernelDB, Tx

@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from app.egress_proxy_main import create_service
-from app.telemetry.modules.egress_metrics import PrometheusVolumeMetrics
+from app.plugins.telemetry.modules.egress_metrics import PrometheusVolumeMetrics
 from harness_core.ids import RandomIds
 from harness_core.sandbox.egress import EgressBinding
 from harness_core.sandbox.egress.state import InMemoryEgressStateStore, StateSealer

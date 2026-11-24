@@ -47,7 +47,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.telemetry.modules import code_graph_metrics
+from app.plugins.telemetry.modules import code_graph_metrics
 
 from .diff_impact import impact_of_diff_impl
 from .history import DEFAULT_HISTORY_LIMIT, history_impl

@@ -910,8 +910,8 @@ class _AnswersDb:
 
 @pytest.fixture
 def leg_seconds(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], float]:
-    from app.telemetry.backend import PrometheusBackend
-    from app.telemetry.modules import pgvector_search_metrics
+    from app.plugins.telemetry.backend import PrometheusBackend
+    from app.plugins.telemetry.modules import pgvector_search_metrics
 
     backend = PrometheusBackend()
     monkeypatch.setattr(pgvector_search_metrics, "LEG_SECONDS", backend.histogram("t_leg_seconds", "t", ["tier", "leg_band"], (0.1, 1.0)))

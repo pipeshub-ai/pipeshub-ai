@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.agents.agent_loop.respond import _record_answer_generated
-from app.telemetry.event_buffer import event_buffer
+from app.plugins.telemetry.event_buffer import event_buffer
 
 
 def _drain() -> list[dict]:

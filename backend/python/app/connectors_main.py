@@ -105,9 +105,9 @@ from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
-from app.telemetry.flag import telemetry_enabled  # noqa: E402 - like the imports around it, after set_service_suffix()
-from app.telemetry.modules.connector_metrics import set_connector_active
-from app.telemetry.setup import setup_telemetry
+from app.plugins.telemetry.flag import telemetry_enabled  # noqa: E402 - like the imports around it, after set_service_suffix()
+from app.plugins.telemetry.modules.connector_metrics import set_connector_active
+from app.plugins import load_plugins
 from app.utils.pdf_stream_conversion import document_conversion_available  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -980,10 +980,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     await register_scope_generation(app_container.config_service(), logger)
 
-    try:
-        await telemetry.bind(app_container.config_service(), logger).start()
-    except Exception as e:
-        logger.warning(f"❌ Failed to start telemetry pusher: {e}")
+    await plugin_host.start(config_service=app_container.config_service(), logger=logger)
 
     if telemetry_enabled():
         app.state.connector_metrics_task = spawn_detached(
@@ -1336,8 +1333,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-    if telemetry.pusher is not None:
-        await telemetry.pusher.stop()
+    await plugin_host.stop()
     try:
         accessible_records_cache = getattr(app.state, "accessible_records_cache", None)
         if accessible_records_cache is not None:
@@ -1415,8 +1411,9 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
 
 # Trace context and the request line — outside auth, so both see every request.
 install_request_logging(app)
-# Telemetry: outermost metrics middleware; pusher started/stopped in lifespan.
-telemetry = setup_telemetry(app, service_name="connector_service")
+# Plug-ins (app.plugins_manifest) add their request middleware here; started and stopped in lifespan.
+plugin_host = load_plugins("connector_service")
+plugin_host.install(app)
 
 
 @app.get("/health")

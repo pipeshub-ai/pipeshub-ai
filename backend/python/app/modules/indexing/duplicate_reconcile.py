@@ -20,7 +20,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
 )
-from app.telemetry.modules.record_storage_metrics import record_recovery_org_pass
+from app.plugins.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:

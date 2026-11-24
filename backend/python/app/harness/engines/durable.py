@@ -143,7 +143,7 @@ from app.harness.write_identity.ports import write_identity_port
 from app.harness.write_identity.settings import use_write_identity
 from app.services.artifact_registry.models import Actor
 from app.services.featureflag.platform_settings import bind_pinned_stages
-from app.telemetry.modules.harness_gateway_metrics import READ_CACHE_METRICS
+from app.plugins.telemetry.modules.harness_gateway_metrics import READ_CACHE_METRICS
 from app.utils.citations import WEB_CITATION_STYLE, WebCitationStyle
 from app.utils.run_model_scope import hold_run_model_scope
 from harness_core import bindings

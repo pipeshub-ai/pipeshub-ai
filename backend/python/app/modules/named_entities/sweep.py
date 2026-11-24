@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 from app.core.org_context import for_org, system
 from app.modules.named_entities.domain.kinds import VECTOR_KINDS
 from app.modules.named_entities.write_retry import retry_named_entity_write
-from app.telemetry.modules.named_entity_metrics import record_sweep
+from app.plugins.telemetry.modules.named_entity_metrics import record_sweep
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:

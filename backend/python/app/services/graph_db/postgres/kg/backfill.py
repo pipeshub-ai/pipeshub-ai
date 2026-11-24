@@ -43,7 +43,7 @@ from app.services.graph_db.postgres.kg.verify import (
     verify_principals,
 )
 from app.services.graph_db.postgres.kg.writers import KgWriter
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     import asyncio

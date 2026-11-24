@@ -25,7 +25,7 @@ from app.modules.artifacts.store import (
 from app.modules.artifacts.writer import REV_PATTERN, canonical_json
 from app.modules.transformers.stored_write import write_id
 from app.services.featureflag.platform_settings import is_artifact_write_enabled
-from app.telemetry.modules.record_storage_metrics import record_artifact_write
+from app.plugins.telemetry.modules.record_storage_metrics import record_artifact_write
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService

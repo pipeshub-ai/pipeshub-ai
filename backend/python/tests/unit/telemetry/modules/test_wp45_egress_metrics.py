@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import re
 
-from app.telemetry.backend import METRICS_BACKEND
-from app.telemetry.modules.egress_metrics import PrometheusVolumeMetrics
+from app.plugins.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.modules.egress_metrics import PrometheusVolumeMetrics
 from harness_core.sandbox.egress import EgressBinding, InMemoryEgressBindings
 from harness_core.sandbox.egress.volume import MIB, EgressVolume, VolumeLimits
 from harness_core.testing.clock import ManualClock

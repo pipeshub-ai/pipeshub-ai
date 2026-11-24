@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from app.core.org_context import spawn_detached
 from app.exceptions.graph_db_exceptions import RecordSchemaNarrowError
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from logging import Logger

@@ -25,7 +25,7 @@ from app.services.graph_db.postgres.kg.drainer import _ctx
 from app.services.graph_db.postgres.kg.listing import DECIDED, LIVE
 from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.writers import KgWriter
-from app.telemetry.backend import METRICS_BACKEND
+from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     import asyncio

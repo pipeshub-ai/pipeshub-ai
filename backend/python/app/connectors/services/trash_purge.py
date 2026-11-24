@@ -67,7 +67,7 @@ from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 from app.services.graph_db.common.utils import is_storage_document_id
 from app.services.messaging.utils import MessagingUtils
 from app.services.permissions.structure_generation import note_org_structure_change
-from app.telemetry.modules.soft_delete_metrics import (
+from app.plugins.telemetry.modules.soft_delete_metrics import (
     record_purge_run,
     record_purged,
     set_trash_backlog,

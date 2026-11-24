@@ -3,7 +3,7 @@
 import pytest
 
 from app.core import org_context
-from app.telemetry.backend import NoopBackend
+from app.plugins.telemetry.backend import NoopBackend
 from tests.integration import (
     org_context_enforced,  # the module, not the name: an imported autouse fixture would run here
 )
