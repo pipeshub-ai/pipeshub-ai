@@ -87,6 +87,11 @@ class KgWriter:
                                         *[[r[i] for r in part] for i in range(5)])
         return n
 
+    async def grant_marks_set(self, rows: list[tuple[int, int, str, bool, int | None]]) -> int:
+        """The placement marks of grants (``grant_marks``): (principal_sk, node_sk, gtype, parent_held, node_group), of rows the caller has just read (the writer is an upsert)."""
+        return sum([await self.tx.fetchval("/* pipeshub:kg.w_grant_marks_set */ SELECT kg.w_grant_marks_set($1::bigint[], $2::bigint[], $3::text[], $4::boolean[], $5::bigint[])",
+                                           *[[r[i] for r in p] for i in range(5)]) for p in _chunks(sorted(rows, key=lambda r: r[:3]))])
+
     async def classes_set(self, rows: list[tuple[int, int, int | None, str, bytes]]) -> int:
         """New classes, by id (an existing id is left as it is): (id, app_sk, group_sk, clauses as JSON text, hash)."""
         return sum([await self.tx.fetchval("/* pipeshub:kg.w_classes_set */ SELECT kg.w_classes_set($1::bigint[], $2::bigint[], $3::bigint[], $4::text[]::jsonb[], $5::bytea[])",
