@@ -471,7 +471,7 @@ def test_pooler_is_refused(monkeypatch):
 
 def test_schema_requirements_from_the_tree():
     from db import schema_requirements
-    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 18, "code": 18}}
+    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 19, "code": 19}}
     with pytest.raises(SystemExit):
         schema_requirements.requirements(["nope"])
 
@@ -613,7 +613,10 @@ def test_the_compose_image_role_script_has_the_layout_of_bootstrap_roles():
     flat = lambda s: re.sub(r"\s+", " ", s).strip()
     vetted = {f"pipeshub_vetted_{s}" for s in b.SHIPPED_VETTED}
     quoted = set(re.findall(r"'(pipeshub_\w+)'", sql))
-    assert quoted == {r for r, _ in b.ROLES} | vetted
+    assert quoted == {r for r, _ in b.ROLES} | vetted | {b.MONITOR}
+    # the opt-in monitoring login: the same one membership both ways (kernel_0019 accepts exactly this one)
+    assert "GRANT pg_monitor TO pipeshub_monitor WITH INHERIT TRUE, SET FALSE;" in flat(sql)
+    assert 'GRANT pg_monitor TO {} WITH INHERIT TRUE, SET FALSE' in Path(b.__file__).read_text()
     logins = set(re.findall(r"\('(pipeshub_\w+)', :'\w+'\)", sql)) | {"pipeshub_ro"}
     assert logins == {r for r, login in b.ROLES if login}
     assert set(re.findall(r":(PG_\w+_PASSWORD)\b", text)) | set(re.findall(r"\w+:(PG_\w+_PASSWORD)", text)) == set(b.PASSWORD_VARS.values())
