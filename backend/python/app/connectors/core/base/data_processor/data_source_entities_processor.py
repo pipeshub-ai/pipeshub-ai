@@ -2677,6 +2677,7 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         membership_moved = False
         unlisted_group_ids: set[str] = set()
+        relink_people = False
         try:
             async with self._sync_transaction() as tx_store:
                 # Every write below goes to record.id, whoever stored it.
@@ -2837,14 +2838,25 @@ class DataSourceEntitiesProcessor:
                     )
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
+                relink_people = record.shared_with is not None and bool(belongs_to_edges)
 
             await self._access_changed([record.connector_id], record.org_id)
             await self._publish_membership_sync(moved_virtual_record_ids)
             await self._flush_pending_blob_moves(pending_moves)
+            if relink_people:
+                await self._relink_people_after_share_change(record)
 
         except Exception as e:
             self._log_failure(f"Failed to update permissions for record {record.id}: {e}", e, exc_info=True)
             raise
+
+    async def _relink_people_after_share_change(self, record: Record) -> None:
+        """A share or unshare reaches a connector as a permission change only, so the people the record names are
+        rewritten after its grants. In a transaction of their own, so a failure cannot roll the grant change back,
+        an unshare least. It is still raised: the connector then fails the item and holds its checkpoint, so the
+        change is read, and the people written, again."""
+        async with self._sync_transaction() as tx_store:
+            await self._handle_record_people(record, tx_store)
 
     async def _write_content_edges(
         self, record: Record, tx_store: TransactionStore, *, may_have_edges: bool,
