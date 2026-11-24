@@ -158,6 +158,9 @@ _PENDING_RUN_STATS: contextvars.ContextVar[SyncRunStats | None] = contextvars.Co
 
 
 LISTED_AUTHENTICATORS_KEY = "/services/connectors/{connector_id}/listedAuthenticators"
+# Whether the authenticator holds the connector account's view, as last decided on a complete
+# user listing: {"email": <authenticator email>, "granted": bool}.
+AUTHENTICATOR_GRANT_KEY = "/services/connectors/{connector_id}/authenticatorGrant"
 
 
 class AuthenticatorLink(str, Enum):

@@ -543,6 +543,79 @@ class TestRegisterAuthenticatedSourceUser:
         assert self._processor_call(conn).await_args.kwargs["extra_present_emails"] == ("a@x.com",)
 
 
+GRANT_KEY = "/services/connectors/jira-1/authenticatorGrant"
+
+
+class TestAuthenticatorGrantRecord:
+    """The last decision, taken on a complete user listing, whether the authenticator holds the
+    connector account's view. It outlives the instance, so a restart or another replica whose first
+    listing is incomplete keeps it instead of starting from no grant."""
+
+    def _connector(self, stored: object = None, error: Exception | None = None) -> MagicMock:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = MagicMock(spec=BaseConnector)
+        conn.logger = MagicMock()
+        conn.connector_id = CONNECTOR
+        conn.config_service = MagicMock(
+            get_config=AsyncMock(return_value=stored, side_effect=error), set_config=AsyncMock(),
+        )
+        return conn
+
+    async def _kept(self, conn: MagicMock, email: str = "Admin@Corp.com") -> bool:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        return await BaseConnector.authenticator_grant_kept(conn, email)
+
+    async def test_a_stored_grant_for_the_same_authenticator_is_kept(self) -> None:
+        conn = self._connector({"email": "admin@corp.com", "granted": True})
+
+        assert await self._kept(conn) is True
+        conn.config_service.get_config.assert_awaited_once_with(GRANT_KEY, use_cache=False, raise_on_error=True)
+
+    @pytest.mark.parametrize("stored", [
+        None,
+        {"email": "admin@corp.com", "granted": False},
+        {"email": "someone.else@corp.com", "granted": True},
+    ])
+    async def test_no_stored_grant_for_this_authenticator_grants_nothing(self, stored: object) -> None:
+        assert await self._kept(self._connector(stored)) is False
+
+    @pytest.mark.parametrize("stored", [True, "admin@corp.com", ["admin@corp.com"], {"granted": "yes"}])
+    async def test_a_malformed_record_grants_nothing_and_warns(self, stored: object) -> None:
+        conn = self._connector(stored)
+
+        assert await self._kept(conn) is False
+        conn.logger.warning.assert_called_once()
+
+    async def test_a_failed_read_grants_nothing_and_warns(self) -> None:
+        conn = self._connector(error=RuntimeError("kv down"))
+
+        assert await self._kept(conn) is False
+        conn.logger.warning.assert_called_once()
+
+    @pytest.mark.parametrize("granted", [True, False])
+    async def test_the_decision_is_stored_for_the_authenticator(self, granted: bool) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector()
+
+        await BaseConnector.remember_authenticator_grant(conn, " Admin@Corp.com", granted=granted)
+
+        conn.config_service.set_config.assert_awaited_once_with(
+            GRANT_KEY, {"email": "admin@corp.com", "granted": granted},
+        )
+
+    async def test_a_failed_write_never_aborts_the_sync(self) -> None:
+        from app.connectors.core.base.connector.connector_service import BaseConnector
+
+        conn = self._connector()
+        conn.config_service.set_config.side_effect = RuntimeError("kv down")
+
+        assert await BaseConnector.remember_authenticator_grant(conn, "admin@corp.com", granted=True) is None
+        conn.logger.warning.assert_called_once()
+
+
 class TestAuthenticatorUser:
     async def test_the_user_who_authenticated_is_read_not_the_creator(self) -> None:
         tx = _tx_store(authenticated_by="admin-user-id")

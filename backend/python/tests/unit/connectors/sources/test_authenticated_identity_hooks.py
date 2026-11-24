@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -709,11 +710,40 @@ class TestGoogleWorkspaceListing:
 
         assert conn._listed_aliases == {"alice.a@corp.com", "alice@old.corp.com"}
 
+class _Kv:
+    """The configuration store as a dict, shared by connector instances like the real one."""
+
+    def __init__(self, values: dict | None = None, error: Exception | None = None) -> None:
+        self.values = dict(values or {})
+        self.error = error
+
+    async def get_config(self, key: str, **_: object) -> object:
+        if self.error:
+            raise self.error
+        return self.values.get(key)
+
+    async def set_config(self, key: str, value: object) -> None:
+        self.values[key] = value
+
+
+GRANT_KEY = "/services/connectors/connector-1/authenticatorGrant"
+
+
+def _with_grant_record(conn: MagicMock, kv: _Kv) -> MagicMock:
+    conn.config_service = kv
+    conn.authenticator_grant_kept = partial(BaseConnector.authenticator_grant_kept, conn)
+    conn.remember_authenticator_grant = partial(BaseConnector.remember_authenticator_grant, conn)
+    return conn
+
+
 class TestSlackWorkspace:
-    def _conn(self, auth: dict | None = None, error: Exception | None = None, authenticator: str | None = None) -> MagicMock:
+    def _conn(
+        self, auth: dict | None = None, error: Exception | None = None, authenticator: str | None = None,
+        kv: _Kv | None = None,
+    ) -> MagicMock:
         datasource = MagicMock()
         datasource.auth_test = AsyncMock(return_value=SimpleNamespace(success=True, data=auth), side_effect=error)
-        return _connector(
+        conn = _connector(
             SlackConnector,
             _fresh_datasource=AsyncMock(return_value=datasource),
             user_id_to_email_cache={"U0ALICE": "alice@corp.com"},
@@ -721,6 +751,7 @@ class TestSlackWorkspace:
             authenticator_email=AsyncMock(return_value=authenticator),
             data_entities_processor=MagicMock(unlink_authenticator=AsyncMock()),
         )
+        return _with_grant_record(conn, kv or _Kv())
 
     async def test_a_user_token_registers_the_account_it_belongs_to(self) -> None:
         conn = self._conn({"user_id": "U0ALICE"})
@@ -766,23 +797,62 @@ class TestSlackWorkspace:
 
         assert await SlackConnector._authenticator_grant(conn) is None
 
+    @pytest.mark.parametrize("granted", [True, False])
+    async def test_a_complete_listing_stores_the_decision(self, granted: bool) -> None:
+        kv = _Kv()
+        conn = self._conn(authenticator="Admin@corp.com", kv=kv)
+        conn._listed_user_emails = set() if granted else {"admin@corp.com"}
+
+        await SlackConnector._authenticator_grant(conn)
+
+        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": granted}
+
     @pytest.mark.parametrize("flag", ["_users_read_failed", "_users_listing_cut"])
-    async def test_an_incomplete_listing_keeps_the_grant_the_last_sync_made(self, flag: str) -> None:
-        conn = self._conn(authenticator="admin@corp.com")
-        setattr(conn, flag, True)
-        previous = Permission(email="admin@corp.com", entity_type=EntityType.USER, type=PermissionType.READ)
-        other = Permission(email="old@corp.com", entity_type=EntityType.USER, type=PermissionType.READ)
+    async def test_after_a_restart_an_incomplete_listing_keeps_the_stored_grant(self, flag: str) -> None:
+        kv = _Kv()
+        await SlackConnector._authenticator_grant(self._conn(authenticator="admin@corp.com", kv=kv))
+        fresh = self._conn(authenticator="admin@corp.com", kv=kv)
+        setattr(fresh, flag, True)
 
-        assert await SlackConnector._authenticator_grant(conn, previous) is previous
-        assert await SlackConnector._authenticator_grant(conn, other) is None
+        grant = await SlackConnector._authenticator_grant(fresh)
 
-    async def test_an_incomplete_listing_that_shows_the_authenticator_drops_the_grant(self) -> None:
-        conn = self._conn(authenticator="admin@corp.com")
+        assert grant is not None and grant.email == "admin@corp.com"
+
+    @pytest.mark.parametrize("stored", [None, {"email": "admin@corp.com", "granted": False}])
+    async def test_an_incomplete_listing_with_no_stored_grant_grants_nothing(self, stored: object) -> None:
+        conn = self._conn(authenticator="admin@corp.com", kv=_Kv({GRANT_KEY: stored}))
+        conn._users_listing_cut = True
+
+        assert await SlackConnector._authenticator_grant(conn) is None
+
+    async def test_a_stored_grant_for_another_authenticator_is_not_this_ones(self) -> None:
+        conn = self._conn(authenticator="admin@corp.com", kv=_Kv({GRANT_KEY: {"email": "old@corp.com", "granted": True}}))
+        conn._users_listing_cut = True
+
+        assert await SlackConnector._authenticator_grant(conn) is None
+
+    async def test_an_incomplete_listing_changes_no_stored_decision(self) -> None:
+        kv = _Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}})
+        conn = self._conn(authenticator="admin@corp.com", kv=kv)
         conn._users_listing_cut = True
         conn._listed_user_emails = {"admin@corp.com"}
-        previous = Permission(email="admin@corp.com", entity_type=EntityType.USER, type=PermissionType.READ)
 
-        assert await SlackConnector._authenticator_grant(conn, previous) is None
+        assert await SlackConnector._authenticator_grant(conn) is None
+        assert kv.values[GRANT_KEY] == {"email": "admin@corp.com", "granted": True}
+
+    async def test_a_failed_read_of_the_stored_grant_grants_nothing(self) -> None:
+        conn = self._conn(authenticator="admin@corp.com", kv=_Kv(error=RuntimeError("kv down")))
+        conn._users_read_failed = True
+
+        assert await SlackConnector._authenticator_grant(conn) is None
+        conn.logger.warning.assert_called_once()
+
+    async def test_an_incomplete_listing_that_shows_the_authenticator_drops_the_grant(self) -> None:
+        conn = self._conn(authenticator="admin@corp.com", kv=_Kv({GRANT_KEY: {"email": "admin@corp.com", "granted": True}}))
+        conn._users_listing_cut = True
+        conn._listed_user_emails = {"admin@corp.com"}
+
+        assert await SlackConnector._authenticator_grant(conn) is None
 
     async def test_no_authenticator_means_no_grant(self) -> None:
         conn = self._conn(authenticator=None)

@@ -859,7 +859,7 @@ class SlackConnector(BaseConnector):
 
             # Phase 1a — Who the token belongs to; needs the user caches Phase 1 warmed
             await self._register_authenticated_identity()
-            self._authenticator_permission = await self._authenticator_grant(self._authenticator_permission)
+            self._authenticator_permission = await self._authenticator_grant()
 
             # Phase 1b — Workspace roles (AppRole for permission resolution)
             await self._sync_workspace_roles()
@@ -1465,15 +1465,15 @@ class SlackConnector(BaseConnector):
             extra_present_emails=self._listed_user_emails,
         )
 
-    async def _authenticator_grant(self, previous: Permission | None = None) -> Permission | None:
+    async def _authenticator_grant(self) -> Permission | None:
         """READ for the user who authenticated this connector, on every channel the token
         reads. They hold the token, so Slack already shows them whatever it fetches; a bot
         token has no Slack account to link them to, so this grant is how they reach it.
 
         Not for a user the workspace lists: they have their own account and see their own
-        channels through their membership, not the token's view. When the user list was not
-        read in full that is unknown, so nobody is newly granted and ``previous`` (the last
-        sync's grant, still held by this instance) is kept."""
+        channels through their membership, not the token's view. A complete user list decides
+        it and the decision is stored; when the list was not read in full that is unknown, so
+        nobody is newly granted and the stored decision stands (authenticator_grant_kept)."""
         email = await self.authenticator_email()
         if not email:
             self.logger.warning(
@@ -1481,11 +1481,13 @@ class SlackConnector(BaseConnector):
                 f"read; they will only see the channels their own email is a member of"
             )
             return None
-        if email.lower() in self._listed_user_emails:
-            return None
+        listed = email.lower() in self._listed_user_emails
         if getattr(self, "_users_read_failed", True) or self._users_listing_cut:
-            return previous if previous and (previous.email or "").lower() == email.lower() else None
-        return Permission(email=email, entity_type=EntityType.USER, type=PermissionType.READ)
+            granted = not listed and await self.authenticator_grant_kept(email)
+        else:
+            granted = not listed
+            await self.remember_authenticator_grant(email, granted=granted)
+        return Permission(email=email, entity_type=EntityType.USER, type=PermissionType.READ) if granted else None
 
     def _with_authenticator(self, perms: list[Permission]) -> list[Permission]:
         """The channel's grants plus the authenticator's, unless they are already a member."""

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    AUTHENTICATOR_GRANT_KEY,
     AuthenticatorLink,
     AuthenticatorLinkResult,
     DataSourceEntitiesProcessor,
@@ -855,6 +856,40 @@ class BaseConnector(ABC):
             ),
             recipient_user_ids=[result.authenticator_user_id],
         )
+
+    async def authenticator_grant_kept(self, email: str) -> bool:
+        """Whether the last complete user listing left this authenticator the connector account's
+        view. A sync whose listing is incomplete cannot decide it again, so it keeps this one; a
+        fresh instance (a restart, another replica) reads it here. False when nothing is stored for
+        this authenticator or the record cannot be read: no new grant. Never raises."""
+        key = AUTHENTICATOR_GRANT_KEY.format(connector_id=self.connector_id)
+        try:
+            stored = await self.config_service.get_config(key, use_cache=False, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning(
+                "Connector %s: could not read the authenticator's last grant; granting nothing new: %s",
+                self.connector_id, e,
+            )
+            return False
+        if stored is None:
+            return False
+        if not isinstance(stored, dict) or not isinstance(stored.get("granted"), bool):
+            self.logger.warning(
+                "Connector %s: the authenticator's last grant is unreadable (%r); granting nothing new",
+                self.connector_id, stored,
+            )
+            return False
+        return stored["granted"] and str(stored.get("email") or "").lower() == email.strip().lower()
+
+    async def remember_authenticator_grant(self, email: str, *, granted: bool) -> None:
+        """Store the decision a complete user listing made, for authenticator_grant_kept. Never raises."""
+        key = AUTHENTICATOR_GRANT_KEY.format(connector_id=self.connector_id)
+        try:
+            await self.config_service.set_config(key, {"email": email.strip().lower(), "granted": granted})
+        except Exception as e:
+            self.logger.warning(
+                "Connector %s: could not store the authenticator's grant: %s", self.connector_id, e,
+            )
 
     async def drop_authenticator_link_if_listed(self) -> None:
         """Remove the authenticator's link when the connector lists them as a source user.
