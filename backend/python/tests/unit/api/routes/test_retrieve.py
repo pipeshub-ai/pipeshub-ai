@@ -433,6 +433,15 @@ class TestHeadingOnlyPassages:
         assert [c["text"] for c in body["chunks"]] == ["Freeze deploys.", "Next."]
 
     @pytest.mark.asyncio
+    async def test_a_code_comment_is_not_taken_for_a_heading(self) -> None:
+        code = _hit("r1", 0, "# configuration", 0.9)
+        code["block_type"] = "code"
+        _, body, _, _ = await _retrieve(
+            RetrieveQuery(query="q"), _results(code, _hit("r1", 1, "Next.", 0.8)),
+        )
+        assert [(c["id"], c["text"]) for c in body["chunks"]] == [("v-r1:0", "# configuration"), ("v-r1:1", "Next.")]
+
+    @pytest.mark.asyncio
     async def test_a_heading_is_not_joined_across_records(self) -> None:
         _, body, _, _ = await _retrieve(
             RetrieveQuery(query="q"), _results(_hit("r1", 0, "# Guide", 0.9), _hit("r2", 1, "Next.", 0.8)),

@@ -749,7 +749,12 @@ def _is_heading_only(hit: dict[str, Any]) -> bool:
     text = hit.get("content")
     if not isinstance(text, str) or "\n" in text.strip():
         return False
-    return hit.get("block_sub_type") == BlockSubType.HEADING.value or _HEADING_ONLY.fullmatch(text.strip()) is not None
+    if hit.get("block_sub_type") == BlockSubType.HEADING.value:
+        return True
+    # "# configuration" in a code block is a comment, not a heading.
+    if hit.get("block_type") not in (None, BlockType.TEXT.value):
+        return False
+    return _HEADING_ONLY.fullmatch(text.strip()) is not None
 
 
 def _chunk_id(hit: dict[str, Any], md: dict[str, Any]) -> str:

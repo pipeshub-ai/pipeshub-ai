@@ -12966,6 +12966,7 @@ components:
           type: string
           minLength: 1
           maxLength: 100000
+          pattern: '\S'
           description: What to find. This text is always searched. A query of only spaces is refused as an empty one is.
         limit:
           type: integer
@@ -13032,10 +13033,12 @@ components:
           description: |
             Reciprocal-rank fusion of the semantic and keyword matches. Higher is better.
             Scores order the chunks of one response and are not comparable across queries.
-            Repeating a query within a few minutes, on an unchanged index, gives the same
-            chunks and scores (the query's embedding is reused and equal scores are broken
-            by id); after a re-index, or once the embedding is computed again, they can
-            differ slightly.
+            Equal scores are broken by id. A query repeated while its embedding is cached
+            (`QUERY_EMBEDDING_CACHE_SECONDS`, 10 minutes by default; at most
+            `QUERY_EMBEDDING_CACHE_ENTRIES`, 2048, queries per server process) gives the same
+            chunks and scores on an unchanged index. When the embedding is computed again (the
+            cache is off, the entry expired or was evicted, or another process answers), or
+            after a re-index, they can differ slightly.
         record:
           type: object
           properties:
@@ -53593,8 +53596,8 @@ paths:
                 $ref: '#/components/schemas/RetrieveResponse'
         '400':
           description: |
-            Invalid request. `VALIDATION_ERROR` when `query` is missing, empty, only spaces, not text or
-            longer than 100,000 characters (`Query is required.` for the first three), `limit` or `maxChunksPerRecord` is not a whole number from 1 to 50 (a
+            Invalid request. `VALIDATION_ERROR` when `query` is missing, empty, only spaces or not text
+            (`Query is required.` for the first three), `limit` or `maxChunksPerRecord` is not a whole number from 1 to 50 (a
             numeric string such as `"8"` is refused too: unlike `POST /search`, these are not read as
             numbers), `filters` is not an object or holds a key the `Filters` schema does not list (the
             message names it and lists the allowed keys), an entry of `filters.apps`, `filters.kb`,
@@ -53605,7 +53608,8 @@ paths:
             not a boolean, a date bound is empty or longer than 64 characters (`A date filter cannot be
             empty`, `A date filter must be at most 64 characters`), or the body has a field the request
             does not take (`These fields aren't accepted here: foo.`).
-            `HTTP_BAD_REQUEST` when the query contains a format specifier (`retrieve query contains
+            `HTTP_BAD_REQUEST` when the query is longer than 100,000 characters (the app-wide filter
+            below refuses it first), contains a format specifier (`retrieve query contains
             potentially dangerous format specifiers. ...`), or from the search service when a date bound
             is not a date it accepts. Markup in `query` is not refused: the app-wide markup filter skips
             this one field.

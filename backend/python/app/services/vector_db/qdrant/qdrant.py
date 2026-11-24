@@ -86,6 +86,8 @@ from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
 from app.services.vector_db.qdrant.memory_sizing import assess_memory, parse_memory_size
 from app.services.vector_db.qdrant.utils import (
     MAX_HNSW_EF_CONSTRUCT,
+    MAX_TIE_READ,
+    TIE_READ_ROUNDS,
     QdrantUtils,
     env_number,
 )
@@ -906,9 +908,11 @@ class QdrantService(IVectorDBService):
             if flat
             else []
         )
-        answers = iter(raw_results)
+        answers = [list(r.points) for r in raw_results]
+        await self._read_boundary_ties(collection_name, requests, legs, flat, answers)
+        position = iter(answers)
         fused: list[list[tuple[str, float]]] = [
-            QdrantUtils.fuse_legs([next(answers).points for _ in request_legs], req.limit)
+            QdrantUtils.fuse_legs([next(position) for _ in request_legs], req.limit)
             for req, request_legs in zip(requests, legs)
         ]
         payloads = await self._payloads_for(collection_name, requests, fused)
@@ -924,6 +928,39 @@ class QdrantService(IVectorDBService):
                 ]
             )
         return results
+
+    async def _read_boundary_ties(
+        self,
+        collection_name: str,
+        requests: list[HybridSearchRequest],
+        legs: list[list[object]],
+        flat: list[object],
+        answers: list[list[object]],
+    ) -> None:
+        """Read a leg deeper while points tied at its fusion depth may go past what it returned.
+
+        Each leg asks for its depth and a margin. When the margin is all tied with
+        the point at the cut, Qdrant chose which of the tied points to return, and
+        another call could choose others. The leg is asked again for twice as many,
+        up to ``MAX_TIE_READ``, until the tie ends inside the answer. Rare: equal
+        scores that many are mostly keyword matches on the same words.
+        """
+        depths = [req.limit * 2 for req, request_legs in zip(requests, legs) for _ in request_legs]
+        for _ in range(TIE_READ_ROUNDS):
+            deeper = [
+                i for i, points in enumerate(answers)
+                if flat[i].limit < MAX_TIE_READ and QdrantUtils.tie_at_cut(points, depths[i], flat[i].limit)
+            ]
+            if not deeper:
+                return
+            for i in deeper:
+                flat[i] = flat[i].model_copy(update={"limit": min(flat[i].limit * 2, MAX_TIE_READ)})
+            more = await self.client.query_batch_points(  # type: ignore
+                collection_name=collection_name,
+                requests=[flat[i] for i in deeper],
+            )
+            for i, result in zip(deeper, more):
+                answers[i] = list(result.points)
 
     async def _payloads_for(
         self,
