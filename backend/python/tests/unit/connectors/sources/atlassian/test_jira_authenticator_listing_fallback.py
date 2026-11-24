@@ -3,7 +3,9 @@
 On a Data Center release without /user/list the bulk read goes through /user/search, and
 on either edition it may be refused. Neither can say who is missing, so the authenticator
 is looked up on their own: found, they are listed; absent, the listing is complete; a
-lookup that fails leaves the pass removal-only.
+lookup that fails leaves the pass removal-only. Jira Cloud's user search answers a caller
+without Browse users with no rows, so there "absent" counts only once the same search finds
+the token's own account.
 """
 
 from functools import partial
@@ -170,8 +172,21 @@ def _acct(account_id: str, email: str | None, *, kind: str = "atlassian") -> dic
     return row
 
 
-def _cloud(find_users, *, creator: str | None = CREATOR) -> MagicMock:
+TOKEN = "Token@Corp.com"
+
+
+def _by_query(creator_rows: list[dict], token_rows: list[dict] | None = None):
+    """find_users answering the authenticator's lookup and the token account's own one."""
+    token = [_acct("tok", TOKEN.lower())] if token_rows is None else token_rows
+
+    def run(*, query, **_):
+        return _resp(OK, token if query.lower() == TOKEN.lower() else creator_rows)
+    return run
+
+
+def _cloud(find_users, *, creator: str | None = CREATOR, token: str | None = TOKEN) -> MagicMock:
     conn = MagicMock(spec=JiraConnector)
+    conn._authenticated_jira_email = token
     conn.logger = MagicMock()
     conn.data_source = MagicMock()
     conn.connector_name = "JIRA"
@@ -197,19 +212,54 @@ def _cloud(find_users, *, creator: str | None = CREATOR) -> MagicMock:
     conn._fetch_all_jira_users_bulk = AsyncMock(side_effect=refused)
     _bind(
         conn, JiraConnector, "_fetch_users", "_user_listing_complete_for_link", "_authenticator_is_listed",
-        "_directory_read_complete", "_safe_json_parse",
+        "_directory_read_complete", "_safe_json_parse", "_find_atlassian_accounts",
     )
+    conn._names_email = JiraConnector._names_email
     return conn
 
 
 class TestJiraCloudRefusedBulkRead:
     async def test_an_unlisted_authenticator_gets_a_complete_listing(self) -> None:
-        conn = _cloud(lambda **_: _resp(OK, [_acct("a1", "someone.else@corp.com")]))
+        conn = _cloud(_by_query([_acct("a1", "someone.else@corp.com")]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
         assert conn._listing_complete_for_link is True
         assert "creator@corp.com" not in conn._listed_user_emails
+
+    async def test_a_search_that_cannot_find_the_tokens_own_account_is_incomplete(self) -> None:
+        # Without Browse users the search answers 200 with no rows: not found may mean cannot see.
+        conn = _cloud(_by_query([], token_rows=[]))
+
+        await conn._fetch_users(active_pipeshub_users=[])
+
+        assert conn._listing_complete_for_link is False
+        assert "creator@corp.com" not in conn._listed_user_emails
+
+    async def test_an_unknown_token_account_email_is_incomplete(self) -> None:
+        conn = _cloud(_by_query([]), token=None)
+
+        await conn._fetch_users(active_pipeshub_users=[])
+
+        assert conn._listing_complete_for_link is False
+
+    async def test_an_authenticator_who_is_the_token_account_and_is_not_found_is_incomplete(self) -> None:
+        conn = _cloud(_by_query([], token_rows=[]), creator=TOKEN)
+
+        await conn._fetch_users(active_pipeshub_users=[])
+
+        assert conn._listing_complete_for_link is False
+
+    async def test_a_found_authenticator_needs_no_probe_of_the_token_account(self) -> None:
+        def find_users(*, query, **_):
+            assert query.lower() != TOKEN.lower(), "probed the token account"
+            return _resp(OK, [_acct("a1", "creator@corp.com")])
+        conn = _cloud(find_users)
+
+        await conn._fetch_users(active_pipeshub_users=[])
+
+        assert conn._listing_complete_for_link is True
+        assert "creator@corp.com" in conn._listed_user_emails
 
     async def test_a_found_authenticator_is_listed(self) -> None:
         conn = _cloud(lambda **_: _resp(OK, [_acct("a1", "creator@corp.com")]))
@@ -240,7 +290,7 @@ class TestJiraCloudRefusedBulkRead:
         assert conn._listing_complete_for_link is False
 
     async def test_an_app_account_with_no_email_does_not_hide_an_answer(self) -> None:
-        conn = _cloud(lambda **_: _resp(OK, [_acct("bot", None, kind="app")]))
+        conn = _cloud(_by_query([_acct("bot", None, kind="app")]))
 
         await conn._fetch_users(active_pipeshub_users=[])
 
