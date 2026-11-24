@@ -17,6 +17,9 @@ from app.sources.client.bookstack.bookstack import BookStackResponse
 CONNECTOR_ID = "bs-shelves"
 
 
+_NOT_FOUND = BookStackResponse(success=False, data={"error": {"code": 404, "message": "Not found"}}, status_code=404)
+
+
 def _listing(*items: dict) -> BookStackResponse:
     return BookStackResponse(success=True, data={"data": list(items), "total": len(items)})
 
@@ -39,6 +42,8 @@ def connector() -> BookStackConnector:
     conn.data_source.list_chapters = AsyncMock(return_value=_listing({"id": 2, "name": "Policies", "book_id": 1}))
     conn.data_source.list_shelves = AsyncMock(return_value=_listing({"id": 3, "name": "Company"}))
     conn.data_source.get_shelf = AsyncMock()
+    conn.data_source.get_book = AsyncMock(return_value=_NOT_FOUND)
+    conn.data_source.get_chapter = AsyncMock(return_value=_NOT_FOUND)
     conn.data_source.get_content_permissions = AsyncMock()
     conn._access = AsyncMock(return_value=MagicMock(permissions=[]))
     conn._load_roles_for_access = AsyncMock(return_value=True)
@@ -66,6 +71,8 @@ async def test_a_complete_listing_removes_a_shelf_an_older_version_stored(connec
 
     assert sorted(_deleted(connector)) == ["book/9", "bookshelf/3"]
     assert connector._health.ok
+    assert [c.args for c in connector.data_source.get_book.await_args_list] == [(9,)]
+    connector.data_source.get_chapter.assert_not_awaited()
 
 
 @pytest.mark.asyncio

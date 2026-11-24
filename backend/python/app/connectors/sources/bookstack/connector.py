@@ -197,7 +197,7 @@ def _combined(first: ReadOutcome, second: ReadOutcome) -> ReadOutcome:
 
 
 def _answered(response: object) -> bool:
-    """Whether a get_user or get_role call came back with the item, not an error body."""
+    """Whether a get call (user, role, book or chapter) came back with the item, not an error body."""
     if isinstance(response, BaseException) or not getattr(response, "success", False):
         return False
     status = getattr(response, "status_code", None)
@@ -1089,7 +1089,9 @@ class BookStackConnector(BaseConnector):
 
     async def _remove_groups_not_listed(self, listed: Set[str]) -> bool:
         """Remove the books and chapters complete listings no longer return (gone, or now outside the book
-        filter), with what is under them, and any shelf an older version stored."""
+        filter), with what is under them, and any shelf an older version stored. The listings page by offset,
+        so each book or chapter is looked up by id first, and written again if BookStack still has it within
+        the book filter, or kept if the lookup fails."""
         try:
             stored = await self.data_entities_processor.get_nodes_by_filters(
                 CollectionNames.RECORD_GROUPS.value, {"connectorId": self.connector_id},
@@ -1104,6 +1106,21 @@ class BookStackConnector(BaseConnector):
             kind, _, raw = external_id.partition("/")
             if not raw.isdigit() or external_id in listed or (kind not in _GROUP_TYPES and kind != _SHELF):
                 continue
+            if kind in _GROUP_TYPES:
+                answered, item = await self._fetch_group(kind, int(raw))
+                if not answered:
+                    self.logger.warning(f"Keeping {external_id}; it is tried again next sync")
+                    done = False
+                    continue
+                if item is not None and self._book_in_scope(int(raw) if kind == "book" else item.get("book_id")):
+                    self.logger.info(f"{external_id} was missed by the listing but is still in BookStack; writing it again")
+                    access = await self._access(kind, item)
+                    if access is None:
+                        self._kept_unnoted_access = True
+                    else:
+                        await self.data_entities_processor.on_new_record_groups(
+                            [(self._group_for(kind, item), access.permissions)])
+                    continue
             self.logger.info(f"{external_id} is no longer in BookStack or in the sync's scope; removing it")
             # The processor reports a failed removal as False, not as an exception, and also says False for a
             # group already gone: a chapter goes with its book, which may come first in this loop.
@@ -1729,9 +1746,9 @@ class BookStackConnector(BaseConnector):
         A complete listing leaves out pages deleted at the source and pages the
         sync filters now exclude, so both leave every store. The listing pages
         by offset, so a delete while it runs can shift a live page past it:
-        each page is looked up by id first, and kept if BookStack still has it
-        within the filters, or if the lookup fails. Returns False when any page
-        was kept for want of an answer, or its delete failed.
+        each page is looked up by id first, and written again if BookStack still
+        has it within the filters, or kept if the lookup fails. Returns False
+        when any page was kept for want of an answer, or its delete failed.
         """
         stale: list[Record] = []
         after_key: str | None = None
@@ -1762,13 +1779,19 @@ class BookStackConnector(BaseConnector):
                 page_id = int(record.external_record_id.split("/", 1)[1])
             except ValueError:
                 self.logger.warning(f"Unreadable page id {record.external_record_id}; keeping its record")
+                self.data_entities_processor.note_kept_records(self.connector_id, [record.id])
                 continue
             answered, page = await self._fetch_page(page_id)
             if not answered:
                 all_done = False
                 continue
             if page is not None and self._page_passes_filters(page, book_ids, book_ids_operator, date_filters):
-                self.logger.info(f"Page {page_id} was missed by the listing but is still in BookStack; keeping it")
+                self.logger.info(f"Page {page_id} was missed by the listing but is still in BookStack; writing it again")
+                prepared = await self._page_record(page)
+                if prepared is None:
+                    self._kept_unnoted_access = True
+                else:
+                    await self.data_entities_processor.on_new_records([prepared])
                 continue
             all_done = await self._delete_page_record(record, page_id) and all_done
         return all_done
@@ -1903,6 +1926,16 @@ class BookStackConnector(BaseConnector):
         if group is None:
             return True
         return await self.data_entities_processor.on_record_group_deleted(external_id, self.connector_id)
+
+    async def _fetch_group(self, kind: str, item_id: int) -> tuple[bool, dict | None]:
+        """Look a book or chapter up by id: (answered, item). One BookStack no longer has is (True, None)."""
+        response = await {"book": self.data_source.get_book, "chapter": self.data_source.get_chapter}[kind](item_id)
+        if _answered(response):
+            return True, response.data
+        if _gone(response):
+            return True, None
+        self.logger.warning(f"Could not read BookStack's answer for {kind} ID {item_id}")
+        return False, None
 
     async def _content_exists(self, content_type: str, item_id: int) -> bool | None:
         """Whether BookStack still lists a book or chapter by id; None when it gives no usable answer."""

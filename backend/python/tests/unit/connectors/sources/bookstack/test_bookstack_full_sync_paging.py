@@ -10,6 +10,8 @@ import pytest
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.sources.client.bookstack.bookstack import BookStackResponse
 
+_NOT_FOUND = BookStackResponse(success=False, data={"error": {"code": 404, "message": "Not found"}}, status_code=404)
+
 
 def _pages(rows: list[dict], total: int) -> BookStackResponse:
     return BookStackResponse(success=True, data={"content": json.dumps({"data": rows, "total": total})})
@@ -29,6 +31,8 @@ def connector() -> BookStackConnector:
                                   "bs-paging", "team", "admin")
     conn.batch_size = 2
     conn.data_source = MagicMock()
+    conn.data_source.get_book = AsyncMock(return_value=_NOT_FOUND)
+    conn.data_source.get_chapter = AsyncMock(return_value=_NOT_FOUND)
     conn._page_record = AsyncMock(side_effect=lambda page: (MagicMock(external_record_id=f"page/{page['id']}"), []))
     conn._get_book_id_filter = MagicMock(return_value=([], None))
     conn._get_date_filters = MagicMock(return_value=(None, None, None, None))
@@ -122,3 +126,19 @@ async def test_a_chapter_already_removed_with_its_book_is_not_a_failure(connecto
     connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(side_effect=lookup)
 
     assert await connector._remove_groups_not_listed(set()) is True
+
+
+@pytest.mark.asyncio
+async def test_a_group_still_in_bookstack_is_not_removed(connector) -> None:
+    processor = connector.data_entities_processor
+    processor.get_nodes_by_filters = AsyncMock(return_value=[
+        {"externalGroupId": "book/9"}, {"externalGroupId": "chapter/13"}])
+    processor.on_new_record_groups = AsyncMock()
+    connector.data_source.get_book = AsyncMock(
+        return_value=BookStackResponse(success=True, data={"id": 9, "name": "b"}, status_code=200))
+    connector._access = AsyncMock(return_value=MagicMock(permissions=[]))
+
+    assert await connector._remove_groups_not_listed(set()) is True
+    processor.on_record_group_deleted.assert_awaited_once_with("chapter/13", "bs-paging")
+    ((batch,), _), = processor.on_new_record_groups.await_args_list
+    assert [group.external_group_id for group, _ in batch] == ["book/9"]
