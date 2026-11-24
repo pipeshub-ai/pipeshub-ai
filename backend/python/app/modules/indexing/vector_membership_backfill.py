@@ -12,12 +12,12 @@ import inspect
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
 from app.core.org_context import for_org, system
 from app.services.messaging.config import RedisConfig, messaging_env
 from app.services.messaging.utils import MessagingUtils
-from app.services.vector_db.org_metrics import ORG_SKIPPED
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -310,7 +310,7 @@ async def _backfill_app_page(
                 owners = sorted(await pipeline.orgs_holding_points(vrid))
             if not owners:
                 # No point holds this record, so there is no stamp to invalidate and nothing to sync. Not a failure.
-                ORG_SKIPPED.inc("membership_backfill")
+                platform_events.emit("vector.maintenance.org_skipped", site="membership_backfill")
                 logger.info(
                     "Vector membership backfill: virtualRecordId=%s connector=%s has no org and no points; nothing to sync",
                     vrid, connector_id,

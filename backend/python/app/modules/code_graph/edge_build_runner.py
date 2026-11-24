@@ -5,13 +5,13 @@ import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.modules.code_graph import deleted_files, edge_build_trigger
 from app.modules.code_graph.build_state import BuildStateStore, needs_full_build
 from app.modules.code_graph.edge_builder import (
     EdgeBuildTooLargeError,
     build_code_graph_edges,
 )
-from app.plugins.telemetry.modules import code_graph_metrics
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
@@ -132,7 +132,7 @@ class CodeEdgeBuildRunner:
                         return False
                 return True
         except edge_build_trigger.LeaseLostError:
-            code_graph_metrics.record_build("lease_lost")
+            platform_events.emit("code_graph.build.settled", outcome="lease_lost")
             # The state now belongs to whichever build took the lock; it settles it.
             self._log.error(
                 "Code edge build for org=%s record_group=%s stopped: it lost its lock",
@@ -140,7 +140,7 @@ class CodeEdgeBuildRunner:
             )
             raise
         except Exception as exc:
-            code_graph_metrics.record_build("error")
+            platform_events.emit("code_graph.build.settled", outcome="error")
             self._log.exception(
                 "Automatic code edge build failed for org=%s record_group=%s",
                 org_id,
@@ -184,7 +184,7 @@ class CodeEdgeBuildRunner:
             )
             await self._state.settle_deferred(org_id, record_group_id, lease_token=token,
                                               now_ms=_now_ms())
-            code_graph_metrics.record_build("waiting_on_indexing")
+            platform_events.emit("code_graph.build.settled", outcome="waiting_on_indexing")
             return False
 
         # Read before the watermark query: a record updated in between is
@@ -206,7 +206,7 @@ class CodeEdgeBuildRunner:
                     org_id, record_group_id, lease_token=token, start=start,
                     started_at_ms=started_at_ms, advance_watermark=False, full=False,
                 )
-                code_graph_metrics.record_build("ready")
+                platform_events.emit("code_graph.build.settled", outcome="ready")
                 return True
 
         self._log.info(
@@ -240,7 +240,7 @@ class CodeEdgeBuildRunner:
                 org_id, record_group_id, lease_token=token, start=start,
                 started_at_ms=started_at_ms, reason=str(exc),
             )
-            code_graph_metrics.record_build("too_large")
+            platform_events.emit("code_graph.build.settled", outcome="too_large")
             return False
         if result.facts_missing:
             # Those files kept their old edges; holding the watermark back
@@ -259,8 +259,17 @@ class CodeEdgeBuildRunner:
             # Kept while the watermark stays: the next build covers the same
             # changes again and needs the names to find the same callers.
             await deleted_files.forget(self._graph_provider, deleted.keys, self._log)
-        code_graph_metrics.record_build(
-            "ready", result, "incremental" if touched_record_ids is not None else "full")
+        platform_events.emit(
+            "code_graph.build.settled",
+            outcome="ready",
+            mode="incremental" if touched_record_ids is not None else "full",
+            duration_seconds=result.duration_s,
+            edges_by_relation=dict(result.edges_by_type),
+            external_references=result.external_refs,
+            unresolved_references=result.unresolved,
+            ambiguous_references=result.ambiguous_skipped,
+            files_without_facts=result.facts_missing,
+        )
         self._log.info(
             "Automatic code edge build complete: %s",
             result.as_log_fields(),

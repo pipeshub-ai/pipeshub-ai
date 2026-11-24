@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import Connectors
 from app.models.entities import RecordType, Status
 from app.models.record_metadata import (
@@ -162,7 +163,7 @@ async def test_only_union_values_are_projected_and_a_misfit_is_dropped_with_a_me
     graph.records[doc["_key"]] = doc
     meta = _meta(team="payments", count=2**53, blurb="free text")
 
-    with patch.object(proj, "record_property_value_dropped") as dropped:
+    with event_calls("record.property_value.dropped") as dropped:
         result = await project(graph, reg, cache, doc["_key"], provided=meta)
 
     assert result.status == WRITTEN

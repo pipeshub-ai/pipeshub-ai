@@ -1,6 +1,7 @@
 import asyncio
 import bisect
 import contextlib
+import itertools
 import json
 import logging
 import math
@@ -8,6 +9,7 @@ import re
 import threading
 import time
 import uuid
+import weakref
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import CancelledError as FuturesCancelledError
@@ -19,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Optional, override
 
 from pydantic import ValidationError
 
+from app import platform_events
 from app.core.envelope import (
     EnvelopeRejected,
     ctx_of,
@@ -103,7 +106,6 @@ from app.services.messaging.storage_protocol import tagged
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor import ParseTier, Pool
-from app.plugins.telemetry.modules import scheduling_metrics as metrics
 from app.utils import error_class
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
@@ -124,6 +126,7 @@ if TYPE_CHECKING:
     from app.services.resource_governor import ResourceGovernor
 
 _BUSYGROUP_ERROR = "BUSYGROUP"
+_WAITS_CONSUMER_IDS = itertools.count(1)
 _STREAM_TYPE = "stream"
 # ``record-events.3`` -- a lane stream, as opposed to its base topic.
 _LANE_SUFFIX = re.compile(r"\.\d+$")
@@ -453,6 +456,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # in the same step as the check, and a run releasing a record wakes
         # a waiter in the same step as the release (see _claim_record_or_wait).
         self._record_waits: dict[tuple[str, str], _RecordWait] = {}
+        # Names this consumer in the record-wait events: never reused, unlike id().
+        self._waits_consumer_id = next(_WAITS_CONSUMER_IDS)
+        # A consumer dropped without stop() must still leave the process's total, so its collection is
+        # announced. The finalizer runs on whatever thread a collection happens on, possibly one already
+        # inside a lock: a listener of this event only notes it.
+        weakref.finalize(
+            self, platform_events.emit, "indexing.consumer.discarded", broker="redis", consumer_id=self._waits_consumer_id,
+        ).atexit = False
         # The same waits by record, so a release finds its waiters without
         # walking every wait.
         self._record_waiters: dict[str, _RecordWaiters] = {}
@@ -1076,7 +1087,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self._in_flight_record_ids.clear()
             self._record_waits.clear()
             self._record_waiters.clear()
-            metrics.forget_record_waits("redis", self)
+            platform_events.emit("indexing.consumer.stopped", broker="redis", consumer_id=self._waits_consumer_id)
 
     def _wait_for_active_futures(self) -> None:
         """Wait for all active futures to complete, bounded by ONE shared timeout.
@@ -1296,7 +1307,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         consumers both wait), not whichever published last.
         """
         waiting = len(self._record_waits)
-        metrics.record_record_waits("redis", self, waiting)
+        platform_events.emit("indexing.record_waits.changed", broker="redis", consumer_id=self._waits_consumer_id, waiting=waiting)
         return waiting
 
     def __park_locked(
@@ -2897,7 +2908,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         is recorded as confirmed, which is what ``__sweep_stale_buffered``
         judges risk by.
         """
-        metrics.refresh_record_waits("redis")
+        platform_events.emit("indexing.consumer.polled", broker="redis")
         in_flight = self._in_flight_by_stream()
         if self.redis is None or not (self._held_entries or in_flight or self._record_waits):
             return
@@ -3038,19 +3049,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if scheduler is None:
             return
         try:
-            metrics.record_scheduler_depth(
-                "redis",
-                scheduler.pending_count,
-                {
+            platform_events.emit(
+                "indexing.scheduler.measured",
+                broker="redis",
+                pending=scheduler.pending_count,
+                active_by_level={
                     "org": scheduler.active_count_at(0),
                     "connector": scheduler.active_entity_count,
                 },
             )
-            metrics.record_lanes_paused(
-                "redis", len({stream for stream, *_r in self._deferred_entries})
-            )
+            platform_events.emit("indexing.lanes.paused_counted", broker="redis", count=len({stream for stream, *_r in self._deferred_entries}))
             for tier, count in self.gate_waiters.snapshot().items():
-                metrics.record_gate_waiters("redis", tier.value, count)
+                platform_events.emit("indexing.gate.waiters_counted", broker="redis", tier=tier.value, count=count)
         except Exception as e:
             self.logger.debug("Failed to publish scheduler metrics: %s", e)
 
@@ -3143,7 +3153,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         released = len(dropped) + len(stale_parked)
         if released:
-            metrics.record_dwell_exceeded("redis", released)
+            platform_events.emit("indexing.dwell.exceeded", broker="redis", count=released)
             self.logger.warning(
                 "Released %d held entry(ies) whose ownership could not be "
                 "confirmed for %.0fs, before another replica's idle claim "
@@ -3233,10 +3243,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             strict=False,
         ):
             if level == _DEFAULT_KEY_LEVEL:
-                metrics.record_missing_key("redis", field)
+                platform_events.emit("indexing.fairness_key.missed", broker="redis", key_field=field)
 
         if not self.__try_enqueue(stream_name, message_id, fields, parsed):
-            metrics.record_deferred("redis", "no_buffer_room")
+            platform_events.emit("indexing.read.deferred", broker="redis", reason="no_buffer_room")
             if not self.__buffer_has_room():
                 # Nothing left to hold it with. Left un-ACKed and untracked so
                 # the pending list keeps it and recovery picks it up later --
@@ -3674,7 +3684,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if tracking_id:
                 await self._clear_retry_tracking(str(tracking_id))
         if settled:
-            metrics.record_connector_off_settled("redis", len(settled))
+            platform_events.emit("indexing.connector_off.settled", broker="redis", count=len(settled))
             self.logger.info(
                 "Acknowledged %d queued event(s) of turned-off or removed "
                 "connectors without indexing them: %s",
@@ -3746,7 +3756,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 if not await self.__hand_back_entry(stream_name, message_id, parsed, hand_back_delay):
                     self.__rebuffer_failed_hand_back(stream_name, message_id, fields, parsed, hand_back_delay)
                 continue
-            metrics.record_dispatch("redis", key[0] if key else "unknown")
+            platform_events.emit("indexing.record.dispatched", broker="redis", org_id=key[0] if key else "unknown")
             try:
                 await self._start_processing_task(
                     stream_name, message_id, fields, parsed, slot_key=key

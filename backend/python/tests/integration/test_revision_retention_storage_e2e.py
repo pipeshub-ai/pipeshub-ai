@@ -41,6 +41,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.neo4j import collection_to_label
 from app.config.constants.service import config_node_constants
@@ -265,7 +266,7 @@ async def test_full_lifecycle_retires_exactly_the_unused_revisions(life: _Lifecy
     }
 
     metrics = _Metrics()
-    with patch.object(retention_module, "record_retention", metrics):
+    with event_calls("record.retention.swept", "kind", "outcome", "count", to=metrics):
         next_key, report = await _sweep(life).run_page(life.prefix)
 
     gone, kept = {revs[0], revs[2]}, {revs[1], revs[3], revs[4]}
@@ -501,7 +502,7 @@ async def test_a_revision_already_gone_is_not_counted_as_deleted(life: _Lifecycl
 
     metrics = _Metrics()
     with patch.object(life.target.store, "delete_revision", side_effect=purged_meanwhile), \
-            patch.object(retention_module, "record_retention", metrics):
+            event_calls("record.retention.swept", "kind", "outcome", "count", to=metrics):
         _, report = await _sweep(life).run_page(life.prefix)
 
     assert report.revisions_deleted == 0

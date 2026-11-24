@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.plugins.telemetry.modules import indexing_metrics
 from app.config.constants.arangodb import ProgressStatus
 from app.events.events import DedupDecision
 from app.exceptions.indexing_exceptions import PasswordProtectedError
@@ -408,7 +409,7 @@ async def test_an_unavailable_count_on_a_searchable_file_is_decided_by_the_inspe
         writes_before_inspection.append(dict(world.graph.record)),
         InspectedPdf(content, needs_ocr=False, repaired=False, page_count=900),
     )[1]
-    with patch.object(page_limit.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
+    with patch.object(indexing_metrics.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
         await world.run()
     inc.assert_called_once()
     inspect.assert_awaited_once()

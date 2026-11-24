@@ -26,6 +26,7 @@ from typing import Any, Protocol, TypedDict, TypeVar, cast
 
 import httpx
 
+from app import platform_events
 from app.capacity.admission import llm_slot as member_llm_slot
 from app.core.org_context import spawn_in_request
 from app.exceptions.non_retryable import NonRetryableError
@@ -62,11 +63,6 @@ from app.services.spend_guard.retry_policy import (
     RetryKind,
     decide_retry,
     process_retry_budget,
-)
-from app.plugins.telemetry.modules.llm_gateway_metrics import (
-    LLM_BREAKER_OPEN,
-    LLM_CALLS,
-    LLM_TOKENS,
 )
 from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
 from app.utils.llm import LLMUnavailableError, is_provider_unavailable
@@ -449,7 +445,7 @@ def _record_tokens(call_site: str, result: object) -> None:
     for direction, usage_key in (("input", "input_tokens"), ("output", "output_tokens")):
         count = counts.get(usage_key)
         if isinstance(count, int) and count > 0:
-            LLM_TOKENS.inc(call_site, direction, value=float(count))
+            platform_events.emit("llm.tokens.used", call_site=call_site, direction=direction, count=float(count))
 
 
 class LLMGateway:
@@ -574,7 +570,7 @@ class LLMGateway:
         # makes the real call as the probe: a health endpoint cannot tell whether the provider serves completions.
         process_probe = fleet is None and breaker.should_attempt_probe()
         if fleet is None and not process_probe and breaker.is_open:
-            LLM_CALLS.inc(site, "circuit_open")
+            platform_events.emit("llm.call.finished", call_site=site, outcome="circuit_open")
             raise ProviderUnavailableError(
                 f"{provider} is failing; not calling it until its cooldown ends",
                 provider=provider,
@@ -596,7 +592,7 @@ class LLMGateway:
                     if fleet is None and not (process_probe and attempt == 0) and breaker.is_open:
                         # The per-process breaker, as it is now: a failure settled since the last check (or while this call
                         # waited for a slot) may have opened it. The probe's owner is let through once.
-                        LLM_CALLS.inc(site, "circuit_open")
+                        platform_events.emit("llm.call.finished", call_site=site, outcome="circuit_open")
                         raise ProviderUnavailableError(
                             f"{provider} is failing; not calling it until its cooldown ends",
                             provider=provider,
@@ -620,7 +616,7 @@ class LLMGateway:
                             result = await asyncio.wait_for(make_call(), call_timeout)
                         except NonRetryableError:
                             # Neither the provider's failure nor one to retry: the caller must not fall back.
-                            LLM_CALLS.inc(site, "error")
+                            platform_events.emit("llm.call.finished", call_site=site, outcome="error")
                             sent_any = sent_any or seen.sent
                             _note_failed_sends(max(0, seen.requests - 1))
                             await self._settle_outcome(
@@ -642,7 +638,7 @@ class LLMGateway:
                                 charged_total += await self._end_refused_attempt(
                                     fleet, breaker, pk, cls, admission, seen, trace, provider
                                 )
-                                LLM_CALLS.inc(site, "sends_used")
+                                platform_events.emit("llm.call.finished", call_site=site, outcome="sends_used")
                                 raise self._sends_used(
                                     provider, pk, cls, sent_any=sent_any, requests=requests_total, charged=charged_total
                                 ) from exc
@@ -698,9 +694,9 @@ class LLMGateway:
                             )
                             await self._settle_outcome(fleet, breaker, pk, cls, admission, wire.OK)
                             self._retry_budget.refund()
-                            LLM_BREAKER_OPEN.set(provider, value=0.0)
+                            platform_events.emit("llm.circuit.changed", provider=provider, open=False)
                             note_llm_call()
-                            LLM_CALLS.inc(site, "ok")
+                            platform_events.emit("llm.call.finished", call_site=site, outcome="ok")
                             _record_tokens(site, result)
                             return result
             finally:
@@ -709,9 +705,9 @@ class LLMGateway:
             assert decision is not None and decision.retry
             if decision.kind is RetryKind.THROTTLE:
                 self.note_rate_limit_retry()
-                LLM_CALLS.inc(site, "rate_limited")
+                platform_events.emit("llm.call.finished", call_site=site, outcome="rate_limited")
             else:
-                LLM_CALLS.inc(site, "transient_retry")
+                platform_events.emit("llm.call.finished", call_site=site, outcome="transient_retry")
             # Full jitter (or the provider's Retry-After, when longer), outside the permit: lock-step retries are what
             # keep a provider at its limit.
             slept_total += decision.delay_s
@@ -746,7 +742,7 @@ class LLMGateway:
         """Before an attempt: a job whose pause budget has no failed sends left sends nothing more."""
         meter = wire.current_meter()
         if meter is not None and meter.remaining() == 0:
-            LLM_CALLS.inc(site, "sends_used")
+            platform_events.emit("llm.call.finished", call_site=site, outcome="sends_used")
             raise self._sends_used(provider, pk, cls, sent_any=sent_any, requests=requests, charged=charged)
 
     @staticmethod
@@ -814,7 +810,7 @@ class LLMGateway:
             admission = await fleet.admit(pk, cls, job)
         except FleetBreakerUnavailable as exc:
             # The control plane cannot be read: pause rather than spend unobserved.
-            LLM_CALLS.inc(site, "controls_unavailable")
+            platform_events.emit("llm.call.finished", call_site=site, outcome="controls_unavailable")
             raise ProviderUnavailableError(
                 f"{provider}: the circuit breaker state could not be read ({exc}); not calling the model",
                 provider=provider,
@@ -827,8 +823,8 @@ class LLMGateway:
                 requests=requests,
             ) from exc
         if not admission.allowed:
-            LLM_CALLS.inc(site, "circuit_open")
-            LLM_BREAKER_OPEN.set(provider, value=1.0)
+            platform_events.emit("llm.call.finished", call_site=site, outcome="circuit_open")
+            platform_events.emit("llm.circuit.changed", provider=provider, open=True)
             raise ProviderUnavailableError(
                 f"{provider} is failing; not calling it until its cooldown ends",
                 provider=provider,
@@ -986,7 +982,7 @@ class LLMGateway:
     ) -> None:
         if rate_limited_after is not None:
             # The provider's Retry-After is longer than this call may wait: say so at once, sleep nothing.
-            LLM_CALLS.inc(site, "rate_limited_deferred")
+            platform_events.emit("llm.call.finished", call_site=site, outcome="rate_limited_deferred")
             raise RateLimited(
                 f"{provider} is rate limiting; it asks for {rate_limited_after:.0f}s, which this call does not wait for",
                 provider=provider,
@@ -1000,14 +996,14 @@ class LLMGateway:
             ) from exc
         if isinstance(exc, TimeoutError) and judged == wire.NEUTRAL:
             # The caller's budget ran out: a slow call, not evidence the provider is down.
-            LLM_CALLS.inc(site, "timeout")
+            platform_events.emit("llm.call.finished", call_site=site, outcome="timeout")
             raise exc
         if judged == wire.FAIL:
             if breaker.is_open:
-                LLM_BREAKER_OPEN.set(provider, value=1.0)
+                platform_events.emit("llm.circuit.changed", provider=provider, open=True)
             if settlement is not None and settlement.state == "open":
-                LLM_BREAKER_OPEN.set(provider, value=1.0)
-            LLM_CALLS.inc(site, "unavailable")
+                platform_events.emit("llm.circuit.changed", provider=provider, open=True)
+            platform_events.emit("llm.call.finished", call_site=site, outcome="unavailable")
             trial = admission is not None and admission.trial
             raise ProviderUnavailableError(
                 f"{provider} could not serve the call: {type(exc).__name__}: {exc}",
@@ -1022,7 +1018,7 @@ class LLMGateway:
                 requests=requests,
             ) from exc
         # The provider answered; the request was at fault. Not the provider's failure.
-        LLM_CALLS.inc(site, "error")
+        platform_events.emit("llm.call.finished", call_site=site, outcome="error")
         raise exc
 
 

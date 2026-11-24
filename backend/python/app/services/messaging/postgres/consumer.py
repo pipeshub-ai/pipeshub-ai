@@ -21,9 +21,9 @@ from collections import Counter
 from logging import Logger
 from typing import TYPE_CHECKING, Any, override
 
+from app import platform_events
 from app.core.db.errors import CommitOutcomeUnknown, ConnectionLost, PoolTimeout
 from app.core.envelope import (
-    INBOX_ERRORS,
     DuplicateEnvelope,
     EnvelopeRejected,
     Inbox,
@@ -633,7 +633,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         try:
             return await self.inbox.record_and_ack(group, ctx, self.queue, group, d)
         except Exception as e:
-            INBOX_ERRORS.inc("record")
+            platform_events.emit("message.inbox.failed", operation="record")
             if log_once(f"inbox-ack:{group}", 30):    # the counter carries the exact count
                 self.logger.warning("Could not record %s in the consumer inbox; acknowledging it alone: %s", d.message_id, type(e).__name__)
             return await self.queue.ack(group, d)

@@ -27,8 +27,8 @@ from app.modules.named_entities.graph_writer import (
 from app.modules.named_entities.merge import anchor_year_less_dates
 from app.modules.named_entities.normalizers.dates import NormalizationContext
 from app.modules.named_entities.resolution import NamedEntityResolver
+from app.modules.named_entities.run_announcement import announce_run
 from app.services.messaging.precision_flip import PrecisionFlip
-from app.plugins.telemetry.modules.named_entity_metrics import observe_stage, record_run
 
 _MODEL_GAVE_UP = frozenset({"no_progress", "budget_turns", "budget_tokens", "timeout"})
 
@@ -208,8 +208,7 @@ async def persist_named_entities(
         )
     finally:
         elapsed = time.perf_counter() - started
-        observe_stage(extraction.strategy, elapsed)
-        record_run(extraction, outcome=outcome)
+        announce_run(extraction, outcome=outcome, seconds=elapsed)
         log_run(record, extraction, outcome=outcome, seconds=elapsed)
     return result
 

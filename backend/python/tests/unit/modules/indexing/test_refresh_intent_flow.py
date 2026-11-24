@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.plugins.telemetry.modules import indexing_metrics
 from app import indexing_main
 from app.config.constants.arangodb import EventTypes, ProgressStatus
 from app.connectors.api.router import mark_user_forced_reindex
@@ -225,7 +226,7 @@ class _Counted:
 async def test_an_expired_request_on_a_completed_row_is_cleared_logged_and_counted(w: World, caplog: pytest.LogCaptureFixture) -> None:
     w.row.update(ri.intent_fields("old", w.now_ms - 25 * HOUR_MS))
     counted = _Counted()
-    with patch.object(ri, "REFRESH_INTENT_EVENTS", counted), caplog.at_level("WARNING"):
+    with patch.object(indexing_metrics.REFRESH_INTENT_EVENTS, "inc", counted.inc), caplog.at_level("WARNING"):
         await w.intent_sweep()
     assert ri.ID_FIELD not in w.row and ri.AT_FIELD not in w.row and not w.msgs
     assert "was not served within its life" in caplog.text
@@ -674,7 +675,7 @@ async def test_an_expired_request_is_rechecked_under_the_lease_before_it_is_clea
     assert w.row[ri.ID_FIELD] == "A"
     w.active = None
     counted = _Counted()
-    with patch.object(ri, "REFRESH_INTENT_EVENTS", counted):
+    with patch.object(indexing_metrics.REFRESH_INTENT_EVENTS, "inc", counted.inc):
         await w.intent_sweep()                                                             # idle and still expired: cleared, counted
     assert ri.ID_FIELD not in w.row and counted.events == ["expired"]
 
@@ -798,7 +799,7 @@ async def test_an_expired_request_that_was_already_served_is_cleared_without_an_
     w.row.update(ri.intent_fields("A", w.now_ms - 25 * HOUR_MS), indexingStatus=FAILED, reason="the file could not be read")
     w.row[ri.DONE_ID_FIELD] = "A"
     counted = _Counted()
-    with patch.object(ri, "REFRESH_INTENT_EVENTS", counted), caplog.at_level("WARNING"):
+    with patch.object(indexing_metrics.REFRESH_INTENT_EVENTS, "inc", counted.inc), caplog.at_level("WARNING"):
         await w.intent_sweep()
     assert ri.ID_FIELD not in w.row and w.row["reason"] == "the file could not be read"
     assert counted.events == [] and "was not served within its life" not in caplog.text

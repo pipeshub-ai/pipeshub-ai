@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,6 +28,7 @@ import pytest
 
 pytest.importorskip("fakeredis.aioredis")
 
+from app import platform_events
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -40,6 +42,7 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from app.plugins.telemetry.modules import scheduling_metrics
 from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
+from tests.support.platform_event_capture import captured_events
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 if TYPE_CHECKING:
@@ -692,8 +695,8 @@ def gauge() -> Any:  # noqa: ANN401
     _RECORD_WAITS_SET.reset_mock()
     from app.plugins.telemetry.modules import scheduling_metrics
 
-    scheduling_metrics._record_waits_by_owner.clear()
-    scheduling_metrics._record_waits_collected.clear()
+    scheduling_metrics._record_waits_by_consumer.clear()
+    scheduling_metrics._record_waits_discarded.clear()
     with patch("app.plugins.telemetry.modules.scheduling_metrics.RECORD_WAITS.set", _RECORD_WAITS_SET):
         yield _RECORD_WAITS_SET
 
@@ -737,21 +740,21 @@ class TestReviewOfTheWaits:
         """A worker records a wait; the main loop ends it. Each publishes the
         count it saw. Published outside the lock that changes the waits, the
         worker's 1 could land after the main loop's 0 and stay there. The
-        worker is paused before the metrics module, so the metrics lock alone
-        cannot hide the race."""
+        worker is paused before its event reaches any listener, so the listener's
+        lock alone cannot hide the race."""
         consumer = harness.consumer
         assert consumer._claim_record("r1")
         main_published = threading.Event()
         worker_publishing = threading.Event()
-        real = scheduling_metrics.record_record_waits
+        real = platform_events.emit
 
-        def paused(*args: Any) -> None:  # noqa: ANN401
-            if threading.current_thread().name == "worker" and args[-1] == 1:
+        def paused(name: str, /, **payload: Any) -> None:  # noqa: ANN401
+            if threading.current_thread().name == "worker" and payload.get("waiting") == 1:
                 worker_publishing.set()
                 main_published.wait(timeout=0.5)
-            real(*args)
+            real(name, **payload)
 
-        with patch(f"{_MODULE}.metrics.record_record_waits", paused):
+        with patch(f"{_MODULE}.platform_events.emit", paused):
             worker = threading.Thread(
                 target=consumer._claim_record_or_wait, args=("r1", LANE, "1-0"), name="worker"
             )
@@ -975,32 +978,46 @@ class TestReviewOfTheWaitsRoundTwo:
 
 
 _COLLECTION_INSIDE_A_PUBLICATION = """
-import gc, threading
+import gc, weakref
 from unittest.mock import patch
+from app import platform_events
+from app.plugins.telemetry import listeners
 from app.plugins.telemetry.modules import scheduling_metrics as m
 
-class Owner:
-    def __init__(self):
+listeners.subscribe(platform_events.on)
+
+class Consumer:
+    def __init__(self, consumer_id):
         self.cycle = self  # freed only by a collection
+        weakref.finalize(self, platform_events.emit, "indexing.consumer.discarded", broker="test", consumer_id=consumer_id)
 
 gc.disable()
-dropped = Owner()
-m.record_record_waits("test", dropped, 1)
+dropped = Consumer(1)
+platform_events.emit("indexing.record_waits.changed", broker="test", consumer_id=1, waiting=1)
 del dropped
 real_set = m.RECORD_WAITS.set
 
 def collecting_set(*args, **kwargs):
-    gc.collect()  # the dropped owner's finalizer runs here, mid-publication
+    gc.collect()  # the dropped consumer's finalizer runs here, mid-publication
     return real_set(*args, **kwargs)
 
-kept = Owner()
+kept = Consumer(2)
 with patch.object(m.RECORD_WAITS, "set", collecting_set):
-    m.record_record_waits("test", kept, 2)
-    m.record_record_waits("test", kept, 3)
-m.refresh_record_waits("test")
-assert {k: r.count for k, r in m._record_waits_by_owner["test"].items()} == {id(kept): 3}
+    platform_events.emit("indexing.record_waits.changed", broker="test", consumer_id=2, waiting=2)
+    platform_events.emit("indexing.record_waits.changed", broker="test", consumer_id=2, waiting=3)
+platform_events.emit("indexing.consumer.polled", broker="test")
+assert m._record_waits_by_consumer["test"] == {2: 3}, m._record_waits_by_consumer
+assert platform_events.listener_errors() == {}
 print("ok")
 """
+
+
+class _Consumer:
+    """Stands in for a consumer: announces its own collection, as the real one does."""
+
+    def __init__(self, broker: str, consumer_id: int) -> None:
+        self.cycle = self  # freed only by a collection
+        weakref.finalize(self, platform_events.emit, "indexing.consumer.discarded", broker=broker, consumer_id=consumer_id)
 
 
 class TestTheGaugeUnderCollection:
@@ -1020,10 +1037,6 @@ class TestTheGaugeUnderCollection:
     def test_a_finalizer_takes_no_lock_and_publishes_nothing(self) -> None:
         """It runs on whatever thread a collection happens on, possibly one
         inside the gauge's own lock: it only records the collection."""
-
-        class Owner:
-            def __init__(self) -> None:
-                self.cycle = self
 
         acquired: list[str] = []
 
@@ -1047,8 +1060,8 @@ class TestTheGaugeUnderCollection:
 
         gc.disable()
         try:
-            owner = Owner()
-            scheduling_metrics.record_record_waits("spy", owner, 1)
+            owner = _Consumer("spy", 71)
+            scheduling_metrics.record_record_waits("spy", 71, 1)
             with patch.object(scheduling_metrics, "_record_waits_lock", SpyLock(scheduling_metrics._record_waits_lock)), \
                     patch.object(scheduling_metrics.RECORD_WAITS, "set") as gauge_set:
                 del owner
@@ -1061,28 +1074,25 @@ class TestTheGaugeUnderCollection:
             gc.enable()
 
     def test_a_total_computed_before_a_collection_is_corrected(self) -> None:
-        class Owner:
-            def __init__(self) -> None:
-                self.cycle = self
-
         published: list[float] = []
         real_set = scheduling_metrics.RECORD_WAITS.set
         gc.disable()
         try:
-            dropped = Owner()
-            scheduling_metrics.record_record_waits("stale", dropped, 1)
+            dropped = _Consumer("stale", 81)
+            scheduling_metrics.record_record_waits("stale", 81, 1)
             del dropped
-            kept = Owner()
+            kept = _Consumer("stale", 82)
 
             def collecting_set(*args: Any, **kwargs: Any) -> None:  # noqa: ANN401
-                gc.collect()  # after the total (with the dropped owner) is computed
+                gc.collect()  # after the total (with the dropped consumer) is computed
                 published.append(kwargs["value"])
                 real_set(*args, **kwargs)
 
             with patch.object(scheduling_metrics.RECORD_WAITS, "set", collecting_set):
-                scheduling_metrics.record_record_waits("stale", kept, 2)
+                scheduling_metrics.record_record_waits("stale", 82, 2)
                 scheduling_metrics.refresh_record_waits("stale")
             assert published[-1] == 2
+            del kept
         finally:
             gc.enable()
 
@@ -1139,33 +1149,24 @@ class TestReviewOfTheWaitsRoundThree:
 
 
 class TestTheGaugeAcrossIdReuse:
-    def test_a_new_owner_reusing_a_collected_owners_id_keeps_its_count(self) -> None:
-        """CPython reuses the id of a freed object. A collected owner's
-        notification still queued must not take away the count of a new
-        owner that got the same id before the queue was drained."""
-
-        class Owner:
-            pass
-
-        scheduling_metrics._record_waits_by_owner.pop("reuse", None)
-        old = Owner()
-        old_id = id(old)
-        scheduling_metrics.record_record_waits("reuse", old, 1)
-        del old
-        gc.collect()  # its finalizer queues the collection; nothing drains it yet
-        candidates = []
-        for _ in range(10_000):
-            candidate = Owner()
-            if id(candidate) == old_id:
-                break
-            candidates.append(candidate)
-        else:
-            pytest.skip("the interpreter did not reuse the freed id")
+    async def test_a_consumer_is_named_by_a_number_that_is_never_reused(self, provider: FakeRedisConnectionProvider) -> None:
+        """CPython reuses the id() of a freed object, so a collected consumer's notice still queued
+        could take away the count of a new consumer at the same address. Each consumer therefore
+        announces itself with a number of its own, and a late notice for an old one names nobody."""
+        first = _make(provider)
+        old_id = first._waits_consumer_id
+        scheduling_metrics.record_record_waits("reuse", old_id, 1)
+        del first
+        gc.collect()  # its finalizer queues the notice; nothing drains it yet
+        newer = [_make(provider) for _ in range(50)]
+        assert old_id not in {consumer._waits_consumer_id for consumer in newer}
+        assert len({consumer._waits_consumer_id for consumer in newer}) == 50
         published: list[float] = []
         with patch.object(
             scheduling_metrics.RECORD_WAITS, "set", side_effect=lambda *_a, value: published.append(value)
         ):
-            scheduling_metrics.record_record_waits("reuse", candidate, 5)
+            scheduling_metrics.note_consumer_discarded("reuse", old_id)
+            scheduling_metrics.record_record_waits("reuse", newer[0]._waits_consumer_id, 5)
             scheduling_metrics.refresh_record_waits("reuse")
         assert published[-1] == 5
 
@@ -1211,23 +1212,19 @@ class TestReviewOfTheWaitsRoundFive:
 
 
 class TestTheGaugeAcrossRestarts:
-    def test_a_consumer_stopped_and_restarted_leaves_no_finalizer_behind(self) -> None:
-        class Owner:
-            pass
-
-        owner = Owner()
-        owner_id = id(owner)
-        for _ in range(5):
-            scheduling_metrics.record_record_waits("restart", owner, 1)
-            scheduling_metrics.forget_record_waits("restart", owner)
-        scheduling_metrics.record_record_waits("restart", owner, 1)  # running, then dropped
-        scheduling_metrics._record_waits_collected.clear()
-        del owner
-        gc.collect()
-
-        notices = [n for n in scheduling_metrics._record_waits_collected if n[:2] == ("restart", owner_id)]
-        # One for the registration it was dropped with; none for the stopped ones.
-        assert len(notices) == 1
+    async def test_a_consumer_stopped_and_restarted_is_announced_once_when_it_is_dropped(
+        self, provider: FakeRedisConnectionProvider
+    ) -> None:
+        consumer = _make(provider)
+        consumer_id = consumer._waits_consumer_id
+        with captured_events("indexing.consumer.discarded", "indexing.consumer.stopped") as events:
+            for _ in range(5):
+                consumer._stop_worker_thread()
+            del consumer
+            gc.collect()  # collects consumers earlier tests left behind too: only this one's notices count
+            mine = [name for name, payload in events if payload["consumer_id"] == consumer_id]
+        # One notice for the consumer, however often it was stopped and started.
+        assert mine == ["indexing.consumer.stopped"] * 5 + ["indexing.consumer.discarded"]
 
 
 @pytest.mark.asyncio

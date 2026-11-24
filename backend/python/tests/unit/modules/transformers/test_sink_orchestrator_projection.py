@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import Connectors
 from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.entities import Record, RecordType
@@ -140,7 +141,7 @@ async def test_flag_off_does_nothing(projected: AsyncMock, monkeypatch: pytest.M
 async def test_projection_failure_never_fails_indexing(projected: AsyncMock) -> None:
     projected.side_effect = RuntimeError("graph down")
     orch = _sink()
-    with patch.object(sink_module, "record_property_projection") as counted:
+    with event_calls("record.properties.projected", "outcome") as counted:
         await orch.index(TransformContext(record=_record()))
     orch._update_indexing_status.assert_awaited_once()
     counted.assert_called_once_with("error")

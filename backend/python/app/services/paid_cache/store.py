@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from yarl import URL
 
+from app import platform_events
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import Routes
 from app.modules.artifacts.models import SignedFileUrl
@@ -28,7 +29,6 @@ from app.modules.transformers.blob_storage import (
     _storage_status_error,
     get_shared_session,
 )
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
@@ -58,17 +58,6 @@ PURGE_BATCH_TIMEOUT_S = 60.0
 #: missing, up to the cap. Short on purpose: the route arrives with a storage upgrade, and the per-id loop is only slower.
 BATCH_REPROBE_BASE_S = 30.0
 BATCH_REPROBE_MAX_S = 300.0
-
-PURGE_REQUESTS = METRICS_BACKEND.counter(
-    "pipeshub_paid_purge_storage_requests_total",
-    "Storage-service requests made to purge paid-result folders, by route (batch carries up to 100 records, record one)",
-    ["route"],
-)
-PURGE_RECORDS = METRICS_BACKEND.counter(
-    "pipeshub_paid_purge_records_total",
-    "Paid-result folders purged, by the route that purged them and the outcome",
-    ["route", "outcome"],
-)
 
 
 class PaidResultStoreError(Exception):
@@ -396,13 +385,13 @@ class NodePaidResultStore:
                         )
                 except Exception as exc:
                     outcomes.update(dict.fromkeys(chunk, exc))
-                    PURGE_RECORDS.inc("batch", "failed", value=float(len(chunk)))
+                    platform_events.emit("paid_result.purge.completed", route="batch", outcome="failed", count=float(len(chunk)))
                     continue
             outcomes.update(await self._purge_one_by_one(org_id, chunk))
         return outcomes
 
     async def _purge_chunk(self, org_id: str, chunk: list[str]) -> dict[str, BaseException | None]:
-        PURGE_REQUESTS.inc("batch")          # counted when sent: a probe the storage service answers 404 is a request too
+        platform_events.emit("paid_result.purge.requested", route="batch")          # counted when sent: a probe the storage service answers 404 is a request too
         # The deadline is for the whole call, retries included (the per-request timeout alone is reset by each retry).
         body = await asyncio.wait_for(
             self._call(
@@ -423,8 +412,8 @@ class NodePaidResultStore:
             # An id the reply leaves out, or does not confirm, is not purged: it is a failure to repeat.
             outcomes[rid] = None if answered.get(rid) else PaidResultStoreError("batch purge did not confirm the record")
         done = sum(1 for e in outcomes.values() if e is None)
-        PURGE_RECORDS.inc("batch", "purged", value=float(done))
-        PURGE_RECORDS.inc("batch", "failed", value=float(len(chunk) - done))
+        platform_events.emit("paid_result.purge.completed", route="batch", outcome="purged", count=float(done))
+        platform_events.emit("paid_result.purge.completed", route="batch", outcome="failed", count=float(len(chunk) - done))
         return outcomes
 
     async def _purge_one_by_one(self, org_id: str, chunk: list[str]) -> dict[str, BaseException | None]:
@@ -433,14 +422,14 @@ class NodePaidResultStore:
 
         async def one(rid: str) -> None:
             async with gate:
-                PURGE_REQUESTS.inc("record")
+                platform_events.emit("paid_result.purge.requested", route="record")
                 try:
                     await self.purge_record(org_id, rid)
                     outcomes[rid] = None
-                    PURGE_RECORDS.inc("record", "purged")
+                    platform_events.emit("paid_result.purge.completed", route="record", outcome="purged")
                 except Exception as exc:
                     outcomes[rid] = exc
-                    PURGE_RECORDS.inc("record", "failed")
+                    platform_events.emit("paid_result.purge.completed", route="record", outcome="failed")
 
         await asyncio.gather(*(one(rid) for rid in chunk))
         return outcomes

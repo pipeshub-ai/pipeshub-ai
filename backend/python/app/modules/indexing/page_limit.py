@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.parsers.pdf.page_count import Unavailable, Unreadable
@@ -26,7 +27,6 @@ from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     is_searchable_record,
 )
-from app.plugins.telemetry.backend import METRICS_BACKEND
 from app.utils.user_errors import (
     MAX_INDEXED_PDF_PAGES,
     PDF_PAGE_LIMIT_NOTE,
@@ -88,12 +88,6 @@ class Refuse:
 
 
 REFUSED_REV_PREFIX = "refused:"
-
-PAGE_COUNT_UNAVAILABLE = METRICS_BACKEND.counter(
-    "pipeshub_pdf_page_count_unavailable_total",
-    "PDFs whose page count could not be taken (a timeout, a dead worker or a closed pool)",
-    [],
-)
 
 _HEX32 = re.compile(r"^[0-9a-fA-F]{32}$")
 
@@ -235,7 +229,7 @@ async def check_page_limit(doc: LongDocument) -> Proceed | Keep | Refuse:
         return await _over_limit(doc, counted, eligible=await _keep_eligible(doc))
     if isinstance(counted, Unavailable):
         if not counted.no_pool:
-            PAGE_COUNT_UNAVAILABLE.inc()
+            platform_events.emit("document.page_count.unavailable")
     else:
         assert isinstance(counted, Unreadable)
     # No count: the caller decides from the whole-file inspection (before it writes anything when ``keep_eligible``, so

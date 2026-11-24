@@ -746,7 +746,7 @@ class _Builder:
         if not target_file:
             # A package import (`requests`, `lodash`). Matching the name across
             # the repo instead is how `from requests import get` used to land
-            # on a repo `get` and an import of `logging` on telemetry/logging.py.
+            # on a repo `get` and an import of `logging` on audit/logging.py.
             # `import ax from "axios"`: the module's default export, whatever this file calls it.
             bindings[local] = self._unplaced(specifier, from_file, family,
                                              "default" if fact.get("context") == "default" else name)

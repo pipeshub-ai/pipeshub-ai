@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.plugins.telemetry.modules import envelope_metrics
 from app.core import envelope, org_context
 from app.services.messaging import inbox as inbox_mod
 from app.services.messaging import message_log
@@ -172,10 +173,10 @@ async def test_on_the_postgres_broker_the_record_and_the_ack_are_one_call_and_a_
     assert queue.acked == []   # acked inside record_and_ack
 
     pg_inbox.record_and_ack = AsyncMock(side_effect=ConnectionError("down"))  # type: ignore[method-assign]
-    before = envelope.INBOX_ERRORS._metric.labels("record")._value.get()
+    before = envelope_metrics.INBOX_ERRORS._metric.labels("record")._value.get()
     await _pg_deliver(c, _wire(), 2)
     assert queue.acked == [2]
-    assert envelope.INBOX_ERRORS._metric.labels("record")._value.get() == before + 1
+    assert envelope_metrics.INBOX_ERRORS._metric.labels("record")._value.get() == before + 1
 
 
 def test_the_factory_gives_the_inbox_to_simple_consumers_only(monkeypatch) -> None:

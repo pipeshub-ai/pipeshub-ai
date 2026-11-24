@@ -1582,7 +1582,7 @@ class TestTheServingPlanReadsTheSearchWithTheScopeFilter:
 
     @pytest.mark.asyncio
     async def test_a_degraded_search_is_counted_by_whether_it_carried_the_filter(self, retrieval_service) -> None:
-        from app.services.permissions.metrics import SERVING_DEGRADED
+        from app.plugins.telemetry.modules.permissions_metrics import SERVING_DEGRADED
         from app.services.vector_db.filters import ScopeFilter
 
         async def degraded_fan_out(collections, requests, limit, *, failed=None, degraded=None) -> list:

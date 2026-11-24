@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
+from app import platform_events
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
@@ -84,11 +85,6 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.precision_flip import PrecisionFlip
-from app.plugins.telemetry.modules.activity_metrics import record_service_activity
-from app.plugins.telemetry.modules.record_storage_metrics import (
-    record_artifact_write,
-    record_property_projection,
-)
 from app.utils.image_utils import INDEX_RECORD_IMAGE_BYTES, fit_image_for_index
 from app.utils.indexing_timing import note, stage
 from app.utils.llm import LLMUnavailableError
@@ -349,7 +345,7 @@ class SinkOrchestrator(Transformer):
                 await self._rewrite_recorded_points(ctx)
             result = await self.vector_store.apply(ctx)
             if result is False:
-                record_service_activity("indexing_service", "document_indexed", connector=connector, status="failed", org=org, kb=kb, mimetype=record.mime_type or "none")
+                platform_events.emit("document.indexed", status="failed", connector=connector, org_id=org, kb_id=kb, mime_type=record.mime_type or "none")
                 raise IndexingError(
                     message=f"Vector store did not index record {record_id}",
                     record_id=record_id,
@@ -357,7 +353,7 @@ class SinkOrchestrator(Transformer):
 
             self.logger.debug(f"Vector store indexing succeeded for record {record_id}")
             # Per-record indexing success counter (powers the Ingestion dashboard).
-            record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
+            platform_events.emit("document.indexed", status="ok", connector=connector, org_id=org, kb_id=kb, mime_type=record.mime_type or "none")
             # The record's own entity points are written before it is marked indexed: a write that is handed
             # back because the index holds another weight precision (``PrecisionFlip``) must leave the record
             # unfinished, so that the event is run again, and not "already indexed" and acknowledged without them.
@@ -423,7 +419,7 @@ class SinkOrchestrator(Transformer):
             self.logger.warning(
                 "Properties of record %s not projected; indexing goes on: %s", ctx.record.id, type(exc).__name__,
             )
-            record_property_projection("error")
+            platform_events.emit("record.properties.projected", outcome="error")
 
     async def _mark_parse_now_stored(
         self, ctx: TransformContext, record_doc: dict[str, Any], *, required: bool
@@ -832,9 +828,9 @@ class SinkOrchestrator(Transformer):
                 "Artifact set for record %s (rev %s) not written; indexing goes on: %s %s",
                 record.id, rev, type(exc).__name__, reason,
             )
-            record_artifact_write("failed")
+            platform_events.emit("record.artifact.written", outcome="failed")
             return None
-        record_artifact_write("written" if written is not None else "unavailable")
+        platform_events.emit("record.artifact.written", outcome="written" if written is not None else "unavailable")
         return written
 
     async def _stored_run_is(self, vrid: str, run: str) -> bool:
@@ -1121,7 +1117,6 @@ class SinkOrchestrator(Transformer):
         from app.services.featureflag.platform_settings import (
             is_named_entity_extraction_enabled,
         )
-        from app.plugins.telemetry.modules.named_entity_metrics import observe_extract
 
         started = time.perf_counter()
         strategy = "none"
@@ -1154,7 +1149,7 @@ class SinkOrchestrator(Transformer):
             )
             return NamedEntityExtraction(status="FAILED", termination_reason="llm_error", strategy="deterministic")
         finally:
-            observe_extract(strategy, time.perf_counter() - started)
+            platform_events.emit("named_entity.extraction.completed", strategy=strategy, duration_seconds=time.perf_counter() - started)
 
     async def reproject_named_entities(
         self,

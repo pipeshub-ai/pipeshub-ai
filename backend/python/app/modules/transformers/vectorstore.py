@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, List, Optional, Tuple
 import openai
 from langchain_core.documents import Document
 
+from app import platform_events
 from app.config.constants.ai_models import TOKENIZE_MAX_CHARS, TOKENIZE_MAX_ITEMS
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import (
@@ -59,7 +60,6 @@ from app.models.blocks import (
     SemanticMetadata,
 )
 from app.models.entities import Record
-from app.modules.indexing import rekey_metrics
 from app.modules.indexing.embed_resume import (
     EMBED_DELIVERY_ID,
     EMBED_DIGEST,
@@ -1716,7 +1716,7 @@ class VectorStore(Transformer):
 
         def embed_whole_record(reason: str) -> tuple[set[str], set[str]]:
             for old in old_ids:
-                rekey_metrics.REKEY_FALLBACK.inc(reason)
+                platform_events.emit("vector.rekey.fell_back", reason=reason)
                 blocks_to_index_ids.add(new_by_old[old])
                 block_ids_to_delete.add(old)
             return blocks_to_index_ids, block_ids_to_delete
@@ -1804,7 +1804,7 @@ class VectorStore(Transformer):
             return embed_whole_record("error")
         for start in range(0, len(old_ids), _REKEY_PAGE):
             await self.delete_blocks_by_ids(set(old_ids[start:start + _REKEY_PAGE]), vrid, collection_name, org_id=org_id)
-        rekey_metrics.REKEYED.inc(self.vector_db_service.get_service_name(), value=float(len(old_ids)))
+        platform_events.emit("vector.blocks.rekeyed", store=self.vector_db_service.get_service_name(), count=float(len(old_ids)))
         log = _POINTED.get()
         if log is not None:  # the points now under their new ids are the ones this move wrote (or an earlier try of it did)
             log.wrote.update(new_by_old[o] for o in anchors)

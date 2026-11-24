@@ -24,6 +24,7 @@ import aiohttp
 import pytest
 from aiohttp import web
 
+from tests.support.platform_event_capture import replace_event_listener
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
 from app.config.constants.neo4j import collection_to_label
 from app.config.constants.service import config_node_constants
@@ -324,9 +325,9 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
 
         monkeypatch.setattr(membership, "read_entries_from_config", fresh)
         membership._READERS.clear()
-        monkeypatch.setattr(backend_module, "record_artifact_read", w.reads.append)
-        monkeypatch.setattr(reader_module, "record_artifact_read", w.reads.append)
-        monkeypatch.setattr(reader_module, "record_artifact_shadow_read", lambda *a: w.shadow.append(a))
+        replace_event_listener(monkeypatch, "record.artifact.read", w.reads.append, "outcome")
+        replace_event_listener(monkeypatch, "record.artifact.read", w.reads.append, "outcome")
+        replace_event_listener(monkeypatch, "record.artifact.shadow_read", lambda *a: w.shadow.append(a), "outcome", "reason")
         try:
             yield w
         finally:

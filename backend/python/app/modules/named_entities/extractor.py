@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.modules.named_entities.domain.config import NamedEntityBudgets
 from app.modules.named_entities.domain.kinds import (
     EntityKind,
@@ -39,7 +40,6 @@ from app.modules.named_entities.strategies.single_call import (
     SingleCallExtractionStrategy,
 )
 from app.modules.named_entities.text import TextUnit, text_units_from_blocks
-from app.plugins.telemetry.modules.named_entity_metrics import record_fallback
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -156,7 +156,7 @@ class NamedEntityExtractor:
                 gave_up = model.termination_reason
                 model = await self._single.extract(doc, seed, ctx)
                 strategy, reason = _single_outcome(model)
-                record_fallback(strategy, gave_up)
+                platform_events.emit("named_entity.extraction.fell_back", to_strategy=strategy, reason=gave_up)
             else:
                 strategy = "agent"
                 reason = model.termination_reason

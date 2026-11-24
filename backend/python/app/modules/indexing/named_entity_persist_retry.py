@@ -32,10 +32,10 @@ import asyncio
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org, system
 from app.services.graph_db.common.record_visibility import is_live_record
-from app.plugins.telemetry.modules.record_storage_metrics import record_recovery_org_pass
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -80,7 +80,7 @@ async def retry_pending_named_entity_persists(
                     logger.warning("named_entity_persist_retry: could not drop the retry of %s", record_id, exc_info=True)
             if cleared:      # counted once it is gone: a retry that stays due would otherwise be counted on every pass
                 logger.warning("named_entity_persist_retry: record %s has no organisation; its retry was dropped", record_id)
-                record_recovery_org_pass("named_entity_persist_retry", "no_org_row")
+                platform_events.emit("recovery.org_pass.finished", job="named_entity_persist_retry", outcome="no_org_row")
             continue
         with for_org(str(org_id), job="named_entity_persist_retry"):
             attempts = int(row.get("attempts") or 0)

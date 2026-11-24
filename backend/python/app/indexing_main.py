@@ -96,6 +96,7 @@ from app.modules.parsers.pdf.docling_processor import (
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
+from app.plugins import load_plugins
 from app.services.base_client import open_circuits
 from app.services.distributed.interface import IDistributedLeaseManager
 from app.services.graph_db.common.record_visibility import (
@@ -150,8 +151,6 @@ from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.controller import run_for_health
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.services.resource_governor.yield_signal import YieldSignal
-from app.plugins.telemetry.modules.record_storage_metrics import record_recovery_org_pass
-from app.plugins import load_plugins
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import bind_host, bind_port, uvicorn_worker_healthcheck_timeout
 from app.utils.indexing_workers import indexing_worker_count
@@ -925,7 +924,7 @@ async def recover_in_progress_records(
 
 def _org_pass_failed(logger: logging.Logger, job: str, org_id: str, exc: Exception) -> None:
     """One organisation's part of a pass failed: say so with its id, and let the later organisations run."""
-    record_recovery_org_pass(job, "failed")
+    platform_events.emit("recovery.org_pass.finished", job=job, outcome="failed")
     logger.warning("Recovery pass %s failed for organisation %s; the later organisations still run: %s: %s", job, org_id, type(exc).__name__, exc)
 
 
@@ -1744,7 +1743,7 @@ async def _republish_refresh_intents(
                 if await refresh_intent.clear_intent(
                     graph_provider, key, held[0], updates, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
                 ):
-                    refresh_intent.REFRESH_INTENT_EVENTS.inc("expired")
+                    platform_events.emit("record.refresh_intent.changed", change="expired")
                     logger.warning(
                         "The Force reindex requested for record %s was not served within its life and is dropped (record status %s)",
                         key, fresh.get("indexingStatus"),
@@ -1789,7 +1788,7 @@ async def _republish_refresh_intents(
                 if await refresh_intent.clear_intent(
                     graph_provider, key, intent_id, expected_at=(refresh_intent.stored_intent(fresh) or (0, None))[1],
                 ):
-                    refresh_intent.REFRESH_INTENT_EVENTS.inc("connector_off")
+                    platform_events.emit("record.refresh_intent.changed", change="connector_off")
                     logger.info("The Force reindex of record %s ended: its connector is off or removed", key)
         except Exception as exc:
             logger.error("Failed to end the Force reindex of record %s for its connector: %s", key, exc)
@@ -1856,7 +1855,7 @@ async def _republish_refresh_intents(
                             {refresh_intent.ID_FIELD: intent_id, "lastRepublishedAt": now_ms},
                         ))
                     raise
-                refresh_intent.REFRESH_INTENT_EVENTS.inc("resent")
+                platform_events.emit("record.refresh_intent.changed", change="resent")
                 return True
         except Exception as exc:
             logger.error("Failed to re-send the Force reindex of record %s: %s", key, exc)

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from langchain_core.messages import HumanMessage
 
+from app import platform_events
 from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.languages import canonical_language
@@ -53,7 +54,6 @@ from app.modules.entity_resolution.normalizer import (
 from app.modules.entity_resolution.organizations import usable_organization_names
 from app.modules.entity_resolution.prompt import build_prompt, candidate_handles
 from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS, MERGED_INTO_FIELD
-from app.plugins.telemetry.modules import entity_resolution_metrics as metrics
 from app.utils.aimodels import INDEXING_SDK_RETRIES
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
@@ -166,7 +166,7 @@ class EntityResolver:
                 return None
             raise
         stats.latency_ms = int((time.monotonic() - started) * 1000)
-        metrics.record_latency(mode.value, time.monotonic() - started)
+        platform_events.emit("entity_resolution.record.resolved", mode=mode.value, duration_seconds=time.monotonic() - started)
 
         if mode is ResolutionMode.APPLY:
             self._keep_own_names(metadata, names)
@@ -548,7 +548,7 @@ class EntityResolver:
                 and not row.get("mergedInto")
             }
         if ids - live:
-            metrics.record_fallback("stale_winner", len(ids - live))
+            platform_events.emit("entity_resolution.names.fell_back", reason="stale_winner", count=len(ids - live))
         return live
 
     @staticmethod
@@ -612,8 +612,8 @@ class EntityResolver:
             # re-keyed indexing model is picked up without a restart.
             self._llms.pop(org_id, None)
             stats.model_failures += 1
-            metrics.record_model_call("failed")
-            metrics.record_fallback("model_error", len(unresolved))
+            platform_events.emit("entity_resolution.model.called", result="failed")
+            platform_events.emit("entity_resolution.names.fell_back", reason="model_error", count=len(unresolved))
             return {}
         valid_indexes = {n.index for n in unresolved}
         node_ids = {handle: node_id for node_id, handle in candidate_handles(unresolved, candidates).items()}
@@ -628,10 +628,10 @@ class EntityResolver:
             # to new, and the model is rebuilt, exactly as when the call fails.
             self._llms.pop(org_id, None)
             stats.model_failures += 1
-            metrics.record_model_call("empty")
-            metrics.record_fallback("model_empty", len(unresolved))
+            platform_events.emit("entity_resolution.model.called", result="empty")
+            platform_events.emit("entity_resolution.names.fell_back", reason="model_empty", count=len(unresolved))
             return {}
-        metrics.record_model_call("ok")
+        platform_events.emit("entity_resolution.model.called", result="ok")
         return decisions
 
     async def _get_llm(self, org_id: str) -> BaseChatModel:
@@ -699,13 +699,13 @@ class EntityResolver:
                 other = by_index.get(decision.same_as_item)
                 if other is None or other.index == name.index or other.kind != name.kind:
                     stats.rejected_decisions += 1
-                    metrics.record_fallback("rejected_item")
+                    platform_events.emit("entity_resolution.names.fell_back", reason="rejected_item")
                     proposed_new[name.index] = ""
                     continue
                 union(name.index, other.index)
                 continue
             stats.rejected_decisions += 1
-            metrics.record_fallback("rejected_target")
+            platform_events.emit("entity_resolution.names.fell_back", reason="rejected_target")
             proposed_new[name.index] = ""
 
         # Group members follow their component leader.
@@ -806,7 +806,7 @@ class EntityResolver:
                 if spelling_key(normalized) == spelling_key(head.normalized):
                     return display, normalized
                 stats.rejected_decisions += 1
-                metrics.record_fallback("rejected_canonical")
+                platform_events.emit("entity_resolution.names.fell_back", reason="rejected_canonical")
         return head.display, head.normalized
 
     # ---- helpers -----------------------------------------------------
@@ -849,7 +849,7 @@ class EntityResolver:
             return
         if len(entity.aliases) >= self.max_aliases:
             stats.alias_cap_hits += 1
-            metrics.record_fallback("alias_cap")
+            platform_events.emit("entity_resolution.names.fell_back", reason="alias_cap")
             return
         entity.aliases.append(name.display)
         entity.new_aliases.append(name.display)
@@ -860,8 +860,8 @@ class EntityResolver:
             key = (entity.kind.entity_type.value, entity.decision)
             counts[key] = counts.get(key, 0) + len(entity.extracted_names)
         for (kind, outcome), count in counts.items():
-            metrics.record_name_outcome(kind, outcome, count)
-        metrics.record_name_outcome("any", "dropped", resolution.stats.names_dropped)
+            platform_events.emit("entity_resolution.names.resolved", kind=kind, outcome=outcome, count=count)
+        platform_events.emit("entity_resolution.names.resolved", kind="any", outcome="dropped", count=resolution.stats.names_dropped)
 
     # ---- apply -------------------------------------------------------
 

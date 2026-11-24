@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import CollectionNames
 from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.models.entities import EntityRecord, EntityType
@@ -76,8 +77,8 @@ class TestWinnerCheckErrors:
         await _seed_winner(fake_graph, fake_store)
         fake_graph.fail_node_lookup = True
         scripted_model()
-        with patch.object(resolver_module.metrics, "record_fallback") as fallback, \
-             patch.object(lookup_module.metrics, "record_lookup_error") as lookup_error, \
+        with event_calls("entity_resolution.names.fell_back", "reason", "count") as fallback, \
+             event_calls("entity_resolution.lookup.failed", "lookup", "outcome") as lookup_error, \
              pytest.raises(EntityLookupUnavailableError):
             await make_resolver().resolve(
                 ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash session"]))

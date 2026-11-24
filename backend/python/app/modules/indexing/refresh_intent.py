@@ -19,8 +19,6 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
-from app.plugins.telemetry.backend import METRICS_BACKEND
-
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -43,13 +41,6 @@ INTENT_LIFE_MS = 24 * 3600 * 1000
 #: What a sweep writes on a row whose intent expired before it was served.
 REFRESH_EXPIRED_REASON = (
     "A Force reindex was requested for this record but could not be started within 24 hours. Request it again."
-)
-
-
-REFRESH_INTENT_EVENTS = METRICS_BACKEND.counter(
-    "pipeshub_refresh_intent_total",
-    "Force reindex requests kept on a record, by what happened to them",
-    ["event"],
 )
 
 

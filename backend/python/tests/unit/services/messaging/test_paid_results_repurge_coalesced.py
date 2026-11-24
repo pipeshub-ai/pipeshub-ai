@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.plugins.telemetry.modules import envelope_metrics
+from app.plugins.telemetry.modules import paid_cache_metrics
 from app.config.constants.arangodb import EventTypes
 from app.core.org_context import OrgContext, bind
 from app.exceptions.indexing_exceptions import ProcessingError
@@ -461,7 +463,7 @@ async def test_a_stale_message_is_counted_by_its_event_type(monkeypatch: pytest.
     from app.core import envelope
 
     seen: list[tuple[str, ...]] = []
-    monkeypatch.setattr(envelope, "STALE_BY_TYPE", SimpleNamespace(inc=lambda *labels, **_k: seen.append(labels)))
+    monkeypatch.setattr(envelope_metrics.STALE_BY_TYPE, "inc", SimpleNamespace(inc=lambda *labels, **_k: seen.append(labels)).inc)
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
     monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
     monkeypatch.setattr(envelope, "_sign_key", b"k" * 32)
@@ -485,13 +487,13 @@ async def test_a_page_whose_ids_are_all_invalid_keeps_no_chain_going(clock: list
 
 async def test_an_org_hop_never_counts_as_an_invalid_id_fallback(world: Any, clock: list[float]) -> None:  # noqa: ANN401
     seen: list[str] = []
-    real = repurge_window.FALLBACK
-    repurge_window.FALLBACK = SimpleNamespace(inc=lambda *labels, **_k: seen.append(labels[0]))  # type: ignore[assignment]
+    real = paid_cache_metrics.REPURGE_FALLBACK
+    paid_cache_metrics.REPURGE_FALLBACK = SimpleNamespace(inc=lambda *labels, **_k: seen.append(labels[0]))  # type: ignore[assignment]
     try:
         org_hop = repurge.org_repurge_event_payload(ORG, now=clock[0])
         assert await repurge_window.coalesce_successor(Broker(clock), ORG, org_hop, store=world.window, now=clock[0] + 300) is False
     finally:
-        repurge_window.FALLBACK = real
+        paid_cache_metrics.REPURGE_FALLBACK = real
     assert seen == []
 
 
@@ -500,7 +502,7 @@ async def test_a_burst_of_failing_first_hops_logs_one_warning_and_counts_every_f
 ) -> None:
     """QA-G32a-5: during a Redis outage a 100k delete would otherwise log 100k lines."""
     counted: list[str] = []
-    monkeypatch.setattr(repurge_window, "FALLBACK", SimpleNamespace(inc=lambda *labels, **_k: counted.append(labels[0])))
+    monkeypatch.setattr(paid_cache_metrics.REPURGE_FALLBACK, "inc", SimpleNamespace(inc=lambda *labels, **_k: counted.append(labels[0])).inc)
     monkeypatch.setattr(repurge_window, "_last_warned", {})
     store = AsyncMock()
     store.open_or_append.side_effect = ConnectionError("redis down")
@@ -540,7 +542,7 @@ async def test_a_seal_published_while_the_claim_lapses_is_not_marked_published_a
 
 async def test_a_seal_counts_the_ids_a_lost_list_no_longer_holds(world: Any, clock: list[float], monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN401
     counted: list[str] = []
-    monkeypatch.setattr(repurge_window, "WINDOW_LOST", SimpleNamespace(inc=lambda *labels, **_k: counted.append(labels[0])))
+    monkeypatch.setattr(paid_cache_metrics.REPURGE_WINDOW_LOST, "inc", SimpleNamespace(inc=lambda *labels, **_k: counted.append(labels[0])).inc)
     broker = Broker(clock)
     for i in range(3):
         assert await repurge_window.coalesce_successor(broker, ORG, first_hop(ORG, f"rec-{i}", clock[0] - 300), store=world.window, now=clock[0])
@@ -554,7 +556,7 @@ async def test_a_seal_counts_the_ids_a_lost_list_no_longer_holds(world: Any, clo
 
 async def test_a_window_that_never_accepted_an_id_finishes_without_a_loss(world: Any, clock: list[float], monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN401
     counted: list[str] = []
-    monkeypatch.setattr(repurge_window, "WINDOW_LOST", SimpleNamespace(inc=lambda *labels, **_k: counted.append(labels[0])))
+    monkeypatch.setattr(paid_cache_metrics.REPURGE_WINDOW_LOST, "inc", SimpleNamespace(inc=lambda *labels, **_k: counted.append(labels[0])).inc)
     store = world.window
     assert (await store.open_or_append(ORG, 5, "aaaa", "e1", "seed", 1000)).state == repurge_window.CLAIMED
     assert await store.mark_published(ORG, 5, "aaaa", "e1", 9000, 1001)

@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org, system
 from app.services.messaging.config import messaging_env
@@ -29,7 +30,6 @@ from app.services.messaging.lanes.assignment_policy import is_large_class
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lanes.interface import DEFAULT_LANE_KEY
 from app.services.messaging.lanes.lifecycle import connector_class_of
-from app.plugins.telemetry.modules import scheduling_metrics as metrics
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -314,8 +314,8 @@ def _pending_view(backlog: LaneBacklog | None, stream: str, now_ms: int) -> dict
 def _publish_metrics(report: LaneReport) -> None:
     for view in report.lanes:
         lane = str(view["lane"])
-        metrics.record_lane_connectors(lane, "large", int(view["large"]))  # type: ignore[call-overload]
-        metrics.record_lane_connectors(lane, "small", int(view["small"]))  # type: ignore[call-overload]
+        platform_events.emit("indexing.lane.connectors_counted", lane=lane, size="large", count=int(view["large"]))  # type: ignore[call-overload]
+        platform_events.emit("indexing.lane.connectors_counted", lane=lane, size="small", count=int(view["small"]))  # type: ignore[call-overload]
         oldest = view["oldestWaitingSeconds"]
         if report.backlog_read:
-            metrics.record_lane_oldest_waiting(lane, float(oldest or 0.0))  # type: ignore[arg-type]
+            platform_events.emit("indexing.lane.oldest_waiting_measured", lane=lane, age_seconds=float(oldest or 0.0))  # type: ignore[arg-type]

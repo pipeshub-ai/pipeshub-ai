@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
+from app.plugins.telemetry.modules import indexing_metrics
 from app.modules.indexing import rekey_metrics
 from app.modules.reconciliation.service import ReconciliationService
 from app.services.vector_db.errors import VectorsNotFetchable
@@ -100,7 +101,7 @@ async def test_only_the_changed_blocks_are_embedded(db) -> None:
 
 async def test_a_store_that_cannot_return_vectors_embeds_again_and_counts_it(db, monkeypatch) -> None:
     recorder = _Recorder()
-    monkeypatch.setattr(rekey_metrics, "REKEY_FALLBACK", recorder)
+    monkeypatch.setattr(indexing_metrics.REKEY_FALLBACK, "inc", recorder.inc)
     store = make_store(db)
     blob = await _legacy_record(store, db)
     db.scroll_with_vectors = AsyncMock(side_effect=VectorsNotFetchable("no vectors"))
@@ -113,7 +114,7 @@ async def test_a_store_that_cannot_return_vectors_embeds_again_and_counts_it(db,
 
 async def test_a_partial_read_embeds_the_blocks_and_keeps_the_old_points_until_they_are_stored(db, monkeypatch) -> None:
     recorder = _Recorder()
-    monkeypatch.setattr(rekey_metrics, "REKEY_FALLBACK", recorder)
+    monkeypatch.setattr(indexing_metrics.REKEY_FALLBACK, "inc", recorder.inc)
     store = make_store(db)
     blob = await _legacy_record(store, db)
     real = db.scroll_with_vectors
@@ -141,7 +142,7 @@ async def test_a_partial_read_embeds_the_blocks_and_keeps_the_old_points_until_t
 
 async def test_moved_blocks_are_counted(db, monkeypatch) -> None:
     moved = _Recorder()
-    monkeypatch.setattr(rekey_metrics, "REKEYED", moved)
+    monkeypatch.setattr(indexing_metrics.REKEYED, "inc", moved.inc)
     store = make_store(db)
     blob = await _legacy_record(store, db)
     await index(store, blob, _doc(changed=(5,)))

@@ -47,7 +47,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from app.plugins.telemetry.backend import METRICS_BACKEND
+from app import platform_events
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -63,17 +63,6 @@ KEY_PREFIX = "messaging:indexed:"
 #: Payload keys: the envelope event id (set by the consumer from the verified envelope) and the delivery id.
 EVENT_ID_KEY = "_event_id"
 DELIVERY_ID_KEY = "_delivery_id"
-
-REPLAY_SET_ERRORS = METRICS_BACKEND.counter(
-    "pipeshub_replay_set_errors_total",
-    "Replay-set reads or writes that failed; the replay guard is weaker for that record, nothing else changes",
-    ["op"],
-)
-REPLAYS_ACKNOWLEDGED = METRICS_BACKEND.counter(
-    "pipeshub_replay_set_acknowledged_total",
-    "Redelivered events of an already completed delivery acknowledged without work",
-    ["service"],
-)
 
 
 def enabled() -> bool:
@@ -270,7 +259,7 @@ async def note_record_completed(record_id: str, completed_at_ms: int, logger: Lo
     try:
         await ref.remember(record_id, completed_at_ms)
     except Exception as exc:
-        REPLAY_SET_ERRORS.inc("write")
+        platform_events.emit("indexing.replay_set.failed", operation="write")
         if logger is not None:
             logger.warning("Replay set not written for record %s: %s", record_id, type(exc).__name__)
 
@@ -285,12 +274,6 @@ SAFE_EVICTION_POLICIES = frozenset({"noeviction"})
 class UnsafeEvictionPolicyError(RuntimeError):
     """An ``allkeys-*`` policy on the Redis that holds the key-value store and broker streams, whose keys have no TTL:
     it can drop stored configuration and queued events. ``volatile-*`` only evicts keys that expire, so it is a warning."""
-
-EVICTION_POLICY_UNSAFE = METRICS_BACKEND.gauge(
-    "pipeshub_redis_eviction_policy_unsafe",
-    "1 when the Redis maxmemory-policy can evict the replay set, pause counters and budgets silently",
-    ["service"],
-)
 
 #: What ``/health`` reports under ``redis.evictionPolicyWarning`` (None: safe, or not read).
 _eviction_warning: str | None = None
@@ -350,7 +333,7 @@ async def check_eviction_policy(redis: Redis, logger: Logger | None = None, serv
             "policy), and put caches on their own Redis with REDIS_CACHE_URL if they need an evicting policy."
         )
     unsafe = bool(policy) and policy not in SAFE_EVICTION_POLICIES
-    EVICTION_POLICY_UNSAFE.set(service, value=1.0 if unsafe else 0.0)
+    platform_events.emit("redis.eviction_policy.checked", service=service, unsafe=unsafe)
     _eviction_warning = (
         f"maxmemory-policy is '{policy}': Redis may evict the replay set, pause counters and budgets silently. "
         "Use 'noeviction'."

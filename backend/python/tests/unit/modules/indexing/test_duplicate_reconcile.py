@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import CollectionNames
 from app.modules.indexing.duplicate_reconcile import (
     MAX_RECONCILE_ATTEMPTS,
@@ -332,7 +333,7 @@ class TestRetrySweep:
         graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
         graph.update_node_fields_if_match = AsyncMock(side_effect=[applied] if isinstance(applied, Exception) else None, return_value=applied)  # type: ignore[method-assign]
         reconciler, _ = _reconciler(graph)
-        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+        with event_calls("recovery.org_pass.finished", "job", "outcome", "count") as counted:
             await _sweep(graph, reconciler)
         counted.assert_not_called()
 
@@ -343,7 +344,7 @@ class TestRetrySweep:
         _pending(graph)
         graph.docs["a1"] = {**graph.docs["p1"], "_key": "a1", "orgId": None}
         reconciler, _ = _reconciler(graph)
-        with patch("app.modules.indexing.duplicate_reconcile.record_recovery_org_pass") as counted:
+        with event_calls("recovery.org_pass.finished", "job", "outcome", "count") as counted:
             await _sweep(graph, reconciler)
         counted.assert_called_once_with("duplicate_reconcile", "no_org_row")
 

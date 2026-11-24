@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -6922,7 +6923,7 @@ class TestRejectedTooLargeCounter:
         with patch.object(record_module, "generate_jwt", new_callable=AsyncMock, return_value="token"), \
              patch.object(record_module, "make_api_call", new_callable=AsyncMock, return_value={"data": b"%PDF"}), \
              patch.object(record_module.MessageErrorClassifier, "classify_by_exception", return_value=kind), \
-             patch.object(record_module, "record_rejected_too_large", side_effect=counter_error) as counter:
+             event_calls("record.storage.rejected_too_large", "status", to=MagicMock(side_effect=counter_error)) as counter:
             handler.config_service.get_config = AsyncMock(
                 return_value={"connectors": {"endpoint": "http://localhost:8088"}}
             )

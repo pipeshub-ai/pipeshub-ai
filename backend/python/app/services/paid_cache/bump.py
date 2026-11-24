@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from app import platform_events
 from app.core.org_context import spawn_detached
 from app.services.paid_cache import locks as lock_limits
 from app.services.paid_cache.run import RunScope
@@ -36,7 +37,6 @@ from app.services.paid_cache.store import (
     GuardUnsupported,
     VersionedBytes,
 )
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 #: A reused object younger than this is out of the sweep's reach for a good while (``retention.GRACE_MS`` is an hour).
 #: 30 min + ``LRU_WINDOW_S`` (10 min) + a skew allowance of 10 min stays under it. Provisional: the bench sets it.
@@ -62,10 +62,6 @@ TOUCH_OVERHEAD = 96
 RECORD_CONCURRENCY = 8
 #: Lost protection (a full queue, a stale entry, the byte budget) is logged at most this often, with the counts since.
 LOSS_LOG_EVERY_S = 60.0
-
-BUMP_TOTAL = METRICS_BACKEND.counter(
-    "pipeshub_paid_bump_total", "Reuse bumps of stored paid results by outcome", ["outcome"],
-)
 
 
 class ByteBudget:
@@ -230,14 +226,14 @@ class BumpQueue:
             self._recent.popitem(last=False)
 
     def _count(self, outcome: str) -> str:
-        BUMP_TOTAL.inc(outcome)
+        platform_events.emit("paid_result.reuse.bumped", outcome=outcome)
         return outcome
 
     def _lose(self, outcome: str, n: int = 1) -> str:
         """Protection that was not applied because the queue fell behind: counted, and logged (at most once a minute,
         with the totals since): a reuse left unprotected falls back to the old race, a re-pay and never wrong data."""
         for _ in range(n):
-            BUMP_TOTAL.inc(outcome)
+            platform_events.emit("paid_result.reuse.bumped", outcome=outcome)
         self._lost[outcome] = self._lost.get(outcome, 0) + n
         now = time.monotonic()
         if now - self._last_loss_log >= LOSS_LOG_EVERY_S:

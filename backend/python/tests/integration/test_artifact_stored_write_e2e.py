@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 import aiohttp
 import pytest
 
+from tests.support.platform_event_capture import replace_event_listener
 from app.config.constants.arangodb import ProgressStatus
 from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.blocks import SemanticMetadata
@@ -643,7 +644,7 @@ async def test_retire_route_missing_is_remembered_and_the_switch_goes_on(
     blob_module._RETIRE_ROUTE["down_until"] = 0.0
     world.proxy.refuse.append(RETIRE)
     seen: list[str] = []
-    monkeypatch.setattr(blob_module, "record_retire_mark", seen.append)
+    replace_event_listener(monkeypatch, "record.retire_mark.set", seen.append, "outcome")
 
     # A 500 from the route is a failed mark; the switch goes on.
     await world.index(world.record(vrid, B), _rev(B))

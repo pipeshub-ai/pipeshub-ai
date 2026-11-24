@@ -20,18 +20,14 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.config.constants.arangodb import ProgressStatus
 from app.services.graph_db.common.record_visibility import PENDING_VIRTUAL_RECORD_ID
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 logger = logging.getLogger("keep_old_copy")
-swap_refusals = METRICS_BACKEND.counter(
-    "pipeshub_keep_old_copy_refused_total",
-    "Runs that used the order they always had because the fleet could not be confirmed for keeping the old copy", ["reason"],
-)
 
 ENV_ENABLED = "INDEXING_KEEP_OLD_COPY"
 #: Added to the accessible-records cache TTL for the time an old copy is kept after its commit.
@@ -63,7 +59,7 @@ _refusals_logged: set[str] = set()
 
 def _refused(reason: str, detail: str = "") -> bool:
     """Counted every time, logged once per process and reason (never once per record)."""
-    swap_refusals.inc(reason)
+    platform_events.emit("indexing.keep_old_copy.refused", reason=reason)
     if reason not in _refusals_logged:
         _refusals_logged.add(reason)
         logger.warning("Keep-old-copy swap refused (%s)%s; runs use the order they always had", reason, f": {detail}" if detail else "")

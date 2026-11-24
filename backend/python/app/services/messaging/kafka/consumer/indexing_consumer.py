@@ -20,6 +20,7 @@ from aiokafka import (  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
 from pydantic import ValidationError
 
+from app import platform_events
 from app.core.envelope import (
     EnvelopeRejected,
     ctx_of,
@@ -94,7 +95,6 @@ from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTrac
 from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
 from app.services.messaging.storage_protocol import tagged
 from app.services.resource_governor import ParseTier, Pool
-from app.plugins.telemetry.modules import scheduling_metrics as metrics
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
 from app.utils.error_class import log_failure, logged_level, quotes_content
@@ -2293,7 +2293,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 await self._clear_retry_tracking(str(tracking_id))
         off = [m for p, m in zip(reached, messages) if not handed_back or p not in handed_back]
         if off:
-            metrics.record_connector_off_settled("kafka", len(off))
+            platform_events.emit("indexing.connector_off.settled", broker="kafka", count=len(off))
             self.logger.info(
                 "Acknowledged %d queued event(s) of turned-off or removed connectors "
                 "without indexing them: %s",
@@ -2321,23 +2321,22 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if scheduler is None:
             return
         try:
-            metrics.record_scheduler_depth(
-                "kafka",
-                scheduler.pending_count,
-                {
+            platform_events.emit(
+                "indexing.scheduler.measured",
+                broker="kafka",
+                pending=scheduler.pending_count,
+                active_by_level={
                     "org": scheduler.active_count_at(0),
                     "connector": scheduler.active_entity_count,
                 },
             )
-            metrics.record_lanes_paused("kafka", len(self._lane_paused))
+            platform_events.emit("indexing.lanes.paused_counted", broker="kafka", count=len(self._lane_paused))
             for tier, count in self.gate_waiters.snapshot().items():
-                metrics.record_gate_waiters("kafka", tier.value, count)
+                platform_events.emit("indexing.gate.waiters_counted", broker="kafka", tier=tier.value, count=count)
             tracker = self._offset_tracker
             if tracker is not None:
                 for tp in tracker.tracked_partitions:
-                    metrics.record_watermark_lag(
-                        tp.topic, tp.partition, tracker.watermark_lag(tp)
-                    )
+                    platform_events.emit("indexing.watermark.measured", topic=tp.topic, partition=tp.partition, lag=tracker.watermark_lag(tp))
         except Exception as e:
             # Never let instrumentation take the consume loop down.
             self.logger.debug("Failed to publish scheduler metrics: %s", e)
@@ -2511,7 +2510,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.fair_scheduler_config.key_fields, key, strict=False
         ):
             if level == _DEFAULT_KEY_LEVEL:
-                metrics.record_missing_key("kafka", field)
+                platform_events.emit("indexing.fairness_key.missed", broker="kafka", key_field=field)
         entity = scheduler.entity_key(key)
         remembered = self._remembered
         if remembered is not None and remembered.holds(entity):
@@ -2533,7 +2532,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # unresolved on purpose -- it floors the watermark until the seek-back
         # re-reads it, which is exactly the guarantee that makes it safe to
         # drop the message here.
-        metrics.record_deferred("kafka", result.value)
+        platform_events.emit("indexing.read.deferred", broker="kafka", reason=result.value)
         if result == EnqueueResult.ENTITY_FULL and remembered is not None:
             return self.__remember(entity, tp, message.offset)
         if result == EnqueueResult.ENTITY_FULL and self.__buffer_has_room():
@@ -2895,7 +2894,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         stale_offsets = offset_tracker.stale_offsets(budget)
         if stale_offsets:
-            metrics.record_dwell_exceeded("kafka", len(stale_offsets))
+            platform_events.emit("indexing.dwell.exceeded", broker="kafka", count=len(stale_offsets))
         for stale in stale_offsets:
             self.logger.error(
                 "Offset %s-%s has been unresolved for %.0fs (budget %.0fs); "
@@ -2984,7 +2983,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             record_key = self.__record_key(message, parsed) if parallel else None
             if record_key is not None and self.__waits_for_record(record_key, item, key):
                 continue
-            metrics.record_dispatch("kafka", key[0] if key else "unknown")
+            platform_events.emit("indexing.record.dispatched", broker="kafka", org_id=key[0] if key else "unknown")
             reserved = (
                 self.__reserve_record(record_key)
                 if record_key is not None

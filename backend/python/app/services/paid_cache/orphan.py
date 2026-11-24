@@ -30,10 +30,10 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from app import platform_events
 from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.services.messaging.consumer_concurrency import RequeueWithoutAttempt
 from app.services.paid_cache.locks import deleted_name
-from app.plugins.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -55,26 +55,6 @@ PROBE_TIMEOUT_S = 3.0
 MAX_REPARSES = 2
 #: How long a delivery handed back for an unconfirmed 410 waits before it is redelivered.
 HAND_BACK_DELAY_S = 15.0
-
-CHECKS = METRICS_BACKEND.counter(
-    "pipeshub_paid_orphan_check_total",
-    "Existence checks of paid work, by what decided and the answer",
-    ["source", "result"],
-)
-GRAPH_READS = METRICS_BACKEND.histogram(
-    "pipeshub_paid_orphan_graph_reads_per_delivery",
-    "Graph reads one delivery's existence checks made",
-    ["kind"],
-    (0, 1, 2, 3, 5, 10, 25, 60, 180),
-)
-REPARSES = METRICS_BACKEND.counter(
-    "pipeshub_paid_orphan_reparse_total",
-    "Parses repeated because the parsing service refused with 410 and the record proved live",
-    ["kind"],
-)
-STOPPED = METRICS_BACKEND.counter(
-    "pipeshub_paid_orphan_stopped_total", "Paid calls and stores refused for a deleted record", ["site"],
-)
 
 
 class RecordGone(RecordDeletedError):
@@ -105,7 +85,6 @@ class ProbeResult:
     live: bool = True
     created: Any = None
     incarnation: Any = None
-
 
 
 @dataclass
@@ -166,26 +145,26 @@ class DeliveryGuard:
                 await backend.marker_value(deleted_name(self.org_id)),
             )
         except Exception as exc:
-            CHECKS.inc("marker", "error")
+            platform_events.emit("paid_result.existence.checked", source="marker", result="error")
             log.debug("Paid-result delete marker unreadable (%s); the existence check goes on", type(exc).__name__)
             return None
 
     def _mark_gone(self, source: str, result: str = "orphan") -> bool:
         self.gone = True
-        CHECKS.inc(source, result)
+        platform_events.emit("paid_result.existence.checked", source=source, result=result)
         return True
 
     async def check(self, backend: LockBackend | None) -> bool:
         """True when the record this run serves is gone. Cheap on the live path: two Redis ``GET``s, and a graph read
         only when a marker changed, when the run started under one, or every ``RECHECK_S``."""
         if self.gone:
-            CHECKS.inc("sticky", "orphan")
+            platform_events.emit("paid_result.existence.checked", source="sticky", result="orphan")
             return True
         if self.stop_disabled or self.closed:
             return False
         markers = await self._markers(backend)
         if self.gone:                                    # another check confirmed a delete while the markers were read
-            CHECKS.inc("sticky", "orphan")
+            platform_events.emit("paid_result.existence.checked", source="sticky", result="orphan")
             return True
         seen = markers if markers is not None else (self.wm_record, self.wm_org)
         changed = seen != (self.wm_record, self.wm_org)
@@ -193,7 +172,7 @@ class DeliveryGuard:
             # The parsing service: no graph. A changed marker is a reason to refuse; the consumer confirms it.
             if changed:
                 return self._mark_gone("marker")
-            CHECKS.inc("marker", "live")
+            platform_events.emit("paid_result.existence.checked", source="marker", result="live")
             return False
         now = self.clock()
         due = (
@@ -202,7 +181,7 @@ class DeliveryGuard:
             or (now - self._last_read >= RECHECK_S and now >= self._retry_at)
         )
         if not due:
-            CHECKS.inc("marker", "live")
+            platform_events.emit("paid_result.existence.checked", source="marker", result="live")
             return False
         generation = self._generation
         async with self._read_lock():
@@ -234,7 +213,7 @@ class DeliveryGuard:
             result = await asyncio.wait_for(self.probe(), self.probe_timeout_s)
         except Exception as exc:
             self._retry_at = self.clock() + RETRY_S
-            CHECKS.inc("graph", "error")
+            platform_events.emit("paid_result.existence.checked", source="graph", result="error")
             log.debug("Existence read failed (%s); the watermark is kept and the read is retried later", type(exc).__name__)
             return False
         self._generation += 1
@@ -246,7 +225,7 @@ class DeliveryGuard:
             return self._mark_gone("graph", "incarnation")
         self.wm_record, self.wm_org = seen
         self.confirm_first = False
-        CHECKS.inc("graph", "live" if not changed else "live_after_change")
+        platform_events.emit("paid_result.existence.checked", source="graph", result="live" if not changed else "live_after_change")
         return False
 
     async def confirm_gone(self, backend: LockBackend | None) -> str:
@@ -261,7 +240,7 @@ class DeliveryGuard:
             try:
                 result = await asyncio.wait_for(self.probe(), self.probe_timeout_s)
             except Exception as exc:
-                CHECKS.inc("graph", "error")
+                platform_events.emit("paid_result.existence.checked", source="graph", result="error")
                 log.debug("Existence read after a 410 failed (%s); the delivery is handed back", type(exc).__name__)
                 self.hand_back = True
                 return "unknown"
@@ -277,16 +256,20 @@ class DeliveryGuard:
             self.wm_record, self.wm_org = seen
             self.confirm_first = False
             self.reparses += 1
-            REPARSES.inc("stop_disabled" if self.reparses > MAX_REPARSES else "reparse")
+            platform_events.emit("paid_result.parse.repeated", kind="stop_disabled" if self.reparses > MAX_REPARSES else "reparse")
             if self.reparses > MAX_REPARSES:
                 self.service_stop_disabled = True
-            CHECKS.inc("graph", "live_after_410")
+            platform_events.emit("paid_result.existence.checked", source="graph", result="live_after_410")
             return "live"
 
     def finish(self) -> None:
         if not self.closed:
             self.closed = True
-            GRAPH_READS.observe("delivery" if self.probe is not None else "service", value=float(self.graph_reads))
+            platform_events.emit(
+                "paid_result.delivery.checked",
+                kind="delivery" if self.probe is not None else "service",
+                graph_reads=float(self.graph_reads),
+            )
 
     def request_fields(self) -> dict[str, str]:
         """The form fields the parsing client sends: the strings this run started under, and whether to stop."""
@@ -362,7 +345,7 @@ async def ensure_record_alive(org_id: str, record_id: str, site: str) -> None:
         except Exception as exc:
             log.debug("Paid-result lock backend unavailable (%s); the existence check goes on", type(exc).__name__)
     if await guard.check(backend):
-        STOPPED.inc(site)
+        platform_events.emit("paid_result.work.stopped", site=site)
         raise RecordGone(record_id)
 
 

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.support.platform_event_capture import replace_event_listener
 from app.config.constants.arangodb import Connectors
 from app.models.blocks import (
     Block,
@@ -144,15 +145,15 @@ async def storage() -> AsyncIterator[FakeStorage]:
 @pytest.fixture
 def outcomes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     seen: list[str] = []
-    monkeypatch.setattr(backend_module, "record_artifact_read", seen.append)
+    replace_event_listener(monkeypatch, "record.artifact.read", seen.append, "outcome")
     return seen
 
 
 @pytest.fixture
 def shadow_outcomes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str | None]]:
     seen: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(
-        reader_module, "record_artifact_shadow_read", lambda outcome, reason=None: seen.append((outcome, reason)),
+    replace_event_listener(
+        monkeypatch, "record.artifact.shadow_read", lambda outcome, reason=None: seen.append((outcome, reason)), "outcome", "reason",
     )
     return seen
 

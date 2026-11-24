@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.keys import taxonomy_node_key
@@ -346,8 +347,8 @@ class TestEmptyAnswer:
 
         await seeded_store(_topic("k-bug", "Bug bash testing"))
         p1, p2 = _patched(_answer(MergeDecision(i=7, same=True, target="k-bug")))
-        with p1, p2, patch.object(resolver_module.metrics, "record_model_call") as calls, \
-                patch.object(resolver_module.metrics, "record_fallback") as fallbacks:
+        with p1, p2, event_calls("entity_resolution.model.called", "result") as calls, \
+                event_calls("entity_resolution.names.fell_back", "reason", "count") as fallbacks:
             resolver = make_resolver()
             resolution = await resolver.resolve(
                 ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))

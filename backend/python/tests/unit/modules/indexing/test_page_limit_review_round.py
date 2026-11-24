@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.plugins.telemetry.modules import indexing_metrics
 from app.config.constants.arangodb import ProgressStatus
 from app.events.events import EventProcessor
 from app.modules.indexing import page_limit
@@ -397,7 +398,7 @@ async def test_an_inspection_without_a_page_count_does_not_count_the_file() -> N
 async def test_a_no_pool_process_does_not_count_the_outage_metric() -> None:
     world = World({"indexingStatus": "QUEUED"})
     world.count(Unavailable(no_pool=True))
-    with patch.object(page_limit.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
+    with patch.object(indexing_metrics.PAGE_COUNT_UNAVAILABLE, "inc") as inc:
         await world.run()
     inc.assert_not_called()
 

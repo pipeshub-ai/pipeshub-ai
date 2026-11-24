@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.models.blocks import SemanticMetadata
 from app.modules.artifacts import sidecars as sidecars_module
 from app.modules.artifacts import store as store_module
@@ -49,7 +50,7 @@ async def storage() -> AsyncIterator[FakeStorage]:
 @pytest.fixture
 def outcomes() -> Iterator[list[str]]:
     seen: list[str] = []
-    with patch.object(sidecars_module, "record_artifact_write", seen.append):
+    with event_calls("record.artifact.written", "outcome", to=seen.append):
         yield seen
 
 

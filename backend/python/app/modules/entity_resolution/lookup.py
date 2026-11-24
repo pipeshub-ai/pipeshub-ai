@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar
 
+from app import platform_events
 from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
-from app.plugins.telemetry.modules import entity_resolution_metrics as metrics
 from app.utils.retry import retry_async
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ async def run_lookup(
         try:
             return await call()
         except Exception as exc:
-            metrics.record_lookup_error(lookup, "failed")
+            platform_events.emit("entity_resolution.lookup.failed", lookup=lookup, outcome="failed")
             if on_failure is not None:
                 on_failure()
             logger.warning("entity lookup %s failed: %s", lookup, type(exc).__name__)
@@ -55,7 +55,7 @@ async def run_lookup(
             base_delay_seconds=LOOKUP_RETRY_DELAY_SECONDS,
         )
     except Exception as exc:
-        metrics.record_lookup_error(lookup, "deferred")
+        platform_events.emit("entity_resolution.lookup.failed", lookup=lookup, outcome="deferred")
         raise EntityLookupUnavailableError(
             f"Entity lookup '{lookup}' could not run; resolution is deferred",
             details={"lookup": lookup, "error": type(exc).__name__},

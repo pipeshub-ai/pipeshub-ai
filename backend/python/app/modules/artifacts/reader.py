@@ -16,6 +16,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Protocol
 
+from app import platform_events
 from app.modules.artifacts.record_backend import (
     ArtifactRecordBackend,
     ArtifactUnavailable,
@@ -25,10 +26,6 @@ from app.services.featureflag.platform_settings import (
     artifact_read_mode,
 )
 from app.services.messaging.membership import reader_for
-from app.plugins.telemetry.modules.record_storage_metrics import (
-    record_artifact_read,
-    record_artifact_shadow_read,
-)
 
 if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
@@ -196,7 +193,7 @@ class ShadowRecordArtifactReader:
         head_only: bool = False,
     ) -> dict[str, Any] | None:
         if not self._slots.acquire(blocking=False):
-            record_artifact_shadow_read("skipped")
+            platform_events.emit("record.artifact.shadow_read", outcome="skipped")
             return await self._legacy.read_record(virtual_record_id, org_id, lookup=lookup)
         shadow = asyncio.create_task(self._artifact.read(virtual_record_id, org_id, lookup=lookup))
         shadow.add_done_callback(_consume_result)
@@ -204,7 +201,7 @@ class ShadowRecordArtifactReader:
             try:
                 served = await self._legacy.read_record(virtual_record_id, org_id, lookup=lookup)
             except Exception:
-                record_artifact_shadow_read("legacy_failed")
+                platform_events.emit("record.artifact.shadow_read", outcome="legacy_failed")
                 raise
             try:
                 await self._compare(virtual_record_id, served, shadow)
@@ -221,18 +218,18 @@ class ShadowRecordArtifactReader:
     ) -> None:
         done, _ = await asyncio.wait({shadow}, timeout=self._grace)
         if not done:
-            record_artifact_shadow_read("timeout")
+            platform_events.emit("record.artifact.shadow_read", outcome="timeout")
             return
         if shadow.cancelled() or shadow.exception() is not None:
             # ArtifactUnavailable, already counted by outcome in the read metric.
-            record_artifact_shadow_read("unavailable")
+            platform_events.emit("record.artifact.shadow_read", outcome="unavailable")
             return
         difference = first_difference(served, shadow.result())
         if difference is None:
-            record_artifact_shadow_read("match")
+            platform_events.emit("record.artifact.shadow_read", outcome="match")
             return
         reason, where = difference
-        record_artifact_shadow_read("mismatch", reason)
+        platform_events.emit("record.artifact.shadow_read", outcome="mismatch", reason=reason)
         suppressed = _MISMATCH_LOG.take()
         if suppressed is not None:
             logger.warning(
@@ -263,7 +260,7 @@ class ArtifactFirstRecordArtifactReader:
         # membership check cannot be seen: the stored record is the only safe answer.
         reader = reader_for(getattr(getattr(self._artifact, "_blob_store", None), "config_service", None))
         if reader is not None and not (await reader.verdict()).ok:
-            record_artifact_read("membership_hold")
+            platform_events.emit("record.artifact.read", outcome="membership_hold")
             return await self._legacy.read_record(virtual_record_id, org_id, lookup=lookup)
         try:
             return await self._artifact.read(virtual_record_id, org_id, lookup=lookup)

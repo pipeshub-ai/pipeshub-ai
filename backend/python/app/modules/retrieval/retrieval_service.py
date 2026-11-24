@@ -21,6 +21,7 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from app import platform_events
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -100,7 +101,6 @@ from app.services.llm_gateway.embedding_gateway import EmbeddingGateway
 from app.services.model_identity.call_context import narrow_workload
 from app.services.model_identity.workload import Workload
 from app.services.permissions import access_status
-from app.services.permissions.metrics import SERVING_DEGRADED
 from app.services.spend_guard.retry_policy import RetryKind
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
@@ -3101,7 +3101,10 @@ class RetrievalService:
         if degraded and plan is not None:
             plan.degraded = True
             plan.degraded_reasons.update(degraded)
-            SERVING_DEGRADED.inc("scopes" if requests and requests[0].scope_filter is not None and _SHADOW_SCOPE_FILTER.get() is None else "legacy")
+            platform_events.emit(
+                "permission.serving.degraded",
+                plan="scopes" if requests and requests[0].scope_filter is not None and _SHADOW_SCOPE_FILTER.get() is None else "legacy",
+            )
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back

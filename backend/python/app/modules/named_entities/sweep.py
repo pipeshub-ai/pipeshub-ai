@@ -26,10 +26,10 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from app import platform_events
 from app.core.org_context import for_org, system
 from app.modules.named_entities.domain.kinds import VECTOR_KINDS
 from app.modules.named_entities.write_retry import retry_named_entity_write
-from app.plugins.telemetry.modules.named_entity_metrics import record_sweep
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -106,12 +106,12 @@ class NamedEntitySweeper:
         result.values_removed = await self._drain(
             lambda: self._graph.delete_dangling_named_entity_values(org_id, self._batch)
         )
-        record_sweep("cleared", result.cleared)
-        record_sweep("deleted", result.deleted)
-        record_sweep("marked", result.marked)
-        record_sweep("dangling_removed", result.dangling_removed)
-        record_sweep("relinked", result.relinked)
-        record_sweep("values_removed", result.values_removed)
+        platform_events.emit("named_entity.orphans.swept", outcome="cleared", count=result.cleared)
+        platform_events.emit("named_entity.orphans.swept", outcome="deleted", count=result.deleted)
+        platform_events.emit("named_entity.orphans.swept", outcome="marked", count=result.marked)
+        platform_events.emit("named_entity.orphans.swept", outcome="dangling_removed", count=result.dangling_removed)
+        platform_events.emit("named_entity.orphans.swept", outcome="relinked", count=result.relinked)
+        platform_events.emit("named_entity.orphans.swept", outcome="values_removed", count=result.values_removed)
         return result
 
     async def _drain(self, step: Callable) -> int:
@@ -131,7 +131,7 @@ class NamedEntitySweeper:
             await self._vectors.delete_entities(org_id, NAMED_ENTITY_VECTOR_TYPE, ids)
         except Exception as exc:
             result.vector_failed = True
-            record_sweep("vector_failed", len(ids))
+            platform_events.emit("named_entity.orphans.swept", outcome="vector_failed", count=len(ids))
             self._logger.warning(
                 "named entity vector delete failed, nodes kept for the next pass org=%s count=%d error=%s",
                 org_id, len(ids), type(exc).__name__,
@@ -143,7 +143,7 @@ class NamedEntitySweeper:
         try:
             result.dangling_removed += await self._graph.delete_dangling_named_entity_mentions(ids)
         except Exception as exc:
-            record_sweep("dangling_failed", len(ids))
+            platform_events.emit("named_entity.orphans.swept", outcome="dangling_failed", count=len(ids))
             self._logger.warning(
                 "named entity dangling mention delete failed org=%s count=%d error=%s",
                 org_id, len(ids), type(exc).__name__,

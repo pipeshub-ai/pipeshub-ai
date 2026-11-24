@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.models.blocks import (
     Block,
@@ -310,7 +311,7 @@ class TestWhenItWrites:
         )
         counted = MagicMock()
 
-        with patch.object(sink_module, "record_artifact_write", counted), caplog.at_level(logging.WARNING):
+        with event_calls("record.artifact.written", "outcome", to=counted), caplog.at_level(logging.WARNING):
             await _index(orch, TransformContext(record=_record()))
 
         orch.vector_store.apply.assert_awaited_once()
@@ -591,7 +592,7 @@ async def test_storage_without_a_set_per_write_indexes_the_record_and_leaves_the
     orch.artifact_writer = ArtifactWriter(NodeArtifactStore(storage.blob_storage(), logger), logger)
     counted = MagicMock()
 
-    with patch.object(sink_module, "record_artifact_write", counted):
+    with event_calls("record.artifact.written", "outcome", to=counted):
         await _index(orch, TransformContext(record=_record()))
 
     orch.blob_storage.apply.assert_awaited_once()
