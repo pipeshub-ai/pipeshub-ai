@@ -760,10 +760,13 @@ export class MongoUserRepository implements UserRepository {
     const user = await Users.findOne({ orgId, _id: id, isDeleted: false });
     if (!user) return null;
     Object.assign(user, fields);
+    // The account can be removed between the read and the save; the write must not land on it then.
+    user.$where = { isDeleted: false };
     try {
       if (session) await user.save({ session });
       else await user.save();
     } catch (error) {
+      if (error instanceof mongoose.Error.DocumentNotFoundError) return null;
       throw mapMongoError(error);
     }
     return dto(user);
@@ -810,7 +813,8 @@ export class MongoUserRepository implements UserRepository {
   ): Promise<UserDto[]> {
     const session = sessionOf(tx);
     const filter = { email: { $in: emails }, isDeleted: true, orgId };
-    const restore = { $set: { isDeleted: false } };
+    // A restore grants nothing: an admin invite promotes afterwards, cap-checked.
+    const restore = { $set: { isDeleted: false, role: 'member' as const } };
     if (session) await Users.updateMany(filter, restore, { session });
     else await Users.updateMany(filter, restore);
     const query = Users.find({

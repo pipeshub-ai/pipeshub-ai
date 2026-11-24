@@ -553,6 +553,20 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       });
     });
 
+    it('restoreByEmails brings a removed admin back as a member and leaves live accounts as they are', async () => {
+      const org = await fx.newOrg();
+      const goneAdmin = await person(org, { role: 'admin' });
+      const goneMember = await person(org);
+      const liveAdmin = await person(org, { role: 'admin' });
+      await users.markDeleted(org, goneAdmin._id);
+      await users.markDeleted(org, goneMember._id);
+      const restored = await users.restoreByEmails(org, [goneAdmin.email, goneMember.email, liveAdmin.email]);
+      const roleOf = (id: string) => restored.find((r) => r._id === id)?.role;
+      expect([roleOf(goneAdmin._id), roleOf(goneMember._id), roleOf(liveAdmin._id)]).to.deep.equal(['member', 'member', 'admin']);
+      expect((await users.getLive(org, goneAdmin._id))!.role).to.equal('member');
+      expect((await users.getLive(org, liveAdmin._id))!.role).to.equal('admin');
+    });
+
     it('promoteToAdmin promotes people; a batch that reaches a service account is refused by the schema', async () => {
       const org = await fx.newOrg();
       const p = await person(org);
@@ -896,6 +910,20 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(await users.updateProfile(other, u._id, { fullName: 'x' })).to.equal(null);
       await users.markDeleted(org, u._id);
       expect(await users.updateProfile(org, u._id, { fullName: 'x' })).to.equal(null);
+    });
+
+    it('updateProfile to an address another account in the organisation holds is a UniqueConstraintError on email', async () => {
+      const org = await fx.newOrg();
+      const [u, other] = [await person(org), await person(org)];
+      let err: unknown;
+      try {
+        await users.updateProfile(org, u._id, { email: other.email });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).to.be.instanceOf(UniqueConstraintError);
+      expect(String((err as UniqueConstraintError).metadata?.key)).to.include('email');
+      expect((await users.getLive(org, u._id))!.email).to.equal(u.email);
     });
 
     it('markDeleted keeps the row, optionally signs the person out and records who deleted', async () => {

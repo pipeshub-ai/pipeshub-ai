@@ -932,7 +932,7 @@ export class PgUserRepository implements UserRepository, Importable {
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       await k.query(
-        '/* pipeshub:identity.user_restore */ UPDATE identity.users u SET is_deleted = false, updated_at = $3 WHERE u.org_id = $1 AND u.email = ANY($2::text[]) AND u.is_deleted',
+        "/* pipeshub:identity.user_restore */ UPDATE identity.users u SET is_deleted = false, role = 'member', updated_at = $3 WHERE u.org_id = $1 AND u.email = ANY($2::text[]) AND u.is_deleted",
         [k.orgId, list, new Date()],
       );
       const { rows } = await k.query<UserRow>(

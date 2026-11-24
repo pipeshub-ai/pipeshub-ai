@@ -13,6 +13,7 @@ import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { UniqueConstraintError } from '../../../libs/repositories/errors';
 import { getUserRepository } from '../../../libs/repositories/user';
 import { audit } from '../../../libs/services/audit';
+import { classifyError, levelFor } from '../../../libs/utils/error-class';
 import { withCause } from '../../../libs/errors/base.error';
 import {
   auditMemberships,
@@ -782,10 +783,104 @@ export class UserController {
       // before it, there is nothing to take back.
       let groupWriteAttempted = false;
       let newUser!: UserDto;
+      const rsAvailable = this.config.rsAvailable === 'true';
+      // The undo could not safely remove a live account, so it stays: a create
+      // that failed, but an account that exists, possibly as an admin.
+      const keepAccount = (
+        reason: 'admin_now' | 'restored' | 'remove_failed',
+        grantStands: boolean,
+        error?: unknown,
+      ): void => {
+        const errorClass =
+          error === undefined ? undefined : classifyError(error);
+        this.logger[errorClass === undefined ? 'warn' : levelFor(errorClass)](
+          'Account kept after a failed create',
+          { target_user_id: newUser._id, reason, error_class: errorClass },
+        );
+        audit('user.create', {
+          target: newUser._id,
+          targetIsUser: true,
+          outcome: 'partial',
+          reason: 'kept_after_failure',
+        });
+        if (grantStands) {
+          auditUserChange('user.role.change', newUser._id, 'new_admin');
+        }
+      };
       const undoSavedAccount = async (reason: string): Promise<void> => {
-        // Membership goes first, so nothing is left pointing at a user that is
-        // about to go, and in its own try: when the group write is what failed,
-        // this is likely to fail too, and the account still has to go.
+        // Taking an admin back is a demotion first. Under the admin lock it is
+        // refused when another admin was demoted meanwhile on the strength of
+        // this one; the conditional removal below then keeps the account.
+        let demoted = false;
+        if (fields.role === 'admin') {
+          try {
+            await saveUserEnsuringOrgRetainsAdmin(
+              orgId,
+              newUser._id,
+              { role: 'member' },
+              rsAvailable,
+            );
+            demoted = true;
+          } catch (demoteError) {
+            const errorClass = classifyError(demoteError);
+            this.logger[levelFor(errorClass)](
+              'Account could not be made a member before its removal',
+              { target_user_id: newUser._id, error_class: errorClass },
+            );
+          }
+        }
+        const grantStands = fields.role === 'admin' && !demoted;
+        // Only a member goes: the store judges the role at the moment of the
+        // write, since the account may have been made an admin since it was
+        // saved. Nothing is taken apart before this decides.
+        let removed: UserDto | null;
+        try {
+          removed = await users.markDeleted(newUser.orgId, newUser._id, {
+            onlyMember: true,
+          });
+        } catch (removeError) {
+          // A refused demotion does not make the account an admin: another
+          // request may have demoted it already. Read the role back, and
+          // record no grant when that read fails too.
+          const isAdmin =
+            grantStands &&
+            (await users
+              .getRoleSnapshot(newUser.orgId, newUser._id)
+              .then((s) => normalizeUserRole(s?.role) === 'admin')
+              .catch(() => false));
+          keepAccount('remove_failed', isAdmin, removeError);
+          return;
+        }
+        if (!removed) {
+          keepAccount('admin_now', grantStands);
+          return;
+        }
+        // The hard delete decides before anything else is taken apart. False:
+        // an invite brought the account back meanwhile (it may have re-added
+        // it to the everyone group), or (demo addresses) a sample-account
+        // cleanup already deleted it. Either way nothing more is taken.
+        try {
+          if (!(await users.deleteRemoved(newUser.orgId, newUser._id))) {
+            keepAccount('restored', false);
+            return;
+          }
+        } catch (cleanupError) {
+          this.logger.error(
+            `Account was saved but ${reason}, and removing it failed too`,
+            {
+              userId: newUser._id,
+              error:
+                cleanupError instanceof Error
+                  ? cleanupError.message
+                  : String(cleanupError),
+            },
+          );
+          return;
+        }
+        // Only then what pointed at it (PostgreSQL drops the credential with
+        // the row). Each in its own try: when the group write is what failed,
+        // this is likely to fail too. A row left behind only names an account
+        // that no longer exists, which is better than stripping a live one.
         try {
           if (groupWriteAttempted) {
             await getGroupRepository().removeFromEveryone(
@@ -812,17 +907,11 @@ export class UserController {
               newUser.email,
             );
           }
-          await users.deleteById(newUser._id);
-        } catch (cleanupError) {
-          this.logger.error(
-            `Account was saved but ${reason}, and removing it failed too`,
-            {
-              userId: newUser._id,
-              error:
-                cleanupError instanceof Error
-                  ? cleanupError.message
-                  : String(cleanupError),
-            },
+        } catch (credentialError) {
+          const errorClass = classifyError(credentialError);
+          this.logger[levelFor(errorClass)](
+            'Account was removed, but discarding its credential failed',
+            { target_user_id: newUser._id, error_class: errorClass },
           );
         }
       };
@@ -830,11 +919,7 @@ export class UserController {
       try {
         newUser =
           fields.role === 'admin'
-            ? await createUserEnsuringAdminCap(
-                orgId,
-                fields,
-                this.config.rsAvailable === 'true',
-              )
+            ? await createUserEnsuringAdminCap(orgId, fields, rsAvailable)
             : await users.create(orgId, fields);
       } catch (saveError) {
         // The check above only sees live accounts, but the unique index covers

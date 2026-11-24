@@ -376,7 +376,6 @@ export const createStorageConfig =
         message: 'Storage configuration saved successfully',
       });
     } catch (error: any) {
-      logger.error('Error creating storage config', { error });
       next(error);
     }
   };
@@ -495,7 +494,6 @@ export const getStorageConfig =
       });
       return;
     } catch (error: any) {
-      logger.error('Error getting storage config', { error });
       next(error);
       return;
     }
@@ -572,7 +570,6 @@ export const createSmtpConfig =
         .json({ message: 'SMTP config created successfully' })
         .end();
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
       next(error);
     }
   };
@@ -630,7 +627,6 @@ export const getSmtpConfig =
       }
       res.status(200).json({}).end();
     } catch (error: any) {
-      logger.error('Error getting smtp config', { error });
       next(error);
     }
   };
@@ -656,7 +652,6 @@ export const getSmtpConfigStatus =
       );
       res.status(200).json({ configured }).end();
     } catch (error: any) {
-      logger.error('Error getting smtp config status', { error });
       next(error);
     }
   };
@@ -687,7 +682,6 @@ export const deleteSmtpConfig =
         .json({ message: 'SMTP config deleted successfully' })
         .end();
     } catch (error: unknown) {
-      logger.error('Error deleting smtp config', { error });
       next(error);
     }
   };
@@ -726,7 +720,6 @@ export const setSmtpConfigEnabled =
       );
       res.status(200).json({ enabled }).end();
     } catch (error: unknown) {
-      logger.error('Error turning smtp config on or off', { error });
       next(error);
     }
   };
@@ -755,8 +748,10 @@ const parseSlackBotStore = (
     };
   } catch (error) {
     // Answering "no bots" here would let the next save overwrite every stored bot.
-    logger.error('Failed to read stored slack bot settings', { error });
-    throw new InternalServerError(SLACK_BOT_SETTINGS_UNREADABLE);
+    throw withCause(
+      new InternalServerError(SLACK_BOT_SETTINGS_UNREADABLE),
+      safeCause(error),
+    );
   }
 };
 
@@ -866,7 +861,6 @@ export const getSlackBotConfigs =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error getting slack bot configs', { error });
       next(error);
     }
   };
@@ -888,7 +882,6 @@ export const getInternalSlackBotConfigs =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error getting internal slack bot configs', { error });
       next(error);
     }
   };
@@ -951,7 +944,6 @@ export const createSlackBotConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error creating slack bot config', { error });
       next(error);
     }
   };
@@ -1033,7 +1025,6 @@ export const updateSlackBotConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error updating slack bot config', { error });
       next(error);
     }
   };
@@ -1061,7 +1052,6 @@ export const deleteSlackBotConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error deleting slack bot config', { error });
       next(error);
     }
   };
@@ -1115,7 +1105,6 @@ export const setPlatformSettings =
 
       res.status(200).json({ message: 'Platform settings saved' }).end();
     } catch (error: any) {
-      logger.error('Error setting platform settings', { error });
       next(error);
     }
   };
@@ -1131,7 +1120,6 @@ export const getPlatformSettings =
       const settings = await getPlatformSettingsFromStore(keyValueStoreService);
       res.status(200).json(settings).end();
     } catch (error: any) {
-      logger.error('Error getting platform settings', { error });
       next(error);
     }
   };
@@ -1167,9 +1155,6 @@ export const getEffectivePlatformFeatureFlags =
       );
       res.status(200).json({ featureFlags }).end();
     } catch (error: any) {
-      logger.error('Error getting effective platform feature flags', {
-        error,
-      });
       next(error);
     }
   };
@@ -1237,7 +1222,6 @@ export const getMicrosoftAuthConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting auth config', { error });
       next(error);
     }
   };
@@ -1271,7 +1255,6 @@ export const setMicrosoftAuthConfig =
         .json({ message: 'Microsoft Auth config created successfully' })
         .end();
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
       next(error);
     }
   };
@@ -1299,7 +1282,6 @@ export const getGoogleAuthConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting auth config', { error });
       next(error);
     }
   };
@@ -1332,7 +1314,6 @@ export const setGoogleAuthConfig =
         .json({ message: 'Google Auth config created successfully' })
         .end();
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
       next(error);
     }
   };
@@ -1360,7 +1341,6 @@ export const createArangoDbConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error creating db config', { error });
       next(error);
     }
   };
@@ -1385,7 +1365,6 @@ export const getArangoDbConfig =
       }
       res.status(200).json({}).end();
     } catch (error: any) {
-      logger.error('Error getting db config', { error });
       next(error);
     }
   };
@@ -1413,7 +1392,6 @@ export const createMongoDbConfig =
         })
         .end();
     } catch (error: any) {
-      logger.error('Error creating db config', { error });
       next(error);
     }
   };
@@ -1440,7 +1418,6 @@ export const getMongoDbConfig =
       }
       res.status(200).json({}).end();
     } catch (error: any) {
-      logger.error('Error getting db config', { error });
       next(error);
     }
   };
@@ -1461,7 +1438,6 @@ export const createRedisConfig =
       );
       res.status(200).json({ message: 'Redis config created successfully' });
     } catch (error: any) {
-      logger.error('Error creating key value store config', { error });
       next(error);
     }
   };
@@ -1487,7 +1463,6 @@ export const getRedisConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting key value store config', { error });
       next(error);
     }
   };
@@ -1512,7 +1487,6 @@ export const createKafkaConfig =
         .json({ message: 'Kafka config created successfully', warningMessage })
         .end();
     } catch (error: any) {
-      logger.error('Error creating kafka config', { error });
       next(error);
     }
   };
@@ -1538,7 +1512,6 @@ export const getKafkaConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting kafka config', { error });
       next(error);
     }
   };
@@ -1671,10 +1644,6 @@ export const createGoogleWorkspaceCredentials =
             }
             topicName = req.body.topicName;
           }
-
-          logger.debug('enableRealTimeUpdates:', enableRealTimeUpdates);
-          logger.debug('realTimeUpdatesEnabled:', realTimeUpdatesEnabled);
-          logger.debug('topicName:', topicName);
 
           let configData;
 
@@ -1812,7 +1781,6 @@ export const createGoogleWorkspaceCredentials =
       }
       res.status(200).json({ message: 'Successfully updated' });
     } catch (error: any) {
-      logger.error('Error creating google workspace credentials', { error });
       next(error);
     }
   };
@@ -1893,7 +1861,6 @@ export const getGoogleWorkspaceCredentials =
           );
       }
     } catch (error: any) {
-      logger.error('Error getting google workspace credentials', { error });
       next(error);
     }
   };
@@ -1922,7 +1889,6 @@ export const getGoogleWorkspaceBusinessCredentials =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting google workspace credentials', { error });
       next(error);
     }
   };
@@ -1955,7 +1921,6 @@ export const deleteGoogleWorkspaceCredentials =
           );
       }
     } catch (error: any) {
-      logger.error('Error getting google workspace credentials', { error });
       next(error);
     }
   };
@@ -2061,7 +2026,6 @@ export const setGoogleWorkspaceOauthConfig =
         .status(200)
         .json({ message: 'Google Workspace credentials created successfully' });
     } catch (error: any) {
-      logger.error('Error creating Google Workspace config', { error });
       next(error);
     }
   };
@@ -2087,7 +2051,6 @@ export const getGoogleWorkspaceOauthConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Google Workspace config', { error });
       next(error);
     }
   };
@@ -2120,7 +2083,6 @@ export const getAtlassianOauthConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Atlassian config', { error });
       next(error);
     }
   };
@@ -2151,7 +2113,6 @@ export const setAtlassianOauthConfig =
         .status(200)
         .json({ message: 'Atlassian config created successfully' });
     } catch (error: any) {
-      logger.error('Error creating Atlassian config', { error });
       next(error);
     }
   };
@@ -2185,7 +2146,6 @@ export const getAtlassianCredentials =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Atlassian credentials', { error });
       next(error);
     }
   };
@@ -2217,7 +2177,6 @@ export const setAtlassianCredentials =
         .status(200)
         .json({ message: 'Atlassian credentials created successfully' });
     } catch (error: any) {
-      logger.error('Error creating Atlassian credentials', { error });
       next(error);
     }
   };
@@ -2251,7 +2210,6 @@ export const getOneDriveCredentials =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting OneDrive credentials', { error });
       next(error);
     }
   };
@@ -2283,7 +2241,6 @@ export const setOneDriveCredentials =
         .status(200)
         .json({ message: 'OneDrive credentials created successfully' });
     } catch (error: any) {
-      logger.error('Error creating OneDrive credentials', { error });
       next(error);
     }
   };
@@ -2317,7 +2274,6 @@ export const getSharePointCredentials =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting SharePoint credentials', { error });
       next(error);
     }
   };
@@ -2349,7 +2305,6 @@ export const setSharePointCredentials =
         .status(200)
         .json({ message: 'SharePoint credentials created successfully' });
     } catch (error: any) {
-      logger.error('Error creating SharePoint credentials', { error });
       next(error);
     }
   };
@@ -2374,7 +2329,6 @@ export const createQdrantConfig =
         warningMessage,
       });
     } catch (error: any) {
-      logger.error('Error creating Sso config', { error });
       next(error);
     }
   };
@@ -2400,7 +2354,6 @@ export const getQdrantConfig =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting SsoConfig', { error });
       next(error);
     }
   };
@@ -2421,7 +2374,6 @@ export const getFrontendUrl =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Frontend Public Url', { error });
       next(error);
     }
   };
@@ -2515,7 +2467,6 @@ export const setFrontendUrl =
         message: 'Frontend Url saved successfully',
       });
     } catch (error: any) {
-      logger.error('Error setting frontend url', { error });
       next(error);
     }
   };
@@ -2537,7 +2488,6 @@ export const getConnectorPublicUrl =
         res.status(200).json({}).end();
       }
     } catch (error: any) {
-      logger.error('Error getting Connector Public Url', { error });
       next(error);
     }
   };
@@ -2596,7 +2546,6 @@ export const setConnectorPublicUrl =
         message: 'Connector Url saved successfully',
       });
     } catch (error: any) {
-      logger.error('Error setting Connector url', { error });
       next(error);
     }
   };
@@ -2626,7 +2575,7 @@ const getMetricsCollectionConfig = async (
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (error) {
     logger.warn('Failed to parse metrics collection config, using empty config', {
-      error,
+      error: safeCause(error),
     });
     return {};
   }
@@ -2674,7 +2623,6 @@ export const toggleMetricsCollection =
         .status(200)
         .json({ message: 'Metrics collection toggled successfully' });
     } catch (error: any) {
-      logger.warn('Error toggling metrics collection', { error });
       next(error);
     }
   };
@@ -2688,7 +2636,6 @@ export const getMetricsCollection =
       );
       res.status(200).json(metricsCollection).end();
     } catch (error: any) {
-      logger.warn('Error getting metrics collection', { error });
       next(error);
     }
   };
@@ -2711,7 +2658,6 @@ export const setMetricsCollectionPushInterval =
         .status(200)
         .json({ message: 'Metrics collection push interval set successfully' });
     } catch (error: any) {
-      logger.warn('Error setting metrics collection push interval', { error });
       next(error);
     }
   };
@@ -2732,7 +2678,6 @@ export const setMetricsCollectionRemoteServer =
         .status(200)
         .json({ message: 'Metrics collection remote server set successfully' });
     } catch (error: any) {
-      logger.warn('Error setting metrics collection remote server', { error });
       next(error);
     }
   };
@@ -2743,7 +2688,10 @@ async function sendEvent(eventService: EntitiesEventProducer | AiConfigEventProd
     await eventService.publishEvent(event);
     await eventService.stop();
   } catch (error) {
-    logger.error('Error sending event', { error });
+    logger.error('broker.event.publish_failed', {
+      event_type: event.eventType,
+      error,
+    });
   }
 }
 
@@ -2774,7 +2722,9 @@ const throwUnlessHealthy = (
       healthCheckFailureMessage(response.data, fallback),
     );
   }
-  throw new InternalServerError(fallback, response?.data);
+  throw withCause(new InternalServerError(fallback), {
+    status: response?.statusCode,
+  });
 };
 
 export const createAIModelsConfig =
@@ -2801,8 +2751,6 @@ export const createAIModelsConfig =
           body: aiConfig.llm,
         };
 
-        logger.debug('Health Check for AI llm Config API calling');
-
         // Don't use nested try/catch with next() inside
         const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
         const aiResponseData =
@@ -2822,8 +2770,6 @@ export const createAIModelsConfig =
           headers: req.headers as Record<string, string>,
           body: aiConfig.embedding,
         };
-
-        logger.debug('Health Check for AI embedding Config API calling');
 
         // Don't use nested try/catch with next() inside
         const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -2911,7 +2857,6 @@ export const createAIModelsConfig =
 
       res.status(200).json({ message: 'AI config created successfully' }).end();
     } catch (error: any) {
-      logger.error('Error creating ai models config', { error });
       next(error);
     }
   };
@@ -2931,7 +2876,6 @@ export const getAIModelsConfig =
         )
         .end();
     } catch (error: any) {
-      logger.error('Error getting ai models config', { error });
       next(error);
     }
   };
@@ -2943,7 +2887,6 @@ export const getInternalAIModelsConfig =
       const aiConfig = await readStoredAiModelsConfig(keyValueStoreService);
       res.status(200).json(aiConfig ?? {}).end();
     } catch (error: any) {
-      logger.error('Error getting internal ai models config', { error });
       next(error);
     }
   };
@@ -2990,7 +2933,6 @@ export const getAIModelsProviders =
         message: 'AI models retrieved successfully',
       });
     } catch (error: any) {
-      logger.error('Error getting AI models providers', { error });
       next(error);
     }
   };
@@ -3041,7 +2983,6 @@ export const getModelsByType =
         message: `Found ${configs.length} ${modelType} models`,
       });
     } catch (error: any) {
-      logger.error('Error getting models by type', { error });
       next(error);
     }
   };
@@ -3148,7 +3089,6 @@ export const getAvailableModelsByType =
       });
       return;
     } catch (error: any) {
-      logger.error('Error getting available models by type', { error });
       next(error);
     }
   };
@@ -3193,7 +3133,6 @@ export const prepareEmbeddingModel =
 
       res.status(response.status).json(response.data);
     } catch (error: any) {
-      logger.error('Error preparing embedding model', { error });
       if (error.response) {
         res.status(error.response.status).json(error.response.data);
         return;
@@ -3247,7 +3186,7 @@ export const streamEmbeddingDownloadProgress =
           break;
         }
       } catch (error: any) {
-        logger.error('Lost connection to embedding server', { error });
+        logger.warn('Lost connection to embedding server', { error });
         if (!closed) {
           res.write(
             `event: progress\ndata: ${JSON.stringify({
@@ -3450,8 +3389,6 @@ export const addAIModelProvider =
         body: healthCheckPayload,
       };
 
-      logger.debug('Health Check for AI embedding Config API calling');
-
       // Don't use nested try/catch with next() inside
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponseData =
@@ -3468,11 +3405,11 @@ export const addAIModelProvider =
               );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
-        // API key provided"); the raw body behind it is for the log only.
-        logger.error('AI model health check failed', {
-          modelType,
-          statusCode: aiResponseData?.statusCode,
-          details: errData,
+        // API key provided"); the provider's text is never logged.
+        logger.warn('ai_model.health_check.failed', {
+          model_type: modelType,
+          provider,
+          status: aiResponseData?.statusCode,
         });
         res.status(aiResponseData?.statusCode ?? 500).json({
           error: {
@@ -3549,7 +3486,6 @@ export const addAIModelProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error adding AI model provider', { error });
       const handleError = handleBackendError(error, 'add AI model provider');
       next(handleError);
     }
@@ -3579,17 +3515,6 @@ export const updateAIModelProvider =
         isDefault = false,
         contextLength,
       } = req.body;
-
-      logger.debug('updateAIModelProvider', {
-        modelType,
-        modelKey,
-        provider,
-        configuration,
-        isMultimodal,
-        isReasoning,
-        isDefault,
-        contextLength,
-      });
 
       // Validate required fields
       if (!provider || !configuration) {
@@ -3695,8 +3620,6 @@ export const updateAIModelProvider =
         body: healthCheckPayload,
       };
 
-      logger.debug('Health Check for AI embedding Config API calling');
-
       // Don't use nested try/catch with next() inside
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponseData =
@@ -3713,11 +3636,11 @@ export const updateAIModelProvider =
               );
 
         // The reason is written for the admin filling in the dialog ("Incorrect
-        // API key provided"); the raw body behind it is for the log only.
-        logger.error('AI model health check failed', {
-          modelType,
-          statusCode: aiResponseData?.statusCode,
-          details: errData,
+        // API key provided"); the provider's text is never logged.
+        logger.warn('ai_model.health_check.failed', {
+          model_type: modelType,
+          provider,
+          status: aiResponseData?.statusCode,
         });
         res.status(aiResponseData?.statusCode ?? 500).json({
           error: {
@@ -3825,7 +3748,6 @@ export const updateAIModelProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error updating AI model provider', { error });
       const handleError = handleBackendError(error, 'update AI model provider');
       next(handleError);
     }
@@ -4149,10 +4071,6 @@ export const updateDefaultAIModel =
       // `/health-check/{type}` endpoint which validates reachability and
       // credentials.
       if ((AI_MODEL_TYPES as readonly string[]).includes(targetModelType)) {
-        logger.debug(
-          `Health Check for AI ${targetModelType} default-update API calling`,
-        );
-
         let aiResponseData: AIServiceResponse;
         if (targetModelType === 'embedding') {
           // Embedding uses the collection-managing endpoint.
@@ -4256,7 +4174,6 @@ export const updateDefaultAIModel =
         },
       });
     } catch (error: any) {
-      logger.error('Error updating default AI model', { error });
       next(error);
     }
   };
@@ -4293,7 +4210,6 @@ export const getConnectorConfig =
 
       res.status(200).json(config).end();
     } catch (error: any) {
-      logger.error('Error getting connector config by name', { error });
       next(error);
     }
   };
@@ -4349,7 +4265,6 @@ export const getCustomSystemPrompt =
         .json({ customSystemPrompt: '', customSystemPromptWebSearch: '', customSystemPromptAgent: '' })
         .end();
     } catch (error: any) {
-      logger.error('Error getting custom system prompt', { error });
       next(error);
     }
   };
@@ -4424,7 +4339,6 @@ export const setCustomSystemPrompt =
         customSystemPromptAgent,
       });
     } catch (error: any) {
-      logger.error('Error setting custom system prompt', { error });
       next(error);
     }
   };
@@ -4439,10 +4353,10 @@ async function proxyAiBackendGet(
   res: Response,
   next: NextFunction,
   path: string,
-  options: { query?: URLSearchParams; logMessage: string },
+  query?: URLSearchParams,
 ): Promise<void> {
   try {
-    const qs = options.query?.toString();
+    const qs = query?.toString();
     const url = `${appConfig.aiBackend}${path}${qs ? `?${qs}` : ''}`;
 
     const headers: Record<string, string> = {};
@@ -4453,11 +4367,15 @@ async function proxyAiBackendGet(
     const response = await axios.get(url, { timeout: 10000, headers });
     res.status(response.status).json(response.data);
   } catch (error: any) {
-    logger.error(options.logMessage, { error });
     if (error?.response) {
       res.status(error.response.status).json(error.response.data);
     } else {
-      next(new ServiceUnavailableError('AI model registry service is unavailable'));
+      next(
+        withCause(
+          new ServiceUnavailableError('AI model registry service is unavailable'),
+          error,
+        ),
+      );
     }
   }
 }
@@ -4474,10 +4392,14 @@ export const getAIModelRegistry =
     if (search) params.set('search', String(search));
     if (capability) params.set('capability', String(capability));
 
-    await proxyAiBackendGet(appConfig, req, res, next, '/api/v1/ai-models/registry', {
-      query: params,
-      logMessage: 'Error proxying AI model registry request',
-    });
+    await proxyAiBackendGet(
+      appConfig,
+      req,
+      res,
+      next,
+      '/api/v1/ai-models/registry',
+      params,
+    );
   };
 
 export const getAIModelRegistryCapabilities =
@@ -4493,7 +4415,6 @@ export const getAIModelRegistryCapabilities =
       res,
       next,
       '/api/v1/ai-models/registry/capabilities',
-      { logMessage: 'Error proxying AI model capabilities request' },
     );
   };
 
@@ -4515,7 +4436,7 @@ export const getAIModelProviderSchema =
       res,
       next,
       `/api/v1/ai-models/registry/${encodeURIComponent(providerId)}/schema`,
-      { query: params, logMessage: 'Error proxying AI model provider schema request' },
+      params,
     );
   };
 
@@ -4573,7 +4494,6 @@ export const getWebSearchProviders =
         message: 'Web search providers retrieved successfully',
       });
     } catch (error: any) {
-      logger.error('Error getting web search providers', { error });
       next(error);
     }
   };
@@ -4658,7 +4578,6 @@ export const updateWebSearchSettings =
         settings: normalizedSettings,
       });
     } catch (error: any) {
-      logger.error('Error updating web search settings', { error });
       next(error);
     }
   };
@@ -4685,8 +4604,6 @@ export const addWebSearchProvider =
         headers: req.headers as Record<string, string>,
         body: { provider, configuration },
       };
-
-      logger.debug('Health check for web search provider before adding');
 
       const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
       const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
@@ -4768,7 +4685,6 @@ export const addWebSearchProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error adding web search provider', { error });
       next(error);
     }
   };
@@ -4837,8 +4753,6 @@ export const updateWebSearchProvider =
         body: { provider, configuration: effectiveConfiguration },
       };
 
-      logger.debug('Health check for web search provider before updating');
-
       const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
       const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
 
@@ -4895,7 +4809,6 @@ export const updateWebSearchProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error updating web search provider', { error });
       next(error);
     }
   };
@@ -5158,8 +5071,6 @@ export const updateDefaultWebSearchProvider =
         body: { provider: targetProvider.provider, configuration: targetProvider.configuration },
       };
 
-      logger.debug('Health check for web search provider before setting as default');
-
       const webSearchHealthCheckCommand = new AIServiceCommand(webSearchHealthCheckOptions);
       const webSearchHealthCheckResponse = (await webSearchHealthCheckCommand.execute()) as AIServiceResponse;
 
@@ -5209,7 +5120,6 @@ export const updateDefaultWebSearchProvider =
         },
       });
     } catch (error: any) {
-      logger.error('Error updating default web search provider', { error });
       next(error);
     }
   };
@@ -5234,7 +5144,6 @@ export const getModelRoles =
         modelRoles: aiModels.modelRoles ?? {},
       });
     } catch (error: any) {
-      logger.error('Error getting model roles', { error });
       next(error);
     }
   };
@@ -5305,7 +5214,6 @@ export const updateModelRoles =
         modelRoles: savedRoles,
       });
     } catch (error: any) {
-      logger.error('Error updating model roles', { error });
       next(error);
     }
   };

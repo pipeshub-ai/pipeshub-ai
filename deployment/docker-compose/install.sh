@@ -1391,7 +1391,7 @@ NEO4J_DATABASE=neo4j
 $(optional_env_line NEO4J_HEAP_INITIAL "$NEO4J_HEAP_INITIAL" "1G")
 $(optional_env_line NEO4J_HEAP_MAX "$NEO4J_HEAP_MAX" "2G")
 $(optional_env_line NEO4J_PAGECACHE "$NEO4J_PAGECACHE" "1G")
-$(optional_env_line NEO4J_MEMORY_LIMIT "$NEO4J_MEMORY_LIMIT" "3G")
+$(optional_env_line NEO4J_MEMORY_LIMIT "$NEO4J_MEMORY_LIMIT" "4G")
 $(optional_env_line NEO4J_MEMORY_RESERVATION "$NEO4J_MEMORY_RESERVATION" "2G")
 
 # ── Key-value / config store ─────────────────────────────────────────────────

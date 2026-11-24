@@ -7800,6 +7800,11 @@ class IGraphDBProvider(ABC):
         switched off (demo data), which only it can read."""
         return []
 
+    async def kh_refresh_plans(self, max_age: float | None = None) -> int:
+        """Plan again, off the request path, the listing statements in use whose cached plan is older than ``max_age``;
+        how many were planned. 0 for a backend with no plan cache to keep."""
+        return 0
+
     async def kh_scope_enabled(self) -> bool:
         return False
 

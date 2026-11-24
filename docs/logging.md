@@ -904,9 +904,9 @@ role name, group name or field value: a role change is told by the event and its
 
 | Event | Outcome | `reason` | Notes |
 | --- | --- | --- | --- |
-| `user.create` | `success`, `failure` | success: `demo_password` (a demo account got a starting password), else none; failure: `email_taken`, `password_not_allowed`, `admin_limit` (created as admin past the organisation's admin limit) | |
+| `user.create` | `success`, `partial`, `failure` | success: `demo_password` (a demo account got a starting password), else none; partial: `kept_after_failure` (the create failed after the account was saved, and the account was kept because removing it could have left the organisation without an admin, the removal itself failed, or an invite restored it meanwhile; followed by `user.role.change` `new_admin` when it is kept as the admin it was created as); failure: `email_taken`, `password_not_allowed`, `admin_limit` (created as admin past the organisation's admin limit) | |
 | `user.invite` | `success`, `failure` | success: `new`, `reinvite`, `resend`; failure: `not_admin`, `admin_limit` | `new` is written when the account is created, even if its mail then fails; `reinvite` and `resend` only after the mail was accepted |
-| `user.restore` | `success` | `invite` | a removed account brought back by an invite |
+| `user.restore` | `success` | `invite` | a removed account brought back by an invite, as a member; an admin invite then logs `user.role.change promote` |
 | `user.role.change` | `success`, `failure` | success: `promote`, `demote`, `new_admin` (created or invited as admin); failure: `not_admin`, `last_admin`, `admin_limit` | "who made U an admin" is this one event |
 | `user.update` | `success`, `failure` | success: `profile`, `sign_in_state` (an admin set whether the user has signed in); failure: `not_admin` | a user's own first sign-in is `auth.sign_in`, not this |
 | `user.email_change.request` | `success`, `failure` | failure: `not_self`, `email_taken` | the verification link was sent; the change itself is `auth.email.change reason=link` when the link is opened |
@@ -1113,6 +1113,23 @@ The level, by the first matching row:
 - **No end line** when no stream exists yet: a draining server, `Query is required`, an ownership or validation refusal before the
   stream's headers, and regenerate's checks before its stream. The request's own `http.request.error` line covers them.
 - **Known duplicate.** A failed save still logs ERROR twice: the persistence helper's own line and the end line.
+
+## Configuration manager (Node)
+
+The configuration manager routes (`/api/v1/configurationManager`) write no line of their own for a failure they pass on: the
+error middleware's `http.request.error` is the one failure line, at its class's level (a refused setting is WARNING
+`bad_request`, a key-value store outage ERROR `internal` with one stack), and the access line records the request. A failure
+Node wraps keeps what caused it as the error's `cause`: the AI model registry unreachable (503), a container reload that
+failed, unreadable Slack bot settings (a `JSON.parse` failure reads `response was not valid JSON`, never the stored text).
+
+- **AI model health check.** A model the AI service's health check refuses, when it is added or updated, is answered with the
+  reason for the admin's dialog and one WARNING `ai_model.health_check.failed` with `status` (the check's), `model_type` and
+  `provider` in its metadata; never the provider's text, which can quote part of the key. A bulk save whose check fails with
+  a 5xx is a 500 whose cause is `{ status }`, never the check's body.
+- **Embedding model download.** A progress stream that loses the embedding server is one WARNING
+  (`Lost connection to embedding server`); the stream tells the browser.
+- **Events.** The config event producers write DEBUG `broker.event.published` with `event_type` and `topic`, and ERROR
+  `broker.event.publish_failed` when a publish fails (the save already succeeded, so this is the only line).
 
 ## Mail delivery (Node)
 
