@@ -57,6 +57,35 @@
 
 PipesHub 在文档、对话、结构化数据、Wiki、工单和代码之上构建**统一的上下文层**。连接器同步每个数据源及其权限。索引流水线对内容进行解析、分块和向量化，并在知识图谱中关联记录、人员和实体。
 
+```mermaid
+flowchart LR
+  subgraph Sources["50+ connectors"]
+    S1["Drive · SharePoint · Box · S3"]
+    S2["Slack · Gmail · Outlook"]
+    S3["Jira · Confluence · Notion · GitHub"]
+    S4["Postgres · Snowflake · Salesforce"]
+  end
+  subgraph Layer["PipesHub context layer"]
+    B["Blocks: one representation for documents, tables, threads, code and SQL"]
+    H["Hierarchy: app, space, folder, record, block"]
+    G["Knowledge graph: entities and typed relations"]
+    T["Agent tools: hybrid search, grep, graph navigation, document reading"]
+    P{{"Permission check on every call"}}
+  end
+  subgraph Consumers["Agents"]
+    A1["Built-in agent loop: chat, deep research, no-code agents"]
+    A2["Claude Code, Cursor, Codex via MCP"]
+    A3["Your apps via SDKs"]
+  end
+  Sources --> B
+  B --> H
+  B --> G
+  H --> T
+  G --> T
+  T --> P
+  P --> Consumers
+```
+
 问题由**智能体循环（agent loop）**回答，而不是单次"先检索、再生成"。智能体会规划、调用工具、阅读结果，并持续迭代直到获得充分证据：
 
 - **混合搜索** —— 语义检索与关键词检索结合，既匹配含义，也匹配精确术语。
@@ -66,6 +95,14 @@ PipesHub 在文档、对话、结构化数据、Wiki、工单和代码之上构�
 
 每次工具调用都按提问用户的权限过滤，每个回答都会引用其来源的具体内容块。
 
+
+| | Top-k 文本块 RAG | PipesHub |
+| --- | --- | --- |
+| **智能体首先看到什么** | 几个文本块 | 每条记录的名称、位置、元数据和摘要，以及命中的块 |
+| **如何进一步深挖** | 做不到：每个问题只检索一次 | 混合搜索、对记录执行 `grep`/`find`、文件夹导航和知识图谱查询，循环进行 |
+| **结构** | 分块时丢失 | 每个数据源都会转换为 Blocks：章节、包含行和单元格的表格、讨论串、代码、带有 schema 的 SQL 表 |
+| **权限** | 通常在索引时近似处理 | 每次工具调用时，都按源系统权限对发起请求的用户进行校验 |
+| **引用** | 按文本块引用（如果有的话） | 按块引用：页面、表格单元格、行、幻灯片或代码行，并移除编造的引用 |
 
 ## 功能特性
 
