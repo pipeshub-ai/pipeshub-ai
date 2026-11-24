@@ -60,12 +60,17 @@ def _chunks(xs, n=1000) -> Iterator[list[Any]]:
         yield xs[i:i + n]
 
 
+async def _node_count(g: Any) -> int:  # noqa: ANN401
+    return (await g.client.execute_query("MATCH (n) RETURN count(n) AS n"))[0]["n"]
+
+
 @pytest.fixture
 async def w(monkeypatch) -> AsyncIterator[W]:
     try:
         g = await connect_neo4j(log, monkeypatch)
     except Exception as exc:
         backend_unavailable("neo4j", exc)
+    before = await _node_count(g)
     run = uuid.uuid4().hex[:8]
     w = W()
     w.g, w.run, w.org, w.app = g, run, f"org-{run}", f"app-{run}"
@@ -143,8 +148,14 @@ async def w(monkeypatch) -> AsyncIterator[W]:
         [e(w.user, USR, w.app, APP, syncState="COMPLETED", lastSyncUpdate=now, isExternalUser=False)],
         collection=CollectionNames.USER_APP_RELATION.value)
     yield w
-    await g.client.execute_query("MATCH (n) WHERE n.connectorId = $a OR n.id = $a OR n.id = $u DETACH DELETE n",
-                                 parameters={"a": w.app, "u": w.user})
+    # Every node the seed wrote carries the test's org or App (a record's type node has its org and no connectorId), or its run suffix.
+    mine = "n.orgId = $o OR n.connectorId = $a OR n.id IN [$a, $u] OR n.id ENDS WITH $sfx"
+    params = {"o": w.org, "a": w.app, "u": w.user, "sfx": f"-{run}"}
+    await g.client.execute_query(f"MATCH (n) WHERE {mine} DETACH DELETE n", parameters=params)
+    left = await g.client.execute_query(f"MATCH (n) WHERE {mine} RETURN count(n) AS n", parameters=params)
+    assert left[0]["n"] == 0, left
+    # The tests run one at a time on their store (as CI runs this file), so the store is back to what it held before the seed.
+    assert await _node_count(g) == before
 
 
 def bfs(w, start, d) -> dict[str, int]:
