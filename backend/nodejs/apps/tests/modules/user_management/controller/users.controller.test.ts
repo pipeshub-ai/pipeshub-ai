@@ -26,6 +26,7 @@ import { UniqueConstraintError } from '../../../../src/libs/repositories/errors'
 import { getUserRepository, setUserRepository } from '../../../../src/libs/repositories/user';
 import { getGroupRepository, setGroupRepository } from '../../../../src/libs/repositories/group';
 import { getCredentialRepository } from '../../../../src/libs/repositories/credential';
+import { SLACK_ONLY_ADD_USER_REFUSAL } from '../../../../src/modules/user_management/services/slack-only-accounts.service';
 import { getOrgRepository } from '../../../../src/libs/repositories/org';
 import type { UserRepository } from '../../../../src/libs/repositories/user';
 import * as auditService from '../../../../src/libs/services/audit';
@@ -6973,9 +6974,10 @@ describe('UserController', () => {
         create: sinon.stub(users, 'createMany').resolves([]),
       };
     };
-    const addUserStubs = (sam: any) => {
+    const addUserStubs = (sam: any, blocked: string[] = []) => {
       sinon.stub(users, 'existsLiveEmail').resolves(true);
       sinon.stub(users, 'getLiveByEmail').resolves(sam);
+      sinon.stub(getCredentialRepository(), 'blockedUserIds').resolves(blocked);
       return {
         upgrade: sinon.stub(users, 'upgradeSlackOnly').resolves(true),
         profile: sinon.stub(users, 'updateProfile'),
@@ -7194,6 +7196,30 @@ describe('UserController', () => {
       expect(restore).to.include({ kind: 'slack', fullName: 'Sam', role: 'member' });
       expect(restore).to.have.property('designation', undefined);
     });
+
+    for (const [label, fields, blocked] of [
+      ['blocked', {}, true],
+      ['switched off', { isDisabled: true }, false],
+    ] as const) {
+      it(`add user leaves a ${label} Slack-only account alone, as an invite does: refused, nothing written`, async () => {
+        const sam = slackRow(fields);
+        req.body = { email: 'sam@acme.test' };
+        const { upgrade, profile, everyone, create } = addUserStubs(sam, blocked ? [sam._id] : []);
+
+        await controller.createUser(req, res, next);
+
+        const error = next.firstCall?.args[0];
+        expect(error, 'refused').to.be.instanceOf(Error);
+        expect(error.statusCode ?? error.status).to.equal(403);
+        expect(error.message).to.equal(SLACK_ONLY_ADD_USER_REFUSAL);
+        expect(upgrade.called, 'not upgraded').to.be.false;
+        expect(profile.called, 'record untouched').to.be.false;
+        expect(everyone.called, 'not in everyone').to.be.false;
+        expect(create.called, 'no new record').to.be.false;
+        expect(mockEventService.publishEvent.called, 'nothing announced').to.be.false;
+        expect(res.status.called, 'no answer but the refusal').to.be.false;
+      });
+    }
 
     it('add user still restores the record when leaving the groups fails too', async () => {
       const sam = slackRow();

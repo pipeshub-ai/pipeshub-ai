@@ -27,6 +27,10 @@ export const SLACK_ONLY_INVITE_MESSAGE =
 export const SLACK_ONLY_SIGN_IN_MESSAGE =
   'This account was created from Slack and can only be used there. Ask your admin to invite you to PipesHub.';
 
+/** What an admin reads when adding an address whose Slack-only account is blocked or switched off. */
+export const SLACK_ONLY_ADD_USER_REFUSAL =
+  "This person's account is blocked or switched off. Unblock it before adding them.";
+
 export const SLACK_ACCOUNT_UNAVAILABLE_MESSAGE =
   'Your PipesHub account was removed or switched off, so this bot cannot answer you. Ask your admin for help.';
 

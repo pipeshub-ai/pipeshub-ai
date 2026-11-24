@@ -4,7 +4,11 @@ import {
   SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE,
   SLACK_ONLY_ADMIN_ROLE_MESSAGE,
 } from '../constants/service-account.constants';
-import { upgradeSlackOnlyAccount } from '../services/slack-only-accounts.service';
+import {
+  assertSlackOnlyAccountActive,
+  SLACK_ONLY_ADD_USER_REFUSAL,
+  upgradeSlackOnlyAccount,
+} from '../services/slack-only-accounts.service';
 import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
@@ -755,6 +759,12 @@ export class UserController {
             isSlackOnlyAccount(existing) &&
             password === undefined
           ) {
+            // A blocked or switched-off account is not brought back by adding its address, as an
+            // invite leaves it alone: refused before anything is written.
+            await assertSlackOnlyAccountActive(
+              existing,
+              SLACK_ONLY_ADD_USER_REFUSAL,
+            );
             res
               .status(201)
               .json(await this.addSlackOnlyAccountAsUser(existing, fields));
