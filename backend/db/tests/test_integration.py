@@ -1071,6 +1071,38 @@ def test_in_shadow_every_access_is_admitted_and_one_outside_the_prefixes_is_logg
         assert c.execute("SELECT enforce FROM platform.kv_access").fetchone()[0] is False
 
 
+def _python_constant(rel_path, name):
+    import ast
+    tree = ast.parse((BACKEND / "python" / rel_path).read_text(encoding="utf-8"))
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == name for t in n.targets))
+
+
+@pytest.mark.parametrize("plan", ["", "SET enable_indexscan = off; SET enable_bitmapscan = off",
+                                  "SET enable_hashjoin = off; SET enable_mergejoin = off", "SET enable_seqscan = off"])
+def test_in_shadow_the_expired_row_purge_logs_no_live_row_it_does_not_delete(kv_db, plan):
+    """The services' purge (postgres_store._PURGE) removes expired rows only: in shadow it must not report the live rows it passes over
+    as accesses outside the role's prefixes, whatever plan runs it, or every purge (once a minute per process) floods the log."""
+    cluster, name = kv_db
+    _set_mode(cluster, name, False)
+    purge = _python_constant("app/config/providers/postgres_store.py", "_PURGE")
+    with connect(cluster, name) as c:
+        c.execute("UPDATE platform.kv_entries SET expires_at = now() - interval '1 second' WHERE key = '/services/agents/parked-turns/c1'")
+    for role in ("connectors", "query", "indexing", "kv"):
+        notes = []
+        with _as(cluster, name, role) as c:
+            c.add_notice_handler(lambda d, notes=notes: notes.append(d.message_primary))
+            c.execute("SET client_min_messages = log")
+            for s in filter(None, plan.split("; ")):
+                c.execute(s)
+            c.execute(purge)
+            logged = [n for n in notes if "outside the role's prefixes" in n]
+            gone = c.execute("SELECT count(*) FROM platform.kv_entries WHERE key = '/services/agents/parked-turns/c1'").fetchone()[0] == 0
+            live = c.execute("SELECT count(*) FROM platform.kv_entries").fetchone()[0]
+            c.rollback()
+        assert logged == [], (role, plan, logged)
+        assert gone and live == len({k for _, k, _, _ in KV_MATRIX}) - 1, (role, live)    # the dead row is removed, every live one kept
+
+
 def test_in_enforce_connectors_writes_the_epoch_keys_of_a_cleanup_and_no_pin_or_other_vector_key(kv_db):
     """The search-index cleanup (connectors) begins a reset: a pointer set, then the issuing and live keys of the new token created."""
     cluster, name = kv_db
