@@ -563,6 +563,8 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "failedAt",
     "indexingAttempts",
     "pageCount",
+    "indexedMd5",
+    "pendingTaxonomyRefs",
     "duplicateReconcilePending",
     "duplicateReconcileAttempts",
     "extractionDeferred",
@@ -765,6 +767,21 @@ def cleans_taxonomy_points(record: dict[str, Any]) -> bool:
     )
 
 
+def taxonomy_refs_from_links(links: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
+    """``{record key: [{"id", "type"}]}`` from the rows of ``get_record_taxonomy_links``, deduplicated per record."""
+    refs: dict[str, list[dict[str, str]]] = {}
+    for link in links:
+        entity_type = TAXONOMY_ENTITY_TYPE_BY_COLLECTION.get(link.get("collection"))
+        record_key, entity_id = link.get("recordId"), link.get("entityId")
+        if not entity_type or not record_key or not entity_id:
+            continue
+        ref = {"id": str(entity_id), "type": entity_type}
+        bucket = refs.setdefault(str(record_key), [])
+        if ref not in bucket:
+            bucket.append(ref)
+    return refs
+
+
 async def record_taxonomy_refs(
     graph: "IGraphDBProvider", record_keys: Iterable[str], logger: Logger,
 ) -> dict[str, list[dict[str, str]]]:
@@ -787,17 +804,7 @@ async def record_taxonomy_refs(
             len(keys), exc,
         )
         return {}
-    refs: dict[str, list[dict[str, str]]] = {}
-    for link in links:
-        entity_type = TAXONOMY_ENTITY_TYPE_BY_COLLECTION.get(link.get("collection"))
-        record_key, entity_id = link.get("recordId"), link.get("entityId")
-        if not entity_type or not record_key or not entity_id:
-            continue
-        ref = {"id": str(entity_id), "type": entity_type}
-        bucket = refs.setdefault(str(record_key), [])
-        if ref not in bucket:
-            bucket.append(ref)
-    return refs
+    return taxonomy_refs_from_links(links)
 
 
 async def deleted_record_taxonomy_refs(
