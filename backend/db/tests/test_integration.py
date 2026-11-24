@@ -958,6 +958,9 @@ KV_MATRIX = [
     ("indexing", "/services/platform/artifactRollout/membership/h1", True, True),
     ("indexing", "/services/entityCleanup/pending/c1", True, True), ("indexing", "/migrations/class_units_backfill/1", True, True),
     ("indexing", "state:lease:record:r1:o1", True, True),
+    *[("indexing", k, True, True) for k in ("/migrations/pdf_page_limit_audit", "/migrations/pdf_page_limit_audit_cursor",
+                                            "/migrations/pdf_page_limit_audit_reruns")],      # the PDF page limit audit (platform_0012)
+    ("kv", "/migrations/pdf_page_limit_audit", False, False), ("query", "/migrations/pdf_page_limit_audit", True, False),
     *[("indexing", k, False, False) for k in ("/services/connectors/c1/config", "/services/connectors/c1/configx/metadataSchemas",
                                               "/services/oauth/jira", "/services/toolsets/i1/u1", "/services/mcp/credentials/i1/u1",
                                               "/services/api-toolsets/credentials/i1/u1", "/services/webSearch", "/services/smtp")],
