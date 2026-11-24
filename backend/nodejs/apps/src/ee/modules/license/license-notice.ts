@@ -3,6 +3,7 @@ import {
   type LicenseStatusView,
   type LicenseStore,
 } from './license.service';
+import { PERMISSION_SYNC_FEATURE } from './license-policy';
 
 /**
  * Written by the Python connectors (`licence_lift.publish_connector_states`): every company-wide
@@ -133,7 +134,13 @@ export async function licenseNotice(
 ): Promise<LicenseNotice> {
   const view = await licenseStatus(store, now);
   const grace = upgradeGraceNotice(view, now);
-  const graceEndsAt = grace?.endsAt ?? null;
+  // A key that turns permission sync on and starts before the grace ends takes over with no gap: nothing will be limited.
+  const keyTakesOver =
+    grace?.key === 'startsLater' &&
+    grace.keyDate !== null &&
+    Date.parse(grace.keyDate) <= Date.parse(grace.endsAt) &&
+    (view.upcoming?.features.includes(PERMISSION_SYNC_FEATURE) ?? false);
+  const graceEndsAt = keyTakesOver ? null : (grace?.endsAt ?? null);
   const permissionSync = view.permissionSync?.allowed ?? true;
 
   const states = (await storedConnectors(store))
