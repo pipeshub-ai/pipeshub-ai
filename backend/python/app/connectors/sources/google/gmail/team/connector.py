@@ -1552,7 +1552,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     raise
 
             self._listed_aliases = listed_aliases
-            self._users_listing_complete = listing_complete and not row_failed
+            self._users_listing_complete = listing_complete and not row_failed and bool(all_users)
 
             if not all_users:
                 self.logger.warning("No users found in Google Workspace")

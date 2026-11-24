@@ -1162,7 +1162,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 await self._user_status.forget_fingerprint()
             self._listing_cut = not listing_complete
             self._listed_aliases = listed_aliases
-            self._users_listing_complete = listing_complete and not row_failed
+            self._users_listing_complete = listing_complete and not row_failed and bool(all_users)
             if self._listing_cut:
                 self.logger.warning(
                     "The user listing may be cut (an empty page before its end); no account's status is changed on this run"

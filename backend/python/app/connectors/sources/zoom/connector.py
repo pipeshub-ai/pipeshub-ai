@@ -599,7 +599,7 @@ class ZoomConnector(BaseConnector):
             )
             next_page_token = resp.data.get("next_page_token")  # type: ignore[union-attr]
             if not next_page_token:
-                self._users_listing_complete = True
+                self._users_listing_complete = bool(all_users)
                 break
         return all_users
 

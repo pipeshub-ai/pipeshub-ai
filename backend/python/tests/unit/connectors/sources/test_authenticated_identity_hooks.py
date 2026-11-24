@@ -451,7 +451,7 @@ class TestZoomSyncOrder:
     async def test_a_listing_read_to_its_last_page_is_complete(self) -> None:
         pages = [
             MagicMock(success=True, data={"users": [], "next_page_token": "t"}),
-            MagicMock(success=True, data={"users": [], "next_page_token": ""}),
+            MagicMock(success=True, data={"users": [{"id": "u1", "email": "a@corp.com"}], "next_page_token": ""}),
         ]
         conn = _connector(ZoomConnector, _users_listing_complete=False)
         conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(users=AsyncMock(side_effect=pages)))
@@ -459,6 +459,15 @@ class TestZoomSyncOrder:
         await ZoomConnector._list_users(conn)
 
         assert conn._users_listing_complete is True
+
+    async def test_an_empty_listing_is_incomplete(self) -> None:
+        empty = MagicMock(success=True, data={"users": [], "next_page_token": ""})
+        conn = _connector(ZoomConnector, _users_listing_complete=False)
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(users=AsyncMock(return_value=empty)))
+
+        await ZoomConnector._list_users(conn)
+
+        assert conn._users_listing_complete is False
 
     async def test_a_listing_that_raises_is_an_incomplete_listing(self) -> None:
         conn = _connector(ZoomConnector, _users_listing_complete=True)
@@ -628,6 +637,15 @@ class TestGoogleWorkspaceListing:
         )
 
         await GoogleGmailTeamConnector._sync_users(conn)
+
+        assert conn._users_listing_complete is False
+
+    @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
+    async def test_an_empty_listing_is_incomplete(self, connector_cls: type) -> None:
+        conn = _directory_conn(connector_cls, [{"users": []}])
+        conn._listing_cut = False
+
+        await connector_cls._sync_users(conn)
 
         assert conn._users_listing_complete is False
 
