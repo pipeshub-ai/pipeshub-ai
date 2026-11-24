@@ -32,6 +32,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # ty
 from helper.authenticated_identity import _linked_user_keys  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import async_poll_until  # type: ignore[import-not-found]
+from helper.oauth_token_helper import delete_backend_kv_key  # type: ignore[import-not-found]
 from helper.record_access import wait_for_record_access  # type: ignore[import-not-found]
 from helper.second_user import SecondUser, second_user  # noqa: F401 - fixture
 from helper.shadow_access_e2e import (  # type: ignore[import-not-found]
@@ -166,7 +167,7 @@ class TestGmailWorkspaceShadowLink:
         assert owner and admin, "the owner and the admin are users of the graph"
         # As on the first sync after an upgrade: earlier runs left the owner in the marker, which
         # would remove the link without the listing being read for them
-        await config_service.set_config(LISTED_AUTHENTICATORS_KEY.format(connector_id=cid), [])
+        await delete_backend_kv_key(LISTED_AUTHENTICATORS_KEY.format(connector_id=cid))
         # Written as a sync that did not check the listing wrote it
         await graph_provider.upsert_authenticated_as(
             owner.get("_key") or owner.get("id"), admin.get("_key") or admin.get("id"), cid,
@@ -198,7 +199,7 @@ class TestGmailWorkspaceShadowLink:
         await _set_authenticator(graph_provider, cid, owner_id)
         admin_ids = await _admin_mailbox_ids(sim, env, graph_provider, cid)
         # Earlier runs left the owner in the marker; without it only the listing itself can keep them unlinked
-        await config_service.set_config(LISTED_AUTHENTICATORS_KEY.format(connector_id=cid), [])
+        await delete_backend_kv_key(LISTED_AUTHENTICATORS_KEY.format(connector_id=cid))
         sim.ops({"op": "suspend_user", "user": "owner"})
         try:
             await sync_and_wait(pipeshub_client, graph_provider, cid, timeout=_SYNC_TIMEOUT_SEC)
