@@ -715,6 +715,14 @@ def test_lint_takes_an_index_a_later_revision_lists_online_as_built_ahead(tmp_pa
     ("a DO nested in a DO body", 'def upgrade():\n    op.execute("DO $o$ BEGIN DO $$ BEGIN DROP INDEX graph.x; END $$; END $o$")\n', True),
     ("a function body created in a DO body", 'def upgrade():\n    op.execute("DO $o$ BEGIN CREATE FUNCTION f() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$; END $o$")\n', True),
     ("a DO with a quoted body", 'def upgrade():\n    op.execute("DO \'BEGIN DROP INDEX graph.x; END\'")\n', True),
+    ("a procedure body the upgrade calls", 'def upgrade():\n    op.execute("CREATE PROCEDURE pg_temp.p() LANGUAGE plpgsql AS $$ BEGIN DROP INDEX graph.x; END $$; '
+                                           'CALL pg_temp.p();")\n', True),
+    ("a function body that runs EXECUTE", 'def upgrade():\n    op.execute("CREATE OR REPLACE FUNCTION pg_temp.f() RETURNS void LANGUAGE plpgsql AS $f$ BEGIN '
+                                          'EXECUTE \'SELECT 1\'; END $f$")\n', True),
+    ("a function body in a quoted string", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS \'SELECT 1\'")\n', True),
+    ("a function body in BEGIN ATOMIC", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END")\n', True),
+    ("a function body that drops nothing", 'def upgrade():\n    op.execute("CREATE OR REPLACE FUNCTION kg.f(p jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ '
+                                           'SELECT p || \'{}\'::jsonb $$")\n', False),
     ("a DO body that drops nothing", 'def upgrade():\n    op.execute("DO $$ BEGIN PERFORM 1; END $$")\n', False),
     ("DROP INDEX only in a dollar-quoted string", 'def upgrade():\n    op.execute("SELECT $$DROP INDEX graph.x$$")\n', False),
     ("DROP INDEX only in a tagged dollar-quoted string", 'def upgrade():\n    op.execute("SELECT $q$DROP INDEX graph.x$q$")\n', False),

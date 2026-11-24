@@ -306,8 +306,13 @@ _DO_BODY = re.compile(r"\s*DO\b.*?\$([A-Za-z_]*)\$(.*)\$\1\$\s*$", re.S | re.I)
 def _do_statements(stmt: str) -> list[str]:
     """The statements of a DO block's body, control words (IF ... THEN, PERFORM, BEGIN) removed."""
     m = _DO_BODY.match(stmt)
+    return _body_statements(m.group(2)) if m else []
+
+
+def _body_statements(body: str) -> list[str]:
+    """The statements of a DO or routine body, control words (IF ... THEN, PERFORM, BEGIN) removed."""
     out = []
-    for raw in statements(m.group(2)) if m else []:
+    for raw in statements(body):
         sub = raw
         while (c := _CTRL.match(sub)):
             sub = sub[c.end():]
@@ -316,13 +321,21 @@ def _do_statements(stmt: str) -> list[str]:
     return out
 
 
+_CODE = re.compile(r"(?:DO|CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE))\b", re.I)    # statements whose quoted body PostgreSQL runs
+_FIRST_BODY = re.compile(r"\$([A-Za-z_]*)\$(.*?)\$\1\$", re.S)
+
+
 def _drops_index(sql: str) -> bool:
-    """A DROP INDEX in any statement of ``sql`` or of a DO body in it, read as ``statements()`` reads SQL (comments are spaces) and outside
-    quoted and dollar-quoted strings (data). Fails closed on what it does not read: any EXECUTE in a DO body (its SQL is a string, as lint_file
-    takes it), a DO whose body is not dollar-quoted, and a dollar-quoted body inside a DO body (a nested DO, a function body: one level is read)."""
+    """A DROP INDEX in any statement of ``sql`` or of the body of a DO, function or procedure in it (code, read as one level: a routine the
+    upgrade creates may be called by it), read as ``statements()`` reads SQL (comments are spaces) and outside quoted and dollar-quoted strings
+    of other statements (data). Fails closed on what it does not read: any EXECUTE in a body (its SQL is a string, as lint_file takes it), a
+    body that is not dollar-quoted (a quoted string, BEGIN ATOMIC), and a dollar-quoted body inside a body (a nested DO or routine)."""
     stmts = statements(sql)
-    bodies = [d for q in stmts for d in _do_statements(q)]
-    if any(re.match(r"DO\b", q, re.I) and not _DO_BODY.match(q) for q in stmts) or any(_DOLLAR.search(_strip_literals(d)) for d in bodies):
+    found = [_FIRST_BODY.search(q) for q in stmts if _CODE.match(q)]
+    if None in found:
+        return True
+    bodies = [d for m in found for d in _body_statements(m.group(2))]
+    if any(_DOLLAR.search(_strip_literals(d)) for d in bodies):
         return True
     return any(re.search(r"\bEXECUTE\b(?!\s+ON\b)", _strip_literals(_strip_bodies(d)), re.I) for d in bodies) or any(
         re.search(r"\bDROP\s+INDEX\b", _strip_literals(_strip_bodies(q)), re.I) for q in stmts + bodies)
