@@ -6526,6 +6526,7 @@
       "affected": "Bude omezen",
       "affectedTooltip": "Tento konektor přebírá přístupová práva ze svého zdroje, k čemuž je potřeba licenční klíč. Bez něj od {{date}} uvidí jeho obsah jen osoba, která ho vytvořila. Nic se nesmaže.",
       "affectedTooltipKeyLater": "Váš licenční klíč začíná platit {{start}}, až po konci ochranné lhůty po upgradu {{date}}. Mezi těmito daty uvidí obsah tohoto konektoru jen osoba, která ho vytvořila. Nic se nesmaže.",
+      "affectedTooltipKeyWithoutSync": "Váš licenční klíč začíná platit {{start}}, ale nezahrnuje přebírání přístupových práv ze zdrojů. Od {{date}}, kdy končí ochranná lhůta po upgradu, uvidí obsah tohoto konektoru jen osoba, která ho vytvořila. Nic se nesmaže.",
       "limited": "Omezený",
       "limitedTooltip": "Žádný licenční klíč nepovoluje synchronizaci oprávnění, takže obsah tohoto konektoru vidí jen osoba, která ho vytvořila. Přístup obnovíte instalací klíče. Nic nebylo smazáno.",
       "restoring": "Obnovuje se přístup",

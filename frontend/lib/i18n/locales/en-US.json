@@ -6362,6 +6362,7 @@
       "affected": "Will be limited",
       "affectedTooltip": "This connector copies access from its source, which needs a license key. Without one, from {{date}} only the person who created it can see its content. Nothing is deleted.",
       "affectedTooltipKeyLater": "Your license key starts on {{start}}, after the upgrade grace ends on {{date}}. In between, only the person who created this connector can see its content. Nothing is deleted.",
+      "affectedTooltipKeyWithoutSync": "Your license key starts on {{start}}, but it does not include copying access from sources. From {{date}}, when the upgrade grace ends, only the person who created this connector can see its content. Nothing is deleted.",
       "limited": "Limited",
       "limitedTooltip": "No license key allows permission sync, so only the person who created this connector can see its content. Install a key to restore access. Nothing was deleted.",
       "restoring": "Restoring access",
