@@ -74,6 +74,10 @@ async def test_a_former_authenticators_link_to_another_connector_stays(world: ca
     await cases.a_former_authenticators_link_to_another_connector_stays(world)
 
 
+async def test_an_authenticator_who_does_not_exist_leaves_no_link(world: cases.LinkWorld) -> None:
+    await cases.an_authenticator_who_does_not_exist_leaves_no_link(world)
+
+
 async def test_a_failed_app_read_raises_only_when_asked_to(world: cases.LinkWorld) -> None:
     await cases.a_failed_app_read_raises_only_when_asked_to(world, partial(_broken_app_read, world))
 

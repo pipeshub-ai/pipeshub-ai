@@ -26,8 +26,9 @@ class _Config:
     async def get_config(self, key: str, **_: object) -> Any:  # noqa: ANN401
         return self.values.get(key)
 
-    async def set_config(self, key: str, value: Any) -> None:  # noqa: ANN401
+    async def set_config(self, key: str, value: Any) -> bool:  # noqa: ANN401
         self.values[key] = value
+        return True
 
 
 async def _ensure_arango_collections(provider) -> None:

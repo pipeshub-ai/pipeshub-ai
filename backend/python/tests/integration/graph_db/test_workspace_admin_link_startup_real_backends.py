@@ -102,10 +102,16 @@ async def _check(p, seed, left) -> None:
     await seed(p, t)
     assert await left(p, t) == set(WORLD)
 
-    service = WorkspaceAdminLinkMigrationService(p, _Config(), logging.getLogger("wsleak-it"))
+    config = _Config()
+    service = WorkspaceAdminLinkMigrationService(p, config, logging.getLogger("wsleak-it"))
     result = await service.migrate()
 
     assert result["success"] is True and result["removed"] >= len(REMOVED)
+    # the removal sweeps the whole store: only this world's markers are looked at
+    markers = {k: config.values.get(f"/services/connectors/{k}-{t}/listedAuthenticators") for k in WORLD}
+    assert markers == {k: [f"creator-{t}"] if k in REMOVED - {"selfl"} else None for k in WORLD}, (
+        "each creator listed stays recorded; a link to oneself shows no listing"
+    )
     assert await left(p, t) == set(WORLD) - REMOVED, (
         "a listed creator's link of the three types and a self-link go; an unlisted creator, an external collaborator, "
         "a personal Dropbox and any other connector keep theirs"
@@ -114,6 +120,7 @@ async def _check(p, seed, left) -> None:
     await p.upsert_authenticated_as(f"creator-{t}", f"admin-{t}", f"gm-{t}", f"org-{t}")
     again = await service.migrate()
     assert again["removed"] >= 1 and "gm" not in await left(p, t)
+    assert config.values[f"/services/connectors/gm-{t}/listedAuthenticators"] == [f"creator-{t}"], "recorded once"
 
 
 async def test_arango_the_startup_removes_the_wrong_links_only(arango_provider) -> None:  # noqa: F811

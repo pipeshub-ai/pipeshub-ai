@@ -121,13 +121,41 @@ class TestLinkAuthenticatorToSourceUser:
         tx.upsert_authenticated_as.assert_not_called()
         tx.get_user_by_email.assert_not_called()
 
-    async def test_unknown_creator_does_nothing(self) -> None:
-        tx = _tx_store()
+    @pytest.mark.parametrize("presence", [P, A, U])
+    @pytest.mark.parametrize("existed", [True, False])
+    async def test_an_authenticator_who_does_not_exist_leaves_no_link(self, presence: Presence, existed: bool) -> None:
+        # The read succeeded: a link left for the connector is someone else's.
+        tx = _tx_store(source_user=SOURCE)
         tx.get_user_by_user_id = AsyncMock(return_value=None)
+        tx.remove_authenticated_as = AsyncMock(return_value=existed)
+        proc = _processor(tx)
 
-        await _link(_processor(tx))
+        result = await _link(proc, presence=presence)
 
+        tx.remove_authenticated_as.assert_awaited_once_with(CONNECTOR)
         tx.upsert_authenticated_as.assert_not_called()
+        proc.config_service.set_config.assert_not_called()
+        assert result.outcome is (AuthenticatorLink.UNLINKED if existed else AuthenticatorLink.UNCHANGED)
+
+    @pytest.mark.parametrize("failing", ["get_app_by_id", "get_user_by_user_id"])
+    async def test_an_authenticator_that_cannot_be_read_changes_nothing(self, failing: str) -> None:
+        tx = _tx_store(source_user=SOURCE)
+        setattr(tx, failing, AsyncMock(side_effect=RuntimeError("graph down")))
+
+        with pytest.raises(RuntimeError):
+            await _link(_processor(tx))
+
+        tx.remove_authenticated_as.assert_not_called()
+        tx.upsert_authenticated_as.assert_not_called()
+
+    async def test_a_connector_that_names_nobody_changes_nothing(self) -> None:
+        tx = _tx_store(source_user=SOURCE)
+
+        result = await _processor(tx).link_authenticator_to_source_user(
+            CONNECTOR, None, "darshan@pipeshub.com", "acct-123", Connectors.JIRA, presence=A,
+        )
+
+        assert result.outcome is AuthenticatorLink.UNCHANGED
         tx.remove_authenticated_as.assert_not_called()
 
     @pytest.mark.parametrize(("email", "source_id"), [(None, "acct-123"), ("darshan@pipeshub.com", None)])
@@ -447,6 +475,7 @@ class TestCacheInvalidation:
         notify = self._patch_notify(monkeypatch)
         tx = _tx_store()
         tx.get_user_by_user_id = AsyncMock(return_value=None)
+        tx.remove_authenticated_as = AsyncMock(return_value=False)
 
         await _link(_processor(tx))
 

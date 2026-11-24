@@ -63,6 +63,7 @@ on:
       - 'backend/python/app/modules/indexing/rate_limit_deferral.py'
       - 'backend/python/app/scripts/record_diagnostics_contract.py'
       - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
+      - 'backend/python/app/connectors/core/base/connector/listed_authenticators.py'
       # publish_with_commit: record events written by the graph transaction (test_record_events_with_commit.py)
       - 'backend/python/app/connectors/core/base/data_store/graph_data_store.py'
       - 'backend/python/app/services/messaging/kafka/handlers/entity.py'
@@ -91,6 +92,7 @@ on:
       - 'backend/python/app/connectors/sources/atlassian/core/jira_issue_security.py'
       - 'backend/python/app/connectors/sources/atlassian/jira_cloud/connector.py'
       - 'backend/python/app/connectors/core/base/data_processor/data_source_entities_processor.py'
+      - 'backend/python/app/connectors/core/base/connector/listed_authenticators.py'
       - '.github/workflows/pg-runtime.yml'
   workflow_dispatch:
 

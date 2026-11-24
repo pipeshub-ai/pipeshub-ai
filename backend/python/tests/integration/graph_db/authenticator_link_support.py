@@ -17,9 +17,11 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.connectors.core.base.connector.listed_authenticators import (
+    LISTED_AUTHENTICATORS_KEY,
+)
 from app.connectors.core.base.connector.source_user_listing import SourceUserListing
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    LISTED_AUTHENTICATORS_KEY,
     AuthenticatorLink,
     DataSourceEntitiesProcessor,
 )
@@ -331,6 +333,15 @@ async def a_former_authenticators_link_goes_on_a_cut_listing(w: LinkWorld) -> No
     assert await linked_to(w) == set(), "the creator's credentials no longer run the connector"
     assert await link(w, listing(w, cut=True), authenticator="peer") is AuthenticatorLink.UNCHANGED
     assert w.marker == [], "nobody was listed"
+
+
+async def an_authenticator_who_does_not_exist_leaves_no_link(w: LinkWorld) -> None:
+    assert await link(w) is AuthenticatorLink.LINKED
+    assert await w.graph.update_node(w.connector_id, APPS, {"authenticatedBy": f"uid-nobody-{w.run}"})
+
+    assert await link(w, listing(w, cut=True)) is AuthenticatorLink.UNLINKED
+    assert await linked_to(w) == set()
+    assert w.marker == []
 
 
 async def a_former_authenticators_link_to_another_connector_stays(w: LinkWorld) -> None:

@@ -14,12 +14,11 @@ from pydantic import BaseModel, Field
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    LISTED_AUTHENTICATORS_KEY,
     AuthenticatorLink,
     AuthenticatorLinkResult,
     DataSourceEntitiesProcessor,
-    listed_authenticator_keys,
 )
+from app.connectors.core.base.connector.listed_authenticators import read_listed_authenticators
 from app.connectors.core.base.connector.source_user_listing import Presence, SourceUserListing
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
@@ -874,9 +873,7 @@ class BaseConnector(ABC):
     async def _marker_holds(self, email: str) -> bool | None:
         """Whether the listed-authenticators marker holds this authenticator; None when it cannot be checked."""
         try:
-            keys = listed_authenticator_keys(await self.config_service.get_config(
-                LISTED_AUTHENTICATORS_KEY.format(connector_id=self.connector_id), use_cache=False, raise_on_error=True,
-            ))
+            keys = await read_listed_authenticators(self.config_service, self.connector_id)
             if not keys:
                 return False
             user = await self.data_entities_processor.get_app_authenticator_user(self.connector_id, self.created_by)

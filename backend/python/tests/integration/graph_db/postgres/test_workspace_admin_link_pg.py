@@ -29,8 +29,9 @@ class _Config:
     async def get_config(self, key: str, **_: object) -> Any:  # noqa: ANN401
         return self.values.get(key)
 
-    async def set_config(self, key: str, value: Any) -> None:  # noqa: ANN401
+    async def set_config(self, key: str, value: Any) -> bool:  # noqa: ANN401
         self.values[key] = value
+        return True
 
 
 async def _seed(p, org_ctx, org: str, types: dict[str, str]) -> None:
@@ -98,6 +99,10 @@ async def test_pg_migration_removes_only_the_three_types_in_each_org_and_access_
     with system("wsleak-it"):
         result = await WorkspaceAdminLinkMigrationService(pg_provider, config, logging.getLogger("wsleak-it")).migrate()
     assert result == {"success": True, "removed": 6}, result
+    # org b reuses org a's connector ids, so the keys below are the ids either org lost a link on
+    assert config.values == {
+        f"/services/connectors/{k}/listedAuthenticators": ["creator"] for k in ("gm", "dr", "db", "dbp", "jira")
+    }
     assert await _links(pg_provider, org_ctx, a) == {"dbp", "jira"}
     assert await _links(pg_provider, org_ctx, b) == {"gm", "dr"}, "org b keeps the links of its own non-admin types, whatever ids org a uses"
     assert await _allowed(pg_provider, org_ctx, a, adm + own) == set(own) | {"adm-dbp", "adm-jira"}
@@ -294,6 +299,9 @@ async def test_pg_an_unlisted_creator_and_a_relation_of_an_external_collaborator
         mine = sorted(r["connectorId"] for r in removed if r["org"] == org)
         assert failed == [] or org not in failed
         assert mine == ["listed", "selfl"]
+        assert {r["connectorId"]: (r["user"], r["selfLink"]) for r in removed if r["org"] == org} == {
+            "listed": ("c", False), "selfl": ("c", True),
+        }
         assert await _small_links(pg_provider, org_ctx, org) == ["external", "unlisted"]
     finally:
         with org_ctx(org):

@@ -11185,12 +11185,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u)-[rel:USER_APP_RELATION]->(a)
             WHERE coalesce(rel.sourceUserId, '') <> '' AND coalesce(rel.isExternalUser, false) = false
           })
-        WITH r, r.connectorId AS connectorId, coalesce(a.orgId, r.orgId) AS org
+        WITH r, r.connectorId AS connectorId, coalesce(a.orgId, r.orgId) AS org, u.id AS userKey, u = s AS selfLink
         DELETE r
-        RETURN connectorId, org
+        RETURN connectorId, org, userKey, selfLink
         """
         rows = await self.client.execute_query(query, parameters={"app_types": list(app_types)})
-        return [{"connectorId": row["connectorId"], "org": row["org"]} for row in rows or []], []
+        return [
+            {"connectorId": row["connectorId"], "org": row["org"], "user": row["userKey"], "selfLink": row["selfLink"]}
+            for row in rows or []
+        ], []
 
     async def batch_upsert_user_groups(
         self,
