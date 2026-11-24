@@ -127,7 +127,7 @@ Read [docs/logging.md](./docs/logging.md) before you add a log line or handle an
 - **Bind ids once where work enters** (a request, a broker message, a tick). `loop.run_in_executor`, `ThreadPoolExecutor.submit` and `threading.Thread` do not copy the context; run the work in `contextvars.copy_context().run`.
 - **An outage is not an absence.** A store, graph or config read that failed raises (`GraphQueryError`, `get_config(..., raise_on_error=True)`, `PermissionVerificationUnavailableError`) and the route answers an error. It is never read as "not found", "no access", "not configured" or "nothing to delete".
 - **A Python 4xx `detail` is shown to the user.** Node passes a 4xx's words through and replaces a 5xx with its own (`libs/errors/backend-error.ts`). So a 4xx `detail` holds no exception text, raw path value or email.
-- **The KV config stores have no compare-and-set.** `create_config_if_absent` is the only conditional write, so a read-modify-write can lose a concurrent write.
+- **Python's KV config has no compare-and-set.** `create_config_if_absent` is its only conditional write, so a read-modify-write there can lose a concurrent write. Node has `KeyValueStoreService.compareAndSet`; use it to rewrite a stored list or object.
 
 ## Conventions
 
