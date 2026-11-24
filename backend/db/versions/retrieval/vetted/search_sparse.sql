@@ -26,8 +26,9 @@ BEGIN
   IF p_leg NOT BETWEEN 1 AND 1000 THEN RAISE EXCEPTION 'search_sparse: p_leg must be 1..1000' USING ERRCODE = '22023'; END IF;
   IF v_org IS NULL THEN RETURN; END IF;       -- no org (or someone else's): no rows, the same answer
   DECLARE v_space smallint; v_n bigint; v_kept boolean; v_tomb boolean; v_big boolean; v_tot bigint; v_k int; v_t bigint[]; v_f double precision[];
-          v_ub double precision[]; v_df bigint[]; v_nt int; v_j int; v_i int; v_pj double precision; v_csk bigint[];
-          v_csc double precision[]; v_nc int; v_lo int; v_hi int; v_w int; v_sks bigint[]; v_scs double precision[]; v_theta double precision;
+          v_ub double precision[]; v_df bigint[]; v_nt int; v_j int; v_i int; v_pj double precision; v_sk bigint; v_sc double precision;
+          v_bsk bigint[]; v_bsc double precision[]; v_nc int; v_w int; v_cut boolean; v_last double precision; v_sks bigint[];
+          v_scs double precision[]; v_theta double precision;
   BEGIN
     IF cardinality(p_terms) < 1 OR cardinality(p_weights) <> cardinality(p_terms) THEN
       RAISE EXCEPTION 'search_sparse: invalid arguments' USING ERRCODE = '22023';
@@ -113,51 +114,61 @@ BEGIN
     v_j := CASE WHEN v_big THEN least(v_nt - 1, 8, (SELECT count(*) FROM unnest(v_ub, v_df) AS u(ub, c) WHERE u.ub IS NOT NULL AND u.c > v_n * 0.05)) ELSE 0 END;
     LOOP
       v_pj := coalesce((SELECT sum(u) FROM unnest(v_ub[1:v_j]) u), 0);
-      -- the candidates by partial sum, best first: the best p_leg * 128 (a top-N sort, the sums unstored), then, if they do not
-      -- decide, all of them
+      -- the candidates by partial sum, best first, read as rows (the sort spills to disk, nothing is held here but a window): the best
+      -- p_leg * 128 (a top-N sort), then, if they do not decide, all of them. A last row with no point flushes the window: a FOR
+      -- query runs as a cursor, which never runs in parallel, so the arms of its UNION ALL come in order
       FOREACH v_k IN ARRAY ARRAY[p_leg * 128, NULL] LOOP
-        SELECT coalesce(array_agg(a.sk ORDER BY a.sc DESC, a.sk), '{}'), coalesce(array_agg(a.sc ORDER BY a.sc DESC, a.sk), '{}')
-          INTO v_csk, v_csc
-          FROM (SELECT x.point_sk AS sk, sum(e.f * x.w) AS sc
-                  FROM unnest(v_t[v_j + 1:v_nt], v_f[v_j + 1:v_nt]) AS e(term, f) CROSS JOIN LATERAL (
-                    SELECT p.point_sk, p.w FROM retrieval.postings p
-                     WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = e.term) x
-                 GROUP BY x.point_sk ORDER BY sc DESC, sk LIMIT v_k) a;
-        v_nc := cardinality(v_csk); v_sks := '{}'; v_scs := '{}'; v_theta := NULL; v_lo := 1; v_w := p_leg * 2;
-        WHILE v_lo <= v_nc LOOP
-          v_hi := least(v_lo + v_w - 1, v_nc);
-          -- the window's points that pass (the point exists, carries no tombstone whatever the filter, passes the arms), scored on
-          -- the left-out terms too, merged into the answer
-          SELECT coalesce(array_agg(z.sk ORDER BY z.sc DESC, z.sk), '{}'), coalesce(array_agg(z.sc ORDER BY z.sc DESC, z.sk), '{}')
-            INTO v_sks, v_scs
-            FROM (SELECT y.sk, y.sc FROM (
-                    SELECT c.sk, c.sc + coalesce((SELECT sum(n.f * x.w) FROM unnest(v_t[1:v_j], v_f[1:v_j]) AS n(term, f)
-                                                    CROSS JOIN LATERAL (SELECT q.w FROM retrieval.postings q
-                                                      WHERE q.org_id = v_org AND q.collection_id = p_collection AND q.space_id = v_space
-                                                        AND q.term = n.term AND q.point_sk = c.sk LIMIT 1) x), 0) AS sc
-                      FROM unnest(v_csk[v_lo:v_hi], v_csc[v_lo:v_hi]) AS c(sk, sc) JOIN LATERAL (
-                        SELECT 1 AS ok FROM retrieval.points p
-                         WHERE p.org_id = v_org AND p.point_sk = c.sk
-                           AND (p_must_vrids IS NULL OR p.group_key = ANY(p_must_vrids))
-                           AND ((p_apps IS NULL AND p_groups IS NULL AND p_roots IS NULL AND p_direct IS NULL)
-                                OR p.group_key = ANY(p_direct)
-                                OR EXISTS (SELECT 1 FROM retrieval.group_members m
-                                            WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.group_key = p.group_key
-                                              AND ((m.kind = 1 AND m.member_id = ANY(p_apps)) OR (m.kind = 2 AND m.member_id = ANY(p_groups))
-                                                   OR (m.kind = 3 AND m.member_id = ANY(p_roots)))))
-                           AND NOT (v_tomb AND EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = v_org AND x.point_sk = p.point_sk))
-                         LIMIT 1) m ON true
-                    UNION ALL SELECT u.sk, u.sc FROM unnest(v_sks, v_scs) AS u(sk, sc)) y
-                  ORDER BY y.sc DESC, y.sk LIMIT p_leg) z;
-          IF cardinality(v_sks) >= p_leg THEN v_theta := v_scs[p_leg]; END IF;
-          v_lo := v_hi + 1; v_w := v_w * 2;
-          -- a candidate scores at most its partial sum plus v_pj (a margin of 1e-9 covers the rounding of the sums)
-          EXIT WHEN v_theta IS NOT NULL AND v_lo <= v_nc
-                AND v_csc[v_lo] + v_pj + 1e-9 * (abs(v_csc[v_lo]) + abs(v_pj) + abs(v_theta)) < v_theta;
+        v_sks := '{}'; v_scs := '{}'; v_theta := NULL; v_bsk := '{}'; v_bsc := '{}'; v_w := p_leg * 2; v_nc := 0; v_cut := false; v_last := NULL;
+        FOR v_sk, v_sc IN
+          SELECT a.sk, a.sc FROM (
+            SELECT x.point_sk AS sk, sum(e.f * x.w) AS sc
+              FROM unnest(v_t[v_j + 1:v_nt], v_f[v_j + 1:v_nt]) AS e(term, f) CROSS JOIN LATERAL (
+                SELECT p.point_sk, p.w FROM retrieval.postings p
+                 WHERE p.org_id = v_org AND p.collection_id = p_collection AND p.space_id = v_space AND p.term = e.term) x
+             GROUP BY x.point_sk ORDER BY sc DESC, sk LIMIT v_k) a
+          UNION ALL SELECT NULL, NULL
+        LOOP
+          IF v_sk IS NOT NULL THEN
+            -- the rest score at most this partial sum plus v_pj (a margin of 1e-9 covers the rounding of the sums); with no term left
+            -- out the order is the answer's, so a full answer is final
+            IF v_theta IS NOT NULL AND (v_j = 0 OR v_sc + v_pj + 1e-9 * (abs(v_sc) + abs(v_pj) + abs(v_theta)) < v_theta) THEN
+              v_cut := true;
+            ELSE
+              v_bsk := v_bsk || v_sk; v_bsc := v_bsc || v_sc; v_nc := v_nc + 1; v_last := v_sc;
+            END IF;
+          END IF;
+          IF cardinality(v_bsk) > 0 AND (v_sk IS NULL OR v_cut OR cardinality(v_bsk) >= v_w) THEN
+            -- the window's points that pass (the point exists, carries no tombstone whatever the filter, passes the arms), scored on
+            -- the left-out terms too, merged into the answer
+            SELECT coalesce(array_agg(z.sk ORDER BY z.sc DESC, z.sk), '{}'), coalesce(array_agg(z.sc ORDER BY z.sc DESC, z.sk), '{}')
+              INTO v_sks, v_scs
+              FROM (SELECT y.sk, y.sc FROM (
+                      SELECT c.sk, c.sc + coalesce((SELECT sum(n.f * x.w) FROM unnest(v_t[1:v_j], v_f[1:v_j]) AS n(term, f)
+                                                      CROSS JOIN LATERAL (SELECT q.w FROM retrieval.postings q
+                                                        WHERE q.org_id = v_org AND q.collection_id = p_collection AND q.space_id = v_space
+                                                          AND q.term = n.term AND q.point_sk = c.sk LIMIT 1) x), 0) AS sc
+                        FROM unnest(v_bsk, v_bsc) AS c(sk, sc) JOIN LATERAL (
+                          SELECT 1 AS ok FROM retrieval.points p
+                           WHERE p.org_id = v_org AND p.point_sk = c.sk
+                             AND (p_must_vrids IS NULL OR p.group_key = ANY(p_must_vrids))
+                             AND ((p_apps IS NULL AND p_groups IS NULL AND p_roots IS NULL AND p_direct IS NULL)
+                                  OR p.group_key = ANY(p_direct)
+                                  OR EXISTS (SELECT 1 FROM retrieval.group_members m
+                                              WHERE m.org_id = v_org AND m.collection_id = p_collection AND m.group_key = p.group_key
+                                                AND ((m.kind = 1 AND m.member_id = ANY(p_apps)) OR (m.kind = 2 AND m.member_id = ANY(p_groups))
+                                                     OR (m.kind = 3 AND m.member_id = ANY(p_roots)))))
+                             AND NOT (v_tomb AND EXISTS (SELECT 1 FROM retrieval.point_tombstones x WHERE x.org_id = v_org AND x.point_sk = p.point_sk))
+                           LIMIT 1) m ON true
+                      UNION ALL SELECT u.sk, u.sc FROM unnest(v_sks, v_scs) AS u(sk, sc)) y
+                    ORDER BY y.sc DESC, y.sk LIMIT p_leg) z;
+            IF cardinality(v_sks) >= p_leg THEN v_theta := v_scs[p_leg]; END IF;
+            v_bsk := '{}'; v_bsc := '{}'; v_w := v_w * 2;
+          END IF;
+          EXIT WHEN v_cut;
         END LOOP;
-        -- decided: the pass held every candidate, or those it did not check (or hold) cannot reach the answer
-        EXIT WHEN v_k IS NULL OR v_nc < v_k OR (v_theta IS NOT NULL
-               AND v_csc[least(v_lo, v_nc)] + v_pj + 1e-9 * (abs(v_csc[least(v_lo, v_nc)]) + abs(v_pj) + abs(v_theta)) < v_theta);
+        -- decided: the rest could not reach the answer, the pass held every candidate, or those it did not hold cannot reach it
+        EXIT WHEN v_cut OR v_k IS NULL OR v_nc < v_k OR (v_theta IS NOT NULL
+               AND (v_j = 0 OR v_last + v_pj + 1e-9 * (abs(v_last) + abs(v_pj) + abs(v_theta)) < v_theta));
       END LOOP;
       -- exact when no term is left out, or when a point that has none of the candidates' terms (it scores at most v_pj) cannot enter
       IF v_j = 0 OR (v_theta IS NOT NULL AND v_pj + 1e-9 * (abs(v_pj) + abs(v_theta)) < v_theta) THEN

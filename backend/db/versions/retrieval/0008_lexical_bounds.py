@@ -10,9 +10,10 @@ revision = "retrieval_0008"
 down_revision = "retrieval_0007"
 branch_labels = None
 depends_on = None
-older_code_compatible = ("adds nullable columns and a table only the new fold reads, replaces the body of the postings trigger function and of the lexical search with the same "
-                         "signatures and answers; older writers fire the same triggers, older fold and recount leave the new columns NULL, "
-                         "which the search reads as not known and answers by the exhaustive sum")
+older_code_compatible = ("adds nullable columns, a table and a trigger, and replaces the body of the postings trigger function and of the "
+                         "lexical search with the same signatures and answers; older writers fire the same triggers; a frequency row that an "
+                         "older fold or recount writes loses its bound (the trigger), so the search sums that term in full, as before, until "
+                         "the fold worker fills it again")
 
 SIG = "retrieval.search_sparse(smallint, bigint[], real[], text[], text[], text[], text[], text[], int)"
 
@@ -38,6 +39,10 @@ def downgrade():
     assert len(body) == len(exemption) == 1, (len(body), len(exemption))
     cur.execute(body[0].replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1))
     cur.execute(exemption[0])
+    op.execute("DROP TRIGGER lexical_df_bound ON retrieval.lexical_df")
+    op.execute("DROP TRIGGER lexical_term_delta_bound ON retrieval.lexical_term_delta")
+    op.execute("DELETE FROM kernel.trigger_exemptions WHERE proc::oid IN (SELECT oid FROM pg_proc WHERE proname IN ('lexical_df_bound', 'lexical_term_delta_bound'))")
+    op.execute("DROP FUNCTION retrieval.lexical_df_bound(), retrieval.lexical_term_delta_bound()")
     op.execute("DELETE FROM kernel.rls_registry WHERE rel::text = 'retrieval.lexical_bound_pending'")
     op.execute("DROP TABLE retrieval.lexical_bound_pending")
     op.execute("ALTER TABLE retrieval.lexical_term_delta DROP COLUMN wmax")

@@ -7,8 +7,8 @@
                                                       asked for it (kg.analyze_requests; db/lib/kg_stats.py); needs PG_JOBS_URL
 
     python -m db.maintain fold [--watch [SECONDS]]    fold the point-count and term-frequency deltas of every org (collection_stats, lexical_df), one transaction
-                                                      per org, then fill the term bounds an upgrade left missing (lexical_bound_pending, a few
-                                                      hundred terms per transaction); needs PG_JOBS_URL. --watch repeats (default 30 s)
+                                                      per org, then fill the term bounds an upgrade left missing (lexical_bound_pending, up to 200
+                                                      per transaction and 20,000 per org per pass); needs PG_JOBS_URL. --watch repeats (default 30 s)
     python -m db.maintain recount [<org>]             recompute the point counts and term frequencies from the live rows (every org, or one); needs PG_JOBS_URL
     python -m db.maintain group-gc                    delete the membership of groups that have no point (every org); needs PG_JOBS_URL
     python -m db.maintain build-indexes               the vector indexes of every points leaf for every embedding space, sized to the leaf
