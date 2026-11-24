@@ -10,6 +10,7 @@
 # from ./postgres and backend/db/Dockerfile) and, by hand, the nine PG_*_PASSWORD values in .env (see env.template). The postgres, pgbouncer and pipeshub-migrate services start without
 # their profiles. Start order: postgres healthy, pgbouncer healthy, pipeshub-migrate exits 0, then the placement and fold workers
 # and the app; if the migration fails the app never starts (see postgres/README.md).
+# The PostgreSQL metrics exporters keep their opt-in `postgres-metrics` profile here too; switching it on needs PG_MONITOR_PASSWORD in .env.
 services:
   # Removed from the project, not moved to a profile: `--profile "*"` would start a profiled service again.
   mongodb: !reset null

@@ -4,7 +4,7 @@
 # document store, graph, vectors, key-value store, broker and scheduler; postgres, pgbouncer, the migration job and the placement
 # and fold workers start without their profiles (with every profile on, and with none), and each worker does its job. The app is stood in for by a sleeping container of the postgres image (building
 # the application image is out of scope here); its dependencies and environment are the overlay's own. The optional helpers that are no
-# store (sandbox, web search and page reading) are left out of the run so that their images are not pulled.
+# store (sandbox, web search, page reading and the opt-in PostgreSQL metrics exporters) are left out of the run so that their images are not pulled.
 # Test-only environment: PROJECT_PREFIX names the compose project; EXTRA_COMPOSE_FILE adds one compose file. Both change nothing when
 # unset. Needs docker; runs on PostgreSQL 17 and 18 (PG_MAJORS to choose); PG_IMAGE_<major> names the built postgres images (default
 # pmcompose/postgres:<major>-pmc) and MIGRATE_IMAGE the migrate image (default: built here from backend/db/Dockerfile as pmcompose/migrate:pmc).
@@ -36,7 +36,7 @@ proj="${PROJECT_PREFIX:-pgimg}-only-$major-$$"
   echo "    healthcheck: {disable: true}"; echo "    ports: !reset []"; echo "    volumes: !reset []"; echo "    build: !reset null"
   echo "    networks: !override [pipeshub]"
   echo "    depends_on: {sandbox-image: !reset null, docker-socket-proxy: !reset null}"
-  for h in sandbox-image docker-socket-proxy web-readers-gateway searxng crawl4ai; do echo "  $h: !reset null"; done; } > "$work/stub-app.yml"
+  for h in sandbox-image docker-socket-proxy web-readers-gateway searxng crawl4ai postgres-exporter pgbouncer-exporter; do echo "  $h: !reset null"; done; } > "$work/stub-app.yml"
 
 services="$(dc config --services)"
 echo "PostgreSQL $major"
@@ -47,21 +47,23 @@ for s in postgres pgbouncer pipeshub-migrate pipeshub-placement pipeshub-fold pi
   check "$s renders with every profile on" "$(echo "$services" | grep -cx "$s")" 1
   check "$s renders with no profile on" "$(echo "$bare" | grep -cx "$s")" 1
 done
+check "the metrics exporters start only with their own profile" "$(echo "$bare" | grep -cE '^(postgres|pgbouncer)-exporter$' || true)" 0
 envs="$(dc config --format json | python3 -c 'import json,sys; e=json.load(sys.stdin)["services"]["pipeshub-ai"]["environment"]; print(" ".join(k+"="+str(e.get(k)) for k in ("DOC_STORE","DATA_STORE","VECTOR_DB_TYPE","KV_STORE_TYPE","MESSAGE_BROKER","REDIS_MODE","CRAWL_SCHEDULER")))')"
 check "the app selects PostgreSQL for every store" "$envs" \
   "DOC_STORE=postgres DATA_STORE=postgres VECTOR_DB_TYPE=pgvector KV_STORE_TYPE=postgres MESSAGE_BROKER=postgres REDIS_MODE=postgres CRAWL_SCHEDULER=postgres"
 
 if ! dc up -d --no-build > "$work/up.log" 2>&1; then echo "FAIL $major: compose up failed:"; cat "$work/up.log"; exit 1; fi
 check "the migration job exits 0" "$($DOCKER inspect -f '{{.State.ExitCode}}' "$proj-pipeshub-migrate-1")" 0
-sleep 5    # long enough for a worker that cannot connect to exit and be restarted
+# Bounded wait for each worker's banner (printed once it is connected and looping), not a fixed sleep.
+until_log() { for _ in $(seq 60); do [ "$(dc logs "$1" 2>&1 | grep -c "$2")" -ge 1 ] && break; sleep 2; done; dc logs "$1" 2>&1 | grep -c "$2"; }
+check "the placement worker is watching" "$(until_log pipeshub-placement 'placement worker running')" 1
+check "the fold worker is watching" "$(until_log pipeshub-fold 'fold worker running')" 1
 running="$($DOCKER ps --filter "label=com.docker.compose.project=$proj" --format '{{.Label "com.docker.compose.service"}}' | sort | tr '\n' ' ')"
 check "exactly the PostgreSQL stack runs" "$running" "pgbouncer pipeshub-ai pipeshub-fold pipeshub-placement postgres "
 check "no container of another store exists" "$($DOCKER ps -a --filter "label=com.docker.compose.project=$proj" --format '{{.Label "com.docker.compose.service"}}' | grep -cE "$stores" || true)" 0
 for w in placement fold; do
   check "the $w worker has not restarted" "$($DOCKER inspect -f '{{.RestartCount}}' "$proj-pipeshub-$w-1")" 0
 done
-check "the placement worker is watching" "$(dc logs pipeshub-placement 2>&1 | grep -c 'placement worker running')" 1
-check "the fold worker is watching" "$(dc logs pipeshub-fold 2>&1 | grep -c 'fold worker running')" 1
 # A banner is printed before any database work, and both loops outlive a failed pass: check what each worker did.
 org=0123456789abcdef01234567
 sql() { dc exec -T postgres psql -qtAX -U postgres -d pipeshub -v ON_ERROR_STOP=1 -c "$1"; }
