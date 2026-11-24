@@ -32,6 +32,7 @@ import {
   majorityPoint,
 } from './follow';
 import { MAPPINGS } from './mapping';
+import { raiseCountersToSlugs } from '../../libs/repositories/slug/pg-import';
 import { PreflightReport, preflight } from './preflight';
 import type { MigrationRuntime } from './runtime';
 import { postLoad } from './schema';
@@ -764,6 +765,18 @@ export async function cutover(
         'the final catch-up did not complete in its budget',
       );
     if (overBudget()) return await abort('F5', 'the freeze budget was used up');
+
+    // F6: the counters behind user and group slugs: the stream brings the users and groups, not the counter changes
+    await mark(
+      'F6 slug counters',
+      () => rt.jobs((_t, k) => raiseCountersToSlugs(k)),
+      (raised) => ({ raised }),
+    );
+    if (
+      overBudget() ||
+      (o.failAt === 'over-after-F6' && process.env.MIGRATE_TEST_HOOKS === '1')
+    )
+      return await abort('F6', 'the freeze budget was used up');
 
     // F6: the outbox rows travel with their state through the same stream (published rows are not copied, publishing becomes pending)
     steps.push({

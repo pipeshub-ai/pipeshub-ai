@@ -1433,7 +1433,15 @@
         },
         "toolNeedsApproval": "Vyžaduje schválení",
         "toolNeedsApprovalHint": "Tento nástroj může mazat data. V chatu projektu se spustí až po schválení.",
-        "indexingStatusLabel": "Indexování: {{status}}"
+        "indexingStatusLabel": "Indexování: {{status}}",
+        "collectionsTitle": "Kolekce",
+        "collectionsSubtitle": "Chaty v tomto projektu prohledávají vybrané kolekce a nahrané projektové soubory.",
+        "noCollectionsAvailable": "Zatím nejsou k dispozici žádné kolekce k přidání.",
+        "failedToLoadCollections": "Nepodařilo se načíst kolekce",
+        "updateCollectionsFailed": "Nepodařilo se aktualizovat kolekce",
+        "collectionsStatusCount": "Vybráno: {{count}}",
+        "collectionsStatusNone": "Žádné",
+        "untitledCollection": "Nepojmenovaná kolekce"
       },
       "moveDialog": {
         "title": "Přesunout do projektu",
