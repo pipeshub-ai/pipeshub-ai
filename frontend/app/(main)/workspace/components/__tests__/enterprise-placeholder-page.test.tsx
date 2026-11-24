@@ -11,6 +11,11 @@ vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 
 const replace = vi.fn();
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace, push: vi.fn() }) }));
+// The page's own labels come back as their keys, so the tests can tell them apart.
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-i18next')>()),
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
 
 // The store persists to localStorage; stand in for the selectors the page reads.
 let user = { isAdmin: true as boolean | null, isProfileInitialized: true };
@@ -21,7 +26,7 @@ vi.mock('@/lib/store/user-store', () => ({
   selectIsProfileInitialized: (s: typeof user) => s.isProfileInitialized,
 }));
 
-import { EnterprisePlaceholderPage } from '../enterprise-placeholder-page';
+import { EnterprisePlaceholderPage, enterpriseContactUrl } from '../enterprise-placeholder-page';
 import { ENTERPRISE_GLIMPSES } from '../enterprise-glimpses';
 
 afterEach(() => {
@@ -34,10 +39,15 @@ function renderPage(glimpse: React.ComponentProps<typeof EnterprisePlaceholderPa
   return render(
     <Theme>
       <EnterprisePlaceholderPage
+        feature="usage"
         title="Usage"
         heading="AI usage and cost are available in the Enterprise Edition"
         message="See what AI costs your organization."
-        contactLabel="Talk to Sales"
+        benefits={['Cost by person', 'Invoices in one place', 'Spending alerts']}
+        related={[
+          { label: 'Groups', href: '/workspace/groups/' },
+          { label: 'Tenants', href: '/workspace/tenants/' },
+        ]}
         glimpse={glimpse}
       />
     </Theme>,
@@ -45,7 +55,7 @@ function renderPage(glimpse: React.ComponentProps<typeof EnterprisePlaceholderPa
 }
 
 describe('EnterprisePlaceholderPage', () => {
-  it('says what is available and offers one way to get it: booking a call', () => {
+  it('says what is available and offers a demo booking for it', () => {
     renderPage();
 
     expect(screen.getByRole('heading', { name: 'Usage' })).toBeTruthy();
@@ -53,13 +63,58 @@ describe('EnterprisePlaceholderPage', () => {
     expect(screen.getByText('See what AI costs your organization.')).toBeTruthy();
 
     // The icon's ligature text stays out of the link's name.
-    const contact = screen.getByRole('link', { name: 'Talk to Sales' });
-    expect(contact.getAttribute('href')).toBe('https://calendly.com/rishabh-pipeshub/30min');
+    const contact = screen.getByRole('link', { name: 'workspace.enterprise.contact' });
+    expect(contact.getAttribute('href')).toBe(enterpriseContactUrl('usage'));
     expect(contact.getAttribute('target')).toBe('_blank');
+    expect(contact.getAttribute('rel')).toBe('noopener noreferrer');
     expect(contact.className).toContain('rt-Button');
-    expect(contact.querySelector('[aria-hidden="true"]')?.textContent).toBe('headset_mic');
-    expect(screen.getAllByRole('link')).toHaveLength(1);
+    expect(contact.querySelector('[aria-hidden="true"]')?.textContent).toBe('event');
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('lists what the feature gives, under its own label', () => {
+    renderPage();
+
+    const list = screen.getByRole('list', { name: 'workspace.enterprise.benefitsTitle' });
+    const items = Array.from(list.querySelectorAll('li')).map((li) => li.textContent);
+    // Each line starts with a hidden check mark's ligature.
+    expect(items).toEqual(['checkCost by person', 'checkInvoices in one place', 'checkSpending alerts']);
+    for (const li of Array.from(list.querySelectorAll('li'))) {
+      expect(li.querySelector('[aria-hidden="true"]')?.textContent).toBe('check');
+    }
+  });
+
+  it('links to the related Enterprise pages inside the app', () => {
+    renderPage();
+
+    const related = screen.getByRole('navigation', { name: 'workspace.enterprise.relatedTitle' });
+    const links = Array.from(related.querySelectorAll('a'));
+    // next/link adds the app's trailing slash only under its own config, which tests don't load.
+    const route = (a: HTMLAnchorElement) => a.getAttribute('href')?.replace(/\/$/, '');
+    expect(links.map((a) => [a.textContent, route(a), a.getAttribute('target')])).toEqual([
+      ['Groups', '/workspace/groups', null],
+      ['Tenants', '/workspace/tenants', null],
+    ]);
+  });
+
+  it('leaves out the list and the related links when there are none', () => {
+    render(
+      <Theme>
+        <EnterprisePlaceholderPage
+          feature="scim"
+          title="SCIM"
+          heading="SCIM is available in the Enterprise Edition"
+          message="Sync people."
+          benefits={[]}
+          related={[]}
+          glimpse={ENTERPRISE_GLIMPSES.scim}
+        />
+      </Theme>,
+    );
+
+    expect(screen.queryByRole('list')).toBeNull();
+    expect(screen.queryByRole('navigation')).toBeNull();
+    expect(screen.getAllByRole('link')).toHaveLength(1);
   });
 
   it('keeps the decorative premium icon away from screen readers', () => {
@@ -90,6 +145,18 @@ describe('EnterprisePlaceholderPage', () => {
 
     expect(container.textContent).toBe('');
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('tags the demo link with the page it came from, and nothing about the user', () => {
+    const url = new URL(enterpriseContactUrl('tenants'));
+
+    expect(`${url.origin}${url.pathname}`).toBe('https://calendly.com/rishabh-pipeshub/30min');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      utm_source: 'pipeshub-oss',
+      utm_medium: 'app',
+      utm_campaign: 'enterprise-edition',
+      utm_content: 'tenants',
+    });
   });
 
   it.each(Object.entries(ENTERPRISE_GLIMPSES))(

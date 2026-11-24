@@ -623,7 +623,8 @@
     "docs": "文档",
     "enterprise": {
       "label": "EE 版提供",
-      "tooltip": "属于 PipesHub 企业版"
+      "tooltip": "属于 PipesHub 企业版",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "出了点问题",
@@ -1899,18 +1900,51 @@
       }
     },
     "enterprise": {
-      "contact": "联系销售",
+      "contact": "预约 30 分钟演示",
       "scim": {
         "heading": "SCIM 预配功能仅在企业版中提供",
-        "message": "让 Okta 或 Microsoft Entra ID 自动添加、更新和停用工作区中的成员。"
+        "message": "让 Okta 或 Microsoft Entra ID 自动添加、更新和停用工作区中的成员。",
+        "benefits": {
+          "providers": "支持 Okta 和 Microsoft Entra ID",
+          "offboarding": "身份提供商停用离职人员后，其访问权限立即失效",
+          "noManualWork": "无需再手动邀请或移除成员"
+        }
       },
       "auditLogs": {
         "heading": "审计日志功能仅在企业版中提供",
-        "message": "查看工作区中谁在何时做了什么。"
+        "message": "查看工作区中谁在何时做了什么。",
+        "benefits": {
+          "everyEvent": "记录每项操作：执行者、时间和来源 IP 地址",
+          "filters": "按人员、操作、对象和结果筛选",
+          "alerts": "用于审查的图表、提醒和导出"
+        }
       },
       "usage": {
         "heading": "用量、额度和账单功能仅在企业版中提供",
-        "message": "按人员、智能体、连接器和模型查看 AI 成本，管理额度、套餐和发票，并在消费设置中设置支出提醒。"
+        "message": "按人员、智能体、连接器和模型查看 AI 成本，管理额度、套餐和发票，并在消费设置中设置支出提醒。",
+        "benefits": {
+          "breakdown": "按人员、智能体、连接器和模型查看 AI 成本",
+          "billing": "额度、套餐和发票集中管理",
+          "alerts": "在消费设置中设置的支出提醒"
+        }
+      },
+      "benefitsTitle": "您将获得",
+      "relatedTitle": "企业版还提供",
+      "tenants": {
+        "heading": "多租户功能仅在企业版中提供",
+        "message": "在同一套部署中，为每个业务部门、地区或客户提供独立的租户，各自拥有自己的成员、连接器和数据。",
+        "benefits": {
+          "separate": "每个租户的成员、连接器、集合和智能体彼此隔离",
+          "inherit": "选择租户从您这里继承哪些设置，例如 AI 模型、邮件和登录方式",
+          "manage": "在一个地方创建租户并管理其用户和用户组"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "一次授权给用户组，无需逐人授权",
+          "teams": "将整个团队和个人添加到用户组",
+          "builtIn": "从内置的 Admin 和 Everyone 用户组开始"
+        }
       }
     },
     "teams": {

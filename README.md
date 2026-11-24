@@ -177,6 +177,20 @@ Prefer a fully managed PipesHub without running your own infrastructure? Sign up
 
 Coding agents connect to `https://app.pipeshub.com/mcp` with a personal access token. See [For coding agents](https://docs.pipeshub.com/for-agents).
 
+## Enterprise Edition
+
+PipesHub is open source and complete on its own. The Enterprise Edition adds what larger organizations need to run it across many teams:
+
+- **Multi-tenancy:** several tenants on one deployment, each with its own people, connectors and data, and the settings you choose for them to inherit.
+- **Single sign-on:** SAML 2.0 and OpenID Connect, through Okta, OneLogin or any other identity provider.
+- **SCIM provisioning:** Okta or Microsoft Entra ID adds, updates and switches off people for you.
+- **Group permissions:** give access to a group once instead of person by person.
+- **Audit logs:** who did what and when, with filters, alerts and export.
+- **Usage, credits and billing:** AI cost by person, agent, connector and model, with spending alerts.
+- **Governance for agents and tools:** organization-wide tool approval rules, and a review of the OAuth apps, actions and MCP servers people add for themselves.
+
+To see it, [book a 30-minute demo](https://calendly.com/rishabh-pipeshub/30min?utm_source=github&utm_medium=readme&utm_campaign=enterprise-edition).
+
 ## Connectors
 
 <p align="center">
@@ -411,6 +425,10 @@ PipesHub supports image, diagram, and scanned-file understanding, plus voice-bas
 2. Check Docker compose logs: `docker compose logs`
 3. Verify environment variables in env.template
 4. Consult [docs.pipeshub.com](https://docs.pipeshub.com/) for detailed guides
+
+### Is there an Enterprise Edition?
+
+Yes. It adds multi-tenancy, SAML and OpenID Connect sign-on, SCIM provisioning, group permissions, audit logs, and usage and billing controls. See [Enterprise Edition](#enterprise-edition).
 
 ### Where can I get help?
 

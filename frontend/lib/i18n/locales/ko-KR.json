@@ -623,7 +623,8 @@
     "docs": "문서",
     "enterprise": {
       "label": "EE에서 제공",
-      "tooltip": "PipesHub Enterprise Edition의 기능입니다"
+      "tooltip": "PipesHub Enterprise Edition의 기능입니다",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "문제가 발생했습니다",
@@ -1899,18 +1900,51 @@
       }
     },
     "enterprise": {
-      "contact": "영업팀과 상담하기",
+      "contact": "30분 데모 예약",
       "scim": {
         "heading": "SCIM 프로비저닝은 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "Okta 또는 Microsoft Entra ID가 워크스페이스 사용자를 자동으로 추가, 업데이트, 비활성화하도록 하세요."
+        "message": "Okta 또는 Microsoft Entra ID가 워크스페이스 사용자를 자동으로 추가, 업데이트, 비활성화하도록 하세요.",
+        "benefits": {
+          "providers": "Okta 및 Microsoft Entra ID와 연동됩니다",
+          "offboarding": "ID 공급자에서 비활성화되는 즉시 퇴사자의 접근이 차단됩니다",
+          "noManualWork": "사용자를 직접 초대하거나 삭제할 필요가 없습니다"
+        }
       },
       "auditLogs": {
         "heading": "감사 로그는 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "워크스페이스에서 누가 언제 무엇을 했는지 확인하세요."
+        "message": "워크스페이스에서 누가 언제 무엇을 했는지 확인하세요.",
+        "benefits": {
+          "everyEvent": "누가, 언제, 어떤 IP 주소에서 했는지 모든 작업 기록",
+          "filters": "사람, 작업, 항목, 결과별 필터",
+          "alerts": "검토를 위한 차트, 알림, 내보내기"
+        }
       },
       "usage": {
         "heading": "사용량, 크레딧 및 결제는 Enterprise Edition에서 사용할 수 있습니다",
-        "message": "사람, 에이전트, 커넥터, 모델별 AI 비용을 확인하고, 크레딧과 요금제, 청구서를 관리하며, 사용량 설정에서 지출 알림을 설정하세요."
+        "message": "사람, 에이전트, 커넥터, 모델별 AI 비용을 확인하고, 크레딧과 요금제, 청구서를 관리하며, 사용량 설정에서 지출 알림을 설정하세요.",
+        "benefits": {
+          "breakdown": "사람, 에이전트, 커넥터, 모델별 AI 비용",
+          "billing": "크레딧, 요금제, 청구서를 한곳에서",
+          "alerts": "사용량 설정에서 지정하는 지출 알림"
+        }
+      },
+      "benefitsTitle": "제공되는 기능",
+      "relatedTitle": "Enterprise의 다른 기능",
+      "tenants": {
+        "heading": "멀티 테넌시는 Enterprise Edition에서 사용할 수 있습니다",
+        "message": "사업부, 지역 또는 고객마다 고유한 테넌트를 두고, 하나의 배포에서 각자의 사람, 커넥터, 데이터를 관리하세요.",
+        "benefits": {
+          "separate": "각 테넌트의 사람, 커넥터, 컬렉션, 에이전트가 서로 분리됩니다",
+          "inherit": "AI 모델, 메일, 로그인 등 테넌트가 상속할 설정을 선택하세요",
+          "manage": "한곳에서 테넌트를 만들고 사용자와 그룹을 관리하세요"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "한 명씩 주는 대신 그룹에 한 번만 접근 권한을 주세요",
+          "teams": "팀 전체와 개별 사용자를 그룹에 추가하세요",
+          "builtIn": "기본 제공 Admin 및 Everyone 그룹으로 시작하세요"
+        }
       }
     },
     "teams": {

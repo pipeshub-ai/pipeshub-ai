@@ -3,7 +3,7 @@
 import { useState, type ReactNode } from 'react';
 import { usePathname } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text } from '@radix-ui/themes';
+import { Badge, Flex, Text } from '@radix-ui/themes';
 import { SidebarBase } from '@/app/components/sidebar';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
@@ -63,13 +63,6 @@ const PEOPLE_SUB_ITEMS = [
   { labelKey: 'workspace.sidebar.nav.teams', route: '/workspace/teams' },
 ];
 
-const GROUPS_NAV_ITEM: NavItem = {
-  icon: 'group',
-  labelKey: 'workspace.sidebar.nav.groups',
-  route: '/workspace/groups',
-  adminOnly: true,
-};
-
 const WORKSPACE_ITEMS: NavItem[] = [
   { icon: 'security', labelKey: 'workspace.sidebar.nav.authentication', route: '/workspace/authentication', adminOnly: true },
   { icon: 'hub', labelKey: 'workspace.sidebar.nav.connectors', route: '/workspace/connectors/team', adminOnly: true },
@@ -96,12 +89,18 @@ const PERSONAL_ITEMS: NavItem[] = [
 
 const PEOPLE_ROUTES = PEOPLE_SUB_ITEMS.map((item) => item.route);
 
-/** Marks an Enterprise Edition page. Hidden from the link's name, so it still reads "Groups". */
-const ENTERPRISE_LOCK = (
-  <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-    <MaterialIcon name="lock" size={14} color="var(--slate-9)" />
-  </span>
-);
+/**
+ * Marks an Enterprise Edition page: a tag that says there is more to see, where a lock would say
+ * "no access". Hidden from the link's name, so it still reads "Groups"; the page itself explains.
+ */
+function EnterpriseNavTag() {
+  const { t } = useTranslation();
+  return (
+    <Badge aria-hidden="true" size="1" variant="soft" radius="full" style={{ flexShrink: 0 }}>
+      {t('common.enterprise.short')}
+    </Badge>
+  );
+}
 
 // ========================================
 // Component
@@ -151,7 +150,7 @@ export default function WorkspaceSidebar() {
     ...DEVELOPER_SETTINGS_ITEMS.map((item) => item.route),
     ...PERSONAL_ITEMS.filter(isNavItemVisible).map((item) => item.route),
     ...PEOPLE_SUB_ITEMS.map((item) => item.route),
-    GROUPS_NAV_ITEM.route,
+    ...Object.values(ENTERPRISE_FEATURES).map((item) => item.route),
     '/workspace/actions',
   ];
 
@@ -173,7 +172,7 @@ export default function WorkspaceSidebar() {
   const visiblePeopleItems = PEOPLE_SUB_ITEMS;
   const visiblePersonalItems = PERSONAL_ITEMS.filter(isNavItemVisible);
 
-  /** The Enterprise Edition pages listed in one part of the sidebar, each locked. */
+  /** The Enterprise Edition pages listed in one part of the sidebar, each tagged. */
   const renderEnterpriseItems = (section: EnterpriseSection) =>
     showEnterprise &&
     Object.values(ENTERPRISE_FEATURES)
@@ -185,7 +184,7 @@ export default function WorkspaceSidebar() {
           label={t(item.labelKey)}
           href={`${item.route}/`}
           isActive={isActive(item.route)}
-          rightSlot={ENTERPRISE_LOCK}
+          rightSlot={<EnterpriseNavTag />}
         />
       ));
 
@@ -245,15 +244,6 @@ export default function WorkspaceSidebar() {
             </CollapsibleSection>
           )}
 
-          {showEnterprise && (
-            <WorkspaceSidebarItem
-              icon={<MaterialIcon name={GROUPS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
-              label={t(GROUPS_NAV_ITEM.labelKey)}
-              href={`${GROUPS_NAV_ITEM.route}/`}
-              isActive={isActive(GROUPS_NAV_ITEM.route)}
-              rightSlot={ENTERPRISE_LOCK}
-            />
-          )}
           {renderEnterpriseItems('overview')}
         </Flex>
 

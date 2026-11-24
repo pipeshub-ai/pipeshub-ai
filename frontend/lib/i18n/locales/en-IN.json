@@ -538,7 +538,8 @@
     "docs": "Docs",
     "enterprise": {
       "label": "Available in EE",
-      "tooltip": "Part of the PipesHub Enterprise Edition"
+      "tooltip": "Part of the PipesHub Enterprise Edition",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "Something went wrong",
@@ -1825,18 +1826,51 @@
       }
     },
     "enterprise": {
-      "contact": "Talk to Sales",
+      "contact": "Book a 30-minute demo",
       "scim": {
         "heading": "SCIM provisioning is available in the Enterprise Edition",
-        "message": "Let Okta or Microsoft Entra ID add, update and switch off people in your workspace automatically."
+        "message": "Let Okta or Microsoft Entra ID add, update and switch off people in your workspace automatically.",
+        "benefits": {
+          "providers": "Works with Okta and Microsoft Entra ID",
+          "offboarding": "People who leave lose access as soon as your identity provider switches them off",
+          "noManualWork": "No more inviting or removing people by hand"
+        }
       },
       "auditLogs": {
         "heading": "Audit logs are available in the Enterprise Edition",
-        "message": "See who did what in your workspace, and when."
+        "message": "See who did what in your workspace, and when.",
+        "benefits": {
+          "everyEvent": "Every action, with who did it, when and from which IP address",
+          "filters": "Filter by person, action, item and outcome",
+          "alerts": "Charts, alerts and export for reviews"
+        }
       },
       "usage": {
         "heading": "Usage, credits and billing are available in the Enterprise Edition",
-        "message": "See what AI costs by person, agent, connector and model, manage credits, your plan and invoices, and set spending alerts in Credit settings."
+        "message": "See what AI costs by person, agent, connector and model, manage credits, your plan and invoices, and set spending alerts in Credit settings.",
+        "benefits": {
+          "breakdown": "AI cost by person, agent, connector and model",
+          "billing": "Credits, your plan and invoices in one place",
+          "alerts": "Spending alerts you set in Credit settings"
+        }
+      },
+      "benefitsTitle": "What you get",
+      "relatedTitle": "Also in Enterprise",
+      "tenants": {
+        "heading": "Multi-tenancy is available in the Enterprise Edition",
+        "message": "Give each business unit, region or customer its own tenant, with its own people, connectors and data, on one deployment.",
+        "benefits": {
+          "separate": "Each tenant keeps its people, connectors, collections and agents apart",
+          "inherit": "Choose which settings a tenant inherits from you, such as AI models, mail and sign-in",
+          "manage": "Create tenants and manage their users and groups from one place"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "Give access to a group once instead of person by person",
+          "teams": "Add whole teams and individual people to a group",
+          "builtIn": "Start from the built-in Admin and Everyone groups"
+        }
       }
     },
     "teams": {

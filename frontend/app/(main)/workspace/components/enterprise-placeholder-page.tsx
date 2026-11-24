@@ -1,7 +1,9 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useId } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useTranslation } from 'react-i18next';
 import { Button, Flex, Heading, Text } from '@radix-ui/themes';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -13,7 +15,22 @@ import { EnterpriseGlimpse, type Glimpse } from './enterprise-glimpse';
 
 const ENTERPRISE_CONTACT_URL = 'https://calendly.com/rishabh-pipeshub/30min';
 
+/**
+ * The demo booking link for one Enterprise page. The tags tell sales which page a booking came
+ * from; they carry the page's name only, nothing about the person or the organization.
+ */
+export function enterpriseContactUrl(feature: string): string {
+  const url = new URL(ENTERPRISE_CONTACT_URL);
+  url.searchParams.set('utm_source', 'pipeshub-oss');
+  url.searchParams.set('utm_medium', 'app');
+  url.searchParams.set('utm_campaign', 'enterprise-edition');
+  url.searchParams.set('utm_content', feature);
+  return url.toString();
+}
+
 export interface EnterprisePlaceholderPageProps {
+  /** Which Enterprise page this is, as named in the demo link's tags. */
+  feature: string;
   /** The page's own title, as the Enterprise Edition names it. */
   title: string;
   subtitle?: string;
@@ -21,7 +38,10 @@ export interface EnterprisePlaceholderPageProps {
   heading: string;
   /** One line on what the feature does. */
   message: string;
-  contactLabel: string;
+  /** What the feature gives an admin, a few short lines. */
+  benefits: string[];
+  /** Other Enterprise pages worth a look. */
+  related: { label: string; href: string }[];
   /** A blurred look at the real page, fading into the message. */
   glimpse: Glimpse;
 }
@@ -31,7 +51,18 @@ export interface EnterprisePlaceholderPageProps {
  * bookmarks land on an explanation instead of a 404: a blurred glimpse of the real page, running
  * out into a message laid out like `EntityEmptyState`, so it reads as part of the product.
  */
-export function EnterprisePlaceholderPage({ title, subtitle, heading, message, contactLabel, glimpse }: EnterprisePlaceholderPageProps) {
+export function EnterprisePlaceholderPage({
+  feature,
+  title,
+  subtitle,
+  heading,
+  message,
+  benefits,
+  related,
+  glimpse,
+}: EnterprisePlaceholderPageProps) {
+  const { t } = useTranslation();
+  const benefitsTitleId = useId();
   const isMobile = useIsMobile();
   const router = useRouter();
   const isAdmin = useEnterprisePrompt();
@@ -94,7 +125,7 @@ export function EnterprisePlaceholderPage({ title, subtitle, heading, message, c
           style={{
             width: '64px',
             height: '64px',
-            borderRadius: 'var(--radius-full)',
+            borderRadius: '9999px',
             backgroundColor: 'var(--slate-3)',
           }}
         >
@@ -110,15 +141,65 @@ export function EnterprisePlaceholderPage({ title, subtitle, heading, message, c
           </Text>
         </Flex>
 
+        {benefits.length > 0 && (
+          <Flex
+            direction="column"
+            gap="3"
+            style={{
+              width: '100%',
+              maxWidth: '440px',
+              boxSizing: 'border-box',
+              padding: 'var(--space-4)',
+              border: '1px solid var(--gray-a5)',
+              borderRadius: 'var(--radius-3)',
+            }}
+          >
+            <Text id={benefitsTitleId} size="1" weight="medium" style={{ color: 'var(--slate-11)' }}>
+              {t('workspace.enterprise.benefitsTitle')}
+            </Text>
+            <Flex asChild direction="column" gap="2">
+              <ul aria-labelledby={benefitsTitleId} style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                {benefits.map((benefit) => (
+                  <Flex asChild key={benefit} gap="2" align="start">
+                    <li>
+                      <span aria-hidden="true" style={{ display: 'inline-flex', flexShrink: 0, marginTop: 2 }}>
+                        <MaterialIcon name="check" size={16} color="var(--accent-11)" />
+                      </span>
+                      <Text size="2" style={{ color: 'var(--slate-12)' }}>
+                        {benefit}
+                      </Text>
+                    </li>
+                  </Flex>
+                ))}
+              </ul>
+            </Flex>
+          </Flex>
+        )}
+
         <Button asChild size="2" className="touch-hit" style={{ marginTop: 'var(--space-2)' }}>
-          <a href={ENTERPRISE_CONTACT_URL} target="_blank" rel="noreferrer">
+          <a href={enterpriseContactUrl(feature)} target="_blank" rel="noopener noreferrer">
             {/* The icon is a text ligature; hide it so the link is named by its label alone. */}
             <span aria-hidden="true" style={{ display: 'inline-flex' }}>
-              <MaterialIcon name="headset_mic" size={16} color="currentColor" />
+              <MaterialIcon name="event" size={16} color="currentColor" />
             </span>
-            {contactLabel}
+            {t('workspace.enterprise.contact')}
           </a>
         </Button>
+
+        {related.length > 0 && (
+          <Flex asChild align="center" justify="center" gap="2" wrap="wrap" style={{ marginTop: 'var(--space-2)' }}>
+            <nav aria-label={t('workspace.enterprise.relatedTitle')}>
+              <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                {t('workspace.enterprise.relatedTitle')}
+              </Text>
+              {related.map(({ label, href }) => (
+                <Button key={href} asChild size="1" variant="soft" color="gray" radius="full" className="touch-hit">
+                  <Link href={href}>{label}</Link>
+                </Button>
+              ))}
+            </nav>
+          </Flex>
+        )}
       </Flex>
     </Flex>
   );

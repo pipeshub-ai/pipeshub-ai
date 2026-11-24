@@ -538,7 +538,8 @@
     "docs": "Dokumentation",
     "enterprise": {
       "label": "In EE verfügbar",
-      "tooltip": "Teil der PipesHub Enterprise Edition"
+      "tooltip": "Teil der PipesHub Enterprise Edition",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "Etwas ist schiefgelaufen",
@@ -1825,18 +1826,51 @@
       }
     },
     "enterprise": {
-      "contact": "Mit dem Vertrieb sprechen",
+      "contact": "30-minütige Demo buchen",
       "scim": {
         "heading": "Die SCIM-Bereitstellung ist in der Enterprise Edition verfügbar",
-        "message": "Lassen Sie Okta oder Microsoft Entra ID Personen in Ihrem Workspace automatisch hinzufügen, aktualisieren und deaktivieren."
+        "message": "Lassen Sie Okta oder Microsoft Entra ID Personen in Ihrem Workspace automatisch hinzufügen, aktualisieren und deaktivieren.",
+        "benefits": {
+          "providers": "Funktioniert mit Okta und Microsoft Entra ID",
+          "offboarding": "Wer das Unternehmen verlässt, verliert den Zugriff, sobald Ihr Identitätsanbieter die Person deaktiviert",
+          "noManualWork": "Kein manuelles Einladen oder Entfernen von Personen mehr"
+        }
       },
       "auditLogs": {
         "heading": "Audit-Logs sind in der Enterprise Edition verfügbar",
-        "message": "Sehen Sie, wer in Ihrem Workspace was getan hat und wann."
+        "message": "Sehen Sie, wer in Ihrem Workspace was getan hat und wann.",
+        "benefits": {
+          "everyEvent": "Jede Aktion – wer sie ausgeführt hat, wann und von welcher IP-Adresse",
+          "filters": "Nach Person, Aktion, Element und Ergebnis filtern",
+          "alerts": "Diagramme, Warnungen und Export für Prüfungen"
+        }
       },
       "usage": {
         "heading": "Nutzung, Credits und Abrechnung sind in der Enterprise Edition verfügbar",
-        "message": "Sehen Sie die KI-Kosten nach Person, Agent, Connector und Modell, verwalten Sie Credits, Tarif und Rechnungen und legen Sie in den Verbrauchseinstellungen Ausgabenwarnungen fest."
+        "message": "Sehen Sie die KI-Kosten nach Person, Agent, Connector und Modell, verwalten Sie Credits, Tarif und Rechnungen und legen Sie in den Verbrauchseinstellungen Ausgabenwarnungen fest.",
+        "benefits": {
+          "breakdown": "KI-Kosten nach Person, Agent, Connector und Modell",
+          "billing": "Credits, Ihr Tarif und Rechnungen an einem Ort",
+          "alerts": "Ausgabenwarnungen, die Sie in den Verbrauchseinstellungen festlegen"
+        }
+      },
+      "benefitsTitle": "Das bekommen Sie",
+      "relatedTitle": "Ebenfalls in Enterprise",
+      "tenants": {
+        "heading": "Mandantenfähigkeit ist in der Enterprise Edition verfügbar",
+        "message": "Geben Sie jedem Geschäftsbereich, jeder Region oder jedem Kunden einen eigenen Mandanten mit eigenen Personen, Connectors und Daten – auf einer einzigen Installation.",
+        "benefits": {
+          "separate": "Jeder Mandant hält seine Personen, Connectors, Sammlungen und Agenten getrennt",
+          "inherit": "Legen Sie fest, welche Einstellungen ein Mandant von Ihnen übernimmt, etwa KI-Modelle, E-Mail und Anmeldung",
+          "manage": "Mandanten anlegen und ihre Benutzer und Gruppen an einem Ort verwalten"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "Zugriff einmal an eine Gruppe vergeben statt Person für Person",
+          "teams": "Ganze Teams und einzelne Personen zu einer Gruppe hinzufügen",
+          "builtIn": "Mit den integrierten Gruppen Admin und Everyone starten"
+        }
       }
     },
     "teams": {

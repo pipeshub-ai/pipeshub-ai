@@ -659,7 +659,8 @@
     "docs": "Dokumentace",
     "enterprise": {
       "label": "K dispozici v EE",
-      "tooltip": "Součást edice PipesHub Enterprise"
+      "tooltip": "Součást edice PipesHub Enterprise",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "Něco se pokazilo",
@@ -2007,18 +2008,51 @@
       }
     },
     "enterprise": {
-      "contact": "Promluvit s obchodem",
+      "contact": "Rezervovat 30minutovou ukázku",
       "scim": {
         "heading": "Zřizování SCIM je k dispozici v edici Enterprise",
-        "message": "Nechte Okta nebo Microsoft Entra ID automaticky přidávat, aktualizovat a vypínat lidi ve vašem pracovním prostoru."
+        "message": "Nechte Okta nebo Microsoft Entra ID automaticky přidávat, aktualizovat a vypínat lidi ve vašem pracovním prostoru.",
+        "benefits": {
+          "providers": "Funguje s Okta a Microsoft Entra ID",
+          "offboarding": "Kdo odejde, ztratí přístup, jakmile ho váš poskytovatel identit vypne",
+          "noManualWork": "Už žádné ruční zvaní ani odebírání lidí"
+        }
       },
       "auditLogs": {
         "heading": "Protokoly auditu jsou k dispozici v edici Enterprise",
-        "message": "Podívejte se, kdo co ve vašem pracovním prostoru udělal a kdy."
+        "message": "Podívejte se, kdo co ve vašem pracovním prostoru udělal a kdy.",
+        "benefits": {
+          "everyEvent": "Každá akce: kdo ji provedl, kdy a z jaké IP adresy",
+          "filters": "Filtrování podle osoby, akce, položky a výsledku",
+          "alerts": "Grafy, upozornění a export pro kontroly"
+        }
       },
       "usage": {
         "heading": "Využití, kredity a fakturace jsou k dispozici v edici Enterprise",
-        "message": "Zjistěte náklady na AI podle osob, agentů, konektorů a modelů, spravujte kredity, tarif a faktury a v Nastavení kreditů nastavte upozornění na útratu."
+        "message": "Zjistěte náklady na AI podle osob, agentů, konektorů a modelů, spravujte kredity, tarif a faktury a v Nastavení kreditů nastavte upozornění na útratu.",
+        "benefits": {
+          "breakdown": "Náklady na AI podle osob, agentů, konektorů a modelů",
+          "billing": "Kredity, váš tarif a faktury na jednom místě",
+          "alerts": "Upozornění na útratu, která nastavíte v Nastavení kreditů"
+        }
+      },
+      "benefitsTitle": "Co získáte",
+      "relatedTitle": "V edici Enterprise také",
+      "tenants": {
+        "heading": "Multitenance je k dispozici v edici Enterprise",
+        "message": "Dejte každé obchodní jednotce, regionu nebo zákazníkovi vlastního tenanta s vlastními lidmi, konektory a daty, a to v jednom nasazení.",
+        "benefits": {
+          "separate": "Každý tenant má své lidi, konektory, kolekce a agenty oddělené",
+          "inherit": "Vyberte, která nastavení tenant přebírá od vás, například modely AI, poštu a přihlašování",
+          "manage": "Vytvářejte tenanty a spravujte jejich uživatele a skupiny na jednom místě"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "Udělte přístup skupině jednou, ne člověku po člověku",
+          "teams": "Přidávejte do skupiny celé týmy i jednotlivé lidi",
+          "builtIn": "Začněte s vestavěnými skupinami Admin a Everyone"
+        }
       }
     },
     "teams": {

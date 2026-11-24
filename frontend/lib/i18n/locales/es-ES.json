@@ -545,7 +545,8 @@
     "docs": "Documentación",
     "enterprise": {
       "label": "Disponible en EE",
-      "tooltip": "Parte de PipesHub Enterprise Edition"
+      "tooltip": "Parte de PipesHub Enterprise Edition",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "Algo salió mal",
@@ -1860,18 +1861,51 @@
       }
     },
     "enterprise": {
-      "contact": "Hablar con ventas",
+      "contact": "Reservar una demo de 30 minutos",
       "scim": {
         "heading": "El aprovisionamiento SCIM está disponible en la Enterprise Edition",
-        "message": "Deje que Okta o Microsoft Entra ID añadan, actualicen y desactiven personas en su espacio de trabajo automáticamente."
+        "message": "Deje que Okta o Microsoft Entra ID añadan, actualicen y desactiven personas en su espacio de trabajo automáticamente.",
+        "benefits": {
+          "providers": "Funciona con Okta y Microsoft Entra ID",
+          "offboarding": "Quien se va pierde el acceso en cuanto su proveedor de identidad lo desactiva",
+          "noManualWork": "Se acabó invitar o eliminar personas a mano"
+        }
       },
       "auditLogs": {
         "heading": "Los registros de auditoría están disponibles en la Enterprise Edition",
-        "message": "Vea quién hizo qué en su espacio de trabajo y cuándo."
+        "message": "Vea quién hizo qué en su espacio de trabajo y cuándo.",
+        "benefits": {
+          "everyEvent": "Cada acción, con quién la hizo, cuándo y desde qué dirección IP",
+          "filters": "Filtre por persona, acción, elemento y resultado",
+          "alerts": "Gráficos, alertas y exportación para revisiones"
+        }
       },
       "usage": {
         "heading": "El uso, los créditos y la facturación están disponibles en la Enterprise Edition",
-        "message": "Vea el coste de la IA por persona, agente, conector y modelo, gestione los créditos, su plan y sus facturas, y configure alertas de gasto en la Configuración de consumo."
+        "message": "Vea el coste de la IA por persona, agente, conector y modelo, gestione los créditos, su plan y sus facturas, y configure alertas de gasto en la Configuración de consumo.",
+        "benefits": {
+          "breakdown": "Coste de la IA por persona, agente, conector y modelo",
+          "billing": "Créditos, su plan y sus facturas en un solo lugar",
+          "alerts": "Alertas de gasto que configura en la Configuración de consumo"
+        }
+      },
+      "benefitsTitle": "Lo que obtiene",
+      "relatedTitle": "También en Enterprise",
+      "tenants": {
+        "heading": "La multitenencia está disponible en la Enterprise Edition",
+        "message": "Dé a cada unidad de negocio, región o cliente su propio inquilino, con sus propias personas, conectores y datos, en una sola implementación.",
+        "benefits": {
+          "separate": "Cada inquilino mantiene separadas sus personas, conectores, colecciones y agentes",
+          "inherit": "Elija qué configuración hereda un inquilino de usted, como los modelos de IA, el correo y el inicio de sesión",
+          "manage": "Cree inquilinos y gestione sus usuarios y grupos desde un solo lugar"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "Dé acceso a un grupo una sola vez en lugar de persona por persona",
+          "teams": "Añada equipos completos y personas concretas a un grupo",
+          "builtIn": "Empiece con los grupos integrados Admin y Everyone"
+        }
       }
     },
     "teams": {

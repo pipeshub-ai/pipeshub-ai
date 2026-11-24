@@ -623,7 +623,8 @@
     "docs": "說明文件",
     "enterprise": {
       "label": "EE 版提供",
-      "tooltip": "屬於 PipesHub 企業版"
+      "tooltip": "屬於 PipesHub 企業版",
+      "short": "EE"
     },
     "errorBoundary": {
       "title": "發生了一些問題",
@@ -1899,18 +1900,51 @@
       }
     },
     "enterprise": {
-      "contact": "聯絡銷售",
+      "contact": "預約 30 分鐘示範",
       "scim": {
         "heading": "SCIM 佈建功能僅在企業版中提供",
-        "message": "讓 Okta 或 Microsoft Entra ID 自動新增、更新和停用工作區中的成員。"
+        "message": "讓 Okta 或 Microsoft Entra ID 自動新增、更新和停用工作區中的成員。",
+        "benefits": {
+          "providers": "支援 Okta 和 Microsoft Entra ID",
+          "offboarding": "身分識別提供者停用離職人員後，其存取權限立即失效",
+          "noManualWork": "無需再手動邀請或移除成員"
+        }
       },
       "auditLogs": {
         "heading": "稽核記錄功能僅在企業版中提供",
-        "message": "查看工作區中誰在何時做了什麼。"
+        "message": "查看工作區中誰在何時做了什麼。",
+        "benefits": {
+          "everyEvent": "記錄每項操作：執行者、時間和來源 IP 位址",
+          "filters": "依人員、操作、項目和結果篩選",
+          "alerts": "供審查使用的圖表、提醒和匯出"
+        }
       },
       "usage": {
         "heading": "用量、額度和帳單功能僅在企業版中提供",
-        "message": "依人員、代理程式、連接器和模型查看 AI 成本，管理額度、方案和發票，並在用量設定中設定支出提醒。"
+        "message": "依人員、代理程式、連接器和模型查看 AI 成本，管理額度、方案和發票，並在用量設定中設定支出提醒。",
+        "benefits": {
+          "breakdown": "依人員、代理程式、連接器和模型查看 AI 成本",
+          "billing": "額度、方案和發票集中管理",
+          "alerts": "在用量設定中設定的支出提醒"
+        }
+      },
+      "benefitsTitle": "您將獲得",
+      "relatedTitle": "企業版還提供",
+      "tenants": {
+        "heading": "多租戶功能僅在企業版中提供",
+        "message": "在同一套部署中，為每個業務部門、地區或客戶提供獨立的租戶，各自擁有自己的成員、連接器和資料。",
+        "benefits": {
+          "separate": "每個租戶的成員、連接器、集合和代理程式彼此隔離",
+          "inherit": "選擇租戶從您這裡繼承哪些設定，例如 AI 模型、郵件和登入方式",
+          "manage": "在一個地方建立租戶並管理其使用者和群組"
+        }
+      },
+      "groups": {
+        "benefits": {
+          "grantOnce": "一次授權給群組，無需逐人授權",
+          "teams": "將整個團隊和個人加入群組",
+          "builtIn": "從內建的 Admin 和 Everyone 群組開始"
+        }
       }
     },
     "teams": {

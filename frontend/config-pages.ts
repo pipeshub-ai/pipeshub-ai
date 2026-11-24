@@ -6,8 +6,9 @@ export { default as WorkspaceLayout } from '@/app/(main)/workspace/workspaceLayo
 export { default as OnboardingPage } from '@/app/(main)/onboarding/onboardingPage';
 export { default as AiModelsPage } from '@/app/(main)/workspace/ai-models/aiModelsPage';
 export { default as AuthenticationPage } from '@/app/(main)/workspace/authentication/authenticationPage';
-export { default as GroupsPage } from '@/app/(main)/workspace/groups/groupsEnterprisePlaceholder';
 export {
+  GroupsPlaceholderPage as GroupsPage,
+  TenantsPlaceholderPage as TenantsPage,
   ScimPlaceholderPage,
   AuditLogsPlaceholderPage,
   UsagePlaceholderPage,
@@ -18,7 +19,6 @@ export { default as ActionsTeamPage } from '@/app/(main)/workspace/actions/team/
 export { default as ProfilePage } from '@/app/(main)/workspace/profile/profilePage';
 
 // Pages without implementations fall back to Next.js 404
-export { notFound as TenantsPage } from 'next/navigation';
 export { notFound as TenantsUsersPage } from 'next/navigation';
 export { notFound as TenantsGroupsPage } from 'next/navigation';
 export { notFound as OrgsPage } from 'next/navigation';
