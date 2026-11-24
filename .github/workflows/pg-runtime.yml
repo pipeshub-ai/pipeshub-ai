@@ -104,7 +104,7 @@ jobs:
         # scripts/test_pg_runtime_shards.py checks that every case runs exactly once; each shard checks its run against its own
         # collection, so no count is written here. The shards are sized to about 20 min of the 45 min limit (shard 1: 25-35 of
         # 60); --durations in the graph step prints the per-test times to rebalance by.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
         include:
           # test_conformance_kh_pg.py alone is longer than a shard should be: its two slowest cases run on their own, and the
           # rest is split by the state of the copy
@@ -121,10 +121,14 @@ jobs:
           - shard: 6
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
             graph_k: not [not_current-adversarial] and not [current-adversarial] and not not_current and not linked_source_accounts
-          # the worlds that link a user to a source account (both kg states): on their own, so no other shard grows
+          # the worlds that link a user to a source account, on their own so no other shard grows, one kg state a shard (both in one
+          # took 31 min on PostgreSQL 17 and passed 43 on 18)
           - shard: 8
             graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
-            graph_k: linked_source_accounts
+            graph_k: linked_source_accounts and not not_current
+          - shard: 9
+            graph_tests: tests/integration/graph_db/postgres/test_conformance_kh_pg.py
+            graph_k: linked_source_accounts and not_current
           # test_kg_read.py stays in shard 5, behind most of the files that run before it in the whole folder: its plan gate
           # depends on the statistics they leave.
           - shard: 4
