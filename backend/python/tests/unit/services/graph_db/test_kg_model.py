@@ -179,6 +179,18 @@ def test_a_membership_needs_a_user_typed_permission_and_an_existing_group_and_an
         ("u", "u", "-"): "self", ("u", "t", "-"): "membership", ("u", "org", "-"): "org"}
 
 
+def test_a_source_accounts_grant_makes_the_record_granted_while_the_account_exists() -> None:
+    """The stamper reads a verified copy's ``granted`` flag in place of the graph (stampgraph.GRANTED, which counts source accounts): the flag counts an existing
+    source account's grant, and none of one that is gone. kg keys no source account, so the grant itself is no kg row."""
+    nodes = {APP: {}, REC: {"connectorId": "a"}}
+    acct = ("sourceAccounts", "s")
+    snap = world(nodes, [edge("permission", *acct, *REC, type="USER", role="READER")])
+    assert derive({REC}, snap).records[snap.sk[REC]]["granted"] is False
+    snap.accounts = {acct}
+    d = derive({REC}, snap)
+    assert d.records[snap.sk[REC]]["granted"] is True and d.grants == {}
+
+
 def test_only_a_principal_grants() -> None:
     """A record that points a permission edge at another record grants nothing and does not make it granted."""
     nodes = {APP: {}, REC: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}
