@@ -26,6 +26,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.models.entities import FileRecord, RecordType
+from app.services.graph_db.neo4j.neo4j_provider import LISTED
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import backend_unavailable, connect_neo4j
 
@@ -204,6 +205,32 @@ async def test_big_folder_pages(w) -> None:
     assert r.pagination.totalItems == BIG
     items, pages, _ = await nodes(w, w.n("BIG"), "folder", flattened=False, depth=1, limit=1000)
     assert len({i.id for i in items}) == BIG, len(items)
+
+
+def _plan_ops(plan: Any) -> Iterator[Any]:  # noqa: ANN401
+    yield plan
+    for child in plan.get("children") or []:
+        yield from _plan_ops(child)
+
+
+async def test_a_page_reads_the_listed_ids_on_the_id_index_whatever_the_plan(w) -> None:
+    """A split browse's page reads the ids it decided (`LISTED`) by each label's unique id index, whatever the statistics. With the
+    App and org tests in its match, a plan sought the App's connectorId index and tested the id after: every record of the App read
+    once per listed id, 62M db hits and 25 s a page on this folder, past the test's timeout over its pages."""
+    kids = sorted(w.n(f"c{i}") for i in range(BIG))
+    async with w.g.client.driver.session(database="neo4j") as s:
+        result = await s.run(f"PROFILE {LISTED.format(name='ids')} RETURN size(ids) AS n",
+                             {"kh_listed": kids, "org_id": w.org, "app_id": w.app})
+        n = (await result.single())["n"]
+        profile = (await result.consume()).profile
+    assert n == BIG
+    ops = list(_plan_ops(profile))
+    reads = [o for o in ops if "kh_x" in (o.get("args") or {}).get("Details", "")
+             and ("Seek" in o["operatorType"] or "Scan" in o["operatorType"])]
+    assert reads and all(o["operatorType"].startswith("NodeUniqueIndexSeek") for o in reads), [o["operatorType"] for o in reads]
+    # Two seeks per id (one per label) and a few property reads: a plan reading the App's records per id is thousands per id.
+    hits = sum(o.get("dbHits") or 0 for o in ops)
+    assert hits <= 12 * BIG, hits
 
 
 async def test_relations_batch_is_bounded_per_record_and_direction(w) -> None:

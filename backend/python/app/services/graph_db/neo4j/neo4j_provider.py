@@ -913,12 +913,15 @@ _EXISTING_KEYS_CHUNK = 20000
 
 # The ids a split browse decided to list (`Neo4jProvider._kh_split_listed`), read by id in place of the walk. They were decided by
 # earlier statements, so a node deleted or moved to another App since then is dropped here, as the walk would drop it.
+# The match holds the id alone, so its only seek is the label's unique id index; the other tests run on what it found, past the
+# collect. With them in the match, a plan could seek the App's connectorId index and test the id after: every record of the App read
+# once per listed id (a 5,000-file folder: 31M rows, 62M db hits and 25 s a page, where the id seek takes 10k hits).
 LISTED = """CALL () {{
                 UNWIND $kh_listed AS kh_lid
                 MATCH (kh_x:Record|RecordGroup {{id: kh_lid}})
-                WHERE kh_x.orgId = $org_id AND kh_x.connectorId = $app_id AND NOT coalesce(kh_x.accessOnly, false)
-                  AND NOT coalesce(kh_x.isDeleted, false)
-                RETURN collect(DISTINCT kh_x) AS {name}
+                WITH collect(DISTINCT kh_x) AS kh_found
+                RETURN [kh_x IN kh_found WHERE kh_x.orgId = $org_id AND kh_x.connectorId = $app_id AND NOT coalesce(kh_x.accessOnly, false)
+                  AND NOT coalesce(kh_x.isDeleted, false)] AS {name}
             }}"""
 
 # The browse mode shadow mode replays a page with: split, but undecided past its bounds instead of answered by legacy.
