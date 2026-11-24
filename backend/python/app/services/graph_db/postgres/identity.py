@@ -395,14 +395,38 @@ class IdentityMixin(PgBase):
             ORDER BY name COLLATE "C", id COLLATE "C" LIMIT $3""", [current_org_id(), wanted, max(1, limit)], None)
         return [dict(r) for r in rows]
 
-    async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int) -> dict[str, str]:
+    async def get_graph_user_keys_by_mongo_user_ids_all_orgs(self, user_ids: list[str], *, chunk_size: int) -> dict[str, str]:
+        """Every active org in turn, each bound by ``for_org`` from this enumeration (the database filters on the bound org); the answers are joined."""
+        from app.core.org_context import for_org, peek, system
+
+        ctx = peek()
+        if ctx is None or ctx.kind != "system":
+            raise PermissionError("get_graph_user_keys_by_mongo_user_ids_all_orgs requires an explicit system context")
         if not user_ids:
             return {}
+        with system("graph_user_keys_all_orgs"):
+            org_docs = await self.get_all_orgs(active=True)
+        found: dict[str, str] = {}
+        for doc in org_docs:
+            org_id = str(doc.get("_key") or doc.get("id") or "")
+            todo = [u for u in user_ids if u not in found]
+            if not org_id or not todo:
+                continue
+            with for_org(org_id, job="graph_user_keys_all_orgs"):
+                found.update(await self.get_graph_user_keys_by_mongo_user_ids(todo, org_id, chunk_size=chunk_size, allow_missing=True))
+        return found
+
+    async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int, allow_missing: bool = False) -> dict[str, str]:
+        if not user_ids:
+            return {}
+        if not org_id:
+            # Fail closed: without an org the lookup would match a user of any organisation.
+            raise ValueError("org_id is required to look up graph users by Mongo user id")
         rows = await self._id_rows("/* pipeshub:graph.user_keys_by_user_ids */ SELECT doc->>'userId' AS uid, id FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND doc->>'userId' = ANY($2::text[])"
-                                " AND ($3::text IS NULL OR doc->>'orgId' = $3)", [current_org_id(), list(user_ids), org_id], None)
+                                " AND doc->>'orgId' = $3", [current_org_id(), list(user_ids), org_id], None)
         found = {r["uid"]: r["id"] for r in rows if r["uid"] and r["id"]}
         missing = [u for u in user_ids if u not in found]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError(f"Users not found in graph: {missing}")
         return found
 
@@ -659,7 +683,7 @@ class IdentityMixin(PgBase):
     async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list:
         """The apps this user passes the connector gate for (the access check's gate, in the user's own org)."""
         org = current_org_id()
-        gated = (await self.get_knowledge_hub_access_v3(user_id, org, transaction=transaction))["gated_app_ids"]
+        gated = (await self.get_knowledge_hub_access_context_v2(user_id, org, transaction=transaction))["gated_app_ids"]      # the gate alone: no grant is read
         if not gated:
             return []
         rows = await self._id_rows("/* pipeshub:graph.get_user_apps */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = ANY($2::text[])", [org, gated], transaction)

@@ -477,18 +477,20 @@ describe('ServiceAccountsService', () => {
         orgId,
         email: `svc-x-${orgId}@service.pipeshub.internal`,
         isDeleted: false,
-        save: sinon.stub().resolvesThis(),
       };
-      // Read both with `.exec()` (the lookup) and by awaiting (the repository's save path).
-      sinon.stub(Users, 'findOne').callsFake((() =>
-        Object.assign(Promise.resolve(account), {
-          exec: () => Promise.resolve(account),
-        })) as any);
+      sinon.stub(Users, 'findOne').returns({
+        exec: () => Promise.resolve(account),
+      } as any);
+      const remove = sinon.stub(Users, 'findOneAndUpdate').returns({
+        exec: () => Promise.resolve({ ...account, isDeleted: true }),
+      } as any);
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
 
       await service.remove(orgId, id);
 
-      expect(account.isDeleted).to.equal(true);
+      const [filter, update] = remove.firstCall.args as any[];
+      expect(filter).to.deep.equal({ orgId, _id: id });
+      expect(update).to.deep.equal({ $set: { isDeleted: true } });
       expect(revoker.revokeAllForServiceAccount.calledOnce).to.equal(true);
     });
   });

@@ -136,3 +136,27 @@ async def test_a_created_task_inherits_the_run() -> None:
         return store_only_active()
 
     assert await asyncio.create_task(read()) is True
+
+
+def test_a_store_only_run_writes_no_parser_identity() -> None:
+    """The identity describes an indexed copy; a run that stores content and indexes nothing records none."""
+    from app.modules.pipeline import parser_identity as pi
+
+    begin_run(ParseNowRun(store_only=True, content_rev="r"))
+    try:
+        shaped = shape_status_write({"contentRev": "r", **dict.fromkeys(pi.IDENTITY_FIELDS, "x")})
+    finally:
+        end_run()
+    assert shaped["contentRev"] == "r"
+    assert not set(pi.IDENTITY_FIELDS) & shaped.keys()
+
+
+def test_a_parse_now_run_that_indexes_keeps_the_identity_of_its_write() -> None:
+    from app.modules.pipeline import parser_identity as pi
+
+    begin_run(ParseNowRun(store_only=False, content_rev="r"))
+    try:
+        shaped = shape_status_write({"indexingStatus": "COMPLETED", **dict.fromkeys(pi.IDENTITY_FIELDS, "x")})
+    finally:
+        end_run()
+    assert set(pi.IDENTITY_FIELDS) <= shaped.keys()

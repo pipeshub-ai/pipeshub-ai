@@ -944,6 +944,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     app.state.config_service = app_container.config_service()
     await configure_envelope(app.state.config_service)
+    from app.modules.indexing.replay_set import check_main_redis_eviction_policy
+
+    await check_main_redis_eviction_policy(app.state.config_service, app_container.logger(), "connectors")
 
     # Resolve data_store first - this internally resolves graph_provider
     data_store = await app_container.data_store()
@@ -1275,6 +1278,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         app.state.kg_worker = start_kg_worker(graph_provider, logger)
+    except ValueError:          # a setting the worker cannot run with (the message names it, e.g. PG_KG_PROJECT=0): refuse to start rather than serve a knowledge hub that never lists
+        raise
     except Exception as e:      # the service runs without it: reads stay on the walk, and the change log is drained at the next start
         logger.error(f"Failed to start the kg worker: {e}", exc_info=True)
 

@@ -81,7 +81,7 @@ from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS,
 )
-from app.connectors.sources.google.common.drive_people import drive_file_people
+from app.connectors.sources.google.common.drive_people import drive_file_people, drive_shared_with, set_drive_people
 from app.connectors.sources.google.drive.utils.drive_export import (
     GoogleExportStreamer,
     drive_http_reasons,
@@ -100,7 +100,7 @@ from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import
     keep_failed_items_linked,
     reconcile_unseen_records,
 )
-from app.connectors.sources.google.drive.utils.drive_pagination import DrivePageWalk
+from app.connectors.sources.google.drive.utils.drive_pagination import DrivePageWalk, iter_drive_pages
 from app.connectors.sources.google.drive.utils.drive_mime import (
     DriveNativeKind,
     classify_drive_mime,
@@ -166,6 +166,7 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     probe_can_list_children,
     seeds_with_new_parent,
     static_data_source_provider,
+    sharing_refused,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -646,6 +647,14 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._drive_restrictions: dict[str, dict[str, bool]] = {}
         self._assumed_restrictions: set[str] = set()
         self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
+        # Per (user, folder), this run: the folder's sharing as that user reads it, None when unreadable.
+        self._parent_grant_cache: dict[tuple[str, str], list[dict] | None] = {}
+        # Who each item was shared with, as last written this run: a later read that finds the same people is not
+        # written again, one that differs is.
+        self._shares_linked_this_run: dict[str, frozenset] = {}
+        # Each permission id's address, as any read this run gave it: Drive leaves some addresses out of some
+        # members' lists, and the same id is the same person.
+        self._grant_emails_this_run: dict[str, str] = {}
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
         self._hidden_groups: dict[str, set[str]] = {}
@@ -920,6 +929,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_restrictions = {}
             self._assumed_restrictions = set()
             self._drive_principals = {}
+            self._parent_grant_cache = {}
+            self._shares_linked_this_run = {}
+            self._grant_emails_this_run = {}
             self._group_people = {}
             self._warned_groups = set()
             self._hidden_groups = {}
@@ -1962,6 +1974,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         direct_permissions: list[Permission] = []
         organizer_permissions: list[Permission] = []
         saw_permission_details = False
+        raw_grants: list[dict] = []
         individually_shared_emails: set[str] = set()
         page_token: Optional[str] = None
         anyone_with_link_permission_type: Optional[PermissionType] = None
@@ -2021,6 +2034,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     # Written without it, the item would lose the grant for good once its change is passed.
                     raise RuntimeError(f"Audience groups {sorted(missing)} are not stored yet; the item is read again next run")
 
+                raw_grants.extend(permissions_data)
                 # Process each permission
                 for perm_data in permissions_data:
                     try:
@@ -2199,6 +2213,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             DrivePermissionBatch(
                 await restrict(stored),
                 saw_permission_details=bool(saw_permission_details and not is_drive and inherits_from_drive),
+                user_grants=raw_grants,
+                grant_details_seen=saw_permission_details,
+                allowed_email=allowed_email,
             ),
             False,
             [e for e in individually_shared_emails if allowed_email(e)],
@@ -4549,7 +4566,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             return None
         permissions, is_fallback, shared = read
         return DrivePermissionBatch(
-            list(permissions), saw_permission_details=getattr(permissions, "saw_permission_details", False)
+            list(permissions),
+            saw_permission_details=getattr(permissions, "saw_permission_details", False),
+            user_grants=getattr(permissions, "user_grants", None),
+            grant_details_seen=getattr(permissions, "grant_details_seen", False),
+            allowed_email=getattr(permissions, "allowed_email", None),
         ), is_fallback, list(shared)
 
     async def _read_as_drive_manager(
@@ -5160,6 +5181,90 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"{len(self._blocked_folder_ids)} awaiting a user who can list them"
             )
 
+    async def _set_people_from_grants(
+        self,
+        record: FileRecord,
+        metadata: dict,
+        permissions: list | None,
+        user_email: str | None,
+        data_source: GoogleDriveDataSource | None,
+    ) -> None:
+        """Owners, author, last modifier and the people the item was shared with directly, from its whole list.
+        Left as they are (shared_with None: keep what is stored) when the list was not read whole."""
+        grants = getattr(permissions, "user_grants", None)
+        if grants is None:
+            return
+        grants = self._with_known_addresses(grants)
+        people = drive_file_people(metadata, grants)
+        set_drive_people(record, people)
+        file_id = str(metadata.get("id") or "")
+        allowed = getattr(permissions, "allowed_email", None)
+        if allowed is not None:
+            # A shared drive's restrictions cut some of the listed people out; they cannot open the item.
+            grants = [g for g in grants if not g.get("emailAddress") or allowed(g["emailAddress"])]
+        details = bool(getattr(permissions, "grant_details_seen", False))
+        parent_grants: list[dict] | None = None
+        # My Drive shares are decided by the owner's sync only: a reader's view of the folder may differ,
+        # and the edges would follow whichever sync ran last.
+        if not details and metadata.get("ownedByMe"):
+            parent_id = (metadata.get("parents") or [None])[0]
+            if metadata.get("inheritedPermissionsDisabled") or not parent_id:
+                # A limited-access item inherits nothing: every grant it lists was made on it.
+                parent_grants = []
+            else:
+                parent_grants = await self._parent_grants(parent_id, user_email, data_source)
+        record.shared_with = drive_shared_with(
+            grants,
+            owner_ids={o.source_id for o in people.owners if o.source_id},
+            parent_grants=parent_grants,
+            has_details=details,
+        )
+        if record.shared_with is not None and file_id:
+            shared = frozenset((p.source_id, (p.email or "").lower()) for p in record.shared_with)
+            if self._shares_linked_this_run.get(file_id) == shared:
+                # Every member's sync of a shared-drive item reads the same list: written once, not once each.
+                record.shared_with = None
+            else:
+                self._shares_linked_this_run[file_id] = shared
+
+    def _with_known_addresses(self, grants: list[dict]) -> list[dict]:
+        """The grants, each missing address filled from what an earlier read this run gave the same permission id."""
+        for grant in grants:
+            if grant.get("id") and grant.get("emailAddress"):
+                self._grant_emails_this_run[grant["id"]] = grant["emailAddress"]
+        return [
+            {**g, "emailAddress": self._grant_emails_this_run[g["id"]]}
+            if not g.get("emailAddress") and g.get("id") in self._grant_emails_this_run else g
+            for g in grants
+        ]
+
+    async def _parent_grants(
+        self, parent_id: str, user_email: str | None, data_source: GoogleDriveDataSource | None
+    ) -> list[dict] | None:
+        """The folder's sharing as this user reads it, once per run; None when it cannot be read whole."""
+        key = ((user_email or "").lower(), parent_id)
+        if key not in self._parent_grant_cache:
+            source = data_source or self.drive_data_source
+            grants: list[dict] | None = []
+            walk = DrivePageWalk()
+            try:
+                async for page in iter_drive_pages(
+                    source.permissions_list,
+                    {"fileId": parent_id, "supportsAllDrives": True, "pageSize": 100,
+                     "fields": "nextPageToken, permissions(id, type, role, emailAddress, deleted, view)"},
+                    "permissions", self.logger, walk,
+                ):
+                    grants.extend(page)
+            except HttpError as e:
+                if not sharing_refused(e):
+                    # Not an answer: the item fails, so its checkpoint holds and it is read again.
+                    raise
+                self.logger.debug(f"Sharing of folder {parent_id} not readable: {e}")
+                grants = None
+            # A partial list read as the folder's would turn inherited grants into direct shares.
+            self._parent_grant_cache[key] = None if walk.incomplete else (grants or None)
+        return self._parent_grant_cache[key]
+
     async def _process_drive_item(
         self,
         metadata: dict,
@@ -5318,10 +5423,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
-                authored_by=people.authored_by,
-                last_modified_by=people.last_modified_by,
-                owners=people.owners,
             )
+            set_drive_people(file_record, people)
 
             if existing_record and not content_changed:
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
@@ -5544,6 +5647,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     f"Failed to fetch permissions for file {file_id} ({metadata.get('name', 'unknown')}): {e}"
                 )
                 raise
+
+            await self._set_people_from_grants(
+                file_record, metadata, None if is_fallback_permissions else new_permissions,
+                user_email, drive_data_source,
+            )
 
             # Build the set of "Shared with Me" record groups this record belongs to: the current
             # user's own group (personal-drive share) plus, for Shared Drive items, one group per
@@ -7868,6 +7976,10 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def reindex_records(self, records: List[Record]) -> None:
         """Reindex records for Google Drive enterprise."""
         try:
+            # Folder sharing may have changed since an earlier call cached it.
+            self._parent_grant_cache = {}
+            self._shares_linked_this_run = {}
+            self._grant_emails_this_run = {}
             if not records:
                 self.logger.info("No records to reindex")
                 return

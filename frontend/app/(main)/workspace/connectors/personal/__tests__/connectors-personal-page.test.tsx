@@ -34,7 +34,7 @@ vi.mock('../../components/connector-panel', () => ({
   },
 }));
 vi.mock('../../components/instance-panel', () => ({ InstanceManagementPanel: () => null }));
-vi.mock('@/config', () => ({ PermissionLockIcon: () => null }));
+vi.mock('@/config', () => ({ PermissionLockIcon: () => null, useUserPermission: () => true }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/app/components/ui/ConnectorIcon', () => ({ ConnectorIcon: () => null }));
 vi.mock('@/app/components/ui/lottie-loader', () => ({

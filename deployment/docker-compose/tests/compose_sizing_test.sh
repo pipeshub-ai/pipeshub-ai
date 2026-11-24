@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Datastore memory sizing in the Compose files (needs `docker compose config` only; starts nothing).
+# Datastore sizing and search diversity tuning (needs `docker compose config` only; starts nothing).
 #  1. With an empty environment the sizing values equal the literals they replaced.
 #  2. The new variables take effect.
 #  3. An empty value falls back to the default.
@@ -55,7 +55,7 @@ for f in docker-compose.yml docker-compose.build.neo4j.yml; do
   want="NEO4J_dbms_memory_heap_initial__size 1G
 NEO4J_dbms_memory_heap_max__size 2G
 NEO4J_dbms_memory_pagecache_size 1G
-neo4j limit $((3*GiB)) reservation $((2*GiB))
+neo4j limit $((4*GiB)) reservation $((2*GiB))
 qdrant limit $(( $( [[ $f == docker-compose.yml ]] && echo 6 || echo 4 ) *GiB)) reservation $((2*GiB))"
   check "$f defaults" "$want" "$got"
   if [[ $f == docker-compose.yml ]]; then
@@ -82,7 +82,7 @@ qdrant limit $(( $( [[ $f == docker-compose.yml ]] && echo 6 || echo 4 ) *GiB)) 
   # An empty value means unset: it falls back to the default instead of rendering an invalid size.
   render "$f" "$TMP/empty.json" NEO4J_MEMORY_LIMIT= NEO4J_HEAP_MAX=
   check "$f empty value uses the default" "NEO4J_dbms_memory_heap_max__size 2G
-neo4j limit $((3*GiB)) reservation $((2*GiB))" \
+neo4j limit $((4*GiB)) reservation $((2*GiB))" \
     "$(summarize "$TMP/empty.json" | grep -E '^(NEO4J_dbms_memory_heap_max|neo4j)')"
 
   # An override file using the existing key names still wins over the base file.
@@ -96,5 +96,19 @@ YML
   check "$f override file wins" "NEO4J_dbms_memory_heap_max__size 3G" \
     "$(summarize "$TMP/ovr.json" | grep heap_max)"
 done
+
+render docker-compose.yml "$TMP/search-diversity.json" \
+  SEARCH_SOURCE_DIVERSITY=true SEARCH_DIVERSITY_WINDOW=20 SEARCH_DIVERSITY_PER_SOURCE=2 SEARCH_DIVERSITY_POOL=100
+check "docker-compose.yml forwards search diversity tuning" "true 20 2 100" \
+  "$(python3 - "$TMP/search-diversity.json" <<'PY'
+import json, sys
+
+environment = json.load(open(sys.argv[1]))["services"]["pipeshub-ai"]["environment"]
+print(*(environment.get(name) for name in (
+    "SEARCH_SOURCE_DIVERSITY", "SEARCH_DIVERSITY_WINDOW",
+    "SEARCH_DIVERSITY_PER_SOURCE", "SEARCH_DIVERSITY_POOL",
+)))
+PY
+)"
 
 (( fail == 0 )) && echo "compose_sizing_test: PASS" || { echo "compose_sizing_test: FAIL"; exit 1; }

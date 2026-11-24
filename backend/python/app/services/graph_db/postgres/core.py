@@ -141,9 +141,25 @@ class CoreMixin(PgBase):
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool | None:
         if not nodes:
             return True
+        from app.services.graph_db.common.utils import (
+            merge_same_id_record_docs,
+            record_created_at_insert_only,
+        )
+
         org = current_org_id()
-        docs = list({d["id"]: d for d in (_node(n, collection) for n in nodes)}.values())     # a repeated id: the last one wins
+        if collection == CollectionNames.RECORDS.value and record_created_at_insert_only():
+            merged: dict[str, dict] = {}
+            for n in nodes:
+                d = _node(n, collection)
+                merged[d["id"]] = merge_same_id_record_docs(merged[d["id"]], d) if d["id"] in merged else d
+            docs = list(merged.values())      # a repeated id: one document, by the rule every store applies
+        else:
+            docs = list({d["id"]: d for d in (_node(n, collection) for n in nodes)}.values())     # a repeated id: the last one wins
         await self._validate_upserts(collection, docs, transaction)      # what is checked is what is written
+        if collection == CollectionNames.RECORDS.value:
+            # insert-only fields: the merge below must neither overwrite them nor, through the clears step, remove them
+            await self._upsert_record_nodes(docs, transaction)
+            return True
         # a field set to None is removed (``SET n += {x: null}``), so the nulls are cleared before the merge
         payload = _j([{"id": d["id"], "doc": d} for d in docs])
         clears = _j([{"id": d["id"], "nulls": nulls} for d in docs if (nulls := [k for k, v in d.items() if v is None])])
@@ -157,6 +173,26 @@ class CoreMixin(PgBase):
                 ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(_nv.key, _nv.value), '{}'::jsonb) FROM jsonb_each(graph.nodes.doc || EXCLUDED.doc) AS _nv WHERE _nv.value <> 'null'::jsonb)""", org, collection, payload)
         await self._q(go, transaction, write=True)
         return True
+
+    async def _upsert_record_nodes(self, docs: list[dict], transaction: str | None) -> None:
+        """``batch_upsert_nodes`` for ``records``: the nulls of the other fields clear as before, but the insert-only
+        fields and the trash state are left alone on an existing record (their nulls clear nothing)."""
+        from app.services.graph_db.common.utils import (
+            RECORD_UPDATE_DROPPED_FIELDS,
+            record_created_at_insert_only,
+        )
+        from app.services.graph_db.postgres.records import _upsert_record_docs
+
+        org = current_org_id()
+        kept = set(RECORD_UPDATE_DROPPED_FIELDS) if record_created_at_insert_only() else {"incarnationId"}      # a null never clears the id, with either switch
+        clears = _j([{"id": d["id"], "nulls": nulls} for d in docs if (nulls := [k for k, v in d.items() if v is None and k not in kept])])
+
+        async def go(tx: Tx) -> None:
+            if clears != "[]":
+                await tx.execute("""/* pipeshub:graph.batch_upsert_nodes_clear */ UPDATE graph.nodes n SET doc = n.doc - x.nulls
+                    FROM jsonb_to_recordset($3::jsonb) AS x(id text, nulls text[]) WHERE n.org_id = $1 AND n.coll = $2 AND n.id = x.id""", org, CollectionNames.RECORDS.value, clears)
+            await _upsert_record_docs(tx, org, docs)
+        await self._q(go, transaction, write=True)
 
     async def create_node_if_absent(self, key: str, collection: str, node: dict[str, Any], transaction: str | None = None) -> bool:
         """One insert that leaves an existing node alone; True iff this call created it (a racing creator that commits first makes this False)."""
@@ -226,6 +262,28 @@ class CoreMixin(PgBase):
                                      org, collection, keys)
         n = await self._q(go, transaction, write=True)
         return n == len(set(keys))
+
+    async def delete_node_if_match(self, key: str, collection: str, expected: dict, graph_name: str = "knowledgeGraph",
+                                   transaction: str | None = None) -> bool:
+        if not expected:
+            raise ValueError("delete_node_if_match needs an expectation")
+        if collection == CollectionNames.RECORDS.value:
+            raise ValueError("records are deleted with their type documents: use delete_nodes_and_edges")
+        org = current_org_id()
+
+        async def go(tx: Tx) -> bool:
+            # The row lock first, in a statement of its own (as update_node_fields_if_match): the expectation is an anti-join, which a deleter that
+            # waited for the lock does not re-check against the row it then deletes. The edges go only when the node did.
+            await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
+            deleted = await tx.fetchval("""/* pipeshub:graph.delete_node_if_match */ WITH d AS (DELETE FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
+                AND NOT EXISTS (SELECT 1 FROM jsonb_each($4::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL))
+                RETURNING 1) SELECT count(*) FROM d""", org, collection, key, _j(expected))
+            if not deleted:
+                return False
+            await tx.execute("""/* pipeshub:graph.delete_edges_of */ DELETE FROM graph.edges WHERE org_id = $1
+                AND ((from_coll = $2 AND from_id = ANY($3::text[])) OR (to_coll = $2 AND to_id = ANY($3::text[])))""", org, collection, [key])
+            return True
+        return await self._q(go, transaction, write=True)
 
     async def delete_nodes_and_edges(self, keys: list[str], collection: str, graph_name: str = "knowledgeGraph", transaction: str | None = None) -> None:
         await self.delete_nodes(keys, collection, transaction)

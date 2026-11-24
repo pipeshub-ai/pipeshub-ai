@@ -6,6 +6,13 @@ import type { TFunction } from 'i18next';
 import type { KnowledgeHubNode } from '../types';
 import { hubNode, installBrowserShims, openRowMenu, renderInTheme, row } from './kb-page-harness';
 
+// These tests are about other behaviour; group permissions grant everything. Mocked at the
+// collection hook because @/config imports these views itself, so a partial @/config mock misses them.
+vi.mock('../hooks/use-collection-group-permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/use-collection-group-permissions')>()),
+  useCollectionGroupPermissions: () => ({ canEdit: true, canDelete: true, canManageSync: true }),
+}));
+
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 
 const SORT = { field: 'name', order: 'asc' } as const;
@@ -158,5 +165,20 @@ describe('the status of a file with nothing to index', () => {
   it('keeps the short label short', () => {
     const file = hubNode({ id: 'r9', name: 'blank.txt', indexingStatus: 'EMPTY', sizeInBytes: 0 });
     expect(getKbItemStatusLabel(file, t, false)).toBe('kb.indexingStatus.empty');
+  });
+});
+
+describe('the status of a PDF that is over the page limit', () => {
+  const t = ((key: string) => key) as unknown as TFunction;
+  const reason = 'This PDF has 501 pages; PDFs over 500 pages are not indexed. Supported in Enterprise Edition.';
+
+  it('shows the reason beside the not-supported status', () => {
+    const file = hubNode({ id: 'r1', name: 'long.pdf', indexingStatus: 'FILE_TYPE_NOT_SUPPORTED', reason });
+    expect(getKbItemStatusLabel(file, t)).toBe(`kb.indexingStatus.fileTypeNotSupported - ${reason}`);
+  });
+
+  it('keeps the short label short', () => {
+    const file = hubNode({ id: 'r1', name: 'long.pdf', indexingStatus: 'FILE_TYPE_NOT_SUPPORTED', reason });
+    expect(getKbItemStatusLabel(file, t, false)).toBe('kb.indexingStatus.fileTypeNotSupported');
   });
 });

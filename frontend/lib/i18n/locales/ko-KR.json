@@ -799,7 +799,11 @@
       "collectionExists": "\"{{name}}\" 컬렉션이 이미 있습니다. 다른 이름을 선택하세요."
     },
     "sourcesNotReady": "일부 소스가 아직 준비 중이라 목록에 표시되지 않습니다({{count}}). 잠시 후 다시 시도하세요.",
-    "sourcePreparing": "이 소스를 준비하는 중입니다… 잠시 후 항목이 여기에 표시됩니다."
+    "sourcePreparing": "이 소스를 준비하는 중입니다… 잠시 후 항목이 여기에 표시됩니다.",
+    "selectionActionsNotice": "먼저 인덱싱",
+    "selectionActionsNoticeEnterprise": "선택한 항목 중 먼저 인덱싱할 항목을 고르는 기능은 Enterprise Edition에 포함됩니다.",
+    "uploadExtrasNotice": "이 파일을 먼저 인덱싱",
+    "uploadExtrasNoticeEnterprise": "업로드 중 먼저 인덱싱할 항목을 고르는 기능은 Enterprise Edition에 포함됩니다."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1332,7 +1336,15 @@
         },
         "toolNeedsApproval": "승인 필요",
         "toolNeedsApprovalHint": "이 도구는 데이터를 삭제할 수 있습니다. 프로젝트 채팅에서는 누군가 승인한 후에만 실행됩니다.",
-        "indexingStatusLabel": "인덱싱: {{status}}"
+        "indexingStatusLabel": "인덱싱: {{status}}",
+        "collectionsTitle": "컬렉션",
+        "collectionsSubtitle": "이 프로젝트의 채팅은 선택한 컬렉션과 업로드된 프로젝트 파일을 검색합니다.",
+        "noCollectionsAvailable": "추가할 컬렉션이 아직 없습니다.",
+        "failedToLoadCollections": "컬렉션을 불러오지 못했습니다",
+        "updateCollectionsFailed": "컬렉션을 업데이트하지 못했습니다",
+        "collectionsStatusCount": "{{count}}개 선택됨",
+        "collectionsStatusNone": "없음",
+        "untitledCollection": "제목 없는 컬렉션"
       },
       "moveDialog": {
         "title": "프로젝트로 이동",
@@ -2201,9 +2213,29 @@
         "pasteBlockLabel": "MCP 구성에 바로 붙여넣을 수 있습니다",
         "copyPasteBlockAria": "붙여넣기 블록 복사",
         "copySuccessTitle": "복사되었습니다",
-        "copyErrorTitle": "복사할 수 없습니다"
+        "copyErrorTitle": "복사할 수 없습니다",
+        "knowledgeLimitLaterHint": "토큰을 교체하지 않고 나중에 변경할 수 있습니다."
       },
-      "scopeCount_other": "범위 {{count}}개"
+      "scopeCount_other": "범위 {{count}}개",
+      "access": {
+        "panelTitle": "액세스 변경",
+        "intro": "{{name}}이(가) 볼 수 있는 항목을 선택하세요. 토큰은 계속 작동하며 변경 사항은 다음 요청부터 적용되므로 토큰을 사용하는 곳을 업데이트할 필요가 없습니다.",
+        "save": "저장",
+        "savedTitle": "액세스가 변경됨",
+        "savedEverything": "이제 {{name}}에서 내가 볼 수 있는 모든 항목을 볼 수 있습니다.",
+        "savedSome_other": "이제 {{name}}에서 선택한 {{count}}개 항목을 볼 수 있습니다.",
+        "undo": "실행 취소",
+        "undoneTitle": "변경 사항이 취소됨",
+        "undoErrorTitle": "변경 사항을 취소하지 못했습니다. 액세스 변경을 열어 다시 설정하세요.",
+        "errorTitle": "액세스를 변경하지 못했습니다",
+        "errorDescription": "변경된 내용이 없습니다. 다시 시도하세요.",
+        "unknownTitle": "변경 사항을 확인할 수 없음",
+        "unknownDescription": "저장되었을 수 있습니다. 다시 시도하기 전에 여기에 표시된 액세스를 확인하세요.",
+        "unknownReloadFailedDescription": "저장되었을 수 있지만 최신 액세스를 불러오지 못했습니다. 표시된 내용을 믿기 전에 페이지를 새로 고치세요.",
+        "rowAction": "액세스 변경",
+        "rowActionAria": "{{name}}이(가) 볼 수 있는 항목 변경",
+        "rowActionTooltip": "액세스 변경: 이 토큰이 볼 수 있는 항목 선택"
+      }
     },
     "agentSignIns": {
       "title": "에이전트 로그인",
@@ -2477,7 +2509,8 @@
         "security": "보안",
         "personal": "개인",
         "people": "구성원",
-        "developerSettings": "개발자 설정"
+        "developerSettings": "개발자 설정",
+        "help": "도움말"
       },
       "nav": {
         "general": "일반",
@@ -2799,7 +2832,7 @@
           "pipeshub_search": "사용자가 읽을 수 있는 커넥터와 컬렉션의 인덱싱된 문서를 의미 기준으로 검색하고, 일치하는 구절을 해당 레코드와 함께 반환합니다.",
           "pipeshub_get_record_content": "레코드 하나의 전체 텍스트를 읽습니다. URL, 이슈 키 또는 외부 ID로 레코드를 찾고, 폴더, 스페이스 또는 에픽 아래의 항목을 탐색하고, Slack 스레드 전체를 읽을 수도 있습니다.",
           "pipeshub_download_record": "레코드에 저장된 원본 파일을 다운로드합니다. 필요하면 PDF로 변환합니다.",
-          "pipeshub_directory": "로그인한 사용자, 워크스페이스의 사용자와 그룹, 사용자가 속한 팀을 조회합니다. 아무것도 변경하지 않습니다.",
+          "pipeshub_directory": "로그인한 사용자, 워크스페이스의 사용자, 사용자가 속한 팀을 조회합니다. 아무것도 변경하지 않습니다.",
           "pipeshub_create_collection": "사용자가 소유하는 비어 있는 새 컬렉션을 만들어 업로드할 수 있게 합니다.",
           "pipeshub_upload": "문서를 컬렉션에 업로드하여 인덱싱하고 검색할 수 있게 합니다. 호출당 최대 20개 문서, 약 3MB까지입니다.",
           "pipeshub_indexing_status": "컬렉션의 인덱싱이 얼마나 진행되었는지, 어떤 문서가 왜 실패했는지 알려 줍니다.",
@@ -2848,7 +2881,7 @@
           },
           "people": {
             "label": "사람 및 엔터티",
-            "description": "워크스페이스의 사용자와 그룹, 그리고 지식 그래프의 사람, 프로젝트, 주제, 값입니다."
+            "description": "워크스페이스의 사용자, 그리고 지식 그래프의 사람, 프로젝트, 주제, 값입니다."
           },
           "chat": {
             "label": "채팅 및 에이전트",
@@ -3776,6 +3809,25 @@
         "reach": "{{connector}}의 변경 사항은 {{interval}} 이내에 PipesHub에 반영됩니다.",
         "reachUnknown": "{{connector}}의 변경 사항은 다음 동기화 때 PipesHub에 반영됩니다.",
         "syncNow": "지금 권한 동기화",
+        "filter": {
+          "label": "검색이 접근 권한을 확인하는 방식",
+          "mode": {
+            "inherit": "배포 기본값",
+            "legacy": "기본 확인",
+            "scopes": "더 빠른 검색"
+          },
+          "effective": {
+            "scopes": "{{connector}} 검색은 더 빠른 검색을 사용합니다. 결과는 찾기 전에 각 사용자가 볼 수 있는 항목으로 좁혀지며, 모든 결과는 계속 확인됩니다.",
+            "legacy": "{{connector}} 검색은 기본 확인을 사용합니다. 결과는 찾은 뒤에 확인됩니다."
+          },
+          "waiting": "{{connector}}의 권한이 최신 상태가 되면 더 빠른 검색이 시작됩니다.",
+          "applies": "이 변경 사항은 30초 이내에 검색에 적용됩니다.",
+          "blocker": {
+            "serving_off": "이 배포에서는 더 빠른 검색이 꺼져 있습니다.",
+            "store_unsupported": "이 배포의 벡터 저장소는 더 빠른 검색을 지원하지 않습니다."
+          },
+          "saveError": "이 설정을 변경하지 못했습니다. 다시 시도하세요."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -3895,7 +3947,9 @@
           "cancelled": "로그인을 취소했습니다.",
           "signInFailed": "로그인이 완료되지 않았습니다. 다시 시도하세요."
         }
-      }
+      },
+      "indexPriorityNotice": "이 커넥터의 인덱싱 우선순위 지정",
+      "indexPriorityNoticeEnterprise": "인덱싱 우선순위는 Enterprise Edition 기능입니다."
     },
     "mcpServers": {
       "searchPlaceholder": "MCP 서버 검색...",
@@ -3946,7 +4000,6 @@
         "unavailable": "사용 불가"
       },
       "catalog": {
-        "title": "서버 더 추가",
         "description": "바로 쓸 수 있는 서버입니다. 추가한 다음 로그인하세요.",
         "personalDescription": "여기서 추가한 서버는 나만 볼 수 있습니다.",
         "added": "추가됨",
@@ -4049,7 +4102,8 @@
           "shared": "모두가 쓰는 공유 자격 증명 하나",
           "sharedHint": "아래에서 한 번만 추가합니다. 모두가 이 자격 증명의 권한으로 작업합니다."
         },
-        "advanced": "고급"
+        "advanced": "고급",
+        "nameTaken": "이 이름을 이미 다른 서버가 쓰고 있습니다. 다른 이름을 고르세요."
       },
       "configPanel": {
         "editTitle": "MCP 서버 편집",
@@ -4200,6 +4254,67 @@
         "signIn": "{{name}}이(가) 추가되었습니다. 도구를 실행하려면 아래에서 로그인하세요.",
         "other": "{{name}}이(가) 추가되었지만 아직 작동하지 않습니다. 아래에서 이유를 확인하세요.",
         "dismiss": "완료"
+      },
+      "searchYourServers": "내 서버 검색",
+      "categories": {
+        "communication": "커뮤니케이션",
+        "meetings": "회의 및 캘린더",
+        "docs": "문서 및 파일",
+        "projects": "프로젝트 관리",
+        "developer": "개발자 도구",
+        "data": "데이터 및 분석",
+        "sales": "영업 및 CRM",
+        "support": "고객 지원",
+        "finance": "재무 및 법무",
+        "design": "디자인 및 화이트보드",
+        "automation": "자동화",
+        "search": "검색 및 리서치",
+        "security": "보안 및 ID"
+      },
+      "discover": {
+        "title": "서버 찾기",
+        "searchPlaceholder": "이름이나 하려는 일(영어)로 검색하세요. 예: “schedule meetings”",
+        "searchLabel": "준비된 서버 검색",
+        "clearSearch": "검색 지우기",
+        "categoriesLabel": "카테고리",
+        "all": "전체",
+        "allServers": "모든 서버",
+        "resultsFor_one": "“{{query}}” 검색 결과 서버 {{count}}개",
+        "resultsFor_other": "“{{query}}” 검색 결과 서버 {{count}}개",
+        "searching": "검색 중…",
+        "catalogLoadFailed": "카탈로그를 불러오지 못했습니다.",
+        "noMatch": "“{{query}}”에 맞는 준비된 서버가 없습니다. 어떤 서버든 URL로 추가할 수 있습니다.",
+        "whatItDoes": "할 수 있는 일",
+        "beforeYouAdd": "추가하기 전에",
+        "readOnly": "읽기 전용",
+        "changesData": "데이터를 읽고 변경함",
+        "readOnlyNote": "정보를 조회하기만 합니다.",
+        "changesDataNote": "데이터를 바꾸는 도구는 허용하지 않는 한 실행 전에 확인을 요청합니다.",
+        "signIn": "로그인",
+        "signInOauth": "각자 자신의 {{name}} 계정으로 로그인합니다",
+        "signInToken": "API 토큰",
+        "signInNone": "로그인 필요 없음",
+        "documentation": "문서",
+        "added_one": "추가됨",
+        "added_other": "{{count}}개 추가됨",
+        "addOrg": "조직에 추가",
+        "addPersonal": "나만 쓰도록 추가",
+        "orgNote": "조직의 모든 사람이 볼 수 있습니다. 각자 로그인해서 사용합니다.",
+        "personalNote": "나만 볼 수 있습니다.",
+        "popularTitle": "조직에서 인기 있는 서버",
+        "popularHint": "로그인한 사람 수 기준",
+        "peopleUse_one": "{{count}}명이 사용 중",
+        "peopleUse_other": "{{count}}명이 사용 중",
+        "browse": "MCP 서버 둘러보기",
+        "browseHint": "서버를 추가하고 로그인하면 목록에 나타나며 캔버스로 끌어올 수 있습니다.",
+        "fromCatalog": "카탈로그에서",
+        "add": "추가",
+        "view": "보기",
+        "askAdmin": "공유 에이전트는 조직이 추가한 서버만 사용할 수 있습니다. 관리자에게 추가를 요청하세요.",
+        "sharedAgentNote": "공유 에이전트가 쓸 수 있는 서버는 관리자만 추가할 수 있습니다. 관리자에게 조직용 {{name}} 추가를 요청하세요.",
+        "addedSignIn": "{{name}}이(가) 추가되었습니다. 도구를 사용하려면 목록에서 로그인하세요.",
+        "emptyBuilder": "아직 MCP 서버가 없습니다. Linear, Slack, GitHub 같은 앱의 도구를 이 에이전트에 주려면 하나를 추가하세요.",
+        "noAddedMatch": "일치하는 서버가 없습니다."
       }
     },
     "bots": {
@@ -4335,6 +4450,7 @@
         "candidateApproved": "\"{{name}}\"이(가) 승인되었습니다",
         "candidateRejected": "\"{{name}}\"이(가) 거부되었습니다",
         "candidateActionError": "후보를 업데이트하지 못했습니다",
+        "candidateGone": "이 후보는 이미 검토되었습니다",
         "conflict": "이 스킬이 다른 곳에서 변경되었습니다",
         "conflictDescription": "최신 버전을 다시 불러온 다음 수정 사항을 적용하세요.",
         "conflictReload": "다시 불러오기"
@@ -5651,7 +5767,6 @@
     "mcpServerAlreadyAttachedNotify": "이 에이전트에는 이미 {{name}}과(와) 같은 유형의 다른 서버가 있습니다. 에이전트는 유형별로 서버를 하나만 사용할 수 있습니다.",
     "webSearchOnlyOne": "웹 검색 제공자는 하나만 연결할 수 있습니다",
     "mcpServerNodeSubtitle": "MCP 서버의 도구",
-    "noMcpServersAvailable": "사용 가능한 MCP 서버가 없습니다",
     "webSearchLocked": "이 에이전트의 웹 검색은 변경할 수 없습니다",
     "webSearchLoading": "웹 검색 제공자를 불러오는 중…",
     "webSearchConfigureFirst": "먼저 {{name}}을(를) 구성하세요",
@@ -6364,5 +6479,151 @@
       "copyDetails": "관리자용 세부 정보 복사",
       "copied": "세부 정보를 복사했습니다"
     }
+  },
+  "support": {
+    "menuLabel": "지원팀에 문의",
+    "title": "지원팀에 문의",
+    "steps": {
+      "area": "영역",
+      "details": "세부 정보"
+    },
+    "close": "닫기",
+    "cancel": "취소",
+    "back": "뒤로",
+    "continue": "계속",
+    "send": "요청 보내기",
+    "sending": "보내는 중…",
+    "changeArea": "영역 변경",
+    "change": "변경",
+    "issueOther": "기타(목록에 없음)",
+    "areaStep": {
+      "title": "어떤 도움이 필요하신가요?",
+      "subtitle": "문제와 가장 가까운 영역을 선택하세요.",
+      "suggested": "추천",
+      "suggestion": "{{time}}에 {{area}}에서 오류가 발생해 이 영역을 추천했습니다.",
+      "idea": "아이디어가 있으신가요? 피드백 보내기"
+    },
+    "areas": {
+      "connectors": {
+        "label": "커넥터 및 동기화",
+        "hint": "앱 연결, 동기화 오류 또는 누락된 데이터"
+      },
+      "chat": {
+        "label": "채팅 및 검색",
+        "hint": "답변, 인용 또는 검색 결과"
+      },
+      "agents": {
+        "label": "에이전트 및 작업",
+        "hint": "에이전트 만들기, 실행 또는 공유"
+      },
+      "files": {
+        "label": "파일 및 컬렉션",
+        "hint": "업로드, 폴더 또는 파일 미리보기"
+      },
+      "access": {
+        "label": "로그인 및 액세스",
+        "hint": "로그인, 비밀번호 또는 SSO"
+      },
+      "people": {
+        "label": "사용자 및 권한",
+        "hint": "사용자 초대, 역할 또는 그룹"
+      },
+      "other": {
+        "label": "기타",
+        "hint": "여기에 없는 모든 항목"
+      }
+    },
+    "details": {
+      "descriptionLabel": "무슨 일이 있었나요?",
+      "descriptionPlaceholder": "무엇을 하려고 했고, 대신 어떤 일이 일어났나요?",
+      "descriptionMin_other": "최소 {{count}}자 이상 입력하세요.",
+      "descriptionMax_other": "{{count}}자 제한에 도달했습니다.",
+      "attach": "스크린샷 첨부",
+      "removeFile": "{{name}} 제거",
+      "fileUnsupported": "{{name}}: 지원되지 않는 파일 형식입니다.",
+      "fileTooLarge": "{{name}} 파일이 5MB를 초과합니다.",
+      "tooManyFiles": "파일은 최대 5개까지 첨부할 수 있습니다.",
+      "filesTotalTooLarge": "파일은 합쳐서 8MB까지 첨부할 수 있습니다.",
+      "smtpTitle": "이 워크스페이스에 이메일이 설정되어 있지 않습니다",
+      "smtpBody": "사용 중인 이메일 앱에서 {{email}}(으)로 보낼 수 있는 메시지를 제공해 드립니다.",
+      "smtpAdmin": "요청을 바로 보내려면 워크스페이스 설정에서 SMTP를 구성하세요.",
+      "smtpMember": "요청을 바로 보내려면 관리자에게 SMTP 구성을 요청하세요.",
+      "includeErrors_other": "최근 오류 {{count}}개 포함",
+      "errorLine": "{{area}}: {{time}}에 오류 {{status}}",
+      "errorLineUnknown": "{{time}}에 오류 {{status}}",
+      "sentWith": "요청과 함께 전송되는 정보: {{list}}.",
+      "sentParts": {
+        "workspace": "워크스페이스",
+        "identity": "이름과 이메일",
+        "browser": "브라우저",
+        "errors": "최근 오류"
+      },
+      "viewDetails": "세부 정보 보기",
+      "hideDetails": "세부 정보 숨기기",
+      "rows": {
+        "issue": "문의 유형",
+        "workspace": "워크스페이스",
+        "signedInAs": "로그인 계정",
+        "browser": "브라우저",
+        "recentErrors": "최근 오류"
+      }
+    },
+    "blocked": {
+      "area": "계속하려면 영역을 선택하세요.",
+      "description": "'무슨 일이 있었나요?'에 최소 {{min}}자가 필요합니다({{left}}자 남음)."
+    },
+    "result": {
+      "sentTitle": "요청을 보냈습니다",
+      "sentBody": "지원팀이 요청을 받았습니다. 사본을 이메일로 보내 드렸으며, 답변은 받은편지함으로 전달됩니다.",
+      "pendingTitle": "아직 보내는 중입니다",
+      "pendingBody": "{{email}}(으)로 이메일을 보내는 데 평소보다 오래 걸리고 있습니다. 답변을 받지 못하면 이 참조 번호로 문의해 주세요.",
+      "referenceLabel": "참조 번호",
+      "copyReference": "참조 번호 복사",
+      "quote": "같은 문제로 다시 문의할 때 이 참조 번호를 알려 주세요.",
+      "done": "완료"
+    },
+    "email": {
+      "title": "이메일 앱에서 보내기",
+      "noSmtp": "이곳에는 이메일이 설정되어 있지 않아 요청 {{reference}}을(를) 보내지 못했습니다. 지원팀에 전달되도록 사용 중인 이메일 앱에서 이 메시지를 보내 주세요.",
+      "failed": "요청 {{reference}}을(를) 이메일로 보내지 못했습니다. 지원팀에 전달되도록 사용 중인 이메일 앱에서 이 메시지를 보내 주세요.",
+      "limit": "최근 1시간 동안 여러 건의 요청을 보내셨습니다. 이번 요청은 이메일 앱에서 보내 주세요.",
+      "unsaved": "요청을 보내지 못했습니다. 지원팀에 전달되도록 사용 중인 이메일 앱에서 이 메시지를 보내 주세요.",
+      "to": "받는 사람",
+      "subject": "제목",
+      "copy": "메시지 복사",
+      "copied": "복사됨",
+      "open": "이메일 앱 열기",
+      "shortened": "이메일 앱에는 짧게 줄인 내용이 전달됩니다. 전체 내용은 메시지 복사를 사용하세요.",
+      "attachFiles_other": "파일 {{count}}개는 이 메시지에 포함되지 않습니다. 이메일 앱에서 직접 첨부해 주세요.",
+      "copyFallback": "자동으로 복사하지 못했습니다. 메시지가 선택되어 있으니 Ctrl+C(Mac에서는 ⌘C)를 누르세요."
+    },
+    "errors": {
+      "load": "지원 옵션을 불러오지 못했습니다.",
+      "retry": "다시 시도",
+      "send": "요청을 보내지 못했습니다. 다시 시도해 주세요.",
+      "emailInstead": "이메일로 보내기"
+    }
+  },
+  "feedback": {
+    "menuLabel": "피드백 보내기",
+    "title": "피드백 보내기",
+    "subtitle": "잘 되는 점, 안 되는 점, 원하는 기능을 알려 주세요.",
+    "kindIssue": "일반 피드백",
+    "kindFeedback": "기능 요청",
+    "descriptionPlaceholder": "어떤 일이 있었나요, 또는 무엇을 개선할까요?",
+    "addFiles": "파일 추가",
+    "removeFile": "제거",
+    "fileHint": "선택 사항. 파일 최대 5개, 각 5MB. 이미지, PDF, 텍스트 또는 CSV.",
+    "cancel": "취소",
+    "submit": "제출",
+    "needReply": "답변이 필요하신가요? 지원팀에 문의",
+    "success": "감사합니다. 피드백을 받았습니다.",
+    "pending": "{{email}}(으)로 보내는 이메일이 평소보다 오래 걸리고 있습니다. 답변이 없으면 문의해 주세요.",
+    "submitError": "제출하지 못했습니다. 다시 시도해 주세요.",
+    "descriptionTooShort": "조금 더 자세히 적어 주세요(최소 10자).",
+    "invalidType": "지원하지 않는 파일 형식입니다.",
+    "fileTooLarge": "각 파일은 5MB 이하여야 합니다.",
+    "tooManyFiles": "파일은 최대 5개까지 첨부할 수 있습니다.",
+    "filesTotalTooLarge": "파일은 합쳐서 8MB까지 첨부할 수 있습니다."
   }
 }

@@ -205,4 +205,9 @@ describe('McpServerIcon', () => {
     expect(logoPath(<McpServerIcon typeId="apollo" name="Sales research" />)).toBe('/icons/connectors/apollo.svg');
     expect(logoPath(<McpServerIcon typeId={null} name="Apollo MCP" />)).toBe('/icons/connectors/apollo.svg');
   });
+
+  it('shows the Zapmail logo for catalog instances and matching custom servers', () => {
+    expect(logoPath(<McpServerIcon typeId="zapmail" name="Cold email" />)).toBe('/icons/connectors/zapmail.svg');
+    expect(logoPath(<McpServerIcon typeId={null} name="Zapmail MCP" />)).toBe('/icons/connectors/zapmail.svg');
+  });
 });

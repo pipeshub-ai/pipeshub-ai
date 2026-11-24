@@ -111,7 +111,7 @@ def test_the_node_api_strips_the_same_names() -> None:
     """`internal-record-fields.ts` mirrors `INTERNAL_RECORD_FIELDS`; a name in one list only leaks or over-strips."""
     ts = Path(__file__).resolve().parents[5] / "backend/nodejs/apps/src/modules/enterprise_search/utils/internal-record-fields.ts"
     body = ts.read_text(encoding="utf-8").split("new Set([", 1)[1].split("]);", 1)[0]
-    assert set(re.findall(r"'([A-Za-z]+)'", body)) == set(INTERNAL_RECORD_FIELDS)
+    assert set(re.findall(r"'([A-Za-z0-9]+)'", body)) == set(INTERNAL_RECORD_FIELDS)
 
 
 # -- the date-bounded and timeline answers -----------------------------------------------------------
@@ -250,3 +250,12 @@ def test_api_record_key_edges(key: str, dropped: bool) -> None:
 def test_api_record_keeps_only_the_names_it_is_told_to() -> None:
     shown = api_record({"failedAt": 1, "deleteSource": "USER", "republishCount": 2}, keep={"deleteSource"})
     assert shown == {"deleteSource": "USER"}
+
+
+def test_the_parser_identity_fields_are_internal() -> None:
+    """The four fields describe how a copy was built; the record endpoint and the search response never return them."""
+    from app.modules.pipeline import parser_identity as pi
+
+    assert set(pi.IDENTITY_FIELDS) <= INTERNAL_RECORD_FIELDS
+    stored = _stored(**dict.fromkeys(pi.IDENTITY_FIELDS, "x"))
+    assert not set(pi.IDENTITY_FIELDS) & api_record(stored).keys()

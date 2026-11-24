@@ -23,8 +23,8 @@ export function withoutSideStores(): () => void {
   };
 }
 
-/** `invite(orgId, emails)` runs an admin invite of `emails` the way `POST /users/bulk/invite` does. */
-export function adminInviter(rsAvailable: boolean): Invite {
+/** A `UserController` over the real stores, with mail, auth and events as no-ops; for the races on its handlers. */
+export function raceController(rsAvailable: boolean): UserController {
   const config = {
     scopedJwtSecret: 'admin-invite-race-secret',
     frontendUrl: 'http://app.admin-invite-race.test',
@@ -42,7 +42,7 @@ export function adminInviter(rsAvailable: boolean): Invite {
     stop: async () => undefined,
     publishEvent: async () => undefined,
   };
-  const controller = new UserController(
+  return new UserController(
     ...([
       config,
       mail,
@@ -51,7 +51,12 @@ export function adminInviter(rsAvailable: boolean): Invite {
       events,
       {},
     ] as unknown as ConstructorParameters<typeof UserController>),
-  ) as unknown as {
+  );
+}
+
+/** `invite(orgId, emails)` runs an invite of `emails` (admin unless `role` says member) the way `POST /users/bulk/invite` does. */
+export function adminInviter(rsAvailable: boolean, role: 'admin' | 'member' = 'admin'): Invite {
+  const controller = raceController(rsAvailable) as unknown as {
     processInvites(...args: unknown[]): Promise<unknown>;
   };
   return (orgId, emails) =>
@@ -61,6 +66,6 @@ export function adminInviter(rsAvailable: boolean): Invite {
       orgId,
       'Inviter',
       { registeredName: 'Race Org' },
-      'admin',
+      role,
     );
 }

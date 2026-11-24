@@ -81,6 +81,7 @@ from app.utils.oauth_config import (
     get_oauth_config,
 )
 from app.utils import error_class
+from app.utils.credential_refresh_log import token_endpoint_error_class
 from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.oauth_redirect import resolve_oauth_base_url
@@ -2819,7 +2820,9 @@ async def handle_toolset_oauth_callback(
             "redirect_url": f"{base_url}/tools?oauth_error=auth_failed"
         }
     except Exception as e:
-        mark_request_failure(request, e, reason="server_error", include_error_text=False)
+        mark_request_failure(
+            request, e, error_class=token_endpoint_error_class(e), reason="server_error", include_error_text=False,
+        )
         error_message = extract_oauth_error_message(e)
         return {
             "success": False,

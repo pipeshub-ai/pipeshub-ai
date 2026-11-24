@@ -34,7 +34,7 @@ from app.core import org_context
 from app.services.messaging.error_classifier import extract_status_code
 from app.utils.error_class import OUR_BUGS, classify_error, level_for, log_failure
 from app.utils.logging_fields import current_log_fields, log_event, log_fields, log_once
-from app.utils.oauth_errors import transient_error_class
+from app.utils.oauth_errors import CODE_REFUSED_ERROR_CODES, transient_error_class
 from app.utils.request_context import (
     get_context,
     new_system_root,
@@ -88,28 +88,6 @@ ERROR_CLASS_BY_REASON = {
 # aiohttp refuses the token URL before sending, and its text is the URL, query included.
 # NonHttpUrlClientError (ftp://) is not an InvalidURL in aiohttp 3.14.
 _UNUSABLE_URL_ERRORS = (aiohttp.InvalidURL, aiohttp.NonHttpUrlClientError)
-
-
-# The keywords the end lines pass themselves: an Attempt.fields key with one of these names would collide with them.
-_END_LINE_KEYS = frozenset({
-    "outcome", "reason", "duration_ms", "error_class", "error_type", "error_message", "http_status", "oauth_error",
-    "level", "include_error_text",
-})
-
-
-class _EndFields(dict[str, object]):
-    """Rejects a key the end line writes itself where it is set: in ``refresh_attempt``'s ``except`` the
-    collision would raise instead, replacing the attempt's real error and writing no ``end``."""
-
-    def __setitem__(self, key: str, value: object) -> None:
-        if key in _END_LINE_KEYS:
-            raise ValueError(f"Attempt.fields cannot set {key!r}: the credential_refresh.end line writes it")
-        super().__setitem__(key, value)
-
-    def update(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
-        # shortcut: setdefault and |= skip the check; route them here if a caller starts using them.
-        for key, value in dict(*args, **kwargs).items():
-            self[key] = value
 
 
 # The keywords the end lines pass themselves: an Attempt.fields key with one of these names would collide with them.
@@ -291,6 +269,16 @@ def refresh_error_class(exc: BaseException) -> str | None:
     None otherwise, so a sign-in or route failure that never went through a refresh keeps its own class."""
     cls = _classified(exc)[0]
     return cls if _reason(exc) or (_logged_level(exc) is not None and cls != classify_error(exc)) else None
+
+
+def token_endpoint_error_class(exc: BaseException) -> str:
+    """The error_class of a failure that may have come from an OAuth token endpoint: the rule a refresh ``end`` uses
+    (``classify_error`` refined by our tags and the endpoint rule), shared with a sign-in's code exchange, which calls the
+    same endpoint. Only a code exchange can be refused for its code: that answer is the client's, ``bad_request``."""
+    cls = _classified(exc)[0]
+    if cls == "misconfigured" and (_first(exc, _oauth_error) or "").lower() in CODE_REFUSED_ERROR_CODES:
+        return "bad_request"
+    return cls
 
 
 def _classified(exc: BaseException) -> tuple[str, str | None]:

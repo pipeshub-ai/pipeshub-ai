@@ -46,8 +46,11 @@ class _Inbox:
     def __init__(self, fresh: bool) -> None:
         self.fresh = fresh
 
-    async def claim(self, topic: str, event_id: str, org_id: str) -> bool:
-        return self.fresh
+    async def seen(self, consumer: str, ctx) -> bool:
+        return not self.fresh
+
+    async def record(self, consumer: str, ctx) -> None:
+        return None
 
 
 @pytest.fixture(autouse=True)
@@ -59,17 +62,17 @@ def _env(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> I
     async def keys() -> tuple[bytes, ...]:
         return (KEY,)
 
-    envelope.configure(keys, _Inbox(fresh=True))
+    envelope.configure(keys)
     yield
     envelope.configure(None)
 
 
-def _consumer(handler=None, retry_manager=None) -> KafkaMessagingConsumer:
+def _consumer(handler=None, retry_manager=None, inbox=None) -> KafkaMessagingConsumer:
     config = KafkaConsumerConfig(
         topics=[TOPIC], client_id="c", group_id="g", auto_offset_reset="earliest",
         enable_auto_commit=False, bootstrap_servers=["localhost:9092"],
     )
-    c = KafkaMessagingConsumer(logging.getLogger(LOGGER), config, retry_manager=retry_manager)
+    c = KafkaMessagingConsumer(logging.getLogger(LOGGER), config, retry_manager=retry_manager, inbox=inbox)
     c.consumer = MagicMock()
     c.consumer.commit = AsyncMock()
     c.cleanup = AsyncMock()
@@ -158,8 +161,7 @@ class TestDeliveries:
         assert len(handler.calls) == 1
 
     async def test_duplicate_envelope(self, caplog) -> None:
-        envelope.configure(envelope._keys, _Inbox(fresh=False))
-        await _deliver(_consumer(_handler()), _record(_signed()))
+        await _deliver(_consumer(_handler(), inbox=_Inbox(fresh=False)), _record(_signed()))
         assert _row(_one_end(caplog)) == ("skipped", "ack", "duplicate", 1, logging.INFO)
 
     async def test_not_json_is_dropped_without_its_value(self, caplog) -> None:

@@ -20,7 +20,13 @@ from app.models.entities import Record
 from app.modules.indexing.record_diagnostics import WriteKind, sql_patch, with_run_patch
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
-from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
+from app.services.graph_db.common.utils import (
+    RECORD_UPDATE_DROPPED_FIELDS,
+    TRASHED_EXTERNAL_ID_PREFIX,
+    collapse_repeated_records,
+    record_created_at_insert_only,
+    record_insert_doc,
+)
 from app.services.graph_db.interface.graph_db_provider import UNSUPPORTED_PAGE_FIELDS
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
@@ -68,6 +74,36 @@ async def _upsert_docs(tx: Tx, org: str, coll: str, docs: list[dict]) -> None:
         INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
         ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(graph.nodes.doc || (SELECT x2.doc FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
                      org, coll, _j([{"id": i, "doc": by_id[i]} for i in sorted(by_id)]))
+
+
+async def _upsert_record_docs(tx: Tx, org: str, docs: list[dict]) -> None:
+    """``_upsert_docs`` for the ``records`` collection, with the insert-only fields.
+
+    A new record is written whole, with an incarnation id minted when ``RECORD_INCARNATION_WRITE`` is on. An existing record is
+    merged from the document without ``createdAtTimestamp``, ``incarnationId`` and the trash state, so a re-sync keeps its stored
+    values and a null cannot remove them. The one exception is a placeholder replaced by a real record (the stored row says
+    ``isPlaceholder``, the incoming one does not): its date becomes the earlier of the two positive values, decided here from the
+    stored row, so two writers that both read the stub cannot both overwrite it. The id is never touched."""
+    by_id: dict[str, dict] = {}
+    for d in docs:
+        by_id[d["id"]] = {**by_id.get(d["id"], {}), **d}      # callers hand one row per id (collapsed or merged); with the switch off, last wins as before
+    if not by_id:
+        return
+    # One document per row: the update branch derives what an existing record may take from it in SQL (``x2.doc - dropped keys``), so the
+    # payload is not doubled and the batch is looked up once per conflicting row (two lookups and two documents per row cost 20-25 % at 500 records per call).
+    rows = [{"id": i, "doc": record_insert_doc(by_id[i])} for i in sorted(by_id)]
+    insert_only = record_created_at_insert_only()
+    dropped = list(RECORD_UPDATE_DROPPED_FIELDS) if insert_only else ["incarnationId"]
+    await tx.execute("""/* pipeshub:graph.records_upsert_record_docs */ WITH x AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS x(id text, doc jsonb))
+        INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, $2, x.id, (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(x.doc) e WHERE e.value <> 'null'::jsonb) FROM x ORDER BY x.id
+        ON CONFLICT (org_id, coll, id) DO UPDATE SET doc = (SELECT coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) FROM jsonb_each(
+            graph.nodes.doc || (SELECT (x2.doc - $4::text[]) || CASE
+                WHEN $5::boolean AND coalesce((graph.nodes.doc->>'isPlaceholder')::boolean, false) AND x2.doc->>'isPlaceholder' = 'false'
+                     AND jsonb_typeof(x2.doc->'createdAtTimestamp') = 'number' AND (x2.doc->>'createdAtTimestamp')::numeric > 0
+                THEN jsonb_build_object('createdAtTimestamp', CASE WHEN jsonb_typeof(graph.nodes.doc->'createdAtTimestamp') = 'number' AND (graph.nodes.doc->>'createdAtTimestamp')::numeric > 0
+                    THEN LEAST((graph.nodes.doc->>'createdAtTimestamp')::numeric, (x2.doc->>'createdAtTimestamp')::numeric) ELSE (x2.doc->>'createdAtTimestamp')::numeric END)
+                ELSE '{}'::jsonb END FROM x x2 WHERE x2.id = EXCLUDED.id)) e WHERE e.value <> 'null'::jsonb)""",
+                     org, _RECORDS, _j(rows), dropped, insert_only)
 
 
 _RECORD_BY_EXTERNAL_PAGE = 100       # the function's LIMIT
@@ -287,6 +323,7 @@ class RecordsMixin(PgBase):
         org = current_org_id()
         if not records:
             return
+        records = collapse_repeated_records(records)          # one row per id, by the rule every store applies
         by_type: dict[str | None, list] = {}
         for rec in records:
             by_type.setdefault(RECORD_TYPE_COLLECTION_MAPPING.get(rec.record_type), []).append(rec)
@@ -309,7 +346,7 @@ class RecordsMixin(PgBase):
                     WHERE h.org_id = $1 AND h.coll = 'records' AND x.ext IS NOT NULL AND h.doc->>'connectorId' = x.cid AND h.doc->>'externalRecordId' = x.ext
                       AND h.id <> x.id AND coalesce((h.doc->>'isDeleted')::boolean, false)""",
                                  org, _j([{"id": b["id"], "ext": b.get("externalRecordId"), "cid": b.get("connectorId")} for b in all_bases]), TRASHED_EXTERNAL_ID_PREFIX)
-            await _upsert_docs(tx, org, _RECORDS, all_bases)
+            await _upsert_record_docs(tx, org, all_bases)
             for coll in sorted(c for c in by_type if c):
                 types = types_by_type[coll]
                 await _upsert_docs(tx, org, coll, types)
@@ -395,23 +432,57 @@ class RecordsMixin(PgBase):
                                                  org, ids, ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, to_status, _j(extra), get_epoch_timestamp_in_ms()), None, write=True)
         return [r["id"] for r in rows]
 
-    async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
+    async def update_indexing_status_for_record_ids(
+        self, record_ids: list[str], status: str, *, fields: dict[str, Any] | None = None
+    ) -> None:
         """Set the status of each existing record that is neither internal nor a placeholder; a database failure is logged, not raised, but a
-        status the schema rejects is (it is validated first, and is an update: a missing record stays missing)."""
+        status the schema rejects is (it is validated first, and is an update: a missing record stays missing). ``fields`` are set in the
+        same statement (a Force reindex's refresh intent); a null value removes the key."""
         org = current_org_id()
         ids = _uniq(record_ids)
         if not ids:
             return
-        _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": status})
+        _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": status, **(fields or {})})
         try:
             run = sql_patch("doc", WriteKind.STATUS_VAR, now="$4::bigint", status="$3::text")
             await self._q(lambda tx: tx.execute(with_run_patch("""/* pipeshub:graph.update_indexing_status_for_record_ids */ UPDATE graph.nodes
-                SET doc = doc || jsonb_build_object('indexingStatus', $3::text) || {RUN_PATCH}
+                SET doc = doc || jsonb_build_object('indexingStatus', $3::text) || {RUN_PATCH} || $5::jsonb
                 WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])
                   AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)""", run),
-                                                 org, ids, status, get_epoch_timestamp_in_ms()), None, write=True)
+                                                 org, ids, status, get_epoch_timestamp_in_ms(), _j(fields or {})), None, write=True)
         except Exception as e:
+            if fields:
+                raise        # with ``fields`` (a Force reindex's request) a lost write must not be read as a request that was made
             error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False, op="update_indexing_status_for_record_ids")
+
+    async def update_record_fields_for_ids(self, record_ids: list[str], fields: dict[str, Any]) -> int:
+        """Set ``fields`` on each existing record that is neither internal nor a placeholder, whatever its status; the
+        statement writes nothing else. Returns how many were written; a failure raises."""
+        org = current_org_id()
+        ids = _uniq(record_ids)
+        if not ids or not fields:
+            return 0
+        _VALIDATOR.validate_node_update(_RECORDS, dict(fields))
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.update_record_fields_for_ids */ UPDATE graph.nodes
+            SET doc = doc || $3::jsonb
+            WHERE org_id = $1 AND coll = 'records' AND id = ANY($2::text[])
+              AND NOT coalesce((doc->>'isInternal')::boolean, false) AND NOT coalesce((doc->>'isPlaceholder')::boolean, false)
+            RETURNING id""", org, ids, _j(dict(fields))), None, write=True)
+        return len(rows or [])
+
+    async def get_records_with_refresh_intent(
+        self, org_id: str, *, after_key: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_records_with_refresh_intent`. The partial index on the intent serves the filter;
+        the org is the bound one (``org_id`` is the caller's check that it is the org it asked for)."""
+        org = current_org_id()
+        if org_id and org != org_id:
+            raise ValueError("get_records_with_refresh_intent: the bound org is not the org asked for")
+        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.records_with_refresh_intent */ SELECT n.doc FROM graph.nodes n
+            WHERE n.org_id = $1 AND n.coll = 'records' AND n.doc->>'refreshIntentId' IS NOT NULL
+              AND coalesce(n.doc->>'isDeleted', '') <> 'true' AND ($2::text IS NULL OR n.id > $2)
+            ORDER BY n.id LIMIT $3""", org, after_key, max(1, int(limit))), None)
+        return [_arango(_doc(r["doc"]), _RECORDS) for r in rows or []]
 
     async def has_records_indexed_since(self, connector_id: str, since_ms: int, *, transaction: str | None = None) -> bool:
         org = current_org_id()

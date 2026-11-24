@@ -429,8 +429,13 @@ config:
   # code runs offline instead.
   sandboxAllowNetwork: false
   # Comma-separated IPv4 CIDRs exempt from that firewall, e.g. a private
-  # package mirror. Link-local and metadata addresses stay blocked.
+  # package mirror. Link-local and metadata addresses, the sandbox bridge and
+  # its gateway (this pod, under DinD) stay blocked however broad this is.
   sandboxEgressAllowCidrs: ""
+  # Comma-separated IPv4 resolvers a networked sandbox may query on port 53
+  # only, when Docker forwards DNS from the container (cloud resolvers, the
+  # gateway and Docker's configured upstreams are already allowed).
+  sandboxEgressDnsServers: ""
   sandboxEgressNetwork: "pipeshub_sandbox_egress"
   # Writable-layer cap for EACH docker-mode sandbox container (default 10g;
   # 0/off disables), so one run cannot fill the daemon's storage. This is a
@@ -440,12 +445,19 @@ config:
   # supports it (overlay2 on xfs+pquota, or btrfs/zfs/devicemapper); otherwise
   # the service logs a warning once and runs continue uncapped.
   sandboxDiskQuota: "10g"
+  # The most seconds one `run_code` run may take (10..3600). A larger timeout
+  # asked for by the model is lowered to it. Set it here only, never through
+  # extraEnv: the docker-proxy sidecar reads the same value to decide when a
+  # leftover sandbox container is old enough to remove.
+  sandboxMaxRunTimeoutS: 300
   # Address of the Docker daemon for SANDBOX_MODE=docker. Leave empty to use
   # the DinD sidecar (see `sandbox.dind`) when it is enabled, or set it to
   # reach a daemon you run yourself, e.g. "tcp://docker-proxy.svc:2375".
   # The chart cannot secure that daemon: put the same policy proxy in front of
   # it (`python -m app.docker_proxy_main` from this image, as the DinD sidecar
-  # does) and never point this at a raw, unauthenticated dockerd.
+  # does) and never point this at a raw, unauthenticated dockerd. That proxy
+  # listens on 127.0.0.1 unless DOCKER_PROXY_HOST says otherwise and has no
+  # client authentication: expose it only to the app (a NetworkPolicy).
   dockerHost: ""
 
   # Light records take their own cluster-wide indexing lease pool. Leave false
@@ -567,10 +579,14 @@ sandbox:
     # Loopback port of the policy proxy the application connects to
     # (DOCKER_HOST). The daemon itself has no TCP listener.
     port: 2375
+    # The code sandbox cap is sized from these limits (see sandbox.capacity),
+    # so both limits are required. Requests equal the limits so the node
+    # really has the room the cap assumes; that adds 2 CPU / 4Gi to each app
+    # pod's scheduling footprint.
     resources:
       requests:
-        cpu: "250m"
-        memory: "512Mi"
+        cpu: "2"
+        memory: "4Gi"
       limits:
         cpu: "2"
         memory: "4Gi"
@@ -580,6 +596,54 @@ sandbox:
     storage:
       sizeLimit: "20Gi"
       existingClaim: ""
+    # Live limit: holds new code runs back only when this sidecar is close to
+    # its own limits (memory above ~90 % / 95 %, or its CPU throttled).
+    # Running code is never stopped. A loop in the dind container writes the
+    # sidecar's cgroup counters for docker-proxy every exportIntervalSeconds
+    # (2..15: docker-proxy treats counters older than 20 s as missing);
+    # it needs /bin/sh in sandbox.dind.image (set enabled=false otherwise).
+    liveLimit:
+      enabled: true
+      exportIntervalSeconds: 5
+      # Empty values use the defaults: 0.90, 0.95, 0.95 and 0.25.
+      memHigh: ""
+      memHard: ""
+      cpuBrake: ""
+      cpuThrottle: ""
+
+  # How many code sandboxes run at once in each app pod (every query worker
+  # of the pod shares the count). Empty values are sized automatically: with
+  # the dind sidecar, the smallest of memoryShare x its memory limit / 512Mi
+  # per run, cpuFactor (0.75) x its CPU limit / 0.5 CPU per run, and 25% of
+  # the process limit / 256, at least minTotal (2). The defaults give 3.
+  # With config.dockerHost, each pod sizes itself from that daemon; when more
+  # than one pod can run (replicaCount, or autoscaling.maxReplicas) and
+  # maxTotal is empty, each pod takes 1/<pods> of it, but never below minTotal,
+  # so many pods on a small daemon together can admit more runs than it fits.
+  # Set maxTotal to cap each pod exactly.
+  capacity:
+    # Replaces the computed cap per pod (up to 1024). Empty or 0: sized
+    # automatically (and split between pods sharing config.dockerHost).
+    maxTotal: ""
+    # The most sandboxes one org may hold at once in a pod (empty: no cap).
+    maxPerOrg: ""
+    # The most sandboxes one chat request runs at once (empty: 2); its other
+    # calls wait without holding one.
+    maxPerRequest: ""
+    minTotal: ""
+    # Share of the dind sidecar's memory limit sandboxes may claim. Only used
+    # with the dind sidecar, which runs nothing else.
+    memoryShare: "0.9"
+    # Share of the CPUs sandboxes may claim (default 0.75).
+    cpuFactor: ""
+    # Seconds a run waits for a free sandbox before it is refused (default 120).
+    slotWaitSeconds: ""
+    # The pod's pids limit (kubelet podPidsLimit), which the app cannot read.
+    pidLimit: ""
+    # Count each run at 1/N of its memory limit (default 1, off). With the
+    # dind sidecar it applies only while the live limit reads the sidecar's
+    # cgroup, and at most 2; it only raises a memory-bound cap.
+    memoryOvercommit: ""
 
   # Docker API policy proxy, deployed with the DinD sidecar. It runs
   # app.docker_proxy_main from the application image (`image` above), so that
@@ -596,6 +660,10 @@ sandbox:
     # allows only config.sandboxDockerImage; a value replaces it, so list
     # that image too.
     allowedImages: ""
+    # Also remove sandbox containers with no instance label (left by a proxy
+    # from before the label, e.g. on a persisted dind volume) once past the
+    # reap age. Off: they are only counted in the proxy log.
+    reapUnlabeled: false
     resources:
       requests:
         cpu: "50m"
@@ -1095,3 +1163,33 @@ parsing:
       periodSeconds: 20
       timeoutSeconds: 10
       failureThreshold: 6
+
+# Prometheus exporter for the PostgreSQL server the application uses (prometheus-community/postgres_exporter), off by default. The
+# chart does not run PostgreSQL: dataSource names yours, as host:port/database?sslmode=... (for example
+# pg.example.internal:5432/pipeshub?sslmode=require). Log in as the monitoring role: python -m db.bootstrap_roles with
+# PG_MONITOR_PASSWORD set creates pipeshub_monitor, a member of pg_monitor that holds no privilege on any table of the application
+# (backend/db/README.md). Its password is read from an existing Secret. Metrics are served on port 9187 (/metrics) of the Service
+# <fullname>-postgres-exporter, unauthenticated over plain HTTP: let only your Prometheus reach it. The args add the collectors for
+# long transactions, transaction-id wraparound and running autovacuums to the exporter's defaults (connections, locks, replication,
+# WAL, table statistics such as dead rows and the last vacuum). Statement statistics (--collector.stat_statements) also need the
+# pg_stat_statements extension in the database, whose surface lines the migrate job must then be given (PG_MIGRATE_SURFACE_FILES).
+postgresExporter:
+  enabled: false
+  image:
+    repository: quay.io/prometheuscommunity/postgres-exporter
+    tag: v0.20.1@sha256:ac5ec343104fae0e2d84a27bb8d69b38430a11910c5382cad85d478d2bab713e
+  dataSource: ""
+  user: pipeshub_monitor
+  passwordSecret:
+    name: ""
+    key: PG_MONITOR_PASSWORD
+  args:
+    - --collector.long_running_transactions
+    - --collector.database_wraparound
+    - --collector.stat_activity_autovacuum
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi

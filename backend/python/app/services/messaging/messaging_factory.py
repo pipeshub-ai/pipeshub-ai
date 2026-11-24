@@ -17,6 +17,7 @@ from app.services.messaging.config import (
     messaging_env,
 )
 from app.services.messaging.fail_safe_retry_tracker import FailSafeRetryTracker
+from app.services.messaging.inbox import shared_inbox
 from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -437,6 +438,7 @@ class MessagingFactory:
                 worker=worker if consumer_type == ConsumerType.INDEXING else None,
                 precision_filter=precision_filter if consumer_type == ConsumerType.INDEXING else None,
                 fairness=fairness,
+                inbox=None if consumer_type == ConsumerType.INDEXING else shared_inbox(),
             )
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
@@ -472,7 +474,7 @@ class MessagingFactory:
                     worker=worker,
                     fairness=fairness,
                 )
-            return KafkaMessagingConsumer(logger, config, retry_manager)
+            return KafkaMessagingConsumer(logger, config, retry_manager, inbox=shared_inbox())
         else:
             if config is None:
                 raise ValueError("Redis Streams config is required")
@@ -500,4 +502,4 @@ class MessagingFactory:
                     worker=worker,
                     fairness=fairness,
                 )
-            return RedisStreamsConsumer(logger, config, retry_manager)
+            return RedisStreamsConsumer(logger, config, retry_manager, inbox=shared_inbox())

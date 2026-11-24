@@ -1,14 +1,17 @@
-"""The counters of the typed graph (``kg.counts``, kg_0015): per connector, the rows each class holds of what a listing counts by class, and the live records by record type
-and origin (the filters of a collection).
+"""The counters of the typed graph (``kg.counts``, kg_0015): per connector, the rows each class holds of what a listing counts by class (facet 1).
 
 A trigger on ``kg.records`` adds a delta row per key in the writer's own transaction, so the rows of a key, summed, are ``count(*)`` at every snapshot. The projection worker
 keeps them few: :func:`fold` replaces a batch of deltas and the folded rows of the same keys with one folded row per key, and :func:`seed` counts a connector whole once
 (its rows written before the trigger held no delta), which also leaves the mark (facet 0) that its counts can be read. Both run under the org's counters lock, read what they
 replace in one statement (one snapshot) and delete exactly the rows they read, so a delta committed meanwhile is kept, never lost or counted twice.
 
-Reading a count is off unless ``PG_KG_COUNTERS=1``: a listing then counts what the viewer's classes open from here instead of from the rows (:func:`class_rows`). A count
-sums only the classes the caller hands in, so it says nothing about rows the viewer may not read. The fold and the seed run whatever that switch says: the trigger adds
-deltas on every write, and unfolded they would grow without bound. A restore keeps no counter row and adds no delta (kg_0015), so the seed counts each connector whole again.
+Reading a count is on unless ``PG_KG_COUNTERS=0`` (any other value raises, ``flush.check_env``): an unfiltered listing counts what the viewer's classes open from here
+instead of from the rows (:func:`class_rows`). A count sums only the classes the caller hands in, so it says nothing about rows the viewer may not read. The fold and the
+seed run whatever that switch says: the trigger adds deltas on every write, and unfolded they would grow without bound, so reading them costs one index read and nothing
+more. A restore keeps no counter row and adds no delta (kg_0015), so the seed counts each connector whole again. Facet 2 (record type and origin) is no longer kept
+(kg_0023): nothing read it.
+
+:func:`check` compares a connector's counters with a recount of its rows after each periodic verify (``net.verify_due``) and reports a difference; it changes nothing.
 """
 from __future__ import annotations
 
@@ -17,10 +20,12 @@ import os
 from typing import TYPE_CHECKING
 
 from app.core.org_context import bind
+from app.services.graph_db.postgres.kg import flush
 from app.services.graph_db.postgres.kg.drainer import _ctx
 from app.services.graph_db.postgres.kg.listing import DECIDED, LIVE
 from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.writers import KgWriter
+from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     import asyncio
@@ -32,34 +37,42 @@ FOLD_MAX = 4000           # deltas one fold takes: with the folded rows of their
 FOLDS_PER_PASS = 25       # folds one pass of the worker runs for an org, so a steady writer cannot hold the pass
 SEEDS_PER_PASS = 5        # connectors one pass counts whole
 KEY = ("app_sk", "facet", "class_id", "kind", "folder", "record_type", "origin")
-FACET_ROWS = "r.kind = 3 AND NOT r.folder AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien"      # as kg.count_keys spells facet 2
 
 FOLD_READ = """/* pipeshub:kg.counts_fold_read */ WITH d AS MATERIALIZED (SELECT id, app_sk, facet, class_id, kind, folder, record_type, origin, n, folded FROM kg.counts
     WHERE org_id = $1 AND NOT folded ORDER BY id LIMIT $2),
   k AS (SELECT DISTINCT app_sk, facet, class_id, kind, folder, record_type, origin FROM d)
 SELECT * FROM d
 UNION ALL SELECT c.id, c.app_sk, c.facet, c.class_id, c.kind, c.folder, c.record_type, c.origin, c.n, c.folded FROM k JOIN kg.counts c ON c.org_id = $1 AND c.folded
-    AND c.app_sk = k.app_sk AND c.facet = 1 AND c.class_id = k.class_id AND c.kind = k.kind AND c.folder = k.folder WHERE k.facet = 1
-UNION ALL SELECT c.id, c.app_sk, c.facet, c.class_id, c.kind, c.folder, c.record_type, c.origin, c.n, c.folded FROM k JOIN kg.counts c ON c.org_id = $1 AND c.folded
-    AND c.app_sk = k.app_sk AND c.facet = 2 AND c.record_type IS NOT DISTINCT FROM k.record_type AND c.origin IS NOT DISTINCT FROM k.origin WHERE k.facet = 2"""
+    AND c.app_sk = k.app_sk AND c.facet = 1 AND c.class_id = k.class_id AND c.kind = k.kind AND c.folder = k.folder WHERE k.facet = 1"""
 UNSEEDED = """/* pipeshub:kg.counts_unseeded */ SELECT s.app_sk FROM kg.projection_state s WHERE s.org_id = $1 AND s.app_sk <> 0
     AND NOT EXISTS (SELECT 1 FROM kg.counts c WHERE c.org_id = s.org_id AND c.app_sk = s.app_sk AND c.facet = 0) ORDER BY s.app_sk LIMIT $2"""
 # What a connector's rows count now and, in one row of its own (facet NULL), the ids of every counter row of the connector that the same snapshot sees (the rows a seed replaces).
 RECOUNT = f"""/* pipeshub:kg.counts_recount */ SELECT coalesce(array_agg(c.id), '{{}}') AS ids, NULL::smallint AS facet, NULL::bigint AS class_id, NULL::smallint AS kind,
     NULL::boolean AS folder, NULL::text AS record_type, NULL::text AS origin, NULL::bigint AS n FROM kg.counts c WHERE c.org_id = $1 AND c.app_sk = $2
   UNION ALL SELECT NULL, 1::smallint, r.class_id, r.kind, r.folder, NULL, NULL, count(*) FROM kg.records r
-    WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE} AND {DECIDED} GROUP BY r.class_id, r.kind, r.folder
-  UNION ALL SELECT NULL, 2::smallint, NULL, NULL, NULL, r.record_type, r.origin, count(*) FROM kg.records r
-    WHERE r.org_id = $1 AND r.app_sk = $2 AND {FACET_ROWS} GROUP BY r.record_type, r.origin"""
+    WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE} AND {DECIDED} GROUP BY r.class_id, r.kind, r.folder"""
 SEEDED = "/* pipeshub:kg.counts_seeded */ SELECT EXISTS (SELECT 1 FROM kg.counts WHERE org_id = $1 AND app_sk = $2 AND facet = 0)"
+# The keys of a connector (by app id) whose counters, summed, differ from what its rows count now: one statement, so one snapshot. Always at least one row: ``seeded`` says
+# whether the connector has been counted whole (nothing is compared until then), and a row whose ``kept`` is NULL names no key.
+DRIFT = f"""/* pipeshub:kg.counts_drift */ WITH a AS MATERIALIZED (SELECT k.sk FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id = $2
+      AND EXISTS (SELECT 1 FROM kg.counts c WHERE c.org_id = $1 AND c.app_sk = k.sk AND c.facet = 0)),
+  c AS (SELECT c.class_id, c.kind, c.folder, sum(c.n)::bigint AS n FROM a JOIN kg.counts c ON c.org_id = $1 AND c.app_sk = a.sk AND c.facet = 1 GROUP BY c.class_id, c.kind, c.folder),
+  r AS (SELECT r.class_id, r.kind, r.folder, count(*) AS n FROM a JOIN kg.records r ON r.org_id = $1 AND r.app_sk = a.sk WHERE {LIVE} AND {DECIDED}
+      GROUP BY r.class_id, r.kind, r.folder),
+  d AS (SELECT coalesce(c.class_id, r.class_id) AS class_id, coalesce(c.kind, r.kind) AS kind, coalesce(c.folder, r.folder) AS folder, coalesce(c.n, 0) AS kept,
+      coalesce(r.n, 0) AS counted FROM c FULL JOIN r ON c.class_id = r.class_id AND c.kind = r.kind AND c.folder = r.folder WHERE coalesce(c.n, 0) <> coalesce(r.n, 0)
+      ORDER BY 1, 2, 3 LIMIT $3)
+SELECT EXISTS (SELECT 1 FROM a) AS seeded, d.class_id, d.kind, d.folder, d.kept, d.counted FROM (SELECT) one LEFT JOIN d ON true ORDER BY 2, 3, 4"""
+DRIFT_LIMIT = 20          # keys one report names
+CHECKED = METRICS_BACKEND.counter("pipeshub_kg_counts_checked_total", "Checks of a connector's counters against a recount of its rows, by what they found (same; differs: the "
+                                  "totals read from them are wrong; unseeded: not counted whole yet, nothing compared; error: the check did not run)", ["result"])
 CLASS_ROWS = """/* pipeshub:kg.counts_class_rows */ SELECT kind, folder, sum(n)::bigint AS n FROM kg.counts
     WHERE org_id = $1 AND app_sk = $2 AND facet = 1 AND class_id = ANY($3::bigint[]) GROUP BY kind, folder"""
-FACETS = """/* pipeshub:kg.counts_facets */ SELECT record_type, origin FROM kg.counts WHERE org_id = $1 AND app_sk = $2 AND facet = 2
-    GROUP BY record_type, origin HAVING sum(n) > 0"""
 
 
 def serving() -> bool:
-    return os.environ.get("PG_KG_COUNTERS") == "1"
+    flush.check_env()
+    return os.environ.get("PG_KG_COUNTERS") != "0"
 
 
 async def _locked(tx: Tx, org: str) -> bool:
@@ -131,10 +144,22 @@ async def class_rows(tx: Tx, org: str, app_sk: int, classes: list[int]) -> dict[
     return {(r["kind"], r["folder"]): r["n"] for r in await tx.fetch(CLASS_ROWS, org, app_sk, classes) if r["n"]}
 
 
-async def facets(tx: Tx, org: str, app_sk: int) -> dict[str, list[str]] | None:
-    """The record types and origins of a connector's live records (for a collection: the filters it offers to whoever may list it); None until it has been counted whole.
-    Only for a connector kg serves (``drainer.serves``): the projection leaves these columns empty on a row whose value the writer refused, and takes that connector off the readers."""
-    if not await tx.fetchval(SEEDED, org, app_sk):
+async def check(db: KernelDB, org: str, app_id: str) -> list[dict] | None:
+    """Compare the counters of a connector with a recount of its rows, in one snapshot, and report the keys that differ (at most ``DRIFT_LIMIT``) on the log and in ``CHECKED``.
+    It repairs nothing: a difference is a bug in the trigger, the fold or the seed, and a silent repair would hide it. None when the check failed (logged, counted); never raises."""
+    try:
+        with bind(_ctx(org)):
+            rows = await db.run(lambda tx: tx.fetch(DRIFT, org, app_id, DRIFT_LIMIT))
+    except Exception:
+        CHECKED.inc("error")
+        logger.warning("kg counters check of connector %s failed; nothing changes", app_id, exc_info=True)
         return None
-    rows = await tx.fetch(FACETS, org, app_sk)
-    return {"recordTypes": sorted({r["record_type"] for r in rows} - {None}), "origins": sorted({r["origin"] for r in rows} - {None})}
+    if not rows[0]["seeded"]:
+        CHECKED.inc("unseeded")           # not counted whole yet (the worker's seed comes later): nothing was compared
+        return []
+    diff = [{k: r[k] for k in ("class_id", "kind", "folder", "kept", "counted")} for r in rows if r["kept"] is not None]
+    CHECKED.inc("differs" if diff else "same")
+    if diff:
+        logger.error("kg counters of connector %s of org %s differ from its rows (the totals read from them are wrong): %s", app_id, org,
+                     ", ".join(f"class {d['class_id']} kind {d['kind']} folder {d['folder']}: kept {d['kept']}, counted {d['counted']}" for d in diff))
+    return diff
