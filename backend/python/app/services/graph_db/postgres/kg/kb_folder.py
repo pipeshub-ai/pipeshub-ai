@@ -30,7 +30,8 @@ def _kids(x: str) -> str:
             f"UNION ALL (SELECT c.* FROM (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND (l.parent_sk, l.kind) >= ({x}, 1) AND (l.parent_sk, l.kind) <= ({x}, 1) "
             f"ORDER BY l.parent_sk, l.kind, l.child_sk) l CROSS JOIN LATERAL (SELECT * FROM (SELECT * FROM kg.records k WHERE k.org_id = $1 AND k.sk >= l.child_sk ORDER BY k.sk LIMIT 1) s "
             f"WHERE s.sk = l.child_sk AND s.kind = 3 AND s.parent_sk IS DISTINCT FROM {x} OFFSET 0) c "
-            f"WHERE EXISTS (SELECT 1 FROM kg.links p WHERE p.org_id = $1 AND p.parent_sk = {x} AND p.kind = 3 AND p.child_sk = l.child_sk))")
+            # OFFSET 0: a probe of the primary key per link; as a semi-join PostgreSQL 18 read the organisation's kind-3 links by links_child
+            f"WHERE EXISTS (SELECT 1 FROM kg.links p WHERE p.org_id = $1 AND p.parent_sk = {x} AND p.kind = 3 AND p.child_sk = l.child_sk OFFSET 0))")
 
 
 # A child kg cannot answer for as the walk reads it: another connector's ($3, whose rows may wait in its own log) or one with a value its columns cannot hold.
