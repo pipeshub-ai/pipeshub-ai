@@ -295,6 +295,18 @@ the auth middleware bound.
   is still cancelled before it reads.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
+- Node: a request a route's schema refuses (`ValidationMiddleware`: the zod schema, the array/key/depth guard, the
+  stack-overflow net, and a value a schema callback can't read, which gets a fixed message and no field) writes no line
+  of its own. `http.request.error` (WARNING, `bad_request`) names each issue in
+  `error.metadata.errors` as `field`, `code` and `message`, never the issue's `value`; the route's `params` are on the line
+  as on every `http.request.error`. A key the caller made up (an unknown field, a record key) is named, and a few rules quote
+  an enum-like value the caller sent in `message` (a duplicate model id), as the 400 body does.
+  `POST /oauth2/token` answers its own refusals (see the OAuth provider below).
+- Node: `params` on `http.request.error` names the route's params: an id as sent (letters, digits, `._:-`, at most
+  128), any other value (an email, a name, a file path) as `[not an id]`. A path param bound to a request field is
+  bound only when it fits: an id field (`connector_id`, `kb_id`, …) takes an id, `connector_type` a name (letters,
+  digits, spaces, `_.:-`). This covers `params` and the bound fields: a one-word value (`ada`, `report.pdf`) or a
+  first-and-last name still fits, and an error message the connector service wrote is passed on as written.
 - Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
   is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
   token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.
@@ -956,6 +968,70 @@ service's 400s: no name, the last owner, people who are gone), and system failur
 `update_team` is not atomic. It saves a rename and member removals before checks that can still answer 400 or 500, and those
 saved changes get no line here; the team service's own log has them.
 
+## Configuration audit events (Node)
+
+Every settings change an admin saves through the configuration manager (`/api/v1/configurationManager`) is one INFO line on
+the `audit` logger, written right after the key-value store accepted the write: `config.<section>.update`, or
+`config.<section>.delete` when a whole setting is removed (today only the SMTP settings; removing one model, provider or Slack
+bot rewrites its list, so it is an update). The admin routes write through an audited store
+(`modules/configuration_manager/utils/config-audit.ts`), so an admin route that saves a setting gets its line without code
+of its own, as long as it is given that store (`adminStore` in `cm_routes.ts`, not the unaudited `serviceStore`). Fields as
+the other audit events: `org_id`, `actor` (the admin), `outcome=success`; `target` and `reason` are null. Never the stored
+key, a field name or a value: the event names the settings, nothing else.
+
+| Section | Settings |
+| --- | --- |
+| `storage` | file storage (local, S3, Azure Blob) |
+| `smtp` | mail server settings, turning mail on or off, removing them |
+| `auth_microsoft`, `auth_google` | sign-in with Microsoft and Google |
+| `platform` | platform settings and feature flags |
+| `slack_bot` | Slack bots (add, change, remove) |
+| `system_prompt` | the custom system prompts |
+| `ai_models` | AI models, their providers, defaults, roles, connection credentials and identity forwarding |
+| `ai_identity_policy` | the identity policy for an AI gateway |
+| `mcp_access` | what the org's `/mcp` endpoint allows |
+| `web_search` | web search providers and settings |
+| `public_urls` | the frontend and connector public URLs |
+| `metrics` | metrics collection |
+| `connector_google_workspace`, `connector_atlassian`, `connector_onedrive`, `connector_sharepoint` | connector OAuth apps and credentials saved from the admin settings |
+
+`auth_azure_ad`, `auth_sso`, `auth_oauth`, `auth_github` and `inheritance` name settings that only the enterprise
+edition's admin routes save; a path no section names is `other`.
+One action that saves several settings writes one line per saved setting. A compare-and-set retry writes a line only for the
+write that took. A save whose later step fails (the mail service did not reload the new SMTP settings) still has its line:
+the setting was stored.
+
+Settings the connector service saves (Node proxies the request to it) are written the same way by the route's handler, once
+Node read the service's 2xx answer: `config.<section>.create`, `config.<section>.update` or `config.<section>.delete`, with
+`target` the object's id and `reason` saying which part changed. The handler writes the line, not a middleware on the
+response, so a save whose browser left before the answer still has its line. The object's id is also on every line of the
+request (`connector_id`); `target` is it only when it is a PipesHub id (otherwise `target` is null and `reason` is
+`invalid_id`). The connector routes are open to members for their own connectors (a personal connector), so
+`config.connector.*` lines include a member's own connectors; Node cannot tell personal from org-wide, and `actor` says who.
+
+| Event | Route | `reason` | `target` |
+| --- | --- | --- | --- |
+| `config.connector.create` | `POST /api/v1/connectors/` | | the new connector's id, from the service's answer |
+| `config.connector.update` | `PUT /:connectorId/config` | `settings` | the connector |
+| `config.connector.update` | `PUT /:connectorId/config/auth` | `auth` | the connector |
+| `config.connector.update` | `PUT /:connectorId/config/filters-sync`, `POST /:connectorId/filters` | `filters_sync` | the connector |
+| `config.connector.update` | `PUT /:connectorId/name` | `rename` | the connector |
+| `config.connector.update` | `POST /:connectorId/toggle` | `sync_enable`, `sync_disable`, `agent_enable`, `agent_disable`; `toggle` when the request flips the current state (no `enabled`), which Node does not know | the connector |
+| `config.connector.update` | `PATCH /:connectorId/permissions/filter` | `permission_filter` | the connector |
+| `config.connector.delete` | `DELETE /:connectorId` | | the connector |
+| `config.connector_oauth_app.create` | `POST /api/v1/oauth/:connectorType` | | the new OAuth app's id, from the service's answer |
+| `config.connector_oauth_app.update` | `PUT /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
+| `config.connector_oauth_app.delete` | `DELETE /api/v1/oauth/:connectorType/:configId` | | the OAuth app |
+
+The line means Node read the service's 2xx. A save the service made whose answer Node did not get (a timeout, a connection
+cut after the service committed, a 2xx whose body does not parse) has no audit line; its error and access lines, and the
+connector service's own line with the same `request_id`, record the attempt. A create resent after a cut connection (the
+connector and OAuth app creates are sent up to three times) may have been made twice with one line.
+
+Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
+validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
+migrations, and settings saved through other routers (OAuth clients, toolsets, MCP servers).
+
 ## Upstream calls (Node)
 
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
@@ -1043,12 +1119,19 @@ run. Each says why it failed on the request's lines:
   the OIDC bearer check) answers in RFC 6749 shape (`modules/oauth_provider/utils/oauth-failure.ts`). A refusal (an OAuth
   error, or a deliberate `BadRequestError`, `NotFoundError`, `UnauthorizedError` or `ForbiddenError`) keeps its 4xx and its
   RFC code: a dead, rotated or unknown refresh token is `invalid_grant`. It writes one DEBUG `oauth.request.refused` with
-  `code`, and a wrong client credential marks the access line `bad_request`. Anything else is ours, whatever its status (a
+  `code` (a `/token` request its schema refuses adds `errors`, each issue's `field` and `code`, never a value), and a wrong
+  client credential marks the access line `bad_request`. Anything else is ours, whatever its status (a
   stored secret that no longer decrypts, a lock timeout's 409, a driver error): one `oauth.request.failed` at
   `levelFor(classifyRequestError(error, 500))` with the error, the access line marked with that class, and the answer
   `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
   retries; `/authorize`: a `server_error` redirect; `/introspect`: `active: false`, as before) with a fixed description.
-  `server_error` is never a refusal's code.
+  `server_error` is never a refusal's code. A change that succeeds (an OAuth app, a personal access token, a code or token
+  grant, an agent registration) is written by the service that made the write, never also by the controller; a step the
+  change runs keeps its own line (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`,
+  `app_id`, `pat_id` or `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token
+  endpoint, the user the grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A
+  delegation's user (whom a service account may act for) is `subject_user_id`, and the admin who granted or revoked it is
+  `granted_by` / `revoked_by`. A personal access token's name is not logged.
 
 The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and
@@ -1172,6 +1255,25 @@ DEBUG `mail.send.retry` (`attempt`, `error_class`, `smtp_code`, `next_retry_ms`)
   `mail.deliveryFailed` notification quotes the recipients). Producers log each publish at DEBUG (`broker.event.published`,
   `event_type`, `topic`).
 
+## Storage (Node)
+
+The storage routes (`/api/v1/document`) write no line of their own for a failure they pass on: the error middleware's
+`http.request.error` is the one failure line. When the storage vendor fails a write, a removal or a read check, the answer is
+503 (WARNING `unavailable`) and the error's `cause` is `{ status, code }`: the vendor's HTTP status and its error code
+(`AccessDenied`, `NoSuchBucket`, `SlowDown`, Azure's `AuthorizationFailure`, a local disk's `ENOENT` or `EACCES`), so a
+misconfigured bucket and a throttle read differently. A read the vendor fails still answers 500 (ERROR `internal`), with the
+vendor's status and code in the error's `metadata`. The vendor's text is never logged: it can quote the bucket, the object
+path and the file name. The providers (`storage/providers/*.ts`) read the status and code through `vendorFailure`
+(`storage/providers/vendor-failure.ts`) and hand the text to the error as `vendorText`, never its metadata; a local read's
+disk failure is wrapped the same way. Only the S3 settings check reads `vendorText`, for the admin's dialog; its WARNING lines
+still carry it.
+
+- Each upload, update, read, copy, rename and removal is DEBUG, with the object path and never its URL.
+- The S3 settings check (run when an admin saves the storage settings) writes one INFO `S3 health check completed` with each
+  check's result; a failed check is WARNING (the admin's settings), a passed one DEBUG.
+- A document whose blob moved but whose record did not is ERROR (`moveTree: blob relocated but the record update failed`): it
+  needs a human. Ids go in fields (`document_id`, `connector_id`), never in the message.
+
 ## Connector proxy (Node)
 
 The connector routes (`/api/v1/connectors`, `backend/nodejs/apps/src/modules/tokens_manager`) and the OAuth app config routes
@@ -1235,10 +1337,13 @@ WARNING. Neither line logs the error's message for a parse failure: it would quo
 
 ## Redaction
 
-Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
-basic tokens, JWTs, known key shapes, URL passwords and query secrets, private keys, this process's secret env values, and
-`name=value` pairs whose name is a credential) are replaced by `[REDACTED]`. In text (the message, a traceback, the text format's
-field list, and any JSON string value that holds such pairs), a pair value that only describes the credential is kept: a bare
+Both formats redact: the whole text line (message, fields, traceback; in Node, the message, metadata and traceback, not the
+typed fields such as `route`), and in JSON every string value. Credentials (bearer and basic tokens, JWTs, known key shapes, URL
+passwords and query secrets, private keys, this process's secret env values, and `name=value` pairs whose name is a credential)
+are replaced by `[REDACTED]`. In Node, the text a `JSON.parse` error quotes (`Unexpected token 'x', "…" is not valid JSON`) is
+`[REDACTED]`, offending character included, in the message, the metadata and a traceback: it is the start of what failed to
+parse, which may be a stored setting or a request body. In text (the message, a traceback, the text format's field list, and any
+JSON string value that holds such pairs), a pair value that only describes the credential is kept: a bare
 `None`, `null`, `true`, `false`, `undefined`, `present` or `missing`; a time under a time name (`token_expires_at=1730000000`,
 `refresh_token_expires_in: 7776000`, also with a fraction, but not a negative number such as `token_ttl=-1` and not
 `updated_password=…`); and an `http(s)` URL with no query, fragment or userinfo under `token_url`, `token_uri`, `token_endpoint`,
@@ -1285,10 +1390,11 @@ Node, drop the address from the thrown message.
 
 **Finding a user's lines (support).** Get the PipesHub id from the admin console (Users, open the user: the profile URL has
 `userId=<id>`) or `GET /api/v1/users?search=<email>` (`_id`), then filter on `user_id=<id>` (requests made by that user) or
-`target_user_id=<id>` (sign-in, user management, connector-creator, and notification socket and queue lines). A connector's per-user lines carry
-`source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object id, Atlassian
-account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry only
-`connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.
+`target_user_id=<id>` (sign-in, user management, connector-creator, notification socket and queue, and OAuth token mint and
+revoke lines); a delegation's grant and revoke lines carry the person as `subject_user_id=<id>`. A connector's per-user
+lines carry `source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object
+id, Atlassian account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry
+only `connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.
 
 **CI.** `.github/scripts/new_lint_findings.py log-pii` (scanner `scripts/log_pii.py`, which reads TypeScript through
 `scripts/log_pii_ts.cjs`) fails a pull request that adds an email or a person's name to a log call under `backend/python/app` or

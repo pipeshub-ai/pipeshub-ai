@@ -14,7 +14,7 @@ import {
   InvalidScopeError,
   InvalidTargetError,
 } from '../../../../src/libs/errors/oauth.errors'
-import { createMockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
 import { FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { NO_APP_CREATOR } from '../../../../src/libs/repositories/oauth-app'
 
@@ -56,7 +56,11 @@ describe('OAuthTokenService', () => {
     service = new OAuthTokenService(mockLogger, jwtConfig, testIssuer)
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -807,7 +811,7 @@ describe('OAuthTokenService', () => {
       sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
 
       await service.revokeAllTokensForApp('client-1')
-      expect(mockLogger.info.called).to.be.true
+      expect(mockLogger.info.args).to.deep.equal([['All tokens revoked for app', { client_id: 'client-1' }]])
     })
   })
 
@@ -834,8 +838,11 @@ describe('OAuthTokenService', () => {
       sinon.stub(OAuthAccessToken, 'updateMany').resolves({} as any)
       sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
 
-      await service.revokeAllTokensForUser('client-1', new Types.ObjectId().toString())
-      expect(mockLogger.info.called).to.be.true
+      const userId = new Types.ObjectId().toString()
+      await service.revokeAllTokensForUser('client-1', userId)
+      expect(mockLogger.info.args).to.deep.equal([
+        ['All tokens revoked for user in app', { client_id: 'client-1', target_user_id: userId }],
+      ])
     })
   })
 
@@ -1055,6 +1062,20 @@ describe('OAuthTokenService', () => {
       expect(tokens).to.have.lengthOf(1)
       expect(tokens[0].name).to.equal('ci token')
       expect(tokens[0].lastUsedAt).to.equal(now)
+      expect(mockLogger.warn.called).to.be.false
+    })
+
+    it('warns, naming whose list, when the list reaches its limit', async () => {
+      const userId = new Types.ObjectId().toString()
+      const row = { _id: new Types.ObjectId(), userId, scopes: [], createdAt: new Date(), expiresAt: new Date(), isRevoked: false }
+      const chainable = { sort: sinon.stub().returnsThis(), limit: sinon.stub().returnsThis(), exec: sinon.stub().resolves([row]) }
+      sinon.stub(OAuthAccessToken, 'find').returns(chainable as any)
+
+      await service.listAccessTokensForUser('client-1', userId, 1)
+
+      expect(mockLogger.warn.args).to.deep.equal([
+        ['Token list reached its limit; older tokens are not shown', { client_id: 'client-1', target_user_id: userId, limit: 1 }],
+      ])
     })
   })
 
@@ -1136,6 +1157,10 @@ describe('OAuthTokenService', () => {
       const result = await service.revokeAccessTokenById(id, 'client-1', userId, userId, 'no longer needed')
 
       expect(result).to.be.true
+      // The token's owner: a service account's, when an admin revokes its key.
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Access token revoked by id', { id, client_id: 'client-1', target_user_id: userId }],
+      ])
       const filter = updateStub.firstCall.args[0] as Record<string, unknown>
       expect(filter).to.have.property('clientId')
       expect(filter).to.have.property('userId')
@@ -1194,6 +1219,9 @@ describe('OAuthTokenService', () => {
       expect(filter).to.not.have.property('userId')
       const update = updateStub.firstCall.args[1] as Record<string, unknown>
       expect(update.revokedBy).to.deep.equal(new Types.ObjectId(adminId))
+      expect(mockLogger.info.args).to.deep.equal([
+        ['Access token revoked by id (admin)', { id, client_id: 'client-1', user_id: adminId }],
+      ])
     })
 
     it('returns false when no document matched', async () => {
@@ -1315,7 +1343,11 @@ describe('OAuthTokenService - branch coverage', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -1359,6 +1391,11 @@ describe('OAuthTokenService - branch coverage', () => {
       expect(result.accessToken).to.be.a('string')
       expect(result.refreshToken).to.be.undefined
       expect(result.tokenType).to.equal('Bearer')
+      expect(mockLogger.info.args).to.deep.equal([
+        ['OAuth tokens generated', {
+          client_id: 'client-1', target_user_id: VALID_USER_ID, scopes: ['user:read'], refresh_issued: false,
+        }],
+      ])
     })
 
     it('should generate refresh token when includeRefreshToken is true, userId exists, and scope includes offline_access', async () => {
@@ -1378,6 +1415,12 @@ describe('OAuthTokenService - branch coverage', () => {
 
       expect(result.accessToken).to.be.a('string')
       expect(result.refreshToken).to.be.a('string')
+      // `target_user_id`: a token minted for a service account by an admin names the account, not the admin.
+      expect(mockLogger.info.args).to.deep.equal([
+        ['OAuth tokens generated', {
+          client_id: 'client-1', target_user_id: VALID_USER_ID, scopes: ['user:read', 'offline_access'], refresh_issued: true,
+        }],
+      ])
     })
 
     it('should NOT generate refresh token when userId is null', async () => {
@@ -1841,6 +1884,10 @@ describe('OAuthTokenService - branch coverage', () => {
         expect(update.$set.revokedReason).to.equal('rotated')
         expect(accessCreate.calledOnce).to.be.true
         expect(refreshCreate.calledOnce).to.be.true
+        // The token endpoint has no signed-in user: `user_id` fills the line's identity with the user the grant acts for.
+        expect(mockLogger.info.args.filter(([message]: [string]) => message === 'Tokens refreshed')).to.deep.equal([
+          ['Tokens refreshed', { client_id: 'client-a', user_id: userId.toString(), rotation_count: 1 }],
+        ])
       })
 
       it('keeps the limit the user agreed to when the app has widened since', async () => {
@@ -1970,6 +2017,11 @@ describe('OAuthTokenService - branch coverage', () => {
 
         expect(accessCreate.called).to.be.false
         expect(refreshCreate.called).to.be.false
+        expect(mockLogger.warn.args).to.deep.equal([
+          ['Refresh token presented by a different client', {
+            issued_to: 'client-a', presented_by: 'client-b', user_id: userId.toString(),
+          }],
+        ])
       })
 
       it('does not rotate or revoke the stored token when a different client is rejected', async () => {

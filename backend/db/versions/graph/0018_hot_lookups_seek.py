@@ -24,8 +24,9 @@ ONLINE_INDEXES = [
 
 
 def upgrade():
-    for name, args in FUNCTIONS.items():
-        op.execute(f"DROP FUNCTION IF EXISTS graph.{name}({args})")
+    op.execute("DROP FUNCTION IF EXISTS graph.blocks_by_record(text, text[], jsonb[], boolean, text, int)")
+    op.execute("DROP FUNCTION IF EXISTS graph.blocks_by_name(text, text, text[], jsonb[], boolean, text, int)")
+    op.execute("DROP FUNCTION IF EXISTS graph.code_files_by_path(text, text[], jsonb[], boolean, text, int)")
     op.execute("DELETE FROM kernel.function_registry WHERE proc::oid NOT IN (SELECT oid FROM pg_proc)")
     # db.migrate builds ONLINE_INDEXES before this transaction without blocking writers; here they are found valid (a new install builds them, empty)
     for ix in ONLINE_INDEXES:

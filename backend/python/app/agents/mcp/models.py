@@ -57,6 +57,24 @@ class MCPAuthMode(str, Enum):
     HEADERS = "headers"
 
 
+class MCPCategory(str, Enum):
+    """The one catalog shelf a server sits on, so people can browse by what kind of tool it is."""
+
+    COMMUNICATION = "communication"
+    MEETINGS = "meetings"
+    DOCS = "docs"
+    PROJECTS = "projects"
+    DEVELOPER = "developer"
+    DATA = "data"
+    SALES = "sales"
+    SUPPORT = "support"
+    FINANCE = "finance"
+    DESIGN = "design"
+    AUTOMATION = "automation"
+    SEARCH = "search"
+    SECURITY = "security"
+
+
 class TokenEndpointAuthMethod(str, Enum):
     """How PipesHub proves which OAuth client it is when it asks for tokens (RFC 6749 §2.3.1)."""
 
@@ -123,6 +141,12 @@ class MCPServerTemplate(MCPCamelModel):
     documentation_url: Optional[str] = None
     auth_hint: Optional[AuthHint] = None
     tags: list[str] = Field(default_factory=list)
+    category: Optional[MCPCategory] = None
+    # What someone gets done with it, in their words ("Schedule meetings"): search reads these, and
+    # the catalog lists them. Hand-written, since a server's tools are only known after sign-in.
+    capabilities: list[str] = Field(default_factory=list)
+    # Every tool only looks things up. Unset means some tools change data.
+    read_only: bool = False
     # The catalog entry that took this one's place. A replaced entry can't be used for a new
     # server; servers already made from it keep running from it.
     replaced_by: Optional[str] = None

@@ -2660,7 +2660,7 @@
           "pipeshub_search": "Searches indexed documents by meaning across the connectors and collections the user can read, and returns the matching passages with their records.",
           "pipeshub_get_record_content": "Reads the full text of one record. It also finds a record from a URL, issue key or external ID, browses what sits under a folder, space or epic, and reads a whole Slack thread.",
           "pipeshub_download_record": "Downloads the original file stored for a record, optionally converted to PDF.",
-          "pipeshub_directory": "Looks up the signed-in user, the workspace's users and groups, and the teams the user belongs to. It changes nothing.",
+          "pipeshub_directory": "Looks up the signed-in user, the workspace's users, and the teams the user belongs to. It changes nothing.",
           "pipeshub_create_collection": "Creates a new, empty collection owned by the user, ready for uploads.",
           "pipeshub_upload": "Uploads documents into a collection so they are indexed and become searchable. Up to 20 documents and about 3 MB per call.",
           "pipeshub_indexing_status": "Reports how far a collection's indexing has got, and which documents failed and why.",
@@ -2709,7 +2709,7 @@
           },
           "people": {
             "label": "People and entities",
-            "description": "The workspace's users and groups, and the people, projects, topics and values in its knowledge graph."
+            "description": "The workspace's users, and the people, projects, topics and values in its knowledge graph."
           },
           "chat": {
             "label": "Chat and agents",
@@ -3638,6 +3638,25 @@
         "reach": "Changes in {{connector}} reach PipesHub within {{interval}}.",
         "reachUnknown": "Changes in {{connector}} reach PipesHub on its next sync.",
         "syncNow": "Sync permissions now",
+        "filter": {
+          "label": "How search checks access",
+          "mode": {
+            "inherit": "Deployment default",
+            "legacy": "Classic check",
+            "scopes": "Faster search"
+          },
+          "effective": {
+            "scopes": "Searches of {{connector}} use the faster search: results are narrowed to what each person may see before they are found, and each result is still checked.",
+            "legacy": "Searches of {{connector}} use the classic check: results are checked after they are found."
+          },
+          "waiting": "Faster search starts once the permissions of {{connector}} are up to date.",
+          "applies": "This change reaches search within 30 seconds.",
+          "blocker": {
+            "serving_off": "Faster search is turned off for this deployment.",
+            "store_unsupported": "This deployment's vector store does not support faster search."
+          },
+          "saveError": "Could not change this setting. Try again."
+        },
         "span": {
           "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
           "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
@@ -3815,7 +3834,6 @@
         "unavailable": "Unavailable"
       },
       "catalog": {
-        "title": "Add more servers",
         "description": "Ready-made servers. Add one, then sign in to it.",
         "personalDescription": "Servers you add here are only visible to you.",
         "added": "Added",
@@ -4070,6 +4088,67 @@
         "signIn": "{{name}} is added. Sign in below so its tools can run.",
         "other": "{{name}} is added, but it isn't working yet. See below for why.",
         "dismiss": "Done"
+      },
+      "searchYourServers": "Search your servers",
+      "categories": {
+        "communication": "Communication",
+        "meetings": "Meetings & calendar",
+        "docs": "Docs & files",
+        "projects": "Project management",
+        "developer": "Developer tools",
+        "data": "Data & analytics",
+        "sales": "Sales & CRM",
+        "support": "Customer support",
+        "finance": "Finance & legal",
+        "design": "Design & whiteboards",
+        "automation": "Automation",
+        "search": "Search & research",
+        "security": "Security & identity"
+      },
+      "discover": {
+        "title": "Discover servers",
+        "searchPlaceholder": "Search by name or by what you want to do, such as “schedule meetings”",
+        "searchLabel": "Search ready-made servers",
+        "clearSearch": "Clear search",
+        "categoriesLabel": "Categories",
+        "all": "All",
+        "allServers": "All servers",
+        "resultsFor_one": "{{count}} server for “{{query}}”",
+        "resultsFor_other": "{{count}} servers for “{{query}}”",
+        "searching": "Searching…",
+        "catalogLoadFailed": "Couldn't load the catalog.",
+        "noMatch": "No ready-made server matches “{{query}}”. You can still add any server by its URL.",
+        "whatItDoes": "What it can do",
+        "beforeYouAdd": "Before you add it",
+        "readOnly": "Reads only",
+        "changesData": "Reads and changes data",
+        "readOnlyNote": "It only looks things up.",
+        "changesDataNote": "Tools that change data ask before they run, unless you allow them.",
+        "signIn": "Sign-in",
+        "signInOauth": "Each person signs in with their {{name}} account",
+        "signInToken": "An API token",
+        "signInNone": "No sign-in needed",
+        "documentation": "Documentation",
+        "added_one": "Added",
+        "added_other": "{{count}} added",
+        "addOrg": "Add to your organization",
+        "addPersonal": "Add for yourself",
+        "orgNote": "Everyone in your organization will see it. Each person signs in to use it.",
+        "personalNote": "Only you will see it.",
+        "popularTitle": "Popular in your organization",
+        "popularHint": "By people signed in",
+        "peopleUse_one": "{{count}} person uses it",
+        "peopleUse_other": "{{count}} people use it",
+        "browse": "Browse MCP servers",
+        "browseHint": "Add a server and sign in to it; it then shows in the list, ready to drag onto the canvas.",
+        "fromCatalog": "From the catalog",
+        "add": "Add",
+        "view": "View",
+        "askAdmin": "A shared agent can only use servers your organization added. Ask an admin to add one.",
+        "sharedAgentNote": "Only an admin can add a server that a shared agent can use. Ask an admin to add {{name}} for your organization.",
+        "addedSignIn": "{{name}} is added. Sign in to it from the list to use its tools.",
+        "emptyBuilder": "No MCP servers yet. Add one to give this agent tools from apps like Linear, Slack or GitHub.",
+        "noAddedMatch": "None of your servers match."
       }
     },
     "bots": {
@@ -4889,6 +4968,7 @@
         "candidateApproved": "Approved \"{{name}}\"",
         "candidateRejected": "Rejected \"{{name}}\"",
         "candidateActionError": "Failed to update candidate",
+        "candidateGone": "This candidate has already been reviewed",
         "conflict": "This skill was changed elsewhere",
         "conflictDescription": "Reload the latest version, then re-apply your edits.",
         "conflictReload": "Reload"
@@ -5631,7 +5711,6 @@
     "mcpServerAlreadyAttachedNotify": "This agent already has another server of the same type as {{name}}. An agent can use one server of each type.",
     "webSearchOnlyOne": "Only one web search provider can be attached",
     "mcpServerNodeSubtitle": "Tools from an MCP server",
-    "noMcpServersAvailable": "No MCP servers available",
     "webSearchLocked": "Web search cannot be changed for this agent",
     "webSearchLoading": "Loading web search providers…",
     "webSearchConfigureFirst": "Configure {{name}} first",

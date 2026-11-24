@@ -16,6 +16,7 @@ import { requestContextMiddleware } from '../../../src/libs/middlewares/request.
 import { accessLog } from '../../../src/libs/middlewares/access-log.middleware'
 import { LogRecord, captureLogRecords, newRequestId, recordsOf } from '../../helpers/log-capture'
 import { BadRequestError } from '../../../src/libs/errors/http.errors'
+import { getRequestContext, runWithRequestContext } from '../../../src/libs/context/request-context'
 import { createConnectorRouter } from '../../../src/modules/tokens_manager/routes/connectors.routes'
 import { createOAuthRouter } from '../../../src/modules/tokens_manager/routes/oauth.routes'
 import { createToolsetsRouter } from '../../../src/modules/toolsets/routes/toolsets_routes'
@@ -184,6 +185,14 @@ describe('safe path params', () => {
       expect(JSON.stringify(r.lines)).to.not.include('unlisted-41')
     })
 
+    it('binds an id field only when the value is id-shaped: an email passes the guard but is on no line', async () => {
+      const r = await lines('/api/items/n5n-fake-ada@example.com/x')
+
+      expect(r.status).to.equal(200)
+      expect(r.lines.filter((l) => l.record_id !== undefined)).to.deep.equal([])
+      expect(JSON.stringify(r.lines)).to.not.include('n5n-fake-ada')
+    })
+
     it('never binds a segment the guard refused: 400 before the handler, and the value is on no line', async () => {
       const r = await lines('/api/items/..%2Fadmin/x')
 
@@ -193,6 +202,34 @@ describe('safe path params', () => {
       expect(JSON.stringify(r.lines)).to.not.include('../admin')
       expect(r.lines.filter((l) => l.record_id !== undefined)).to.deep.equal([])
     })
+  })
+
+  describe('bindPathLogFields: the value a field takes', () => {
+    /** The value bound under `key` after the router's param handler saw `value`. */
+    const bound = (key: 'connector_type' | 'connector_id', value: string): unknown => {
+      const router = Router() as Router & { params: Record<string, Array<(...args: unknown[]) => void>> }
+      bindPathLogFields(router, { p: key })
+      return runWithRequestContext({ rootId: 'bind-rule' }, () => {
+        router.params.p![0]!({}, {}, () => undefined, value)
+        return getRequestContext()?.logFields?.[key]
+      })
+    }
+
+    const CASES: Array<[key: 'connector_type' | 'connector_id', value: string, isBound: boolean]> = [
+      ['connector_type', 'SHAREPOINT ONLINE', true],
+      ['connector_type', 'x'.repeat(128), true],
+      ['connector_type', 'a/b', false],
+      ['connector_type', 'x'.repeat(129), false],
+      ['connector_type', '100%', false],
+      ['connector_id', '64f0c0ffee00000000000a5a', true],
+      ['connector_id', 'Ada Lovelace', false],
+    ]
+    for (const [key, value, isBound] of CASES) {
+      const shown = value.length > 40 ? `${value.slice(0, 8)}… (${value.length} chars)` : value
+      it(`${key} ${isBound ? 'binds' : 'does not bind'} ${JSON.stringify(shown)}`, () => {
+        expect(bound(key, value)).to.equal(isBound ? value : undefined)
+      })
+    }
   })
 
   describe('every router that pastes path params into a service URL guards them', () => {

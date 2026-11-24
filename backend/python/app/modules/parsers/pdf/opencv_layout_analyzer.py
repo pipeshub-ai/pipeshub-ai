@@ -68,6 +68,8 @@ class LayoutRegion:
     caption: str = ""
     # TEXT only: a heading line split off the paragraph it was set on.
     heading: bool = False
+    # TEXT only: read by OCR from the page image. Its box is the whole page, not where the text sits.
+    from_ocr: bool = False
 
 
 @dataclass

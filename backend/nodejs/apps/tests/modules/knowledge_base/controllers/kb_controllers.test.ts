@@ -3403,7 +3403,7 @@ describe('Knowledge Base Controller', () => {
       await handler(createMockRequest({ params: { recordId: 'r2' } }), createMockResponse(), second)
 
       expect(first.firstCall.args[0].message).to.equal(gone)
-      expect(second.firstCall.args[0].message).to.equal('Record r2 not found')
+      expect(second.firstCall.args[0].message).to.equal('Record not found')
     })
 
     it('should call next when reindexRecord connector returns non-200', async () => {

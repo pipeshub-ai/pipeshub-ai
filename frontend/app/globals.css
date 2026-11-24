@@ -354,6 +354,14 @@ body {
   outline-offset: -2px;
 }
 
+/* MCP catalog card titles reset every style inline (all: unset), outline included, so the
+   keyboard ring has to win over the inline style */
+.mcp-card-title:focus-visible {
+  outline: 2px solid var(--focus-8) !important;
+  outline-offset: 2px !important;
+  border-radius: var(--radius-1) !important;
+}
+
 /* Records table column boundaries (kb-column-widths.tsx): a hairline appears on hover / drag */
 .kb-col-resize::after {
   content: '';

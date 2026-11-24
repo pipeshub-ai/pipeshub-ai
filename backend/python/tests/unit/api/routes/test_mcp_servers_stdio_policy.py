@@ -189,9 +189,9 @@ class TestOffByDefault:
     async def test_the_catalog_says_whether_custom_stdio_is_allowed(self, registry: Any, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN401
         from app.api.routes.mcp_servers import list_catalog
 
-        off = await list_catalog(route_request(FakeConfigService(), registry=registry), page=1, limit=5, search=None)
+        off = await list_catalog(route_request(FakeConfigService(), registry=registry), page=1, limit=5, search=None, category=None)
         monkeypatch.setenv("MCP_ALLOW_CUSTOM_STDIO", "true")
-        on = await list_catalog(route_request(FakeConfigService(), registry=registry), page=1, limit=5, search=None)
+        on = await list_catalog(route_request(FakeConfigService(), registry=registry), page=1, limit=5, search=None, category=None)
 
         assert (off["customStdioAllowed"], on["customStdioAllowed"]) == (False, True)
 

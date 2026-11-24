@@ -3,7 +3,7 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from '../context/request-context';
-import { Logger } from '../services/logger.service';
+import { isShownId, Logger } from '../services/logger.service';
 import { accessLogLevel } from '../utils/api-path.utils';
 import { classifyRequestError, ErrorClass } from '../utils/error-class';
 
@@ -67,9 +67,20 @@ export function routeTemplate(req: Request): string {
   return typeof mount === 'string' && mount !== '' ? mount : UNMATCHED;
 }
 
-/** The route params as the matched route saw them. */
+const NOT_AN_ID = '[not an id]';
+
+/**
+ * The route params as the matched route saw them, for a log line: an id as
+ * sent, anything else (an email, a name, a file path) by its name only.
+ */
 export function routeParams(req: Request): Record<string, string> {
-  return matched.get(req)?.params ?? req.params;
+  const params = matched.get(req)?.params ?? req.params;
+  return Object.fromEntries(
+    Object.entries(params).map(([name, value]) => [
+      name,
+      isShownId(value) ? value : NOT_AN_ID,
+    ]),
+  );
 }
 
 /** The error middleware records why the request failed, so the access line says the same. */
