@@ -6361,12 +6361,13 @@
     "connector": {
       "affected": "Wird beschränkt",
       "affectedTooltip": "Dieser Connector übernimmt Zugriffsrechte aus seiner Quelle, wofür ein Lizenzschlüssel nötig ist. Ohne ihn kann ab {{date}} nur die Person, die ihn erstellt hat, seine Inhalte sehen. Es wird nichts gelöscht.",
+      "affectedTooltipKeyLater": "Ihr Lizenzschlüssel gilt ab {{start}}, also erst nach dem Ende der Kulanzzeit nach dem Upgrade am {{date}}. Dazwischen kann nur die Person, die diesen Connector erstellt hat, seine Inhalte sehen. Es wird nichts gelöscht.",
       "limited": "Beschränkt",
       "limitedTooltip": "Kein Lizenzschlüssel erlaubt die Berechtigungssynchronisierung, daher kann nur die Person, die diesen Connector erstellt hat, seine Inhalte sehen. Installieren Sie einen Schlüssel, um den Zugriff wiederherzustellen. Es wurde nichts gelöscht.",
       "restoring": "Zugriff wird wiederhergestellt",
       "restoringTooltip": "Ein Lizenzschlüssel ist vorhanden. Der Zugriff kehrt zurück, sobald die vollständige Synchronisierung dieses Connectors abgeschlossen ist."
     },
-    "graceKeyStartsLater": "Ihr Lizenzschlüssel gilt ab {{start}}. Bis dahin übernehmen unternehmensweite Connectors dank der Kulanzzeit nach dem Upgrade weiter Zugriffsrechte aus ihren Quellen, bis {{date}}.",
+    "graceKeyStartsLater": "Ihr Lizenzschlüssel gilt ab {{start}}. Dank der Kulanzzeit nach dem Upgrade übernehmen unternehmensweite Connectors bis {{date}} weiter Zugriffsrechte aus ihren Quellen. Endet die Kulanzzeit früher, können bis zum Start des Schlüssels nur die Personen, die sie erstellt haben, ihre Inhalte sehen.",
     "graceKeyEnded": "Ihr Lizenzschlüssel ist am {{ended}} abgelaufen. Dank der Kulanzzeit nach dem Upgrade übernehmen unternehmensweite Connectors bis {{date}} weiter Zugriffsrechte aus ihren Quellen. Danach werden sie ohne neuen Schlüssel auf die Personen beschränkt, die sie erstellt haben. Es wird nichts gelöscht.",
     "openLicensePage": "Lizenzeinstellungen öffnen"
   }

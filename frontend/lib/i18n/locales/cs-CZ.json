@@ -6525,12 +6525,13 @@
     "connector": {
       "affected": "Bude omezen",
       "affectedTooltip": "Tento konektor přebírá přístupová práva ze svého zdroje, k čemuž je potřeba licenční klíč. Bez něj od {{date}} uvidí jeho obsah jen osoba, která ho vytvořila. Nic se nesmaže.",
+      "affectedTooltipKeyLater": "Váš licenční klíč začíná platit {{start}}, až po konci ochranné lhůty po upgradu {{date}}. Mezi těmito daty uvidí obsah tohoto konektoru jen osoba, která ho vytvořila. Nic se nesmaže.",
       "limited": "Omezený",
       "limitedTooltip": "Žádný licenční klíč nepovoluje synchronizaci oprávnění, takže obsah tohoto konektoru vidí jen osoba, která ho vytvořila. Přístup obnovíte instalací klíče. Nic nebylo smazáno.",
       "restoring": "Obnovuje se přístup",
       "restoringTooltip": "Licenční klíč je nainstalovaný. Přístup se vrátí, jakmile skončí úplná synchronizace tohoto konektoru."
     },
-    "graceKeyStartsLater": "Váš licenční klíč začíná platit {{start}}. Do té doby ochranná lhůta po upgradu nechává celofiremní konektory přebírat přístupová práva ze zdrojů, a to do {{date}}.",
+    "graceKeyStartsLater": "Váš licenční klíč začíná platit {{start}}. Ochranná lhůta po upgradu nechává celofiremní konektory přebírat přístupová práva ze zdrojů do {{date}}. Pokud lhůta skončí dřív, uvidí jejich obsah až do začátku platnosti klíče jen osoby, které je vytvořily.",
     "graceKeyEnded": "Platnost vašeho licenčního klíče skončila {{ended}}. Ochranná lhůta po upgradu nechává celofiremní konektory přebírat přístupová práva ze zdrojů do {{date}}. Potom budou bez nového klíče omezené na osoby, které je vytvořily. Nic se nesmaže.",
     "openLicensePage": "Otevřít nastavení licence"
   }
