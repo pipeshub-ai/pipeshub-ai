@@ -462,9 +462,8 @@ class LinearConnector(BaseConnector):
         )
         # Per-run state
         self._full_member_emails: set[str] = set()
-        # The user listing of this run: read in full and non-empty, and every listed account's email.
-        # The users query passes no includeDisabled, so a suspended account is not listed, and whether
-        # Linear accepts that argument is not confirmed anywhere in this repository.
+        # The user listing of this run: read in full and non-empty, and every listed account's email,
+        # suspended accounts included.
         self._users_listing_complete = False
         self._listed_user_emails: set[str] = set()
         self._refreshed_issue_ids: set[str] = set()
@@ -1006,7 +1005,8 @@ class LinearConnector(BaseConnector):
         try:
             async for users_list, _, _ in self._api.pages(
                 "users", ["users"], page_size=50,
-                fetch=lambda ds, first, after: ds.users(first=first, after=after),
+                # Suspended users too: one may be the authenticator, and a suspended creator is still listed.
+                fetch=lambda ds, first, after: ds.users(first=first, after=after, includeDisabled=True),
             ):
                 all_users.extend(users_list)
         except LinearApiError as e:
@@ -1014,11 +1014,14 @@ class LinearConnector(BaseConnector):
                 raise
             raise RuntimeError(f"Failed to fetch users: {e}") from e
 
-        # pages() raises when Linear says more follows without a way to continue, so a return is the end.
-        self._users_listing_complete = bool(all_users)
         self._listed_user_emails = {
             u["email"].strip().lower() for u in all_users if isinstance(u.get("email"), str) and u["email"].strip()
         }
+        # pages() raises when Linear says more follows without a way to continue, so a return is the end.
+        # User.email is non-null in Linear's schema: a row without one is malformed and may be the authenticator.
+        self._users_listing_complete = bool(all_users) and all(
+            isinstance(u.get("email"), str) and u["email"].strip() for u in all_users
+        )
 
         # Convert Linear users to AppUser objects
         app_users: List[AppUser] = []

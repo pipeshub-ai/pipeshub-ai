@@ -36,20 +36,68 @@ def _listing(connector: LinearConnector, users: list[dict], error: Exception | N
 
 @pytest.mark.asyncio
 async def test_a_listing_read_to_its_end_is_complete_and_names_every_listed_account() -> None:
-    # Linear's users query does not pass includeDisabled, so a suspended account is never in the
-    # listing; guests are, and are withdrawn from the connector like other non-full members.
+    # Guests and suspended accounts are listed too, and are withdrawn from the connector like
+    # other non-full members.
     connector = _make_connector()
     _listing(connector, [
         {"id": "u1", "email": "Live@Corp.com", "active": True},
         {"id": "u2", "email": "guest@corp.com", "active": True, "guest": True},
-        {"id": "u3", "active": True},
+        {"id": "u4", "email": "Suspended@Corp.com", "active": False},
     ])
     connector._listed_user_emails = {"stale@corp.com"}
 
-    await connector._fetch_users()
+    users = await connector._fetch_users()
 
     assert connector._users_listing_complete is True
-    assert connector._listed_user_emails == {"live@corp.com", "guest@corp.com"}
+    assert connector._listed_user_emails == {"live@corp.com", "guest@corp.com", "suspended@corp.com"}
+    assert "suspended@corp.com" not in {u.email for u in users}
+
+
+@pytest.mark.asyncio
+async def test_the_listing_asks_for_suspended_accounts_too() -> None:
+    connector = _make_connector()
+    connector.data_source = MagicMock()
+    fetches: list = []
+
+    async def pages(*_: object, fetch: object, **__: object) -> AsyncIterator[tuple]:
+        fetches.append(fetch)
+        yield [{"id": "u1", "email": "a@corp.com", "active": True}], None, None
+
+    connector._api.pages = pages
+    await connector._fetch_users()
+    datasource = MagicMock(users=AsyncMock())
+
+    await fetches[0](datasource, 50, "cursor")
+
+    datasource.users.assert_awaited_once_with(first=50, after="cursor", includeDisabled=True)
+
+
+@pytest.mark.asyncio
+async def test_the_users_query_passes_include_disabled_to_linear() -> None:
+    from app.sources.client.graphql.response import GraphQLResponse
+    from app.sources.external.linear.linear import LinearDataSource
+
+    client = MagicMock()
+    client.get_client.return_value.execute = AsyncMock(return_value=GraphQLResponse(success=True, data={}))
+
+    await LinearDataSource(client).users(first=50, includeDisabled=True)
+
+    sent = client.get_client.return_value.execute.await_args.kwargs
+    assert sent["variables"]["includeDisabled"] is True
+    assert "$includeDisabled: Boolean" in sent["query"]
+    assert "includeDisabled: $includeDisabled" in sent["query"]
+
+
+@pytest.mark.asyncio
+async def test_a_listed_account_without_an_email_leaves_the_listing_incomplete() -> None:
+    # Linear's User.email is non-null: a row without one is malformed, and may be the authenticator.
+    connector = _make_connector()
+    _listing(connector, [{"id": "u1", "email": "live@corp.com", "active": True}, {"id": "u3", "active": True}])
+
+    await connector._fetch_users()
+
+    assert connector._users_listing_complete is False
+    assert connector._listed_user_emails == {"live@corp.com"}
 
 
 @pytest.mark.asyncio
