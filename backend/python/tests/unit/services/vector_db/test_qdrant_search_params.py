@@ -76,11 +76,16 @@ def _point(pid: str, score: float) -> MagicMock:
     return MagicMock(id=pid, score=score, payload={})
 
 
-def test_stable_top_breaks_ties_by_id_whatever_the_arrival_order() -> None:
-    a = [_point("b", 0.5), _point("a", 0.5), _point("c", 0.9)]
-    b = [_point("a", 0.5), _point("c", 0.9), _point("b", 0.5)]
-    assert [p.id for p in QdrantUtils.stable_top(a, 3)] == [p.id for p in QdrantUtils.stable_top(b, 3)] == ["c", "a", "b"]
-    assert [p.id for p in QdrantUtils.stable_top(a, 2)] == ["c", "a"]
+def test_stable_ties_breaks_ties_by_id_whatever_the_arrival_order() -> None:
+    a = [_point("c", 0.9), _point("b", 0.5), _point("a", 0.5)]
+    b = [_point("c", 0.9), _point("a", 0.5), _point("b", 0.5)]
+    assert [p.id for p in QdrantUtils.stable_ties(a)] == [p.id for p in QdrantUtils.stable_ties(b)] == ["c", "a", "b"]
+
+
+def test_stable_ties_keeps_qdrants_order_for_a_distance_metric() -> None:
+    # Euclid: smaller is nearer, and Qdrant sends the nearest first. That order stays.
+    leg = [_point("near", 0.1), _point("b", 0.5), _point("a", 0.5), _point("far", 0.9)]
+    assert [p.id for p in QdrantUtils.stable_ties(leg)] == ["near", "a", "b", "far"]
 
 
 def _service(*leg_answers: list, stored: list[str] | None = None) -> QdrantService:
@@ -151,6 +156,54 @@ async def test_several_requests_share_one_search_and_one_payload_read() -> None:
     assert svc.client.query_batch_points.await_count == 1
     assert svc.client.retrieve.await_count == 1
     assert svc.client.retrieve.call_args.kwargs["ids"] == ["a", "b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_an_l2_leg_ranks_its_nearest_point_first() -> None:
+    svc = _service([_point("near", 0.1), _point("mid", 0.4), _point("far", 0.9)])
+    out = await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=3)])
+    assert [r.id for r in out[0]] == ["near", "mid", "far"]
+
+
+class _TiedLeg:
+    """A leg where every point ties: Qdrant returns `limit` of them, from a subset it picks."""
+
+    def __init__(self, order: list[str]) -> None:
+        self.order = order
+        self.limits: list[int] = []
+
+    async def __call__(self, collection_name: str, requests: list) -> list:
+        self.limits.extend(r.limit for r in requests)
+        return [MagicMock(points=[_point(i, 0.5) for i in self.order[: r.limit]]) for r in requests]
+
+
+@pytest.mark.asyncio
+async def test_a_tie_past_the_margin_is_read_until_it_ends_so_any_subset_gives_one_answer() -> None:
+    """limit 1: the leg fuses its best 2 and asks for 4. Five points tie, so the four
+    returned are Qdrant's pick; two calls picking different four must still agree."""
+    answers = []
+    for order in (["a", "b", "c", "d", "e"], ["e", "d", "c", "b", "a"], ["b", "c", "d", "e", "a"]):
+        svc = _service()
+        leg = _TiedLeg(order)
+        svc.client.query_batch_points = AsyncMock(side_effect=leg.__call__)
+        svc.client.retrieve.side_effect = lambda **kw: [MagicMock(id=i, payload={}) for i in kw["ids"]]
+        out = await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=1)])
+        answers.append([(r.id, r.score) for r in out[0]])
+        assert leg.limits == [4, 8]  # read again, deeper, once the tie ran past the answer
+    assert answers[0] == answers[1] == answers[2] == [("a", 0.5)]
+
+
+@pytest.mark.asyncio
+async def test_a_tie_that_ends_inside_the_answer_is_not_read_again() -> None:
+    svc = _service()
+    svc.client.query_batch_points = AsyncMock(
+        side_effect=lambda collection_name, requests: [
+            MagicMock(points=[_point("a", 0.9), _point("b", 0.5), _point("c", 0.5), _point("d", 0.1)]) for _ in requests
+        ]
+    )
+    svc.client.retrieve.side_effect = lambda **kw: [MagicMock(id=i, payload={}) for i in kw["ids"]]
+    await svc.query_nearest_points("col", [HybridSearchRequest(dense_query=[0.1], limit=1)])
+    assert svc.client.query_batch_points.await_count == 1
 
 
 @pytest.mark.asyncio

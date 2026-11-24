@@ -1,7 +1,7 @@
 """Reciprocal-rank fusion of a hybrid search's dense and lexical legs, in Python, as Qdrant's server-side fusion computes it.
 
 A point's score is the sum over the legs it appears in of ``1 / (1 + rank)`` with ranks counted from 1 (so a one-leg answer scores
-``1 / (2 + index)``, what Qdrant answers for a single prefetch). Ties are broken by id, like ``QdrantUtils.stable_top``, so equal
+``1 / (2 + index)``, what Qdrant answers for a single prefetch). Ties are broken by id, like ``QdrantUtils.stable_ties``, so equal
 scores come back in the same order every time.
 """
 

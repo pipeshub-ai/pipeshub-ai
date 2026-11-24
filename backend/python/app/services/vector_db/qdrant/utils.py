@@ -45,6 +45,10 @@ MAX_HNSW_EF_CONSTRUCT = 4096
 # little more than its fusion depth and is re-sorted with a fixed tie-break
 # before the cut: a tie at the cut-off is not dropped at random.
 TIE_MARGIN = 2
+# A leg whose margin is all tied with the point at its cut is read again, twice as
+# deep each time, at most this many times and this deep.
+TIE_READ_ROUNDS = 3
+MAX_TIE_READ = 4096
 
 
 def env_number(name: str, default: float, minimum: float, maximum: float, cast: type) -> float:
@@ -306,18 +310,42 @@ class QdrantUtils:
 
         Fused here rather than by Qdrant: Qdrant orders equal scores inside a leg
         differently on every call, and a tie that flips moves a point one place in
-        that leg and changes its fused score. Each leg is put in (-score, id)
-        order and cut to the depth Qdrant fuses (``limit * 2``) first, so the same
-        query gives the same points and scores every time. The scores are
-        Qdrant's own: ``1 / (2 + index)`` summed over the legs a point is in.
+        that leg and changes its fused score. Each leg keeps Qdrant's order with its
+        ties put in id order (``stable_ties``), and is cut to the depth Qdrant fuses
+        (``limit * 2``), so the same query gives the same points and scores every
+        time. The scores are Qdrant's own: ``1 / (2 + index)`` summed over the legs
+        a point is in.
         """
-        ranked = [[str(p.id) for p in QdrantUtils.stable_top(points, limit * 2)] for points in legs]
+        ranked = [[str(p.id) for p in QdrantUtils.stable_ties(points)[: limit * 2]] for points in legs]
         return rrf(ranked, limit)
 
     @staticmethod
-    def stable_top(points: list[Any], limit: int) -> list[Any]:
-        """Order by (-score, id) and keep ``limit``: equal scores come back in the same order every time."""
-        return sorted(points, key=lambda p: (-(p.score or 0.0), str(p.id)))[:limit]
+    def stable_ties(points: list[Any]) -> list[Any]:
+        """Qdrant's order, with each run of equal scores put in id order.
+
+        Qdrant answers best first in the collection's own sense (higher for cosine
+        and dot, lower for Euclid), so no direction is imposed here: only equal
+        scores, whose order Qdrant does not fix, are reordered.
+        """
+        out: list[Any] = []
+        start = 0
+        while start < len(points):
+            end = start
+            while end < len(points) and points[end].score == points[start].score:
+                end += 1
+            out.extend(sorted(points[start:end], key=lambda p: str(p.id)))
+            start = end
+        return out
+
+    @staticmethod
+    def tie_at_cut(points: list[Any], depth: int, asked: int) -> bool:
+        """Whether a leg may hold more points tied with the one at its fusion ``depth``
+        than the ``asked`` it returned: it returned all it was asked for, and its last
+        point scores the same as the point at the cut. Which of the tied points made it
+        into the answer is then Qdrant's choice, so the leg is read deeper."""
+        if depth < 1 or len(points) < asked or len(points) < depth:
+            return False
+        return points[depth - 1].score == points[-1].score
 
     @staticmethod
     def qdrant_result_to_search_result(scored_point: Any) -> SearchResult:

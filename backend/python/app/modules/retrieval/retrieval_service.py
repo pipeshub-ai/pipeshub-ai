@@ -2780,12 +2780,13 @@ class RetrievalService:
             raise ValueError("No dense embeddings found")
         # Read before the next await, while it still describes the instance just returned.
         attempt_timeout = None if self._cached_embedding_is_local else QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS
+        # Read with it: the config the vectors below come from, the key they are cached under.
+        config_hash = getattr(self, "_cached_embedding_config_hash", None)
 
         sparse_embedder = await self._ensure_sparse_embedder()
 
         # The same query is searched with the same vector for a while (see
         # query_embedding_cache): a remote model's vectors vary slightly per call.
-        config_hash = getattr(self, "_cached_embedding_config_hash", None)
         cache: QueryEmbeddingCache | None = getattr(self, "_query_embeddings", None)
         instructed = [instruct_query(dense_embeddings, query) for query in queries]
 
