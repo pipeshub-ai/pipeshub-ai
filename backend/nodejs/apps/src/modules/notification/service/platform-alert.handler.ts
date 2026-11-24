@@ -386,7 +386,9 @@ export class PlatformAlertHandler {
   }
 
   /** The admins to notify: of the signed copy's org only, or of every org for an unsigned event. */
-  private async recipients(org: string | null): Promise<PlatformRecipientOrg[]> {
+  private async recipients(
+    org: string | null,
+  ): Promise<PlatformRecipientOrg[]> {
     const all = await this.resolveRecipients();
     return org ? all.filter((o) => o.orgId === org) : all;
   }
