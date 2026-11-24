@@ -146,16 +146,26 @@ select = [
     "RUF015",   # unnecessary iterable allocation for first element
     "RUF019",   # unnecessary key check before dict access
     "RUF100",   # unused noqa directive
+
+    # --- Architecture ---
+    "TID251",   # banned imports, listed under flake8-tidy-imports.banned-api below
 ]
 ignore = [
     "E501",     # Line too long (handled by formatter)
     "B008",     # Function call in default arg (conflicts with FastAPI Depends())
 ]
 
+# Application code announces platform events (app.platform_events) and never imports telemetry: a build without it
+# deletes app/plugins/telemetry and its manifest line. tests/unit/plugins/test_architecture.py checks the same by walking app/.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"app.plugins.telemetry".msg = "Only the telemetry plug-in imports itself. Emit a platform event (app.platform_events) instead."
+"prometheus_client".msg = "Only app/plugins/telemetry may use the Prometheus client. Emit a platform event (app.platform_events) instead."
+
 [tool.ruff.lint.per-file-ignores]
+"app/plugins/telemetry/**/*.py" = ["TID251"]
 "app/sources/external/**/example*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401", "T201", "T203"]
 "app/**/migrations/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401"]
-"tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "FBT001", "FBT002", "T201", "T203"]
+"tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "FBT001", "FBT002", "T201", "T203", "TID251"]
 # begin_transaction(explicit: bool | None) mirrors IGraphDBProvider, and the access walks pass a "does this hop inherit" flag between small
 # functions; ruff versions differ on whether they flag either, so it is ignored for these files, not noqa'd.
 "app/services/graph_db/postgres/base.py" = ["FBT001", "FBT002"]
