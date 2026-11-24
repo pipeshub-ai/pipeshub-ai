@@ -42,10 +42,12 @@ functions:
     test:
       checks: [privileges, catalog]
 
-  # The running job saves how far it got: progress only, and only while the job is running.
+  # The running job saves how far it got: progress only, and only while the job is running. The document-store copy saves it with the import
+  # login (platform_data_0002); the jobs login, held by every background process, may not (platform_data_0006).
   - name: platform.job_checkpoint
     class: jobs
     scope: global
+    grants: [pipeshub_owner]
     args:
       - {name: p_id, type: bigint}
       - {name: p_progress, type: text, length: [2, 65536]}

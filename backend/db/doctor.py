@@ -36,7 +36,8 @@ def check(conn: psycopg.Connection) -> None:
             log(f"PROBLEM {problems[-1]}")
         else:
             try:
-                migrate._report(conn)
+                # an index a revision retires may still be there: its drop waited on a reader, a warning the next migrate run retries
+                migrate._report(conn, migrate._retiring(migrate.alembic_config(migrate.migrate_url()), conn))
             except RunnerError as exc:
                 problems.append(str(exc))
     if problems:
