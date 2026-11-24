@@ -1242,10 +1242,13 @@ WARNING. Neither line logs the error's message for a parse failure: it would quo
 
 ## Redaction
 
-Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
-basic tokens, JWTs, known key shapes, URL passwords and query secrets, private keys, this process's secret env values, and
-`name=value` pairs whose name is a credential) are replaced by `[REDACTED]`. In text (the message, a traceback, the text format's
-field list, and any JSON string value that holds such pairs), a pair value that only describes the credential is kept: a bare
+Both formats redact: the whole text line (message, fields, traceback; in Node, the message, metadata and traceback, not the
+typed fields such as `route`), and in JSON every string value. Credentials (bearer and basic tokens, JWTs, known key shapes, URL
+passwords and query secrets, private keys, this process's secret env values, and `name=value` pairs whose name is a credential)
+are replaced by `[REDACTED]`. In Node, the text a `JSON.parse` error quotes (`Unexpected token 'x', "…" is not valid JSON`) is
+`[REDACTED]`, offending character included, in the message, the metadata and a traceback: it is the start of what failed to
+parse, which may be a stored setting or a request body. In text (the message, a traceback, the text format's field list, and any
+JSON string value that holds such pairs), a pair value that only describes the credential is kept: a bare
 `None`, `null`, `true`, `false`, `undefined`, `present` or `missing`; a time under a time name (`token_expires_at=1730000000`,
 `refresh_token_expires_in: 7776000`, also with a fraction, but not a negative number such as `token_ttl=-1` and not
 `updated_password=…`); and an `http(s)` URL with no query, fragment or userinfo under `token_url`, `token_uri`, `token_endpoint`,
