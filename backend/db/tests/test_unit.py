@@ -727,6 +727,11 @@ def test_lint_takes_an_index_a_later_revision_lists_online_as_built_ahead(tmp_pa
     ("a function body in BEGIN ATOMIC", 'def upgrade():\n    op.execute("CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END; SELECT pg_temp.f()")\n', True),
     ("a function body that drops nothing", 'def upgrade():\n    op.execute("CREATE OR REPLACE FUNCTION kg.f(p jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ '
                                            'SELECT p || \'{}\'::jsonb $$")\n', False),
+    ("a DO with a quoted body inside a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN DO \'BEGIN DROP INDEX graph.x; END\'; END $$")\n', True),
+    ("a procedure with a quoted body created and called in a DO body",
+     'def upgrade():\n    op.execute("DO $$ BEGIN CREATE PROCEDURE p() LANGUAGE plpgsql AS \'BEGIN DROP INDEX graph.x; END\'; CALL p(); END $$")\n', True),
+    ("a trigger created in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN CREATE TRIGGER t AFTER INSERT ON graph.y EXECUTE FUNCTION graph.f(); END $$")\n', True),
+    ("DROP INDEX as data in a DO body", 'def upgrade():\n    op.execute("DO $$ BEGIN RAISE NOTICE \'DROP INDEX x\'; INSERT INTO graph.t VALUES (\'DO\'); END $$")\n', False),
     ("a DO body that drops nothing", 'def upgrade():\n    op.execute("DO $$ BEGIN PERFORM 1; END $$")\n', False),
     ("DROP INDEX only in a dollar-quoted string", 'def upgrade():\n    op.execute("SELECT $$DROP INDEX graph.x$$")\n', False),
     ("DROP INDEX only in a tagged dollar-quoted string", 'def upgrade():\n    op.execute("SELECT $q$DROP INDEX graph.x$q$")\n', False),
@@ -815,6 +820,10 @@ _EXEC_FN = "CREATE OR REPLACE FUNCTION graph.f() RETURNS void LANGUAGE plpgsql A
     ("a DO with a quoted body", "DO 'BEGIN DROP INDEX graph.x; END';\n", "", True),
     ("EXECUTE in a DO body, with a waiver", "DO $$ BEGIN EXECUTE 'DROP INDEX graph.x'; END $$;\n", "", True),
     ("a DO body that drops nothing", "DO $$ BEGIN PERFORM 1; END $$;\n", "", False),
+    ("a DO with a quoted body inside a DO body", "DO $$ BEGIN DO 'BEGIN DROP INDEX graph.x; END'; END $$;\n", "", True),
+    ("a quoted procedure created and called in a DO body",
+     "DO $$ BEGIN CREATE PROCEDURE p() LANGUAGE plpgsql AS 'BEGIN DROP INDEX graph.x; END'; CALL p(); END $$;\n", "", True),
+    ("DROP INDEX as data in a DO body", "DO $$ BEGIN RAISE NOTICE 'DROP INDEX x'; INSERT INTO graph.t VALUES ('DO'); END $$;\n", "", False),
 ])
 def test_lint_reads_the_body_of_a_routine_the_file_runs(tmp_path, name, sql, mark, flagged):
     """A routine the .sql creates and runs in the same upgrade is code of that upgrade: its body is read with the DO-body rules. A routine it
@@ -830,3 +839,15 @@ def test_lint_leaves_the_bodies_of_a_released_revision_alone(tmp_path):
     f.write_text("DO $$ BEGIN EXECUTE 'SELECT 1'; END $$;\n")
     f.with_suffix(".py").write_text('revision = "graph_0003"\nolder_code_compatible = "a test revision that older code never sees"\n')
     assert not any("runs in the upgrade" in m for m in lint.lint_file(f))      # graph_0003 is in released_heads.json: it cannot change
+
+
+@pytest.mark.parametrize("sql,flagged", [
+    ("SELECT E'it\\'s'; DROP INDEX graph.x", True),            # the escaped quote does not end the string
+    ("SELECT E'DROP INDEX graph.x \\' still data'", False),
+    ("SELECT 'it''s'; DROP INDEX graph.x", True),
+    ("SELECT E'\\'', 'x'; DROP INDEX graph.x; SELECT 'y'", True),     # read as '' (a doubled quote) the drop hid in a string
+])
+def test_lint_reads_backslash_escapes_in_an_e_string(tmp_path, sql, flagged):
+    py = tmp_path / "0003_x.py"
+    py.write_text('revision = "graph_0003"\n\n\ndef upgrade():\n    op.execute(' + repr(sql) + ')\n')
+    assert any("may DROP INDEX" in m for m in lint.lint_revision(py, {"graph": 2})) is flagged, sql

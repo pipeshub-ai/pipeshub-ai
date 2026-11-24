@@ -34,6 +34,23 @@ from db.locations import version_locations
 _DOLLAR = re.compile(r"\$([A-Za-z_]*)\$")
 
 
+def _string_end(sql: str, i: int) -> int:
+    """The index after the quoted string that starts at ``sql[i]``: ``''`` is a quote inside it, and in an ``E'...'`` string a backslash
+    escapes the next character, so ``\\'`` does not end it."""
+    escapes = sql[i - 1:i] in ("e", "E") and not re.match(r"[\w$]", sql[i - 2:i - 1])
+    j, n = i + 1, len(sql)
+    while j < n:
+        if escapes and sql[j] == "\\":
+            j += 2
+        elif sql[j] == "'" and sql[j + 1:j + 2] == "'":
+            j += 2
+        elif sql[j] == "'":
+            return j + 1
+        else:
+            j += 1
+    return n
+
+
 def statements(sql: str) -> list[str]:
     """Split on ';'. A comment becomes a space (``DROP/**/INDEX`` is ``DROP INDEX``); quoted strings and dollar-quoted bodies are kept in the text."""
     out, buf, i, n = [], [], 0, len(sql)
@@ -47,11 +64,9 @@ def statements(sql: str) -> list[str]:
             i = n if i < 0 else i + 2
             buf.append(" ")
         elif c == "'":
-            j = i + 1
-            while j < n and not (sql[j] == "'" and sql[j + 1:j + 2] != "'"):
-                j += 2 if sql[j] == "'" else 1
-            buf.append(sql[i:j + 1])
-            i = j + 1
+            j = _string_end(sql, i)
+            buf.append(sql[i:j])
+            i = j
         elif c == "$" and (m := _DOLLAR.match(sql, i)):
             end = sql.find(m.group(0), m.end())
             end = n if end < 0 else end + len(m.group(0))
@@ -73,7 +88,7 @@ def _strip_bodies(stmt: str) -> str:
 
 
 def _strip_literals(stmt: str) -> str:
-    return re.sub(r"'(?:[^']|'')*'", "''", stmt)
+    return re.sub(r"(?<![\w$])[Ee]'(?:[^'\\]|\\.|'')*'|'(?:[^']|'')*'", "''", stmt, flags=re.S)
 
 
 _N = r'(?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?'          # a possibly schema-qualified, possibly quoted name
@@ -327,11 +342,8 @@ def _mask(stmt: str) -> tuple[str, list[str]]:
     while i < n:
         c = stmt[i]
         if c == "'":
-            j = i + 1
-            while j < n and not (stmt[j] == "'" and stmt[j + 1:j + 2] != "'"):
-                j += 2 if stmt[j] == "'" else 1
             out.append("''")
-            i = j + 1
+            i = _string_end(stmt, i)
         elif c == "$" and (m := _DOLLAR.match(stmt, i)):
             end = stmt.find(m.group(0), m.end())
             end = n if end < 0 else end
@@ -364,11 +376,15 @@ def _code_body(stmt: str) -> tuple[bool, str | None]:
     return True, bodies[int(m[0][0])] if len(m) == 1 and not m[0][1] and len(re.findall(r"\bAS\b", masked, re.I)) == 1 else None
 
 
+_RUNS_CODE = re.compile(r"(?:DO|CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|(?:CONSTRAINT\s+)?TRIGGER|RULE))\b", re.I)
+
+
 def _body_unsafe(body: str | None) -> bool:
-    """Whether a DO, function or procedure body may DROP INDEX, read one level deep: a DROP INDEX or any EXECUTE in it, a dollar-quoted body
-    inside it, or no body that could be read (None)."""
-    return body is None or any(_DOLLAR.search(q) or re.search(r"\bEXECUTE\b(?!\s+ON\b)|\bDROP\s+INDEX\b", q, re.I)
-                               for q in map(_strip_literals, _body_statements(body)))
+    """Whether a DO, function or procedure body may DROP INDEX, read one level deep: a DROP INDEX or any EXECUTE in it, a statement of it
+    that is code itself (a DO, a routine, a trigger or a rule, whatever its quoting: nested bodies are not read), a dollar-quoted string in
+    it, or no body that could be read (None). String data in it (``RAISE NOTICE 'DROP INDEX x'``) is not code."""
+    return body is None or any(_RUNS_CODE.match(q) or _DOLLAR.search(s := _strip_literals(q)) or re.search(r"\bEXECUTE\b(?!\s+ON\b)|\bDROP\s+INDEX\b", s, re.I)
+                               for q in _body_statements(body))
 
 
 def _routines_run(stmts: list[str]) -> list[tuple[str, str]]:
