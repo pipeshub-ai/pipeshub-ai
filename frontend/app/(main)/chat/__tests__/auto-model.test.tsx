@@ -44,12 +44,17 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-function renderPanel(models: AvailableLlmModel[], props: { allowAuto?: boolean } = {}) {
+function renderPanel(
+  models: AvailableLlmModel[],
+  props: { allowAuto?: boolean; decisionModelConfigured?: boolean } = {},
+) {
+  const { decisionModelConfigured, ...panelProps } = props;
+  useChatStore.getState().setDecisionModelConfigured(decisionModelConfigured !== false);
   useChatStore.getState().setAvailableModelsForCtx(ASSISTANT_CTX, models);
   const onModelSelect = vi.fn();
   render(
     <Theme>
-      <ModelSelectorPanel selectedModel={null} onModelSelect={onModelSelect} {...props} />
+      <ModelSelectorPanel selectedModel={null} onModelSelect={onModelSelect} {...panelProps} />
     </Theme>,
   );
   return onModelSelect;
@@ -62,6 +67,12 @@ describe('ModelSelectorPanel Auto row', () => {
     expect(row.textContent).toContain('Picks a model and effort for each question');
     fireEvent.click(row);
     expect(onModelSelect).toHaveBeenCalledWith(AUTO_MODEL);
+  });
+
+  it('hides Auto when no decision model is configured', async () => {
+    renderPanel([llm('k1', 'gpt-5'), llm('k2', 'gpt-5-mini')], { decisionModelConfigured: false });
+    await waitFor(() => expect(screen.getByText('gpt-5')).toBeTruthy());
+    expect(screen.queryByTestId('chat-model-auto-row')).toBeNull();
   });
 
   it('hides Auto with a single model', async () => {

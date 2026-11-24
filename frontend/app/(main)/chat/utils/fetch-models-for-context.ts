@@ -53,7 +53,7 @@ function clearSelectedModelIfNotInList(
   if (!current) {
     return;
   }
-  if (!isModelInList(models, current)) {
+  if (!isModelInList(models, current, useChatStore.getState().settings.decisionModelConfigured)) {
     s.setSelectedModelForCtx(ctxKey, null);
   }
 }
@@ -117,6 +117,11 @@ export async function fetchModelsForContext(
   const promise = (async (): Promise<AvailableLlmModel[]> => {
     let models: AvailableLlmModel[];
     let autoDefault = useChatStore.getState().settings.autoDefault;
+    // Runs alongside the model fetch. A failed check keeps the last answer, so a
+    // network error does not drop a saved Auto choice.
+    const decisionCheck = ChatApi.hasConfiguredDecisionModel().catch(
+      () => useChatStore.getState().settings.decisionModelConfigured,
+    );
     if (ctxKey === ASSISTANT_CTX) {
       const catalog = await ChatApi.fetchOrgLlmCatalog();
       models = catalog.models;
@@ -142,8 +147,10 @@ export async function fetchModelsForContext(
       useChatStore.getState().setAgentDefaultReasoningEffort(ctxKey, agentDefaultEffort);
     }
 
+    const decisionModelConfigured = await decisionCheck;
     const s = useChatStore.getState();
     s.setAvailableModelsForCtx(ctxKey, models);
+    s.setDecisionModelConfigured(decisionModelConfigured);
     if (ctxKey === ASSISTANT_CTX) s.setAutoDefault(autoDefault);
 
     // Prefer an explicitly flagged default; otherwise fall back to the first

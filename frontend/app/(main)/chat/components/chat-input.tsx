@@ -486,6 +486,7 @@ export function ChatInput({
       modelCtxKey,
       openedProjectId,
       settings.autoDefault,
+      settings.decisionModelConfigured,
       settings.selectedModels,
       settings.defaultModels,
       settings.availableModels,

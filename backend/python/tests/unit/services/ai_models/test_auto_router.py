@@ -96,7 +96,32 @@ def classify_as(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[str]]:
                 raise ClassifierError(error)
             return parse_label(label)
 
+        class _Decision:
+            model_name = "decision"
+
+            async def decide(
+                self, content: str, questions: list, max_attempts: int = 1
+            ) -> DecisionResult:
+                if error:
+                    raise TimeoutError(error)
+                choice = label or "standard"
+                return DecisionResult(
+                    model=self.model_name,
+                    answers={
+                        "need": DecisionAnswer(
+                            name="need",
+                            type="choice",
+                            choice=choice,
+                            probabilities={choice: 1.0},
+                        )
+                    },
+                )
+
+        async def fake_get(_config: object) -> tuple:
+            return _Decision(), {}
+
         monkeypatch.setattr(service_module, "classify", fake)
+        monkeypatch.setattr(service_module, "get_decision_model_instance", fake_get)
         return calls
 
     return _set
@@ -326,6 +351,20 @@ def test_user_content_keeps_only_recent_user_turns() -> None:
 # --- service ---------------------------------------------------------------------
 
 
+def test_no_decision_model_uses_the_default_model() -> None:
+    decision = _run([SMALL, MEDIUM, LARGE], AutoRequest(query="Thanks!"))
+    assert decision.fallback and decision.reason == "no_decision_model"
+    assert decision.model_key == "k-medium"
+
+
+def test_no_decision_model_on_an_agent_route_leaves_the_choice() -> None:
+    decision = _run(
+        [SMALL, MEDIUM, LARGE], AutoRequest(query="what changed?", agent_route=True)
+    )
+    assert decision.fallback and decision.model_key is None
+    assert decision.reason == "no_decision_model"
+
+
 def test_single_model_skips_router(classify_as) -> None:
     calls = classify_as("heavy")
     decision = _run([LARGE], AutoRequest(query="explain everything"))
@@ -539,9 +578,11 @@ def test_acknowledgements_skip_the_classifier(
 ) -> None:
     calls = classify_as("standard")
     decision = _run([SMALL, MEDIUM, LARGE], AutoRequest(query=query))
-    assert (calls == []) is settled
     if settled:
+        assert calls == []
         assert decision.reason == "greeting" and decision.model_key == "k-small"
+    else:
+        assert decision.reason.startswith("classified_")
 
 
 def test_configured_decision_model_classifies_and_the_chat_model_is_not_called(
@@ -716,6 +757,10 @@ def test_classifier_failure_on_an_image_turn_still_picks_a_vision_model(classify
 
 
 def test_continuation_clamps_an_explicit_effort(monkeypatch) -> None:
+    async def present(_config: object) -> tuple:
+        return object(), {}
+
+    monkeypatch.setattr(service_module, "get_decision_model_instance", present)
     pinned = _entry("k-r", "acme-r", size="large", reasoning=True)
     pinned["configuration"]["reasoningEfforts"] = ["low", "medium", "high"]
     history = [
@@ -741,7 +786,11 @@ def test_chat_classifier_gets_what_is_left_of_the_budget(monkeypatch) -> None:
         await asyncio.sleep(0.05)
         return None, "d", ClassifierError("timeout")
 
+    async def configured(_config: object) -> bool:
+        return True
+
     monkeypatch.setattr(service_module, "classify", fake_classify)
+    monkeypatch.setattr(service_module, "_decision_model_configured", configured)
     monkeypatch.setattr(service_module, "_classify_with_decision_model", slow_decision)
     _run([SMALL, MEDIUM, LARGE], AutoRequest(query="who owns payments?"))
     assert 1.5 <= seen["timeout"] < service_module.CLASSIFIER_TIMEOUT_S

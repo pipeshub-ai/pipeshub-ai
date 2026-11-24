@@ -33,6 +33,7 @@ beforeEach(() => {
         },
       },
       autoDefault: false,
+      decisionModelConfigured: true,
     },
   });
 });
@@ -62,6 +63,12 @@ describe('Auto as the org default', () => {
         toolCatalogFullNames: [],
       },
     });
+    expect(getEffectiveModel(ASSISTANT_CTX)?.modelKey).toBe('k-luna');
+  });
+
+  it('stays on the concrete model when no decision model is configured', () => {
+    useChatStore.getState().setDecisionModelConfigured(false);
+    useChatStore.getState().setAutoDefault(true);
     expect(getEffectiveModel(ASSISTANT_CTX)?.modelKey).toBe('k-luna');
   });
 

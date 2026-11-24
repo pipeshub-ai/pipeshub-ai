@@ -751,6 +751,14 @@ export const ChatApi = {
     };
   },
 
+  /** True when the org has a saved decision model. Auto stays hidden until one exists. */
+  async hasConfiguredDecisionModel(): Promise<boolean> {
+    const { data } = await apiClient.get<{ models?: unknown }>(
+      '/api/v1/configurationManager/ai-models/available/decision',
+    );
+    return Array.isArray(data?.models) && data.models.length > 0;
+  },
+
   async fetchAvailableLlms(): Promise<AvailableLlmModel[]> {
     const { models } = await this.fetchOrgLlmCatalog();
     return models;

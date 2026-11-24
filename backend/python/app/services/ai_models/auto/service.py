@@ -223,6 +223,18 @@ async def resolve_auto_model(
     return decision
 
 
+async def _decision_model_configured(config_service: ConfigurationService) -> bool:
+    """Auto runs only when a decision model is saved.
+
+    A saved model that cannot be built still counts: the classifier reports
+    that failure. No saved model does not, and the turn uses the default model.
+    """
+    try:
+        return await get_decision_model_instance(config_service) is not None
+    except Exception:
+        return True
+
+
 async def _resolve(
     config_service: ConfigurationService, request: AutoRequest
 ) -> AutoDecision:
@@ -241,6 +253,8 @@ async def _resolve(
     if len(full_pool) == 1:
         # One model: nothing to route, and its configured effort applies as usual.
         return _decide(full_pool[0], None, "single_model")
+    if not await _decision_model_configured(config_service):
+        return _fallback(full_pool, request, "no_decision_model")
 
     pool = apply_filters(
         full_pool,
