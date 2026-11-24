@@ -495,6 +495,7 @@ def _walk_service(records: list[SimpleNamespace], graph_status: str) -> tuple[Ev
     graph.get_typed_records_batch = AsyncMock(return_value={})
     connector = MagicMock()
     connector.reindex_records = AsyncMock()
+    connector.records_excluded_by_indexing_filters = AsyncMock(return_value=set())
     service = EventService.__new__(EventService)
     service.graph_provider = graph
     service.logger = MagicMock()
