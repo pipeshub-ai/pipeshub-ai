@@ -199,8 +199,9 @@ class UsersSync:
         This method expands each group via ``list_group_projects(include_subgroups=True)``
         to close that gap.
 
-        Falls back to creator-only access when every configured target fails,
-        mirroring the Jira ``_fallback_permissions_for_forbidden_scheme`` pattern.
+        When every configured target fails, the creator is the only user listed and the
+        listing is incomplete; whether they get creator-only access is then decided by
+        ``GitLabConnector._decide_creator_token_view``.
         """
         c = self.c
         dict_member: dict[int, GroupMember] = {}
@@ -338,7 +339,8 @@ class UsersSync:
         if all_failed:
             self.logger.warning(
                 "GitLab user sync: every configured group/project failed to enumerate members; "
-                "relying on creator-only access (%s) for this run.",
+                "the creator (%s) is the only user listed this run. The listing is incomplete, so "
+                "they get creator-only access only as the token's own account or by an earlier stored grant.",
                 c.creator_email,
             )
 
@@ -437,7 +439,8 @@ class UsersSync:
         if groups_failed and projects_failed:
             self.logger.warning(
                 "GitLab user sync (unscoped): both list_groups (%s) and list_projects (%s) "
-                "failed; relying on creator-only access (%s) for this run.",
+                "failed; the creator (%s) is the only user listed this run. The listing is incomplete, so "
+                "they get creator-only access only as the token's own account or by an earlier stored grant.",
                 groups_res.error, projects_res.error, c.creator_email,
             )
 
