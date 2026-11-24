@@ -513,7 +513,16 @@ def trash_statements() -> list[str]:
     return [t.PAGE, t.COUNT]
 
 
-RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements, TRASH: trash_statements}
+KB_ROOT = "python/app/services/graph_db/postgres/kg/kb_root.py"
+
+
+def kb_root_statements() -> list[str]:
+    """A knowledge base's root over the typed graph's candidates: composed once, at import, from the module's seek builders."""
+    k = importlib.import_module("app.services.graph_db.postgres.kg.kb_root")
+    return [k.FOLDERS, k.RECORDS]
+
+
+RENDERED = {LISTING: listing_statements, HIERARCHY: hierarchy_statements, COUNTS: counts_statements, TRASH: trash_statements, KB_ROOT: kb_root_statements}
 
 
 def sources() -> dict[str, tuple[list[str], list[str]]]:
