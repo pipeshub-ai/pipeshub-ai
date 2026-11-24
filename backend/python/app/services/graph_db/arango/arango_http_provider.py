@@ -17059,8 +17059,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
             if not await self.kb_exists(kb_id):
-                self.logger.warning(f"❌ kb_exists returned false for KB {kb_id} during folder creation by user {user_id}")
-                return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
+                self.logger.warning(f"❌ kb_exists returned false during folder creation by user {user_id}")
+                return {"valid": False, "success": False, "code": 404, "reason": "Knowledge base not found"}
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
                 if user_role is None:
@@ -17068,7 +17068,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         f"❌ Permission check returned None for user {user_key} on KB {kb_id} "
                         f"(KB exists but no permission found or permission query failed)"
                     )
-                    return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
+                    return {"valid": False, "success": False, "code": 404, "reason": "Knowledge base not found"}
                 kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
                 reason = (
@@ -19402,17 +19402,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception:
             return None
 
-    async def _fetch_record_name(self, record_id: str) -> str | None:
-        """Fetch just a record's display name for use in error messages. Returns None on any failure."""
-        try:
-            results = await self.execute_query(
-                "FOR r IN @@col FILTER r._key == @id RETURN r.recordName",
-                bind_vars={"@col": CollectionNames.RECORDS.value, "id": record_id},
-            )
-            return results[0] if results else None
-        except Exception:
-            return None
-
     async def _validate_upload_context(
         self,
         kb_id: str,
@@ -19430,13 +19419,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return self._validation_error(404, "User key not found")
             # Check KB existence before permission so we can return 404 vs 403 accurately
             if not await self.kb_exists(kb_id):
-                return self._validation_error(404, f"Knowledge base {kb_id} not found")
+                return self._validation_error(404, "Knowledge base not found")
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
                 if user_role is None:
                     # No role at all → hide existence (404), same as the read path.
                     # Do not leak the KB name to a non-member.
-                    return self._validation_error(404, f"Knowledge base {kb_id} not found")
+                    return self._validation_error(404, "Knowledge base not found")
                 # Has a role but it is under-privileged → 403 discloses the requirement.
                 kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
@@ -19451,12 +19440,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
                 if not parent_folder:
                     kb_name = await self._fetch_kb_name(kb_id)
-                    folder_name = await self._fetch_record_name(parent_folder_id)
                     kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
-                    folder_label = f"'{folder_name}' ({parent_folder_id})" if folder_name else parent_folder_id
                     return self._validation_error(
                         404,
-                        f"Folder {folder_label} was not found in knowledge base {kb_label}. "
+                        f"The folder was not found in knowledge base {kb_label}. "
                         "The folder may not exist or may belong to a different knowledge base.",
                     )
                 if not is_live_record(parent_folder):

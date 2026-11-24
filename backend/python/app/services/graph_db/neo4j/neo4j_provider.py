@@ -16626,8 +16626,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return {"valid": False, "success": False, "code": 500, "reason": "Internal error: user record is malformed"}
 
             if not await self.kb_exists(kb_id):
-                self.logger.warning(f"❌ kb_exists returned false for KB {kb_id} during folder creation by user {user_id}")
-                return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
+                self.logger.warning(f"❌ kb_exists returned false during folder creation by user {user_id}")
+                return {"valid": False, "success": False, "code": 404, "reason": "Knowledge base not found"}
 
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
@@ -16636,7 +16636,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         f"❌ Permission check returned None for user {user_key} on KB {kb_id} "
                         f"(KB exists but no permission found or permission query failed)"
                     )
-                    return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
+                    return {"valid": False, "success": False, "code": 404, "reason": "Knowledge base not found"}
                 kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
                 reason = (
@@ -16671,17 +16671,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception:
             return None
 
-    async def _fetch_record_name(self, record_id: str) -> str | None:
-        """Fetch just a record's display name for use in error messages. Returns None on any failure."""
-        try:
-            results = await self.client.execute_query(
-                "MATCH (r:Record {id: $record_id}) RETURN r.recordName AS name",
-                parameters={"record_id": record_id},
-            )
-            return results[0]["name"] if results else None
-        except Exception:
-            return None
-
     async def _validate_upload_context(
         self,
         kb_id: str,
@@ -16709,14 +16698,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "valid": False,
                     "success": False,
                     "code": 404,
-                    "reason": f"Knowledge base {kb_id} not found"
+                    "reason": "Knowledge base not found"
                 }
 
             user_role = await self.get_user_kb_permission(kb_id, user_key)
             if user_role not in ["OWNER", "WRITER"]:
                 if user_role is None:
                     # No role at all → hide existence (404), same as the read path.
-                    return {"valid": False, "success": False, "code": 404, "reason": f"Knowledge base {kb_id} not found"}
+                    return {"valid": False, "success": False, "code": 404, "reason": "Knowledge base not found"}
                 kb_name = await self._fetch_kb_name(kb_id)
                 kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
                 reason = (
@@ -16729,15 +16718,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
                 if not parent_folder:
                     kb_name = await self._fetch_kb_name(kb_id)
-                    folder_name = await self._fetch_record_name(parent_folder_id)
                     kb_label = f"'{kb_name}' ({kb_id})" if kb_name else kb_id
-                    folder_label = f"'{folder_name}' ({parent_folder_id})" if folder_name else parent_folder_id
                     return {
                         "valid": False,
                         "success": False,
                         "code": 404,
                         "reason": (
-                            f"Folder {folder_label} was not found in knowledge base {kb_label}. "
+                            f"The folder was not found in knowledge base {kb_label}. "
                             "The folder may not exist or may belong to a different knowledge base."
                         ),
                     }

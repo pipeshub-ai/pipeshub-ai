@@ -627,7 +627,7 @@ async def get_catalog_template(request: Request, type_id: str) -> dict[str, Any]
     registry = _get_mcp_registry(request)
     template = registry.get_template(type_id)
     if not template:
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Unknown MCP server type: {type_id}")
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Unknown MCP server type.")
     return template.model_dump(by_alias=True)
 
 

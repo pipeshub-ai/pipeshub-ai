@@ -1052,9 +1052,27 @@ cut after the service committed, a 2xx whose body does not parse) has no audit l
 connector service's own line with the same `request_id`, record the attempt. A create resent after a cut connection (the
 connector, connector OAuth app and toolset creates are sent up to three times) may have been made twice with one line.
 
+OAuth clients (Developer Settings, `/api/v1/oauth-clients`) are saved by Node itself: the controller writes
+`config.oauth_client.*` once the OAuth app service returned (it throws on a refusal or a failure, which then has no line),
+with `target` the app's id (as above, an id that is not a PipesHub id gives `target` null and `reason` `invalid_id`
+instead of the table's reason). Any member registers and manages their own apps, so these lines include a member's own apps;
+`actor` says who. The service's own INFO lines (`OAuth app created`, `OAuth app suspended`, …, with `app_id`, and
+`client_id` where the service has it) stay next to the audit line.
+
+| Event | Route | `reason` | `target` |
+| --- | --- | --- | --- |
+| `config.oauth_client.create` | `POST /api/v1/oauth-clients/` | | the new app's id |
+| `config.oauth_client.update` | `PUT /:appId` | `settings` | the app |
+| `config.oauth_client.update` | `PUT /:appId/token-identity` | `token_identity` | the app |
+| `config.oauth_client.update` | `POST /:appId/regenerate-secret` | `secret_rotate` | the app |
+| `config.oauth_client.update` | `POST /:appId/suspend`, `POST /:appId/activate` | `suspend`, `activate` | the app |
+| `config.oauth_client.update` | `POST /:appId/revoke-all-tokens` | `tokens_revoked` | the app |
+| `config.oauth_client.delete` | `DELETE /:appId` | | the app |
+
 Not audited: writes by other services on the configuration manager's `/internal/` routes (service tokens), reads,
 validation 400s and other refusals before the write, system failures (the error middleware logs those once), boot-time
-migrations, and settings saved through other routers (OAuth clients).
+migrations, and writes that are not settings: a member's own credentials and sign-ins, OAuth callbacks, agent
+credentials, and operations such as sync, reindex and test.
 
 ## Upstream calls (Node)
 
@@ -1150,12 +1168,13 @@ run. Each says why it failed on the request's lines:
   `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
   retries; `/authorize`: a `server_error` redirect; `/introspect`: `active: false`, as before) with a fixed description.
   `server_error` is never a refusal's code. A change that succeeds (an OAuth app, a personal access token, a code or token
-  grant, an agent registration) is written by the service that made the write, never also by the controller; a step the
-  change runs keeps its own line (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`,
-  `app_id`, `pat_id` or `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token
-  endpoint, the user the grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A
-  delegation's user (whom a service account may act for) is `subject_user_id`, and the admin who granted or revoked it is
-  `granted_by` / `revoked_by`. A personal access token's name is not logged.
+  grant, an agent registration) is written by the service that made the write, never also by the controller (an OAuth
+  client's controller adds only its `config.oauth_client.*` audit line); a step the change runs keeps its own line
+  (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`, `app_id`, `pat_id` or
+  `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token endpoint, the user the
+  grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A delegation's user (whom a
+  service account may act for) is `subject_user_id`, and the admin who granted or revoked it is `granted_by` / `revoked_by`.
+  A personal access token's name is not logged.
 
 The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and
