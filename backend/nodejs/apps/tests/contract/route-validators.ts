@@ -46,15 +46,17 @@ const mountPrefix = (layer: Layer): string => {
 export interface ValidatorMount {
   key: string
   handler: (req: any, res: any, next: (arg?: unknown) => void) => Promise<void>
+  /** The schema the route passed to ValidationMiddleware.validate. */
+  schema: unknown
 }
 
 export async function collectValidatorMounts(): Promise<ValidatorMount[]> {
-  const captured = new Map<unknown, true>()
+  const captured = new Map<unknown, unknown>()
   const original = ValidationMiddleware.validate.bind(ValidationMiddleware)
   process.env.SECRET_KEY = process.env.SECRET_KEY ?? 'route-validator-contract-key'
   const stub = sinon.stub(ValidationMiddleware, 'validate').callsFake((schema, options) => {
     const handler = original(schema, options)
-    captured.set(handler, true)
+    captured.set(handler, schema)
     return handler
   })
   const mounts: ValidatorMount[] = []
@@ -62,7 +64,7 @@ export async function collectValidatorMounts(): Promise<ValidatorMount[]> {
   const add = (key: string, handler: ValidatorMount['handler']): void => {
     const n = (seen.get(key) ?? 0) + 1
     seen.set(key, n)
-    mounts.push({ key: n > 1 ? `${key} dup${n}` : key, handler })
+    mounts.push({ key: n > 1 ? `${key} dup${n}` : key, handler, schema: captured.get(handler) })
   }
   const walk = (stack: Layer[], prefix: string, factory: string, inherited: any[]): void => {
     const routerWide = inherited.slice()
