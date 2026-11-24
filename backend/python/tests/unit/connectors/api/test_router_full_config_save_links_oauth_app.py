@@ -340,7 +340,8 @@ class TestOtherSavesAreUnchanged:
         assert store.apps() == []
         assert store.values[CONFIG_PATH] == {"auth": {"connectorScope": "personal"}}
 
-    async def test_a_failed_connector_write_takes_back_the_new_app_and_fails_the_save(self) -> None:
+    async def test_a_failed_connector_write_keeps_the_new_app_says_so_and_fails_the_save(self) -> None:
+        # As on create: taking the app back could undo a concurrent edit (the store has no compare-and-set).
         store = InMemoryConfigService(
             {CONFIG_PATH: {"auth": {"connectorScope": "personal"}}}, failing_paths=(CONFIG_PATH,)
         )
@@ -349,7 +350,8 @@ class TestOtherSavesAreUnchanged:
             await _save(store, {"auth": {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}})
 
         assert caught.value.status_code == 500
-        assert store.apps() == []
+        assert "pick that app when you try again" in caught.value.detail
+        assert len(store.apps()) == 1
         assert store.values[CONFIG_PATH] == {"auth": {"connectorScope": "personal"}}
 
 

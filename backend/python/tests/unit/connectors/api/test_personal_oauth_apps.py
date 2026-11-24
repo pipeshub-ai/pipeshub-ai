@@ -628,26 +628,32 @@ class TestTheConnectorScopeIsTheServers:
 
 
 @pytest.mark.asyncio
-class TestAFailedSaveLeavesNoApp:
-    async def test_an_auth_save_whose_connector_config_is_not_stored_takes_its_new_app_back(self) -> None:
+class TestAFailedSave:
+    """A save that fails after its OAuth app write keeps the app, as create does, and says so."""
+
+    async def test_an_auth_save_whose_connector_config_is_not_stored_keeps_its_new_app_and_says_so(self) -> None:
         store = _ConnectorConfigWriteFails({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
 
         with pytest.raises(HTTPException) as exc:
             await _save_auth(store, ALICE, {"clientId": "alice-client", "clientSecret": ALICE_SECRET})
 
         assert exc.value.status_code == 500
-        assert store.apps() == []
+        assert exc.value.detail.endswith("Its OAuth app was saved: pick that app when you try again.")
+        [app] = store.apps()
+        assert app[OAUTH_APP_OWNER_FIELD] == ALICE
 
-    async def test_an_auth_save_whose_connector_config_is_not_stored_puts_the_app_back(self) -> None:
+    async def test_an_auth_save_whose_connector_config_is_not_stored_keeps_the_named_app_s_update(self) -> None:
         store = _ConnectorConfigWriteFails({
             APPS_PATH: [_personal_app(ALICE, "alice-app")],
             CONFIG_PATH: {"auth": {"oauthConfigId": "alice-app", "connectorScope": "personal"}},
         })
 
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as exc:
             await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated"})
 
-        assert store.apps() == [_personal_app(ALICE, "alice-app")]
+        # The connector already links the app it named, so a retry finds no other app in its way.
+        assert "OAuth app" not in exc.value.detail
+        assert store.apps()[0]["config"]["clientSecret"] == "rotated"
 
     async def test_a_connector_that_could_not_be_created_saves_no_app(self) -> None:
         store = InMemoryConfigService()
@@ -980,7 +986,7 @@ class _AppWriteAnswersFailureButLands(InMemoryConfigService):
 
 
 @pytest.mark.asyncio
-class TestAnUndoLeavesALaterWriteAlone:
+class TestAFailedSaveLeavesALaterWriteAlone:
     async def test_an_auth_save_does_not_roll_back_a_later_change_to_the_app(self) -> None:
         store = _alice_linked(_OwnAppChangesWhileTheConnectorFails)
 
@@ -997,53 +1003,54 @@ class TestAnUndoLeavesALaterWriteAlone:
 
         assert store.apps() == [_alice_app_from_her_other_connector()]
 
-    async def test_the_full_save_still_puts_back_its_own_write(self) -> None:
+    async def test_the_full_save_keeps_its_own_update_of_the_named_app(self) -> None:
         store = _alice_linked(_ConnectorConfigWriteFails)
 
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as exc:
             await _save_full(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated"})
 
-        assert store.apps() == [_personal_app(ALICE, "alice-app")]
+        assert "OAuth app" not in exc.value.detail
+        assert store.apps()[0]["config"]["clientSecret"] == "rotated"
 
 
 @pytest.mark.asyncio
-class TestAnAppWriteThatAnswersFailureIsTakenBack:
-    """It may have landed: left there, a retry with the same name is refused as a duplicate."""
+class TestAnAppWriteThatAnswersFailureIsNamed:
+    """It may have landed: the error says so, else the retry's "app name already exists" is the first sign."""
 
-    async def test_an_auth_save_s_new_app_goes(self) -> None:
+    async def test_an_auth_save_s_new_app(self) -> None:
         store = _AppWriteAnswersFailureButLands({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
 
         with pytest.raises(HTTPException) as exc:
             await _save_auth(store, ALICE, {"clientId": "alice-client", "clientSecret": ALICE_SECRET})
 
         assert exc.value.status_code == 500
-        assert store.apps() == []
+        assert exc.value.detail.endswith("Its OAuth app may have been saved: check the app list before you try again.")
 
-    async def test_an_auth_save_s_update_is_put_back(self) -> None:
-        store = _alice_linked(_AppWriteAnswersFailureButLands)
-
-        with pytest.raises(HTTPException):
-            await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated"})
-
-        assert store.apps() == [_personal_app(ALICE, "alice-app")]
-
-    async def test_the_full_save_s_new_app_goes(self) -> None:
+    async def test_the_full_save_s_new_app(self) -> None:
         store = _AppWriteAnswersFailureButLands({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
 
         with pytest.raises(HTTPException) as exc:
             await _save_full(store, ALICE, {"clientId": "alice-client", "clientSecret": ALICE_SECRET})
 
         assert exc.value.status_code == 500
-        assert store.apps() == []
+        assert "check the app list" in exc.value.detail
 
-    async def test_a_retry_with_the_same_name_then_saves(self) -> None:
+    async def test_not_an_update_of_the_named_app(self) -> None:
+        store = _alice_linked(_AppWriteAnswersFailureButLands)
+
+        with pytest.raises(HTTPException) as exc:
+            await _save_auth(store, ALICE, {"oauthConfigId": "alice-app", "clientSecret": "rotated"})
+
+        assert "check the app list" not in exc.value.detail
+
+    async def test_a_retry_that_picks_the_kept_app_links_it(self) -> None:
         store = _AppWriteAnswersFailureButLands({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
-        auth = {"clientId": "alice-client", "clientSecret": ALICE_SECRET, "oauthInstanceName": "My app"}
         with pytest.raises(HTTPException):
-            await _save_auth(store, ALICE, auth)
+            await _save_auth(store, ALICE, {"clientId": "alice-client", "clientSecret": ALICE_SECRET})
+        [kept] = store.apps()
 
         store.__class__ = InMemoryConfigService
-        await _save_auth(store, ALICE, auth)
+        await _save_auth(store, ALICE, {"oauthConfigId": kept["_id"]})
 
-        [app] = store.apps()
-        assert app["oauthInstanceName"] == "My app"
+        assert store.apps() == [kept]
+        assert _linked_app_id(store) == kept["_id"]

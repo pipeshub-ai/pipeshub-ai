@@ -316,7 +316,8 @@ class TestValidateOAuthAppBeforeCreation:
     @pytest.mark.asyncio
     async def test_update_with_name_change(self):
         existing_configs = [
-            {"_id": "cfg1", "orgId": "o1", "oauthInstanceName": "Old Name"},
+            # The app's own client ID: a new one would also need its secret.
+            {"_id": "cfg1", "orgId": "o1", "oauthInstanceName": "Old Name", "config": {"clientId": "c1"}},
             {"_id": "cfg2", "orgId": "o1", "oauthInstanceName": "Other"},
         ]
         cs = AsyncMock()
