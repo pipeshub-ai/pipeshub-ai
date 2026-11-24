@@ -37,6 +37,7 @@ export async function configuredLocalStorageReplicaProblem(
   if (!problem) return null;
   const raw =
     (await keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-  const storageType = (parseKvObject(raw) as { storageType?: string }).storageType;
+  const storageType = (parseKvObject(raw) as { storageType?: string })
+    .storageType;
   return !storageType || storageType === storageTypes.LOCAL ? problem : null;
 }
