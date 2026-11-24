@@ -115,7 +115,11 @@ function isConversationModelInCatalog(
   if (!k || !n || !models?.length) {
     return true;
   }
-  return isModelInList(models, modelInfo);
+  return isModelInList(
+    models,
+    modelInfo,
+    useChatStore.getState().settings.decisionModelConfigured,
+  );
 }
 
 function mapApiSegmentToAgentStrategy(
@@ -197,7 +201,7 @@ async function refreshSelectedModelFromCatalog(
 ): Promise<void> {
   try {
     const models = await fetchModelsForContext(ctxKey);
-    if (!isModelInList(models, modelInfo)) {
+    if (!isModelInList(models, modelInfo, useChatStore.getState().settings.decisionModelConfigured)) {
       // Conversation still references a model that was removed from the org/agent
       // list — clear selection so the toolbar shows the default from the catalog.
       useChatStore.getState().setSelectedModelForCtx(ctxKey, null);

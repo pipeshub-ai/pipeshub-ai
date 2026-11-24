@@ -2013,6 +2013,7 @@
         "title": "Default for new chats",
         "description": "Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.",
         "needsTwoModels": "Add at least two chat models before Auto can be the default.",
+        "needsDecisionModel": "Add a decision model before Auto can be the default.",
         "toastSaved": "Saved",
         "toastSaveError": "Could not save"
       },

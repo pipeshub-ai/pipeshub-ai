@@ -1,7 +1,7 @@
 """Auto model mode: picks a configured chat model and reasoning effort per turn.
 
-A configured decision model sorts the turn into a need tier when one exists;
-otherwise a short chat call does. Code maps the tier onto the configured models
+A configured decision model sorts the turn into a need tier. With none saved,
+the turn uses the default model. Code maps the tier onto the configured models
 by size and thinking (see ``app/services/ai_models/traits.py``).
 """
 

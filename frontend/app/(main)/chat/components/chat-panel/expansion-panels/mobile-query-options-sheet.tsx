@@ -49,7 +49,7 @@ export function MobileQueryOptionsSheet({
   const openedProjectId = useChatStore((s) => s.projectScope?.projectId ?? null);
   const displayModel = useMemo(
     () => getEffectiveModel(modelCtxKey),
-    [modelCtxKey, openedProjectId, settings.autoDefault, settings.selectedModels, settings.defaultModels, settings.availableModels],
+    [modelCtxKey, openedProjectId, settings.autoDefault, settings.decisionModelConfigured, settings.selectedModels, settings.defaultModels, settings.availableModels],
   );
   const handleModelSelect = (model: ModelOverride | null) =>
     setSelectedModelForCtx(modelCtxKey, model);

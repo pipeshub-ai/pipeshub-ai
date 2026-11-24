@@ -117,6 +117,7 @@ export function ModelSelectorPanel({
   // Read the shared cache so the panel re-renders as soon as the fetcher
   // writes results — no duplicate network calls.
   const cached = useChatStore((s) => s.settings.availableModels[ctxKey]);
+  const decisionModelConfigured = useChatStore((s) => s.settings.decisionModelConfigured);
   const models: AvailableLlmModel[] = cached?.models ?? [];
 
   const reasoningEffort = normalizeReasoningEffort(useChatStore((s) => s.settings.reasoningEffort[ctxKey] ?? null));
@@ -198,7 +199,7 @@ export function ModelSelectorPanel({
   const activeModel = models.find(
     (model) => model.modelKey === activeKey && model.modelName === activeName
   );
-  const showAuto = allowAuto && canUseAuto(models);
+  const showAuto = allowAuto && canUseAuto(models, decisionModelConfigured);
   const isAutoSelected = isAutoModel(selectedModel);
   const showReasoningEffort = !isAutoSelected && Boolean(activeModel?.isReasoning);
   const modelDefaultEffort = normalizeReasoningEffort(activeModel?.defaultReasoningEffort ?? null);

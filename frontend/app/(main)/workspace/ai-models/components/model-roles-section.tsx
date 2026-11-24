@@ -150,7 +150,8 @@ export function ModelRolesSection({
     [roles, indexingCandidates, t, onRolesUpdated, acknowledge]
   );
 
-  const enoughModelsForAuto = chatModelCount(configuredModels) >= 2;
+  const hasDecisionModel = (configuredModels.decision ?? []).length > 0;
+  const enoughModelsForAuto = hasDecisionModel && chatModelCount(configuredModels) >= 2;
 
   const handleAutoDefaultChange = useCallback(
     async (checked: boolean) => {
@@ -469,8 +470,12 @@ export function ModelRolesSection({
                     'Open new chats on Auto. A model someone already chose stays, and a project keeps its own model.',
                   )
                 : t(
-                    'workspace.aiModels.autoDefault.needsTwoModels',
-                    'Add at least two chat models before Auto can be the default.',
+                    hasDecisionModel
+                      ? 'workspace.aiModels.autoDefault.needsTwoModels'
+                      : 'workspace.aiModels.autoDefault.needsDecisionModel',
+                    hasDecisionModel
+                      ? 'Add at least two chat models before Auto can be the default.'
+                      : 'Add a decision model before Auto can be the default.',
                   )}
             </Text>
           </Flex>
