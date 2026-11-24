@@ -1055,7 +1055,12 @@ run. Each says why it failed on the request's lines:
   `levelFor(classifyRequestError(error, 500))` with the error, the access line marked with that class, and the answer
   `500 server_error` (`/revoke` and the bearer check: `503 temporarily_unavailable`, so the client keeps the token and
   retries; `/authorize`: a `server_error` redirect; `/introspect`: `active: false`, as before) with a fixed description.
-  `server_error` is never a refusal's code.
+  `server_error` is never a refusal's code. A change that succeeds (an OAuth app, a personal access token, a code or token
+  grant, an agent registration) is written by the service that made the write, never also by the controller; a step the
+  change runs keeps its own line (`OAuth tokens generated`, `All tokens revoked for app`). The lines carry `client_id`,
+  `app_id`, `pat_id` or `registration_id`; `user_id` is the request's user (the request's own identity wins; on the token
+  endpoint, the user the grant acts for), and the user a token is minted for or revoked from is `target_user_id`. A personal
+  access token's name is not logged.
 
 The MCP endpoint (`modules/mcp`) passes its failures to the error middleware, and writes one INFO `mcp.tool_call.end` per tool
 call: `tool`, `duration_ms`, `outcome` (`failure` when the tool answered an error), `client_id` (the OAuth app) and
@@ -1295,7 +1300,8 @@ Node, drop the address from the thrown message.
 
 **Finding a user's lines (support).** Get the PipesHub id from the admin console (Users, open the user: the profile URL has
 `userId=<id>`) or `GET /api/v1/users?search=<email>` (`_id`), then filter on `user_id=<id>` (requests made by that user) or
-`target_user_id=<id>` (sign-in, user management, connector-creator, and notification socket and queue lines). A connector's per-user lines carry
+`target_user_id=<id>` (sign-in, user management, connector-creator, notification socket and queue, and OAuth token mint and
+revoke lines). A connector's per-user lines carry
 `source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object id, Atlassian
 account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry only
 `connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.

@@ -335,6 +335,8 @@ describe('OAuthProviderController', () => {
       await controller.authorizeConsent(req, mockRes, mockNext)
       const response = mockRes.json.firstCall.args[0]
       expect(response.redirectUrl).to.include('code=auth-code-123')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('should issue a code for any authenticated user (not limited to app creator)', async () => {
@@ -582,6 +584,9 @@ describe('OAuthProviderController', () => {
 
       await controller.token(req, mockRes, mockNext)
       expect(mockRes.setHeader.calledWith('Cache-Control', 'no-store')).to.be.true
+      expect(mockRes.json.firstCall.args[0].access_token).to.equal('at')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('records oauth_token_issued with the grant, client and channel', async () => {
@@ -1048,6 +1053,8 @@ describe('OAuthProviderController', () => {
       const response = mockRes.json.firstCall.args[0]
       expect(response.access_token).to.equal('new-at')
       expect(response.refresh_token).to.equal('new-rt')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
 
     it('should require client_secret for confidential clients on refresh', async () => {
@@ -1460,6 +1467,9 @@ describe('OAuthProviderController', () => {
       const args = mockOAuthTokenService.generateTokens.firstCall.args
       expect(args[5]).to.equal('Creator Name')
       expect(args[6]).to.equal('premium')
+      expect(mockRes.json.firstCall.args[0].access_token).to.equal('at')
+      // AuthorizationCodeService / OAuthTokenService log the event; the controller adds no twin.
+      expect(mockLogger.info.called).to.be.false
     })
   })
 

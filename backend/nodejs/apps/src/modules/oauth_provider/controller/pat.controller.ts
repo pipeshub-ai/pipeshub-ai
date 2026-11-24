@@ -1,6 +1,5 @@
 import { injectable, inject } from 'inversify'
 import { Response, NextFunction } from 'express'
-import { Logger } from '../../../libs/services/logger.service'
 import { DEFAULT_EXPIRY_DAYS, PatService } from '../services/pat.service'
 import { ScopeValidatorService } from '../services/scope.validator.service'
 import { CreatePatRequest, UpdatePatKnowledgeLimitBody } from '../types/oauth.types'
@@ -17,7 +16,6 @@ import { recordServiceActivity } from '../../../libs/services/telemetry/modules/
 @injectable()
 export class PatController {
   constructor(
-    @inject('Logger') private logger: Logger,
     @inject('PatService') private patService: PatService,
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
@@ -46,12 +44,6 @@ export class PatController {
         fullName,
         data,
       )
-
-      this.logger.info('Personal access token created via API', {
-        orgId,
-        userId,
-        name: data.name,
-      })
 
       // Activation signal: a token is the first step of every programmatic
       // path (MCP clients, SDKs). Scopes are counted, not listed.
@@ -115,12 +107,6 @@ export class PatController {
         typeof req.body?.reason === 'string' ? req.body.reason : undefined
 
       await this.patService.revokeToken(orgId, userId, tokenId, reason)
-
-      this.logger.info('Personal access token revoked via API', {
-        orgId,
-        userId,
-        tokenId,
-      })
 
       res.json({ message: 'Personal access token revoked successfully' })
     } catch (error) {
@@ -227,12 +213,6 @@ export class PatController {
         typeof req.body?.reason === 'string' ? req.body.reason : undefined
 
       await this.patService.adminRevokeToken(orgId, adminUserId, tokenId, reason)
-
-      this.logger.info('Personal access token revoked by admin via API', {
-        orgId,
-        adminUserId,
-        tokenId,
-      })
 
       res.json({ message: 'Personal access token revoked successfully' })
     } catch (error) {

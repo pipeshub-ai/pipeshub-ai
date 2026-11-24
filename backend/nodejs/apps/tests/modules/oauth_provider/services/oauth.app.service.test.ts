@@ -16,7 +16,7 @@ import {
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { PAT_APP_CLIENT_ID_PREFIX, SERVICE_TOKEN_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
-import { createMockLogger } from '../../../helpers/mock-logger'
+import { createMockLogger, createSnakeCaseLogKeyGuard } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
   let service: OAuthAppService
@@ -53,7 +53,11 @@ describe('OAuthAppService', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
@@ -274,7 +278,7 @@ describe('OAuthAppService', () => {
         updatedAt: new Date(),
       }
 
-      sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
+      const create = sinon.stub(OAuthApp, 'create').resolves(mockApp as any)
 
       const result = await service.createApp(fakeOrgId, fakeUserId, true, {
         name: 'Test App',
@@ -283,6 +287,16 @@ describe('OAuthAppService', () => {
         redirectUris: ['https://example.com/callback'],
       })
 
+      // The one line for the event (the controller writes none); the app's name is a label an admin chose.
+      expect(mockLogger.info.args.map(([message, meta]: [string, any]) => [message, { ...meta, app_id: String(meta.app_id) }]))
+        .to.deep.equal([
+          ['OAuth app created', {
+            app_id: String(mockApp._id),
+            client_id: (create.firstCall.args[0] as any).clientId,
+            org_id: fakeOrgId,
+            name: 'Test App',
+          }],
+        ])
       expect(result).to.have.property('clientSecret')
       expect(result).to.have.property('clientId')
       expect(result.name).to.equal('Test App')
@@ -1409,7 +1423,11 @@ describe('OAuthAppService - branch coverage', () => {
     )
   })
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard()
+  after(() => snakeCaseKeys.report())
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, mockLogger)
     sinon.restore()
   })
 
