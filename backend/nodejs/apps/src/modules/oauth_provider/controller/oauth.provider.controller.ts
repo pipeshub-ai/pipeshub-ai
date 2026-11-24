@@ -37,6 +37,7 @@ import {
 import {
   answerOAuthServerFailure,
   isOAuthRefusal,
+  logOAuthRefusal,
   logOAuthServerFailure,
   OAUTH_SERVER_FAILURE,
   oauthErrorBody,
@@ -1075,7 +1076,7 @@ export class OAuthProviderController {
   }
 
   private logRefusal(error: BaseError): void {
-    this.logger.debug('oauth.request.refused', { code: oauthErrorCode(error) });
+    logOAuthRefusal(this.logger, oauthErrorCode(error));
   }
 
   private answerRefusal(res: Response, error: BaseError): void {
