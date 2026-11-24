@@ -193,4 +193,10 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="miro" name="Miro" />)).toBe('miro icon');
     expect(logo(<McpServerIcon typeId={null} name="Miro" />)).toBe('miro icon');
   });
+
+  it("shows Canva's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="canva" name="Canva" />)).toBe('canva icon');
+    expect(logoPath(<McpServerIcon typeId="canva" name="Canva" />)).toBe('/icons/connectors/canva.svg');
+    expect(logo(<McpServerIcon typeId={null} name="Canva" />)).toBe('canva icon');
+  });
 });

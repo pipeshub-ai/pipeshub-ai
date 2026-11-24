@@ -106,6 +106,7 @@ class TestMCPRegistry:
         assert "fireflies" in type_ids
         assert "fathom" in type_ids
         assert "miro" in type_ids
+        assert "canva" in type_ids
 
     def test_miro_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -126,6 +127,26 @@ class TestMCPRegistry:
         assert miro.default_scopes == []
         assert miro.icon == "/icons/connectors/miro.svg"
         assert miro.documentation_url == "https://developers.miro.com/docs/mcp-intro"
+
+    def test_canva_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        canva = registry.get_template("canva")
+
+        assert canva is not None
+        assert canva.display_name == "Canva"
+        assert canva.transport == MCPTransport.STREAMABLE_HTTP
+        assert canva.default_url == "https://mcp.canva.com/mcp"
+        assert canva.default_auth_mode == MCPAuthMode.OAUTH
+        assert canva.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert canva.supports_dcr is True
+        assert canva.require_oauth_client is False
+        assert canva.url_editable is False
+        assert canva.authorization_url == "https://mcp.canva.com/authorize"
+        assert canva.token_url == "https://mcp.canva.com/token"
+        assert canva.default_scopes == []
+        assert canva.icon == "/icons/connectors/canva.svg"
+        assert canva.documentation_url == "https://www.canva.dev/docs/apps/mcp/"
 
     def test_lucid_catalog_entry(self) -> None:
         registry = MCPRegistry()

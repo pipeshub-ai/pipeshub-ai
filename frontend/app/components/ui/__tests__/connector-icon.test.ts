@@ -21,6 +21,8 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('granola')).toBe('granola');
     expect(resolveConnectorType('fireflies')).toBe('fireflies');
     expect(resolveConnectorType('fathom')).toBe('fathom');
+    expect(resolveConnectorType('canva')).toBe('canva');
+    expect(resolveConnectorType('Canva MCP')).toBe('canva');
   });
 
   it('matches Intercom, Granola, Fireflies and Fathom as whole words only', () => {
