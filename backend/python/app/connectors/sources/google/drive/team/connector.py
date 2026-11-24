@@ -672,6 +672,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # drive's records from My Drive ones when that filter is checked.
         self._listed_shared_drive_ids: set = set()
         self._shared_drives_listed = False
+        self._kept_drives_noted: set[str] = set()
 
         # Collaborators granted access to a file but outside this Workspace domain.
         # Accumulated across the run and flushed once at the end, so an email repeated
@@ -912,6 +913,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._folder_probe_403s = {}
             self._folders_probed = set()
             self._synced_drive_ids = set()
+            self._kept_drives_noted = set()
             self._drive_has_member_cache = {}
             self._drive_member_emails = {}
             self._drive_managers = {}
@@ -1726,30 +1728,39 @@ class GoogleDriveTeamConnector(BaseConnector):
         found" is confirmed with groups.get for that exact group; any other answer keeps the group for the next run.
         """
         stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+        kept: list[AppUserGroup] = []
         for group in stored:
             group_id = (group.source_user_group_id or "").lower()
             if not group_id or "@" not in group_id or group_id in listed_group_ids:
                 continue
-            try:
-                await self.admin_data_source.members_list(groupKey=group_id, maxResults=1)
-            except HttpError as e:
-                if e.resp.status != HttpStatusCode.NOT_FOUND.value:
-                    self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {e}")
-                    continue
-                try:
-                    await self.admin_data_source.groups_get(groupKey=group_id)
-                except HttpError as again:
-                    if again.resp.status != HttpStatusCode.NOT_FOUND.value:
-                        self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {again}")
-                        continue
-                else:
-                    self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
-                    continue
-            else:
-                self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
+            if not await self._group_is_gone(group_id):
+                kept.append(group)
                 continue
             self.logger.info(f"Group {group_id} was deleted in Google Workspace; removing it and its access")
             await self.data_entities_processor.on_user_group_deleted(group.source_user_group_id, self.connector_id)
+        # A kept group was not rewritten this run, so the full sync's unlink would otherwise drop its members.
+        self.data_entities_processor.note_kept_user_groups(self.connector_id, kept)
+
+    async def _group_is_gone(self, group_id: str) -> bool:
+        """Whether a group missing from the listing is deleted: True only when members.list and groups.get
+        both answer 404."""
+        try:
+            await self.admin_data_source.members_list(groupKey=group_id, maxResults=1)
+        except HttpError as e:
+            if e.resp.status != HttpStatusCode.NOT_FOUND.value:
+                self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {e}")
+                return False
+            try:
+                await self.admin_data_source.groups_get(groupKey=group_id)
+            except HttpError as again:
+                if again.resp.status != HttpStatusCode.NOT_FOUND.value:
+                    self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {again}")
+                    return False
+                return True
+            self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
+            return False
+        self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
+        return False
 
     async def _process_group(self, group: Dict) -> None:
         """
@@ -3013,6 +3024,18 @@ class GoogleDriveTeamConnector(BaseConnector):
             # excludes them, so their record group is still removed if they are deleted later.
             {"driveIds": sorted(set(synced_drive_ids) | set(not_removed) | (known & self._listed_shared_drive_ids))},
         )
+
+    async def _note_kept_shared_drive(self, drive_id: str) -> None:
+        """A shared drive a member lists that the admin listing left out is not written this run, so the full sync's
+        unlink would take its members' access unless it is noted kept. Failing that, nothing may be unlinked."""
+        if drive_id in self._listed_shared_drive_ids or drive_id in self._kept_drives_noted:
+            return
+        self._kept_drives_noted.add(drive_id)
+        try:
+            await self.data_entities_processor.note_kept_record_group(self.connector_id, drive_id)
+        except Exception as e:
+            self._sync_ledger.note_incomplete()
+            self.logger.warning(f"Shared drive {drive_id} is kept but could not be noted kept: {e}")
 
     async def _shared_drive_is_gone(self, drive_id: str) -> bool:
         return await self._shared_drive_exists(drive_id) is False
@@ -7036,6 +7059,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         self.logger.warning(f"Skipping drive without ID: {drive_name}")
                         continue
 
+                    await self._note_kept_shared_drive(drive_id)
                     try:
                         self.logger.info(f"Syncing shared drive '{drive_name}' (ID: {drive_id}) for user {user.email}")
 
