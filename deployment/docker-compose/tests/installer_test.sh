@@ -981,6 +981,12 @@ check_exact "a repeated extra is on once" "$(EXTRA_PROFILES=my-proxy,my-proxy dp
 check_exact "an extra does not turn on what the selections turn off" "$(DEPLOY_TYPE=eval EXTRA_PROFILES=sandbox,broker-kafka,graph-arango,my-proxy dp neo4j redis redis)" "graph-neo4j,my-proxy"
 check_exact "postgres named in both places is on once" "$(COMPOSE_PROFILES=postgres EXTRA_PROFILES=postgres dp neo4j redis redis)" "graph-neo4j,sandbox,postgres"
 check_exact "no extras leaves the derived list alone" "$(EXTRA_PROFILES= dp neo4j redis redis)" "graph-neo4j,sandbox"
+# A PostgreSQL profile the setting turned on goes off when the setting stops naming it; one set any other way stays.
+check_exact "postgres from the setting goes when the setting is cleared" "$(COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate SAVED_EXTRA_PROFILES=postgres,postgres-migrate EXTRA_PROFILES= dp neo4j redis redis)" "graph-neo4j,sandbox"
+check_exact "only the profile taken out of the setting goes" "$(COMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate SAVED_EXTRA_PROFILES=postgres,postgres-migrate EXTRA_PROFILES=postgres dp neo4j redis redis)" "graph-neo4j,sandbox,postgres"
+check_exact "postgres still named in the setting stays" "$(COMPOSE_PROFILES=graph-neo4j,sandbox,postgres SAVED_EXTRA_PROFILES=postgres EXTRA_PROFILES=postgres dp neo4j redis redis)" "graph-neo4j,sandbox,postgres"
+check_exact "postgres set outside the setting stays" "$(COMPOSE_PROFILES=graph-neo4j,sandbox,postgres SAVED_EXTRA_PROFILES=my-proxy EXTRA_PROFILES= dp neo4j redis redis)" "graph-neo4j,sandbox,postgres"
+check_exact "the document-store override keeps both whatever the setting says" "$(COMPOSE_PROFILES=postgres PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml SAVED_EXTRA_PROFILES=postgres EXTRA_PROFILES= dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
 (
   work="$TMP_ROOT/extra-profiles"; mkdir -p "$work/bin"
   cp "$INNER_INSTALLER" "$work/install.sh"
@@ -1014,6 +1020,20 @@ check_exact "no extras leaves the derived list alone" "$(EXTRA_PROFILES= dp neo4
   check_exact "an empty value clears the saved setting" "$(saved PIPESHUB_EXTRA_PROFILES)" ""
   [[ "$(grep -c '^PIPESHUB_EXTRA_PROFILES=' "$work/.env")" == "1" ]] && pass "the setting is saved on one line" || fail "the setting is saved on one line"
 
+  # The same through the installer: PostgreSQL switched on by the setting, then the setting cleared.
+  seed "graph-neo4j,sandbox"
+  run PIPESHUB_EXTRA_PROFILES=postgres,postgres-migrate
+  check_exact "the setting can switch the PostgreSQL profiles on" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+  run PIPESHUB_UNRELATED=1
+  check_exact "they stay on while the setting names them" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+  run PIPESHUB_EXTRA_PROFILES=
+  check_exact "clearing the setting switches them off" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox"
+  run PIPESHUB_UNRELATED=1
+  check_exact "and they stay off on the next run" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox"
+  seed "graph-neo4j,sandbox,postgres"
+  run PIPESHUB_EXTRA_PROFILES=
+  check_exact "a PostgreSQL profile set by hand is not touched by an empty setting" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox,postgres"
+
   seed "graph-neo4j,sandbox"
   run "PIPESHUB_EXTRA_PROFILES= my-proxy , my-cron " && pass "spaces around the names are accepted" || fail "spaces around the names are accepted"
   check_exact "spaces around the names are dropped" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy,my-cron"
@@ -1032,9 +1052,21 @@ check_exact "no extras leaves the derived list alone" "$(EXTRA_PROFILES= dp neo4
   (cd "$work" && PIPESHUB_EXTRA_PROFILES=my-proxy bash ./install.sh --yes --print-env-only >/dev/null 2>&1) && pass "a new install with an extra profile exits 0" || fail "a new install with an extra profile exits 0"
   check "a new .env lists the extra profile" ",$(saved COMPOSE_PROFILES)," ",my-proxy,"
   check_exact "a new .env saves the setting" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy"
+  # The web readers' credentials are typed into .env by hand; a rewrite must not leave their services without them.
+  printf 'SEARXNG_SECRET=s3cret-value\nCRAWL4AI_API_TOKEN=t0ken=with=equals\n' >>"$work/.env"
   (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
   check "--reconfigure keeps the extra profile" ",$(saved COMPOSE_PROFILES)," ",my-proxy,"
   check_exact "--reconfigure keeps the setting" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy"
+  check_exact "--reconfigure keeps SEARXNG_SECRET" "$(saved SEARXNG_SECRET)" "s3cret-value"
+  check_exact "--reconfigure keeps CRAWL4AI_API_TOKEN" "$(saved CRAWL4AI_API_TOKEN)" "t0ken=with=equals"
+  (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  [[ "$(grep -c '^SEARXNG_SECRET=' "$work/.env")" == "1" && "$(grep -c '^CRAWL4AI_API_TOKEN=' "$work/.env")" == "1" ]] && pass "a second --reconfigure keeps one line of each" || fail "a second --reconfigure keeps one line of each"
+  # A value given for the new .env (PIPESHUB_ENV_EXTRA) is the one written, once.
+  printf 'SEARXNG_SECRET=from-extra-file\n' >"$work/extra.env"
+  (cd "$work" && PIPESHUB_ENV_EXTRA=extra.env bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1) && pass "--reconfigure with the secret in PIPESHUB_ENV_EXTRA exits 0" || fail "--reconfigure with the secret in PIPESHUB_ENV_EXTRA exits 0"
+  check_exact "the PIPESHUB_ENV_EXTRA value is the one written" "$(saved SEARXNG_SECRET)" "from-extra-file"
+  [[ "$(grep -c '^SEARXNG_SECRET=' "$work/.env")" == "1" ]] && pass "and it is written once" || fail "and it is written once"
+  check_exact "the other credential is still carried over" "$(saved CRAWL4AI_API_TOKEN)" "t0ken=with=equals"
 
   # --stop and --uninstall name the extra profiles, or `down` leaves their containers (checked with a recording docker).
   cat >"$work/bin/docker" <<'STUB'

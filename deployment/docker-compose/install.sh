@@ -88,7 +88,9 @@ PIPESHUB_COMPOSE_OVERRIDES="${PIPESHUB_COMPOSE_OVERRIDES:-$(_saved_env_val PIPES
 # selections bring (comma-separated), for services an override file adds. Saved
 # in .env as well; set but empty clears the saved value. Kept in EXTRA_PROFILES,
 # a name .env does not hold, so sourcing .env later cannot put the old value back.
-EXTRA_PROFILES="${PIPESHUB_EXTRA_PROFILES-$(_saved_env_val PIPESHUB_EXTRA_PROFILES)}"
+# SAVED_EXTRA_PROFILES is the value as this run found it, read before anything rewrites .env.
+SAVED_EXTRA_PROFILES="$(_saved_env_val PIPESHUB_EXTRA_PROFILES)"
+EXTRA_PROFILES="${PIPESHUB_EXTRA_PROFILES-$SAVED_EXTRA_PROFILES}"
 EXTRA_PROFILES="${EXTRA_PROFILES//[[:space:]]/}"
 # The value goes into .env, which this script sources: profile names and nothing else.
 _profile_list='^([A-Za-z0-9][A-Za-z0-9_.-]*(,[A-Za-z0-9][A-Za-z0-9_.-]*)*)?$'
@@ -288,10 +290,17 @@ optional_env_line() {
 # both of them whenever the document-store override is in use, since it depends on services of both.
 # PIPESHUB_EXTRA_PROFILES come last. A profile the selections decide (graph, broker, key-value store, sandbox) is not taken from
 # there: the selections stay the one place that turns those on.
+# A PostgreSQL profile that PIPESHUB_EXTRA_PROFILES named until this run, and names no longer, is off again: without this the
+# "already set" rule would keep it for good. The document-store override still brings both.
 opt_in_profiles() {
   local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)" seen=",graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,"
+  local was=",${SAVED_EXTRA_PROFILES:-}," now=",${EXTRA_PROFILES:-},"
   for o in postgres postgres-migrate; do
-    if [[ ",${have}," == *",${o},"* || "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ]]; then echo "$o"; seen+="${o},"; fi
+    if [[ "${PIPESHUB_COMPOSE_OVERRIDES:-}" != *docker-compose.postgres-docstore.yml* ]]; then
+      [[ ",${have}," == *",${o},"* ]] || continue
+      if [[ "$was" == *",${o},"* && "$now" != *",${o},"* ]]; then continue; fi
+    fi
+    echo "$o"; seen+="${o},"
   done
   local IFS=','
   for o in ${EXTRA_PROFILES:-}; do
@@ -1286,6 +1295,10 @@ if ! ${SKIP_WIZARD:-false}; then
   NEO4J_MEMORY_LIMIT="$(get_existing_val NEO4J_MEMORY_LIMIT "")"
   NEO4J_MEMORY_RESERVATION="$(get_existing_val NEO4J_MEMORY_RESERVATION "")"
   QDRANT_MEMORY_RESERVATION="$(get_existing_val QDRANT_MEMORY_RESERVATION "")"
+  # The web readers' credentials (env.template): set by hand, never asked here. Without them a rewrite
+  # leaves the search-searxng and fetch-crawl4ai services, which PIPESHUB_EXTRA_PROFILES keeps on, unable to start.
+  _saved_searxng_secret="$(_saved_env_val SEARXNG_SECRET)"
+  _saved_crawl4ai_token="$(_saved_env_val CRAWL4AI_API_TOKEN)"
   # Qdrant's memory limit decides search speed once the index grows
   # (docs/deployment/vector-db-sizing.md); keep an operator's value.
   QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "${QDRANT_MEMORY_LIMIT:-}")"
@@ -1551,6 +1564,12 @@ ENVFILE
   if [[ -n "$EXTRA_PROFILES" ]]; then
     printf 'PIPESHUB_EXTRA_PROFILES=%s\n' "$EXTRA_PROFILES" >> "$ENV_FILE"
   fi
+  # The web readers' credentials as they were saved, unless PIPESHUB_ENV_EXTRA sets them for this .env.
+  for _kept in "SEARXNG_SECRET=${_saved_searxng_secret}" "CRAWL4AI_API_TOKEN=${_saved_crawl4ai_token}"; do
+    [[ -n "${_kept#*=}" ]] || continue
+    if [[ -n "${PIPESHUB_ENV_EXTRA:-}" && -f "$PIPESHUB_ENV_EXTRA" ]] && grep -qE "^${_kept%%=*}=" "$PIPESHUB_ENV_EXTRA"; then continue; fi
+    printf '%s\n' "$_kept" >> "$ENV_FILE"
+  done
   if [[ -n "${PIPESHUB_ENV_EXTRA:-}" ]]; then
     [[ -f "$PIPESHUB_ENV_EXTRA" ]] || die "PIPESHUB_ENV_EXTRA: $PIPESHUB_ENV_EXTRA not found"
     # A key the installer already wrote would appear twice and be read back wrong.
