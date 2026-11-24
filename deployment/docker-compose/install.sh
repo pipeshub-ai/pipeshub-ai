@@ -96,6 +96,16 @@ EXTRA_PROFILES="${EXTRA_PROFILES//[[:space:]]/}"
 _profile_list='^([A-Za-z0-9][A-Za-z0-9_.-]*(,[A-Za-z0-9][A-Za-z0-9_.-]*)*)?$'
 [[ "$EXTRA_PROFILES" =~ $_profile_list ]] \
   || die "PIPESHUB_EXTRA_PROFILES: expected compose profile names separated by commas, got '${EXTRA_PROFILES}'"
+# A name given twice is saved once, as it is switched on once.
+if [[ -n "$EXTRA_PROFILES" ]]; then
+  _extra_once=""
+  _extra_ifs="$IFS"; IFS=','
+  for _extra_name in $EXTRA_PROFILES; do
+    [[ ",${_extra_once}," == *",${_extra_name},"* ]] || _extra_once+="${_extra_once:+,}${_extra_name}"
+  done
+  IFS="$_extra_ifs"
+  EXTRA_PROFILES="$_extra_once"
+fi
 
 # Every compose call reads docker-compose.yml plus the files listed in
 # PIPESHUB_COMPOSE_OVERRIDES (colon-separated; relative paths start here).

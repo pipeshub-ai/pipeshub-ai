@@ -1037,6 +1037,12 @@ check_exact "the document-store override keeps both whatever the setting says" "
   seed "graph-neo4j,sandbox"
   run "PIPESHUB_EXTRA_PROFILES= my-proxy , my-cron " && pass "spaces around the names are accepted" || fail "spaces around the names are accepted"
   check_exact "spaces around the names are dropped" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy,my-cron"
+  seed "graph-neo4j,sandbox"
+  run "PIPESHUB_EXTRA_PROFILES= my-proxy , my-cron , my-proxy "
+  check_exact "a name given twice is saved once" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy,my-cron"
+  check_exact "and is on once" "$(saved COMPOSE_PROFILES)" "graph-neo4j,sandbox,my-proxy,my-cron"
+  run PIPESHUB_UNRELATED=1
+  check_exact "a later run leaves the saved list as it is" "$(saved PIPESHUB_EXTRA_PROFILES)" "my-proxy,my-cron"
 
   # The value is written to .env, which the installer sources: anything but profile names is refused before that.
   seed "graph-neo4j,sandbox"
