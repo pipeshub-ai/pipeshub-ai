@@ -36,7 +36,7 @@ from app.schema.node_validator import SchemaValidationError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from logging import Logger
 
     from app.models.entities import Record, User
@@ -56,7 +56,7 @@ MAX_PERSON_LOOKUPS = 200
 _NEW_EDGE_TYPES = frozenset({
     EntityRelations.AUTHORED_BY.value, EntityRelations.ADDRESSED_TO.value,
     EntityRelations.REVIEWED_BY.value, EntityRelations.OWNED_BY.value,
-    EntityRelations.LAST_MODIFIED_BY.value,
+    EntityRelations.LAST_MODIFIED_BY.value, EntityRelations.SHARED_WITH.value,
 })
 
 _ARANGO_SCHEMA_VIOLATION = 1620
@@ -97,6 +97,7 @@ class PeopleStore(Protocol):
     async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None: ...
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None: ...
     def is_transient_error(self, error: BaseException) -> bool: ...
 
@@ -207,12 +208,22 @@ def _source_people_links(record: Record) -> list[PersonLink]:
         (EntityRelations.LAST_MODIFIED_BY, record.last_modified_by, updated),
         *((EntityRelations.OWNED_BY, owner, updated) for owner in record.owners),
     ]
-    return [
+    links = [
         PersonLink(role, email=person.email, source_id=person.source_id,
                    source_timestamp=timestamp, display_name=person.display_name)
         for role, person, timestamp in named
         if person is not None and person.identifiable
     ]
+    # Last, so the cap on a record's edges drops them before anyone it names by role.
+    owned = {_PersonResolver.identity(link) for link in links if link.edge_type is EntityRelations.OWNED_BY}
+    links.extend(
+        PersonLink(EntityRelations.SHARED_WITH, email=person.email, source_id=person.source_id,
+                   source_timestamp=updated, display_name=person.display_name)
+        for person in record.shared_with or []
+        if person.identifiable
+        and _PersonResolver.identity(PersonLink(EntityRelations.SHARED_WITH, person.email, person.source_id)) not in owned
+    )
+    return links
 
 
 def person_links(record: Record) -> list[PersonLink]:
@@ -292,10 +303,12 @@ class _PersonResolver:
         source_key = f"{self._record.connector_id}:{source_id}" if source_id else None
         # Read first: an upsert of a node that exists still takes its write lock
         # inside the sync transaction, so popular outsiders would serialise syncs.
-        # A failed read raises, as for members.
+        # A failed read raises, as for members. By email first: the node an
+        # upsert by email wrote may carry no source key, and one written under
+        # the source key alone would otherwise shadow it.
         existing = (
-            source_key and await self._store.get_person_by_source_key(source_key, org_id)
-        ) or (email and await self._store.get_person_by_email(email, org_id, raise_on_error=True))
+            email and await self._store.get_person_by_email(email, org_id, raise_on_error=True)
+        ) or (source_key and await self._store.get_person_by_source_key(source_key, org_id))
         if existing:
             return CollectionNames.PEOPLE.value, existing.id
         person = Person(email=email or None, source_key=source_key, org_id=org_id, full_name=link.display_name)
@@ -354,7 +367,12 @@ async def link_record_people(
     # would delete that record's person edges.
     if record.is_placeholder:
         return 0
-    links = person_links(record)
+    # None means the connector did not read the shares this time: keep the stored ones, as for any role
+    # the connector could not tell.
+    keep = list(dict.fromkeys([
+        *record.people_unknown, *([EntityRelations.SHARED_WITH.value] if record.shared_with is None else []),
+    ]))
+    links = [link for link in person_links(record) if link.edge_type.value not in keep]
     if not links and not may_have_edges and not isinstance(record, LINKED_RECORD_TYPES):
         return 0
     propagate = must_propagate or (lambda _exc: False)
@@ -397,7 +415,9 @@ async def link_record_people(
     # After the reads, and one replace: where a store commits each statement, a
     # failed read or write must leave the old edges.
     try:
-        await store.replace_record_entity_relations(record.id, collections, origin, edges)
+        await store.replace_record_entity_relations(
+            record.id, collections, origin, edges, keep_edge_types=keep,
+        )
     except Exception as exc:  # see _NEW_EDGE_TYPES
         established = [e for e in edges if e["edgeType"] not in _NEW_EDGE_TYPES]
         if (
@@ -412,6 +432,8 @@ async def link_record_people(
         # An empty replace would clear the links this failure is meant to keep.
         if not established:
             return 0
-        await store.replace_record_entity_relations(record.id, collections, origin, established)
+        await store.replace_record_entity_relations(
+            record.id, collections, origin, established, keep_edge_types=keep,
+        )
         return len(established)
     return len(edges)

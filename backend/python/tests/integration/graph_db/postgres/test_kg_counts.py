@@ -1,6 +1,6 @@
 """The counters of the typed graph (kg.counts): after any sequence of changes, folded or not, a key's rows sum to count(*) of what it counts (by the listing's own
 predicates); a seed counts a connector whole and repairs what drifted; a fold that races the writers loses and doubles nothing; and a listing that counts from them
-counts only what the viewer's classes open."""
+counts only what the viewer's classes open; the check reports counters that differ from a recount and repairs nothing."""
 from __future__ import annotations
 
 import asyncio
@@ -25,9 +25,7 @@ from .test_kg_read import flip
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 
 TRUTH = f"""SELECT r.app_sk, 1::smallint AS facet, r.class_id, r.kind, r.folder, NULL::text AS record_type, NULL::text AS origin, count(*) AS n FROM kg.records r
-    WHERE r.org_id = $1 AND r.app_sk IS NOT NULL AND {kgl.LIVE} AND {kgl.DECIDED} GROUP BY 1, 3, 4, 5
-  UNION ALL SELECT r.app_sk, 2::smallint, NULL, NULL, NULL, r.record_type, r.origin, count(*) FROM kg.records r
-    WHERE r.org_id = $1 AND r.app_sk IS NOT NULL AND {counts.FACET_ROWS} GROUP BY 1, 6, 7"""
+    WHERE r.org_id = $1 AND r.app_sk IS NOT NULL AND {kgl.LIVE} AND {kgl.DECIDED} GROUP BY 1, 3, 4, 5"""
 HELD = """SELECT app_sk, facet, class_id, kind, folder, record_type, origin, sum(n) AS n FROM kg.counts WHERE org_id = $1 AND facet <> 0
     GROUP BY 1, 2, 3, 4, 5, 6, 7 HAVING sum(n) <> 0"""
 
@@ -106,6 +104,39 @@ async def test_a_seed_counts_a_connector_whole_repairs_a_drift_and_marks_it_read
     assert held == truth
     with ctx(org):
         assert await p._q(lambda tx: counts.class_rows(tx, org, sk, []), None) == {}
+
+
+async def test_the_check_reports_the_keys_whose_counters_differ_from_a_recount_and_changes_nothing(pg_db, caplog, monkeypatch) -> None:
+    results: list[str] = []
+    monkeypatch.setattr(counts.CHECKED, "inc", lambda *labels, value=1.0: results.extend(labels))
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    await run(p, org, await everything2(p, org))
+    assert await counts.check(pg_db, org, "app1") == []                              # not counted whole yet: nothing to compare, nothing reported
+    assert results == ["unseeded"]                                                   # and not counted as a check that found the counters right
+    await counts.run(pg_db, org)
+    assert await counts.check(pg_db, org, "app1") == []                              # counted whole: the counters are the recount
+    assert results == ["unseeded", "same"]
+
+    async def first_key(tx) -> asyncpg.Record:
+        return await tx.fetchrow("""SELECT c.app_sk, c.class_id, c.kind, c.folder, sum(c.n)::bigint AS n FROM kg.counts c JOIN kg.node_keys k ON k.org_id = c.org_id AND k.sk = c.app_sk
+            WHERE c.org_id = $1 AND k.coll = 1 AND k.id = 'app1' AND c.facet = 1 GROUP BY 1, 2, 3, 4 ORDER BY 2, 3, 4 LIMIT 1""", org)
+    with ctx(org):
+        key = await p._q(first_key, None)
+        assert key is not None
+
+        async def drift(tx) -> None:
+            await KgWriter(tx).counts_add([(key["app_sk"], 1, key["class_id"], key["kind"], key["folder"], None, None, 5)])
+        await p._q(drift, None, write=True)
+    before = await state(p, org)
+    with caplog.at_level(logging.ERROR, logger=counts.logger.name):
+        found = await counts.check(pg_db, org, "app1")
+    assert found == [{"class_id": key["class_id"], "kind": key["kind"], "folder": key["folder"], "kept": key["n"] + 5, "counted": key["n"]}]
+    assert await state(p, org) == before                                             # reported, not repaired
+    assert any("kg counters of connector app1" in r.getMessage() for r in caplog.records)
+    assert results == ["unseeded", "same", "differs"]
+    assert await counts.check(pg_db, org, "app2") == []                              # another connector of the org is not named
+    assert await counts.check(pg_db, new_org(), "app1") == []                        # nor is a connector of another org
 
 
 async def test_a_fold_that_races_the_writers_loses_and_doubles_nothing(pg_db) -> None:

@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from logging import Logger
 from typing import Any, AsyncContextManager, Optional
 
@@ -505,6 +506,7 @@ class BaseDataStore(ABC):
     @abstractmethod
     async def replace_record_entity_relations(
         self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+        *, keep_edge_types: Collection[str] = (),
     ) -> None:
         """Replace the record's ``entityRelations`` edges of ``origin`` to
         ``to_collections`` with ``edges``, atomically; see

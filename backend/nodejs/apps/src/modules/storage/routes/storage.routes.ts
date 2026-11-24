@@ -712,8 +712,7 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         return await storageController.createDocumentBuffer(req, res, next);
-      } catch (error: any) {
-        logger.error(`Failed to upload buffer: ${error.message}`);
+      } catch (error) {
         next(error);
       }
     },

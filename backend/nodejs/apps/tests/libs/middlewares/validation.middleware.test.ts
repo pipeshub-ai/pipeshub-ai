@@ -2,8 +2,12 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { z } from 'zod'
-import { ValidationMiddleware } from '../../../src/libs/middlewares/validation.middleware'
+import {
+  UNREADABLE_REQUEST_MESSAGE,
+  ValidationMiddleware,
+} from '../../../src/libs/middlewares/validation.middleware'
 import { ValidationError } from '../../../src/libs/errors/validation.error'
+import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors'
 import { Logger } from '../../../src/libs/services/logger.service'
 
 // ---------------------------------------------------------------------------
@@ -304,29 +308,101 @@ describe('ValidationMiddleware', () => {
   // Non-Zod errors
   // -----------------------------------------------------------------------
   describe('validate - non-Zod errors', () => {
-    it('should forward non-Zod errors via next()', async () => {
-      // A transform that throws a plain Error is not a validation failure
-      const schema = z.object({
-        body: z.any().transform(() => {
-          throw new Error('Unexpected error')
-        }),
-        query: z.any(),
-        params: z.any(),
-        headers: z.any(),
-      })
+    const schemaWithBody = (body: z.ZodTypeAny) =>
+      z.object({ body, query: z.any(), params: z.any(), headers: z.any() })
 
-      const middleware = ValidationMiddleware.validate(schema)
-      const req = createMockRequest()
-      const res = createMockResponse()
+    const run = async (schema: z.ZodObject, req: any = createMockRequest()) => {
       const next = createMockNext()
-
-      await middleware(req, res, next)
-
+      await ValidationMiddleware.validate(schema)(req, createMockResponse(), next)
       expect(next.calledOnce).to.be.true
-      const error = next.firstCall.args[0]
-      expect(error).to.be.instanceOf(Error)
+      return next.firstCall.args[0]
+    }
+
+    const GENERIC_REFUSAL = [
+      { field: '', message: UNREADABLE_REQUEST_MESSAGE, code: 'VALIDATION_ERROR', value: '' },
+    ]
+
+    it('answers a plain Error thrown by a transform with the fixed 400, without its message', async () => {
+      const error = await run(
+        schemaWithBody(
+          z.any().transform(() => {
+            throw new Error('n5m-canary sent-value')
+          }),
+        ),
+      )
+
+      expect(error).to.be.instanceOf(ValidationError)
+      expect(error.statusCode).to.equal(400)
+      expect(error.errors).to.deep.equal(GENERIC_REFUSAL)
+      expect(JSON.stringify(error)).to.not.include('n5m-canary')
+      expect(error.message).to.not.include('n5m-canary')
+    })
+
+    it('answers a TypeError from a refine with the fixed 400', async () => {
+      const error = await run(
+        schemaWithBody(z.any().refine(() => (null as any).principalId)),
+      )
+
+      expect(error).to.be.instanceOf(ValidationError)
+      expect(error.errors).to.deep.equal(GENERIC_REFUSAL)
+    })
+
+    it('still answers a call-stack RangeError with the too-many-values refusal', async () => {
+      const error = await run(
+        schemaWithBody(
+          z.any().refine(() => {
+            throw new RangeError('Maximum call stack size exceeded')
+          }),
+        ),
+      )
+
+      expect(error).to.be.instanceOf(ValidationError)
+      expect(error.errors).to.deep.equal([
+        {
+          field: '',
+          message: 'The request holds too many invalid values to check.',
+          code: 'TOO_BIG',
+          value: '',
+        },
+      ])
+    })
+
+    it('answers any other RangeError with the fixed 400, not the too-many-values refusal', async () => {
+      const error = await run(
+        schemaWithBody(
+          z.any().refine(() => {
+            throw new RangeError('Invalid time value')
+          }),
+        ),
+      )
+
+      expect(error).to.be.instanceOf(ValidationError)
+      expect(error.errors).to.deep.equal(GENERIC_REFUSAL)
+    })
+
+    it('passes our own classified error through with its status', async () => {
+      const unavailable = new ServiceUnavailableError('store is down')
+      const error = await run(
+        schemaWithBody(
+          z.any().refine(async () => {
+            throw unavailable
+          }),
+        ),
+      )
+
+      expect(error).to.equal(unavailable)
+      expect(error.statusCode).to.equal(503)
+    })
+
+    it('forwards a throw outside the parse as is, not as a 400', async () => {
+      // Express 5 makes req.query getter-only; assigning it then throws in our code, not the caller's.
+      const req = createMockRequest({ body: {} })
+      Object.defineProperty(req, 'query', { get: () => ({}), enumerable: true })
+
+      const error = await run(schemaWithBody(z.object({})), req)
+
+      expect(error).to.be.instanceOf(TypeError)
       expect(error).to.not.be.instanceOf(ValidationError)
-      expect(error.message).to.equal('Unexpected error')
     })
   })
 

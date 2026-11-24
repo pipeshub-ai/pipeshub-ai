@@ -46,6 +46,7 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_scopes_delete": (([11],), "kg.scopes"),
     "kg.w_listing_set": (([11], [3], ["rec"], [3], [True], [False], [False], [b"\x00r"]), "kg.records"),
     "kg.w_trash_set": (([11], [3], ["rec"], [3], [1790000000000], ["bt1"]), "kg.records"),
+    "kg.w_pc_top_set": (([11], [3], ["rec"], [3], [True]), "kg.records"),
     "kg.w_counts_add": (([5], [1], [7], [3], [False], [None], [None], [2]), "kg.counts"),
     "kg.w_counts_delete": (([1],), "kg.counts"),
     "kg.w_analyze_request": ((5,), "kg.analyze_requests"),
@@ -54,6 +55,7 @@ CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that ar
     "kg.w_counts_add": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::smallint[]", "%s::boolean[]", "%s::text[]", "%s::text[]", "%s::bigint[]"],
     "kg.w_listing_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::bytea[]"],
     "kg.w_trash_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s::text[]"],
+    "kg.w_pc_top_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
     "kg.w_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
     "kg.w_scopes_set": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]"],
     "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]", "%s"],
@@ -70,7 +72,7 @@ def marks(args: tuple, name: str | None = None) -> str:
 
 # The writers that take the caller's projection code epoch last (kg_0013); call() passes it.
 GUARDED = ("kg.w_stamps_set", "kg.w_fence_rows", "kg.w_queue_touch", "kg.w_queue_done", "kg.w_changes_ack", "kg.w_changes_delete")
-EPOCH = 9
+EPOCH = 10
 
 
 def call(c, name: str, org: str | None, args: tuple, *, epoch: int | None = EPOCH):
@@ -229,6 +231,8 @@ BAD = {
                          ([None], [3], ["s"], [3], [True], [False], [False], [None]), ([11], [3], ["s"], [3], [True], [False], [False], [None, None])],
     "kg.w_trash_set": [([11, 12], [3], ["s"], [3], [1], ["b"]), ([11], [4], ["s"], [3], [1], ["b"]), ([11], [3], [""], [3], [1], ["b"]), ([None], [3], ["s"], [3], [1], ["b"]),
                        ([11], [3], ["s"], [3], [1, 2], ["b"]), ([11], [3], ["s"], [3], [1], ["b", "c"]), (None, [3], ["s"], [3], [1], ["b"])],
+    "kg.w_pc_top_set": [([11, 12], [3], ["s"], [3], [True]), ([11], [4], ["s"], [3], [True]), ([11], [3], [""], [3], [True]), ([11], [3], ["s"], [3], [None]),
+                        ([None], [3], ["s"], [3], [True]), ([11], [3], ["s"], [3], [True, False]), (None, [3], ["s"], [3], [True])],
     "kg.w_stamps_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([None], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
@@ -574,6 +578,19 @@ def test_the_trash_columns_are_written_to_the_row_of_the_session_org_and_the_oth
         clean(c)
 
 
+def test_pc_top_is_written_to_the_row_of_the_session_org_and_the_other_columns_stay(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values())))
+        before = c.execute("SELECT name, parent_sk, deleted, pc_top FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert before[3] is False                                                                                                      # kg_0024's default
+        assert call(c, "kg.w_pc_top_set", ORG_A, ([11], [3], ["rec-1"], [3], [True])) == [(1,)]
+        assert tuple(c.execute("SELECT name, parent_sk, deleted, pc_top FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()) == (*before[:3], True)
+        call(c, "kg.w_pc_top_set", ORG_B, ([11], [3], ["rec-1"], [3], [False]))                                                       # another org's call makes a row of its own
+        assert c.execute("SELECT pc_top FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] is True
+        clean(c)
+
+
 def test_a_listed_row_with_a_long_name_that_does_not_compress_is_written(pdb):
     """A name has no bound: the name indexes key on a prefix of it, so a 100 KB key of random bytes (no compression helps) is no index entry too large to write."""
     with conn(pdb) as c:
@@ -627,17 +644,21 @@ def counters(c, org: str) -> list[tuple]:
 
 
 def test_a_write_of_the_records_adds_its_counter_deltas_in_the_writers_org_and_the_fold_writers_replace_them(pdb):
-    """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record of a connector adds a facet 2 delta, an
-    unchanged repeat adds none, its delete takes it back. The fold's writers delete the deltas by id in the session org only and insert folded rows."""
+    """kg_0015: the trigger on kg.records runs as the vetted writer, in its transaction, under the per-org policy; a live record a listing counts by class (stamped and
+    decided) adds a facet 1 delta, an unchanged repeat adds none, its delete takes it back. kg_0023: no facet 2 delta (record type and origin) any more. The fold's writers
+    delete the deltas by id in the session org only and insert folded rows."""
     with conn(pdb) as c:
         clean(c)
         live = rec_args((11, rec_values(deleted=False)))
         call(c, "kg.w_records_upsert", ORG_A, live)
-        call(c, "kg.w_records_upsert", ORG_A, live)
         call(c, "kg.w_records_upsert", ORG_B, rec_args((11, rec_values(deleted=True))))          # not live: counts nowhere
-        assert counters(c, ORG_A) == [(2, "FILE", "CONNECTOR", 1, False)] and counters(c, ORG_B) == []
+        assert counters(c, ORG_A) == [] and counters(c, ORG_B) == []                            # live, not decided yet: no facet 1, and no facet 2 at all
+        call(c, "kg.w_stamps_set", ORG_A, ([11], [3], ["rec-1"], [3], [b"\x00\x01"], [9], [True], [True], [False], [True], [4], [False]))
+        call(c, "kg.w_r13_set", ORG_A, ([11], [3], ["rec-1"], [3], [False]))
+        call(c, "kg.w_records_upsert", ORG_A, live)
+        assert counters(c, ORG_A) == [(1, None, None, 1, False)]
         call(c, "kg.w_records_delete", ORG_A, ([11],))
-        assert counters(c, ORG_A) == [(2, "FILE", "CONNECTOR", 1, False), (2, "FILE", "CONNECTOR", -1, False)]
+        assert counters(c, ORG_A) == [(1, None, None, 1, False), (1, None, None, -1, False)]
         ids = [r[0] for r in c.execute("SELECT id FROM kg.counts WHERE org_id = %s", (ORG_A,))]
         assert call(c, "kg.w_counts_delete", ORG_B, (ids,)) == [(0,)]                                # another org's ids are not theirs to delete
         assert call(c, "kg.w_counts_delete", ORG_A, (ids,)) == [(2,)]

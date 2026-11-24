@@ -1,3 +1,4 @@
+import { Logger } from '../../libs/services/logger.service';
 import { loadConfig, redact } from './config';
 import { Log, bulk, StoppedForTest } from './bulk';
 import { cancelDrain, drain } from './drain';
@@ -262,6 +263,7 @@ export async function runCli(
   argv: string[],
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
+  Logger.consoleToStderr();
   const a = parse(argv);
   if (a.cmd === 'help' || a.cmd === '--help' || a.flags.has('help')) {
     process.stdout.write(`${HELP}\n`);

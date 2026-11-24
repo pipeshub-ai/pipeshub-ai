@@ -38,6 +38,7 @@ import {
 } from '../../crawling_manager/services/connector_schedule_orchestrator';
 import { ConnectorSyncBlock } from '../../crawling_manager/utils/schedule_config_mapper';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
+import { auditSettingsChange } from '../../configuration_manager/utils/config-audit';
 
 const logger = Logger.getInstance({
   service: 'Connector Controller',
@@ -81,6 +82,7 @@ export const buildProxyHeaders = (
  * @param validatePayload - Function to validate the request payload
  * @param createPayload - Function to create the payload from request body
  * @param operationName - Human-readable operation name for logging
+ * @param auditReason - The `reason` of the `config.connector.update` audit line written once the service saved
  * @returns Express route handler function
  */
 const createConnectorConfigUpdateHandler = (
@@ -89,6 +91,7 @@ const createConnectorConfigUpdateHandler = (
   validatePayload: (body: any) => void,
   createPayload: (body: any) => any,
   operationName: string,
+  auditReason: string,
   onSuccess?: (req: AuthenticatedUserRequest, body: any) => void,
 ) => {
   return async (
@@ -142,6 +145,10 @@ const createConnectorConfigUpdateHandler = (
         operationName,
         'Connector instance not found',
       );
+      auditSettingsChange('connector', 'update', {
+        target: connectorId,
+        reason: auditReason,
+      });
     } catch (error: any) {
       const handledError = handleBackendError(error, operationName.toLowerCase());
       next(handledError);
@@ -630,7 +637,9 @@ export const createConnectorInstance =
 
       const headers = buildProxyHeaders(req);
 
-      const connectorResponse = await executeConnectorCommand(
+      const connectorResponse = await executeConnectorCommand<{
+        connector?: { connectorId?: string };
+      }>(
         `${appConfig.connectorBackend}/api/v1/connectors/`,
         HttpMethod.POST,
         headers,
@@ -643,6 +652,9 @@ export const createConnectorInstance =
         'Creating connector instance',
         'Connector config not found'
       );
+      auditSettingsChange('connector', 'create', {
+        target: connectorResponse.data?.connector?.connectorId,
+      });
     } catch (error: any) {
       const handledError = handleBackendError(
         error,
@@ -781,6 +793,10 @@ export const updateConnectorInstanceConfig =
         'Updating connector instance config',
         'Connector instance not found',
       );
+      auditSettingsChange('connector', 'update', {
+        target: connectorId,
+        reason: 'settings',
+      });
     } catch (error: any) {
       const handledError = handleBackendError(
         error,
@@ -808,6 +824,7 @@ export const updateConnectorInstanceAuthConfig = (appConfig: AppConfig) =>
       baseUrl: body.baseUrl,
     }),
     'Updating connector instance auth config',
+    'auth',
   );
 
 /**
@@ -832,6 +849,7 @@ export const updateConnectorInstanceFiltersSyncConfig = (
       baseUrl: body.baseUrl,
     }),
     'Updating connector instance filters-sync config',
+    'filters_sync',
     (req, body) => {
       if (body?.sync === undefined) return;
       const { connectorId } = req.params;
@@ -891,6 +909,7 @@ export const deleteConnectorInstance =
         'Deleting connector instance',
         'Connector instance not found'
       );
+      auditSettingsChange('connector', 'delete', { target: connectorId });
     } catch (error: any) {
       const handledError = handleBackendError(
         error,
@@ -936,6 +955,10 @@ export const updateConnectorInstanceName =
         'Updating connector instance name',
         'Connector instance not found'
       );
+      auditSettingsChange('connector', 'update', {
+        target: connectorId,
+        reason: 'rename',
+      });
     } catch (error: any) {
       const handledError = handleBackendError(
         error,
@@ -1236,6 +1259,10 @@ export const saveConnectorInstanceFilterOptions =
         'Saving connector instance filter options',
         'Connector instance filter options not found'
       );
+      auditSettingsChange('connector', 'update', {
+        target: connectorId,
+        reason: 'filters_sync',
+      });
     } catch (error: any) {
       const handledError = handleBackendError(
         error,
@@ -1358,6 +1385,14 @@ export const toggleConnectorInstance =
         'Toggling connector instance',
         'Connector instance not found'
       );
+      auditSettingsChange('connector', 'update', {
+        target: connectorId,
+        // Without `enabled` the service flipped the current state, which Node does not know.
+        reason:
+          typeof enabled === 'boolean'
+            ? `${type}_${enabled ? 'enable' : 'disable'}`
+            : 'toggle',
+      });
     } catch (error: any) {
       const handledError = handleBackendError(
         error,
@@ -1594,6 +1629,10 @@ export const setPermissionFilter =
         'Setting the permission filter',
         'Connector not found',
       );
+      auditSettingsChange('connector', 'update', {
+        target: req.params.connectorId as string,
+        reason: 'permission_filter',
+      });
     } catch (error) {
       next(handleBackendError(error, 'set permission filter'));
     }
@@ -2040,7 +2079,7 @@ const validateActiveConnector = async (
   );
 
   if (!isAllowed) {
-    throw new BadRequestError(`Connector ${connectorId} not allowed`);
+    throw new BadRequestError('Connector not allowed');
   }
 
   logger.debug('Connector validation successful', {

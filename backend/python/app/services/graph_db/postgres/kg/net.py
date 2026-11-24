@@ -4,6 +4,7 @@ The reader trusts every row kg holds for a served connector. Verifying the conne
 
 - a share of the checks the reader answers (``PG_KG_SHADOW_SAMPLE``, 1 % unless set) is repeated by the walk, off the caller's path, in one snapshot (:func:`sample`, called by ``read``);
 - the worker verifies each enforced connector now and then (``PG_KG_VERIFY_EVERY_S``, an hour unless set, 0 = never), a few connectors per pass (:func:`verify_due`), working at most ``VERIFY_SHARE`` of the time.
+  A verify that finds no difference then compares the connector's counters with a recount of its rows (``counts.check``), which only reports.
 
 Any difference takes the connector back to the walk at once (``backfill.demote``: mode legacy, no cursor), logs an error and is counted: kg admitting what the walk denies is a leak, and kg
 denying what the walk admits is a gap the reader must not have either. The connector is taken to enforce again only by the bootstrap (copy, verify, promote), and not before ``HOLD_S``
@@ -27,7 +28,13 @@ from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import bind, spawn_detached
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.kg import backfill, bootstrap, drainer, locks
+from app.services.graph_db.postgres.kg import (
+    backfill,
+    bootstrap,
+    counts,
+    drainer,
+    locks,
+)
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.services.graph_db.postgres.kg.verify import (
     Cursor,
@@ -489,6 +496,7 @@ async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], Verif
                 await demote(db, org, [app], source="verify", why="the copy differs from the graph")
             else:
                 LAST_VERIFIED.set(org, app, value=time.time())
+                await counts.check(db, org, app)
             st.cursor, st.since, st.flagged, st.due = None, None, False, time.monotonic() + every
             completed += 1
             break

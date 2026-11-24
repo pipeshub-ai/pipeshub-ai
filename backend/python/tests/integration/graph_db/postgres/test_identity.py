@@ -141,9 +141,10 @@ async def test_the_orgs_and_their_apps(w: World, org_ctx) -> None:
 
 async def test_graph_keys_by_user_ids_name_every_missing_user(w: World) -> None:
     await w.nodes("users", {"_key": "k1", "userId": "uid-1"})
-    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1"], chunk_size=10) == {"uid-1": "k1"}
+    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1"], w.org, chunk_size=10) == {"uid-1": "k1"}
     with pytest.raises(ValueError, match="uid-2"):
-        await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], chunk_size=10)
+        await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], w.org, chunk_size=10)
+    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], w.org, chunk_size=10, allow_missing=True) == {"uid-1": "k1"}
 
 
 async def test_the_people_behind_an_app_are_the_orgs_members_linked_to_it(w: World) -> None:
@@ -346,7 +347,7 @@ async def test_what_identity_writes_feeds_the_access_check(w: World) -> None:
 
 CALLS = [
     ("get_user_by_user_id", ("u",)), ("get_user_by_email", ("a@b.c",)), ("get_users_by_emails", (["a@b.c"],)), ("get_org_apps", ("o",)), ("get_account_type", ("o",)), ("get_users", ("o",)),
-    ("get_organization_users", ("o",)), ("find_users", ("o", "x")), ("get_graph_user_keys_by_mongo_user_ids", (["u"],)), ("get_user_by_source_id", ("s", "c")),
+    ("get_organization_users", ("o",)), ("find_users", ("o", "x")), ("get_graph_user_keys_by_mongo_user_ids", (["u"], "o")), ("get_user_by_source_id", ("s", "c")),
     ("get_app_users", ("o", "c")), ("get_app_user_links", ("o", "c")), ("batch_upsert_app_users", ([app_user("a@b.c", "k")],)), ("get_user_group_by_external_id", ("c", "e")),
     ("get_user_groups", ("c", "o")), ("get_user_directory_groups", ("u", "o")), ("get_app_role_by_external_id", ("c", "e")),
     ("batch_upsert_user_groups", ([AppUserGroup(app_name=Connectors.JIRA, connector_id="c", source_user_group_id="e", name="G")],)),
@@ -394,7 +395,9 @@ async def test_graph_keys_by_user_ids_only_name_users_of_the_org_asked(w: World)
     assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1"], w.org, chunk_size=10) == {"uid-1": "k1"}
     with pytest.raises(ValueError, match="uid-2"):
         await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-1", "uid-2"], w.org, chunk_size=10)
-    assert await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-2"], None, chunk_size=10) == {"uid-2": "k2"}      # no org asked: any user of this graph
+    for no_org in (None, ""):  # no org asked is refused, never "any user of this graph"
+        with pytest.raises(ValueError, match="org_id is required"):
+            await w.p.get_graph_user_keys_by_mongo_user_ids(["uid-2"], no_org, chunk_size=10)
 
 
 async def test_an_address_is_lowered_by_the_database_alone_so_the_stored_and_the_asked_side_agree(w: World) -> None:

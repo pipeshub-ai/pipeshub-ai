@@ -75,6 +75,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.zendesk import (
     oauth_urls,  # noqa: F401 - registers the OAuth URL rule the router and token refresh apply
 )
@@ -367,6 +368,8 @@ class ZendeskConnector(BaseConnector):
         self._section_id_to_data: dict[str, dict[str, Any]] = {}
         self._category_id_to_data: dict[str, dict[str, Any]] = {}
         self._org_id_to_data: dict[str, dict[str, Any]] = {}
+        # Organizations Zendesk did not answer about this sync: their group is left as it is.
+        self._unanswered_org_ids: set[str] = set()
         self._user_id_to_app_user: dict[str, AppUser] = {}
         self._rebuild_ticket_edges = False
         self._rebuild_article_edges = False
@@ -382,6 +385,7 @@ class ZendeskConnector(BaseConnector):
         self._ticket_folders: dict[str, tuple[RecordGroup, list[Permission]]] = {}
         self._folder_org_group_ids: dict[str, set[str]] = {}
         self._skipped_this_sync: list[str] = []
+        self._read_everything = True
         self._token_refresh_lock = asyncio.Lock()
         self.records_sync_point = SyncPoint(
             connector_id=self.connector_id,
@@ -443,6 +447,7 @@ class ZendeskConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         self._skipped_this_sync = []
+        self._read_everything = True
         try:
             await self._run_sync()
         except ZendeskAuthError as e:
@@ -475,8 +480,14 @@ class ZendeskConnector(BaseConnector):
                 ),
             )
 
-    def _skip(self, what: str) -> None:
+    def _skip(self, what: str, *, left_unread: bool = True) -> None:
         self._skipped_this_sync.append(what)
+        if left_unread:
+            self._read_everything = False
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that left part of Zendesk unread unlinks nothing it did not write."""
+        return FullSyncCoverage(complete=self._read_everything)
 
     async def _ensure_admin_account(self) -> None:
         """Stop with one actionable error when the connected account is not an admin.
@@ -518,6 +529,7 @@ class ZendeskConnector(BaseConnector):
         self._section_id_to_data.clear()
         self._category_id_to_data.clear()
         self._org_id_to_data.clear()
+        self._unanswered_org_ids.clear()
         self._ticket_folders.clear()
         self._folder_org_group_ids.clear()
 
@@ -529,10 +541,10 @@ class ZendeskConnector(BaseConnector):
         )
         await self._ensure_admin_account()
 
-        # A full sync deletes the sync points and every edge with them, keeping the
-        # nodes. Skipping an unchanged record would leave it stranded: still in the
-        # graph, attached to nothing, and never touched again because it will never
-        # look changed. A missing checkpoint is the signal that just happened, so send
+        # A full sync deletes the sync points and unlinks every node it did not write.
+        # Skipping an unchanged record would leave it stranded: still in the graph,
+        # attached to nothing, and never touched again because it will never look
+        # changed. A missing checkpoint is the signal that just happened, so send
         # everything and let the processor rebuild the edges. One flag per stage — a
         # stage that never runs never writes a checkpoint, and would otherwise pin the
         # other stage's flag on forever.
@@ -638,7 +650,7 @@ class ZendeskConnector(BaseConnector):
                 "truncated and the group is rebuilt from scratch on every write"
             )
         if not replace_members:
-            self._skip("custom role access")
+            self._skip("custom role access", left_unread=False)
             self.logger.error(
                 "Zendesk: custom role export failed — keeping existing group and "
                 "all-tickets members, adding only agents whose access is known"
@@ -1376,6 +1388,27 @@ class ZendeskConnector(BaseConnector):
                 sorted(emails), self.connector_id
             )
 
+    async def _keep_organization_group(self, org_id: str) -> None:
+        """Keep an unanswered organization's group through a full sync's unlink.
+
+        The org is also recorded so a ticket that already had its org_ grant keeps it
+        this sync.
+
+        A failed keep must not stop the tickets and Help Center: the run is reported
+        incomplete instead, so nothing is unlinked and a full sync stays owed.
+        """
+        self._unanswered_org_ids.add(org_id)
+        try:
+            await self.data_entities_processor.note_kept_user_group(
+                self.connector_id, f"org_{org_id}"
+            )
+        except Exception as e:
+            self._skip("organization groups")
+            self.logger.warning(
+                f"Zendesk: could not keep the group of organization {org_id}; "
+                f"this full sync unlinks nothing: {e}"
+            )
+
     async def _add_organizations_missing_from_export(
         self, org_user_groups: list[tuple[AppUserGroup, list[AppUser]]]
     ) -> list[tuple[AppUserGroup, list[AppUser]]]:
@@ -1411,6 +1444,7 @@ class ZendeskConnector(BaseConnector):
                 )
             except Exception as e:
                 self.logger.warning(f"Zendesk: could not check organization {org_id}: {e}")
+                await self._keep_organization_group(org_id)
                 continue
             if response.status_code == HttpStatusCode.NOT_FOUND.value:
                 for external_id in (f"org_{org_id}", f"{ORG_AGENTS_GROUP_PREFIX}{org_id}"):
@@ -1426,6 +1460,7 @@ class ZendeskConnector(BaseConnector):
                 self.logger.warning(
                     f"Zendesk: organization {org_id} missing from the export and unreadable"
                 )
+                await self._keep_organization_group(org_id)
                 continue
             self._org_id_to_data[org_id] = org_data
             org_user_groups.append((self._org_user_group(org_id), []))
@@ -1621,6 +1656,7 @@ class ZendeskConnector(BaseConnector):
                     self.logger.warning(
                         "Zendesk: ignoring ticket checkpoint from a superseded sync"
                     )
+                    self._skip("tickets")
                     return synced
                 await self.records_sync_point.update_sync_point(
                     SYNC_POINT_KEY,
@@ -2117,16 +2153,54 @@ class ZendeskConnector(BaseConnector):
             # The stored node is an untyped Record the Neo4j upsert rejects, so the
             # typed record is rebuilt; keeping the status avoids re-queueing it.
             record.indexing_status = existing_record.indexing_status
+        organization_id = ticket_data.get("organization_id")
+        # An unanswered org's grant opens no new access: only a stored copy that
+        # already carries it keeps it. Such orgs are rare, so this read is too.
+        keeps_org_grant = bool(
+            has_public_comment
+            and existing_record
+            and str(organization_id) in self._unanswered_org_ids
+            and await self._has_stored_org_grant(existing_record.id, organization_id)
+        )
         permissions = self._record_permissions(
             group_id,
             requester,
-            ticket_data.get("organization_id"),
+            organization_id,
             collaborators=ticket_data.get("collaborator_ids") or [],
             include_customer_access=has_public_comment,
             assignee_id=ticket_data.get("assignee_id"),
             requester_id=ticket_data.get("requester_id"),
+            keeps_org_grant=keeps_org_grant,
         )
         return record, permissions
+
+    async def _has_stored_org_grant(self, record_id: str, organization_id: Any) -> bool:
+        """Whether the stored ticket already carries its organization's org_ grant.
+
+        Every stored copy of the group is checked: older syncs could leave several
+        with the same external id, and the grant may sit on any of them. A read that
+        fails raises, so the ticket is set aside with its stored grant untouched
+        rather than rewritten without it.
+        """
+        groups = CollectionNames.GROUPS.value
+        async with self.data_store_provider.transaction() as tx_store:
+            copies = await tx_store.get_nodes_by_filters(
+                groups,
+                {"connectorId": self.connector_id, "externalGroupId": f"org_{organization_id}"},
+                raise_on_error=True,
+            )
+            for doc in copies or []:
+                edge = await tx_store.get_edge(
+                    doc.get("_key") or doc.get("id"),
+                    groups,
+                    record_id,
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.PERMISSION.value,
+                    raise_on_error=True,
+                )
+                if edge is not None:
+                    return True
+        return False
 
     def _parse_ticket_links(self, ticket_data: dict[str, Any]) -> list[RelatedExternalRecord]:
         """Map Zendesk's ticket-to-ticket links onto RecordRelations.
@@ -2359,7 +2433,7 @@ class ZendeskConnector(BaseConnector):
             datasource.list_articles, "articles", offset_only=True
         )
         if not complete:
-            self._skip("deleted Help Center articles")
+            self._skip("deleted Help Center articles", left_unread=False)
             self.logger.error(
                 "Zendesk: article list truncated — skipping the deleted-article check"
             )
@@ -2593,6 +2667,7 @@ class ZendeskConnector(BaseConnector):
         # Zendesk rejects a start_time inside the last minute; the next sync resumes.
         if next_start > get_epoch_timestamp_in_ms() // 1000 - INCREMENTAL_SAFETY_LAG_SECONDS:
             return None
+        self._skip("Help Center articles")
         return next_start
 
     async def _sync_help_center_sections(self) -> bool:
@@ -4000,6 +4075,7 @@ class ZendeskConnector(BaseConnector):
         include_customer_access: bool = True,
         assignee_id: Any = None,
         requester_id: Any = None,
+        keeps_org_grant: bool = False,
     ) -> list[Permission]:
         permissions: list[Permission] = [self._all_tickets_permission()]
         granted: set[str] = set()
@@ -4027,7 +4103,8 @@ class ZendeskConnector(BaseConnector):
             grant_group(f"{ORG_AGENTS_GROUP_PREFIX}{organization_id}")
         # Granted whether or not the org shares tickets: run_sync empties the group of
         # an org that does not, so toggling sharing needs no change to the tickets.
-        if include_customer_access and known_org:
+        # An unanswered org's group is left as it is: a ticket that had its grant keeps it.
+        if include_customer_access and (known_org or keeps_org_grant):
             grant_group(f"org_{organization_id}")
 
         emails: set[str] = set()

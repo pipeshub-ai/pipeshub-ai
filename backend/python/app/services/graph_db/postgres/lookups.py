@@ -843,20 +843,8 @@ class LookupsMixin(PgBase):
                                     op="get_message_id_header_by_key", record_id=record_key)
             return None
 
-    async def get_related_mails_by_message_id_header(self, message_id_header: str, exclude_key: str, collection: str, transaction: str | None = None) -> list[str]:
-        """The keys of the other documents of the collection with this message id header. A read by a document field: there is no index for it."""
-        org = current_org_id()
-        try:
-            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_related_mails_by_message_id_header */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2
-                AND doc->>'messageIdHeader' = $3 AND id <> $4 ORDER BY id""", org, collection, message_id_header, exclude_key), transaction)
-            return [r["id"] for r in rows]
-        except Exception as e:
-            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
-                                    op="get_related_mails_by_message_id_header")
-            return []
 
-
-    # ---- keys by external id, linked records, failed records, documents by status, departments, and what is left of a connector's sync ----
+    # ---- linked records, failed records, documents by status, departments, and what is left of a connector's sync ----
     async def filter_linked_record_ids(self, record_ids: list[str], transaction: str | None = None) -> list[str]:
         """The records among ``record_ids`` that belong to a record group or have a canonical hierarchy parent, in the order asked."""
         org = current_org_id()
@@ -888,13 +876,6 @@ class LookupsMixin(PgBase):
             FROM graph.ref_links($1::text[], $2, $3, $4)""", doc_ids, OriginTypes.UPLOAD.value, Connectors.KNOWLEDGE_BASE.value, REF_LINKS_PER_DOC), None)
         return [{"docId": r["doc_id"], "recordId": r["node_id"], "kind": r["kind"], "origin": r["origin"],
                  "connectorName": r["connector_name"], "connectorId": r["connector_id"]} for r in rows]
-
-    async def get_key_by_external_file_id(self, external_file_id: str) -> str | None:
-        """The key of a record of this org by external id, whatever its connector. With no connector named there is no index for it."""
-        return await self._key_by_external(external_file_id, None, None)
-
-    async def get_key_by_external_message_id(self, external_message_id: str, transaction: str | None = None) -> str | None:
-        return await self._key_by_external(external_message_id, None, transaction)
 
     async def get_record_key_by_external_id(self, external_id: str, connector_id: str, transaction: str | None = None) -> str | None:
         return await self._key_by_external(external_id, connector_id, transaction)

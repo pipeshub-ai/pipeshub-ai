@@ -263,6 +263,28 @@ class CoreMixin(PgBase):
         n = await self._q(go, transaction, write=True)
         return n == len(set(keys))
 
+    async def delete_node_if_match(self, key: str, collection: str, expected: dict, graph_name: str = "knowledgeGraph",
+                                   transaction: str | None = None) -> bool:
+        if not expected:
+            raise ValueError("delete_node_if_match needs an expectation")
+        if collection == CollectionNames.RECORDS.value:
+            raise ValueError("records are deleted with their type documents: use delete_nodes_and_edges")
+        org = current_org_id()
+
+        async def go(tx: Tx) -> bool:
+            # The row lock first, in a statement of its own (as update_node_fields_if_match): the expectation is an anti-join, which a deleter that
+            # waited for the lock does not re-check against the row it then deletes. The edges go only when the node did.
+            await tx.execute("/* pipeshub:graph.lock_node */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3 FOR UPDATE", org, collection, key)
+            deleted = await tx.fetchval("""/* pipeshub:graph.delete_node_if_match */ WITH d AS (DELETE FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = $3
+                AND NOT EXISTS (SELECT 1 FROM jsonb_each($4::jsonb) f WHERE n.doc->f.key IS DISTINCT FROM f.value AND NOT (f.value = 'null'::jsonb AND n.doc->f.key IS NULL))
+                RETURNING 1) SELECT count(*) FROM d""", org, collection, key, _j(expected))
+            if not deleted:
+                return False
+            await tx.execute("""/* pipeshub:graph.delete_edges_of */ DELETE FROM graph.edges WHERE org_id = $1
+                AND ((from_coll = $2 AND from_id = ANY($3::text[])) OR (to_coll = $2 AND to_id = ANY($3::text[])))""", org, collection, [key])
+            return True
+        return await self._q(go, transaction, write=True)
+
     async def delete_nodes_and_edges(self, keys: list[str], collection: str, graph_name: str = "knowledgeGraph", transaction: str | None = None) -> None:
         await self.delete_nodes(keys, collection, transaction)
 

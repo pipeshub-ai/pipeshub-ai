@@ -46,6 +46,10 @@ on:
       - 'backend/python/app/services/graph_db/**'
       # The record schema and the validator Neo4j and PostgreSQL write through.
       - 'backend/python/app/schema/**'
+      # Skills: the graph_db skill-candidate tests drive the skill store and its routes.
+      - 'backend/python/app/agents/agent_loop/skills/**'
+      - 'backend/python/app/agent_loop_lib/modules/providers/skills/**'
+      - 'backend/python/app/api/routes/skills.py'
       - 'backend/python/app/services/permissions/**'
       - 'backend/python/app/services/redis/**'
       - 'backend/python/app/config/**'
@@ -87,6 +91,9 @@ on:
       - 'backend/python/app/modules/indexing/lane_upkeep.py'
       - 'backend/python/app/modules/indexing/duplicate_reconcile.py'
       - 'backend/python/app/modules/indexing/named_entity_persist_retry.py'
+      # Un-indexing a record and the shared stage runtime: their real-graph tests run on every store.
+      - 'backend/python/app/modules/indexing/**'
+      - 'backend/python/app/modules/pipeline/**'
       - 'backend/python/tests/integration/messaging/**'
       - 'backend/python/tests/integration/paid_results/**'
       - 'backend/python/tests/integration/vector_db/**'

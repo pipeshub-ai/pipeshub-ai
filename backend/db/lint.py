@@ -19,9 +19,12 @@ SECURITY DEFINER is looked for in function definitions):
   - SECURITY DEFINER outside a ``vetted`` directory (generated function files are linted there too, and may
     GRANT CREATE ON SCHEMA to the schema's vetted role for their own transaction); BYPASSRLS; MATERIALIZED VIEW;
     ALTER DEFAULT PRIVILEGES.
-Pure-Python revisions (no .sql) are not parsed. Not covered: PG18-only syntax (guard with kernel.pg_major()).
+Pure-Python revisions (no .sql) are not parsed by these rules. ``lint_revision`` reads every unreleased revision's .py for its index rules:
+a blocking index build on a table the revision does not create, and a DROP INDEX or any SQL not constant text without ``min_code_epoch``.
+Not covered: PG18-only syntax (guard with kernel.pg_major()).
 """
 import ast
+import json
 import re
 import sys
 from pathlib import Path
@@ -31,8 +34,25 @@ from db.locations import version_locations
 _DOLLAR = re.compile(r"\$([A-Za-z_]*)\$")
 
 
+def _string_end(sql: str, i: int) -> int:
+    """The index after the quoted string that starts at ``sql[i]``: ``''`` is a quote inside it, and in an ``E'...'`` string a backslash
+    escapes the next character, so ``\\'`` does not end it."""
+    escapes = sql[i - 1:i] in ("e", "E") and not re.match(r"[\w$]", sql[i - 2:i - 1])
+    j, n = i + 1, len(sql)
+    while j < n:
+        if escapes and sql[j] == "\\":
+            j += 2
+        elif sql[j] == "'" and sql[j + 1:j + 2] == "'":
+            j += 2
+        elif sql[j] == "'":
+            return j + 1
+        else:
+            j += 1
+    return n
+
+
 def statements(sql: str) -> list[str]:
-    """Split on ';', skipping comments, quoted strings and dollar-quoted bodies (kept in the text)."""
+    """Split on ';'. A comment becomes a space (``DROP/**/INDEX`` is ``DROP INDEX``); quoted strings and dollar-quoted bodies are kept in the text."""
     out, buf, i, n = [], [], 0, len(sql)
     while i < n:
         c = sql[i]
@@ -42,12 +62,11 @@ def statements(sql: str) -> list[str]:
         elif sql.startswith("/*", i):
             i = sql.find("*/", i)
             i = n if i < 0 else i + 2
+            buf.append(" ")
         elif c == "'":
-            j = i + 1
-            while j < n and not (sql[j] == "'" and sql[j + 1:j + 2] != "'"):
-                j += 2 if sql[j] == "'" else 1
-            buf.append(sql[i:j + 1])
-            i = j + 1
+            j = _string_end(sql, i)
+            buf.append(sql[i:j])
+            i = j
         elif c == "$" and (m := _DOLLAR.match(sql, i)):
             end = sql.find(m.group(0), m.end())
             end = n if end < 0 else end + len(m.group(0))
@@ -69,7 +88,7 @@ def _strip_bodies(stmt: str) -> str:
 
 
 def _strip_literals(stmt: str) -> str:
-    return re.sub(r"'(?:[^']|'')*'", "''", stmt)
+    return re.sub(r"(?<![\w$])[Ee]'(?:[^'\\]|\\.|'')*'|'(?:[^']|'')*'", "''", stmt, flags=re.S)
 
 
 _N = r'(?:"[^"]+"|[\w$]+)(?:\.(?:"[^"]+"|[\w$]+))?'          # a possibly schema-qualified, possibly quoted name
@@ -79,6 +98,16 @@ _BREAKING = (r"^(?:ADD (?:COLUMN )?(?:IF NOT EXISTS )?\S+ .*\b(?:CHECK|REFERENCE
              r"|ALTER (?:COLUMN )?(?:\"[^\"]+\"|\S+) (?:SET NOT NULL|DROP DEFAULT)"
              r"|DROP CONSTRAINT\b|DETACH PARTITION\b|(?:ENABLE|FORCE) ROW LEVEL SECURITY)")
 _EXEC_CALLS = ("execute", "exec_driver_sql", "text")
+_SQL_KWARGS = ("sqltext", "statement", "sql", "text")      # Alembic op.execute(sqltext), Connection.execute / exec_driver_sql(statement), text(text)
+
+
+def _sql_arg(call: ast.Call) -> ast.expr:
+    """The SQL argument of an execute / exec_driver_sql / text call, by position or keyword, ``text(...)`` unwrapped. A call whose SQL
+    cannot be found (``**kw``, no argument) is returned itself: it is not constant text, so it fails closed."""
+    a = call.args[0] if call.args else next((k.value for k in call.keywords if k.arg in _SQL_KWARGS), None)
+    if a is None:
+        return call
+    return _sql_arg(a) if isinstance(a, ast.Call) and _call_name(a.func) == "text" else a
 
 
 def _key(name: str) -> str:
@@ -108,13 +137,35 @@ def _contract(py_text: str) -> bool:
     return isinstance(mark, ast.Constant) and type(mark.value) is int and mark.value > 0
 
 
-def _const_str(node: ast.expr) -> str | None:
+def _const_str(node: ast.expr, consts: dict[str, str] | None = None) -> str | None:
+    """Constant text: a string literal, ``+`` of constant texts, a name in ``consts`` or an f-string of those; anything else is None."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        a, b = _const_str(node.left), _const_str(node.right)
+        a, b = _const_str(node.left, consts), _const_str(node.right, consts)
         return None if a is None or b is None else a + b
+    if isinstance(node, ast.Name) and consts and node.id in consts:
+        return consts[node.id]
+    if isinstance(node, ast.JoinedStr):                  # f"DROP FUNCTION {SIG}" of module constants, without conversion or format
+        parts = [v.value if isinstance(v, ast.Constant) else
+                 _const_str(v.value, consts) if isinstance(v, ast.FormattedValue) and v.conversion == -1 and v.format_spec is None else None
+                 for v in node.values]
+        return None if None in parts else "".join(parts)
     return None
+
+
+def _module_consts(tree: ast.Module) -> dict[str, str]:
+    """Names the module assigns once, to constant text, and that nothing else in the file binds (a parameter, a local, a loop, an import):
+    a name with any other binding is not resolved, wherever it is used."""
+    binds: dict[str, int] = {}
+    for n in ast.walk(tree):
+        names = ([n.id] if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) else
+                 [a.arg for a in (*n.posonlyargs, *n.args, *n.kwonlyargs, n.vararg, n.kwarg) if a] if isinstance(n, ast.arguments) else
+                 [(a.asname or a.name).split(".")[0] for a in n.names] if isinstance(n, (ast.Import, ast.ImportFrom)) else [])
+        for name in names:
+            binds[name] = binds.get(name, 0) + 1
+    return {n.targets[0].id: v for n in tree.body if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+            and binds.get(n.targets[0].id) == 1 and (v := _const_str(n.value)) is not None}
 
 
 def _arg(call: ast.Call, i: int, kw: str) -> ast.expr | None:
@@ -201,11 +252,17 @@ def _call_name(f: ast.expr) -> str:
     return ""
 
 
-def _upgrade_sql(py_text: str) -> tuple[list[str], bool]:
+
+def _upgrade_sql(py_text: str, runtime: list[str] | None = None) -> tuple[list[str], bool]:
     """SQL a revision runs: string constants passed to execute / exec_driver_sql / text / ensure_index and Alembic's schema API
     calls, in ``upgrade()`` and every module function it calls (``downgrade()`` is not read). True when some argument is not a
-    constant (not parsed). shortcut: calls through objects other than module functions are not followed."""
-    funcs = {f.name: f for f in ast.parse(py_text).body if isinstance(f, ast.FunctionDef) and f.name != "downgrade"}
+    constant (not parsed: an f-string, a non-constant ``+``, a call, a name that is not a module constant); ``runtime`` collects the source
+    of each such argument.
+    shortcut: calls through objects other than module functions are not followed."""
+    tree = ast.parse(py_text)
+    body = tree.body
+    funcs = {f.name: f for f in body if isinstance(f, ast.FunctionDef) and f.name != "downgrade"}
+    consts = _module_consts(tree)                       # UPGRADE = """...""" passed by name
     sql, dynamic, seen, todo = [], False, set(), ["upgrade"] if "upgrade" in funcs else []
     while todo:
         fn = funcs[todo.pop()]
@@ -224,8 +281,7 @@ def _upgrade_sql(py_text: str) -> tuple[list[str], bool]:
             if name == "ensure_index":
                 args = call.args[2:3] or [k.value for k in call.keywords if k.arg == "ddl"]
             elif name in _EXEC_CALLS:
-                args = call.args[:1]
-                args = [a.args[0] if isinstance(a, ast.Call) and _call_name(a.func) == "text" and a.args else a for a in args]
+                args = [_sql_arg(call)]
             elif name in _OP_API:
                 r = _op_sql(name, call)
                 if r is None:
@@ -236,9 +292,11 @@ def _upgrade_sql(py_text: str) -> tuple[list[str], bool]:
             else:
                 continue
             for a in args:
-                v = _const_str(a)
+                v = _const_str(a, consts)
                 if v is None:
                     dynamic = True
+                    if runtime is not None:
+                        runtime.append(ast.unparse(a))
                 else:
                     sql.append(v)
     return sql, dynamic
@@ -257,17 +315,104 @@ def _earlier_tables(path: Path) -> set[str]:
 _CTRL = re.compile(r"^\s*(?:DECLARE\b.*?\bBEGIN\b|BEGIN\b|END(?:\s+IF|\s+LOOP)?\b|(?:ELS)?IF\b.*?\bTHEN\b|ELSE\b|LOOP\b|FOR\b.*?\bLOOP\b|PERFORM\b|EXCEPTION\b|WHEN\b.*?\bTHEN\b)\s*", re.I | re.S)
 
 
+_DO_BODY = re.compile(r"\s*DO\b.*?\$([A-Za-z_]*)\$(.*)\$\1\$\s*$", re.S | re.I)
+
+
 def _do_statements(stmt: str) -> list[str]:
     """The statements of a DO block's body, control words (IF ... THEN, PERFORM, BEGIN) removed."""
-    m = re.match(r"\s*DO\b.*?\$([A-Za-z_]*)\$(.*)\$\1\$\s*$", stmt, re.S | re.I)
+    m = _DO_BODY.match(stmt)
+    return _body_statements(m.group(2)) if m else []
+
+
+def _body_statements(body: str) -> list[str]:
+    """The statements of a DO or routine body, control words (IF ... THEN, PERFORM, BEGIN) removed."""
     out = []
-    for raw in statements(m.group(2)) if m else []:
+    for raw in statements(body):
         sub = raw
         while (c := _CTRL.match(sub)):
             sub = sub[c.end():]
         if sub.strip():
             out.append(sub.strip())
     return out
+
+
+def _mask(stmt: str) -> tuple[str, list[str]]:
+    """The statement with each quoted string as ``''`` and each dollar-quoted string as ``$<n>$``, its text at index n of the list."""
+    out, bodies, i, n = [], [], 0, len(stmt)
+    while i < n:
+        c = stmt[i]
+        if c == "'":
+            out.append("''")
+            i = _string_end(stmt, i)
+        elif c == "$" and (m := _DOLLAR.match(stmt, i)):
+            end = stmt.find(m.group(0), m.end())
+            end = n if end < 0 else end
+            bodies.append(stmt[m.end():end])
+            out.append(f"${len(bodies) - 1}$")
+            i = end + len(m.group(0))
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out), bodies
+
+
+_ROUTINE = re.compile(rf"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+({_N})", re.I)
+_NOT_A_RUN = re.compile(r"(?:GRANT|REVOKE|COMMENT|(?:ALTER|DROP)\s+(?:FUNCTION|PROCEDURE|ROUTINE))\b", re.I)
+
+
+def _code_body(stmt: str) -> tuple[bool, str | None]:
+    """(whether PostgreSQL runs a body of this statement, that body). A DO's body is its one dollar-quoted string; a function's or procedure's
+    is the dollar-quoted string after its top-level ``AS`` (parameter defaults and other parenthesised parts skipped). The body is None
+    when it is not exactly that: a quoted string, BEGIN ATOMIC, ``AS 'file', 'symbol'``, or more than one candidate."""
+    masked, bodies = _mask(stmt)
+    if re.match(r"DO\b", masked, re.I):
+        m = re.fullmatch(r"DO\s+(?:LANGUAGE\s+\w+\s+)?\$(\d+)\$(?:\s+LANGUAGE\s+\w+)?\s*", masked, re.I)
+        return True, bodies[int(m.group(1))] if m else None
+    if not _ROUTINE.match(masked):
+        return False, None
+    while (flat := re.sub(r"\([^()]*\)", "", masked)) != masked:        # the top level: no parameter list, defaults or RETURNS TABLE (...)
+        masked = flat
+    m = re.findall(r"\bAS\s+\$(\d+)\$(\s*,)?", masked, re.I)
+    return True, bodies[int(m[0][0])] if len(m) == 1 and not m[0][1] and len(re.findall(r"\bAS\b", masked, re.I)) == 1 else None
+
+
+_RUNS_CODE = re.compile(r"(?:DO|CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|(?:CONSTRAINT\s+)?TRIGGER|RULE))\b", re.I)
+
+
+def _body_unsafe(body: str | None) -> bool:
+    """Whether a DO, function or procedure body may DROP INDEX, read one level deep: a DROP INDEX or any EXECUTE in it, a statement of it
+    that is code itself (a DO, a routine, a trigger or a rule, whatever its quoting: nested bodies are not read), a dollar-quoted string in
+    it, or no body that could be read (None). String data in it (``RAISE NOTICE 'DROP INDEX x'``) is not code."""
+    return body is None or any(_RUNS_CODE.match(q) or _DOLLAR.search(s := _strip_literals(q)) or re.search(r"\bEXECUTE\b(?!\s+ON\b)|\bDROP\s+INDEX\b", s, re.I)
+                               for q in _body_statements(body))
+
+
+def _routines_run(stmts: list[str]) -> list[tuple[str, str]]:
+    """(name, CREATE statement) of each function or procedure these statements create and also run: named with ``(`` outside strings in a
+    statement that is not a routine's CREATE, GRANT, REVOKE, COMMENT, ALTER or DROP (a CALL, a SELECT, a PERFORM in a DO body, a trigger), or in
+    the body of a routine that is run. A name matches with or without its schema (the search path), in any case."""
+    routines = [(m.group(1), s) for s in stmts if (m := _ROUTINE.match(s))]
+    texts = []
+    for s in stmts:
+        if not _ROUTINE.match(s) and not _NOT_A_RUN.match(s):
+            is_code, body = _code_body(s)
+            texts.append(_strip_literals(body if is_code and body is not None else _strip_bodies(s)))
+
+    def named(name: str, text: str) -> bool:
+        return re.search(rf'(?<![\w$])"?{re.escape(_key(name).split(".")[-1])}"?\s*\(', text, re.I) is not None
+    run: list[tuple[str, str]] = []
+    while new := [r for r in routines if r not in run and any(named(r[0], x) for x in texts)]:
+        run += new
+        texts = [_strip_literals(body) for _, s in new if (body := _code_body(s)[1]) is not None]
+    return run
+
+
+def unsafe_bodies(stmts: list[str]) -> list[str]:
+    """The one reader of the code an upgrade runs, for a revision's .sql and the constant SQL of its upgrade() alike: every DO, and every
+    function or procedure the statements create and run, whose body may DROP INDEX or cannot be read (``_body_unsafe``). Without
+    min_code_epoch that refuses the revision: a waiver does not clear it, the drop would hold the table's readers until the upgrade commits."""
+    run = {s for _, s in _routines_run(stmts)}
+    return [s for s in stmts if (re.match(r"\s*DO\b", s, re.I) or s in run) and _code_body(s)[0] and _body_unsafe(_code_body(s)[1])]
 
 
 def lint_file(path: Path) -> list[str]:
@@ -301,6 +446,13 @@ def lint_file(path: Path) -> list[str]:
         if not compat_ok:
             flag(f"{what} can break older code: set min_code_epoch or older_code_compatible = \"<reason>\"")
 
+    rev = _module_assign(py_text, "revision") if py_text else None
+    branch, _, epoch = rev.value.rpartition("_") if isinstance(rev, ast.Constant) and isinstance(rev.value, str) else ("", "", "")
+    shipped = epoch.isdigit() and int(epoch) <= _released().get(branch, 0)     # as lint_revision: a released revision cannot change
+    if not contract and not shipped:
+        for s in unsafe_bodies(statements(text) + [q for x in py_sql for q in statements(x)]):
+            flag(f"{s[:60]!r} runs in the upgrade and its body may DROP INDEX (a DROP INDEX, an EXECUTE, a nested or not dollar-quoted body): "
+                 "set min_code_epoch (older_code_compatible does not clear it)")
     if py_dynamic:
         breaks("SQL built at run time in upgrade() (not parsed)")
     for raw, full in items:
@@ -393,6 +545,75 @@ def lint_file(path: Path) -> list[str]:
     return bad
 
 
+def _released() -> dict[str, int]:
+    return json.loads((Path(__file__).parent / "released_heads.json").read_text())["epochs"]
+
+
+def _online_indexes(text: str) -> set[tuple[str, str]]:
+    """(table, name) of each entry of ``ONLINE_INDEXES`` written as literals."""
+    online = _module_assign(text, "ONLINE_INDEXES")
+    entries = [{k.value: _const_str(v) for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant)}
+               for d in (online.elts if isinstance(online, ast.List) else []) if isinstance(d, ast.Dict)]
+    return {(_key(e["table"]), e["name"]) for e in entries if e.get("table") and e.get("name")}
+
+
+def lint_revision(py: Path, released: dict[str, int]) -> list[str]:
+    """Index rules for a revision's .py, with or without a .sql. A revision a release shipped (epoch up to ``released``) is not read:
+    it cannot change, and a database that ran it keeps what it built.
+      - ``ensure_partitioned_index(..., blocking=True)`` on a table this revision does not create, unless the index is one of the
+        ``ONLINE_INDEXES`` of the revision or of a later one of its branch (db.migrate builds those before the transaction) or the module
+        sets ``blocking_index_ok = "<why>"`` (an index on a column the revision adds cannot be built ahead): a blocking build keeps the table's writers waiting until the upgrade commits;
+      - without ``min_code_epoch``, SQL in ``upgrade()`` that is a DROP INDEX or that is not constant text (an f-string, a non-constant ``+``,
+        ``%``, ``.format``, a call, a name other than a module constant): a drop inside the upgrade's transaction keeps every reader of the
+        table waiting until the commit, and SQL built at run time may be one."""
+    text = py.read_text(encoding="utf-8")
+    rev = _module_assign(text, "revision")
+    branch, _, epoch = rev.value.rpartition("_") if isinstance(rev, ast.Constant) and isinstance(rev.value, str) else ("", "", "")
+    if not epoch.isdigit() or int(epoch) <= released.get(branch, 0):
+        return []
+    sql_file = py.with_suffix(".sql")
+    runtime: list[str] = []
+    const_sql, _ = _upgrade_sql(text, runtime)
+    earlier = _earlier_tables(sql_file)
+    stmts = [s for q in [sql_file.read_text(encoding="utf-8") if sql_file.is_file() else "", *const_sql] for s in statements(q)]
+    created = {_key(m.group(2)) for s in stmts + [sub for s in stmts for sub in _do_statements(s)]          # as lint_file: statements, not comments or strings
+               if (m := re.match(rf"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(IF NOT EXISTS\s+)?({_N})", s, re.I))
+               and not (m.group(1) and _key(m.group(2)) in earlier)}
+    # a later revision of the branch is pending whenever this one is, so the online step builds its ONLINE_INDEXES ahead of this one's call too
+    later = [f.read_text(encoding="utf-8") for f in py.parent.glob("[0-9]*.py") if f.name[:4].isdigit() and int(f.name[:4]) > int(epoch)]
+    online = {ix for t in (text, *later) for ix in _online_indexes(t)}
+    why = _module_assign(text, "blocking_index_ok")
+    waived = isinstance(why, ast.Constant) and isinstance(why.value, str) and len(why.value.split()) >= 4
+    tree = ast.parse(text)
+    nodes = [n for f in tree.body if not (isinstance(f, ast.FunctionDef) and f.name == "downgrade") for n in ast.walk(f)]
+    # a loop whose body binds its name again (a nested loop, an assignment) exempts nothing: which list a call reads is not followed
+    from_online = {id(c) for f in nodes if isinstance(f, ast.For) and isinstance(f.target, ast.Name) and isinstance(f.iter, ast.Name)
+                   and f.iter.id == "ONLINE_INDEXES" and not any(isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and n.id == f.target.id
+                                                                for b in f.body for n in ast.walk(b))
+                   for c in ast.walk(f) if isinstance(c, ast.Call)
+                   and any(k.arg is None and isinstance(k.value, ast.Name) and k.value.id == f.target.id for k in c.keywords)}
+    bad = []
+    for call in (n for n in nodes if isinstance(n, ast.Call) and _call_name(n.func) == "ensure_partitioned_index"):
+        if not any(k.arg == "blocking" and isinstance(k.value, ast.Constant) and k.value.value is True for k in call.keywords):
+            continue
+        if id(call) in from_online:
+            continue
+        table, name = (_const_str(n) if (n := _arg(call, i, kw)) is not None else None for i, kw in ((1, "table"), (2, "name")))
+        if (table and _key(table) in created) or (table and name and (_key(table), name) in online) or waived:
+            continue
+        bad.append(f"{py.name}: index {name or '<built at run time>'} on {table or '<built at run time>'} is built inside the upgrade's transaction "
+                   "(blocking=True): list it in ONLINE_INDEXES, or set blocking_index_ok = \"<why it cannot be built ahead>\"")
+    if not _contract(text):
+        # fail closed: SQL the lint cannot read to the end may be a DROP INDEX, wherever the unknown part is
+        bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: SQL built at run time: {s[:60]}" for s in runtime]
+        if not sql_file.is_file():                                                          # a .sql's revision: lint_file reads its constant SQL
+            stmts = [q for s in const_sql for q in statements(s)]
+            bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: {s[:60]}" for s in stmts
+                    if re.search(r"\bDROP\s+INDEX\b", _strip_literals(_strip_bodies(s)), re.I)]
+            bad += [f"{py.name}: upgrade() may DROP INDEX without min_code_epoch: a body it runs: {s[:60]}" for s in unsafe_bodies(stmts)]
+    return bad
+
+
 def retiring_violations() -> list[str]:
     """Indexes a revision lists in ``ONLINE_DROPS`` are dropped by db.migrate, so no SQL of the revision shows the DROP. The revision says which
     it is: ``min_code_epoch`` when older code plans with an index it drops, ``older_code_compatible = "<why>"`` when nothing does (a dropped
@@ -404,7 +625,12 @@ def retiring_violations() -> list[str]:
 
 def main(argv: list[str]) -> int:
     files = [Path(a) for a in argv] or sorted(f for d in version_locations() for g in ("*.sql", "vetted/*.sql") for f in Path(d).glob(g))
-    bad = [msg for f in files for msg in lint_file(f)]
+    sql_files = [f for f in files if f.suffix != ".py"]
+    sql_files += [s for f in files if f.suffix == ".py" and (s := f.with_suffix(".sql")).is_file() and s not in sql_files]   # its upgrade()'s constant SQL
+    bad = [msg for f in sql_files for msg in lint_file(f)]
+    revisions = [f for f in files if f.suffix == ".py"] if argv else sorted(f for d in version_locations() for f in Path(d).glob("[0-9]*.py"))
+    released = _released()
+    bad += [msg for f in revisions for msg in lint_revision(f, released)]
     if not argv:
         bad += retiring_violations()
         from db.lib import vetted

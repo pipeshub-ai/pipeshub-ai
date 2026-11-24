@@ -2420,6 +2420,41 @@ async def _republish_stranded_records(
     return republished + rate_limited_resent
 
 
+async def run_pdf_page_limit_audit_once(app_container: IndexingAppContainer, graph_provider: IGraphDBProvider) -> None:
+    """The start-up audit of indexed PDFs over the page limit, on the replica that wins the leader lock."""
+    from app.modules.indexing.pdf_page_limit_audit import (
+        LEASE_KEY,
+        LEASE_TTL_SECONDS,
+        run_pdf_page_limit_audit,
+    )
+    from app.modules.indexing.vector_membership_backfill import (
+        VectorMembershipBackfillLeaderLock,
+    )
+
+    logger = app_container.logger()
+    lock = None
+    try:
+        blob_storage = app_container.blob_storage()
+        if inspect.isawaitable(blob_storage):
+            blob_storage = await blob_storage
+        lock = VectorMembershipBackfillLeaderLock(
+            logger, await MessagingUtils._get_redis_config(app_container), f"pdf_page_limit_audit:{uuid4().hex}",
+            ttl_seconds=LEASE_TTL_SECONDS, key=LEASE_KEY,
+        )
+
+        async def read_prefix(vrid: str, org_id: str, max_bytes: int) -> tuple[bytes, int | None] | None:
+            return await blob_storage.read_stored_prefix(vrid, org_id, max_bytes)
+
+        await run_pdf_page_limit_audit(
+            app_container.config_service(), graph_provider, read_prefix, logger, lock=lock,
+        )
+    except Exception:
+        logger.error("PDF page-limit audit failed", exc_info=True)
+    finally:
+        if lock is not None:
+            await lock.close()
+
+
 async def run_stale_recovery_loop(
     app_container: IndexingAppContainer,
     graph_provider: IGraphDBProvider,
@@ -3383,6 +3418,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.scope_sweep_task = spawn_detached(
             run_scope_sweep_loop(app_container, graph_provider, _all_org_ids)
         )
+
+    app.state.pdf_page_limit_audit_task = spawn_detached(run_pdf_page_limit_audit_once(app_container, graph_provider))
 
     # On every store, not only Neo4j: on the loop records are indexed on, beside the
     # consumers whose slot use (process-wide, see LLMGateway) it yields to. The class-units

@@ -107,7 +107,7 @@ export class OAuthDeviceService {
     const verificationUri = new URL('/oauth/device', frontendUrl).toString()
     const displayCode = `${userCode.slice(0, 4)}-${userCode.slice(4)}`
 
-    this.logger.info('Device authorization created', { clientId })
+    this.logger.info('Device authorization created', { client_id: clientId })
 
     return {
       device_code: deviceCode,
@@ -154,8 +154,8 @@ export class OAuthDeviceService {
         status: OAuthDeviceCodeStatus.DENIED,
       })
       this.logger.info('Device authorization denied', {
-        clientId: record.clientId,
-        userId,
+        client_id: record.clientId,
+        user_id: userId,
       })
       return
     }
@@ -173,9 +173,9 @@ export class OAuthDeviceService {
       orgId,
     })
     this.logger.info('Device authorization approved', {
-      clientId: record.clientId,
-      userId,
-      orgId,
+      client_id: record.clientId,
+      user_id: userId,
+      org_id: orgId,
     })
   }
 
