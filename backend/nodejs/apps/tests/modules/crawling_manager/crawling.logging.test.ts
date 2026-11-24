@@ -17,7 +17,8 @@ import { Logger } from '../../../src/libs/services/logger.service';
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware';
 import { requestContextMiddleware } from '../../../src/libs/middlewares/request.context';
 import { accessLog } from '../../../src/libs/middlewares/access-log.middleware';
-import { AuthMiddleware } from '../../../src/libs/middlewares/auth.middleware';
+// The class the crawling router resolves (from src/config), as tests/modules/crawling_manager/routes/cm_routes.test.ts binds it.
+import { AuthMiddleware } from '../../../src/config';
 import { AuthTokenService } from '../../../src/libs/services/authtoken.service';
 import { registerUpstreams } from '../../../src/libs/http/upstream-call';
 import * as requestContext from '../../../src/libs/context/request-context';
