@@ -192,7 +192,7 @@ jobs:
        !contains(github.event.pull_request.labels.*.name, 'skip-it') &&
        (needs.changes.outputs.integration_shards != '[]' ||
         contains(github.event.pull_request.labels.*.name, 'it-all')))
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb/ssh=true
     timeout-minutes: 300
 
     strategy:

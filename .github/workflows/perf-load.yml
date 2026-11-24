@@ -44,7 +44,7 @@ env:
 jobs:
   load-test:
     name: Sustained load (neo4j)
-    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/family=m7i+m8i+m6i+m6a+m7a/volume=100gb/ssh=true
     # About 15 minutes to build and start, up to 30 to seed, 19 of load.
     timeout-minutes: 120
 
