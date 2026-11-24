@@ -289,6 +289,9 @@ async def test_a_fill_page_reads_at_most_a_page_of_rows_and_relabels_on_the_last
         assert await pg_db.run(epoch) == bf.TOPS_FROM
     assert await bf.fill_pc_tops(pg_db, org, KB, page=2, after=more) == ("enforce", None)
     with ctx(org):
+        assert await pg_db.run(epoch) == bf.MARKS_FROM      # the grants' marks are filled next (``fill_grant_marks``)
+    assert await bf.fill_grant_marks(pg_db, org, KB) == ("enforce", None)
+    with ctx(org):
         assert await pg_db.run(epoch) == CODE_EPOCH
         assert sorted(_ids(await pg_provider.get_kb_children(KB, 0, 50))) == ["a", "d", "e"]
 
