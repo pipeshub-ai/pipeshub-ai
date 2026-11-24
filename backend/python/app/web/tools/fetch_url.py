@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
-from app.plugins.telemetry.modules.web_metrics import record_fetch
+from app import platform_events
 from app.utils.chat_helpers import CitationRefMapper
 from app.utils.citations import extract_tiny_ref
 from app.utils.text_fragments import strip_fragment_directive
@@ -214,7 +214,7 @@ def create_fetch_url_tool(
         try:
             url = resolve_tiny_ref_url(url, ref_mapper)
             if own := issued_file(issued_links, url):
-                record_fetch("own_file", time.monotonic() - started)
+                platform_events.emit("web.fetch.completed", outcome="own_file", duration_seconds=time.monotonic() - started)
                 return _own_file_payload(own)
             if signature_removed(url):
                 # From an earlier turn's saved step: it opens nothing, and would only hand the
@@ -226,7 +226,7 @@ def create_fetch_url_tool(
             url = checked_url(url)
             outcome = await service.fetch(url, caller)
         except WebError as e:
-            record_fetch(e.error_type, time.monotonic() - started)
+            platform_events.emit("web.fetch.completed", outcome=e.error_type, duration_seconds=time.monotonic() - started)
             logger.warning("Fetch URL failed for %s: %s (%s)", redact_url(url), e.error_type, e.message)
             # The hint is for the model; `error` is what the step card shows people. An error that says what to do
             # next (a spent allowance: stop fetching) keeps its own hint.
@@ -238,7 +238,7 @@ def create_fetch_url_tool(
                 payload["retryable"] = False
             return json.dumps(payload)
         except Exception:
-            record_fetch("upstream_error", time.monotonic() - started)
+            platform_events.emit("web.fetch.completed", outcome="upstream_error", duration_seconds=time.monotonic() - started)
             logger.exception("Unexpected error fetching URL %s", redact_url(url))
             return json.dumps({
                 "ok": False, "error_type": "upstream_error", "error": "The page could not be read",
@@ -246,7 +246,7 @@ def create_fetch_url_tool(
             })
 
         page = outcome.value
-        record_fetch("ok", time.monotonic() - started)
+        platform_events.emit("web.fetch.completed", outcome="ok", duration_seconds=time.monotonic() - started)
         logger.info("Fetched URL %s: %d blocks extracted", redact_url(page.url), len(page.blocks))
         blocks, total = capped_blocks(page.blocks)
         payload: dict[str, object] = {

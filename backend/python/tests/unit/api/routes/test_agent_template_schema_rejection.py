@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 from jsonschema import ValidationError as JsonSchemaValidationError
 
+from tests.support.platform_event_capture import event_calls
 from app.api.routes.agent import create_agent_template
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 
@@ -27,7 +28,7 @@ async def test_a_schema_rejected_template_is_a_400_and_counted() -> None:
         patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value={"graph_provider": graph, "logger": MagicMock()}),
         patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),
         patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),
-        patch("app.api.routes.agent.record_schema_rejection") as counted,
+        event_calls("graph.write.rejected", "collection") as counted,
         pytest.raises(HTTPException) as exc,
     ):
         await create_agent_template(request)
@@ -57,7 +58,7 @@ async def test_the_rejected_value_is_not_logged(caplog) -> None:
         patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value={"graph_provider": graph, "logger": MagicMock()}),
         patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),
         patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),
-        patch("app.api.routes.agent.record_schema_rejection"),
+        event_calls("graph.write.rejected", "collection"),
         caplog.at_level(logging.DEBUG, logger="app.api.routes.agent"),
         pytest.raises(HTTPException) as exc,
     ):

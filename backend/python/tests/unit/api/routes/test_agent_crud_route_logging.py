@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tests.support.platform_event_capture import event_calls
 from app.api.middlewares.request_log import install_request_logging
 from app.config.constants.service import config_node_constants
 from app.schema.node_validator import SchemaValidationError
@@ -267,7 +268,7 @@ def test_a_schema_rejection_is_a_counted_quiet_400(
     else:
         graph.fail(failing, rejection)
 
-    with patch("app.api.routes.agent.record_schema_rejection") as counted:
+    with event_calls("graph.write.rejected", "collection") as counted:
         response = _client(graph).request(method, BASE + path, headers=as_user("alice"), json=body)
 
     assert response.status_code == 400
@@ -570,7 +571,7 @@ def test_a_schema_rejection_of_a_document_we_built_is_our_error(graph: InMemoryG
     """The permission edge holds nothing the caller sent: its rejection is our drift, an ERROR, and still counted."""
     graph.fail("batch_create_edges", SchemaValidationError("permission", "at 'role': not one of the roles"))
 
-    with patch("app.api.routes.agent.record_schema_rejection") as counted:
+    with event_calls("graph.write.rejected", "collection") as counted:
         response = _client(graph).post(f"{BASE}/template/create", headers=as_user("alice"), json={
             "name": "T", "description": "d", "systemPrompt": "p",
         })
@@ -586,7 +587,7 @@ def test_a_template_copy_the_schema_refuses_is_our_error(graph: InMemoryGraph, c
     is, and it is our drift (a stored template that no longer fits the schema), not the caller's mistake."""
     graph.fail("clone_agent_template", SchemaValidationError("agentTemplates", "at 'tags': not an array"))
 
-    with patch("app.api.routes.agent.record_schema_rejection") as counted:
+    with event_calls("graph.write.rejected", "collection") as counted:
         response = _client(graph).post(f"{BASE}/template/tpl/clone", headers=as_user("alice"))
 
     assert response.status_code == 500

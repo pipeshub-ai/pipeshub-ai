@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.agents.agent_loop.respond import _record_answer_generated
+from app.plugins.telemetry import product_events
 from app.plugins.telemetry.event_buffer import event_buffer
 
 
@@ -106,7 +107,7 @@ def test_answer_also_counts_on_the_grafana_activity_counter(monkeypatch) -> None
     calls: list[dict] = []
     import app.agents.agent_loop.respond as respond
 
-    monkeypatch.setattr(respond, "record_service_activity", lambda *a, **k: calls.append({"args": a, **k}))
+    monkeypatch.setattr(product_events, "record_service_activity", lambda *a, **k: calls.append({"args": a, **k}))
     _drain()
     state = {"chat_mode": "internal_search", "available_connectors": [{"id": "demo-1", "type": "Demo"}]}
     citations = [{"metadata": {"connector": "DRIVE", "connectorId": "demo-1"}}]
@@ -126,7 +127,7 @@ def test_a_stopped_answer_is_flagged_and_counted_under_its_own_status(monkeypatc
     calls: list[dict] = []
     import app.agents.agent_loop.respond as respond
 
-    monkeypatch.setattr(respond, "record_service_activity", lambda *a, **k: calls.append(k))
+    monkeypatch.setattr(product_events, "record_service_activity", lambda *a, **k: calls.append(k))
     _drain()
     citations = [{"metadata": {"connector": "SLACK", "connectorId": "c-1"}}]
     respond._record_answer_generated(_context(), {"chat_mode": "agent"}, citations, stopped=True)  # type: ignore[arg-type]

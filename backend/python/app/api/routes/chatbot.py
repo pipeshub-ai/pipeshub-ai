@@ -22,6 +22,7 @@ from pydantic import (
     model_validator,
 )
 
+from app import platform_events
 from app.agents.agent_loop.cancellation.registry import (
     RunCancellationRegistry,
     RunOwner,
@@ -122,8 +123,6 @@ from app.services.opik_traces import erase_conversation_traces, opik_trace_store
 from app.services.org_erasure import ORG_ERASE_PAGE, erase_org_page
 from app.services.parsing.interface import ParseError
 from app.services.resource_governor.kinds import ParseKind
-from app.plugins.telemetry.event_buffer import record_event
-from app.plugins.telemetry.identity import domain_from_email
 from app.utils.attachment_mime_types import (
     DELIMITED_MIME_TYPES,
     DOCX_MIME_TYPES,
@@ -134,6 +133,7 @@ from app.utils.attachment_mime_types import (
 from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
 from app.utils.chat_helpers import accessible_node_ids
 from app.utils.concurrency import gather_with_concurrency
+from app.utils.email_domain import domain_from_email
 from app.utils.entity_vector_store import (  # noqa: F401 - warm_up is imported from here by query_main
     load_entity_vector_store,
     warm_up_entity_vector_store,
@@ -2192,15 +2192,16 @@ async def _parse_chat_query(
     _chat_user = getattr(request.state, "user", {}) or {}
     _chat_email = _chat_user.get("email")
     _search_type = "web_search" if query_info.chatMode == "web_search" else "internal_search"
-    record_event("chat_session_started", {
-        "orgId": _chat_user.get("orgId"),
-        "userId": _chat_user.get("userId"),
-        "email": _chat_email,
-        "domain": domain_from_email(_chat_email),
-        "mode": query_info.chatMode,
-        "search_type": _search_type,
-        "streaming": streaming,
-    })
+    platform_events.emit(
+        "chat.session.started",
+        org_id=_chat_user.get("orgId"),
+        user_id=_chat_user.get("userId"),
+        user_email=_chat_email,
+        email_domain=domain_from_email(_chat_email),
+        chat_mode=query_info.chatMode,
+        search_type=_search_type,
+        streaming=streaming,
+    )
     return query_info, resolved
 
 

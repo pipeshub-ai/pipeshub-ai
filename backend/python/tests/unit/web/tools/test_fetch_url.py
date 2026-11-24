@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+from tests.support.platform_event_capture import event_calls
 from app.utils.html_to_blocks import TextBlock
 from app.web.chain import ChainOutcome
 from app.web.errors import Blocked, InvalidUrl, TimedOut, UnsafeUrl
@@ -123,7 +124,7 @@ class TestTool:
         assert "fetch those URLs next" in payload["hint"]
 
     async def test_records_metrics(self) -> None:
-        with patch("app.web.tools.fetch_url.record_fetch") as record:
+        with event_calls("web.fetch.completed", "outcome", "duration_seconds") as record:
             await create_fetch_url_tool(service(TimedOut("x")), CALLER).ainvoke({"url": "https://example.com"})
         assert record.call_args.args[0] == "timeout"
 
@@ -147,7 +148,7 @@ class TestOwnFiles:
 
     async def test_issued_link_is_not_fetched(self) -> None:
         fake = service(PAGE)
-        with patch("app.web.tools.fetch_url.record_fetch") as record:
+        with event_calls("web.fetch.completed", "outcome", "duration_seconds") as record:
             payload = json.loads(await create_fetch_url_tool(fake, CALLER, issued_links=issued()).ainvoke({"url": OWN_LINK}))
         fake.fetch.assert_not_called()
         assert payload["ok"] is False and payload["error_type"] == "own_file" and payload["retryable"] is False

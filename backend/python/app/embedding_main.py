@@ -48,11 +48,11 @@ from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.core.org_context import spawn_detached
 from app.edition import check_runtime_settings
+from app.plugins import load_plugins
 from app.services.resource_governor.probe import (
     effective_cpu_count,
     effective_cpu_source,
 )
-from app.plugins import load_plugins
 from app.utils.embedding_precision import (
     INT8,
     QUANTIZER_VERSION,

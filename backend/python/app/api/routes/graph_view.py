@@ -16,6 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
+from app import platform_events
 from app.agents.actions.code_graph.ops import RecordAccess
 from app.api.connection_limit import groups_outside_limit, ids_outside_connection
 from app.api.middlewares.auth import deny_service_tokens, require_scopes
@@ -31,7 +32,6 @@ from app.modules.graph_view.models import (  # noqa: TC001 -- FastAPI reads the 
 from app.modules.graph_view.policy import VisibilityPolicy
 from app.modules.graph_view.service import NOT_FOUND, GraphViewError, GraphViewService
 from app.modules.graph_view.sources.code import CodeSource
-from app.plugins.telemetry.modules import graph_view_metrics
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -99,7 +99,11 @@ async def _run(
         logger.error("graph view %s failed: %s", operation, type(exc).__name__)
         raise HTTPException(503, UNAVAILABLE) from None
     finally:
-        graph_view_metrics.record(operation, outcome, time.perf_counter() - started, **items)
+        platform_events.emit(
+            "graph_view.request.completed",
+            operation=operation, outcome=outcome, duration_seconds=time.perf_counter() - started,
+            node_count=items.get("nodes", 0), edge_count=items.get("edges", 0), id_count=items.get("ids", 0),
+        )
 
 
 @router.post("/expand")

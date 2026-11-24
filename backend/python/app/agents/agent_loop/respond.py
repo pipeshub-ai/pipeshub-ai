@@ -64,6 +64,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app import platform_events
 from app.agent_loop_lib.transport.opik_tracing import (
     is_opik_configured,
     maybe_start_named_span,
@@ -81,9 +82,7 @@ from app.agents.agent_loop.reasoning_persistence import (
 from app.agents.agent_loop.tool_approvals import PENDING_MESSAGE, RESUMING
 from app.models.citation_source import count_live_citations
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
-from app.plugins.telemetry.event_buffer import record_event
-from app.plugins.telemetry.identity import domain_from_email
-from app.plugins.telemetry.modules.activity_metrics import record_service_activity
+from app.utils.email_domain import domain_from_email
 from app.utils.citations import normalize_citations_and_chunks
 from app.utils.error_class import failure_reason
 from app.utils.log_redaction import redact_error_for_log
@@ -698,27 +697,18 @@ def _record_answer_generated(
                 demo_sources = True
         # The address itself stays out: the domain says which organisation
         # without naming a person, and the user id already identifies them.
-        record_event("answer_generated", {
-            "orgId": context.org_id,
-            "userId": context.user_id,
-            "domain": domain_from_email(str(context.user_email or "")),
-            "chat_mode": state.get("chat_mode"),
-            "citation_count": len(citations),
-            "connectors": sorted(connectors),
-            "demo_sources": demo_sources,
+        platform_events.emit(
+            "answer.generated",
+            org_id=context.org_id,
+            user_id=context.user_id,
+            email_domain=domain_from_email(str(context.user_email or "")),
+            chat_mode=state.get("chat_mode"),
+            citation_count=len(citations),
+            connectors=sorted(connectors),
+            demo_sources=demo_sources,
             # Stopped by the person after text was on screen: kept apart so
             # the cited ratio of finished answers stays comparable.
-            "stopped": stopped,
-        })
-        # The Grafana counter for the same step: org and domain only. The
-        # connector label marks demo answers so the demo funnel has its own line.
-        record_service_activity(
-            "query_service",
-            "answer_generated",
-            connector="demo" if demo_sources else "none",
-            status="stopped" if stopped else ("cited" if citations else "uncited"),
-            org=str(context.org_id or "unknown"),
-            domain=domain_from_email(str(context.user_email or "")),
+            stopped=stopped,
         )
-    except Exception as exc:  # telemetry must never break an answer
-        logging.getLogger(__name__).debug("telemetry: answer_generated not recorded: %s", exc)
+    except Exception as exc:  # announcing the answer must never break it
+        logging.getLogger(__name__).debug("answer.generated not announced: %s", exc)
