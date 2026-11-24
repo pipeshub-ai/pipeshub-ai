@@ -248,7 +248,10 @@ export function failedOnDatabaseOnly(e: unknown): boolean {
     seen.add(link);
     // a host name that does not resolve is a wrong address, not an outage: waiting cannot fix it
     if (link instanceof ConnectionLost)
-      return !link.commitSent && (link.cause as { code?: unknown } | undefined)?.code !== 'ENOTFOUND';
+      return (
+        !link.commitSent &&
+        (link.cause as { code?: unknown } | undefined)?.code !== 'ENOTFOUND'
+      );
     if (link instanceof PoolTimeout) return true;
     if (link instanceof DbOverloaded) return link.sqlstate === '53300';
     if (
