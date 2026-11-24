@@ -597,6 +597,53 @@ def test_a_large_collection_is_answered_exactly_by_pruning_and_by_scoring_narrow
     check_against_reference(cluster, name, ORG_A, queries[:1], (((None, None, None, None), None), ((None, None, None, ["g0", "g1"]), {"g0", "g1"})), (10,))
 
 
+def postings_scanned(cluster, name, org, terms) -> tuple[list, int]:
+    """A whole-org search's answer (leg 10) and the rows its scans of the postings returned, table and index."""
+    with connect_as(cluster, name, "pipeshub_query_login") as c, uow(c, "pipeshub_query", org):
+        got = c.execute("SELECT point_sk, score FROM retrieval.search_sparse(1::smallint, %s::bigint[], %s::real[], NULL, NULL, NULL, NULL, NULL, 10)",
+                        (list(terms), [1.0] * len(terms))).fetchall()
+        read = c.execute("SELECT sum(pg_stat_get_xact_tuples_returned(c.oid))::int FROM pg_class c "
+                         "WHERE c.relnamespace = 'retrieval'::regnamespace AND c.relname LIKE 'postings%%'").fetchone()[0]
+        return got, read
+
+
+def pending_bounds(cluster, name) -> list[tuple]:
+    with cluster.admin(name) as c:
+        return c.execute("SELECT org_id, collection_id, space_id FROM retrieval.lexical_bound_pending ORDER BY 1, 2, 3").fetchall()
+
+
+def test_the_fold_worker_fills_the_bounds_an_upgrade_left_missing_and_the_search_then_prunes(rdb, monkeypatch):
+    """A collection upgraded with frequency rows that have no bound is searched by the exhaustive sum; each fold pass fills a few hundred
+    bounds from the postings, the collection leaves the pending list when none is missing, and the search prunes with the same answer.
+    A done job is a no-op, and a delta folded without a bound (a writer on the old trigger body) puts the collection back."""
+    cluster, name = rdb
+    adopt(cluster, name, ORG_A)
+    big_corpus(cluster, name, ORG_A)
+    terms = (1, 2, 3, 4, 5, 6, 7)
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.run(jobs)[1] == {}
+    exact = bounds(cluster, name, ORG_A)
+    assert pending_bounds(cluster, name) == [] and None not in exact.values()      # written after the upgrade: nothing to fill
+    with cluster.admin(name) as c:                                                  # as an upgrade leaves them
+        c.execute("UPDATE retrieval.lexical_df SET wmax = NULL WHERE org_id = %s", (ORG_A,))
+        c.execute("INSERT INTO retrieval.lexical_bound_pending VALUES (%s, 1, 1)", (ORG_A,))
+    want, read = postings_scanned(cluster, name, ORG_A, terms)
+    assert read > 200_000                                                           # no bounds: every posting summed
+    monkeypatch.setattr(fold, "BOUND_TERMS", 3)                                     # 7 terms: three transactions, the last one ends the job
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.fill_bounds(jobs) == ({ORG_A: 7}, {}, 0)
+        assert fold.fill_bounds(jobs) == ({}, {}, 0)                                # done: a no-op
+    assert bounds(cluster, name, ORG_A) == exact and pending_bounds(cluster, name) == []
+    got, read = postings_scanned(cluster, name, ORG_A, terms)
+    assert [r[0] for r in got] == [r[0] for r in want] and [r[1] for r in got] == pytest.approx([r[1] for r in want]) and read < 20_000
+    with cluster.admin(name) as c:                                                  # an older writer's delta: not known again until filled
+        c.execute("INSERT INTO retrieval.lexical_term_delta (org_id, collection_id, space_id, term, d) VALUES (%s, 1, 1, 4, 0)", (ORG_A,))
+    monkeypatch.setenv("PG_JOBS_URL", f"postgresql://pipeshub_jobs@127.0.0.1:{cluster.port}/{name}")
+    from db import maintain
+    assert maintain.main(["fold"]) == 0                                             # folds it, marks the collection, fills it in the same pass
+    assert bounds(cluster, name, ORG_A) == exact and pending_bounds(cluster, name) == []
+
+
 def bounds(cluster, name, org: str) -> dict[int, float | None]:
     """The bound the search reads per term: the folded value and the deltas', not known when any of them is not."""
     with cluster.admin(name) as c:
@@ -645,12 +692,13 @@ def test_downgrading_the_term_bounds_restores_the_previous_search_and_trigger_an
 
     def state() -> tuple:
         with cluster.admin(name) as a:
-            return (a.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'retrieval' AND column_name = 'wmax'").fetchone()[0],
+            return (a.execute("SELECT count(*) FROM information_schema.columns WHERE table_schema = 'retrieval' AND column_name = 'wmax'").fetchone()[0]
+                + a.execute("SELECT count(*) FROM pg_class WHERE oid = to_regclass('retrieval.lexical_bound_pending')").fetchone()[0],
                     a.execute(f"SELECT prosrc LIKE '%%v_pj%%' FROM pg_proc WHERE oid = '{SPARSE}'::regprocedure").fetchone()[0],
                     a.execute("SELECT prosrc LIKE '%%wmax%%' FROM pg_proc WHERE oid = 'retrieval.postings_df_capture()'::regprocedure").fetchone()[0],
                     a.execute("SELECT count(*) FROM kernel.rls_violations").fetchone()[0])
 
-    assert state() == (2, True, True, 0)
+    assert state() == (3, True, True, 0)
     r = run_migrate(url, "downgrade", "retrieval_0007", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout
     assert state() == (0, False, False, 0)
@@ -661,9 +709,13 @@ def test_downgrading_the_term_bounds_restores_the_previous_search_and_trigger_an
     assert [r[0] for r in search(cluster, name, ORG_A, (5,))] == [sk]
     r = run_migrate(url)
     assert r.returncode == 0, r.stdout
-    assert state() == (2, True, True, 0)
-    assert bounds(cluster, name, ORG_A) == {5: None}                          # written before the upgrade: not known until recount
+    assert state() == (3, True, True, 0)
+    assert bounds(cluster, name, ORG_A) == {5: None}                          # written before the upgrade: not known until filled
+    assert pending_bounds(cluster, name) == [(ORG_A, 1, 1)]                   # the upgrade lists the collection for the fold worker
     assert [r[0] for r in search(cluster, name, ORG_A, (5,))] == [sk]
+    with connect_as(cluster, name, "pipeshub_jobs") as jobs:
+        assert fold.run(jobs)[1] == {} and fold.fill_bounds(jobs) == ({ORG_A: 1}, {}, 0)
+    assert bounds(cluster, name, ORG_A) == {5: 1.0} and pending_bounds(cluster, name) == []
 
 
 def test_every_table_the_lexical_search_reads_is_filtered_by_the_bound_org():

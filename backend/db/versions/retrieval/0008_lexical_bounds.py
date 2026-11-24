@@ -10,7 +10,7 @@ revision = "retrieval_0008"
 down_revision = "retrieval_0007"
 branch_labels = None
 depends_on = None
-older_code_compatible = ("adds nullable columns, replaces the body of the postings trigger function and of the lexical search with the same "
+older_code_compatible = ("adds nullable columns and a table only the new fold reads, replaces the body of the postings trigger function and of the lexical search with the same "
                          "signatures and answers; older writers fire the same triggers, older fold and recount leave the new columns NULL, "
                          "which the search reads as not known and answers by the exhaustive sum")
 
@@ -38,5 +38,7 @@ def downgrade():
     assert len(body) == len(exemption) == 1, (len(body), len(exemption))
     cur.execute(body[0].replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1))
     cur.execute(exemption[0])
+    op.execute("DELETE FROM kernel.rls_registry WHERE rel::text = 'retrieval.lexical_bound_pending'")
+    op.execute("DROP TABLE retrieval.lexical_bound_pending")
     op.execute("ALTER TABLE retrieval.lexical_term_delta DROP COLUMN wmax")
     op.execute("ALTER TABLE retrieval.lexical_df DROP COLUMN wmax")

@@ -11,7 +11,9 @@ The document frequency of each term is kept the same way: triggers on the postin
 the postings (which also ends the counting of a collection whose postings predate the triggers, ``retrieval.lexical_df_pending``).
 Beside each frequency they keep ``wmax``, the largest |weight| of the term's postings (retrieval_0008), the bound the lexical search prunes
 with: the fold keeps the larger of the folded and the delta values, recount computes it, and NULL (a row written before retrieval_0008) means
-not known, which the fold carries and the search does not prune on.
+not known, which the fold carries and the search does not prune on. ``fill_bounds`` (each fold pass) computes the missing ones from the
+postings, a few terms per transaction, for the collections in ``retrieval.lexical_bound_pending`` (every collection at the upgrade, and any
+whose fold met a delta without a bound), so an upgraded install prunes without an operator step.
 """
 from collections.abc import Callable
 
@@ -67,6 +69,11 @@ up AS (
   INSERT INTO retrieval.lexical_df AS f (org_id, collection_id, space_id, term, df, wmax)
   SELECT %(org)s, s.collection_id, s.space_id, s.term, s.d, s.wmax FROM sums s WHERE s.df <> 0
   ON CONFLICT (org_id, collection_id, space_id, term) DO UPDATE SET df = f.df + EXCLUDED.df, wmax = EXCLUDED.wmax
+  RETURNING 1),
+unknown AS (       -- a bound that stays not known: fill_bounds computes it
+  INSERT INTO retrieval.lexical_bound_pending (org_id, collection_id, space_id)
+  SELECT DISTINCT %(org)s, s.collection_id, s.space_id FROM sums s WHERE s.df <> 0 AND s.wmax IS NULL
+  ON CONFLICT DO NOTHING
   RETURNING 1)
 SELECT (SELECT count(*) FROM taken)"""
 
@@ -84,6 +91,7 @@ stale AS (
      AND NOT EXISTS (SELECT 1 FROM pending x WHERE x.collection_id = f.collection_id AND x.space_id = f.space_id AND x.term = f.term)
   RETURNING 1),
 done AS (DELETE FROM retrieval.lexical_df_pending x WHERE x.org_id = %(org)s RETURNING 1),
+bounded AS (DELETE FROM retrieval.lexical_bound_pending x WHERE x.org_id = %(org)s RETURNING 1),
 up AS (
   INSERT INTO retrieval.lexical_df AS f (org_id, collection_id, space_id, term, df, wmax)
   SELECT %(org)s, k.collection_id, k.space_id, k.term, coalesce(l.n, 0) - coalesce(x.d, 0), coalesce(l.wmax, 0)
@@ -93,6 +101,22 @@ up AS (
   RETURNING 1)
 SELECT (SELECT count(*) FROM up)"""
 RECOUNT_BOUNDS = "UPDATE retrieval.lexical_term_delta d SET wmax = 0 WHERE d.org_id = %(org)s AND d.wmax IS NULL"
+
+# The bound of up to BOUND_TERMS frequency rows that lack one: the largest |weight| of the term's postings in this statement's snapshot (a
+# posting committed later carries its bound on its own delta). Under the org lock, so no fold rewrites the rows meanwhile; a delta without
+# a bound still unfolded keeps the term not known for the search, and its fold marks the collection again.
+BOUND_TERMS = 200
+FILL_BOUNDS = """
+WITH todo AS (
+  SELECT f.collection_id, f.space_id, f.term FROM retrieval.lexical_df f
+   WHERE f.org_id = %(org)s AND f.wmax IS NULL ORDER BY f.collection_id, f.space_id, f.term LIMIT %(terms)s),
+filled AS (
+  UPDATE retrieval.lexical_df f SET wmax = coalesce((SELECT max(abs(p.w)) FROM retrieval.postings p
+      WHERE p.org_id = %(org)s AND p.collection_id = t.collection_id AND p.space_id = t.space_id AND p.term = t.term), 0)
+    FROM todo t
+   WHERE f.org_id = %(org)s AND f.collection_id = t.collection_id AND f.space_id = t.space_id AND f.term = t.term
+  RETURNING 1)
+SELECT count(*) FROM filled"""
 
 # The true count of live points per (collection, space), from one snapshot, minus the deltas that snapshot already sees: the search
 # adds the deltas back, and a delta committed later belongs to a point this snapshot does not count either.
@@ -146,6 +170,25 @@ def recount_org(jobs: psycopg.Connection, org: str) -> list[tuple[int, int, int]
             return counts
     except psycopg.errors.SerializationFailure:      # a fold committed between the lock and the snapshot: nothing changed, run again
         return None
+
+
+def fill_bounds_org(jobs: psycopg.Connection, org: str) -> int:
+    """Fill up to :data:`BOUND_TERMS` missing bounds of ``org`` in one transaction; when fewer were missing, the org leaves
+    ``lexical_bound_pending``. Returns how many were filled (:data:`BUSY`: a fold or recount holds the org)."""
+    with jobs.transaction():
+        if not org_lock(jobs, org):
+            return BUSY
+        n = jobs.execute(FILL_BOUNDS, {"org": org, "terms": BOUND_TERMS}).fetchone()[0]
+        if n < BOUND_TERMS:
+            jobs.execute("DELETE FROM retrieval.lexical_bound_pending WHERE org_id = %(org)s", {"org": org})
+        return n
+
+
+def fill_bounds(jobs: psycopg.Connection) -> tuple[dict[str, int], dict[str, str], int]:
+    """One pass over the orgs with collections in ``lexical_bound_pending``: (org -> bounds filled, org -> error, collections still pending)."""
+    orgs = [r[0] for r in jobs.execute("SELECT DISTINCT org_id FROM retrieval.lexical_bound_pending ORDER BY 1")]
+    done, failed = each_org(jobs, orgs, fill_bounds_org, BOUND_TERMS)
+    return done, failed, jobs.execute("SELECT count(*) FROM retrieval.lexical_bound_pending").fetchone()[0]
 
 
 def each_org(jobs: psycopg.Connection, orgs: list[str], step: Callable[[psycopg.Connection, str], int], batch: int) -> tuple[dict[str, int], dict[str, str]]:
