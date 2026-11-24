@@ -4164,7 +4164,7 @@ class SharePointConnector(BaseConnector):
                     if site:
                         # A change notification can't say what changed at which depth; a run
                         # reads every library's changes since its delta token.
-                        await self.run_sync()
+                        await self.request_sync()
 
             self.logger.info("✅ SharePoint webhook notification processed")
 

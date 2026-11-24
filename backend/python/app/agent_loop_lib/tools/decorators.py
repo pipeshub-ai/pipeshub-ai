@@ -313,6 +313,42 @@ def reject_unknown_arguments(accepted: frozenset[str] | None, kwargs: dict[str, 
         )
 
 
+def required_argument_names(fn: Callable[..., Any]) -> frozenset[str]:
+    """Keyword names ``fn`` cannot be called without: its parameters with no
+    default. Empty when the signature cannot be read.
+
+    Read from the signature, as ``accepted_argument_names`` is: what decides
+    whether the call can bind is the function, not the schema the model saw.
+    """
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return frozenset()
+    return frozenset(
+        p.name
+        for p in params
+        if p.default is inspect.Parameter.empty
+        and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    )
+
+
+def reject_missing_arguments(required: frozenset[str], kwargs: dict[str, Any]) -> None:
+    """Raise `ToolValidationError` naming required arguments the call left out.
+
+    Without it the call dies on Python's bare ``TypeError`` ("missing 1
+    required positional argument"), which the executor reports as an internal
+    failure with no usage to correct against; a model that sent ``{}`` then
+    tends to send ``{}`` again. Arguments hooks inject are already in
+    ``kwargs`` here: pre-tool middleware runs before validation.
+    """
+    missing = sorted(required - set(kwargs))
+    if missing:
+        raise ToolValidationError(
+            f"Missing required argument(s): {', '.join(missing)}. Nothing was run; "
+            "call it again with them."
+        )
+
+
 def _normalize_legacy_output(result: Any) -> ToolOutput:
     """Convert legacy ``(bool, str)`` returns to `ToolOutput`.
 
@@ -390,14 +426,19 @@ class BoundMethodTool(Tool):
         return self._meta.result_schema
 
     def validate(self, kwargs: dict[str, Any]) -> None:
-        """Only unknown argument names are rejected: connector tools normalize
-        loosely typed values themselves (e.g. Pydantic validators that handle
-        LLM input variations)."""
+        """Only argument names are checked, unknown ones and missing required
+        ones: connector tools normalize loosely typed values themselves (e.g.
+        Pydantic validators that handle LLM input variations)."""
         reject_unknown_arguments(self._accepted_args, kwargs)
+        reject_missing_arguments(self._required_args, kwargs)
 
     @functools.cached_property
     def _accepted_args(self) -> frozenset[str] | None:
         return accepted_argument_names(self._bound_method)
+
+    @functools.cached_property
+    def _required_args(self) -> frozenset[str]:
+        return required_argument_names(self._bound_method)
 
     async def execute(self, **kwargs: Any) -> ToolOutput:
         result = await self._bound_method(**kwargs)

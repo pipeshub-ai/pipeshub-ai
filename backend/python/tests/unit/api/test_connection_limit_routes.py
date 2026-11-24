@@ -48,6 +48,7 @@ from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.attachment_utils import keep_accessible_attachments
 
 ROUTER = "app.connectors.api.router"
+DEMO_CHECK = "app.modules.demo_data.access.is_hidden_demo_record"  # looked up there by refuse_hidden_demo_record
 
 #: Each node the fake graph knows, with the app it lives in.
 ROWS = {
@@ -179,7 +180,7 @@ class TestRecordsById:
     async def test_record_metadata(self) -> None:
         request = _request()
         request.app.container.config_service.return_value = AsyncMock()
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)):
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)):
             with pytest.raises(HTTPException) as exc:
                 await get_record_by_id("rec-out", request, graph_provider=self._graph_with_access())
             assert exc.value.status_code == 403
@@ -190,7 +191,7 @@ class TestRecordsById:
         request = _request()
         request.app.container.config_service.return_value = AsyncMock()
         fetch = AsyncMock(return_value={"ok": True, "records": []})
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._fetch_multiple_records_impl", fetch):
             with pytest.raises(HTTPException) as exc:
                 await get_record_content("rec-out", request, graph_provider=self._graph_with_access())
@@ -203,7 +204,7 @@ class TestRecordsById:
         graph.get_record_by_id = AsyncMock(return_value=SimpleNamespace(
             id="rec-out", org_id="org-1", connector_id="app-out",
         ))
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._resolve_record_content_response", AsyncMock()) as serve:
             with pytest.raises(HTTPException) as exc:
                 await stream_record(_request(), "rec-out", graph_provider=graph, config_service=AsyncMock())
@@ -221,7 +222,7 @@ class TestRecordsById:
     async def test_a_budgeted_read_outside_the_limit_is_refused_before_any_fetch(self) -> None:
         graph = self._graph_with_access()
         fetch = AsyncMock(return_value={"ok": True, "records": []})
-        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch("app.api.routes.records._fetch_multiple_records_impl", fetch):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
@@ -232,7 +233,7 @@ class TestRecordsById:
     @pytest.mark.asyncio
     async def test_a_switched_off_demo_record_outside_the_limit_is_still_a_404(self) -> None:
         graph = self._graph_with_access()
-        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=True)):
+        with patch(DEMO_CHECK, AsyncMock(return_value=True)):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
                                           start_block=None, start_record=0, max_chars=40_000, extract=False)
@@ -246,7 +247,7 @@ class TestRecordsById:
 
         graph = self._graph_with_access()
         fetch = AsyncMock(return_value={"ok": True, "records": []})
-        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch("app.api.routes.records._resolve_thread_record_group", AsyncMock(return_value={"id": "t"})), \
              patch("app.api.routes.records._fetch_thread_records_impl", fetch), \
              patch("app.api.routes.records.read_thread", AsyncMock(return_value={"content": ""})):
@@ -276,7 +277,7 @@ class TestBrowsing:
             return await knowledge_graph_navigate(
                 request=request, graph_provider=graph, node_id=node_id, page=1, limit=50, depth=1,
                 node_types=None, created_after=None, created_before=None,
-                modified_after=None, modified_before=None,
+                modified_after=None, modified_before=None, cursor=None,
             )
 
     @pytest.mark.asyncio
@@ -320,7 +321,7 @@ class TestBrowsing:
             result = await knowledge_graph_navigate(
                 request=_request(), graph_provider=graph, node_id=None, page=1, limit=50, depth=1,
                 node_types=None, created_after=None, created_before=None,
-                modified_after=None, modified_before=None,
+                modified_after=None, modified_before=None, cursor=None,
             )
         assert navigator.return_value.navigate.call_args.kwargs["connector_ids"] == ["app-in"]
         assert [row["id"] for row in result["rows"]] == ["rec-in"]
@@ -702,7 +703,7 @@ class TestParentsOutsideTheLimit:
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
             return await get_record_by_id("rec-in", request, graph_provider=graph)
 
@@ -771,7 +772,7 @@ class TestSourcePathsUnderALimit:
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
             return await get_record_by_id("rec-in", request, graph_provider=graph)
 
@@ -874,7 +875,7 @@ class TestCollectionFilesWithNoParentNode:
         graph.get_document = AsyncMock(return_value={"connectorId": "app-in", "_key": "rec-in"})
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._stage_states_of", AsyncMock(return_value=None)):
             return await get_record_by_id("rec-in", request, graph_provider=graph)
 
@@ -923,7 +924,7 @@ class TestWhatAReadNamesBesideTheRecord:
         request = _request(limit)
         request.app.container.config_service.return_value = AsyncMock()
         fetch = AsyncMock(return_value={"ok": True, "records": [{"id": "rec-in"}]})
-        with patch(f"{ROUTER}.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch(f"{ROUTER}._fetch_multiple_records_impl", fetch), \
              patch(f"{ROUTER}.record_to_text", return_value="text"):
             await get_record_content("rec-in", request, graph_provider=_graph_under(FILE_LIMIT) if limit else _graph())
@@ -939,7 +940,7 @@ class TestWhatAReadNamesBesideTheRecord:
         request.app.container.graph_provider = AsyncMock(return_value=graph)
         request.app.container.blob_store = AsyncMock(return_value=MagicMock())
         fetch = AsyncMock(return_value={"ok": True, "records": [{"id": "rec-in"}]})
-        with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=False)), \
+        with patch(DEMO_CHECK, AsyncMock(return_value=False)), \
              patch("app.api.routes.records._fetch_multiple_records_impl", fetch), \
              patch("app.api.routes.records.read_record", AsyncMock(return_value={"content": ""})):
             await read_record_content("rec-in", request, mode="record", query=None,

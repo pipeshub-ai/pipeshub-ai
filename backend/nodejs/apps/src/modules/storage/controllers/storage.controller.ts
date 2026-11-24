@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Mutex } from 'async-mutex';
 import { inject, injectable } from 'inversify';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
@@ -15,6 +16,9 @@ import {
   ARTIFACT_URL_TTL_SECONDS,
   ARTIFACT_RETIRING_STALE_MS,
   ARTIFACT_RETIRING_HEARTBEAT_MS,
+  PAID_RESULT_URL_TTL_SECONDS,
+  PAID_RESULT_LIST_PAGE,
+  PAID_RESULT_PURGE_BATCH_MAX,
 } from '../constants/constants';
 import {
   AzureBlobStorageConfig,
@@ -22,6 +26,8 @@ import {
   S3StorageConfig,
 } from '../config/storage.config';
 import { Logger } from '../../../libs/services/logger.service';
+import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
+import { parseKvObject } from '../../../libs/utils/kv-object.utils';
 import { ConfigurationManagerServiceCommand } from '../../../libs/commands/configuration_manager/cm.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -70,6 +76,19 @@ import {
   serveFileFromLocalStorage,
   writeToStorage,
 } from '../utils/utils';
+import {
+  paidResultsOrgRoot,
+  RECORD_ID,
+  isPaidResultManifestPath,
+  isPaidResultMarkerPath,
+  isPaidResultObjectPath,
+  ETAG_VALUE,
+  REFRESH_MARKER_FOLDER,
+  REFRESH_MARKER_PATH,
+  paidResultsRecordRoot,
+} from '../utils/paid-results';
+import { purgePaidResultsOlderThan } from '../utils/paid-results-purge';
+import { localEtagOf } from '../utils/storage-fingerprint';
 import { UploadDocumentService } from './storage.upload.service';
 import { withWriteWindow } from './storage.write-window';
 import { readDocumentWithFingerprint } from './storage.fingerprint';
@@ -210,6 +229,18 @@ function virtualRecordIdOf(
 // TODO: Remove these globals
 let storageConfig:
   AzureBlobStorageConfig | LocalStorageConfig | S3StorageConfig | null = null;
+
+/**
+ * How far past this service's clock a purge cutoff may lie before it is refused. The cutoff is the object store's clock,
+ * which may differ from this host's, so the bound is one only a bug would exceed; a cutoff past the warning mark is
+ * accepted and logged.
+ */
+const PURGE_CUTOFF_FUTURE_LIMIT_MS = 15 * 60_000;
+const PURGE_CUTOFF_FUTURE_WARN_MS = 60_000;
+/** The record folder's sentinel area: listings leave it out and the purge that follows it removes it with the folder. */
+const PURGE_CUTOFF_FOLDER = 'purge-cutoff';
+/** Folder deletes in flight at once within one batch purge. */
+const PAID_RESULT_PURGE_BATCH_CONCURRENCY = 8;
 
 @injectable()
 export class StorageController {
@@ -407,7 +438,7 @@ export class StorageController {
   ): Promise<string> {
     const storageConfig =
       (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-    const { storageType } = JSON.parse(storageConfig);
+    const { storageType } = parseKvObject(storageConfig);
     return storageType ?? 'local';
   }
 
@@ -420,7 +451,7 @@ export class StorageController {
       const adapter = await this.initializeStorageAdapterForWrite(req);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       if (!isValidStorageVendor(storageType ?? '')) {
         throw new BadRequestError(`Invalid storage type: ${storageType}`);
       }
@@ -474,7 +505,7 @@ export class StorageController {
       const fullDocumentPath = getFullDocumentPath(orgId, documentPath);
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       const storageVendor = getStorageVendor(storageType ?? '');
       const documentInfo: Partial<Document> = {
         documentName,
@@ -1040,6 +1071,7 @@ export class StorageController {
       }
     });
     stream.pipe(res);
+    releaseOnClientClose(res, stream);
   }
 
   /**
@@ -1168,6 +1200,584 @@ export class StorageController {
           }),
         })),
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // Paid-result cache. Every key is built from the storage token's org and a
+  // validated record id; no request field names another org's folder.
+
+  async presignPaidResults(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      this.assertBodyOrgMatchesToken(req, orgId);
+      const { recordId, files } = req.body as {
+        recordId: string;
+        files: {
+          path: string;
+          mode: 'put' | 'get' | 'replace' | 'refresh' | 'bump';
+          etag?: string;
+        }[];
+      };
+      const root = paidResultsRecordRoot(orgId, recordId);
+      const storageType = await this.getConfiguredStorageType(req);
+      if (!isValidStorageVendor(storageType)) {
+        throw new BadRequestError(`Invalid storage type: ${storageType}`);
+      }
+      const adapter = await this.remoteArtifactAdapter(req, storageType);
+      const capabilities = await this.paidResultCapabilities(req, adapter);
+      if (
+        files.some((f) => f.mode === 'bump') &&
+        !capabilities.list.includes('bump')
+      ) {
+        throw new BadRequestError(
+          'This store does not support a conditional bump',
+        );
+      }
+      const signed = await Promise.all(
+        files.map(async ({ path: filePath, mode, etag }) => {
+          const method = mode === 'get' ? 'GET' : 'PUT';
+          if (adapter === null) {
+            const storageEndpoint = await storedServiceEndpoint(
+              this.keyValueStoreService,
+              'storage',
+              this.config.endpoint,
+            );
+            return {
+              path: filePath,
+              mode,
+              method,
+              url: `${storageEndpoint}/api/v1/document/internal/paid-results/${recordId}/files/${filePath}${mode === 'replace' ? '?replace=1' : mode === 'refresh' ? '?refresh=1' : mode === 'bump' ? `?bump=1&ifMatch=${encodeURIComponent(etag ?? '')}` : ''}`,
+              headers: {
+                Authorization:
+                  req.verifiedToken !== undefined
+                    ? `Bearer ${req.verifiedToken}`
+                    : (req.headers.authorization ?? ''),
+                ...(mode !== 'get' && {
+                  'Content-Type': 'application/octet-stream',
+                }),
+              },
+            };
+          }
+          return {
+            path: filePath,
+            mode,
+            method,
+            ...(await adapter.signObjectUrl(`${root}/${filePath}`, {
+              method,
+              contentType: mode === 'get' ? undefined : 'application/json',
+              expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
+              ifAbsent: mode === 'put',
+              ...(mode === 'bump' && etag !== undefined && { ifMatch: etag }),
+            })),
+          };
+        }),
+      );
+      res.status(HTTP_STATUS.OK).json({
+        recordId,
+        expiresInSeconds: PAID_RESULT_URL_TTL_SECONDS,
+        capabilities: capabilities.list,
+        files: signed,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * What the paid-result routes can rely on, named in replies so a client never infers support from a status code:
+   * `conditionalDelete` (a delete by listed ETag), `bump` (a PUT conditional on the ETag).
+   */
+  private async paidResultCapabilities(
+    req: AuthenticatedServiceRequest,
+    remote?: StorageServiceAdapter | null,
+  ): Promise<{ list: string[] }> {
+    const adapter = remote ?? (await this.initializeStorageAdapter(req));
+    const caps = await adapter.conditionalCapabilities();
+    return {
+      list: [
+        ...(caps.conditionalDelete ? ['conditionalDelete'] : []),
+        ...(caps.bump ? ['bump'] : []),
+      ],
+    };
+  }
+
+  /** Local storage's stand-in for a signed conditional PUT: the first writer wins. */
+  async putPaidResultFile(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const body: unknown = req.body;
+      if (!Buffer.isBuffer(body)) {
+        throw new BadRequestError(
+          'Send the file as the request body with Content-Type application/octet-stream',
+        );
+      }
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const pathParam: unknown = req.params[0];
+      if (typeof pathParam !== 'string' || pathParam === '') {
+        throw new BadRequestError('path must be a single value');
+      }
+      const adapter = await this.localArtifactAdapter(req);
+      const filePath = pathParam;
+      const storageKey = `${paidResultsRecordRoot(orgId, recordParam)}/${filePath}`;
+      let written = true;
+      const replace = req.query.replace === '1';
+      const refresh = req.query.refresh === '1';
+      const bump = req.query.bump === '1';
+      // The same rule the signed modes have: `replace` rewrites a manifest, `refresh` one result object, `bump` one
+      // result object while its ETag is the one named. The marker is never written through a URL.
+      if (
+        isPaidResultMarkerPath(filePath) ||
+        (bump && (replace || refresh || !isPaidResultObjectPath(filePath))) ||
+        (replace && refresh) ||
+        (replace && !isPaidResultManifestPath(filePath)) ||
+        (refresh && !isPaidResultObjectPath(filePath))
+      ) {
+        throw new BadRequestError('This mode does not apply to this path');
+      }
+      if (bump && !(await adapter.conditionalCapabilities()).bump) {
+        // The URL that brought the request was signed by a replica that honoured it: this store does not, and the key
+        // lock alone does not make the compare-then-write safe here. Refused before anything is written.
+        throw new BadRequestError(
+          'This store does not support a conditional bump',
+        );
+      }
+      try {
+        if (bump) {
+          const ifMatch: unknown = req.query.ifMatch;
+          if (typeof ifMatch !== 'string' || !ETAG_VALUE.test(ifMatch)) {
+            throw new BadRequestError('ifMatch must be one ETag');
+          }
+          const outcome = await adapter.writeObjectIfMatch(
+            storageKey,
+            body,
+            ifMatch,
+          );
+          if (outcome === 'gone') {
+            res.status(HTTP_STATUS.NOT_FOUND).json({ error: 'File not found' });
+            return;
+          }
+          if (outcome === 'changed') {
+            res.status(412).json({ error: 'The result changed' });
+            return;
+          }
+        } else if (replace || refresh) {
+          await adapter.writeObject(storageKey, body);
+        } else {
+          written = await adapter.writeObjectIfAbsent(storageKey, body);
+        }
+      } catch (error) {
+        this.logger.error('Could not write a paid result', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+      }
+      if (!written) {
+        // Answered here, not thrown: losing the race is the normal outcome, not a request error to log.
+        res.status(412).json({ error: 'A result is already stored here' });
+        return;
+      }
+      res
+        .status(HTTP_STATUS.OK)
+        .json({ path: filePath, size: body.byteLength });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Local storage's stand-in for a signed GET. */
+  async getPaidResultFile(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const pathParam: unknown = req.params[0];
+      if (typeof pathParam !== 'string' || pathParam === '') {
+        throw new BadRequestError('path must be a single value');
+      }
+      const adapter = await this.localArtifactAdapter(req);
+      const filePath = pathParam;
+      const opened = await adapter.openObject(
+        `${paidResultsRecordRoot(orgId, recordParam)}/${filePath}`,
+      );
+      if (opened === null) {
+        // A miss is the cache's normal path: answered here, not thrown, so it is not logged as a failed request.
+        res.status(HTTP_STATUS.NOT_FOUND).json({ error: 'File not found' });
+        return;
+      }
+      // The version and write time a client needs for a conditional bump, read from the descriptor being served.
+      try {
+        const st = await opened.handle.stat({ bigint: true });
+        res.set('ETag', `"${localEtagOf(st)}"`);
+        const mtimeMs = Number(st.mtimeNs / BigInt(1_000_000));
+        res.set('Last-Modified', new Date(mtimeMs).toUTCString());
+        // The exact stamp (a local file carries milliseconds, the header whole seconds): what the refresh fence compares.
+        res.set('X-Last-Modified-Ms', String(mtimeMs));
+      } catch (statError) {
+        void opened.handle.close();
+        throw statError;
+      }
+      this.sendOpenedFile(req, res, next, opened, filePath);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async listPaidResults(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const claimed = (req.query as { orgId?: unknown }).orgId;
+      if (claimed !== undefined && claimed !== orgId) {
+        throw new ForbiddenError(
+          'The organization in the request does not match the storage token',
+        );
+      }
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const prefixQuery: unknown = req.query.prefix;
+      const afterQuery: unknown = req.query.after;
+      if (
+        (prefixQuery !== undefined && typeof prefixQuery !== 'string') ||
+        (afterQuery !== undefined && typeof afterQuery !== 'string')
+      ) {
+        throw new BadRequestError('prefix and after must be single values');
+      }
+      const prefix = prefixQuery;
+      const after = afterQuery;
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      const adapter = await this.initializeStorageAdapter(req);
+      const capabilities = await this.paidResultCapabilities(req, adapter);
+      const page = await adapter.listObjects(`${root}/${prefix ?? ''}`, {
+        after,
+        limit: PAID_RESULT_LIST_PAGE,
+      });
+      res.status(HTTP_STATUS.OK).json({
+        objects: page.objects
+          // A purge-cutoff sentinel is the store's clock reading, never a result.
+          .filter(
+            (o) =>
+              o.key.startsWith(`${root}/`) &&
+              !o.key.startsWith(`${root}/${PURGE_CUTOFF_FOLDER}/`) &&
+              !o.key.startsWith(`${root}/${REFRESH_MARKER_FOLDER}/`),
+          )
+          .map((o) => ({
+            path: o.key.slice(root.length + 1),
+            size: o.size,
+            lastModifiedMs: o.lastModifiedMs,
+            ...(o.etag !== undefined && { etag: o.etag }),
+          })),
+        capabilities: capabilities.list,
+        ...(page.next !== undefined && { next: page.next }),
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async deletePaidResults(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      this.assertBodyOrgMatchesToken(req, orgId);
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const { paths } = req.body as { paths: string[] };
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      const adapter = await this.initializeStorageAdapter(req);
+      await adapter.deleteObjects(paths.map((p) => `${root}/${p}`));
+      res.status(HTTP_STATUS.OK).json({ deleted: paths.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Deletes each path only while it is still the version named (its listed ETag). The answer says which were kept
+   * (`changed`). A store that confirmed it cannot delete by version answers 200 with `unsupported: true` and deletes
+   * nothing (the caller then takes its own fallback); one whose probe was denied or could not tell reads as "not supported" for a while and answers the same (never 503).
+   * A request
+   * that names versions is never turned into a plain delete.
+   */
+  async deletePaidResultsIfMatch(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      this.assertBodyOrgMatchesToken(req, orgId);
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const { items } = req.body as {
+        items: { path: string; etag: string }[];
+      };
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      const adapter = await this.initializeStorageAdapter(req);
+      const caps = await adapter.conditionalCapabilities();
+      if (!caps.conditionalDelete) {
+        res
+          .status(HTTP_STATUS.OK)
+          .json({ unsupported: true, deleted: 0, changed: [] });
+        return;
+      }
+      const result = await adapter.deleteObjectsIfMatch(
+        items.map(({ path, etag }) => ({ key: `${root}/${path}`, etag })),
+      );
+      const changed = result.changed.map((k) => k.slice(root.length + 1));
+      res
+        .status(HTTP_STATUS.OK)
+        .json({ deleted: items.length - changed.length, changed });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Removes everything the cache holds for the record. Safe to repeat: nothing there is a success. */
+  async purgePaidResultsOfRecord(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      // One value each: a repeated or split parameter is an array, and never reaches a key or a response.
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      // The validator has coerced it to a positive integer; anything else (an array, a non-number) is refused here too.
+      const beforeQuery: unknown = req.query.before;
+      if (
+        beforeQuery !== undefined &&
+        typeof beforeQuery !== 'string' &&
+        typeof beforeQuery !== 'number'
+      ) {
+        throw new BadRequestError('before must be a single value');
+      }
+      const adapter = await this.initializeStorageAdapter(req);
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      // The cutoff is an instant the store's own clock returned (`purge-cutoff`): one in the future is not one.
+      if (beforeQuery !== undefined) {
+        const aheadMs = Number(beforeQuery) - Date.now();
+        if (aheadMs > PURGE_CUTOFF_FUTURE_LIMIT_MS) {
+          throw new BadRequestError('before is in the future');
+        }
+        if (aheadMs > PURGE_CUTOFF_FUTURE_WARN_MS) {
+          this.logger.warn(
+            'Paid-result purge cutoff is ahead of this service clock',
+            { aheadMs },
+          );
+        }
+      }
+      if (beforeQuery === undefined) {
+        await adapter.deleteTree(root);
+      } else {
+        // A purge that started at this instant removes only what existed then: a late DELETE (its caller lost its
+        // lease and a newer one has stored results since) leaves the newer objects alone.
+        await this.deletePaidResultsOlderThan(
+          adapter,
+          root,
+          Number(beforeQuery),
+        );
+      }
+      res.status(HTTP_STATUS.OK).json({ purged: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Removes the folders of up to `PAID_RESULT_PURGE_BATCH_MAX` records in one request (the same removal as the
+   * per-record DELETE without `before`, which is what a re-purge hop does). Each id gets its own result: one folder
+   * that cannot be removed never hides the others, and the caller repeats just the failed ones. Safe to repeat.
+   */
+  async purgePaidResultsBatch(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const body = req.body as { recordIds?: unknown };
+      const ids = body.recordIds;
+      // The validator has run; this refuses anything it did not (fail closed, and the bound holds on its own).
+      if (
+        !Array.isArray(ids) ||
+        ids.length === 0 ||
+        ids.length > PAID_RESULT_PURGE_BATCH_MAX ||
+        !ids.every(
+          (id) => typeof id === 'string' && RECORD_ID.test(id) && id !== 'org',
+        )
+      ) {
+        throw new BadRequestError('recordIds must be 1 to 100 record ids');
+      }
+      const recordIds = ids as string[];
+      const adapter = await this.initializeStorageAdapter(req);
+      const results: Array<{
+        recordId: string;
+        purged: boolean;
+        error?: string;
+      }> = [];
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const i = cursor++;
+          if (i >= recordIds.length) return;
+          const recordId = recordIds[i] as string;
+          try {
+            await adapter.deleteTree(paidResultsRecordRoot(orgId, recordId));
+            results[i] = { recordId, purged: true };
+          } catch (error) {
+            // The detail stays in the log: a store error can carry a path or a credential hint.
+            this.logger.error('Could not purge a paid-result folder', {
+              recordId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            results[i] = { recordId, purged: false, error: 'purge failed' };
+          }
+        }
+      };
+      await Promise.all(
+        Array.from(
+          {
+            length: Math.min(
+              PAID_RESULT_PURGE_BATCH_CONCURRENCY,
+              recordIds.length,
+            ),
+          },
+          worker,
+        ),
+      );
+      res.status(HTTP_STATUS.OK).json({ results });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  private async deletePaidResultsOlderThan(
+    adapter: StorageServiceAdapter,
+    root: string,
+    before: number,
+  ): Promise<void> {
+    await purgePaidResultsOlderThan(adapter, root, before);
+  }
+
+  /**
+   * The store's current time, as a cutoff for a purge that follows: a sentinel object is written to the record's folder
+   * and its last-modified stamp (the object store's own clock, the one every stored result carries) is read back, so no
+   * clock of the caller or of this service decides which objects a purge may remove. The sentinel is deleted again.
+   */
+  async paidResultsPurgeCutoff(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const recordParam: unknown = req.params.recordId;
+      if (typeof recordParam !== 'string' || recordParam === '') {
+        throw new BadRequestError('recordId must be a single value');
+      }
+      const adapter = await this.initializeStorageAdapter(req);
+      const root = paidResultsRecordRoot(orgId, recordParam);
+      // The refresh marker first: its own store timestamp is when this refresh began, and it is older than the
+      // cutoff taken below. A bump or re-store of an object that predates it must not carry that object past the purge.
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from(JSON.stringify({ startedMs: Date.now() })),
+        documentPath: `${root}/${REFRESH_MARKER_PATH}`,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
+      // A folder of its own, so the lookup never depends on how many other sentinels a crash left beside it.
+      const folder = `${root}/${PURGE_CUTOFF_FOLDER}/${randomUUID()}/`;
+      const key = `${folder}stamp.json`;
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from('{}'),
+        documentPath: key,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
+      let cutoff: number;
+      try {
+        const page = await adapter.listObjects(folder, {
+          limit: PAID_RESULT_LIST_PAGE,
+        });
+        const written = page.objects.find((o) => o.key === key);
+        // A stamp that is not a positive number (an S3 object listed without LastModified reads as 0) is no stamp.
+        if (written === undefined || !(written.lastModifiedMs > 0)) {
+          throw new ServiceUnavailableError(
+            'The store did not stamp the cutoff',
+          );
+        }
+        cutoff = written.lastModifiedMs;
+      } finally {
+        await adapter.deleteObjects([key]).catch(() => undefined);
+      }
+      // The marker is written again now that the cutoff is known: its time is then at or after the cutoff, so a result
+      // written before the cutoff (which the purge removes) can never be taken for one written after the refresh began,
+      // by a run that still holds it and would store it again.
+      await adapter.uploadDocumentToStorageService({
+        buffer: Buffer.from(
+          JSON.stringify({ startedMs: Date.now(), cutoffMs: cutoff }),
+        ),
+        documentPath: `${root}/${REFRESH_MARKER_PATH}`,
+        mimeType: 'application/json',
+        isVersioned: false,
+      });
+      // `marker`: the refresh marker was written before this cutoff was taken (a client with paid-result writes on
+      // requires it: a service of an earlier release answers without).
+      res.status(HTTP_STATUS.OK).json({ cutoff, marker: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /** Removes everything the cache holds for the token's org. */
+  async purgePaidResultsOfOrg(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const adapter = await this.initializeStorageAdapter(req);
+      await adapter.deleteTree(paidResultsOrgRoot(orgId));
+      res.status(HTTP_STATUS.OK).json({ purged: true });
     } catch (error) {
       next(error);
     }
@@ -2149,7 +2759,7 @@ export class StorageController {
 
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
-      const { storageType } = JSON.parse(storageConfig);
+      const { storageType } = parseKvObject(storageConfig);
       const storageVendorInETCD = storageType;
 
       // TODO: fix this usage
@@ -2173,7 +2783,14 @@ export class StorageController {
         // Local files are bound to the identity the caller verified (`ifMatch`): S3 and Azure callers send `If-Match` themselves.
         const ifMatch =
           typeof req.query.ifMatch === 'string' ? req.query.ifMatch : undefined;
-        serveFileFromLocalStorage(document, res, resolvedVersion, ifMatch);
+        const range = req.headers.range;
+        serveFileFromLocalStorage(
+          document,
+          res,
+          resolvedVersion,
+          ifMatch,
+          typeof range === 'string' ? range : undefined,
+        );
       } else {
         res.status(200).json({ signedUrl: signedUrlResult.data });
       }
@@ -2423,7 +3040,7 @@ export class StorageController {
         const storageConfig =
           (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
           '{}';
-        const { storageType: configStorageType } = JSON.parse(storageConfig);
+        const { storageType: configStorageType } = parseKvObject(storageConfig);
 
         addVersion({
           version: 0,

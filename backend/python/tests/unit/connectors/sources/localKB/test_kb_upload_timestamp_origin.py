@@ -122,3 +122,31 @@ class TestNewVersionOfAContentDatedUpload:
         assert stored.source_created_at == UPLOADED - 86_400_100
         assert stored.source_updated_at == UPLOADED - 900
         assert stored.source_timestamp_origin == "upload"
+
+
+class TestNewVersionSize:
+    """A replaced file's record states the new file's size, as an upload's does."""
+
+    @pytest.mark.asyncio
+    async def test_a_new_version_takes_the_size_of_the_new_file(self, service, mock_processor) -> None:
+        stored = TestNewVersionStamp._editable(service)
+        stored.size_in_bytes = 4200
+        await service.update_record("user1", "rec-1", {}, file_metadata={"lastModified": UPLOADED, "size": 4272})
+        assert stored.size_in_bytes == 4272
+        mock_processor.on_record_content_update.assert_awaited_once_with(stored)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("size", [None, "4272", -1, True], ids=["missing", "text", "negative", "bool"])
+    async def test_a_size_that_is_not_a_byte_count_leaves_the_stored_one(self, service, size: object) -> None:
+        stored = TestNewVersionStamp._editable(service)
+        stored.size_in_bytes = 4200
+        metadata = {"lastModified": UPLOADED} if size is None else {"lastModified": UPLOADED, "size": size}
+        await service.update_record("user1", "rec-1", {}, file_metadata=metadata)
+        assert stored.size_in_bytes == 4200
+
+    @pytest.mark.asyncio
+    async def test_a_rename_leaves_the_size_alone(self, service) -> None:
+        stored = TestNewVersionStamp._editable(service)
+        stored.size_in_bytes = 4200
+        await service.update_record("user1", "rec-1", {"recordName": "renamed"})
+        assert stored.size_in_bytes == 4200

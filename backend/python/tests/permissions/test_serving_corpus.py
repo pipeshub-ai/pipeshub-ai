@@ -12,7 +12,9 @@ import pytest
 from app.services.permissions.scope_fields import set_resolved_generation
 from app.services.vector_db import scope_expr as sx
 
+from . import gen
 from .serving_corpus import SCENARIOS, ServingCorpus, build, judge
+from .test_scope_projector import FAMILIES, retyped
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -48,6 +50,24 @@ async def test_no_over_admit_and_no_recall_loss_on_the_corpus() -> None:
     assert pairs > 3000
     assert over == [] and lost == []
     assert unreached == []      # the connector arm returns every record of a gated app, so a hidden record the oracle admits is a loss, not a miss
+
+
+@pytest.mark.timeout(600)
+@pytest.mark.parametrize("family", [f for f, _ in FAMILIES])
+async def test_no_over_admit_and_no_recall_loss_on_generated_worlds(family: str) -> None:
+    """The same both ways on the generated worlds, typed as a connector of each rule family. A record of a connector the viewer reads as legacy is
+    left to the request (the planner never serves it), as it is in a search."""
+    bad, decided = [], 0
+    for kind in sorted(gen.GENERATORS):
+        for seed in gen.seeds():
+            for i, world in enumerate(gen.generate(kind, seed, gen.world_count())):
+                corpus = await build(SCENARIOS[0], retyped(world, family))
+                verdict = judge(corpus, returned(corpus))
+                decided += sum(1 for v, (sc, _) in corpus.viewers.items() for r, p in corpus.points.items()
+                               if not corpus.refused(r) and not set(p["connectorIds"]) & sc.legacy_apps)
+                bad += [(kind, seed, i, family, what, *p) for what in ("over", "lost", "unreached") for p in getattr(verdict, what)]
+    assert bad == []
+    assert decided > 500      # the stamps decide enough pairs for the check to mean something
 
 
 async def test_a_connector_that_is_not_served_is_left_to_the_request_whole() -> None:

@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-import yaml
 
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     CountsInfo,
@@ -17,10 +15,9 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.utils.kh_cursor import Boundary, KnowledgeHubCursor, decode, encode
+from tests.support.openapi_spec import openapi_spec
 
 from .test_kh_search import ORG, SECRET, USER_ID, USER_KEY, FakeProvider, row
-
-SPEC = Path(__file__).resolve().parents[3] / "nodejs" / "apps" / "src" / "modules" / "api-docs" / "pipeshub-openapi.yaml"
 
 
 class CappedProvider(FakeProvider):
@@ -98,7 +95,7 @@ async def test_the_response_says_whether_the_total_is_a_lower_bound(service, cap
 def test_the_models_default_to_exact_and_the_spec_documents_the_new_fields() -> None:
     assert PaginationInfo(limit=1, totalItems=0, hasNext=False, hasPrev=False).totalCapped is False
     assert CountsInfo(items=[], total=0).capped is False
-    schemas = yaml.safe_load(SPEC.read_text(encoding="utf-8"))["components"]["schemas"]
+    schemas = openapi_spec()["components"]["schemas"]
     pagination = schemas["KnowledgeHubNodesResponse"]["properties"]["pagination"]
     assert pagination["properties"]["totalCapped"]["type"] == "boolean" and "totalCapped" not in pagination["required"]
     counts = schemas["KnowledgeHubNodesResponse"]["properties"]["counts"]["properties"]

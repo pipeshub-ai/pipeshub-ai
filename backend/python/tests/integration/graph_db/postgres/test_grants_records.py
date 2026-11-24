@@ -7,6 +7,7 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 """
 from __future__ import annotations
 
+import logging
 import random
 from typing import Any
 
@@ -214,6 +215,53 @@ async def test_a_details_read_that_cannot_be_answered_raises_instead_of_refusing
     assert await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
 
 
+def fail_document_reads_of(w: World, monkeypatch: pytest.MonkeyPatch, coll: str) -> None:
+    """Every read reaches the real database except a document read of ``coll``, which fails as a store that stopped answering would."""
+    real = w.p._q
+
+    class _Tx:
+        def __init__(self, tx: Any) -> None:  # noqa: ANN401
+            self._tx = tx
+
+        def __getattr__(self, name: str) -> Any:  # noqa: ANN401
+            return getattr(self._tx, name)
+
+        async def fetchrow(self, sql: str, *args: object) -> Any:  # noqa: ANN401
+            if "pipeshub:graph.get_document */" in sql and args[1:2] == (coll,):      # (org, coll, key)
+                raise RuntimeError("store down")      # an OSError would become the runtime's ConnectionLost and be retried
+            return await self._tx.fetchrow(sql, *args)
+
+    async def q(fn: Any, transaction: str | None, **k: Any) -> Any:  # noqa: ANN401
+        return await real(lambda tx: fn(_Tx(tx)), transaction, **k)
+
+    monkeypatch.setattr(w.p, "_q", q)
+
+
+async def test_the_type_document_is_in_the_details_when_found_and_none_when_absent(w: World) -> None:
+    await world(w)
+    await w.nodes("files", {"_key": "open1", "webUrl": "https://x/open1"})          # open2 is a FILE record without one
+    found = await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
+    absent = await w.p.check_record_access_with_details("uid-gm", w.org, "open2")
+    assert found["record"]["fileRecord"]["_key"] == "open1"
+    assert absent is not None and absent["record"]["id"] == "open2" and absent["record"]["fileRecord"] is None       # still opened
+
+
+@pytest.mark.parametrize(("coll", "who", "record"), [
+    ("files", "uid-gm", "open1"),        # the record's type document
+    ("apps", "uid-kbu", "k1"),           # the collection of a KB record
+], ids=["type_document", "kb_app"])
+async def test_a_failed_optional_document_read_raises_as_an_outage(w: World, monkeypatch: pytest.MonkeyPatch, coll: str, who: str, record: str) -> None:
+    await world(w)
+    await w.nodes("files", {"_key": "open1"})
+    fail_document_reads_of(w, monkeypatch, coll)
+    with pytest.raises(RuntimeError):        # not None (a denial), and not details without the document
+        await w.p.check_record_access_with_details(who, w.org, record)
+    if coll == "apps":      # only that read failed: a connector record reads no app document
+        assert await w.p.check_record_access_with_details("uid-gm", w.org, "open1")
+    monkeypatch.undo()
+    assert await w.p.check_record_access_with_details(who, w.org, record)
+
+
 # ---- the context role --------------------------------------------------------------------------------------------------------------------
 
 async def ctx(w: World, who: str, node: str | None, kind: str | None = None, org: str | None = None) -> dict:
@@ -332,6 +380,39 @@ async def test_an_unsupported_parent_is_refused_and_a_failed_read_gives_the_lowe
     assert await ctx(w, "gm", "rg", "recordGroup") == LOW
     monkeypatch.setattr(w.p, "_q", real)
     assert await ctx(w, "gm", "rg", "recordGroup") == abilities("WRITER")
+
+
+async def test_the_hidden_apps_are_the_asked_ones_marked_hidden_in_this_org(w: World) -> None:
+    """The knowledge hub's root listing asks this to leave a project's own collection out (knowledge_hub_service.get_nodes)."""
+    await world(w)
+    await w.nodes("apps", {"_key": "kbtext", "type": "KB", "isHidden": "true"}, {"_key": "kbfalse", "type": "KB", "isHidden": False})      # only a boolean true hides, as on Neo4j
+    assert await w.p.get_hidden_app_ids(["kb1", "kb2", "kb3", APP, "missing", "kbtext", "kbfalse", "kb2"]) == ["kb2"]
+    assert await w.p.get_hidden_app_ids(["kb1"]) == []
+    assert await w.p.get_hidden_app_ids([]) == []
+    with in_org(_org()):
+        assert await w.p.get_hidden_app_ids(["kb2"]) == []
+
+
+async def test_the_root_listings_leave_a_hidden_collection_out_and_keep_the_others(w: World, pg_db) -> None:
+    """All Records, the sidebar root and a global search are KnowledgeHubService.get_nodes with no parent: each asks which of the viewer's Apps are hidden. The
+    hidden collection is still opened by id."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+    from tests.permissions.kh_layer import _Config
+
+    from .test_kg_read import flip
+    await world(w)
+    await flip(pg_db, w.org)
+    kh = KnowledgeHubService(logging.getLogger("hidden-apps"), w.p, _Config())
+    for args in ({}, {"flattened": True}, {"only_containers": True}, {"q": "k"}):
+        page = await kh.get_nodes(user_id="uid-kbu", org_id=w.org, **args)
+        assert page.success, (args, page.error)
+        ids = {i.id for i in page.items}
+        assert "kb2" not in ids and "k2" not in ids, (args, ids)
+        assert {"kb1"} <= ids or "k1" in ids, (args, ids)
+    opened = await kh.get_nodes(user_id="uid-kbu", org_id=w.org, parent_id="kb2", parent_type="app")
+    assert opened.success and {i.id for i in opened.items} == {"k2"}
 
 
 async def test_other_orgs_see_none_of_this(w: World) -> None:

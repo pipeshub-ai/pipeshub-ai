@@ -44,6 +44,7 @@ import {
   getReindexNodeForTableItem,
   mapReindexOptionsToMenuActions,
 } from '../utils/reindex-label';
+import { useCollectionGroupPermissions, isReindexPermissionLocked, type CollectionGroupPermissions } from '../hooks/use-collection-group-permissions';
 import { ColumnResizeHandle, kbCol, kbColMin, useKbColumnWidths, type KbColumn } from './kb-column-widths';
 
 /** "SOME_STATUS" → "Some Status", for statuses without a dedicated label. */
@@ -60,7 +61,9 @@ export type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
 
 /** Extra columns an edition overlay can add after "Updated" (desktop only). */
 export interface KbListExtraColumns {
+  /** The column's header cell itself (a TableHeaderCell): it is not wrapped in another column header. */
   header: ReactNode;
+  /** A row's content for the column, placed inside the row's cell. */
   cell: (item: TableItem) => ReactNode;
 }
 
@@ -215,6 +218,8 @@ export interface KbItemMenuHandlers {
   onReplace?: (item: TableItem) => void;
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;
+  /** Group permissions: an action the caller may not take stays listed, locked. */
+  groupPermissions?: CollectionGroupPermissions;
 }
 
 /** The "…" menu of one item, shared by the list rows and the grid cards so both offer the same actions. */
@@ -226,22 +231,28 @@ export function getKbItemMenuActions(item: TableItem, t: TFunction, h: KbItemMen
   // Per-item permission (Knowledge Hub nodes only): a shared item can have a lower
   // role than the folder it is listed in.
   const canEditItem = isHubNode ? (item.permission?.canEdit ?? false) : true;
+  const reindexNode = getReindexNodeForTableItem(item, isHubNode);
   const { options: reindexMenuOptions, showMenu: showReindexMenu } = getReindexMenuState(
-    getReindexNodeForTableItem(item, isHubNode),
+    reindexNode,
     !!h.onReindex,
   );
+  const gp = h.groupPermissions;
+  const editLocked = gp ? !gp.canEdit : false;
+  const reindexLocked = isReindexPermissionLocked(reindexNode, gp);
   return [
     { icon: 'folder_open', label: t('kb.rowActions.open'), onClick: h.onOpen },
     !isFolder && h.onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: t('action.download'), onClick: () => h.onDownload!(item) },
-    h.onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: h.onStartRename },
+    h.onRename && canEditItem && { icon: 'edit', label: t('menu.rename'), onClick: h.onStartRename, permissionLocked: editLocked },
     ...(showReindexMenu
-      ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) => h.onReindex!(item, statusFilters))
+      ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) => h.onReindex!(item, statusFilters)).map(
+          (action) => ({ ...action, permissionLocked: reindexLocked }),
+        )
       : []),
-    !isFolder && h.onReplace && canEditItem && { icon: 'drive_folder_upload', label: t('action.replace'), onClick: () => h.onReplace!(item) },
+    !isFolder && h.onReplace && canEditItem && { icon: 'drive_folder_upload', label: t('action.replace'), onClick: () => h.onReplace!(item), permissionLocked: editLocked },
     // Move relocates an item within its collection — a collection itself has nothing to move into.
-    h.onMove && canEditItem && !(isHubNode && item.nodeType === 'app') && { icon: 'drive_file_move', label: t('action.move'), onClick: () => h.onMove!(item) },
+    h.onMove && canEditItem && !(isHubNode && item.nodeType === 'app') && { icon: 'drive_file_move', label: t('action.move'), onClick: () => h.onMove!(item), permissionLocked: editLocked },
     // Includes "a collection only by its OWNER", the same rule the bulk bar applies.
-    h.onDelete && canDeleteKbTableItem(item) && { icon: 'delete', label: t('action.delete'), onClick: () => h.onDelete!(item), color: 'red' as const },
+    h.onDelete && canDeleteKbTableItem(item) && { icon: 'delete', label: t('action.delete'), onClick: () => h.onDelete!(item), color: 'red' as const, permissionLocked: gp ? !gp.canDelete : false },
   ];
 }
 
@@ -456,6 +467,7 @@ function TableRow({
   const canEditItem = isKnowledgeHubNode(item)
     ? (item.permission?.canEdit ?? false)
     : true;
+  const groupPermissions = useCollectionGroupPermissions();
 
   // Split name into base and extension for files
   const getNameParts = (name: string) => {
@@ -694,7 +706,7 @@ function TableRow({
             <Text
               ref={nameRef}
               size="2"
-              onClick={onRename && canEditItem && canHover ? (e: React.MouseEvent) => {
+              onClick={onRename && canEditItem && groupPermissions.canEdit && canHover ? (e: React.MouseEvent) => {
                 e.stopPropagation();
                 startEditing();
               } : undefined}
@@ -707,7 +719,7 @@ function TableRow({
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
-                cursor: onRename && canEditItem && canHover ? 'text' : 'default',
+                cursor: onRename && canEditItem && groupPermissions.canEdit && canHover ? 'text' : 'default',
               }}
             >
               {item.name}
@@ -871,6 +883,7 @@ function TableRow({
               onReplace,
               onMove,
               onDelete,
+              groupPermissions,
             })}
           />
         </Box>
@@ -1056,7 +1069,7 @@ export function KbListView({
         )}
         {!isMobile && resizeHandle('updated')}
 
-        {!belowDesktop && extraColumns ? <Box role="columnheader" style={{ display: 'contents' }}>{extraColumns.header}</Box> : null}
+        {!belowDesktop && extraColumns ? extraColumns.header : null}
 
         {/* Actions */}
         <Box role="columnheader" style={{ width: actionsWidth(isMobile, !!onGoToParent), flexShrink: 0 }}>

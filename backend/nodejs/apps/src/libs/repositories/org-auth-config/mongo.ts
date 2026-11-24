@@ -8,7 +8,13 @@ import type {
   OrgAuthConfigRepository,
 } from './types';
 
-const dto = (row: unknown): OrgAuthConfigDto => toPlain<OrgAuthConfigDto>(row);
+// Not part of the DTO on either store: callers read it through removedSignInMethods().
+const dto = (row: unknown): OrgAuthConfigDto => {
+  const { removedSignInMethods: _removed, ...rest } = toPlain<
+    OrgAuthConfigDto & { removedSignInMethods?: string[] }
+  >(row);
+  return rest;
+};
 
 export class MongoOrgAuthConfigRepository implements OrgAuthConfigRepository {
   async get(orgId: string): Promise<OrgAuthConfigDto | null> {

@@ -176,7 +176,7 @@ class TestDelegateMethods:
         tx.get_users.return_value = sentinel
         result = await proc.get_all_active_users()
         assert result is sentinel
-        tx.get_users.assert_awaited_once_with("org-1", active=True)
+        tx.get_users.assert_awaited_once_with("org-1", active=True, raise_on_error=False)
 
     @pytest.mark.asyncio
     async def test_get_user_by_user_id_found(self):
@@ -534,7 +534,7 @@ class TestMigrateGroupPermissionsToUser:
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = None
         result = await proc.migrate_group_permissions_to_user("group-1", "missing@x.com", "conn-1", tx)
-        assert result is None
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_no_permissions_returns_none(self):
@@ -542,7 +542,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_user_by_email.return_value = _make_user()
         tx.get_edges_from_node.return_value = []
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_creates_new_permission_edges(self):
@@ -555,7 +555,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.return_value = None  # no existing permission for user
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
         tx.batch_create_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -570,7 +570,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.return_value = {"role": "READER"}
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
         # The batch upsert overwrites the edge; a delete first lost it when the batch failed.
         tx.delete_edge.assert_not_awaited()
         tx.batch_create_edges.assert_awaited_once()
@@ -589,7 +589,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.return_value = {"role": "OWNER"}
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
         # batch_create_edges should not be called since no new edges needed
         tx.batch_create_edges.assert_not_awaited()
 
@@ -604,7 +604,7 @@ class TestMigrateGroupPermissionsToUser:
         ]
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_handles_invalid_permission_role(self):
@@ -617,7 +617,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.return_value = None
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is True
         # Should have defaulted to READ and created edge
         tx.batch_create_edges.assert_awaited_once()
 
@@ -627,7 +627,7 @@ class TestMigrateGroupPermissionsToUser:
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = None
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1")
-        assert result is None
+        assert result is False
 
     @pytest.mark.asyncio
     async def test_exception_in_edge_processing_continues(self):
@@ -642,7 +642,7 @@ class TestMigrateGroupPermissionsToUser:
         tx.get_edge.side_effect = [Exception("transient"), None]
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
-        assert result is None
+        assert result is False
         # Second edge should still have been processed
         tx.batch_create_edges.assert_awaited_once()
 
@@ -837,3 +837,42 @@ class TestGetGroupsWithAccessToRecord:
 
         assert [g.id for g in await proc.get_groups_with_access_to_record(record)] == ["g-1"]
         proc.get_record_group_by_external_id.assert_not_awaited()
+
+
+class TestGetRolesOnRecord:
+    """The role of each user's and group's own edge into a record, from the edge shapes of every store."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("shape", ["arango", "neo4j_or_postgres"])
+    async def test_roles_are_read_from_each_principals_own_edge(self, shape: str) -> None:
+        proc, tx = _make_processor()
+        tx.get_users_with_permission_to_node = AsyncMock(return_value=[_make_user("u-1", "Bob@Example.com"), _make_user("u-2", "inherited@example.com")])
+        group = _make_user_group("g-1")
+        group.source_user_group_id = "eng@example.com"
+        tx.get_groups_with_permission_to_node = AsyncMock(return_value=[group])
+
+        def edge(collection: str, key: str, role: str) -> dict:
+            if shape == "arango":
+                return {"_from": f"{collection}/{key}", "role": role}
+            return {"from_collection": collection, "from_id": key, "role": role}
+
+        tx.get_edges_to_node = AsyncMock(return_value=[
+            edge(CollectionNames.USERS.value, "u-1", "READER"),
+            edge(CollectionNames.GROUPS.value, "g-1", "WRITER"),
+            edge(CollectionNames.RECORDS.value, "r-0", "READER"),
+            edge(CollectionNames.PEOPLE.value, "p-1", "WRITER"),
+        ])
+        tx.get_nodes_by_field_in = AsyncMock(return_value=[{"_key": "p-1", "email": "Partner@Example.org"}])
+
+        users, groups = await proc.get_roles_on_record("rec-1")
+
+        assert users == {"bob@example.com": "READER", "partner@example.org": "WRITER"}, (
+            "a user reaching it through another node has no edge here; a Person is named by address"
+        )
+        tx.get_nodes_by_field_in.assert_awaited_once_with(
+            CollectionNames.PEOPLE.value, "_key", ["p-1"], ["_key", "email"], raise_on_error=True
+        )
+        assert groups == {"eng@example.com": "WRITER"}
+        tx.get_edges_to_node.assert_awaited_once_with(
+            f"{CollectionNames.RECORDS.value}/rec-1", CollectionNames.PERMISSION.value, raise_on_error=True
+        )

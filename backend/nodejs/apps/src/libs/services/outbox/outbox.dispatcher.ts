@@ -52,6 +52,9 @@ const CANDIDATE_BATCH = 20;
  */
 const MAX_CANDIDATE_SCAN = 500;
 
+/** The started dispatchers, for {@link kickOutbox}. */
+const started = new Set<OutboxDispatcher>();
+
 function backoffFor(attempts: number): Date {
   const delay = Math.min(BASE_BACKOFF_MS * 2 ** attempts, MAX_BACKOFF_MS);
   return new Date(Date.now() + delay);
@@ -71,6 +74,7 @@ function backoffFor(attempts: number): Date {
 export class OutboxDispatcher {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private rerun = false;
   private stopped = false;
 
   constructor(
@@ -91,6 +95,7 @@ export class OutboxDispatcher {
     // Long enough between ticks that holding the event loop open would delay
     // shutdown for no reason.
     this.timer.unref();
+    started.add(this);
     this.logger.info('Outbox dispatcher started', {
       pollIntervalMs: this.pollIntervalMs,
     });
@@ -106,6 +111,7 @@ export class OutboxDispatcher {
    */
   async stop(): Promise<void> {
     this.stopped = true;
+    started.delete(this);
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -122,14 +128,23 @@ export class OutboxDispatcher {
    */
   async drain(): Promise<number> {
     // One pass at a time: a slow broker must not have ticks pile up behind it.
-    if (this.running) return 0;
+    // A call that lands meanwhile makes the running pass look once more, since
+    // a kick's events may have committed after that pass's last empty claim.
+    if (this.running) {
+      this.rerun = true;
+      return 0;
+    }
     this.running = true;
     let delivered = 0;
     try {
       for (;;) {
         if (this.stopped) break;
         const event = await this.claimNext();
-        if (!event) break;
+        if (!event) {
+          if (!this.rerun) break;
+          this.rerun = false;
+          continue;
+        }
         const sent = await this.deliver(event);
         if (sent) delivered += 1;
       }
@@ -218,6 +233,17 @@ export class OutboxDispatcher {
     } else {
       this.logger.warn('Outbox event failed to publish; will retry', detail);
     }
+  }
+}
+
+/**
+ * Delivers what is due now rather than at the next tick, for a write whose
+ * caller acts on its events at once (a new organisation's first request needs
+ * its admin in the permission graph). The timer stays the fallback.
+ */
+export function kickOutbox(): void {
+  for (const dispatcher of started) {
+    spawnDetached(() => void dispatcher.drain());
   }
 }
 

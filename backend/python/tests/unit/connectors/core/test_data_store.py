@@ -131,7 +131,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def reap_stale_external_app_relations(self, connector_id):
         return 0
 
-    async def get_users(self, org_id, active=True):
+    async def get_users(self, org_id, active=True, *, raise_on_error=False):
         return []
 
     async def get_user_groups(self, connector_id, org_id, *, raise_on_error=False):
@@ -164,13 +164,13 @@ class ConcreteTransactionStore(TransactionStore):
     async def batch_upsert_record_permissions(self, record_id, permissions):
         pass
 
-    async def batch_upsert_record_group_permissions(self, record_group_id, permissions, connector_id):
+    async def batch_upsert_record_group_permissions(self, record_group_id, permissions, connector_id, org_id):
         pass
 
     async def batch_upsert_user_groups(self, user_groups):
         pass
 
-    async def batch_upsert_app_users(self, users):
+    async def batch_upsert_app_users(self, users, org_id):
         pass
 
     async def batch_upsert_orgs(self, orgs):
@@ -258,7 +258,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def delete_record_entity_relations(self, record_id, to_collection, origin) -> int:
         return 0
 
-    async def replace_record_entity_relations(self, record_id, to_collections, origin, edges) -> None:
+    async def replace_record_entity_relations(
+        self, record_id, to_collections, origin, edges, *, keep_edge_types=(),
+    ) -> None:
         pass
 
     async def get_record_by_weburl(self, weburl, org_id=None):

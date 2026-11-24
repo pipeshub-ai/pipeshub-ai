@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage
 
-from app.agent_loop_lib.core.exceptions import TransportError
+from app.agent_loop_lib.core.exceptions import TOOLS_UNSUPPORTED_CODE, TransportError
 from app.agent_loop_lib.core.responses import (
     ModelResponse,
     StopReason,
@@ -446,6 +446,7 @@ class LangChainTransport(LLMTransport):
             raise TransportError(
                 f"bind_tools() failed for {len(tool_names)} tool(s) {tool_names}: {exc}",
                 retryable=False,
+                code=TOOLS_UNSUPPORTED_CODE,
             ) from exc
         logger.debug(
             "LangChainTransport: bound %d tool(s) to LLM call: %s",

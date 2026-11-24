@@ -58,6 +58,7 @@ from app.modules.retrieval.selection_scope import (
     within_connection,
 )
 from app.modules.retrieval.title_hits import UnindexedMatch, find_unindexed_matches
+from app.services.graph_db.common.utils import api_records
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
     IGraphDBProvider,
@@ -67,6 +68,7 @@ from app.services.model_identity.runtime import call_scope
 from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.utils.error_class import log_failure
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
 from app.utils.request_deadline import deadline_after, search_deadline_seconds
@@ -359,6 +361,9 @@ async def _rewritten_queries(
 ) -> list[str]:
     """The query rewritten and expanded by the model, for retrieval."""
     llm = await resolve_llm_for_search(request, retrieval_service)
+    if llm is None:
+        # Retrieval needs only the embedding model, so search runs on the typed query.
+        return _queries_for_search(query, None, None)
     rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
     # OpikTracer is invoke-config only (not a constructor callback); without
@@ -562,8 +567,9 @@ async def _unindexed_matches(
             find_unindexed_matches(store, graph_provider, context, query),
             timeout=ENTITY_SEARCH_DEADLINE_SECONDS + 2.0,
         )
-    except Exception:
-        logger.warning("Search: the lookup of records by name failed", exc_info=True)
+    except Exception as exc:
+        # The search answers without it. Text-free: the title check's embedding error is the provider's body.
+        log_failure(logger, "title_lookup.failed", exc, include_error_text=False)
         return None
 
 
@@ -665,6 +671,12 @@ async def search(
                     request, graph_provider, request.state.user.get("orgId"), request.state.user.get("userId"), results,
                 )
                 hide_record_source_paths(request, results)
+                for key in ("records", "virtual_to_record_map"):
+                    if results.get(key):
+                        results[key] = api_records(results[key])
+                outside_dates = results.get("outsideDates")
+                if isinstance(outside_dates, dict) and outside_dates.get("records"):
+                    results["outsideDates"] = {**outside_dates, "records": api_records(outside_dates["records"])}
                 timer.mark("retrieval")
                 timer.emit(
                     logger, "search", detail=format_spans(stages),

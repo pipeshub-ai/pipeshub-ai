@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import mimetypes
 from datetime import datetime, timezone
 
 import pytest
@@ -234,6 +235,15 @@ class TestParentsAndFlags:
         unknown = mime_for("blob.xyz999", is_directory=False)
         assert unknown == MimeTypes.BIN.value
         assert mime_for("folder", is_directory=True) == MimeTypes.FOLDER.value
+
+    def test_a_mapped_type_keeps_its_mime_whatever_the_host_table_says(self, monkeypatch):
+        # The Windows registry's answers: an alias for .zip, Excel's type for .csv, none for .mdx.
+        registry = {"a.zip": "application/x-zip-compressed", "a.csv": "application/vnd.ms-excel"}
+        monkeypatch.setattr(mimetypes, "guess_type", lambda path, strict=True: (registry.get(path), None))
+        assert mime_for("a.zip", is_directory=False) == "application/zip"
+        assert mime_for("a.csv", is_directory=False) == "text/csv"
+        assert mime_for("a.mdx", is_directory=False) == "text/mdx"
+        assert mime_for("a.xyz999", is_directory=False) == MimeTypes.BIN.value
 
 
 class TestRevisionsAndMoves:

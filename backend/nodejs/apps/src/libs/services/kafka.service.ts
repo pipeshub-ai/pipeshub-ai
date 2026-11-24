@@ -206,11 +206,13 @@ export abstract class BaseKafkaConsumerConnection
   implements IKafkaConsumer, IMessageConsumer
 {
   protected consumer: Consumer;
+  private readonly groupId: string;
 
   constructor(@unmanaged() config: KafkaConfig, @unmanaged() logger: Logger) {
     super(config, logger);
+    this.groupId = config.groupId ?? `${config.clientId ?? 'default'}-group`;
     this.consumer = this.kafka.consumer({
-      groupId: config.groupId ?? `${config.clientId ?? 'default'}-group`,
+      groupId: this.groupId,
       maxWaitTimeInMs: 5000,
       ...(config.sessionTimeout !== undefined && {
         sessionTimeout: config.sessionTimeout,
@@ -300,6 +302,7 @@ export abstract class BaseKafkaConsumerConnection
                     topic,
                     parsedValue as T,
                     (value) => handler({ ...parsedMessage, value }),
+                    this.groupId,
                   ),
               );
             } catch (error) {

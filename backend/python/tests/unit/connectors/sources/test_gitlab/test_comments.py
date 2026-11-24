@@ -8,6 +8,7 @@ Covers:
 from __future__ import annotations
 
 import base64
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -784,3 +785,13 @@ class TestMrFileChangeContent:
         await helper.build_merge_request_comment_blocks(
             "https://gitlab.com/ns/proj/-/merge_requests/1", 0, _make_record())
         c.data_entities_processor.on_pr_file_changes.assert_not_awaited()
+
+    async def test_an_mr_left_unlinked_because_no_code_was_walked_says_so(self, caplog) -> None:
+        c, helper, _ = self._run([_change("src/a.py")])
+        c.repos.synced_project_path = AsyncMock(return_value=None)
+        c.data_entities_processor.on_pr_file_changes = AsyncMock()
+        helper.logger = logging.getLogger("test.gitlab.mr-links")
+        with caplog.at_level(logging.INFO, logger="test.gitlab.mr-links"):
+            await helper.build_merge_request_comment_blocks(
+                "https://gitlab.com/ns/proj/-/merge_requests/1", 0, _make_record())
+        assert "not linked to the files it changed" in caplog.text

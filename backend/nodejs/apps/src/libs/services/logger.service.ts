@@ -106,9 +106,9 @@ export interface LoggerConfig {
 
 const DEFAULT_SERVICE = 'default-service';
 
-/** audit() and the auth refusal wrapper log on behalf of their caller, so their frames are skipped like the logger's. */
+/** audit() and the auth / user audit wrappers log on behalf of their caller, so their frames are skipped like the logger's. */
 const AUDIT_FRAME =
-  /[\\/](?:libs[\\/]services[\\/]audit|modules[\\/]auth[\\/]utils[\\/]sign-in-audit)\.[jt]s:/;
+  /[\\/](?:libs[\\/]services[\\/]audit|modules[\\/]auth[\\/]utils[\\/]sign-in-audit|modules[\\/]user_management[\\/]utils[\\/]user-audit)\.[jt]s:/;
 
 /** Event fields a call site may pass in `meta`; they render like the context ids. */
 const EVENT_FIELD_KEYS = [
@@ -125,8 +125,17 @@ const EVENT_FIELD_KEYS = [
   'outcome',
   'actor',
   'target',
+  'group_id',
+  'team_id',
+  'key_id',
+  'scopes',
   'reason',
   'auth_method',
+  'code',
+  'events',
+  'bytes',
+  'ttfb_ms',
+  'frame',
 ] as const;
 
 /** Shown in the text line as ` | k=v`, in this order (identity first, as in Python), when the record has them. */
@@ -162,6 +171,8 @@ export const SNAKE_TOKEN = /^[a-z0-9_]{1,64}$/;
 const TYPE_NAME = /^[A-Za-z0-9_]{1,64}$/;
 /** A transport error code (`ECONNREFUSED`, `UND_ERR_SOCKET`). */
 const NETWORK_CODE = /^[A-Z][A-Z0-9_]{1,63}$/;
+/** An SSE frame type (`RUN_FINISHED`). */
+const FRAME_TYPE = /^[A-Z][A-Z_]{0,31}$/;
 const SHOWN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 /** A dotted lowercase event name (`http.request.end`). */
 export const EVENT_NAME = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$/;
@@ -171,6 +182,16 @@ const PIPESHUB_ID =
 
 export const isPipesHubId = (value: unknown): value is string =>
   typeof value === 'string' && PIPESHUB_ID.test(value);
+
+/** A team id: a PipesHub id, or the org's default All team (`all_<org id>`). */
+export const isTeamId = (value: unknown): value is string =>
+  isPipesHubId(value) ||
+  (typeof value === 'string' &&
+    value.startsWith('all_') &&
+    isPipesHubId(value.slice('all_'.length)));
+
+/** Comma-joined OAuth scope names (`kb:read,semantic:write`). */
+export const SCOPE_LIST = /^[a-z_]+(?::[a-z_]+)*(?:,[a-z_]+(?::[a-z_]+)*)*$/;
 
 const isText = (v: unknown): boolean => typeof v === 'string';
 const isIdValue = (v: unknown): boolean =>
@@ -203,8 +224,19 @@ const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
   // An id as shown (raw, or a provider's hash); never an email or a name.
   actor: matches(SHOWN_ID),
   target: matches(SHOWN_ID),
+  group_id: isPipesHubId,
+  team_id: isTeamId,
+  // A service-account key's record id, never the key.
+  key_id: isPipesHubId,
+  scopes: matches(SCOPE_LIST),
   reason: matches(SNAKE_TOKEN),
   auth_method: matches(TYPE_NAME),
+  // A chat stream's (`chat_stream.end`): the AI service's error code, and what it sent.
+  code: matches(SNAKE_TOKEN),
+  events: Number.isInteger,
+  bytes: Number.isInteger,
+  ttfb_ms: Number.isInteger,
+  frame: matches(FRAME_TYPE),
   // Fill the identity only when the request context has none (an audit line before sign-in).
   org_id: isPipesHubId,
   user_id: isPipesHubId,
@@ -522,6 +554,10 @@ export class Logger {
     seen = new WeakSet(),
     withStack = true,
   ): any {
+    // Here, not only in the JSON console format: the text format and the log files print strings as they are.
+    if (typeof obj === 'string') {
+      return redactSecretsInText(obj);
+    }
     // Handle non-object types
     if (obj === null || typeof obj !== 'object') {
       return obj;
@@ -540,6 +576,10 @@ export class Logger {
 
     if (obj instanceof Error) {
       return this.serializeError(obj, seen, withStack);
+    }
+    // A Buffer's toJSON lists every byte, so one file in the metadata would log its whole content.
+    if (ArrayBuffer.isView(obj) || obj instanceof ArrayBuffer) {
+      return `[binary ${String(obj.byteLength)} bytes]`;
     }
     // Dates and Mongo ids have no own keys worth walking; JSON shows them through toJSON.
     const { toJSON } = obj as { toJSON?: unknown };
@@ -707,7 +747,8 @@ export class Logger {
     const { fields, rest } = splitFields(meta as unknown);
     this.logger.log({
       level,
-      message,
+      message:
+        typeof message === 'string' ? redactSecretsInText(message) : message,
       metadata:
         rest === undefined
           ? undefined

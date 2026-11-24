@@ -13,7 +13,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from app.services.graph_db.postgres.kg.model import Key, derive
-from app.services.graph_db.postgres.kg.reader import load_sks, snapshot
+from app.services.graph_db.postgres.kg.reader import (
+    load_sks,
+    records_after,
+    seeks,
+    snapshot,
+)
 from app.services.graph_db.postgres.kg.stamp import StampStats, stamp_app
 
 if TYPE_CHECKING:
@@ -23,6 +28,26 @@ if TYPE_CHECKING:
 
 PAGE = 2000
 LIMIT = 100                        # examples of one kind of difference kept in a result
+# The verify's checks by key: each row they test is looked up by a seek (the first row at or after the key in the key's unique index, kept when it is the key;
+# a range of one value for a multi-row read), as kg/read.py reads. Written as joins, on an org the statistics did not know yet (put at a row), the planner
+# read the org on org_id alone once per row: verify_orphan_links crossed the org's links with its records, over 120 s for 47,000 links, past the timeout.
+VERIFY_SK = """/* pipeshub:kg.verify_sk */ SELECT r.sk, r.coll, r.id, k.sk AS key_sk FROM kg.records r
+    LEFT JOIN LATERAL (SELECT * FROM (SELECT k.sk, k.id FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = r.coll AND k.id >= r.id ORDER BY k.coll, k.id LIMIT 1) k
+      WHERE k.id = r.id OFFSET 0) k ON true
+    WHERE r.org_id = $1 AND r.app_sk = $2 AND k.sk IS DISTINCT FROM r.sk ORDER BY r.sk LIMIT $3"""
+# The links under one of the connector's records whose child row is gone: under reader.seeks.
+ORPHAN_LINKS = """/* pipeshub:kg.verify_orphan_links */ SELECT p.sk AS parent_sk, l.kind, l.child_sk FROM kg.records p
+    CROSS JOIN LATERAL (SELECT l.kind, l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk >= p.sk AND l.parent_sk <= p.sk ORDER BY l.parent_sk OFFSET 0) l
+    WHERE p.org_id = $1 AND p.app_sk = $2
+      AND NOT EXISTS (SELECT 1 FROM (SELECT c.sk FROM kg.records c WHERE c.org_id = $1 AND c.sk >= l.child_sk ORDER BY c.sk LIMIT 1) c WHERE c.sk = l.child_sk)
+    ORDER BY p.sk, l.child_sk LIMIT $3"""
+# A grant row without a connector whose node is gone (the per-connector scan cannot find it), and an access list of the connector whose record row is gone.
+ORPHAN_GRANTS = """/* pipeshub:kg.verify_orphan_grants */ SELECT m.principal_sk, m.node_sk, m.gtype FROM kg.scope_members m WHERE m.org_id = $1 AND m.app_sk IS NULL
+      AND NOT EXISTS (SELECT 1 FROM (SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.sk >= m.node_sk ORDER BY r.sk LIMIT 1) r WHERE r.sk = m.node_sk)
+    ORDER BY m.node_sk LIMIT $2"""
+ORPHAN_SCOPES = """/* pipeshub:kg.verify_orphan_scopes */ SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND s.app_sk = $2
+      AND NOT EXISTS (SELECT 1 FROM (SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.sk >= s.sk ORDER BY r.sk LIMIT 1) r WHERE r.sk = s.sk)
+    ORDER BY s.sk LIMIT $3"""
 
 
 @dataclass
@@ -77,13 +102,22 @@ def _line(row: dict, cols: tuple[str, ...]) -> str:
     return repr(tuple(row.get(c) for c in cols))
 
 
+# The app and its record groups, in (collection, id) order (no index by connector: the org's groups are few beside its records).
+APP_GROUPS = """/* pipeshub:kg.app_nodes */ SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[])
+    AND ((n.coll = 'apps' AND n.id = $3) OR (n.coll = 'recordGroups' AND n.doc->>'connectorId' = $3)) AND (n.coll, n.id) > ($4, $5) ORDER BY n.coll, n.id LIMIT $6"""
+
+
 async def app_nodes(tx: Tx, org: str, app_id: str, after: Key | None, limit: int) -> list[Key]:
-    """The next page of a connector's nodes in (collection, id) order: the app, its record groups, its records."""
+    """The next page of a connector's nodes: the app and its record groups in (collection, id) order, then its records in byte order of id (at most 1,000 of them a page). A page
+    costs its own rows, wherever the cursor is."""
     c0, i0 = after if after else ("", "")
-    rows = await tx.fetch("""/* pipeshub:kg.app_nodes */ SELECT n.coll, n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[])
-        AND ((n.coll = 'apps' AND n.id = $3) OR (n.coll <> 'apps' AND n.doc->>'connectorId' = $3)) AND (n.coll, n.id) > ($4, $5) ORDER BY n.coll, n.id LIMIT $6""",
-                          org, ["apps", "recordGroups", "records"], app_id, c0, i0, limit)
-    return [(r["coll"], r["id"]) for r in rows]
+    out: list[Key] = []
+    if c0 != "records":
+        out = [(r["coll"], r["id"]) for r in await tx.fetch(APP_GROUPS, org, ["apps", "recordGroups"], app_id, c0, i0, limit)]
+        i0 = ""
+    if len(out) < limit:
+        out += [("records", i) for i in await records_after(tx, org, app_id, i0, limit - len(out))]
+    return out
 
 
 async def _readonly(tx: Tx, org: str):  # noqa: ANN202
@@ -159,19 +193,16 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
             res.note_all("extra", [f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (no node)" for r in rows if r["node_sk"] not in expected_sks])
         # a record row whose sk is not the one node_keys holds for its (coll, id): the writers take any sk
         res.note_all("changed", [f"s|{r['sk']} {r['coll']}:{r['id']} (node_keys holds {r['key_sk']})" for r in await tx.fetch(
-            """/* pipeshub:kg.verify_sk */ SELECT r.sk, r.coll, r.id, k.sk AS key_sk FROM kg.records r
-                LEFT JOIN kg.node_keys k ON k.org_id = r.org_id AND k.coll = r.coll AND k.id = r.id
-                WHERE r.org_id = $1 AND r.app_sk = $2 AND k.sk IS DISTINCT FROM r.sk ORDER BY r.sk LIMIT $3""", org, app_sk, LIMIT)])
+            VERIFY_SK, org, app_sk, LIMIT)])
     if app_sk is not None:
-        for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_links */ SELECT l.parent_sk, l.kind, l.child_sk FROM kg.links l JOIN kg.records p ON p.org_id = l.org_id AND p.sk = l.parent_sk AND p.app_sk = $2
-                WHERE l.org_id = $1 AND NOT EXISTS (SELECT 1 FROM kg.records c WHERE c.org_id = l.org_id AND c.sk = l.child_sk) ORDER BY l.parent_sk, l.child_sk LIMIT $3""", org, app_sk, LIMIT):
+        async with seeks(tx):
+            orphans = await tx.fetch(ORPHAN_LINKS, org, app_sk, LIMIT)
+        for r in orphans:
             res.note("extra", f"l|{r['parent_sk']}|{r['kind']}|{r['child_sk']} (child gone)")        # a link under one of this connector's records whose child row is gone
-    for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_grants */ SELECT m.principal_sk, m.node_sk, m.gtype FROM kg.scope_members m
-            WHERE m.org_id = $1 AND m.app_sk IS NULL AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = m.org_id AND r.sk = m.node_sk) ORDER BY m.node_sk LIMIT $2""", org, LIMIT):
+    for r in await tx.fetch(ORPHAN_GRANTS, org, LIMIT):
         res.note("extra", f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (node gone)")      # a grant on a node that is gone leaves its row without a connector: the per-connector scan cannot find it
     if app_sk is not None:
-        for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_scopes */ SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND s.app_sk = $2
-                AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = s.org_id AND r.sk = s.sk) ORDER BY s.sk LIMIT $3""", org, app_sk, LIMIT):
+        for r in await tx.fetch(ORPHAN_SCOPES, org, app_sk, LIMIT):
             res.note("extra", f"sc|{r['sk']} (node gone)")        # an access list of this connector whose record row is gone: no reader counts it; a restart backfill removes it
     if cross:   # superset: kg may mark a connector the graph no longer needs marked, never miss one
         marked = {r["app_sk"] for r in await tx.fetch("""/* pipeshub:kg.verify_cross */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND cross_app AND app_sk = ANY($2::bigint[])""",

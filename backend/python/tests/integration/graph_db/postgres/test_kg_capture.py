@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pytest
 
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH
+
 from .pg_support import new_org
 from .test_kg_derivation import ctx, edge, prov
 
@@ -29,7 +31,7 @@ async def log(p, org: str) -> list[tuple[str, list[str]]]:
 
 async def clear(p, org: str) -> None:
     async def go(tx) -> None:
-        await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1))", org)
+        await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1), $2)", org, CODE_EPOCH)
     with ctx(org):
         await p._q(go, None, write=True)
 
@@ -109,6 +111,37 @@ async def test_an_edge_is_logged_by_the_end_its_rows_depend_on(pg_db) -> None:
     assert [e for _, e in await log(p, org)] == [["3:r1"], ["3:r1"], ["3:r2"]]
 
 
+async def marked(p, org: str) -> list[tuple[bool, list[str]]]:
+    async def go(tx) -> list:
+        return [(r["grant_only"], sorted(r["ends"])) for r in await tx.fetch("SELECT grant_only, ends FROM kg.graph_changes WHERE org_id = $1 ORDER BY id", org)]
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def test_a_grant_on_a_record_or_a_record_group_is_logged_in_a_row_of_its_own_marked_grant_only(pg_db) -> None:
+    """kg_0021: the rows of a grant added, removed, retyped or re-keyed on a record or record group are marked; a membership, a grant on an app and every other edge are not,
+    and one statement that changes both kinds writes each in a row of its own."""
+    p, org = prov(pg_db), new_org()
+    await world(p, org)
+    with ctx(org):
+        await p.batch_create_edges([edge("u1", "users", "r2", "records", type="USER", role="OWNER")], "permission")
+        await p.batch_create_edges([edge("t1", "teams", "g1", "recordGroups", type="TEAM", role="READER")], "permission")
+        await p.batch_create_edges([edge("u1", "users", "grp", "groups", type="USER")], "permission")              # a membership: the member
+        await p.batch_create_edges([edge("u1", "users", "c1", "apps", type="USER", role="READER")], "permission")   # a grant on an app restamps its connector whole
+        await p.batch_create_edges([edge("r1", "records", "c1", "apps")], "belongsTo")
+    assert await marked(p, org) == [(True, ["3:r2"]), (True, ["2:g1"]), (False, ["4:u1"]), (False, ["1:c1"]), (False, ["3:r1"])]
+    await clear(p, org)
+    await raw(p, org, "/* pipeshub:test.edge_role */ UPDATE graph.edges SET doc = jsonb_set(doc, '{role}', '\"WRITER\"') WHERE org_id = $1 AND coll = 'permission' AND to_id = 'r2'", org)
+    await raw(p, org, "/* pipeshub:test.rekey_edge */ UPDATE graph.edges SET ekey = ekey || 'x' WHERE org_id = $1 AND coll = 'permission' AND to_id = 'r2'", org)
+    with ctx(org):
+        await p.batch_delete_edges([edge("u1", "users", "r2", "records", type="USER")], "permission")
+    assert all(m for m, _ in await marked(p, org)) and {e for _, ends in await marked(p, org) for e in ends} == {"3:r2"}
+    await clear(p, org)
+    await raw(p, org, """/* pipeshub:test.both */ UPDATE graph.edges SET doc = doc || '{"role": "OWNER", "relationshipType": "ATTACHMENT"}'
+        WHERE org_id = $1 AND coll IN ('permission', 'nodeRelations') AND to_id IN ('r1', 'r2')""", org)
+    assert sorted(await marked(p, org)) == [(False, ["3:r2"]), (True, ["3:r1"])]
+
+
 async def test_an_edge_update_is_logged_only_when_what_the_projection_reads_changed(pg_db) -> None:
     p, org = prov(pg_db), new_org()
     await world(p, org)
@@ -154,10 +187,23 @@ async def test_the_log_is_the_writers_own_organisations_and_a_service_cannot_log
         await p.batch_upsert_nodes([{"_key": "r1", "orgId": a, **REC}], "records")
     assert await log(p, b) == [] and len(await log(p, a)) == 1
 
-    async def forge(tx) -> None:
-        await tx.execute("/* pipeshub:test.forge */ INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['3:x'])", b)
+    async def forge(tx) -> None:          # the demotion request is the one row a service inserts itself (kg_0022)
+        await tx.execute("/* pipeshub:test.forge */ INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, 'c1', ARRAY['3:@demote'])", b)
     with ctx(a), pytest.raises(Exception, match="row-level security|violates"):
         await p._q(forge, None, write=True)
+
+
+async def test_a_service_cannot_log_keys_itself_and_its_graph_writes_still_log_them(pg_db) -> None:
+    """kg_0022: a row the service inserts itself would have the worker re-project the keys it names (or hold a connector as pending), so only the capture trigger may."""
+    p, org = prov(pg_db), new_org()
+    for sql in ("INSERT INTO kg.graph_changes (org_id, ends) VALUES ($1, ARRAY['3:x'])",
+                "INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, 'c1', ARRAY['3:@demote', '3:x'])"):
+        with pytest.raises(Exception, match="capture triggers only"):
+            await raw(p, org, "/* pipeshub:test.forge_keys */ " + sql, org)
+    assert await log(p, org) == []
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "r1", "orgId": org, **REC}], "records")
+    assert await log(p, org) == [("c1", ["3:r1"])]
 
 
 async def test_a_service_cannot_choose_the_identifier_or_the_transaction_id_of_a_row_it_logs(pg_db) -> None:
@@ -165,7 +211,7 @@ async def test_a_service_cannot_choose_the_identifier_or_the_transaction_id_of_a
     p, org = prov(pg_db), new_org()
 
     async def forge(tx) -> tuple:
-        await tx.execute("/* pipeshub:test.forge_id */ INSERT INTO kg.graph_changes (org_id, id, txid, ends) OVERRIDING SYSTEM VALUE VALUES ($1, 999999999, '1'::xid8, ARRAY['3:x'])", org)
+        await tx.execute("/* pipeshub:test.forge_id */ INSERT INTO kg.graph_changes (org_id, id, txid, ends) OVERRIDING SYSTEM VALUE VALUES ($1, 999999999, '1'::xid8, ARRAY['3:@demote'])", org)
         row = await tx.fetchrow("SELECT id, txid = pg_current_xact_id() AS mine FROM kg.graph_changes WHERE org_id = $1", org)
         return row["id"], row["mine"]
     with ctx(org):
@@ -175,7 +221,7 @@ async def test_a_service_cannot_choose_the_identifier_or_the_transaction_id_of_a
 
     async def claim_next(tx) -> None:
         for i in range(50):
-            await tx.execute("/* pipeshub:test.claim */ INSERT INTO kg.graph_changes (org_id, id, ends) OVERRIDING SYSTEM VALUE VALUES ($1, $2, ARRAY['3:y'])", org, got_id + 1 + i)
+            await tx.execute("/* pipeshub:test.claim */ INSERT INTO kg.graph_changes (org_id, id, ends) OVERRIDING SYSTEM VALUE VALUES ($1, $2, ARRAY['3:@demote'])", org, got_id + 1 + i)
     with ctx(org):
         await p._q(claim_next, None, write=True)
         await p.batch_upsert_nodes([{"_key": "after", "orgId": org, **REC}], "records")

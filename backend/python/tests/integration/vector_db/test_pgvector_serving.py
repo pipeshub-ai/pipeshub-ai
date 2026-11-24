@@ -124,15 +124,32 @@ async def test_no_group_row_and_a_trust_nothing_filter_are_the_arms_alone(store)
 
 @pytest.mark.timeout(1800)
 async def test_the_corpus_has_no_over_admit_and_no_recall_loss_on_real_rows(store) -> None:
+    pairs = await on_real_rows(store, [(scenario.id, await build(scenario)) for scenario in SCENARIOS])
+    assert pairs > 3000
+
+
+@pytest.mark.timeout(1800)
+async def test_the_generated_worlds_have_no_over_admit_and_no_recall_loss_on_real_rows(store) -> None:
+    """The unit test's generated worlds, fewer of them: each typed as a connector of every rule family."""
+    from tests.permissions import gen
+    from tests.permissions.test_scope_projector import FAMILIES, retyped
+
+    corpora = [(f"{kind}/{i}/{family}", await build(SCENARIOS[0], retyped(world, family)))
+               for kind in sorted(gen.GENERATORS) for i, world in enumerate(gen.generate(kind, 7, 10)) for family, _ in FAMILIES]
+    assert await on_real_rows(store, corpora) > 3000
+
+
+async def on_real_rows(store, corpora) -> int:
+    """Each corpus written as points of its own organisation and searched by each viewer with the filter a search carries: the rows equal the
+    tree, and nothing is admitted against the oracle or hidden from it. Returns the pairs judged."""
     pairs = decided = 0
     over, lost, unreached = [], [], []
-    for scenario in SCENARIOS:
-        corpus = await build(scenario)
+    for name, corpus in corpora:
         if not corpus.points:
             continue
-        org = hashlib.sha1(scenario.id.encode()).hexdigest()[:24]
+        org = hashlib.sha1(name.encode()).hexdigest()[:24]
         await store.upsert_points("records", [
-            VectorPoint(id=hashlib.md5(f"{scenario.id}/{rid}".encode()).hexdigest(), dense_vector=[1.0, i / 100, 0.0, 0.0],
+            VectorPoint(id=hashlib.md5(f"{name}/{rid}".encode()).hexdigest(), dense_vector=[1.0, i / 100, 0.0, 0.0],
                         payload={"page_content": rid, "metadata": {"orgId": org, "virtualRecordId": rid, "blockId": rid, "embeddingModel": "p:m:4"}, **payload})
             for i, (rid, payload) in enumerate(corpus.points.items())])
         admitted = {}
@@ -142,15 +159,16 @@ async def test_the_corpus_has_no_over_admit_and_no_recall_loss_on_real_rows(stor
             [hits] = await store.query_nearest_points("records", [req])
             admitted[viewer] = {h.payload["metadata"]["virtualRecordId"] for h in hits}
             node = sx.admits(flt)
-            assert admitted[viewer] == {r for r, p in corpus.points.items() if sx.evaluate(node, p)}, (scenario.id, viewer)      # the rows equal the tree
+            assert admitted[viewer] == {r for r, p in corpus.points.items() if sx.evaluate(node, p)}, (name, viewer)      # the rows equal the tree
         verdict = judge(corpus, admitted)
         pairs += len(corpus.points) * len(corpus.viewers)
         decided += sum(1 for r in corpus.points if not corpus.refused(r)) * len(corpus.viewers)
-        over += [(scenario.id, *p) for p in verdict.over]
-        lost += [(scenario.id, *p) for p in verdict.lost]
-        unreached += [(scenario.id, *p) for p in verdict.unreached]
-    print(f"corpus on pgvector: pairs={pairs} decided={decided} over_admit={len(over)} recall_loss={len(lost)} unreached={len(unreached)}")
-    assert pairs > 3000 and over == [] and lost == [] and unreached == []
+        over += [(name, *p) for p in verdict.over]
+        lost += [(name, *p) for p in verdict.lost]
+        unreached += [(name, *p) for p in verdict.unreached]
+    print(f"on pgvector: pairs={pairs} decided={decided} over_admit={len(over)} recall_loss={len(lost)} unreached={len(unreached)}")
+    assert over == [] and lost == [] and unreached == []
+    return pairs
 
 
 async def test_k_answers_come_back_when_most_of_the_nearest_points_are_restricted(store) -> None:

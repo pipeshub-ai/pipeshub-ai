@@ -26,7 +26,10 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 )
 from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingBusy,
+    KnowledgeHubListingNotReady,
     KnowledgeHubListingTooLarge,
+    PermissionVerificationUnavailableError,
+    listing_busy,
 )
 from app.utils.kh_cursor import (
     Boundary,
@@ -441,6 +444,29 @@ async def test_a_busy_listing_is_a_503(service, provider) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("parent", [("app1", "app"), ("f1", "folder"), (None, None)], ids=["browse", "folder", "all_records"])
+async def test_a_source_still_being_prepared_is_an_empty_page_that_says_so_not_a_503(service, provider, parent) -> None:
+    """The source holds nodes its copy has not reached yet: a successful, empty page marked ``preparing``, with nothing to page on to."""
+    provider.get_knowledge_hub_connector_page_v3.side_effect = KnowledgeHubListingNotReady()
+    parent_id, parent_type = parent
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id=parent_id, parent_type=parent_type, flattened=parent_id is None, include=["counts"])
+
+    assert (result.success, result.errorCode, result.preparing, result.items) == (True, None, True, [])
+    assert (result.pagination.totalItems, result.pagination.hasNext, result.pagination.hasPrev) == (0, False, False)
+    assert result.pagination.nextCursor is None and result.pagination.prevCursor is None
+    assert (result.counts.total, result.counts.items) == (0, [])
+    assert "preparing" in result.model_dump(exclude_none=True)
+
+
+@pytest.mark.asyncio
+async def test_a_listing_with_rows_is_not_marked_preparing(service, provider) -> None:
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of([], scope=admitted_scope(node_type="app"))
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app")
+
+    assert result.success is True and result.preparing is None
+
+
+@pytest.mark.asyncio
 async def test_any_statement_finding_the_memory_pool_spent_is_a_503_not_a_500(service, provider) -> None:
     class PoolSpent(Exception):
         code = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
@@ -449,6 +475,56 @@ async def test_any_statement_finding_the_memory_pool_spent_is_a_503_not_a_500(se
     result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True)
 
     assert (result.success, result.errorCode) == (False, 503)
+
+
+def _check_stopped_by(cause: Exception) -> PermissionVerificationUnavailableError:
+    """What ``check_access`` raises when ``cause`` stops it."""
+    try:
+        raise PermissionVerificationUnavailableError() from cause
+    except PermissionVerificationUnavailableError as wrapped:
+        return wrapped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["raised", "in_a_group", "a_group_below_the_wrap"])
+async def test_a_deadline_passing_inside_the_batch_check_is_a_503_not_a_500(service, provider, shape) -> None:
+    """The check wraps whatever stopped it; the listing's own deadline stopping it is still the listing being busy, also where it
+    stopped one of several tasks the check ran (a group the wrap carries as its cause)."""
+    busy = KnowledgeHubListingBusy(timed_out=True)
+    wrapped = _check_stopped_by(ExceptionGroup("walks", [ValueError("other"), busy]) if shape == "a_group_below_the_wrap" else busy)
+    provider.get_knowledge_hub_connector_page_v3.side_effect = ExceptionGroup("pages", [wrapped]) if shape == "in_a_group" else wrapped
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app")
+
+    assert (result.success, result.errorCode, result.error) == (False, 503, str(KnowledgeHubListingBusy(timed_out=True)))
+
+
+def test_a_cause_chain_that_loops_through_a_group_ends() -> None:
+    wrapped = _check_stopped_by(ConnectionError("graph down"))
+    group = ExceptionGroup("walks", [wrapped])
+    wrapped.__cause__.__cause__ = group
+    assert listing_busy(group) is None
+
+
+@pytest.mark.asyncio
+async def test_a_batch_check_the_graph_could_not_answer_is_still_a_500(service, provider) -> None:
+    provider.get_knowledge_hub_connector_page_v3.side_effect = _check_stopped_by(ConnectionError("graph down"))
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app")
+
+    assert (result.success, result.errorCode, result.items) == (False, 500, [])
+
+
+@pytest.mark.asyncio
+async def test_a_user_lookup_that_finds_the_memory_pool_spent_is_busy_not_an_unknown_user(service, provider) -> None:
+    class PoolSpent(Exception):
+        code = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
+
+    provider.get_user_by_user_id.side_effect = PoolSpent()
+    result = await service.get_nodes(user_id="u1", org_id="o1")
+
+    assert (result.success, result.errorCode) == (False, 503)
+    assert result.error != "User not found"
+    assert provider.get_user_by_user_id.call_args.kwargs == {"raise_on_error": True}
+    provider.get_knowledge_hub_root_nodes_v2.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -602,19 +678,24 @@ def _sorted_listing(names: list[str]) -> tuple[list[dict], Callable[..., Awaitab
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("skip_rows", [0, 1000], ids=["page_reads", "large_reads"])
 @pytest.mark.parametrize("limit", [1, 3, 7])
-async def test_numbered_pages_cover_the_listing_once_in_order(service, provider, limit) -> None:
+async def test_numbered_pages_cover_the_listing_once_in_order(service, provider, limit, skip_rows) -> None:
     rows, listing = _sorted_listing([f"Name {n % 5} {n}" for n in range(20)])
     provider.get_knowledge_hub_root_nodes_v2.side_effect = listing
+    provider.kh_skip_rows = skip_rows
     seen: list[str] = []
     for page in range(1, 20 // limit + 3):
         provider.get_knowledge_hub_root_nodes_v2.reset_mock()
         result = await service.get_nodes(user_id="u1", org_id="o1", page=page, limit=limit, sort_by="name",
                                          sort_order="asc")
         assert result.success is True
-        # One keyset step per page up to this one, stopping where the listing ends.
-        last_page = -(-len(rows) // limit)
-        assert provider.get_knowledge_hub_root_nodes_v2.await_count == min(page, last_page)
+        # A backend that reads a page at a time takes one keyset step per page up to this one; one that takes large reads, the rows before the page in
+        # one read and then the page from where they end. Neither reads past the end of the listing.
+        if skip_rows:
+            assert provider.get_knowledge_hub_root_nodes_v2.await_count == (2 if 0 < (page - 1) * limit < len(rows) else 1)
+        else:
+            assert provider.get_knowledge_hub_root_nodes_v2.await_count == min(page, -(-len(rows) // limit))
         expected = rows[(page - 1) * limit:page * limit]
         assert [i.id for i in result.items] == [r["id"] for r in expected]
         assert result.pagination.totalItems == len(rows)
@@ -1028,3 +1109,115 @@ async def test_an_origin_sort_reaches_the_folder_query(service, provider) -> Non
     assert result.success is True
     kwargs = provider.get_knowledge_hub_connector_page_v3.call_args.kwargs
     assert (kwargs["sort_field"], kwargs["sort_dir"]) == ("origin", "DESC")
+
+
+@pytest.mark.asyncio
+async def test_a_browse_total_older_than_five_minutes_is_counted_again_without_the_boundary(service, provider, monkeypatch) -> None:
+    """The page's own query counts only the rows past its boundary, so an aged total is asked for again from the start of the folder."""
+    import app.utils.kh_cursor as kh_cursor
+    from app.connectors.sources.localKB.handlers import knowledge_hub_service as khs
+
+    clock = [1_000_000_000_000]
+    monkeypatch.setattr(kh_cursor.time, "time", lambda: clock[0] / 1000)
+    monkeypatch.setattr(khs.time, "time", lambda: clock[0] / 1000)
+    browse = {"user_id": "u1", "org_id": "o1", "parent_id": "p1", "parent_type": "recordGroup", "limit": 1}
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of([row("r1", "Record")], total=5, has_more=True, scope=admitted_scope())
+    first = await service.get_nodes(**browse)
+
+    clock[0] += 299_000
+    recent = await service.get_nodes(**browse, cursor=first.pagination.nextCursor)
+    assert recent.pagination.totalItems == 5
+    assert provider.get_knowledge_hub_connector_page_v3.call_args.kwargs["include_total"] is False
+
+    clock[0] += 2_000
+    provider.get_knowledge_hub_connector_page_v3.reset_mock()
+    provider.get_knowledge_hub_connector_page_v3.side_effect = lambda **kw: page_of(
+        [row("r2", "Second")], total=2 if kw["after"] is None else 1, has_more=kw["after"] is None, scope=admitted_scope())
+    aged = await service.get_nodes(**browse, cursor=first.pagination.nextCursor)
+    assert aged.pagination.totalItems == 2, "the whole folder, as the viewer may read it now"
+    whole = provider.get_knowledge_hub_connector_page_v3.call_args_list[-1].kwargs
+    assert (whole["after"], whole["include_total"]) == (None, True)
+
+
+@pytest.mark.asyncio
+async def test_counts_asked_for_on_a_later_browse_page_describe_the_whole_folder(service, provider) -> None:
+    """A first page without counts issues a cursor carrying the total alone; a later page asking for counts counts the folder again, then carries them."""
+    browse = {"user_id": "u1", "org_id": "o1", "parent_id": "p1", "parent_type": "recordGroup", "limit": 1}
+    provider.get_knowledge_hub_connector_page_v3.side_effect = lambda **kw: page_of(
+        [row("r2" if kw["after"] else "r1", "Record")], has_more=True, scope=admitted_scope(),
+        total=5 if kw["include_total"] else None, counts={"record": 3, "folder": 2} if kw["include_total"] else None)
+    first = await service.get_nodes(**browse)
+    assert first.counts is None
+
+    second = await service.get_nodes(**browse, cursor=first.pagination.nextCursor, include=["counts"])
+    assert [item.id for item in second.items] == ["r2"]
+    assert {item.label: item.count for item in second.counts.items} == {"records": 3, "folders": 2}
+    assert sum(item.count for item in second.counts.items) == second.counts.total == second.pagination.totalItems == 5
+    whole = provider.get_knowledge_hub_connector_page_v3.call_args_list[-1].kwargs
+    assert (whole["after"], whole["include_total"]) == (None, True)
+
+    provider.get_knowledge_hub_connector_page_v3.reset_mock()
+    third = await service.get_nodes(**browse, cursor=second.pagination.nextCursor)
+    fourth = await service.get_nodes(**browse, cursor=third.pagination.nextCursor, include=["counts"])
+    assert provider.get_knowledge_hub_connector_page_v3.await_count == 2, "the counts travel in the cursor, also through a page that did not ask for them"
+    assert sum(item.count for item in fourth.counts.items) == fourth.counts.total == 5
+
+
+@pytest.mark.asyncio
+async def test_counts_asked_for_on_a_later_root_page_describe_the_whole_listing(service, provider) -> None:
+    ids = [{"id": "app1", "nodeType": "app"}, {"id": "kb-1", "nodeType": "app"}, {"id": "f1", "nodeType": "folder"}]
+    provider.get_knowledge_hub_root_nodes_v2.side_effect = lambda **kw: envelope(
+        [row("kb-1" if kw["after"] else "app1", "App", node_type="app")], total=3, has_more=True,
+        ids=ids if kw["include_ids"] else None)
+    first = await service.get_nodes(user_id="u1", org_id="o1", limit=1)
+    assert provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs["include_ids"] is False
+
+    second = await service.get_nodes(user_id="u1", org_id="o1", limit=1, cursor=first.pagination.nextCursor, include=["counts"])
+    assert [item.id for item in second.items] == ["kb-1"]
+    assert {item.label: item.count for item in second.counts.items} == {"apps": 2, "folders": 1}
+    assert sum(item.count for item in second.counts.items) == second.counts.total == second.pagination.totalItems == 3
+    whole = provider.get_knowledge_hub_root_nodes_v2.call_args.kwargs
+    assert (whole["after"], whole["include_ids"]) == (None, True)
+
+
+def test_only_postgresql_reads_the_rows_before_a_numbered_page_in_large_reads() -> None:
+    """Neo4j's and ArangoDB's page reads hold every row they keep in memory against a pool (a 1,000-row read ran Neo4j's transaction pool out of memory):
+    they read a page at a time. PostgreSQL's cost is per read, not per row."""
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+    from app.services.graph_db.postgres.provider import PostgresGraphProvider
+    assert (Neo4jProvider.kh_skip_rows, ArangoHTTPProvider.kh_skip_rows) == (0, 0)
+    assert PostgresGraphProvider.kh_skip_rows >= 1000
+
+
+@pytest.mark.parametrize(("mode", "rows"), [("split", 1000), ("", 1000), ("legacy", 0), ("shadow", 0)])
+def test_neo4j_reads_the_rows_before_a_numbered_browse_page_in_large_reads_only_when_browsing_split(monkeypatch, mode, rows) -> None:
+    """A split browse reads its page by id from the listing it decided, so a large read holds no more than a page's: only it reads 1,000 rows
+    at a time. Legacy, and every flatten (``kh_skip_rows``), read a page at a time."""
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+    from app.services.graph_db.postgres.provider import PostgresGraphProvider
+    monkeypatch.setenv("KH_BROWSE_MODE", mode)
+    neo4j = Neo4jProvider.__new__(Neo4jProvider)
+    assert (neo4j.kh_browse_skip_rows, neo4j.kh_skip_rows) == (rows, 0)
+    postgres = PostgresGraphProvider.__new__(PostgresGraphProvider)
+    assert postgres.kh_browse_skip_rows == postgres.kh_skip_rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("flattened", "reads"), [(False, [3, 1]), (True, [1, 1, 1, 1])], ids=["browse", "flatten"])
+async def test_a_browse_reads_the_rows_before_a_numbered_page_by_its_own_read_size(service, provider, flattened, reads) -> None:
+    rows, _ = _sorted_listing([f"n{i:02d}" for i in range(9)])
+
+    async def connector_page(*, limit: int, after: dict | None, **_kwargs: object) -> dict:
+        start = 0 if after is None else next(i for i, r in enumerate(rows) if r["id"] == after["id"]) + 1
+        window = rows[start:start + limit + 1]
+        return page_of(window[:limit], scope=admitted_scope("g1"), total=len(rows), has_more=len(window) > limit)
+
+    provider.get_knowledge_hub_connector_page_v3.side_effect = connector_page
+    provider.kh_skip_rows, provider.kh_browse_skip_rows = 0, 1000
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="g1", parent_type="recordGroup", flattened=flattened,
+                                     page=4, limit=1, sort_by="name", sort_order="asc")
+
+    assert result.success is True
+    assert [i.id for i in result.items] == [rows[3]["id"]]
+    assert [c.kwargs["limit"] for c in provider.get_knowledge_hub_connector_page_v3.call_args_list] == reads

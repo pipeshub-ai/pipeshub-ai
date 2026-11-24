@@ -1,9 +1,10 @@
 """Unit tests: no database needed."""
+import json
 from pathlib import Path
 
 import pytest
 
-from db import epoch_lint, lint, locations, migrate
+from db import epoch_lint, lint, locations, migrate, released_heads
 from db.boot_assert import schema_problems
 
 
@@ -45,6 +46,63 @@ def test_epoch_lint_rejects_bad_id_and_file_prefix(branch):
     (branch / "0005_mismatch.py").write_text('revision = "identity_0004"\ndown_revision = "identity_0003"\n')
     msgs = "\n".join(epoch_lint.lint_branch(branch))
     assert "is not identity_NNNN" in msgs and "file prefix does not match" in msgs
+
+
+def test_expected_heads_read_from_the_files(branch):
+    _rev(branch, "identity", 4, 3)
+    assert epoch_lint.expected_heads([branch]) == ({"identity": (4, 3)}, {"identity_0004"})
+
+
+def test_epoch_lint_reads_annotated_revision_attributes(branch):
+    (branch / "0004_annotated.py").write_text('revision: str = "identity_0004"\ndown_revision: str = "identity_0002"\nmin_code_epoch: int = 4\n')
+    assert "expected 'identity_0003'" in "\n".join(epoch_lint.lint_branch(branch))
+    (branch / "0004_annotated.py").write_text('revision: str = "identity_0004"\ndown_revision: str = "identity_0003"\nmin_code_epoch: int = 4\n')
+    assert epoch_lint.expected_heads([branch]) == ({"identity": (4, 4)}, {"identity_0004"})
+
+
+def test_expected_heads_refuse_a_second_head(branch):
+    _rev(branch, "identity", 4, 3, name="this_pr")
+    (branch / "0005_other_pr.py").write_text('revision = "identity_0005"\ndown_revision = "identity_0003"\n')
+    with pytest.raises(ValueError, match="2 heads"):
+        epoch_lint.expected_heads([branch])
+
+
+def test_expected_heads_refuse_a_head_whose_id_is_not_its_files_epoch(branch):
+    (branch / "0004_wrong.py").write_text('revision = "identity_0005"\ndown_revision = "identity_0003"\n')
+    with pytest.raises(ValueError, match="is not epoch 4"):
+        epoch_lint.expected_heads([branch])
+
+
+def test_a_computed_depends_on_or_contract_does_not_break_the_lint(branch):
+    _rev(branch, "identity", 4, 3, extra='depends_on = PARENTS\nmin_code_epoch = int("4")')
+    assert epoch_lint.lint_branch(branch) == []
+    with pytest.raises(ValueError, match="depends_on, min_code_epoch must be a literal"):
+        epoch_lint.expected_heads([branch])
+
+
+def test_no_released_head_is_gone():
+    """A branch never goes below the head the last release shipped (``released_heads.json``, edited only by the release
+    process): a shipped revision deleted or renumbered would leave installed databases ahead of the files."""
+    released = json.loads((locations.DB_DIR / "released_heads.json").read_text())["epochs"]
+    heads, _ = epoch_lint.expected_heads(locations.version_locations())
+    below = {b: (heads.get(b, (0, 0))[0], n) for b, n in released.items() if heads.get(b, (0, 0))[0] < n}
+    assert not below, f"branch heads below the released ones (now, released): {below}"
+
+
+def test_released_heads_records_the_tree_heads(tmp_path):
+    """The release step's writer, and the check the release workflow runs on the tagged tree."""
+    out = tmp_path / "released_heads.json"
+    released_heads.write("v9.9.9", out)
+    heads, _ = epoch_lint.expected_heads(locations.version_locations())
+    assert json.loads(out.read_text()) == {"release": "v9.9.9", "epochs": {b: e for b, (e, _) in heads.items()}}
+    assert released_heads.check(out) == ""
+    # a pre-release or hotfix tag names another release with the same heads
+    out.write_text(json.dumps({**json.loads(out.read_text()), "release": "v9.9.10-rc.1"}))
+    assert released_heads.check(out) == ""
+    stale = json.loads(out.read_text())
+    stale["epochs"]["kernel"] -= 1
+    out.write_text(json.dumps(stale))
+    assert released_heads.check(out) != ""
 
 
 def test_shipped_branches_pass_both_lints():
@@ -289,6 +347,36 @@ def test_lint_create_if_not_exists_of_another_modules_table(tmp_path, monkeypatc
     assert lint.lint_file(f) == []
 
 
+@pytest.mark.parametrize("annotated", [False, True])                  # ONLINE_DROPS: list[str] = [...] is the same declaration
+@pytest.mark.parametrize("mark,flagged", [
+    ("", True),
+    ("min_code_epoch = 0\n", True),                                    # no mark, as for every other rule
+    ('older_code_compatible = "unused"\n', True),                      # a reason of fewer than four words is none
+    ('older_code_compatible = "no plan of any release reads these"\n', False),
+    ('older_code_compatible: str = "no plan of any release reads these"\n', False),
+    ("min_code_epoch = 1\n", False),
+    ("min_code_epoch: int = 1\n", False),
+])
+def test_lint_a_revision_that_retires_indexes_says_whether_older_code_needs_them(tmp_path, monkeypatch, mark, flagged, annotated):
+    """ONLINE_DROPS is dropped by db.migrate, not by SQL the lint reads, so the revision itself must say min_code_epoch or why older code still works."""
+    monkeypatch.setattr(lint, "version_locations", lambda: [str(tmp_path)])
+    (tmp_path / "0002_retire.py").write_text(mark + f'ONLINE_DROPS{": list[str]" if annotated else ""} = ["a.ix"]\n')
+    assert bool(lint.retiring_violations()) is flagged
+    if flagged:
+        assert "set min_code_epoch (older code plans with them) or older_code_compatible" in lint.retiring_violations()[0]
+
+
+@pytest.mark.parametrize("raw,want", [("", None), (" ", None), ("512", "512MB"), ("0", 2), ("-1", 2), ("1.5", 2), ("1GB", 2), ("9999999", 2)])
+def test_the_index_build_memory_is_a_whole_number_of_megabytes(monkeypatch, raw, want):
+    monkeypatch.setenv("PG_INDEX_BUILD_MEMORY_MB", raw)
+    if want == 2:
+        with pytest.raises(migrate.RunnerError) as e:
+            migrate.build_memory()
+        assert e.value.code == migrate.EXIT_CONFIG and "PG_INDEX_BUILD_MEMORY_MB" in str(e.value)
+    else:
+        assert migrate.build_memory() == want
+
+
 @pytest.mark.parametrize("sql,flagged", [
     ("REVOKE CREATE ON SCHEMA a FROM pipeshub_vetted_a", False),
     ("REVOKE pipeshub_vetted_a, pipeshub_vetted_b FROM pipeshub_owner", False),
@@ -383,7 +471,7 @@ def test_pooler_is_refused(monkeypatch):
 
 def test_schema_requirements_from_the_tree():
     from db import schema_requirements
-    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 17, "code": 17}}
+    assert schema_requirements.requirements(["kernel"]) == {"kernel": {"requires": 19, "code": 19}}
     with pytest.raises(SystemExit):
         schema_requirements.requirements(["nope"])
 
@@ -525,7 +613,10 @@ def test_the_compose_image_role_script_has_the_layout_of_bootstrap_roles():
     flat = lambda s: re.sub(r"\s+", " ", s).strip()
     vetted = {f"pipeshub_vetted_{s}" for s in b.SHIPPED_VETTED}
     quoted = set(re.findall(r"'(pipeshub_\w+)'", sql))
-    assert quoted == {r for r, _ in b.ROLES} | vetted
+    assert quoted == {r for r, _ in b.ROLES} | vetted | {b.MONITOR}
+    # the opt-in monitoring login: the same one membership both ways (kernel_0019 accepts exactly this one)
+    assert "GRANT pg_monitor TO pipeshub_monitor WITH INHERIT TRUE, SET FALSE;" in flat(sql)
+    assert 'GRANT pg_monitor TO {} WITH INHERIT TRUE, SET FALSE' in Path(b.__file__).read_text()
     logins = set(re.findall(r"\('(pipeshub_\w+)', :'\w+'\)", sql)) | {"pipeshub_ro"}
     assert logins == {r for r, login in b.ROLES if login}
     assert set(re.findall(r":(PG_\w+_PASSWORD)\b", text)) | set(re.findall(r"\w+:(PG_\w+_PASSWORD)", text)) == set(b.PASSWORD_VARS.values())

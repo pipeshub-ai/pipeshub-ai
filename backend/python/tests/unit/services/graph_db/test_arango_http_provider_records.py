@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import MissingOrgContext
 from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import FolderChangedDuringDelete
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -720,18 +720,18 @@ class TestGetFileRecordById:
 class TestGetUserByEmail:
     async def test_found(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = [_arango_user()]
-        result = await connected_provider.get_user_by_email("user@example.com")
+        result = await connected_provider.get_user_by_email("user@example.com", org_id="org-1")
         assert result is not None
         assert result.email == "user@example.com"
 
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_user_by_email("nobody@example.com")
+        result = await connected_provider.get_user_by_email("nobody@example.com", org_id="org-1")
         assert result is None
 
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.get_user_by_email("user@example.com")
+        result = await connected_provider.get_user_by_email("user@example.com", org_id="org-1")
         assert result is None
 
 
@@ -1382,6 +1382,7 @@ class TestUpdateQueuedDuplicatesStatus:
             [dup],   # duplicates found
         ]
         connected_provider.batch_update_nodes = AsyncMock(return_value=True)
+        connected_provider._promote_queued_copies = AsyncMock(side_effect=lambda updates, txn=None: len(updates))
         result = await connected_provider.update_queued_duplicates_status(
             record_id="r1", new_indexing_status="COMPLETED",
         )
@@ -1408,25 +1409,27 @@ class TestUpdateQueuedDuplicatesStatus:
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [[ref], [dup]]
         connected_provider.batch_update_nodes = AsyncMock(return_value=True)
+        connected_provider._promote_queued_copies = AsyncMock(side_effect=lambda updates, txn=None: len(updates))
 
         result = await connected_provider.update_queued_duplicates_status(
             record_id="r1", new_indexing_status="COMPLETED", virtual_record_id="v-1",
         )
 
         assert result == 1
-        assert connected_provider.batch_update_nodes.await_args.args[0][0]["extractionStatus"] == "COMPLETED"
+        assert connected_provider._promote_queued_copies.await_args.args[0][0]["extractionStatus"] == "COMPLETED"
 
     async def test_promoted_duplicates_take_the_primarys_enrichment_outcome(self, connected_provider) -> None:
         ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "extractionStatus": "FAILED"}
         dup = {"_key": "r2", "md5Checksum": "abc", "indexingStatus": "QUEUED"}
         connected_provider.http_client.execute_aql.side_effect = [[ref], [dup]]
         connected_provider.batch_update_nodes = AsyncMock(return_value=True)
+        connected_provider._promote_queued_copies = AsyncMock(side_effect=lambda updates, txn=None: len(updates))
 
         await connected_provider.update_queued_duplicates_status(
             record_id="r1", new_indexing_status="COMPLETED", virtual_record_id="v-1",
         )
 
-        assert connected_provider.batch_update_nodes.await_args.args[0][0]["extractionStatus"] == "FAILED"
+        assert connected_provider._promote_queued_copies.await_args.args[0][0]["extractionStatus"] == "FAILED"
 
     async def test_with_duplicates_empty_status(self, connected_provider):
         ref = {"_key": "r1", "orgId": "org-1", "md5Checksum": "abc", "sizeInBytes": 100}
@@ -1436,6 +1439,7 @@ class TestUpdateQueuedDuplicatesStatus:
             [dup],
         ]
         connected_provider.batch_update_nodes = AsyncMock(return_value=True)
+        connected_provider._promote_queued_copies = AsyncMock(side_effect=lambda updates, txn=None: len(updates))
         result = await connected_provider.update_queued_duplicates_status(
             record_id="r1", new_indexing_status="EMPTY",
         )
@@ -2006,21 +2010,20 @@ class TestDeleteKbHubApp:
 
 class TestBatchUpsertAppUsers:
     async def test_empty_list(self, connected_provider):
-        await connected_provider.batch_upsert_app_users([])
+        await connected_provider.batch_upsert_app_users([], org_id="org1")
 
-    async def test_no_orgs_raises(self, connected_provider):
+    async def test_no_org_raises(self, connected_provider):
         user = MagicMock()
         user.connector_id = "conn1"
-        connected_provider.http_client.execute_aql.return_value = []  # no orgs
-        with pytest.raises(Exception, match="No organizations"):
-            await connected_provider.batch_upsert_app_users([user])
+        with pytest.raises(MissingOrgContext, match="needs the org"):
+            await connected_provider.batch_upsert_app_users([user], org_id="")
 
     async def test_exception_raises(self, connected_provider):
         user = MagicMock()
         user.connector_id = "conn1"
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
         with pytest.raises(Exception):
-            await connected_provider.batch_upsert_app_users([user])
+            await connected_provider.batch_upsert_app_users([user], org_id="org1")
 
 
 # ===================================================================
@@ -2127,7 +2130,7 @@ class TestBatchCreateUserAppEdges:
 class TestGetEntityIdByEmail:
     async def test_found_in_users(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = ["u1"]
-        result = await connected_provider.get_entity_id_by_email("user@example.com")
+        result = await connected_provider.get_entity_id_by_email("user@example.com", org_id="org-1")
         assert result == "u1"
 
     async def test_found_in_groups(self, connected_provider):
@@ -2135,7 +2138,7 @@ class TestGetEntityIdByEmail:
             [],      # users
             ["g1"],  # groups
         ]
-        result = await connected_provider.get_entity_id_by_email("group@example.com")
+        result = await connected_provider.get_entity_id_by_email("group@example.com", org_id="org-1")
         assert result == "g1"
 
     async def test_found_in_people(self, connected_provider):
@@ -2144,17 +2147,17 @@ class TestGetEntityIdByEmail:
             [],      # groups
             ["p1"],  # people
         ]
-        result = await connected_provider.get_entity_id_by_email("external@example.com")
+        result = await connected_provider.get_entity_id_by_email("external@example.com", org_id="org-1")
         assert result == "p1"
 
     async def test_not_found(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = [[], [], []]
-        result = await connected_provider.get_entity_id_by_email("nobody@example.com")
+        result = await connected_provider.get_entity_id_by_email("nobody@example.com", org_id="org-1")
         assert result is None
 
     async def test_exception(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.get_entity_id_by_email("user@example.com")
+        result = await connected_provider.get_entity_id_by_email("user@example.com", org_id="org-1")
         assert result is None
 
 
@@ -2164,7 +2167,7 @@ class TestGetEntityIdByEmail:
 
 class TestBulkGetEntityIdsByEmail:
     async def test_empty_input(self, connected_provider):
-        result = await connected_provider.bulk_get_entity_ids_by_email([])
+        result = await connected_provider.bulk_get_entity_ids_by_email([], org_id="org-1")
         assert result == {}
 
     async def test_found_in_users(self, connected_provider):
@@ -2174,16 +2177,14 @@ class TestBulkGetEntityIdsByEmail:
             [],  # people (remaining)
         ]
         result = await connected_provider.bulk_get_entity_ids_by_email(
-            ["user@example.com"]
-        )
+            ["user@example.com"], org_id="org-1")
         assert "user@example.com" in result
         assert result["user@example.com"][0] == "u1"
 
     async def test_exception_returns_empty(self, connected_provider):
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
         result = await connected_provider.bulk_get_entity_ids_by_email(
-            ["user@example.com"]
-        )
+            ["user@example.com"], org_id="org-1")
         assert result == {}
 
 
@@ -2555,24 +2556,21 @@ class TestGetUserSyncState:
             {"syncState": "IN_PROGRESS", "_key": "edge1"}
         ]
         result = await connected_provider.get_user_sync_state(
-            user_email="user@example.com", service_type="GOOGLE_DRIVE",
-        )
+            user_email="user@example.com", service_type="GOOGLE_DRIVE", org_id="org-1")
         assert result is not None
         assert result["syncState"] == "IN_PROGRESS"
 
     async def test_user_not_found(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value=None)
         result = await connected_provider.get_user_sync_state(
-            user_email="none@example.com", service_type="GOOGLE_DRIVE",
-        )
+            user_email="none@example.com", service_type="GOOGLE_DRIVE", org_id="org-1")
         assert result is None
 
     async def test_no_sync_edge(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value="u1")
         connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.get_user_sync_state(
-            user_email="user@example.com", service_type="GOOGLE_DRIVE",
-        )
+            user_email="user@example.com", service_type="GOOGLE_DRIVE", org_id="org-1")
         assert result is None
 
     async def test_exception(self, connected_provider):
@@ -2580,8 +2578,7 @@ class TestGetUserSyncState:
             side_effect=Exception("err")
         )
         result = await connected_provider.get_user_sync_state(
-            user_email="user@example.com", service_type="GOOGLE_DRIVE",
-        )
+            user_email="user@example.com", service_type="GOOGLE_DRIVE", org_id="org-1")
         assert result is None
 
 
@@ -2596,15 +2593,13 @@ class TestUpdateUserSyncState:
             {"syncState": "COMPLETED"}
         ]
         result = await connected_provider.update_user_sync_state(
-            user_email="user@example.com", state="COMPLETED",
-        )
+            user_email="user@example.com", state="COMPLETED", org_id="org-1")
         assert result is not None
 
     async def test_user_not_found(self, connected_provider):
         connected_provider.get_entity_id_by_email = AsyncMock(return_value=None)
         result = await connected_provider.update_user_sync_state(
-            user_email="none@example.com", state="COMPLETED",
-        )
+            user_email="none@example.com", state="COMPLETED", org_id="org-1")
         assert result is None
 
     async def test_exception(self, connected_provider):
@@ -2612,8 +2607,7 @@ class TestUpdateUserSyncState:
             side_effect=Exception("err")
         )
         result = await connected_provider.update_user_sync_state(
-            user_email="user@example.com", state="COMPLETED",
-        )
+            user_email="user@example.com", state="COMPLETED", org_id="org-1")
         assert result is None
 
 
@@ -4309,7 +4303,8 @@ class TestPrincipalLookupsCanRaise:
             "get_person_by_email": ("a@b.com", "org-1"),
             "upsert_person_by_email": (Person(email="a@b.com", org_id="org-1"),),
         }[method]
-        return getattr(provider, method)(*args, raise_on_error=raise_on_error)
+        scope = {"org_id": "org-1"} if method == "get_user_by_email" else {}
+        return getattr(provider, method)(*args, raise_on_error=raise_on_error, **scope)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["get_user_by_email", "get_person_by_email", "upsert_person_by_email"])

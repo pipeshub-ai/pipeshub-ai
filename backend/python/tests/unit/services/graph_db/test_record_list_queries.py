@@ -7,8 +7,7 @@ tests compare what each query declares with what it is sent, for every view
 and filter combination, and check that a failed read raises.
 
 The All Records list is the Knowledge Hub listing
-(``get_knowledge_hub_connector_page_v3``, one page per connector); a KB's own
-list is ``list_kb_records``.
+(``get_knowledge_hub_connector_page_v3``, one page per connector).
 """
 
 from __future__ import annotations
@@ -36,11 +35,6 @@ def _arango() -> ArangoHTTPProvider:
     return provider
 
 
-FILTERS = {
-    "search": "report", "record_types": ["FILE"], "origins": ["UPLOAD"], "connectors": ["DRIVE"],
-    "indexing_status": ["COMPLETED"], "date_from": 1, "date_to": 2,
-}
-
 HUB_FILTERS = {
     "search_query": "report", "node_types": ["record"], "record_types": ["FILE"],
     "indexing_status": ["COMPLETED"], "created_at": {"gte": 1, "lte": 2}, "updated_at": {"gte": 1, "lte": 2},
@@ -48,13 +42,15 @@ HUB_FILTERS = {
     "record_group_ids": ["g1"],
 }
 
-# start_id, start_type, flatten
+# start_id, start_type, flatten, the view's own filters
 HUB_VIEWS = {
-    "all records": (None, "app", True),
-    "app children": (None, "app", False),
-    "group children": ("g1", "recordGroup", False),
-    "folder children": ("f1", "folder", False),
-    "below a folder": ("f1", "folder", True),
+    "all records": (None, "app", True, None),
+    "app children": (None, "app", False, None),
+    "group children": ("g1", "recordGroup", False, None),
+    "folder children": ("f1", "folder", False, None),
+    "below a folder": ("f1", "folder", True, None),
+    # the sidebar of a folder whose record can have an arrow: its arrow is read apart (`sidebar_rows`)
+    "folder sidebar": ("f1", "folder", False, {"only_containers": True}),
 }
 
 
@@ -81,7 +77,7 @@ class _Hub:
             "chain_top_groups": [{"ownGroups": ["g9"], "ids": ["s1"]}],
             "chain_top_details": [{"id": "s1", "handle": "records/s1", "parents": ["p9"],
                                    "ownGroups": [{"id": "g9", "deleted": False}]}],
-            "chain_top_facts": [{"hidden": [], "underApp": []}],
+            "chain_top_hidden": [],
             "lineage": [{"ancestors": ["a1"], "declared": ["g1"]}],
             "browse_start": [{"handle": "records/f1", "fromApp": from_app, "crumbNodes": [], "crumbEdges": []}],
             "enrich": [{"i": 0, "row": row}],
@@ -95,6 +91,7 @@ class _Hub:
             "check:targets": [target],
             "check:seeds": [{"node": "p1", "seed": "s2"}],
             "slim": [["records/r1", "record", "a"]],
+            "sidebar_rows": [["records/r1", True, False]],
             "connector": ["app1"],
             "name_matches": ["records/r1"],
             "own_groups": ["recordGroups/g1"],
@@ -112,6 +109,8 @@ class _Hub:
         if name is None:
             name = "slim" if "kh_handles" in query else "connector"
         self.sent.add(name)
+        if name == "slim" and "kh_side" in query:
+            return [["records/r1", "record", "a", False, True]]      # a browse sidebar's record that can have an arrow
         if name in self._levels:
             frontier = bind_vars.get("kh_frontier") or bind_vars.get("kh_front") or []
             found = [h for h in self._levels[name] if h not in frontier]
@@ -135,12 +134,12 @@ def _arango_hub(*, opens: bool, from_app: bool) -> tuple[ArangoHTTPProvider, _Hu
 @pytest.mark.parametrize("filtered", [False, True])
 async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from_app, filtered) -> None:
     provider, hub = _arango_hub(opens=opens, from_app=from_app)
-    start_id, start_type, flatten = HUB_VIEWS[view]
+    start_id, start_type, flatten, own = HUB_VIEWS[view]
 
     page = await provider.get_knowledge_hub_connector_page_v3(
         "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,
         flatten=flatten, sort_field="updatedAt", sort_dir="DESC",
-        filters=HUB_FILTERS if filtered else None, start_id=start_id, start_type=start_type,
+        filters={**(HUB_FILTERS if filtered else {}), **(own or {})} or None, start_id=start_id, start_type=start_type,
         include_scope=True,
     )
 
@@ -155,10 +154,10 @@ async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from
 async def test_every_knowledge_hub_statement_is_reached_by_some_view() -> None:
     """Or a statement with a wrong bind would pass the test above unseen."""
     reached: set[str] = set()
-    for start_id, start_type, flatten in HUB_VIEWS.values():
+    for start_id, start_type, flatten, own in HUB_VIEWS.values():
         for opens in (False, True):
             for from_app in (False, True):
-                for filters in (None, {"search_query": "report"}):
+                for filters in (own, {"search_query": "report", **(own or {})}):
                     provider, hub = _arango_hub(opens=opens, from_app=from_app)
                     await provider.get_knowledge_hub_connector_page_v3(
                         "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,
@@ -171,39 +170,10 @@ async def test_every_knowledge_hub_statement_is_reached_by_some_view() -> None:
     assert statements <= reached, sorted(statements - reached)
 
 
-@pytest.mark.parametrize("folder_id", [None, "f1"])
-@pytest.mark.parametrize("filtered", [False, True])
-async def test_kb_records_sends_exactly_the_binds_it_declares(folder_id, filtered) -> None:
-    provider = _arango()
-    provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-    provider.execute_query = AsyncMock(side_effect=[[{"records": [], "total": 0}], [[]]])
-    filters = FILTERS if filtered else dict.fromkeys(FILTERS)
-    filters = {k: v for k, v in filters.items() if k != "permissions"}
-    await provider.list_kb_records(
-        "kb1", "uk1", "org1", 0, 10, sort_by="recordName", sort_order="asc", folder_id=folder_id, **filters,
-    )
-    for call in provider.execute_query.await_args_list:
-        assert _declared(call.args[0]) == set(call.kwargs["bind_vars"])
-
-
-async def test_an_unknown_sort_field_is_not_spliced_into_the_query() -> None:
-    provider = _arango()
-    provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-    provider.execute_query = AsyncMock(side_effect=[[{"records": [], "total": 0}], [[]]])
-    await provider.list_kb_records(
-        "kb1", "uk1", "org1", 0, 10, None, None, None, None, None, None, None,
-        sort_by="x REMOVE record IN records", sort_order="asc; drop",
-    )
-    query = provider.execute_query.await_args_list[0].args[0]
-    assert "REMOVE" not in query and "drop" not in query
-    assert "SORT record.recordName ASC" in query
-
-
 def _neo4j() -> Neo4jProvider:
     provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
     provider.client = AsyncMock()
     provider.client.execute_query = AsyncMock(side_effect=RuntimeError("graph down"))
-    provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
     return provider
 
 
@@ -219,20 +189,6 @@ async def test_a_failed_all_records_read_raises(backend, flatten) -> None:
     with pytest.raises(RuntimeError, match="graph down"):
         await provider.get_knowledge_hub_connector_page_v3(
             "app1", "org1", ["uk1"], ["app1"], ["r1"], 10, flatten=flatten,
-        )
-
-
-@pytest.mark.parametrize("backend", ["arango", "neo4j"])
-async def test_a_failed_kb_records_read_raises(backend) -> None:
-    if backend == "arango":
-        provider = _arango()
-        provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
-        provider.execute_query = AsyncMock(side_effect=RuntimeError("graph down"))
-    else:
-        provider = _neo4j()
-    with pytest.raises(RuntimeError, match="graph down"):
-        await provider.list_kb_records(
-            "kb1", "uk1", "org1", 0, 10, None, None, None, None, None, None, None, "recordName", "asc",
         )
 
 

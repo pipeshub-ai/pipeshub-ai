@@ -17,9 +17,11 @@ Resolution is I/O, so it happens here rather than in `PipesHubPromptBuilder` —
 that builder re-runs on every turn and must stay pure string assembly. This
 hook writes the rendered section into `tool_state`; the builder only reads it.
 
-Everything resolved is memoised in `tool_state` for the life of the
-conversation, which is what earns the section its `Volatility.CONV` band: after
-the first turn that resolves a repo, the bytes do not move.
+Every definitive answer (found, absent, denied) is memoised in `tool_state`
+for the rest of the run, which is what earns the section its `Volatility.CONV`
+band: after the first turn that resolves a repo, the bytes do not move. A
+lookup that failed is not an answer: it is retried on the next refresh, up to
+`_MAX_ATTEMPTS` per run, and only then cached as absent.
 
 Trust: this content is writable by anyone who can commit to an indexed repo,
 and it lands in the system prompt rather than behind the "treat as data" guard
@@ -46,7 +48,12 @@ from app.modules.code_graph.connectors import (
     normalize_connector_type,
 )
 from app.services.artifact_registry.models import Actor
+from app.services.record_content.models import (
+    RecordContentError,
+    RecordContentUnavailableError,
+)
 from app.services.record_content.resolver import RecordContentResolver
+from app.utils import error_class
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.context import (
@@ -77,6 +84,12 @@ _GROUP_NAME_CACHE_KEY = "repo_instructions_group_names"
 #: unchanged retrieval of a follow-up turn would re-issue the record-group
 #: lookup each time for a section whose bytes cannot have moved.
 _SEEN_ANCHORS_KEY = "repo_instructions_seen_anchors"
+#: `{_WALK or record_id: failed attempts this run}`. Bounds what a graph or
+#: connector that stays down costs a run: each attempt can wait out the timeout
+#: and writes a log line, on every model call and every tool call.
+_ATTEMPTS_KEY = "repo_instructions_attempts"
+_WALK = "walk"
+_MAX_ATTEMPTS = 3
 
 _MISS: tuple[str, str] = ("", "")
 
@@ -157,18 +170,16 @@ async def _records_at_paths(
 
     Equality on `codeFiles.filePath`, which the `(orgId, filePath)` composite
     index serves. One path can hold several records when two repos share it —
-    the caller narrows by record group.
+    the caller narrows by record group. Raises when the graph cannot answer:
+    a failed read is not an absent file.
     """
     async def _one(path: str) -> tuple[str, list[str]]:
-        try:
-            rows = await graph_provider.get_nodes_by_filters(
-                collection=CollectionNames.CODE_FILES.value,
-                filters={"orgId": org_id, "filePath": path},
-                return_fields=["_key"],
-            )
-        except Exception:
-            logger.debug("Instruction-file lookup failed for %s", path, exc_info=True)
-            return path, []
+        rows = await graph_provider.get_nodes_by_filters(
+            collection=CollectionNames.CODE_FILES.value,
+            filters={"orgId": org_id, "filePath": path},
+            return_fields=["_key"],
+            raise_on_error=True,
+        )
         return path, [key for row in rows or [] if (key := row.get("_key") or row.get("id"))]
 
     return dict(await asyncio.gather(*(_one(p) for p in paths)))
@@ -182,15 +193,11 @@ async def _groups_for_records(
     `codeFiles` carries neither a connector nor a group, so the repo scope has
     to come from the `records` row. Connector id is not a substitute: one
     GitHub Teams connector syncs every repo in the org, and each of them can
-    have its own root `CLAUDE.md`.
+    have its own root `CLAUDE.md`. Raises when the graph cannot answer.
     """
     if not record_ids:
         return {}
-    try:
-        rows = await graph_provider.get_records_by_record_ids(record_ids, org_id)
-    except Exception:
-        logger.debug("Record-group lookup failed", exc_info=True)
-        return {}
+    rows = await graph_provider.get_records_by_record_ids(record_ids, org_id, raise_on_error=True)
     return {
         key: str(group)
         for row in rows or []
@@ -255,15 +262,18 @@ async def _resolve_nearest(
 
 
 async def _fetch_contents(
-    context: "AgentContext", record_ids: list[str],
-) -> dict[str, str]:
-    """`{record_id: text}`, ACL-checked, empty string for anything unreadable.
+    context: "AgentContext", record_ids: list[str], file_cache: dict[str, str],
+) -> None:
+    """Put each file's ACL-checked text in `file_cache` as its fetch finishes.
+
+    Per file, so a refresh that times out on one file keeps the others.
 
     Every failure is swallowed: a missing or unreadable instruction file must
     leave the turn exactly as it would have been without this hook, and an
-    access denial in particular must not become visible. Failures are recorded
-    rather than dropped so the caller caches them too — one attempt per
-    conversation, not one per turn for a file that will stay denied.
+    access denial in particular must not become visible. A definitive failure
+    is cached as `""`: one attempt per run, not one per turn for a file that
+    will stay denied. An unavailable file is left out, to be retried, until its
+    attempts are spent.
     """
     resolver = RecordContentResolver(
         graph_provider=context.graph_provider,
@@ -273,22 +283,37 @@ async def _fetch_contents(
     actor = Actor(org_id=context.org_id, user_id=context.user_id)
     sem = asyncio.Semaphore(_MAX_CONCURRENT_FETCHES)
 
-    async def _one(record_id: str, session: aiohttp.ClientSession) -> tuple[str, str]:
+    async def _one(record_id: str, session: aiohttp.ClientSession) -> str | None:
         async with sem:
             try:
                 resolved = await resolver.resolve(
                     actor=actor, ref=record_id, max_bytes=_MAX_FILE_BYTES, session=session,
                 )
-            # Blanket, deliberately: every `RecordContentError` subclass (not
-            # found, denied, too large, unavailable) and every transport fault
-            # mean the same thing here — no section, and no trace in the turn.
-            except Exception:
-                logger.debug("Instruction file %s unavailable", record_id, exc_info=True)
-                return record_id, ""
-        return record_id, (resolved.content or b"").decode("utf-8", errors="replace").strip()
+            # Named: one without a cause (a connector 5xx) classes as internal,
+            # and a query bug behind one was already logged by the db layer.
+            except RecordContentUnavailableError as exc:
+                error_class.log_failure(logger, "repo_instructions.fetch_failed", exc, error_class="unavailable",
+                                        include_error_text=False, record_id=record_id)
+                return "" if _attempt_spent(context, record_id) else None
+            except RecordContentError:
+                logger.debug("Instruction file %s unreadable", record_id, exc_info=True)
+                return ""
+            # The access check raises the store's own error, so an outage there is retried; anything else is our
+            # bug, cached once so it does not cost the other files their section.
+            except Exception as exc:
+                error_class.log_failure(logger, "repo_instructions.fetch_failed", exc,
+                                        include_error_text=False, record_id=record_id)
+                transient = error_class.classify_error(exc) in ("unavailable", "timeout")
+                return None if transient and not _attempt_spent(context, record_id) else ""
+        return (resolved.content or b"").decode("utf-8", errors="replace").strip()
+
+    async def _store(record_id: str, session: aiohttp.ClientSession) -> None:
+        text = await _one(record_id, session)
+        if text is not None:
+            file_cache[record_id] = text
 
     async with aiohttp.ClientSession() as session:
-        return dict(await asyncio.gather(*(_one(r, session) for r in record_ids)))
+        await asyncio.gather(*(_store(r, session) for r in record_ids))
 
 
 async def _group_names(
@@ -355,8 +380,8 @@ async def resolve_repo_instructions(context: "AgentContext") -> str | None:
         for rid, path in _code_anchors(context.tool_state.get("virtual_record_id_to_result"))
         if rid not in seen
     ]
-    if anchors_raw:
-        seen.update(rid for rid, _ in anchors_raw)
+    # A graph that used up the run's attempts is not read again; cached files still render.
+    if anchors_raw and not _out_of_attempts(context, _WALK):
         groups = await _groups_for_records(
             graph_provider, context.org_id, [rid for rid, _ in anchors_raw],
         )
@@ -367,12 +392,13 @@ async def resolve_repo_instructions(context: "AgentContext") -> str | None:
         ]
         if anchors:
             await _resolve_nearest(graph_provider, context.org_id, anchors, dir_cache)
+        seen.update(rid for rid, _ in anchors_raw)
 
     hits = {rid: (group_id, path)
             for (group_id, _), (rid, path) in dir_cache.items() if rid}
     missing = sorted(set(hits) - set(file_cache))
     if missing:
-        file_cache.update(await _fetch_contents(context, missing))
+        await _fetch_contents(context, missing, file_cache)
     readable = {rid: text for rid, text in file_cache.items() if text and rid in hits}
     if not readable:
         return None
@@ -386,15 +412,37 @@ async def resolve_repo_instructions(context: "AgentContext") -> str | None:
     ])
 
 
+def _out_of_attempts(context: "AgentContext", key: str) -> bool:
+    """True once this run has no retries left for `key`."""
+    return context.tool_state.get(_ATTEMPTS_KEY, {}).get(key, 0) >= _MAX_ATTEMPTS
+
+
+def _attempt_spent(context: "AgentContext", key: str) -> bool:
+    """Count a failed attempt at `key`; True once this run has no retries left for it."""
+    attempts: dict[str, int] = context.tool_state.setdefault(_ATTEMPTS_KEY, {})
+    attempts[key] = attempts.get(key, 0) + 1
+    return _out_of_attempts(context, key)
+
+
+def _give_up(context: "AgentContext") -> None:
+    """Cache what is still unknown as absent: retrieved anchors as walked, found files as unreadable."""
+    state = context.tool_state
+    state.setdefault(_SEEN_ANCHORS_KEY, set()).update(
+        rid for rid, _ in _code_anchors(state.get("virtual_record_id_to_result")))
+    file_cache: dict[str, str] = state.setdefault(_FILE_CACHE_KEY, {})
+    for rid, _ in state.get(_DIR_CACHE_KEY, {}).values():
+        if rid:
+            file_cache.setdefault(rid, "")
+
+
 async def _refresh(context: "AgentContext") -> None:
     try:
         async with asyncio.timeout(_RESOLVE_TIMEOUT_SECONDS):
             section = await resolve_repo_instructions(context)
-    except TimeoutError:
-        logger.debug("Repo-instruction resolution timed out")
-        return
-    except Exception:
-        logger.warning("Repo-instruction resolution failed", exc_info=True)
+    except Exception as exc:  # TimeoutError too: a slow graph is retried like a failed one
+        error_class.log_failure(logger, "repo_instructions.resolve_failed", exc, include_error_text=False)
+        if _attempt_spent(context, _WALK):
+            _give_up(context)
         return
     if section:
         context.tool_state[SECTION_STATE_KEY] = section

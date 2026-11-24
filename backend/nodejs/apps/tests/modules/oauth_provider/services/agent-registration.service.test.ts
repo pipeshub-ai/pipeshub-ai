@@ -15,7 +15,7 @@ import { setOrgRepository } from '../../../../src/libs/repositories/org';
 import { hashOpaqueToken } from '../../../../src/libs/repositories/oauth-token/token-hash';
 import { ASSERTION_TYP } from '../../../../src/modules/oauth_provider/constants/agent-auth.constants';
 import { InvalidGrantError } from '../../../../src/libs/errors/oauth.errors';
-import { createMockLogger } from '../../../helpers/mock-logger';
+import { createMockLogger, createSnakeCaseLogKeyGuard, MockLogger } from '../../../helpers/mock-logger';
 
 const ISSUER = 'https://pipeshub.test';
 const SECRET = 'test-secret-key-for-signing-tokens-at-least-32-bytes';
@@ -128,6 +128,8 @@ describe('AgentRegistrationService', () => {
   let generate: sinon.SinonStub;
   let user: { fullName: string } | null;
   let app: { clientId: string; allowedScopes: string[] };
+  let logger: MockLogger;
+  let tokensLogger: MockLogger;
 
   beforeEach(() => {
     delete process.env.PIPESHUB_ENABLE_DEVICE_GRANT;
@@ -139,8 +141,10 @@ describe('AgentRegistrationService', () => {
     setOrgRepository({
       getAccountType: async () => ({ accountType: 'business' }),
     } as any);
+    logger = createMockLogger();
+    tokensLogger = createMockLogger();
     tokens = new OAuthTokenService(
-      createMockLogger() as any,
+      tokensLogger as any,
       { algorithm: 'HS256', secret: SECRET } as any,
       ISSUER,
     );
@@ -156,7 +160,7 @@ describe('AgentRegistrationService', () => {
         }) as any,
     );
     service = new AgentRegistrationService(
-      createMockLogger() as any,
+      logger as any,
       { getAppByClientId: sinon.stub().callsFake(async () => app) } as any,
       tokens,
       {
@@ -168,7 +172,11 @@ describe('AgentRegistrationService', () => {
     );
   });
 
-  afterEach(() => {
+  const snakeCaseKeys = createSnakeCaseLogKeyGuard();
+  after(() => snakeCaseKeys.report());
+
+  afterEach(function () {
+    snakeCaseKeys.check(this, logger, tokensLogger);
     sinon.restore();
     setOAuthTokenRepository();
     setUserRepository();
@@ -328,6 +336,11 @@ describe('AgentRegistrationService', () => {
         claimedUserId: USER.userId,
         claimedOrgId: USER.orgId,
       });
+      const id = (row as { _id: unknown })._id;
+      expect(logger.info.args).to.deep.equal([
+        ['registration.created', { registration_id: `reg_${id}` }],
+        ['claim.confirmed', { registration_id: `reg_${id}`, user_id: USER.userId, org_id: USER.orgId }],
+      ]);
     });
 
     it('refuses another account, whatever the code', async () => {
@@ -386,6 +399,7 @@ describe('AgentRegistrationService', () => {
         ),
       ).to.equal('revoked');
       expect([...repo.rows.values()][0].status).to.equal('revoked');
+      expect(logger.info.lastCall.args).to.deep.equal(['claim.denied', { registration_id: r.registration_id }]);
     });
 
     it('refuses a deny that lost the race to an approval', async () => {
@@ -481,6 +495,7 @@ describe('AgentRegistrationService', () => {
       expect(claims.jti).to.be.a('string');
       expect(claims.exp! - claims.iat!).to.equal(30 * 24 * 3600);
       expect(Date.parse(out.assertion_expires!)).to.equal(claims.exp! * 1000);
+      expect(logger.info.lastCall.args).to.deep.equal(['token.issued', { registration_id: r.registration_id, grant: 'claim' }]);
     });
 
     it('stamps the access token with the registration and keeps the row until the assertion is long over', async () => {
@@ -551,6 +566,8 @@ describe('AgentRegistrationService', () => {
       expect(out.access_token).to.equal('at');
       expect(out).to.not.have.property('refresh_token');
       expect(generate.firstCall.args[4]).to.equal(false);
+      expect(logger.info.lastCall.args[0]).to.equal('token.issued');
+      expect(logger.info.lastCall.args[1]).to.include({ grant: 'jwt-bearer' }).and.to.have.keys('registration_id', 'grant');
     });
 
     const forge = (
@@ -746,6 +763,7 @@ describe('AgentRegistrationService', () => {
       expect([...repo.rows.values()][0].status).to.equal('claimed');
       await service.revokeForUser(id, USER);
       expect([...repo.rows.values()][0].status).to.equal('revoked');
+      expect(logger.info.lastCall.args).to.deep.equal(['registration.revoked', { registration_id: id, user_id: USER.userId }]);
     });
   });
 });

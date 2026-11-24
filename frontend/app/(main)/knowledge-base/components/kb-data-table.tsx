@@ -41,6 +41,8 @@ interface KbDataTableProps {
   error?: string | null;
   /** False when repeating the request cannot help (the view is too large to list), so no retry button. */
   errorRetryable?: boolean;
+  /** The listing answered that its source is still being prepared: nothing to list yet, and the page asks again by itself. */
+  preparing?: boolean;
   pagination?: {
     limit: number;
     totalItems: number;
@@ -89,6 +91,7 @@ export function KbDataTable({
   isRefreshing = false,
   error = null,
   errorRetryable = true,
+  preparing = false,
   pagination,
   permissions,
   currentNodeName,
@@ -261,6 +264,11 @@ export function KbDataTable({
         )}
       </Flex>
     );
+  }
+
+  // A source still being prepared has rows to come, not none: hold the table's place instead of an empty state.
+  if (!showSkeleton && items.length === 0 && preparing) {
+    return <RecordsLoadingTable label={t('kb.sourcePreparing')} showSourceColumn={showSourceColumn} isMobile={isMobile} />;
   }
 
   // Show empty state when no node selected (no breadcrumbs) - Collections mode only

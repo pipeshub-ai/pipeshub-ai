@@ -176,8 +176,8 @@ class EntityMixin(PgBase):
         """Remove up to ``batch_size`` value rows whose record no longer exists."""
         org = current_org_id()
         return int(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_dangling_named_entity_values */ WITH b AS (
-            SELECT v.id FROM graph.nodes v WHERE v.org_id = $1 AND v.coll = 'valueMentions' AND v.doc->>'orgId' = $2
-              AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = v.org_id AND r.coll = 'records' AND r.id = v.doc->>'recordId') ORDER BY v.id LIMIT $3),
+            SELECT v.id FROM (SELECT x.org_id, x.id, x.doc->>'recordId' AS rid FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = 'valueMentions' AND x.doc->>'orgId' = $2 OFFSET 0) v
+              WHERE NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = v.rid) ORDER BY v.id LIMIT $3),
           d AS (DELETE FROM graph.nodes n USING b WHERE n.org_id = $1 AND n.coll = 'valueMentions' AND n.id = b.id RETURNING 1) SELECT count(*) FROM d""",
                                                  org, org_id, max(1, batch_size)), None, write=True) or 0)
 

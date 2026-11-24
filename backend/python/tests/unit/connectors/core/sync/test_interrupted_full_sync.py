@@ -119,7 +119,7 @@ class TestTheRunItself:
         )
         await started.wait()
         lease.stop_requested.set()
-        await asyncio.wait_for(task, timeout=1)
+        await task
 
         assert _idle_write(gp).get(_OWED) is True
 
@@ -140,7 +140,7 @@ class TestTheRunItself:
         )
         await started.wait()
         lease.lost.set()
-        await asyncio.wait_for(task, timeout=1)
+        await task
 
         writes = _final_writes(gp)
         assert not any("status" in w for w in writes)

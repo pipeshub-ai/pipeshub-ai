@@ -1,17 +1,22 @@
 import 'reflect-metadata';
 import { config } from 'dotenv';
 import { applyStoreUmbrella } from './libs/config/storeUmbrella';
+import { checkStartup } from './edition';
 import { Logger } from './libs/services/logger.service';
 import axios from 'axios';
+import axiosRetry from 'axios-retry';
 import { installUpstreamLogging } from './libs/http/upstream-call';
+import { RETRY_POLICY } from './libs/http/retry-policy';
 
 // Loads environment variables
 config({ quiet: true });
 applyStoreUmbrella();
+checkStartup();
 // The imports above created the logger before .env was loaded.
 Logger.applyEnv();
-// Every default-instance axios call, axios-retry's retries included, writes its upstream.call.end line.
+// Every default-instance axios call, each retry included, writes its upstream.call.end line.
 installUpstreamLogging(axios);
+axiosRetry(axios, RETRY_POLICY);
 import { Application } from './app';
 import { createGracefulShutdown } from './shutdown';
 

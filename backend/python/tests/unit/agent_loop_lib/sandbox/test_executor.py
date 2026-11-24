@@ -7,6 +7,8 @@ uploaded to blob storage and shown to the user as a download card.
 
 from __future__ import annotations
 
+import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -111,6 +113,46 @@ class TestMemoryLimitDoesNotBreakJitRuntimes:
         applied = self._applied_limits(
             ExecutionLimits(max_cpu_seconds=7, max_file_size_bytes=99, max_processes=5)
         )
-        assert applied.get(resource.RLIMIT_CPU) == (7, 7)
+        # Hard one second above soft, so the kernel sends SIGXCPU (reported
+        # as a CPU-time kill) rather than SIGKILL (which reads as out of memory).
+        assert applied.get(resource.RLIMIT_CPU) == (7, 8)
         assert applied.get(resource.RLIMIT_FSIZE) == (99, 99)
         assert applied.get(resource.RLIMIT_NPROC) == (5, 5)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+class TestCancelKillsTheProcessGroup:
+    async def test_cancelled_run_kills_its_process_group_then_raises(self, tmp_path) -> None:
+        import asyncio
+        import os
+
+        from app.agent_loop_lib.sandbox.coding import executor as executor_mod
+
+        spawned: list[asyncio.subprocess.Process] = []
+        real_exec = asyncio.create_subprocess_exec
+
+        async def _recording_exec(*args, **kwargs) -> asyncio.subprocess.Process:
+            proc = await real_exec(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        runner = CodeExecutor(str(tmp_path), EnvironmentManager(str(tmp_path)))
+        with patch.object(executor_mod, "confine_command", lambda cmd, *_a, **_k: cmd), patch.object(
+            executor_mod.asyncio, "create_subprocess_exec", _recording_exec,
+        ):
+            task = asyncio.ensure_future(
+                runner._run([sys.executable, "-c", "import time; time.sleep(60)"], 60, allow_network=False)
+            )
+            for _ in range(100):
+                if spawned:
+                    break
+                await asyncio.sleep(0.02)
+            await asyncio.sleep(0.2)
+            pgid = os.getpgid(spawned[0].pid)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert spawned[0].returncode is not None
+        with pytest.raises(ProcessLookupError):
+            os.killpg(pgid, 0)

@@ -91,6 +91,7 @@ def _graph(upsert_error: BaseException | None = None) -> MagicMock:
     graph = MagicMock()
     graph.batch_upsert_nodes = AsyncMock(side_effect=upsert_error, return_value=True)
     graph.get_document = AsyncMock(return_value=None)
+    graph.get_user_by_user_id = AsyncMock(return_value=None)
     graph.get_user_by_email = AsyncMock(return_value=None)
     return graph
 

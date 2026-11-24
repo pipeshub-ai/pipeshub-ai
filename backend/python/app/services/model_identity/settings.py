@@ -248,6 +248,14 @@ class ConnectionForwardingSettings:
         digest = hmac.new(_FINGERPRINT_SALT, material.encode(), "sha256").hexdigest()
         object.__setattr__(self, "fingerprint", digest[:16])
 
+    @property
+    def background_api_key(self) -> str | None:
+        """The key background traffic is sent with in place of the model's own (``Authorization``), or None when the
+        model's own key goes out. Forwarders put this on the wire; the circuit breaker keys the provider by it."""
+        if not self.enabled or self.service_auth != "apiKey" or not self.service_api_key:
+            return None
+        return self.service_api_key
+
     @classmethod
     def parse(cls, raw: Any, *, strict: bool = False) -> "ConnectionForwardingSettings":  # noqa: ANN401 - a value of unknown shape (JSON or user input)
         if raw is None:

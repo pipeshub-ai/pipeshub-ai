@@ -10,17 +10,21 @@ Covers:
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
 from app.services.record_content.models import (
     RecordAccessDeniedError,
     RecordContentError,
+    RecordContentUnavailableError,
     RecordNotFoundError,
     ResolvedRecordContent,
 )
 from app.services.record_content.resolver import RecordContentResolver
+from app.utils.error_class import classify_error, mark_error
 
 
 def _make_actor(org_id="org1", user_id="user1"):
@@ -260,3 +264,70 @@ class TestArtifactsAreReadAsTheirOwner:
             )
 
         assert artifacts.resolve.await_args.kwargs["actor"] is caller
+
+
+class TestGraphOutage:
+    """A graph that cannot be read is not a missing record (F58): the agent was told
+    "Record not found" for a file that exists, and gave up on it."""
+
+    async def test_a_failed_lookup_is_unavailable_not_not_found(self, graph: AsyncMock, config: MagicMock) -> None:
+        down = RuntimeError("Neo4j driver not connected")  # what the Neo4j client raises, stamped as the db layer does
+        mark_error(down, "unavailable")
+        graph.get_record_by_id = AsyncMock(side_effect=down)
+        resolver = RecordContentResolver(graph_provider=graph, config_service=config)
+        with pytest.raises(RecordContentUnavailableError) as raised:
+            await resolver.resolve(actor=_make_actor(), ref="rec1", max_bytes=1000)
+        assert not isinstance(raised.value, RecordNotFoundError)
+        assert raised.value.__cause__ is down
+        assert classify_error(raised.value) == "unavailable"
+
+    async def test_the_lookup_asks_the_provider_to_raise(self, graph: AsyncMock, config: MagicMock) -> None:
+        resolver = RecordContentResolver(graph_provider=graph, config_service=config)
+        with pytest.raises(RecordNotFoundError):
+            await resolver.resolve(actor=_make_actor(), ref="rec1", max_bytes=1000)
+        graph.get_record_by_id.assert_awaited_once_with("rec1", raise_on_error=True)
+
+    async def test_a_failed_lookup_does_not_fall_back_to_the_artifact_registry(self, graph: AsyncMock, config: MagicMock) -> None:
+        graph.get_record_by_id = AsyncMock(side_effect=ConnectionError("graph down"))
+        registry = MagicMock()
+        registry.resolve = AsyncMock()
+        resolver = RecordContentResolver(graph_provider=graph, config_service=config, artifact_registry=registry)
+        with pytest.raises(RecordContentUnavailableError):
+            await resolver.resolve(actor=_make_actor(), ref="rec1", conversation_id="conv1", max_bytes=1000)
+        registry.resolve.assert_not_awaited()
+
+    async def test_a_failed_artifact_refetch_is_unavailable(self, graph: AsyncMock, config: MagicMock) -> None:
+        graph.get_record_by_id = AsyncMock(side_effect=[None, ConnectionError("graph down")])
+        registry = MagicMock()
+        registry.resolve = AsyncMock(return_value=MagicMock(artifact_id="art1"))
+        resolver = RecordContentResolver(graph_provider=graph, config_service=config, artifact_registry=registry)
+        with pytest.raises(RecordContentUnavailableError):
+            await resolver.resolve(actor=_make_actor(), ref="report.pdf", conversation_id="conv1", max_bytes=1000)
+        assert graph.get_record_by_id.await_args_list[1].kwargs == {"raise_on_error": True}
+
+    async def test_the_resolver_leaves_logging_the_failure_to_its_caller(
+        self, graph: AsyncMock, config: MagicMock, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        graph.get_record_by_id = AsyncMock(side_effect=ConnectionError("graph down"))
+        resolver = RecordContentResolver(graph_provider=graph, config_service=config)
+        with caplog.at_level(logging.DEBUG, logger="app.services.record_content"), pytest.raises(RecordContentUnavailableError):
+            await resolver.resolve(actor=_make_actor(), ref="rec1", max_bytes=1000)
+        assert not [r for r in caplog.records if r.name.startswith("app.services.record_content")]
+
+    async def test_the_message_names_no_backend_detail(self, graph: AsyncMock, config: MagicMock) -> None:
+        graph.get_record_by_id = AsyncMock(side_effect=ConnectionError("bolt://10.0.0.7:7687 refused"))
+        resolver = RecordContentResolver(graph_provider=graph, config_service=config)
+        with pytest.raises(RecordContentUnavailableError) as raised:
+            await resolver.resolve(actor=_make_actor(), ref="rec1", max_bytes=1000)
+        assert "10.0.0.7" not in str(raised.value)
+        assert "not found" not in str(raised.value).lower()
+
+    @pytest.mark.parametrize("bug", [MissingOrgContext, SystemContextNotAllowed, OrgMismatch])
+    async def test_an_org_context_bug_is_not_reported_as_an_outage(
+        self, graph: AsyncMock, config: MagicMock, bug: type[Exception],
+    ) -> None:
+        """No query ran, so nothing else logged it: it must reach the caller as itself."""
+        graph.get_record_by_id = AsyncMock(side_effect=bug("no org context is bound"))
+        resolver = RecordContentResolver(graph_provider=graph, config_service=config)
+        with pytest.raises(bug):
+            await resolver.resolve(actor=_make_actor(), ref="rec1", max_bytes=1000)

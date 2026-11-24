@@ -277,3 +277,115 @@ class TestWebToolAdapterResultView:
         adapter = WebToolAdapter(_web_search_tool(failed), "dynamic", "web_search", make_context())
         output = await adapter.execute(query="x")
         assert adapter.result_view({}, ToolResult(tool_call_id="c1", name="dynamic__web_search", content=output.data)) is None
+
+
+# Two distinct 1x1 PNGs, as data URIs.
+_PNG_A = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+_PNG_B = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+_PAGE_IMAGES = [
+    {"url": "https://example.com/a.png", "alt": "Revenue chart"},
+    {"url": "https://example.com/b.png", "alt": ""},
+    {"url": "https://example.com/c.png", "alt": ""},
+]
+
+
+class _Loader:
+    """Stands in for the run's gated image fetch: one data URI (or None) per address asked."""
+
+    def __init__(self, answers: dict[str, str | None] | Exception | None = None) -> None:
+        self.answers = answers if answers is not None else {}
+        self.asked: list[list[str]] = []
+
+    async def __call__(self, urls: list[str]) -> list[str | None]:
+        self.asked.append(list(urls))
+        if isinstance(self.answers, Exception):
+            raise self.answers
+        return [self.answers.get(url) for url in urls]
+
+
+class TestSendPageImages:
+    """"Send images to LLM": a fetched page's first images go to a model that reads images,
+    after the page's text, through the request-wide image admission."""
+
+    @staticmethod
+    def _adapter(loader: _Loader | None, *, max_images: int = 3, multimodal: bool = True, images=None) -> WebToolAdapter:
+        payload = _url_content_payload(images=_PAGE_IMAGES if images is None else images)
+        options = {"image_loader": loader, "max_images": max_images} if loader is not None else {}
+        return WebToolAdapter(
+            _fetch_url_tool(payload), "dynamic", "fetch_url",
+            make_context(config_service=None, is_multimodal_llm=multimodal), **options,
+        )
+
+    async def test_the_pages_images_follow_its_text(self) -> None:
+        from app.agent_loop_lib.core.messages import ImagePart, TextPart
+
+        loader = _Loader({"https://example.com/a.png": _PNG_A, "https://example.com/b.png": _PNG_B})
+        output = await self._adapter(loader, max_images=2).execute(url="https://example.com/report")
+
+        assert output.success is True
+        assert isinstance(output.data[0], TextPart) and "The report says the sky is blue." in output.data[0].text
+        assert [type(part) for part in output.data[1:]] == [ImagePart, ImagePart]
+        assert loader.asked == [["https://example.com/a.png", "https://example.com/b.png"]]
+        assert len(output.sources) == 1
+
+    async def test_only_the_first_max_images_are_read(self) -> None:
+        loader = _Loader({})
+        await self._adapter(loader, max_images=1).execute(url="https://example.com/report")
+        assert loader.asked == [["https://example.com/a.png"]]
+
+    async def test_off_by_default_no_image_is_read(self) -> None:
+        output = await self._adapter(None).execute(url="https://example.com/report")
+        assert isinstance(output.data, str)
+
+    async def test_a_model_that_does_not_read_images_is_sent_the_text_alone(self) -> None:
+        loader = _Loader({"https://example.com/a.png": _PNG_A})
+        output = await self._adapter(loader, multimodal=False).execute(url="https://example.com/report")
+        assert isinstance(output.data, str) and "[image" not in output.data
+        assert loader.asked == []
+
+    async def test_images_that_could_not_be_read_leave_the_text_alone(self) -> None:
+        output = await self._adapter(_Loader({})).execute(url="https://example.com/report")
+        assert isinstance(output.data, str) and "The report says the sky is blue." in output.data
+
+    async def test_a_failing_image_fetch_never_fails_the_page(self) -> None:
+        output = await self._adapter(_Loader(RuntimeError("boom"))).execute(url="https://example.com/report")
+        assert output.success is True and isinstance(output.data, str)
+
+    async def test_a_page_without_images_asks_for_none(self) -> None:
+        loader = _Loader({})
+        output = await self._adapter(loader, images=[]).execute(url="https://example.com/report")
+        assert isinstance(output.data, str) and loader.asked == []
+
+    async def test_an_image_the_admission_refuses_is_named_in_the_text(self) -> None:
+        """The same image twice: the second is a duplicate, and the model is told one was left out."""
+        from app.agent_loop_lib.core.messages import ImagePart, TextPart
+
+        loader = _Loader({"https://example.com/a.png": _PNG_A, "https://example.com/b.png": _PNG_A})
+        output = await self._adapter(loader, max_images=2).execute(url="https://example.com/report")
+
+        assert sum(isinstance(part, ImagePart) for part in output.data) == 1
+        assert "[image on the page not shown: duplicate]" in [p.text for p in output.data if isinstance(p, TextPart)]
+
+    async def test_the_step_card_view_survives_every_image_being_refused(self) -> None:
+        """The request's image cap is already spent: the text comes back with the reasons, and
+        the card must still find its view under that string."""
+        from app.agent_loop_lib.core.types import ToolResult
+        from app.utils.image_admission import ImageAdmission
+        from app.utils.image_policy import permissive_policy
+
+        adapter = self._adapter(_Loader({"https://example.com/a.png": _PNG_A}), max_images=1)
+        adapter._context.tool_state["image_admission"] = ImageAdmission(permissive_policy(0))
+
+        output = await adapter.execute(url="https://example.com/report")
+
+        assert isinstance(output.data, str) and "[image on the page not shown:" in output.data
+        view = adapter.result_view({}, ToolResult(tool_call_id="c1", name="dynamic__fetch_url", content=output.data))
+        assert view is not None and view["fields"][0]["label"] == "Page"
+
+    async def test_the_step_card_view_survives_a_page_sent_with_images(self) -> None:
+        from app.agent_loop_lib.core.types import ToolResult
+
+        adapter = self._adapter(_Loader({"https://example.com/a.png": _PNG_A}))
+        output = await adapter.execute(url="https://example.com/report")
+        view = adapter.result_view({}, ToolResult(tool_call_id="c1", name="dynamic__fetch_url", content=output.data))
+        assert view is not None and view["fields"][0]["label"] == "Page"

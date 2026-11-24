@@ -10,6 +10,10 @@ import type {
   KnowledgeHubQueryParams,
   RecordDetailsResponse,
 } from './types';
+import { getOrgIdFromToken, getUserIdFromToken } from '@/lib/utils/jwt';
+import { selectRecordPreviewCacheEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
+import { evictRecordContent } from '@/lib/record-content';
+import { mintGrant, connectorLabel, type Grant } from '@/lib/record-content/grant';
 import { FOLDER_REINDEX_DEPTH } from './constants';
 import { DEFAULT_PAGE_SIZE } from './store';
 import { isKbCollectionsHubApp } from './utils/all-records-transformer';
@@ -710,11 +714,16 @@ export const KnowledgeBaseApi = {
   async reindexItem(
     recordId: string,
     depth: number = 0,
-    statusFilters?: string[]
+    statusFilters?: string[],
+    // A user's Force reindex: every stored result is bypassed and paid for again.
+    force?: boolean
   ) {
-    const body: { depth: number; statusFilters?: string[] } = { depth };
+    const body: { depth: number; statusFilters?: string[]; force?: boolean } = { depth };
     if (statusFilters?.length) {
       body.statusFilters = statusFilters;
+    }
+    if (force) {
+      body.force = true;
     }
     const { data } = await apiClient.post<Record<string, unknown>>(
       `${BASE_URL}/reindex/record/${recordId}`,
@@ -801,6 +810,41 @@ export const KnowledgeBaseApi = {
       { suppressErrorToast: options?.suppressErrorToast }
     );
     return data;
+  },
+
+  /**
+   * Details call of an open: it sends the content-open header, so the server applies the stream
+   * route's connector refusals too, and it alone mints the single-use grant the content cache
+   * accepts for a connector record. A refusal evicts every variant of the record.
+   */
+  async getRecordDetailsForOpen(
+    recordId: string,
+    options?: { suppressErrorToast?: AxiosRequestConfig['suppressErrorToast'] }
+  ): Promise<{ details: RecordDetailsResponse; grant: Grant | null }> {
+    // The owner is read when the question is asked, so an answer that lands after the account changed
+    // cannot mint a grant for the new owner.
+    const asked = getOrgIdFromToken() && getUserIdFromToken() ? `${getOrgIdFromToken()}|${getUserIdFromToken()}` : null;
+    // With the cache off, this is the plain details request: no connector refusals are added to it.
+    const contentOpen = selectRecordPreviewCacheEnabled(useFeatureFlagsStore.getState());
+    try {
+      const { data } = await apiClient.get<RecordDetailsResponse>(
+        `${BASE_URL}/record/${recordId}`,
+        {
+          headers: contentOpen ? { 'X-Record-Content-Open': '1' } : undefined,
+          suppressErrorToast: options?.suppressErrorToast,
+        }
+      );
+      const answered =
+        getOrgIdFromToken() && getUserIdFromToken()
+          ? `${getOrgIdFromToken()}|${getUserIdFromToken()}`
+          : null;
+      const grant = asked && answered === asked ? mintGrant(recordId, connectorLabel(data?.record ?? {}), asked) : null;
+      return { details: data, grant };
+    } catch (error) {
+      const status = (error as { statusCode?: number })?.statusCode;
+      if (status === 403 || status === 404 || status === 409) evictRecordContent(recordId);
+      throw error;
+    }
   },
 
   /**

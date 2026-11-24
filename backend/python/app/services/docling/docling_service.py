@@ -4,10 +4,20 @@ import time
 from typing import Any
 
 from docling_core.types.doc.document import DoclingDocument
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.capacity.admission import docling_demand, parse_class, reserve_or_adopt
+from app.capacity.member_budget import AdmissionTimeout, Permit
 from app.core.org_context import spawn_in_request
 from app.modules.parsers.pdf.docling_processor import (
     DoclingProcessor,
@@ -246,16 +256,26 @@ async def parse_pdf_endpoint(
     record_name: str = Form(...),
     start_page: int | None = Form(default=None),
     end_page: int | None = Form(default=None),
+    x_parse_class: str | None = Header(default=None),
 ) -> ParseResponse | JSONResponse:
     """Parse PDF document (phase 1 - no block creation, no LLM calls)"""
     # After the response is sent: until then the serialized document is still held.
     background_tasks.add_task(release_freed_memory)
     cost = 0
     handed_off = False
+    member_permit = None
     try:
         pdf_binary = await file.read()
         admitted, cost = await _acquire_docling_gate(pdf_binary, record_name)
         if not admitted:
+            return _backpressure_response()
+        # PIPESHUB_CAPACITY_PROFILE=auto only: this service runs the conversion, so it reserves it, once,
+        # with the class the caller sent. The indexing caller holds no tokens while it waits on this call.
+        try:
+            member_permit = await reserve_or_adopt(
+                None, docling_demand(parse_class(x_parse_class)), deadline_s=DOCLING_GATE_TIMEOUT_SECONDS
+            )
+        except AdmissionTimeout:
             return _backpressure_response()
 
         service = docling_service
@@ -273,7 +293,7 @@ async def parse_pdf_endpoint(
         # cancelling the task.
         abandon = asyncio.Event()
         parse_task = spawn_in_request(
-            _parse_holding_gate(service, record_name, pdf_binary, page_range, cost, abandon),
+            _parse_holding_gate(service, record_name, pdf_binary, page_range, cost, abandon, member_permit),
             name=f"docling-parse:{record_name}",
         )
         handed_off = True
@@ -313,6 +333,8 @@ async def parse_pdf_endpoint(
     finally:
         if not handed_off:
             _release_docling_gate(cost)
+            if member_permit is not None:
+                member_permit.release()
 
 
 # Strong references (the loop keeps only weak ones, and a parse abandoned by
@@ -337,6 +359,7 @@ async def _parse_holding_gate(
     page_range: tuple[int, int] | None,
     cost: int,
     abandon: asyncio.Event | None = None,
+    member_permit: Permit | None = None,
 ) -> str:
     try:
         if abandon is not None and lanes_active():
@@ -348,6 +371,8 @@ async def _parse_holding_gate(
         return await asyncio.to_thread(serialize_docling_doc, doc)
     finally:
         _release_docling_gate(cost)
+        if member_permit is not None:
+            member_permit.release()
 
 
 def _parse_failure_response(error_code: str, error: str) -> JSONResponse:

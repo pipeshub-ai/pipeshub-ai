@@ -4,7 +4,8 @@ import {
   ConnectorServiceResponse,
 } from '../../../libs/commands/connector_service/connector.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { Response } from 'express';
+import { Response, Router } from 'express';
+import { bindPathLogFields } from '../../../libs/middlewares/safe-path-params.middleware';
 import { isLocalFsConnector } from '../../../utils/local-fs-utils';
 import {
   DesktopPresence,
@@ -42,6 +43,18 @@ export { retryAfterToSeconds, SERVICE_UNAVAILABLE_MESSAGE };
  */
 export const handleBackendError = (error: unknown, operation: string): Error =>
   mapBackendError(error, operation);
+
+/**
+ * Names the connector (and record) a request is about on every line it writes: the service call
+ * lines, the error line and the access line. Register after `guardPathParams`.
+ */
+export const bindConnectorLogFields = (router: Router): void => {
+  bindPathLogFields(router, {
+    connectorId: 'connector_id',
+    connectorType: 'connector_type',
+    recordId: 'record_id',
+  });
+};
 
 // Helper function to execute connector service commands
 export const executeConnectorCommand = async <T = unknown>(
@@ -109,11 +122,14 @@ export const fetchConnectorInstanceSummary = async (
   connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
+  options: Pick<ConnectorServiceCommandOptions, 'timeoutMs'> = {},
 ): Promise<ConnectorInstanceSummary> => {
   const response = await executeConnectorCommand(
     `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
     HttpMethod.GET,
     headers,
+    undefined,
+    options,
   );
 
   if (!(response.statusCode >= 200 && response.statusCode < 300)) {

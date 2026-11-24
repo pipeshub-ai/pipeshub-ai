@@ -57,13 +57,15 @@ _DAY_MONTH = re.compile(
 # "9–11 September 2025", "Jan–Mar 2025".
 _RANGE_END_MONTH = re.compile(rf"^(?P<mon>{_MONTH_NAMES})\.?(?:,?\s*(?P<y>\d{{4}}))?$", re.IGNORECASE)
 _RANGE_END_DAY = re.compile(rf"^(?P<d>\d{{1,2}}){ORDINAL}(?:(?:,\s*|\s+)(?P<y>\d{{4}}))?$", re.IGNORECASE)
-# Starts only at the first space of a run, so a long run is not scanned again from each of its spaces.
-_RANGE_SEPARATOR = re.compile(r"(?<!\s)(?:\s*[–—‒/-]\s*|\s+(?:to|through|thru|until|till)\s+)", re.IGNORECASE)
+# A range's separator: a dash or slash with any spaces around it, or one of these words between spaces.
+# Each word is matched as one literal under IGNORECASE, so it folds case as the regex it replaces did
+# ("UNTIL", and "İ" or "ı" for the "i" of "until" and "till").
+_RANGE_DASHES = frozenset("–—‒/-")
+_RANGE_WORDS = tuple(re.compile(word, re.IGNORECASE) for word in ("to", "through", "thru", "until", "till"))
 _FROM = re.compile(r"^from\s+", re.IGNORECASE)
 _BETWEEN = re.compile(r"^between\s+", re.IGNORECASE)
-# Only after a leading "between": "2024-01-01 and later" is no range. Starts only at the
-# first space of a run, like _RANGE_SEPARATOR, so a long run is not rescanned from each space.
-_AND = re.compile(r"(?<!\s)\s+and\s+", re.IGNORECASE)
+# Only after a leading "between": "2024-01-01 and later" is no range.
+_AND_WORDS = (re.compile("and", re.IGNORECASE),)
 _YEAR_FIRST = re.compile(r"^(?P<y>\d{4})(?P<sep>[/.])(?P<m>\d{1,2})(?P=sep)(?P<d>\d{1,2})$")
 # A dotted date is the European form, day first: dateparser reads "10.09.2026" as October 9.
 _DOTTED = re.compile(r"^(?P<d>\d{1,2})\.(?P<m>\d{1,2})\.(?P<y>\d{4})$")
@@ -234,6 +236,45 @@ def _date_part(text: str) -> _Part | None:
     return None
 
 
+def _skip_spaces(text: str, start: int) -> int:
+    end = start
+    while end < len(text) and text[end].isspace():
+        end += 1
+    return end
+
+
+def _separators(
+    text: str, words: tuple[re.Pattern[str], ...], dashes: frozenset[str] = frozenset(),
+) -> list[tuple[int, int]]:
+    """The ``(start, end)`` of each separator in ``text``, left to right: a dash
+    with the spaces around it, or a word with spaces on both sides. What
+    ``finditer`` gave for ``(?<!\\s)(?:\\s*[<dashes>]\\s*|\\s+(?:<words>)\\s+)``, in one
+    pass: a separator starts only where no space precedes it, so each run of
+    spaces is read once, however long, and none is rescanned from its spaces."""
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while start < len(text):
+        if start and text[start - 1].isspace():
+            start += 1
+            continue
+        word_start = _skip_spaces(text, start)
+        end = None
+        if word_start < len(text) and text[word_start] in dashes:
+            end = _skip_spaces(text, word_start + 1)
+        elif word_start > start:
+            for word in words:
+                found = word.match(text, word_start)
+                if found and found.end() < len(text) and text[found.end()].isspace():
+                    end = _skip_spaces(text, found.end())
+                    break
+        if end is None:
+            start += 1
+            continue
+        spans.append((start, end))
+        start = end
+    return spans
+
+
 def _range_ends(text: str) -> tuple[str, str] | None:
     """The two ends of a range, split at the first separator where both read as
     dates and one names a month ("12/25" is a day, not a range). ISO's own hyphens
@@ -242,9 +283,9 @@ def _range_ends(text: str) -> tuple[str, str] | None:
     between = _BETWEEN.match(text)
     if between:
         text = text[between.end():]
-    separators = [*_RANGE_SEPARATOR.finditer(text), *(_AND.finditer(text) if between else ())]
-    for separator in separators:
-        left, right = text[: separator.start()], text[separator.end():]
+    separators = [*_separators(text, _RANGE_WORDS, _RANGE_DASHES), *(_separators(text, _AND_WORDS) if between else ())]
+    for start, end in separators:
+        left, right = text[:start], text[end:]
         if _ISO_DATE.match(left) and _ISO_DATE.match(right):
             return left, right
         first, last = _date_part(left), _date_part(right)

@@ -189,11 +189,6 @@ describe('what a restore says', () => {
     expect(utils.orderForRestore([inDocs, item('solo'), docs]).map((i) => i.id)).toEqual(['solo', 'docs', 'a']);
   });
 
-  it('goes back to the last page that still has rows', () => {
-    expect(utils.pageAfterRemoval(3, 25, 51)).toBe(3);
-    expect(utils.pageAfterRemoval(3, 25, 50)).toBe(2);
-    expect(utils.pageAfterRemoval(2, 25, 0)).toBe(1);
-  });
 });
 
 describe('the page', () => {
@@ -329,6 +324,98 @@ describe('the page', () => {
     await screen.findByText('Nothing was deleted recently');
     expect(api.count(`GET ${KB}/${KB_ID}/trash`)).toBe(2);
     expect(toasts()).toEqual([]);
+  });
+
+  const pageOf = (n: number, ids: string[], extra: Partial<TrashListResponse['pagination']> = {}) =>
+    page(ids.map((id) => item(id)), {
+      pagination: { page: n, limit: 25, totalCount: 60, totalPages: 3, totalCapped: false, nextCursor: null, ...extra },
+    });
+  const trashParams = (api: ReturnType<typeof fakeApi>) =>
+    api.sent.filter((r) => r.url === `${KB}/${KB_ID}/trash`).map((r) => r.config.params);
+
+  it('pages forward with the cursor the server gave, and back with the one used before', async () => {
+    const api = render({
+      [`GET ${KB}/${KB_ID}/trash`]: (config) => {
+        const cursor = config.params?.cursor;
+        if (cursor === 'c2') return { status: 200, data: pageOf(2, ['p2'], { nextCursor: 'c3' }) };
+        if (cursor === 'c3') return { status: 200, data: pageOf(3, ['p3']) };
+        return { status: 200, data: pageOf(1, ['p1'], { nextCursor: 'c2' }) };
+      },
+    });
+    await screen.findByRole('row', { name: 'p1.pdf' });
+    const next = () => screen.getByRole('button', { name: /Next/ });
+    const previous = () => screen.getByRole('button', { name: /Previous/ });
+    expect((previous() as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => fireEvent.click(next()));
+    await screen.findByRole('row', { name: 'p2.pdf' });
+    expect(screen.getByText('Showing 26–26 of 60')).toBeTruthy();
+    await act(async () => fireEvent.click(next()));
+    await screen.findByRole('row', { name: 'p3.pdf' });
+    await waitFor(() => expect((next() as HTMLButtonElement).disabled).toBe(true));
+    await act(async () => fireEvent.click(previous()));
+    await screen.findByRole('row', { name: 'p2.pdf' });
+    await act(async () => fireEvent.click(previous()));
+    await screen.findByRole('row', { name: 'p1.pdf' });
+
+    expect(trashParams(api)).toEqual([
+      { page: 1, limit: 25 },
+      { page: 2, limit: 25, cursor: 'c2' },
+      { page: 3, limit: 25, cursor: 'c3' },
+      { page: 2, limit: 25, cursor: 'c2' },
+      { page: 1, limit: 25 },
+    ]);
+  });
+
+  it('shows a capped total as a lower bound', async () => {
+    render({
+      [`GET ${KB}/${KB_ID}/trash`]: {
+        status: 200,
+        data: pageOf(1, ['p1', 'p2'], { totalCount: 10000, totalPages: 400, totalCapped: true, nextCursor: 'c2' }),
+      },
+    });
+    expect(await screen.findByText('Showing 1–2 of 10,000+')).toBeTruthy();
+  });
+
+  it('goes back a page when a restore emptied the one shown', async () => {
+    let restored = false;
+    const api = render({
+      [`GET ${KB}/${KB_ID}/trash`]: (config) =>
+        config.params?.cursor === 'c2'
+          ? { status: 200, data: restored ? pageOf(2, [], { totalCount: 25 }) : pageOf(2, ['last']) }
+          : { status: 200, data: pageOf(1, ['p1'], { nextCursor: restored ? null : 'c2' }) },
+      [`POST ${KB}/record/last/restore`]: () => {
+        restored = true;
+        return { status: 200, data: { success: true } };
+      },
+    });
+    await screen.findByRole('row', { name: 'p1.pdf' });
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Next/ })));
+    const row = await screen.findByRole('row', { name: 'last.pdf' });
+
+    await act(async () => {
+      fireEvent.click(within(row).getByRole('button', { name: /Restore/ }));
+    });
+
+    await screen.findByRole('row', { name: 'p1.pdf' });
+    expect(trashParams(api).at(-1)).toEqual({ page: 1, limit: 25 });
+  });
+
+  it('starts again from the first page when the server refuses a cursor', async () => {
+    const api = render({
+      [`GET ${KB}/${KB_ID}/trash`]: (config) =>
+        config.params?.cursor
+          ? { status: 400, data: { error: { message: 'Start again from the first page.' } } }
+          : { status: 200, data: pageOf(1, ['p1'], { nextCursor: 'c2' }) },
+    });
+    await screen.findByRole('row', { name: 'p1.pdf' });
+
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Next/ })));
+
+    await waitFor(() => expect(trashParams(api)).toHaveLength(3));
+    expect(trashParams(api).at(-1)).toEqual({ page: 1, limit: 25 });
+    expect(screen.getByRole('row', { name: 'p1.pdf' })).toBeTruthy();
+    expect(screen.queryByText('Start again from the first page.')).toBeNull();
   });
 
   it('goes back to the collection', async () => {

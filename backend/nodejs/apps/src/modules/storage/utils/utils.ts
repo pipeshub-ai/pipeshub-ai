@@ -10,6 +10,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { localEtagOf, normalizeEtag } from './storage-fingerprint';
 import { Logger } from '../../../libs/services/logger.service';
+import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
 import { getMimeType } from '../mimetypes/mimetypes';
 import {
   Document,
@@ -371,7 +372,6 @@ export function validateFileAndDocumentName(
     );
   }
 
-
   if (documentName?.includes('/')) {
     throw new BadRequestError(
       `File "${fileNameForError}": The document name cannot contain a forward slash.`,
@@ -484,15 +484,57 @@ export function getStorageVendor(storageType: string): StorageVendor {
  * descriptor, which is the same file the bytes come from: with `ifMatch` a download of any other identity answers 412 before a byte
  * is sent, and the response always carries `ETag`.
  */
-export function serveFileFromLocalStorage(document: Document, res: Response, version?: number, ifMatch?: string) {
+export type ByteRange = { start: number; end: number };
+
+/**
+ * Reads one `Range: bytes=...` header against a file of `size` bytes (RFC 9110 section 14.1.2).
+ * `null` means "serve the whole file": no header, a multi-range, or a header that is not a valid range.
+ * `'unsatisfiable'` means the range starts at or after the end (416). An end past the last byte is clamped.
+ */
+export function parseByteRange(
+  header: string | undefined,
+  size: number,
+): ByteRange | 'unsatisfiable' | null {
+  if (header === undefined || header === '') return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match || (match[1] === '' && match[2] === '')) return null;
+  if (match[1] === '') {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix === 0) return 'unsatisfiable';
+    return size === 0
+      ? 'unsatisfiable'
+      : { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+  const start = Number(match[1]);
+  const end = match[2] === '' ? size - 1 : Number(match[2]);
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    (match[2] !== '' && end < start)
+  )
+    return null;
+  if (start >= size) return 'unsatisfiable';
+  return { start, end: Math.min(end, size - 1) };
+}
+
+export function serveFileFromLocalStorage(
+  document: Document,
+  res: Response,
+  version?: number,
+  ifMatch?: string,
+  rangeHeader?: string,
+) {
   try {
-    const localFilePath = version !== undefined
-      ? (document.versionHistory?.[version]?.local?.localPath ||
-         document.versionHistory?.[version]?.local?.url)
-      : (document.local?.localPath);
+    const localFilePath =
+      version !== undefined
+        ? document.versionHistory?.[version]?.local?.localPath ||
+          document.versionHistory?.[version]?.local?.url
+        : document.local?.localPath;
 
     if (!localFilePath) {
-      throw new NotFoundError('Local file path not found for requested version');
+      throw new NotFoundError(
+        'Local file path not found for requested version',
+      );
     }
 
     // DON'T use new URL() - it treats # as a fragment identifier!
@@ -542,8 +584,11 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
       );
     }
     let etag: string;
+    let size: number;
     try {
-      etag = localEtagOf(fs.fstatSync(fd, { bigint: true }));
+      const stat = fs.fstatSync(fd, { bigint: true });
+      etag = localEtagOf(stat);
+      size = Number(stat.size);
     } catch (err) {
       fs.closeSync(fd);
       throw err;
@@ -555,6 +600,17 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
       );
     }
     res.setHeader('ETag', `"${etag}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    // One range of the same open file; the ETag above names exactly these bytes.
+    const range = parseByteRange(rangeHeader, size);
+    if (range === 'unsatisfiable') {
+      fs.closeSync(fd);
+      res.status(416);
+      res.setHeader('Content-Range', `bytes */${String(size)}`);
+      res.end();
+      return;
+    }
 
     // Get mime type from extension
     const mimeType = getMimeType(document.extension);
@@ -571,8 +627,20 @@ export function serveFileFromLocalStorage(document: Document, res: Response, ver
     );
 
     // Stream the file
-    const fileStream = createReadStream(filePath, { fd });
+    if (range) {
+      res.status(206);
+      res.setHeader(
+        'Content-Range',
+        `bytes ${String(range.start)}-${String(range.end)}/${String(size)}`,
+      );
+      res.setHeader('Content-Length', String(range.end - range.start + 1));
+    }
+    const fileStream = createReadStream(
+      filePath,
+      range ? { fd, start: range.start, end: range.end } : { fd },
+    );
     fileStream.pipe(res);
+    releaseOnClientClose(res, fileStream);
 
     // Handle streaming errors
     fileStream.on('error', (error) => {

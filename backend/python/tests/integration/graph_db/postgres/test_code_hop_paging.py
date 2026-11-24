@@ -13,6 +13,7 @@ import pytest
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres import codegraph as cg
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
+from tests.support import plan_gate
 
 from .pg_support import new_org
 
@@ -252,8 +253,8 @@ def _lit(v: object) -> str:
     return "'" + str(v).replace("'", "''") + "'"
 
 
-async def _generic_plan(pg_db, org: str, anchors: list[str], types: list[str], limit: int, *, out: bool, inn: bool, after: str) -> str:
-    """The plan a prepared statement takes from its sixth run (forced here), under the page's planner profile, for these arguments."""
+async def _generic_plan(pg_db, org: str, anchors: list[str], types: list[str], limit: int, *, out: bool, inn: bool, after: str) -> tuple[str, object]:
+    """The plan a prepared statement takes from its sixth run (forced here), under the page's planner profile, for these arguments: as text, run, and as JSON."""
     sql, args = cg._hop_statement(org, "blocks", anchors, types, limit, out=out, inn=inn, both=False, after=after)
 
     async def go(tx) -> str:
@@ -261,8 +262,9 @@ async def _generic_plan(pg_db, org: str, anchors: list[str], types: list[str], l
         await tx._con.execute("PREPARE hop_generic AS " + sql.replace("/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */", ""))
         await tx.fetchval("SELECT set_config('plan_cache_mode', 'force_generic_plan', true)")
         rows = await tx._con.fetch("EXPLAIN (ANALYZE, BUFFERS, COSTS OFF) EXECUTE hop_generic(" + ", ".join(_lit(a) for a in args) + ")")
+        shape = await tx._con.fetchval("EXPLAIN (FORMAT JSON) EXECUTE hop_generic(" + ", ".join(_lit(a) for a in args) + ")")
         await tx._con.execute("DEALLOCATE hop_generic")
-        return "\n".join(r[0] for r in rows)
+        return "\n".join(r[0] for r in rows), shape
     with _bound(org):
         return await pg_db.run(go)
 
@@ -284,10 +286,10 @@ async def test_the_generic_plan_of_the_page_reads_an_index_range_of_about_a_page
         if state == "analysed":
             await _admin("ANALYZE graph.edges")
         for name, (anchors, out, inn, after) in cases.items():
-            plan = await _generic_plan(pg_db, org, anchors, ["CALLS"], 200, out=out, inn=inn, after=after)
+            plan, shape = await _generic_plan(pg_db, org, anchors, ["CALLS"], 200, out=out, inn=inn, after=after)
             root = next(line for line in plan.splitlines() if line.strip().startswith("Buffers:"))
             touched = sum(int(part.split("=")[1]) for part in root.split() if part.startswith(("hit=", "read=")))
-            assert "Seq Scan on" not in plan and "Bitmap Heap Scan" not in plan, (state, name, plan)
+            assert "Seq Scan on" not in plan and not plan_gate.unkeyed(shape, "edges", r"\b(from_id|to_id)\)?(::text)? = |ROW\("), (state, name, plan)
             assert touched < 4000, (state, name, touched, plan)
             if after:
                 assert re.search(r"Index Cond: .*ROW\(", plan), plan                                                  # the cursor is a bound of the index scan

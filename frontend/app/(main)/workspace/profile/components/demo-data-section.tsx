@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Switch, Link, Separator } from '@radix-ui/themes';
 import { useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { useDemoSwitch } from '@/app/(main)/workspace/connectors/demo-data/use-demo-switch';
+import { AboutDemoDataLink } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { SettingsSection } from './settings-section';
 
 export interface DemoDataSectionProps {
@@ -84,6 +85,8 @@ export function DemoDataSection({ isAdmin }: DemoDataSectionProps) {
             />
           </>
         )}
+        <Separator size="4" />
+        <AboutDemoDataLink isAdmin={isAdmin} size="2" />
       </SettingsSection>
     </Box>
   );

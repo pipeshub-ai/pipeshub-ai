@@ -6,8 +6,6 @@ indexing and query services can share a single in-process model load.
 
 from __future__ import annotations
 
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
-
 import asyncio
 import base64
 import contextlib
@@ -20,21 +18,24 @@ import struct
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
-import anyio
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.body_limit import BodyLimitMiddleware
 from app.api.validation_errors import input_free_422
+from app.capacity.admission import parse_class, reserve_or_adopt
+from app.capacity.budget_policy import EMBED_WEIGHT, QUERY_EMBED_WEIGHT, Demand, Family
+from app.capacity.member_budget import AdmissionTimeout
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -46,15 +47,29 @@ from app.config.constants.ai_models import (
 from app.config.constants.service import config_node_constants
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.core.org_context import spawn_detached
-from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
+from app.edition import check_runtime_settings
+from app.services.resource_governor.probe import (
+    effective_cpu_count,
+    effective_cpu_source,
+)
 from app.telemetry.setup import setup_telemetry
-from app.utils.env_utils import env_positive_int
+from app.utils.embedding_precision import (
+    INT8,
+    QUANTIZER_VERSION,
+    PrecisionDecision,
+    PrecisionSelector,
+    model_cache_state_path,
+)
+from app.utils.env_utils import bind_host, bind_port, env_positive_int, hf_hub_offline
 from app.utils.logger import create_logger, install_log_redaction
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# Stop at load on a store setting this edition does not run.
+check_runtime_settings()
+
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 
     from sentence_transformers import SentenceTransformer
     from transformers import PreTrainedTokenizerBase
@@ -80,6 +95,34 @@ def _omp_threads_per_encode() -> int:
     return int(raw) if raw.isdecimal() and int(raw) > 0 else 2
 
 
+def _planned_slots() -> int | None:
+    """``PIPESHUB_CAPACITY_PROFILE=auto`` only: this process's share of the plan's encode slots, else ``None``."""
+    from app.capacity.runtime import current_plan
+
+    plan = current_plan()
+    if plan is None or plan.widths is None:
+        return None
+    return max(2, plan.widths.embed_slots // max(1, plan.widths.embed_processes))
+
+
+def default_executor_threads(slots: int, reserved: int) -> int:
+    """Threads for the loop's default executor: every encode slot runs at once, plus the reserved query slots
+    and two for the model loads. The stdlib default is ``min(32, cpus + 4)``, which caps 74 slots at 32."""
+    return slots + max(0, reserved) + 2
+
+
+def configure_default_executor(loop: asyncio.AbstractEventLoop, slots: int, reserved: int) -> None:
+    """Size the loop's default executor to the slots (``auto`` only); with the flag off nothing changes."""
+    from app.capacity.knobs import capacity_profile
+
+    if capacity_profile() == "auto":
+        from concurrent.futures import ThreadPoolExecutor
+
+        loop.set_default_executor(
+            ThreadPoolExecutor(max_workers=default_executor_threads(slots, reserved), thread_name_prefix="embed")
+        )
+
+
 def _default_max_concurrent_embeddings() -> int:
     """Encode slots when not set explicitly.
 
@@ -88,6 +131,8 @@ def _default_max_concurrent_embeddings() -> int:
     stretch every batch (queries included). Slots are sized so the threads
     fill the CPUs once. Larger containers keep one slot per CPU.
     """
+    if (planned := _planned_slots()) is not None:
+        return planned
     cpus = effective_cpu_count()
     if cpus <= _SMALL_TIER_MAX_CPUS:
         return max(2, cpus // _omp_threads_per_encode())
@@ -357,6 +402,14 @@ class ModelListItem(BaseModel):
     max_seq_length: int | None = None
     # Tokens the model adds to every input from its default prompt; they count against max_seq_length.
     prompt_tokens: int = 0
+    # How the loaded weights are stored (fp32 or int8-w) and why; None until the model is loaded.
+    precision: str | None = None
+    quantizer_version: str | None = None
+    precision_reason: str | None = None
+    precision_intent: str | None = None
+    precision_fallback: bool | None = None
+    # What the next load will use, once a decision exists (the decision is taken once per process).
+    precision_next: str | None = None
 
 
 class ModelListResponse(BaseModel):
@@ -385,6 +438,31 @@ class EncodePriority(StrEnum):
 
 class EncodeAbandoned(Exception):
     """The caller left before its vectors were wanted; nobody will read the result."""
+
+
+# The longest an encode waits for its member tokens; a wait is always bounded.
+# How long an encode that holds an encode slot waits for its member tokens before it answers 429. Short on purpose:
+# the wait is spent holding an encode slot and a model lease, so a long one would let bulk requests queued for tokens
+# take every slot; a caller that is told to back off (Retry-After) retries and queues behind the others instead.
+EMBED_PERMIT_WAIT_S = 10.0
+EMBED_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
+
+
+def embed_class(priority: EncodePriority, header: str | None) -> str | None:
+    """The cost class an encode runs under: a search query is small work, an indexing batch carries its record's
+    class in ``X-Parse-Class`` (no header: small, as light-format records send none), and a value that is not a class
+    is unclassified (big work), never trusted."""
+    if priority is EncodePriority.QUERY:
+        return "small"
+    if header is None:
+        return "small"
+    return parse_class(header)
+
+
+def embed_demand(priority: EncodePriority, cls: str | None) -> Demand:
+    if priority is EncodePriority.QUERY:
+        return Demand(Family.QUERY_EMBED, QUERY_EMBED_WEIGHT, 0, "small")
+    return Demand(Family.EMBED, EMBED_WEIGHT, 0, cls)
 
 
 class EncodeGate:
@@ -431,6 +509,8 @@ class EncodeGate:
             EncodePriority.BULK: deque(),
         }
         self._clock = clock
+        # Class rank of each waiting bulk request (0 = small): under PARSE_ADMISSION=classes small waits ahead of large and huge.
+        self._rank: dict[asyncio.Future[int], int] = {}
         self._next_token = 0
         # token -> (priority, time taken); a token tells a release which slot it frees.
         self._held: dict[int, tuple[EncodePriority, float]] = {}
@@ -528,15 +608,27 @@ class EncodeGate:
             },
         }
 
-    async def acquire(self, priority: EncodePriority) -> int:
-        """Take a slot; the returned token goes back to ``release`` to say which one."""
+    async def acquire(self, priority: EncodePriority, *, rank: int = 0) -> int:
+        """Take a slot; the returned token goes back to ``release`` to say which one.
+
+        *rank* orders the waiting bulk requests: a lower rank is served first, first come first served inside a
+        rank. Left at 0 for every request, the queue is the plain arrival order it always was."""
         started = self._clock()
         if not self.waiting(priority) and self._has_room(priority):
             token = self._take(priority)
             self._waits[priority].append(0.0)
             return token
         waiter: asyncio.Future[int] = asyncio.get_running_loop().create_future()
-        self._waiting[priority].append(waiter)
+        queue = self._waiting[priority]
+        if rank:
+            self._rank[waiter] = rank
+            queue.append(waiter)
+        elif not self._rank:
+            queue.append(waiter)  # nobody waits with a rank: the plain arrival order
+        else:
+            # Behind every waiter of rank 0, ahead of the first of a higher rank.
+            at = next((i for i, w in enumerate(queue) if self._rank.get(w, 0) > 0 and not w.done()), len(queue))
+            queue.insert(at, waiter)
         # Settles the queue at once if there is room after all (its head
         # was only waiters that have since given up).
         self._wake()
@@ -547,6 +639,8 @@ class EncodeGate:
                 # Granted, then cancelled before it could run: hand it back.
                 self.release(priority, waiter.result())
             raise
+        finally:
+            self._rank.pop(waiter, None)
         self._waits[priority].append(self._clock() - started)
         return token
 
@@ -568,6 +662,17 @@ class EncodeGate:
             yield
         finally:
             self.release(priority, token)
+
+
+def _stamp_precision(model: object, decision: PrecisionDecision) -> None:
+    """Keep the decision on the model object itself, so the response header names the weights that encoded.
+
+    Looking the precision up by name after the encode would race a reload that decides again.
+    """
+    try:
+        model._pipeshub_precision = decision  # type: ignore[attr-defined]
+    except Exception:
+        logger.debug("could not record the precision on %s", type(model).__name__, exc_info=True)
 
 
 def release_memory() -> None:
@@ -633,6 +738,7 @@ class ModelManager:
         self._download_status: dict[str, DownloadStatus] = {}
         self._download_status_lock = threading.Lock()
         self._prepare_tasks: dict[str, asyncio.Task] = {}
+        self._precisions: dict[str, PrecisionDecision] = {}
 
     @staticmethod
     def _cache_key(model_name: str) -> str:
@@ -643,6 +749,54 @@ class ModelManager:
 
     def list_loaded_models(self) -> list[str]:
         return list(self._models)
+
+    def precision_of(self, model_name: str) -> PrecisionDecision | None:
+        return self._precisions.get(self._cache_key(model_name))
+
+    def _load_with_precision(self, load: Any, model_name: str) -> tuple[Any, PrecisionDecision]:  # noqa: ANN401
+        """Load with *load*, then back its linear layers with the int8 file when the decision says so.
+
+        Runs on a worker thread. The fp32 model is built first (its weights are
+        mapped, not read), and the linear layers are swapped only once the int8
+        file is verified and mapped. On any failure the model stays fp32, the
+        reason is reported, and the saved decision is left alone so int8 is
+        tried again on the next start.
+        """
+        decision = precision_selector.decide(self._device)
+        model = load()
+        if decision.precision != INT8:
+            _stamp_precision(model, decision)
+            return model, decision
+        try:
+            from app.utils.int8_file import (
+                Int8FileError,
+                apply_int8_file,
+                eligible_linears,
+                ensure_int8_file,
+                source_keys,
+            )
+
+            root = getattr(model[0], "auto_model", model)
+
+            def key_map_for(file_keys: set[str]) -> dict[str, str]:
+                return source_keys(list(eligible_linears(root)), file_keys)
+
+            from huggingface_hub import hf_hub_download
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            # Only the one weights file is needed; a whole-snapshot lookup fails when an unrelated file is not cached.
+            snapshot = Path(hf_hub_download(model_name, "model.safetensors", local_files_only=True)).parent
+            path = ensure_int8_file(model_name, snapshot, key_map_for, Path(HF_HUB_CACHE) / "int8-weights")
+            if apply_int8_file(root, path) == 0:
+                raise Int8FileError("the model has no linear layers to convert")
+        except Exception as exc:
+            logger.exception("Backing the embedding model with int8 weights failed")
+            decision = precision_selector.downgrade_for_boot(f"{type(exc).__name__}: {exc}")
+            _stamp_precision(model, decision)
+            return model, decision
+        release_memory()
+        _stamp_precision(model, decision)
+        return model, decision
 
     @staticmethod
     def _default_prompt(model: object) -> str:
@@ -868,6 +1022,7 @@ class ModelManager:
             self._last_used.pop(key, None)
             self._locks.pop(key, None)
             self._counters.pop(key, None)
+            self._precisions.pop(key, None)
         return dropped
 
     async def run_idle_reaper(self) -> None:
@@ -952,12 +1107,7 @@ class ModelManager:
                             model_name, status, self._download_status_lock
                         )
                     except Exception as download_exc:
-                        offline = os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in {
-                            "1",
-                            "true",
-                            "yes",
-                        }
-                        if offline:
+                        if hf_hub_offline():
                             err = RuntimeError(
                                 "HuggingFace offline mode is on (HF_HUB_OFFLINE=1), so "
                                 f"'{model_name}' cannot be downloaded. Set HF_HUB_OFFLINE=0 "
@@ -985,7 +1135,7 @@ class ModelManager:
                         status.updated_at = time.time()
                     return model
 
-            model = await asyncio.to_thread(_load)
+            model, precision = await asyncio.to_thread(self._load_with_precision, _load, model_name)
             # Best effort: a model that can embed must load even if its counting
             # tokenizer cannot be prepared; the first count tries again.
             try:
@@ -999,6 +1149,7 @@ class ModelManager:
                     exc_info=True,
                 )
             self._models[cache_key] = model
+            self._precisions[cache_key] = precision
             self._last_used[cache_key] = time.monotonic()
             logger.info("Embedding model '%s' loaded", model_name)
             return model
@@ -1068,8 +1219,13 @@ class ModelManager:
         trust_remote_code: bool = False,
         priority: EncodePriority = EncodePriority.BULK,
         should_stop: Callable[[], Awaitable[bool]] | None = None,
+        parse_class: str | None = None,
+        witness: dict[str, Any] | None = None,
     ) -> list[list[float]]:
         """Embed ``texts``.
+
+        ``witness``, when given, receives the precision decision of the model object that
+        did the encoding (key ``decision``), for the response header.
 
         ``should_stop`` (for a request: whether the client has gone) is asked
         once the slot is held and again before the vectors are returned. A
@@ -1103,14 +1259,26 @@ class ModelManager:
                     convert_to_numpy=True,
                     show_progress_bar=False,
                 )
+                if witness is not None:
+                    witness["decision"] = getattr(model, "_pipeshub_precision", None)
                 return embeddings.tolist()
 
-            token = await self._encode_gate.acquire(priority)
+            cls = embed_class(priority, parse_class)
+            token = await self._encode_gate.acquire(priority, rank=0 if cls == "small" else 1)
+            try:
+                # PIPESHUB_CAPACITY_PROFILE=auto: the encode holds its member tokens (embed, or query_embed for a search),
+                # with the class of its record; no component upstream reserves them (reserved once, here).
+                permit = await reserve_or_adopt(None, embed_demand(priority, cls), deadline_s=EMBED_PERMIT_WAIT_S)
+            except BaseException:
+                self._encode_gate.release(priority, token)
+                raise
             try:
                 if await _abandoned("before start"):
                     raise EncodeAbandoned
                 work = spawn_detached(asyncio.to_thread(_encode), name="embedding-encode")
             except BaseException:
+                if permit is not None:
+                    permit.release()
                 self._encode_gate.release(priority, token)
                 raise
             # The thread outlives a cancelled request, so it keeps the model leased
@@ -1120,6 +1288,8 @@ class ModelManager:
 
             def _release(done: asyncio.Future[list[list[float]]]) -> None:
                 self._drop_lease(lease_key)
+                if permit is not None:
+                    permit.release()
                 self._encode_gate.release(priority, token)
                 if not done.cancelled():
                     done.exception()  # mark retrieved when nobody is waiting any more
@@ -1131,6 +1301,9 @@ class ModelManager:
             return vectors
 
 
+precision_selector = PrecisionSelector(
+    state_path=model_cache_state_path, quantizer_version=QUANTIZER_VERSION,
+)
 model_manager = ModelManager()
 
 
@@ -1195,6 +1368,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     mark_process_non_dumpable()
     install_log_redaction()
     app.state.model_manager = model_manager
+    configure_default_executor(asyncio.get_running_loop(), MAX_CONCURRENT_EMBEDDINGS, QUERY_RESERVED_SLOTS)
     logger.info(
         "Starting embedding server (max_concurrency=%d, "
         "slots reserved for search queries=%d, model idle unload=%ss)",
@@ -1282,6 +1456,21 @@ app.add_middleware(RequestContextMiddleware)
 telemetry = setup_telemetry(app, service_name="embedding_service")
 
 
+PRECISION_HEADER = "X-Embedding-Precision"
+PRECISION_FALLBACK_HEADER = "X-Embedding-Precision-Fallback"
+
+
+def _precision_fields(decision: PrecisionDecision | None) -> dict[str, Any]:
+    known = isinstance(decision, PrecisionDecision)
+    return {
+        "precision": decision.precision if known else None,
+        "quantizer_version": decision.quantizer_version if known else None,
+        "precision_reason": decision.reason if known else None,
+        "precision_intent": decision.intent if known else None,
+        "precision_fallback": decision.fallback if known else None,
+    }
+
+
 @app.get("/health")
 async def health_check() -> JSONResponse:
     try:
@@ -1295,6 +1484,7 @@ async def health_check() -> JSONResponse:
                 "status": status,
                 "loaded_models": loaded,
                 "default_model": DEFAULT_EMBEDDING_MODEL,
+                **_precision_fields(precision_selector.decision),
                 "cpu": {
                     "effective_cpus": effective_cpu_count(),
                     "source": effective_cpu_source(),
@@ -1316,6 +1506,15 @@ async def health_check() -> JSONResponse:
         )
 
 
+def _next_precision() -> str | None:
+    decision = precision_selector.decision
+    return decision.precision if isinstance(decision, PrecisionDecision) else None
+
+
+def _intent_of_decision() -> str:
+    return precision_selector.intent(getattr(model_manager, "_device", "cpu"))
+
+
 @app.get("/v1/models")
 async def list_models() -> ModelListResponse:
     created = int(time.time())
@@ -1323,12 +1522,17 @@ async def list_models() -> ModelListResponse:
         ModelListItem(
             id=name, created=created, max_seq_length=model_manager.max_seq_length(name),
             prompt_tokens=model_manager.prompt_tokens(name),
+            precision_next=_next_precision(),
+            **_precision_fields(model_manager.precision_of(name)),
         )
         for name in model_manager.list_loaded_models()
     ]
     if not models:
         models.append(
-            ModelListItem(id=DEFAULT_EMBEDDING_MODEL, created=created)
+            ModelListItem(
+                id=DEFAULT_EMBEDDING_MODEL, created=created,
+                precision_intent=_intent_of_decision(), precision_next=_next_precision(),
+            )
         )
     return ModelListResponse(data=models)
 
@@ -1388,17 +1592,14 @@ async def download_progress(model_name: str) -> JSONResponse:
     )
 
 
-async def _client_gone(request: Request) -> bool:
-    """Whether the client has disconnected.
-
-    ``Request.is_disconnected`` polls inside an already-cancelled scope; behind
-    a ``BaseHTTPMiddleware`` (the telemetry one) that cancel lands before the
-    disconnect is read, so it always answers False. Wait a moment for real.
-    The body is already read by now, so the only message left is a disconnect.
-    """
-    with anyio.move_on_after(0.005):
-        return (await request.receive())["type"] == "http.disconnect"
-    return False
+def _precision_headers(decision: object) -> dict[str, str]:
+    """Which weights computed these vectors: absent when the model reports none (a plain fp32 load of an older build)."""
+    if not isinstance(decision, PrecisionDecision):
+        return {}
+    headers = {PRECISION_HEADER: decision.precision}
+    if decision.fallback:
+        headers[PRECISION_FALLBACK_HEADER] = "1"
+    return headers
 
 
 @app.post("/v1/embeddings")
@@ -1406,6 +1607,7 @@ async def create_embeddings(
     request: EmbeddingRequest,
     http_request: Request,
     x_embedding_priority: Annotated[str | None, Header()] = None,
+    x_parse_class: Annotated[str | None, Header()] = None,
 ) -> EmbeddingResponse:
     # --- server-side policy checks (fail fast, before any I/O) ---
     if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
@@ -1424,6 +1626,7 @@ async def create_embeddings(
 
     texts = _normalize_input(request.input)
     encoding_format = request.encoding_format or "float"
+    witness: dict[str, Any] = {}
 
     try:
         vectors = await model_manager.encode(
@@ -1431,11 +1634,21 @@ async def create_embeddings(
             texts,
             trust_remote_code=request.trust_remote_code,
             priority=EncodePriority.from_header(x_embedding_priority),
-            should_stop=lambda: _client_gone(http_request),
+            should_stop=http_request.is_disconnected,
+            **({"parse_class": x_parse_class} if x_parse_class is not None else {}),
+            witness=witness,
         )
     except EncodeAbandoned:
         # Nobody is reading this; 499 is the conventional "client closed request".
         raise HTTPException(status_code=499, detail="Client closed request") from None
+    except AdmissionTimeout:
+        # The node is busy, not broken: no member tokens came free in time. The client treats a 429 with Retry-After as
+        # backpressure (its own bounded retry), not as a failure that feeds retry counts and circuit breakers.
+        raise HTTPException(
+            status_code=429,
+            detail="Embedding capacity is busy; retry shortly.",
+            headers={"Retry-After": str(EMBED_BACKPRESSURE_RETRY_AFTER_SECONDS)},
+        ) from None
     except Exception as exc:
         logger.exception("Embedding failed for model=%s", request.model)
         raise HTTPException(
@@ -1451,13 +1664,16 @@ async def create_embeddings(
         )
         for i, vec in enumerate(vectors)
     ]
-    return EmbeddingResponse(
-        data=data,
-        model=request.model,
-        usage=EmbeddingUsage(
-            prompt_tokens=token_estimate,
-            total_tokens=token_estimate,
-        ),
+    return JSONResponse(
+        EmbeddingResponse(
+            data=data,
+            model=request.model,
+            usage=EmbeddingUsage(
+                prompt_tokens=token_estimate,
+                total_tokens=token_estimate,
+            ),
+        ).model_dump(),
+        headers=_precision_headers(witness.get("decision")),
     )
 
 
@@ -1484,13 +1700,12 @@ async def tokenize(request: EmbeddingRequest) -> TokenizeResponse:
 
 
 def run(
-    host: str = "0.0.0.0",
+    host: str | None = None,
     port: int | None = None,
     reload: bool = False,
 ) -> None:
-    resolved_port = port or int(
-        os.getenv("EMBEDDING_SERVER_PORT", str(EMBEDDING_SERVER_PORT))
-    )
+    host = host or bind_host()
+    resolved_port = port if port is not None else bind_port(EMBEDDING_SERVER_PORT, "EMBEDDING_SERVER_PORT")
     uvicorn.run(
         "app.embedding_main:app",
         host=host,

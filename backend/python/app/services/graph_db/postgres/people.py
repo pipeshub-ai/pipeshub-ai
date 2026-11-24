@@ -21,6 +21,8 @@ from app.services.graph_db.postgres.base import _VALIDATOR, _arango, _doc, _ekey
 from app.services.graph_db.postgres.identity import IdentityMixin, _soft
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from app.core.db import Tx
 
 _ER = CollectionNames.ENTITY_RELATIONS.value
@@ -134,14 +136,15 @@ class PeopleMixin(IdentityMixin):
 
         try:
             return await self._q(go, transaction, write=True)
-        except Exception as e:
-            self.logger.error("Migrate person to user failed for user %s in org %s: %s", user_key, org_id, e)
+        except Exception:
             raise
 
     # ---- a principal by email -------------------------------------------------------------------------------------------------------
     @_soft(None)
-    async def get_entity_id_by_email(self, email: str, transaction: str | None = None) -> str | None:
+    async def get_entity_id_by_email(self, email: str, transaction: str | None = None, *, org_id: str) -> str | None:
         """The id of the user, else the group, else the person of the org with this email (case-insensitive). A failed read answers None."""
+        if not self._named_org(org_id):
+            return None
         found = await self._principals_by_email(_BY_EMAIL_COLLS, [email], transaction)
         if found is not None:      # the vetted read of graph_0006: the user, else the group, else the person; the lowest id (byte order, as COLLATE "C") of a kind
             return min(found, key=lambda r: (_BY_EMAIL_COLLS.index(r["coll"]), r["node_id"]))["node_id"] if found else None
@@ -150,11 +153,11 @@ class PeopleMixin(IdentityMixin):
         return rows[0]["id"] if rows else None
 
     @_soft(dict)
-    async def bulk_get_entity_ids_by_email(self, emails: list[str], transaction: str | None = None) -> dict[str, tuple[str, str, str]]:
+    async def bulk_get_entity_ids_by_email(self, emails: list[str], transaction: str | None = None, *, org_id: str) -> dict[str, tuple[str, str, str]]:
         """``{stored email: (id, collection, permission type)}`` of the users, groups and persons of the org whose email is one of ``emails`` (case-insensitive),
         keyed by the address as stored, as on Neo4j; an address held by more than one is the user's, else the group's. A failed read answers ``{}``."""
         wanted = sorted({e for e in emails if e})
-        if not wanted:
+        if not self._named_org(org_id) or not wanted:
             return {}
         found = await self._principals_by_email(_BY_EMAIL_COLLS, wanted, transaction)      # the vetted read of graph_0006
         if found is not None and all(isinstance(_doc(r["doc"]).get("email"), str) for r in found):
@@ -206,9 +209,9 @@ class PeopleMixin(IdentityMixin):
         return list(rows.values())
 
     async def replace_record_entity_relations(self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
-                                              transaction: str | None = None) -> None:
+                                              transaction: str | None = None, *, keep_edge_types: Collection[str] = ()) -> None:
         """Replaces the record's ``entityRelations`` edges of this ``origin`` (an edge without one is INFERRED) to nodes of ``to_collections`` with ``edges``;
-        no edges clears them. One statement: the new edges are written and only the record's other edges of that origin go, so a failed write leaves the old
+        no edges clears them, except those of ``keep_edge_types``. One statement: the new edges are written and only the record's other edges of that origin go, so a failed write leaves the old
         links, in or out of a transaction, and an edge of another origin stays. Every row is scoped to the ambient org."""
         if not record_id or not to_collections or not origin:
             raise ValueError("replacing a record's entity relations needs a record, collections and an origin")
@@ -223,9 +226,9 @@ class PeopleMixin(IdentityMixin):
             ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc
             RETURNING from_coll, from_id, to_coll, to_id, ekey),
             gone AS (DELETE FROM graph.edges d WHERE d.org_id = $1 AND d.coll = 'entityRelations' AND d.from_coll = 'records' AND d.from_id = $3
-                AND d.to_coll = ANY($4::text[]) AND coalesce(d.doc->>'origin', $5) = $6
+                AND d.to_coll = ANY($4::text[]) AND coalesce(d.doc->>'origin', $5) = $6 AND NOT (coalesce(d.doc->>'edgeType', '') = ANY($7::text[]))
                 AND NOT EXISTS (SELECT 1 FROM ins i WHERE (i.from_coll, i.from_id, i.to_coll, i.to_id, i.ekey) = (d.from_coll, d.from_id, d.to_coll, d.to_id, d.ekey)))
-            SELECT count(*) FROM ins""", current_org_id(), _j(rows), record_id, list(to_collections), EntityOrigin.INFERRED.value, origin),
+            SELECT count(*) FROM ins""", current_org_id(), _j(rows), record_id, list(to_collections), EntityOrigin.INFERRED.value, origin, list(keep_edge_types)),
                       transaction, write=True)
 
     async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str, transaction: str | None = None) -> int:

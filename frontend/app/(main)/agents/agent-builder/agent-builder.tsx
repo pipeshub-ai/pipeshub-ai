@@ -21,6 +21,7 @@ import { useAgentBuilderNodeTemplates } from './hooks/use-node-templates';
 import { useAgentBuilderReconstruction } from './hooks/use-flow-reconstruction';
 import { AgentBuilderHeader } from './components/agent-builder-header';
 import { AgentBuilderSidebar } from './components/agent-builder-sidebar';
+import { serviceAgentKnowledgeOptions } from './sidebar-utils';
 import { AgentBuilderCanvas } from './components/agent-builder-canvas';
 import { DeleteAgentDialog } from '@/app/(main)/chat/sidebar/dialogs';
 import { ServiceAccountConfirmDialog } from './components/service-account-confirm-dialog';
@@ -192,13 +193,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   /** The agent could not be fetched: nothing may be saved, or an empty graph would overwrite it. */
   const agentLoadFailed = Boolean(editingKey) && !loadedAgent && !loading;
 
-  const { nodeTemplates } = useAgentBuilderNodeTemplates(
-    availableTools,
-    availableModels,
-    availableKnowledgeBases,
-    configuredConnectors,
-    availableSkills
-  );
   const { reconstructFlowFromAgent } = useAgentBuilderReconstruction();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>([]);
@@ -206,6 +200,23 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
   const { canPersist, isAgentStructureLocked, isServiceAccountToolsetOrgLocked, isServiceAccount } =
     useMemo(() => getAgentBuilderPermissions(loadedAgent), [loadedAgent]);
+  const collectionsNeedBinding = isServiceAccount && !serviceAccountUserId;
+  const paletteKnowledge = useMemo(
+    () =>
+      serviceAgentKnowledgeOptions(configuredConnectors, availableKnowledgeBases, {
+        isServiceAccount,
+        bound: Boolean(serviceAccountUserId),
+      }),
+    [configuredConnectors, availableKnowledgeBases, isServiceAccount, serviceAccountUserId]
+  );
+  // The canvas still renders what the agent already has; only what can be added is narrowed.
+  const { nodeTemplates } = useAgentBuilderNodeTemplates(
+    availableTools,
+    availableModels,
+    paletteKnowledge.knowledgeBases,
+    paletteKnowledge.connectors,
+    availableSkills
+  );
   const canAccessServiceAgent = useUserPermission('accessServiceAgent');
   const isAdmin = useUserStore(selectRefreshedIsAdmin);
   const canDeleteAgentPermission = useUserPermission('deleteAgent');
@@ -913,7 +924,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       loading={loading}
       nodeTemplates={nodeTemplates}
       availableSkills={availableSkills}
-      configuredConnectors={configuredConnectors}
+      configuredConnectors={paletteKnowledge.connectors}
+      collectionsNeedBinding={collectionsNeedBinding}
       toolsets={toolsets}
       activeToolsetTypeKeys={activeToolsetTypeKeys}
       toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}

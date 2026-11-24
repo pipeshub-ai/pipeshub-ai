@@ -15,6 +15,10 @@ import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.parsers.image_parser import svg_worker
+from tests.unit.modules.parsers.test_svg_worker import (
+    assert_deadline_applied,
+    record_deadlines,
+)
 
 NS = 'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"'
 GOOD = f'<svg {NS} width="20" height="20"><rect width="20" height="20" fill="red"/></svg>'
@@ -57,10 +61,14 @@ def test_the_deadline_also_holds_for_a_renderer_that_has_just_started(
 ) -> None:
     _fresh_pool(monkeypatch)
     _fake_child(monkeypatch, tmp_path, "import time\ntime.sleep(60)\n")
-    start = time.monotonic()
-    with pytest.raises(DocumentProcessingError):
-        svg_worker.run_bounded(_b64(GOOD), timeout=1.0)
-    assert time.monotonic() - start < 3.0  # the first SVG of a renderer gets 1 s + 5 s today
+    applied = record_deadlines(monkeypatch)
+    svg = _b64(GOOD)
+    deadline = time.monotonic() + 1.0
+    with pytest.raises(DocumentProcessingError) as err:
+        svg_worker.run_bounded(svg, deadline=deadline)
+    # A renderer still starting gets no time of its own: every wait used the call's deadline (checked as applied,
+    # not timed). It once got 1 s + 5 s.
+    assert_deadline_applied(applied, deadline, err.value)
 
 
 def test_the_renderer_does_not_inherit_the_service_secrets(monkeypatch: pytest.MonkeyPatch) -> None:

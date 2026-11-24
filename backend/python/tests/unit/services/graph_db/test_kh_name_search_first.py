@@ -120,7 +120,9 @@ async def test_neo4j_no_match_lists_nothing_without_walking() -> None:
     {"flatten": False},
     {"start_id": "g1", "start_type": "recordGroup"},
 ])
-async def test_neo4j_browsing_is_unchanged(overrides) -> None:
+async def test_neo4j_browsing_is_unchanged(overrides, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The fake answers the legacy browse statement; split is the default (docs/knowledge-hub-browse.md).
+    monkeypatch.setenv("KH_BROWSE_MODE", "legacy")
     provider = _neo4j(["r1"])
     provider._kh_v3_connector_and_size = AsyncMock(return_value=(APP, 0))
     provider._kh_v3_chain_tops = AsyncMock(return_value={})
@@ -212,13 +214,14 @@ async def test_arango_too_many_matches_fall_back(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_neo4j_the_name_search_page_is_sliced_from_sorted_matches() -> None:
+@pytest.mark.parametrize("filters", [{"search_query": "x"}, None])
+async def test_neo4j_the_page_is_cut_from_rows_sorted_before_they_are_collected(filters) -> None:
     """ORDER BY + LIMIT over the collected rows keeps the whole row list on each
-    row it holds (745 MB for 201 rows of 5650 matches on the benchmark graph);
-    the matches are few enough to sort and slice."""
-    listing, _ = _listing(await _statements(_neo4j(["r1"]), {"search_query": "x"}))
-    assert "CALL (rows)" not in listing
-    assert "rows[0..$kh_limit] AS page" in listing
-
-    full, _ = _listing(await _statements(_neo4j(["r1"]), None))
-    assert "CALL (rows)" in full
+    row it holds (745 MB for 201 rows of 5650 matches, 1.6 GB for a 50k-record
+    connector's first page on the benchmark graph); sorting before the collect
+    is charged each row once."""
+    listing, _ = _listing(await _statements(_neo4j(["r1"]), filters))
+    head, _, cut = listing.partition("AS rows")
+    assert "ORDER BY nullRank" in head
+    assert "UNWIND range(0, size(rows[0..$kh_limit]) - 1) AS kh_i" in cut and "ORDER BY kh_i" in cut
+    assert "LIMIT $kh_limit" not in cut

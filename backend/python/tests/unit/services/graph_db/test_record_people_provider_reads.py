@@ -57,11 +57,19 @@ class TestGetUserByEmailOrg:
         assert "orgId" in query and params == {"email": "ann@acme.com", "org_id": "org-1"}
 
     @pytest.mark.asyncio
-    async def test_without_one_it_is_not(self, make) -> None:
+    async def test_an_org_of_none_is_refused_before_any_read(self, make) -> None:
+        from app.core.org_context import MissingOrgContext
+
         p = make()
-        await p.get_user_by_email("ann@acme.com")
-        query, params = self._call(p, make)
-        assert "orgId" not in query and params == {"email": "ann@acme.com"}
+        for empty in (None, ""):
+            with pytest.raises(MissingOrgContext, match="org argument is required"):
+                await p.get_user_by_email("ann@acme.com", org_id=empty)
+
+    @pytest.mark.asyncio
+    async def test_without_one_there_is_no_read(self, make) -> None:
+        p = make()
+        with pytest.raises(TypeError):      # no unscoped read: an address is unique only within an org
+            await p.get_user_by_email("ann@acme.com")  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])

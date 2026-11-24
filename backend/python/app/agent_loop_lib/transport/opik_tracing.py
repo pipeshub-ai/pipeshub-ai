@@ -46,6 +46,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.utils.error_class import failure_reason, stack_text_without_messages
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import RunContext
@@ -155,9 +156,9 @@ def build_langchain_opik_callbacks(project_name: str | None = None) -> list[Any]
     if not is_opik_configured():
         return []
     try:
-        from opik.integrations.langchain import OpikTracer
+        from app.agent_loop_lib.transport.opik_langchain import TextFreeOpikTracer
 
-        return [OpikTracer(project_name=project_name)]
+        return [TextFreeOpikTracer(project_name=project_name)]
     except Exception:
         _logger.debug("Failed to build LangChain OpikTracer callback", exc_info=True)
         return []
@@ -192,8 +193,12 @@ def _guarded_cm(build_cm, label: str):
     try:
         yield value
     except BaseException as exc:
+        # Opik is never handed the exception: its collector would upload the message and the traceback, and log both
+        # at ERROR. A stream closed early (GeneratorExit) is not a failure.
+        if not isinstance(exc, GeneratorExit):
+            _record_failure(value, exc)
         try:
-            cm.__exit__(type(exc), exc, exc.__traceback__)
+            cm.__exit__(None, None, None)
         except Exception:
             _logger.debug("Opik %s failed to close on error", label, exc_info=True)
         raise
@@ -202,6 +207,18 @@ def _guarded_cm(build_cm, label: str):
             cm.__exit__(None, None, None)
         except Exception:
             _logger.debug("Opik %s failed to close", label, exc_info=True)
+
+
+def _record_failure(span_or_trace: Any, exc: BaseException) -> None:
+    """Mark a span or trace failed with why, not what the error said (a provider's message can quote the prompt)."""
+    try:
+        span_or_trace.error_info = {
+            "exception_type": type(exc).__name__,
+            "message": failure_reason(exc),
+            "traceback": stack_text_without_messages(exc),
+        }
+    except Exception:
+        _logger.debug("Opik failure recording failed", exc_info=True)
 
 
 def maybe_start_run_trace(

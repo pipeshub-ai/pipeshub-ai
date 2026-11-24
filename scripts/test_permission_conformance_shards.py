@@ -4,25 +4,59 @@ The `graph` job splits two suites across `matrix.shard`, each shard with its own
 stores. A shard names its pytest paths in `tests`. For each suite one shard
 takes the whole folder minus what the others name (`--ignore`), so a new test
 file is never left out. A file too slow for one shard runs alone in several,
-each with a `k` expression; for every test exactly one of them is true. Each
-shard pins its case count in `cases`, and a suite's pins add up to TOTALS.
+each with a `k` expression; for every test exactly one of them is true. No
+count is written down: each shard checks its run against its own
+`pytest --collect-only`, and `--collect` (run in permission-conformance.yml,
+where the suites' dependencies are installed) collects each suite's folder and
+every shard and checks they match.
 
 Run: python3 -m unittest discover -s scripts -p 'test_permission_conformance_shards.py'
+     python3 scripts/test_permission_conformance_shards.py --collect
 """
 
 import itertools
 import re
+import sys
 import unittest
 from pathlib import Path
 
 import yaml
+from assert_no_skips import collect, shard_problems
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/permission-conformance.yml"
 PYTHON = ROOT / "backend/python"
+# the suites the graph job splits (the junit classname prefix), and what its run step passes besides tests and k
+SUITES = ("tests.integration.graph_permissions", "tests.permissions")
+SELECT = ["-m", "integration"]
 
-# Cases of each suite under `-m integration` (the junit classname prefix). Adding tests raises this and the cases of the shard that runs them.
-TOTALS = {"tests.integration.graph_permissions": 842, "tests.permissions": 312}
+
+def _shards() -> tuple[list[int], dict[int, dict]]:
+    matrix = yaml.safe_load(WORKFLOW.read_text())["jobs"]["graph"]["strategy"]["matrix"]
+    return matrix["shard"], {entry["shard"]: entry for entry in matrix["include"]}
+
+
+def _once(shards: dict[int, dict]) -> dict[int, dict]:
+    """The shards of the once-each split. A shard with a `browse_mode` runs its tests a second time under that mode."""
+    return {shard: entry for shard, entry in shards.items() if not entry.get("browse_mode")}
+
+
+def collected_problems() -> list[str]:
+    """Collect each suite's folder and each shard as the workflow runs them; every case must run in exactly one shard of its suite."""
+    _, shards = _shards()
+    shards = _once(shards)
+    problems = []
+    for suite in SUITES:
+        folder, problem = collect([suite.replace(".", "/"), *SELECT], cwd=PYTHON)
+        problems += [f"{suite}: {problem}"] if problem else []
+        runs = {}
+        for shard, entry in shards.items():
+            if entry["suite"] == suite:
+                k = ["-k", entry["k"]] if entry.get("k") else []
+                runs[shard], problem = collect([*entry["tests"].split(), *SELECT, *k], cwd=PYTHON)
+                problems += [f"shard {shard}: {problem}"] if problem else []
+        problems += [f"{suite}: {p}" for p in shard_problems(folder, runs)]
+    return problems
 
 
 def _holds(expression: str, true: set[str]) -> bool:
@@ -44,27 +78,20 @@ def _partition(expressions: list[str]) -> bool:
 
 class PermissionConformanceShardsTest(unittest.TestCase):
     def setUp(self) -> None:
-        matrix = yaml.safe_load(WORKFLOW.read_text())["jobs"]["graph"]["strategy"]["matrix"]
-        self.names = matrix["shard"]
-        self.shards = {entry["shard"]: entry for entry in matrix["include"]}
+        self.names, self.shards = _shards()
         self.args = {shard: entry["tests"].split() for shard, entry in self.shards.items()}
 
-    def test_every_shard_has_its_suite_tests_and_pin(self) -> None:
+    def test_every_shard_has_its_suite_and_tests(self) -> None:
         self.assertEqual(sorted(self.names), sorted(self.shards))
         for shard, entry in self.shards.items():
-            self.assertIn(entry["suite"], TOTALS, shard)
-            self.assertIsInstance(entry["cases"], int, shard)
-            self.assertGreater(entry["cases"], 0, shard)
+            self.assertIn(entry["suite"], SUITES, shard)
             self.assertTrue(self.args[shard], shard)
 
-    def test_the_pins_add_up_to_each_suite(self) -> None:
-        for suite, total in TOTALS.items():
-            self.assertEqual(sum(e["cases"] for e in self.shards.values() if e["suite"] == suite), total, suite)
-
     def test_each_test_runs_in_exactly_one_shard(self) -> None:
-        for suite in TOTALS:
+        once = _once(self.shards)
+        for suite in SUITES:
             folder = suite.replace(".", "/")
-            mine = {shard: self.args[shard] for shard, e in self.shards.items() if e["suite"] == suite}
+            mine = {shard: self.args[shard] for shard, e in once.items() if e["suite"] == suite}
             rest = [shard for shard, args in mine.items() if folder in args]
             self.assertEqual(len(rest), 1, f"{suite}: exactly one shard runs the folder minus the others' files")
             self.assertNotIn("k", self.shards[rest[0]], "-k would drop tests of new files from the rest shard")
@@ -94,6 +121,22 @@ class PermissionConformanceShardsTest(unittest.TestCase):
             # An ignore no other shard names would drop that file; a named file not ignored would run twice.
             self.assertEqual(set(ignored), set(named), suite)
 
+    def test_each_browse_mode_pass_runs_its_file_once(self) -> None:
+        """A second pass names a mode the listing has, runs one file, and its shards' -k expressions hold each of that file's tests once."""
+        passes: dict[tuple[str, str], list[int]] = {}
+        for shard, entry in self.shards.items():
+            if entry.get("browse_mode"):
+                self.assertEqual(entry["browse_mode"], "legacy", shard)
+                self.assertEqual(len(self.args[shard]), 1, f"shard {shard}: a second pass runs one file")
+                passes.setdefault((entry["browse_mode"], self.args[shard][0]), []).append(shard)
+        for (mode, path), shards in passes.items():
+            self.assertTrue((PYTHON / path).is_file(), path)
+            ks = [self.shards[shard].get("k") for shard in shards]
+            if len(shards) == 1:
+                self.assertIsNone(ks[0], f"{mode} {path}: one shard with -k drops tests")
+            else:
+                self.assertTrue(all(ks) and _partition(ks), f"{mode} {path}: the -k expressions {ks} do not hold each test exactly once")
+
     def test_each_allowed_skip_is_in_a_file_its_shard_runs(self) -> None:
         for shard, entry in self.shards.items():
             folder = entry["suite"].replace(".", "/")
@@ -112,4 +155,10 @@ class PermissionConformanceShardsTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--collect"]:
+        found = collected_problems()
+        if found:
+            sys.exit("\n".join(found))
+        sys.stdout.write("every case of each suite runs in exactly one shard\n")
+        sys.exit(0)
     unittest.main()

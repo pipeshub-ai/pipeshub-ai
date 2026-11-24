@@ -21,7 +21,8 @@ from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
-from app.modules.demo_data.access import is_hidden_demo_record
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.modules.demo_data.access import refuse_hidden_demo_record
 from app.modules.pipeline.parse_now import ParseNow, optional_redis
 from app.modules.retrieval.selection_scope import within_connection
 from app.services.model_identity.boundary import principal_from_request_user
@@ -43,6 +44,8 @@ from app.utils.record_reader import (
     read_record,
     read_thread,
 )
+from app.utils.user_lookup import get_document_or_503
+from app.utils.user_messages import DATABASE_UNREACHABLE
 
 if TYPE_CHECKING:
     from app.containers.query import QueryAppContainer
@@ -58,7 +61,6 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
     403, a switched-off demo record a 404. Returns the accessible ids, for the
     fetch to reuse."""
     container: QueryAppContainer = request.app.container
-    logger = container.logger()
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
     try:
@@ -68,23 +70,19 @@ async def _check_access(request: Request, graph_provider: Any, record_id: str) -
                 status_code=HttpStatusCode.FORBIDDEN.value,
                 detail="You do not have permission to access this record",
             )
-        doc = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-        try:
-            hidden = await is_hidden_demo_record(
-                graph_provider, container.config_service(), org_id, user_id,
-                (doc or {}).get("connectorId"),
-            )
-        except Exception as exc:
-            logger.warning("demo data setting unreadable for user=%s: %s", user_id, exc)
-            hidden = False
-        if hidden:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+        doc = await get_document_or_503(graph_provider, record_id, CollectionNames.RECORDS.value)
+        await refuse_hidden_demo_record(
+            graph_provider, container.config_service(), org_id, user_id, (doc or {}).get("connectorId"),
+        )
         await refuse_outside_connection(request, graph_provider, org_id, user_id, record_id)
         return accessible
     except HTTPException:
         raise
+    except PermissionVerificationUnavailableError as exc:  # the access check could not be made: the record routes' 503
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail=DATABASE_UNREACHABLE, headers={"Retry-After": "5"},
+        ) from exc
     except Exception as exc:
-        logger.error("Error checking record access for %s: %s", record_id, exc)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to check record access",

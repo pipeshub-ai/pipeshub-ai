@@ -62,7 +62,7 @@ import {
 import type { CitationMaps } from './components/message-area/response-tabs/citations/types';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
-import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import { ANSWER_FAILED, ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
 import { StreamError } from '@/lib/api/stream-errors';
 import { readAccessNotices, type AccessNotice } from '@/app/components/feedback/access-notice';
 import { discardCompare, onPrimaryTurnStarted } from './compare/compare-controller';
@@ -1232,6 +1232,8 @@ export async function streamMessageForSlot(
           timestamp: new Date().toISOString(),
         };
         if (data.status === 'calling_llm') {
+          // A tool's last progress still waiting out its dwell must not come back after this.
+          cancelPendingStatus();
           applyStatus(statusMessage);
         } else {
           scheduleStatus(statusMessage);
@@ -1667,7 +1669,7 @@ export async function streamMessageForSlot(
           // A failed answer to a card leaves the card as it was, to answer again.
           messages: resumeAskUserQuestion || reuseRowId
             ? currentMessages
-            : withStreamingErrorMessage(currentMessages, err, streamErrorInfo(error)),
+            : withStreamingErrorMessage(currentMessages, err, streamErrorInfo(error) ?? { code: ANSWER_FAILED }),
         });
         if (resumeAskUserQuestion) {
           notifyAskUserQuestionResumeFailed(err);
@@ -1741,7 +1743,7 @@ export async function streamMessageForSlot(
       pendingAskUserQuestion: pendingAfterStreamFailure(pendingNow),
       messages: resumeAskUserQuestion || reuseRowId
         ? currentMessages
-        : withStreamingErrorMessage(currentMessages, errorMessage),
+        : withStreamingErrorMessage(currentMessages, errorMessage, { code: ANSWER_FAILED }),
     });
     if (resumeAskUserQuestion) {
       notifyAskUserQuestionResumeFailed(errorMessage);
@@ -1953,6 +1955,8 @@ export async function streamRegenerateForSlot(
         timestamp: new Date().toISOString(),
       };
       if (data.status === 'calling_llm') {
+        // A tool's last progress still waiting out its dwell must not come back after this.
+        cancelPendingStatus();
         applyStatus(statusMessage);
       } else {
         scheduleStatus(statusMessage);

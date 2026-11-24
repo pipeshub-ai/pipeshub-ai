@@ -89,7 +89,7 @@ def test_the_short_point_columns_and_the_bit_vector_stay_in_the_row_on_every_lea
     placement_env(monkeypatch, cluster, name)
     adopt(cluster, name, ORG_A)
     with cluster.admin(name) as c:
-        main = {"org_id", "group_key", "vrid", "block_id", "ent_type", "ent_id", "ent_kind", "ent_level", "bq"}
+        main = {"org_id", "group_key", "vrid", "block_id", "ent_type", "ent_id", "ent_kind", "ent_level", "bq", "member_keys"}
         for rel in ("retrieval.points", "retrieval.points_h0", "retrieval.points_h7"):
             s = storage(c, rel)
             assert {k: s[k] for k in main} == dict.fromkeys(main, "m"), rel

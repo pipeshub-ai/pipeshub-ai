@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from app.api.routes import records as route
 from app.models.blocks import BlockType
+from app.modules.demo_data import access as demo_access
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -82,7 +83,7 @@ class _no_scope:
 
 @pytest.fixture(autouse=True)
 def _demo_data_visible() -> Iterator[None]:
-    with patch.object(route, "is_hidden_demo_record", AsyncMock(return_value=False)):
+    with patch.object(demo_access, "is_hidden_demo_record", AsyncMock(return_value=False)):
         yield
 
 
@@ -113,7 +114,7 @@ class TestAccess:
 
     async def test_switched_off_demo_data_is_a_404(self) -> None:
         request, _, _ = _request()
-        with patch.object(route, "is_hidden_demo_record", AsyncMock(return_value=True)), \
+        with patch.object(demo_access, "is_hidden_demo_record", AsyncMock(return_value=True)), \
                 pytest.raises(HTTPException) as err:
             await _read(request)
         assert err.value.status_code == 404
@@ -282,7 +283,7 @@ class TestRecordMode:
         request, _, _ = _request()
         fetch = AsyncMock()
 
-        with patch.object(route, "is_hidden_demo_record", AsyncMock(return_value=True)),                 patch.object(route, "_fetch_multiple_records_impl", fetch), pytest.raises(HTTPException) as err:
+        with patch.object(demo_access, "is_hidden_demo_record", AsyncMock(return_value=True)),                 patch.object(route, "_fetch_multiple_records_impl", fetch), pytest.raises(HTTPException) as err:
             await _read(request)
 
         assert err.value.status_code == 404

@@ -350,7 +350,9 @@ class TestSendMessage:
         call_kwargs = mock_aio.send_and_wait.call_args.kwargs
         assert call_kwargs["topic"] == "t"
         assert call_kwargs["key"] == b"k"
-        assert json.loads(call_kwargs["value"].decode("utf-8")) == {"key": "val"}
+        sent = json.loads(call_kwargs["value"].decode("utf-8"))
+        assert sent.pop("eventId")  # every message leaves with an event id
+        assert sent == {"key": "val"}
 
     @pytest.mark.asyncio
     async def test_send_message_without_key(self, logger, plain_config):

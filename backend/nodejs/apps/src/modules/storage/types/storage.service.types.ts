@@ -226,6 +226,47 @@ export interface SignObjectUrlOptions {
   method: 'GET' | 'PUT';
   contentType?: string;
   expiresInSeconds: number;
+  /**
+   * A PUT that must not replace an object already there (`If-None-Match: *`):
+   * the uploader sends the header returned with the URL, and a lost race
+   * answers 412 or 409 and keeps the first writer's object.
+   */
+  ifAbsent?: boolean;
+  /**
+   * A PUT that may replace only the object whose ETag is this (`If-Match`), signed into the URL like `ifAbsent`.
+   * A missing key answers 404 or 412 (the store decides), a changed one 412, a concurrent write 409.
+   */
+  ifMatch?: string;
+}
+
+/** One object in a prefix listing. `key` is the full storage key. */
+export interface ListedObject {
+  key: string;
+  size: number;
+  lastModifiedMs: number;
+  /** The object's version (ETag, unquoted), when the store lists one. */
+  etag?: string;
+}
+
+/** What a conditional paid-result operation can rely on, decided by the store itself (never assumed). */
+export interface ConditionalCapabilities {
+  /** Delete by `(key, etag)` that the store refuses when the object changed. */
+  conditionalDelete: boolean;
+  /** A PUT conditional on the current ETag, which changes the ETag when the bytes change. */
+  bump: boolean;
+  /** The probe was denied (a 403 on its prefix): kept for a while as "not supported", then asked again. Internal. */
+  denied?: boolean;
+}
+
+/** The result of a conditional delete: keys left in place because the object changed since it was listed. */
+export interface ConditionalDeleteResult {
+  changed: string[];
+}
+
+/** One page of a prefix listing; `next` is an opaque cursor, absent on the last page. */
+export interface ObjectPage {
+  objects: ListedObject[];
+  next?: string;
 }
 
 /**

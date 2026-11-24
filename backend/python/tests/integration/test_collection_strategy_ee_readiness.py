@@ -42,6 +42,7 @@ from app.services.vector_db.strategy import (
     RecordContext,
 )
 from tests.support.bound_org import bind_test_org
+from tests.support.in_memory_vector_db import InMemoryVectorDBService
 from tests.support.vector_db import make_config_service
 from tests.unit.services.vector_db.test_strategy_contract import PerOrgStrategy
 
@@ -60,10 +61,11 @@ def _bound_org(request: pytest.FixtureRequest) -> Iterator[str]:
     yield from bind_test_org(getattr(request, "param", ORG_A))
 
 
-class FakeVectorDB:
+class FakeVectorDB(InMemoryVectorDBService):
     """In-memory vector DB that records which collection each call targeted."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.live: set[str] = set()
         self.created: list[str] = []
         self.payload_writes: list[str] = []

@@ -21,6 +21,7 @@ import { scopedStorageServiceJwtGenerator } from '../../../../src/libs/utils/cre
 import { DefaultStorageConfig } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { FakeBackend } from '../../tokens_manager/routes/connectors-http-harness'
 import { FakeKeyValueStore } from '../../knowledge_base/routes/kb-http-harness'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
 
 const JWT_SECRET = 'artifact-http-test-jwt-secret'
 const SCOPED_JWT_SECRET = 'artifact-http-test-scoped-secret'
@@ -145,11 +146,12 @@ describe('Artifact sets over HTTP: the local disk path', () => {
       rows.push(doc)
       return doc
     }) as never)
-    sinon.stub(DocumentModel, 'findOneAndUpdate').callsFake(((filter: Filter, update: { $set: Row; $unset?: Row }) =>
+    sinon.stub(DocumentModel, 'findOneAndUpdate').callsFake(((filter: Filter, update: { $set?: Row; $inc?: Row; $unset?: Row }) =>
       query(() => {
         const row = rows.find((r) => matches(r, filter))
         if (!row) return null
-        for (const [key, value] of Object.entries(update.$set)) setAt(row, key, value)
+        for (const [key, value] of Object.entries(update.$set ?? {})) setAt(row, key, value)
+        for (const [key, value] of Object.entries(update.$inc ?? {})) setAt(row, key, Number(row[key] ?? 0) + Number(value))
         for (const key of Object.keys(update.$unset ?? {})) {
           const parts = key.split('.')
           const last = parts.pop()!
@@ -174,12 +176,14 @@ describe('Artifact sets over HTTP: the local disk path', () => {
     baseUrl = `${origin}/api/v1/document`
     // The URLs presign hands out must reach this server.
     kv.values.set(ENDPOINTS_KEY, JSON.stringify({ cm: { endpoint: backend.url }, storage: { endpoint: origin } }))
+    registerUpstreams({ nodejs: [backend.url, origin] })
     kv.changed(storageEtcdPaths)
   })
 
   afterEach(async () => {
     kv.changed(storageEtcdPaths)
     sinon.restore()
+    registerUpstreams({})
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await backend.stop()
     fs.rmSync(home, { recursive: true, force: true })

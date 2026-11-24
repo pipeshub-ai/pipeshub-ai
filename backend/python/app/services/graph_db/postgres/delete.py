@@ -5,6 +5,7 @@ ambient org before anything else (and before any ``try``); every statement is a 
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,7 @@ from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.postgres.trash import _sweep_edges
 from app.services.graph_db.taxonomy import TAXONOMY_EDGE_COLLECTIONS
 from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
+from app.utils import error_class
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -128,9 +130,9 @@ async def _delete_connector(tx: Tx, org: str, connector_id: str) -> dict[str, An
             WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.to_coll = ANY($3::text[])
           UNION SELECT n.id FROM graph.nodes n JOIN graph.nodes r ON r.org_id = n.org_id AND r.coll = 'records' AND r.id = n.id AND r.doc->>'connectorId' = $2
             WHERE n.org_id = $1 AND n.coll = ANY($3::text[])) t""", org, connector_id, _TYPE_COLLS) if ids["records"] else 0
-    blocks = await tx.fetchval("""/* pipeshub:graph.connector_delete_block_count */ SELECT count(*) FROM graph.nodes b
-        JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.doc->>'recordId' AND r.doc->>'connectorId' = $2
-        WHERE b.org_id = $1 AND b.coll = 'blocks'""", org, connector_id) if ids["records"] else 0
+    blocks = await tx.fetchval("""/* pipeshub:graph.connector_delete_block_count */ SELECT count(*)
+        FROM (SELECT b.org_id, b.doc->>'recordId' AS rid FROM graph.nodes b WHERE b.org_id = $1 AND b.coll = 'blocks' OFFSET 0) b
+        JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.rid AND r.doc->>'connectorId' = $2""", org, connector_id) if ids["records"] else 0
     removed_records = 0
     for pass_ in range(3):      # a record written while this ran is taken in the same unit, then the unit is checked
         if pass_ == 0:
@@ -491,7 +493,8 @@ class DeleteMixin(PgBase):
             try:
                 file_record = await self.get_document(record_id, CollectionNames.FILES.value, transaction)
             except Exception as e:
-                self.logger.debug(f"File record not found for record {record_id}: {e}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False, level=logging.DEBUG,
+                                        op="delete_record", step="file_record_read", record_id=record_id)
 
             # A mail's attachments go with it, as on ArangoDB: left behind, they stay
             # searchable with nothing left to clean up their vectors.
@@ -523,7 +526,8 @@ class DeleteMixin(PgBase):
                         "payloads": [payload, *attachment_payloads],
                     }
             except Exception as e:
-                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="delete_record", step="deletion_event_payload")
                 event_data = None
 
             # The record and its blocks (joined by field, not by an edge, so the sweep misses them) go together or not at all.
@@ -542,7 +546,9 @@ class DeleteMixin(PgBase):
                 try:
                     await self.kh_scope_mark_changed(record["connectorId"])
                 except Exception as e:
-                    self.logger.warning(f"kh scope: could not mark {record['connectorId']} changed after a delete: {e}")
+                    error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                            op="delete_record", step="kh_scope_mark_changed",
+                                            connector_id=record["connectorId"])
 
             return {
                 "success": True,
@@ -558,7 +564,8 @@ class DeleteMixin(PgBase):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete record {record_id}: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_record", record_id=record_id)
             return {
                 "success": False,
                 "code": 500,
@@ -598,8 +605,7 @@ class DeleteMixin(PgBase):
                 raise Exception(f"Deletion failed: {result.get('reason', 'Unknown error')}")
             return result
 
-        except Exception as e:
-            self.logger.error(f"❌ Delete record by external ID failed: {str(e)}")
+        except Exception:
             raise
 
     async def unlink_nodes_missed_by_full_sync(self, connector_id: str, seen: Mapping[str, Collection[str]], *, window_start_ms: int | None = None,
@@ -626,7 +632,8 @@ class DeleteMixin(PgBase):
                                     f"or the grants of the {len(outside)} outside its window from {failed_grants or []}")
             return (unlinked + ungranted, not failed and not failed_grants)
         except Exception as e:
-            self.logger.error(f"Error unlinking nodes missed by the full sync of {connector_id}: {e}", exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="unlink_nodes_missed_by_full_sync", connector_id=connector_id)
             return (0, False)
 
     async def _collect_connector_entities(self, connector_id: str, transaction: str | None = None, *, include_virtual_record_ids: bool = False) -> dict:
@@ -659,7 +666,8 @@ class DeleteMixin(PgBase):
             n = await self._q(lambda tx: _sweep_edges(tx, org, list(edge_collections), node_ids), transaction or None, write=True)
             return (n, [])
         except Exception as e:
-            self.logger.error(f"❌ Failed to delete relationships: {e}")
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="_delete_all_edges_for_nodes")
             return (0, list(edge_collections))
 
 
@@ -685,13 +693,15 @@ class DeleteMixin(PgBase):
             else:
                 result = await self._q(lambda tx: _delete_connector_atomically(tx, org, connector_id, savepoint=True), transaction, write=True)
         except Exception as e:
-            self.logger.error("Failed to delete connector instance %s: %s", connector_id, e, exc_info=True)
+            error_class.log_failure(self.logger, "graph.provider.failed", e, include_error_text=False,
+                                    op="delete_connector_instance", connector_id=connector_id)
             return {"success": False, "error": f"Failed to delete connector instance: {e}"}
         if result.get("success"):
             try:
                 await self.kh_scope_forget(connector_id)
             except Exception as e:
-                self.logger.warning("kh scope: could not drop the scopes of deleted connector %s: %s", connector_id, e)
+                error_class.log_failure(self.logger, "graph.provider.step_failed", e, include_error_text=False,
+                                        op="delete_connector_instance", step="kh_scope_drop", connector_id=connector_id)
         return result
 
     async def sweep_deleted_connector_writes(self, connector_id: str, record_group_ids: Sequence[str] = ()) -> tuple[int, int]:

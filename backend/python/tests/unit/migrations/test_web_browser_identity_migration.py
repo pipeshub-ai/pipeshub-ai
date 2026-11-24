@@ -52,6 +52,10 @@ class _Graph:
         self.edge_org = edge_org
         self.edge_read_fails = edge_read_fails
 
+    async def get_all_orgs(self, **_: object) -> list[dict]:
+        # Like Arango and Neo4j, the app read below answers for every org.
+        return [{"_key": "org-1"}, {"_key": "org-2"}]
+
     async def get_nodes_by_field_in(self, collection: str, field: str, values: list, fields: list, *,
                                     raise_on_error: bool = False) -> list[dict]:
         assert (field, values) == ("type", ["Web"])
@@ -124,7 +128,8 @@ async def test_an_unreadable_org_edge_is_a_failure_and_the_flag_stays_unset() ->
         _container(config), _Graph(["old"], org_id=None, edge_read_fails=True), LOGGER,
     )
 
-    assert result == {"success": False, "skipped": False, "connectors_updated": 0, "failures": 1}
+    # One failure per org's pass: the app names no org, so each org's pass looks for it.
+    assert result == {"success": False, "skipped": False, "connectors_updated": 0, "failures": 2}
     assert MIGRATION_FLAG_KEY not in config.store
 
 
@@ -239,3 +244,19 @@ def test_the_backfill_never_changes_what_the_crawler_uses(raw: object, name: str
 
     assert _crawled(sync[name], default, high) == _crawled(raw, default, high)
     assert _crawled(sync[name], default, high) == sync[name] or isinstance(sync[name], str)
+
+
+async def test_an_org_list_that_fails_quietly_still_leaves_the_flag_unset() -> None:
+    """Arango and Neo4j log a failed org list and answer no orgs unless asked to raise."""
+    config = _MemoryConfigService({_path("old"): _web_config()})
+    graph = _Graph(["old"])
+
+    async def orgs(**kwargs: object) -> list[dict]:
+        if kwargs.get("raise_on_error"):
+            raise ConnectionError("graph did not answer")
+        return []
+    graph.get_all_orgs = orgs
+
+    with pytest.raises(ConnectionError):
+        await run_web_browser_identity_backfill(_container(config), graph, LOGGER)
+    assert MIGRATION_FLAG_KEY not in config.store

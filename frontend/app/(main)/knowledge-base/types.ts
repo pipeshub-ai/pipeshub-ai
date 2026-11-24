@@ -363,6 +363,8 @@ export interface KnowledgeHubApiResponse {
   success: boolean;
   /** Sources left out of this page because they are still being prepared; they are asked again on the next page. */
   notReady?: string[];
+  /** Nothing could be listed yet: the source is still being prepared. The page is empty, with no cursor; ask again in a moment. */
+  preparing?: boolean;
   error: string | null;
   id: string | null;
   currentNode: {
@@ -385,7 +387,7 @@ export interface KnowledgeHubApiResponse {
   pagination: {
     limit: number;
     totalItems: number;
-    /** True when `totalItems` stopped at the server's cap: it is then a lower bound. */
+    /** True when `totalItems` may not be exact (usually lower; see `totalCapped` in the API spec). */
     totalCapped?: boolean;
     hasNext: boolean;
     hasPrev: boolean;
@@ -569,6 +571,8 @@ export interface RecordDetailsResponse {
     orgId: string;
     recordName: string;
     externalRecordId: string;
+    externalRevisionId?: string | null;
+    contentRev?: string | null;
     recordType: RecordType;
     origin: 'UPLOAD' | 'CONNECTOR';
     createdAtTimestamp: number;
@@ -579,6 +583,8 @@ export interface RecordDetailsResponse {
     isArchived: boolean;
     indexingStatus: IndexingStatus;
     reason?: string;
+    // How a COMPLETED record was indexed (e.g. only part of a large text file); not a failure.
+    indexingNote?: string | null;
     // Set while the record waits out its source's rate limit (epoch ms).
     retryNotBefore?: number | null;
     connectorName?: string;

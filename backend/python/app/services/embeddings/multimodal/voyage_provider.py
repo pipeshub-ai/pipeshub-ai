@@ -12,10 +12,16 @@ import logging
 from langchain_core.embeddings import Embeddings
 
 from app.exceptions.non_retryable import NonRetryableError
+from app.services.embeddings.multimodal._concurrent import gather_or_cancel
 from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.services.llm_gateway.embedding_gateway import (
+    EmbeddingRateLimited,
+    get_embedding_gateway,
+)
+from app.services.llm_gateway.wire import refused_by_allowance
 
 _CONCURRENCY_LIMIT = 5
 _DEFAULT_BATCH_SIZE = 7
@@ -39,7 +45,9 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
         async def process_batch(batch_start: int, batch_imgs: list[str]) -> list[ImageEmbeddingResult]:
             async with semaphore:
                 try:
-                    embeddings = await self.dense_embeddings.aembed_documents(batch_imgs)
+                    embeddings = await get_embedding_gateway().call(
+                        lambda: self.dense_embeddings.aembed_documents(batch_imgs)
+                    )
                     # A short response must not silently drop its tail --
                     # every input index owes the caller a result.
                     results = [
@@ -56,7 +64,11 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
                     return results
                 except NonRetryableError:
                     raise
+                except EmbeddingRateLimited:
+                    raise  # the provider's wait goes to the record handler, which hands the record back
                 except Exception as e:
+                    if refused_by_allowance(e):
+                        raise  # the job's send allowance is spent: not one image's failure
                     if self.logger:
                         self.logger.warning(f"Voyage batch {batch_start} failed: {e}")
                     return [
@@ -68,7 +80,7 @@ class VoyageMultimodalProvider(IMultimodalEmbeddingProvider):
             (start, image_base64s[start:start + batch_size])
             for start in range(0, len(image_base64s), batch_size)
         ]
-        results = await asyncio.gather(*[process_batch(s, imgs) for s, imgs in batches])
+        results = await gather_or_cancel([process_batch(s, imgs) for s, imgs in batches])
         flattened: list[ImageEmbeddingResult] = []
         for r in results:
             flattened.extend(r)

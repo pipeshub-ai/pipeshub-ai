@@ -19,6 +19,7 @@ from app.config.constants.arangodb import (
 )
 from app.events.processor import Processor, convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import DocumentProcessingError, RecordDeletedError
+from app.services.docling.client import DoclingParseError
 from app.models.entities import RecordType
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 import logging
@@ -443,23 +444,21 @@ class TestProcessPdfWithDoclingEvents:
     """Tests for Processor.process_pdf_with_docling."""
 
     @pytest.mark.asyncio
-    async def test_docling_failure_yields_docling_failed(self):
-        """When Docling returns None, yields docling_failed event."""
+    async def test_docling_failure_reaches_the_caller(self):
+        """A Docling parse error propagates: the caller falls back and logs it."""
         proc, _, gp, _ = _make_processor()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf_batched.return_value = None
+        proc.docling_client.parse_pdf_batched.side_effect = DoclingParseError("Docling could not parse the document", status_code=422, reason="parse_failed")
 
-        events = await _collect(
-            proc.process_pdf_with_docling(
-                recordName="test.pdf",
-                recordId="rec-1",
-                pdf_binary=b"pdf-content",
-                virtual_record_id="vr-1",
+        with pytest.raises(DoclingParseError):
+            await _collect(
+                proc.process_pdf_with_docling(
+                    recordName="test.pdf",
+                    recordId="rec-1",
+                    pdf_binary=b"pdf-content",
+                    virtual_record_id="vr-1",
+                )
             )
-        )
-
-        assert len(events) == 1
-        assert events[0].event == "docling_failed"
 
     @pytest.mark.asyncio
     async def test_docling_success_yields_parsing_complete(self):
@@ -487,6 +486,36 @@ class TestProcessPdfWithDoclingEvents:
 
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"
+
+    @pytest.mark.asyncio
+    async def test_a_non_retryable_error_while_building_blocks_passes_through_unchanged(self) -> None:
+        """A table model call refused for good is not a Docling failure: as DOCLING_FAILED after
+        PARSING_COMPLETE it became a retryable 'Docling failed after parsing completed'."""
+        from app.exceptions.non_retryable import NonRetryableError
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
+        stop = NonRetryableError("refused for good")
+        proc, _, _gp, _ = _make_processor()
+        proc.docling_client = AsyncMock()
+        proc.docling_client.parse_pdf_batched.return_value = MagicMock()
+        proc.docling_processor = AsyncMock()
+        proc.docling_processor.create_blocks.side_effect = stop
+
+        events = proc.process_pdf_with_docling(
+            recordName="test.pdf",
+            recordId="rec-1",
+            pdf_binary=b"pdf-content",
+            virtual_record_id="vr-1",
+        )
+        assert (await events.__anext__()).event == "parsing_complete"
+        with pytest.raises(NonRetryableError) as raised:
+            await events.__anext__()  # the stop itself, not a docling_failed event
+
+        assert raised.value is stop
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
 
 
 # ===========================================================================
@@ -850,6 +879,55 @@ class TestMarkRecordOutcomes:
         await proc._mark_record("rec-1", ProgressStatus.EMPTY)
 
         gp.update_node.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_extra_fields_land_in_the_one_status_write_and_win_over_derived_ones(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record(
+            "rec-1", ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason="why",
+            extra_fields={"contentRev": "x:abc", "hasIndexedCopy": False},
+        )
+
+        gp.update_node.assert_awaited_once()
+        written = self._written(gp)
+        assert written["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+        assert written["reason"] == "why"
+        assert written["contentRev"] == "x:abc" and written["hasIndexedCopy"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_leaves_no_parse_in_progress_for_the_stale_scan(self) -> None:
+        """A refusal after the run marked the parse IN_PROGRESS is final: the parse status ends with the refusal, so the stale
+        scan (which requeues an IN_PROGRESS parse) does not take the record back."""
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "parsingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason="why")
+
+        written = self._written(gp)
+        assert written["parsingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+        assert written["processingStartedAt"] is None
+
+    @pytest.mark.asyncio
+    async def test_no_extra_fields_is_the_write_without_them(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.FAILED)
+        plain = self._written(gp)
+        gp.update_node.reset_mock()
+        await proc._mark_record("rec-1", ProgressStatus.FAILED, extra_fields=None)
+
+        def stable(fields: dict) -> dict:  # the clock fields differ by a millisecond between two writes
+            return {k: v for k, v in fields.items() if "imestamp" not in k and not k.endswith("At")}
+
+        assert stable(self._written(gp)) == stable(plain)
+        assert set(self._written(gp)) == set(plain)
+        assert "contentRev" not in plain
 
 
 # ===========================================================================
@@ -1538,9 +1616,10 @@ class TestProcessGmailMessage:
         assert events[1].event == "indexing_complete"
 
     @pytest.mark.asyncio
-    async def test_error_propagates(self):
-        """Errors from html processing should propagate."""
-        proc, logger, gp, config = _make_processor()
+    async def test_error_propagates(self, caplog):
+        """Errors from html processing propagate, unlogged: the consumer's index.end writes them once."""
+        proc, _, gp, config = _make_processor()
+        proc.logger = logging.getLogger("test.p6.processor")
 
         async def failing_html(*args, **kwargs):
             raise Exception("html failed")
@@ -1551,7 +1630,7 @@ class TestProcessGmailMessage:
             await _collect(proc.process_gmail_message(
                 "email.html", "rec-1", 1, "gmail", "org-1", b"<html>hi</html>", "vr-1"
             ))
-        logger.error.assert_called_once()
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     @pytest.mark.asyncio
     async def test_a_deleted_record_propagates_without_an_error_log(self) -> None:
@@ -1627,14 +1706,14 @@ class TestProcessPdfWithDocling:
 
     @pytest.mark.asyncio
     async def test_docling_parse_fails(self):
-        """Should yield docling_failed when parse_pdf_batched returns None."""
+        """A parse error from parse_pdf_batched propagates."""
         proc, _, gp, config = _make_processor()
-        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf_batched = AsyncMock(side_effect=DoclingParseError("Docling could not parse the document", status_code=422, reason="parse_failed"))
 
-        events = await _collect(proc.process_pdf_with_docling(
-            "test.pdf", "rec-1", b"pdfdata", "vr-1"
-        ))
-        assert events[0].event == "docling_failed"
+        with pytest.raises(DoclingParseError):
+            await _collect(proc.process_pdf_with_docling(
+                "test.pdf", "rec-1", b"pdfdata", "vr-1"
+            ))
 
     @pytest.mark.asyncio
     async def test_block_creation_fails(self):
@@ -3445,12 +3524,12 @@ class TestProcessPdfWithDoclingCoverage:
     async def test_parse_failure(self):
         proc = _make_processor_cov()
         proc.docling_client = AsyncMock()
-        proc.docling_client.parse_pdf_batched = AsyncMock(return_value=None)
+        proc.docling_client.parse_pdf_batched = AsyncMock(side_effect=DoclingParseError("Docling could not parse the document", status_code=422, reason="parse_failed"))
 
-        events = await _collect_events(
-            proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
-        )
-        assert any(e.event == "docling_failed" for e in events)
+        with pytest.raises(DoclingParseError):
+            await _collect_events(
+                proc.process_pdf_with_docling("test.pdf", "r1", b"pdf", "vr1")
+            )
 
     @pytest.mark.asyncio
     async def test_blocks_failure(self):

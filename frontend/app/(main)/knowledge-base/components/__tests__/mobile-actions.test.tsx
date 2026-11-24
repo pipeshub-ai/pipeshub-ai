@@ -7,7 +7,7 @@ import '@/lib/__tests__/test-i18n';
 
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => true, useIsBelowDesktop: () => true }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
-vi.mock('@/config', () => ({ PermissionLockIcon: () => null }));
+vi.mock('@/config', () => ({ PermissionLockIcon: () => null, KbSelectionActions: () => null }));
 
 import { ItemActionMenu } from '../item-action-menu';
 import { SelectionActionBar } from '../selection-action-bar';
@@ -35,5 +35,14 @@ describe('SelectionActionBar on mobile', () => {
     const buttons = screen.getAllByRole('button');
     expect(buttons.length).toBeGreaterThanOrEqual(3);
     for (const b of buttons) expect(b.getAttribute('aria-label')).toBeTruthy();
+  });
+
+  it('wraps onto a second row so edition-provided actions cannot push controls off a narrow screen', () => {
+    render(
+      <Theme>
+        <SelectionActionBar selectedCount={2} onDeselectAll={() => {}} onChat={() => {}} onDelete={() => {}} />
+      </Theme>,
+    );
+    expect(screen.getByText('2 selected').parentElement!.style.flexWrap).toBe('wrap');
   });
 });

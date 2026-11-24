@@ -296,7 +296,7 @@ class TestPerformTtsHealthCheck:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_litellm_proxy_bad_status_returns_500(self):
+    async def test_litellm_proxy_bad_status_returns_502(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -317,7 +317,7 @@ class TestPerformTtsHealthCheck:
             from app.api.routes.health import perform_tts_health_check
 
             resp = await perform_tts_health_check(cfg, logger)
-        assert resp.status_code == 500
+        assert resp.status_code == 502
 
     @pytest.mark.asyncio
     async def test_unsupported_provider_returns_400(self):
@@ -578,7 +578,7 @@ class TestPerformSttHealthCheck:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_litellm_proxy_bad_status_returns_500(self):
+    async def test_litellm_proxy_bad_status_returns_502(self):
         logger = MagicMock()
         mock_adapter = MagicMock()
 
@@ -599,7 +599,7 @@ class TestPerformSttHealthCheck:
             from app.api.routes.health import perform_stt_health_check
 
             resp = await perform_stt_health_check(cfg, logger)
-        assert resp.status_code == 500
+        assert resp.status_code == 502
 
     @pytest.mark.asyncio
     async def test_unsupported_provider_returns_400(self):

@@ -27,6 +27,7 @@ import pytest
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from tests.support.log_capture import failure_line
 
 
 # ---------------------------------------------------------------------------
@@ -76,15 +77,17 @@ class TestNeo4jGetDocumentsByIds:
         assert result["app1"]["_key"] == "app1"  # id → _key conversion
 
     @pytest.mark.asyncio
-    async def test_resilient_on_query_error(self, neo4j_provider):
+    async def test_resilient_on_query_error(self, neo4j_provider, caplog):
         # A transient DB failure must degrade to {} (callers fall back to UNKNOWN),
         # never propagate and abort the whole projection.
+        neo4j_provider.logger = logging.getLogger("tests.agent_toolset_projection")
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("db down"))
         result = await neo4j_provider._get_documents_by_ids(
             ["x"], CollectionNames.RECORD_GROUPS.value
         )
         assert result == {}
-        neo4j_provider.logger.warning.assert_called()
+        fields = failure_line(caplog.records, "graph.provider.failed", "internal", logging.ERROR, "db down")
+        assert (fields["op"], fields["collection"]) == ("_get_documents_by_ids", CollectionNames.RECORD_GROUPS.value)
 
 
 # ---------------------------------------------------------------------------
@@ -97,12 +100,12 @@ def _make_projection_client(toolset_rows, knowledge_rows, doc_store):
 
     - ``agent_ids`` param + 'AS toolset' in query → toolset rows
     - ``agent_ids`` param otherwise               → knowledge rows
-    - ``ids`` param                               → docs from doc_store
+    - ``app_ids`` param (the org's apps)          → docs from doc_store
     Records call counts so tests can assert batching.
     """
     calls = {"toolsets": 0, "knowledge": 0, "docs": 0}
 
-    async def _execute(query, parameters=None, txn_id=None):
+    async def _execute(query, parameters=None, txn_id=None, **_):
         parameters = parameters or {}
         if "agent_ids" in parameters:
             if "AS toolset" in query:
@@ -110,10 +113,10 @@ def _make_projection_client(toolset_rows, knowledge_rows, doc_store):
                 return toolset_rows
             calls["knowledge"] += 1
             return knowledge_rows
-        if "ids" in parameters:
+        if "app_ids" in parameters:
             calls["docs"] += 1
             return [
-                {"n": doc_store[i]} for i in parameters["ids"] if i in doc_store
+                {"app": doc_store[i]} for i in parameters["app_ids"] if i in doc_store
             ]
         return []
 
@@ -150,7 +153,7 @@ class TestNeo4jProjectAgents:
         neo4j_provider.client.execute_query = client
 
         # a3 is requested but has neither toolsets nor knowledge.
-        result = await neo4j_provider._project_agents_toolsets_and_knowledge(["a1", "a2", "a3"])
+        result = await neo4j_provider._project_agents_toolsets_and_knowledge(["a1", "a2", "a3"], org_id="org-1")
 
         # Every requested id present with the consistent default shape.
         assert set(result.keys()) == {"a1", "a2", "a3"}
@@ -178,6 +181,16 @@ class TestNeo4jProjectAgents:
         # page regardless of agent count (no per-agent N+1).
         assert calls["toolsets"] == 1
         assert calls["knowledge"] == 1
+
+    @pytest.mark.asyncio
+    async def test_without_the_agents_org_no_app_is_resolved(self, neo4j_provider) -> None:
+        knowledge_rows = [{"agent_id": "a1", "_key": "k1", "connectorId": "app1", "filters": "{}"}]
+        client, calls = _make_projection_client([], knowledge_rows, {"app1": {"id": "app1", "name": "Slack", "type": "SLACK"}})
+        neo4j_provider.client.execute_query = client
+        result = await neo4j_provider._project_agents_toolsets_and_knowledge(["a1"])
+        (k1,) = result["a1"]["knowledge"]
+        assert (k1["type"], k1["name"]) == ("UNKNOWN", "app1")
+        assert calls["docs"] == 0
         # KB + app doc lookups are batched into at most one query per collection.
         assert calls["docs"] <= 2
 

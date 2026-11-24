@@ -115,7 +115,7 @@ def stub_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         return MagicMock(name="llm"), {}
 
     monkeypatch.setattr(excel_module, "invoke_with_structured_output_and_reflection", structured)
-    monkeypatch.setattr(excel_module, "invoke_with_row_descriptions_and_reflection", rows)
+    monkeypatch.setattr("app.utils.table_enrichment.invoke_with_structured_output_and_reflection", rows)
     monkeypatch.setattr(excel_module, "get_llm_gateway", lambda: _Gateway())
     monkeypatch.setattr(excel_module, "provider_key", lambda llm: "stub")
     monkeypatch.setattr(excel_module, "get_llm_invoke_config", lambda llm: {})

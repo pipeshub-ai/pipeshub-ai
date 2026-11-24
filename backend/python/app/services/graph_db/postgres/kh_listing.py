@@ -2,7 +2,10 @@
 
 The structure of a page (which rows, their order, the keyset) comes from ``kg.records``; who may see a row is asked of the access check for every row a page keeps, so an answer is never
 older than the check (kg classes for a connector kg serves, the live walk otherwise). A listing therefore works while a connector syncs: structure may lag the drain, access never does.
-A connector with no copy in kg yet is not listed as empty: it is refused as not ready.
+A connector is listed once kg has finished copying it, before the copy is verified or promoted (``head``); one that holds no node yet lists nothing.
+shortcut: a connector that holds nodes and whose copy is not finished (an existing connector's first copy, or one kg took back after a difference) is refused as not ready
+(``_kh_not_ready``), which the knowledge hub answers as an empty page marked ``preparing``: PostgreSQL keeps no other structure of a connector to list from. Upgrade to a
+listing over ``graph.edges`` if such copies are long enough to matter.
 
 A page scans windows of the sort order until it has the rows asked for, the end, or a bound (time or rows looked at). At a bound it hands back the position it reached (``resume``), so that
 a page with no rows can still be continued. The total counts the rows the check admits among the first :data:`COUNT_SCAN` candidates: exact when that was all of them, else a lower bound
@@ -24,7 +27,8 @@ from app.exceptions.graph_db_exceptions import (
     KnowledgeHubListingTooLarge,
 )
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.base import NotImplementedInPostgres, PgBase, _doc
+from app.services.graph_db.postgres.base import PgBase, _doc
+from app.services.graph_db.postgres.kg import counts as kg_counts
 from app.services.graph_db.postgres.kg import listing as kgl
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.model import CODE_COLL, CODE_EPOCH
@@ -37,9 +41,15 @@ if TYPE_CHECKING:
 BUDGET_S = 1.0               # how long one request keeps scanning for rows before it hands back the position it reached
 MAX_SCANNED = 50_000         # candidates one request looks at, at most
 HIDDEN_MAX = 100_000        # rows hidden by groups that hide their children that one listing carries to its statements; more is a view too wide to list (measured at 20,000 of 20,050 rows: about 100 ms)
+# shortcut: a flatten below a start, or with a depth bound, carries the rows it may list to its statements: past this many it is refused as a view too wide. Upgrade to a
+# statement over the hierarchy if a folder that large must be searched whole.
+SCOPE_MAX = 100_000
 COUNT_CAP = 10_000          # a count of what kg decides is exact up to this many rows; a listing with more reports the cap
 UNDECIDED_MAX = 200         # rows kg does not decide that a count may hand to the walk
 CLASS_MAX = 50_000          # classes of a connector a count evaluates
+# The children of a page's rows whose classes a browse reads to decide their arrows by those classes only: up to about this many, one read of their class ids costs less than
+# deciding every class of the connector (each literal of each class a seek); past it the browse decides every class.
+CLASS_COVER = 2_000
 COUNT_SCAN = 500            # candidates the total asks the access check about when kg does not serve the connector (the check is the expensive part during a sync); more than that is reported as "at least"
 WINDOW_MAX = 2_000
 ADMIT_CHUNK = 2_000
@@ -50,6 +60,9 @@ LEAD_NODES = 5_000
 LEAD_DEPTH = 50
 LEAD_PER = 1_000
 ANY_GROUP = ""      # ``only_group`` of the chain-top walk for the records of every group at once (``_kh_tops_under``): each is placed under its own groups, as for one
+# The key a connector that holds no node is listed by before kg has copied it: no row of kg has it, so its listing is the empty one its copy would give (a new collection opened
+# the moment it is created).
+NOTHING = -1
 
 @dataclass
 class LeadBudget:
@@ -75,30 +88,56 @@ def _node_type(coll: str, doc: dict) -> str:
     return "folder" if doc.get("mimeType") in FOLDER_MIME_TYPES or str(doc.get("recordType") or "").upper() == "FOLDER" else "record"
 
 
-async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str]) -> dict[str, Any] | None:
+async def class_sets(tx: Tx, org: str, app_sk: int, held: set[str], only: list[int] | None = None) -> dict[str, Any] | None:
     """What the viewer's grants open of a connector kg serves, per class: met with no grant of the row's own (``plain``), met with the row's own grant (``own``), and the classes kg cannot vouch
-    for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate."""
-    rows = await tx.fetch(kgl.CLASSES, org, app_sk, CLASS_MAX + 1)
-    if len(rows) > CLASS_MAX:
+    for (``unvouched``). ``held``: every grant of every gated connector. None when the connector has too many classes to evaluate. With ``only``, just those of the connector's classes
+    are decided (``known``; one that is not the connector's opens nothing, as when every class is read): a row of any other class is the access check's (``_kh_class_split``), a
+    statement handed the sets reads only rows of known classes, and :func:`cover_children` decides more of them."""
+    got = await (tx.fetchrow(kgl.CLASSES, org, app_sk, CLASS_MAX + 1) if only is None else tx.fetchrow(kgl.CLASSES_OF, org, app_sk, only))
+    if got["n"] > CLASS_MAX:
         return None
-    found = {r["id"]: (json.loads(r["clauses"]) if isinstance(r["clauses"], str) else list(r["clauses"])) for r in rows}
+    found = {int(c): cl for c, cl in json.loads(got["doc"]).items()}
     verdicts = await kg_read.class_verdicts(tx, org, found, held)
-    return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None}}
+    return {"app_sk": app_sk, "plain": {c for c, v in verdicts.items() if v and v[0]}, "own": {c for c, v in verdicts.items() if v and v[1] and not v[0]}, "unvouched": {c for c, v in verdicts.items() if v is None},
+            "known": None if only is None else set(only), "held": held}
+
+
+async def cover_children(tx: Tx, org: str, sets: dict[str, Any], parents: list[int], hidden: list[int]) -> dict[str, Any] | None:
+    """Sets read for some classes (``class_sets`` with ``only``) extended, in place, by the classes of the live children of ``parents`` (what their arrows decide by class), or by every
+    class of the connector when they have more than CLASS_COVER children. None when those cannot be decided by class (too many classes): the check decides the children then."""
+    kids = await tx.fetch(kgl.CHILD_CLASSES, org, parents, CLASS_COVER + 1, hidden)
+    new = None if len(kids) > CLASS_COVER else sorted({k["class_id"] for k in kids if k["class_id"] is not None} - sets["known"])
+    if new == []:
+        return sets
+    got = await class_sets(tx, org, sets["app_sk"], sets["held"], new)
+    if got is None:
+        return None
+    for k in ("plain", "own", "unvouched"):
+        sets[k] |= got[k]
+    sets["known"] = None if new is None else sets["known"] | got["known"]
+    return sets
 
 
 async def head(tx: Tx, org: str, app_id: str, held: set[str], *, by_class: bool) -> tuple[int | None, dict, list[int], bool, dict[str, set[int]] | None]:
-    """A connector's listing state: its node key (None when kg holds no current copy of it), its document, the rows groups that hide their children hide, whether kg serves it, and
-    what the viewer's grants open of it by class (None unless ``by_class``: the page reads one snapshot, so the stamps it admits by are the ones the currency check saw). ``held``:
-    every grant of every gated connector, since a clause's literals are the nodes a walk passes through, of any connector; a row's own grant is still the App's."""
+    """A connector's listing state: its node key (None when kg holds no finished copy of it and it holds a node; :data:`NOTHING` when it holds none), its document, the rows groups
+    that hide their children hide, whether kg serves it, and what the viewer's grants open of it by class (None unless ``by_class``: the page reads one snapshot, so the stamps it
+    admits by are the ones the currency check saw). ``held``: every grant of every gated connector, since a clause's literals are the nodes a walk passes through, of any connector;
+    a row's own grant is still the App's."""
     k = await tx.fetchrow(kgl.STATE, org, app_id)
     hidden: list[int] = []
-    ready = bool(k["sk"] is not None and k["mode"] != "legacy" and k["code_epoch"] == CODE_EPOCH and k["verified_at"] is not None)      # a copy of an older code lacks the listing columns: it is not listed from
-    if ready and await tx.fetchval(kgl.HAS_HIDER, org, k["sk"]):
+    # A finished copy made by this code is listed from whether or not it is verified yet: every change since the copy is in the log the drain projects, so its structure lags the graph
+    # by the drain, as an enforced connector's does while it syncs, and who may see a row stays the live walk's until kg serves the connector. A copy of an older code lacks the
+    # listing columns, and a copy whose verify found a difference is set back to epoch 0 (``backfill.backfill``): neither is listed from.
+    ready = bool(k["sk"] is not None and k["code_epoch"] == CODE_EPOCH and k["backfill_cursor"] == "done")
+    if not ready:
+        holds = await tx.fetchval(kgl.HOLDS, org, app_id)
+        return (None if holds else NOTHING), (_doc(k["app_doc"]) if k["app_doc"] else {}), [], False, None
+    if await tx.fetchval(kgl.HAS_HIDER, org, k["sk"]):
         hidden = list(await tx.fetchval(kgl.HIDDEN, org, k["sk"]))
         if len(hidden) > HIDDEN_MAX:
             raise KnowledgeHubListingTooLarge
-    served = ready and kg_read.enabled() and await kg_read.serves(tx, org, app_id)      # PG_KG_READ=0, or a connector this process distrusts (as ``read.decide``): every row is the live check's
-    return (k["sk"] if ready else None), (_doc(k["app_doc"]) if k["app_doc"] else {}), hidden, served, (await class_sets(tx, org, k["sk"], held) if served and by_class else None)
+    served = kg_read.enabled() and await kg_read.serves(tx, org, app_id)      # PG_KG_READ=0, or a connector this process distrusts (as ``read.decide``): every row is the live check's
+    return k["sk"], (_doc(k["app_doc"]) if k["app_doc"] else {}), hidden, served, (await class_sets(tx, org, k["sk"], held) if served and by_class else None)
 
 
 def origin_of(app_doc: dict) -> str:
@@ -127,6 +166,18 @@ def where_of(org: str, app_sk: int, app_doc: dict, filters: dict[str, Any], hidd
     return base, where
 
 
+def capped_counts(rows: list[Any]) -> tuple[dict[str, int], bool]:
+    """The counts by type of a count statement's rows (``count_sql``, ``browse_count_sql``: read up to COUNT_CAP + 1), and whether they reached past the cap. A count past it keeps
+    COUNT_CAP: the row past the cap is dropped from its largest type, so the counts add up to what the total reports."""
+    counts = {"record": 0, "folder": 0, "recordGroup": 0}
+    for r in rows:
+        counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += r["n"]
+    over = sum(counts.values()) - COUNT_CAP
+    if over > 0:
+        counts[max(counts, key=counts.__getitem__)] -= over
+    return counts, over > 0
+
+
 class KhListingMixin(PgBase):
     async def _kq(self, fn: Any, transaction: str | None) -> Any:  # noqa: ANN401
         """A read unit of the listing: custom plans (a statement that carries arrays of ids is planned for them, not generically after the fifth run), in the page's transaction when it has one."""
@@ -140,8 +191,8 @@ class KhListingMixin(PgBase):
         start_id: str | None = None, start_type: str = "app", grants_by_connector: dict[str, list[str]] | None = None, include_scope: bool = False, via_parent_id: str | None = None,
         transaction: str | None = None, name_parents: bool = True, user_key: str | None = None, grants_out: dict[str, list[str]] | None = None, max_depth: int = 50,
     ) -> dict[str, Any]:
-        """One page of the flat listing of a connector (``flatten`` from the app), or the browse of a record group or a record (``kh_browse``). A browse of the connector itself and a depth
-        bound are not served here yet."""
+        """One page of the flat listing of a connector (``flatten`` from the app), of what lies below a record group or a record (``flatten`` from it), or the browse of a node
+        (``kh_browse``). ``max_depth`` bounds the flatten in hierarchy hops from its start, as on Neo4j and ArangoDB."""
         if direction not in ("next", "prev"):
             raise ValueError(f"Unsupported page direction: {direction!r}.")
         order = (sort_dir or "").strip().upper()
@@ -150,10 +201,14 @@ class KhListingMixin(PgBase):
         if sort_field not in kgl.SORTS:
             raise ValueError(f"Unsupported sort field: {sort_field!r}. Allowed: {sorted(kgl.SORTS)}")
         start_id = start_id or app_id
-        if flatten and (max_depth != 50 or not (start_type in ("app", "kb") or start_id == app_id)):
-            raise NotImplementedInPostgres("PostgresGraphProvider.get_knowledge_hub_connector_page_v3 flattens a whole connector only")
+        scoped = flatten and not (start_type in ("app", "kb") or start_id == app_id)
         org = current_org_id()
         filters = filters or {}
+        start = None
+        if scoped:      # a flatten below the connector lists the start's connector, as a browse of the start resolves it (``_kh_browse``)
+            found = await self._kq(lambda tx: tx.fetch(kgl.BROWSE_START, org, start_id), transaction) if org_id == org else []
+            start = found[0] if len(found) == 1 else None
+            app_id = (start["app_id"] if start else None) or ""
         if flatten and (org_id != org or app_id not in set(gated_app_ids)):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
         if flatten:      # a browse resolves its App from its start first (``_kh_browse``)
@@ -189,28 +244,56 @@ class KhListingMixin(PgBase):
 
         app_sk, app_doc, hidden, served, sets = await self._kq(lambda tx: head(tx, org, app_id, held, by_class=snapshot), transaction)
         if app_sk is None:
-            raise KnowledgeHubListingNotReady
+            return await self._kh_not_ready(org, start_id, at_app=not scoped, access=access, transaction=transaction, include_scope=include_scope, include_total=include_total)
+        admit = self._kh_admitter(org, access, transaction, served=served)
+        scope: list[int] | None = None
+        crumbs: tuple[list[dict[str, Any]], list[dict[str, Any]]] | None = None
+        if scoped:
+            # a start of this connector that is live, not hidden by a group above it and that the viewer may open (else the flatten's 404, as the browse's)
+            if start["app_sk"] != app_sk or start["deleted"] or start["alien"] or start["sk"] in set(hidden) or start_id not in await admit([start_id]):
+                return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
+            scope = await self._kh_flat_below(org, start["sk"], app_sk, hidden, admit, max_depth, transaction)
+            if include_scope:
+                trail = await self._kq(lambda tx: self._kh_browse_trail(tx, org, start), transaction)
+                opened = await admit([r["id"] for sk, r in trail[4].items() if sk != start["sk"] and r["kind"] != 1]) | {start_id}
+                crumbs = self._kh_browse_scope(app_id, app_doc, start["sk"], trail, opened, set(gated_app_ids))
+        elif max_depth < 50:
+            scope = await self._kh_flat_within(org, app_id, app_sk, max_depth, transaction)
         if filtered_out(app_id, app_doc, filters):
             return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=True)
         base, where = where_of(org, app_sk, app_doc, filters, hidden)
-        admit = self._kh_admitter(org, access, transaction, served=served)
+        if scope is not None:
+            where += f" AND r.sk = ANY({base.add(scope)}::bigint[])"
         gset = set(granted)
         admitted_of = self._kh_admitted_of(sets, gset, admit)
         viewer = await self._kh_flat_viewer(sets, where, base, admit, granted, transaction)
-        admit_sql, pbase = None, kgl.Params(list(base.values))
-        if viewer is not None:      # a connector kg serves: the classes admit in the statement, so a window needs no question to the access check
+        admit_sql, pbase, page_where = None, kgl.Params(list(base.values)), where
+        if viewer is not None and scope is not None:
+            # The rows of a scope are read by their keys whatever the window, so each window read them all again: the classes admit inside the read, and one window is the page.
+            page_where += f" AND {kgl.class_admit('r', pbase, viewer, raw=True)}"
+            admit_sql = "true"
+        elif viewer is not None:      # a connector kg serves: the classes admit in the statement, so a window needs no question to the access check
             admit_sql = kgl.class_admit("w", pbase, viewer)
         need, kept, boundary, scanned, resume = limit + 1, [], after, 0, None
         window, t0 = min(WINDOW_MAX, max(need * 4, 100)), time.monotonic()
+        # A first page whose windows reach the end of the listing has read every row its total counts, each with what the classes say of it (``ok``): counted from the windows,
+        # the total needs no second read of the connector (a search for a rare word reads the whole connector to find its few rows, and the count read it again).
+        found = {"record": 0, "folder": 0, "recordGroup": 0} if include_total and viewer is not None and after is None else None
+        whole = False
         while len(kept) < need:
             p = kgl.Params(list(pbase.values))
             p.values[2] = window
             branches = kgl.after(sort_field, order, direction, boundary, p) if boundary is not None else None
-            sql = kgl.page_sql(sort_field, order, direction, where, branches, admit_sql)
+            sql = kgl.page_sql(sort_field, order, direction, page_where, branches, admit_sql)
             got = await self._kq(lambda tx, s=sql, v=tuple(p.values): tx.fetch(s, *v), transaction)
             allowed = None if viewer is not None else await admit([r["id"] for r in got]) if got else set()
             kept += [r for r in got if (r["ok"] if allowed is None else r["id"] in allowed)][:need - len(kept)]
+            if found is not None:
+                for r in got:
+                    if r["ok"]:
+                        found["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += 1
             if len(got) < window:
+                whole = True
                 break
             if len(kept) >= need:
                 break
@@ -224,7 +307,9 @@ class KhListingMixin(PgBase):
             window = min(WINDOW_MAX, window * 8)
         total = counts = None
         capped = False
-        if include_total:
+        if whole and found is not None and sum(found.values()) <= COUNT_CAP:
+            total, counts = sum(found.values()), {k: v for k, v in found.items() if v}
+        elif include_total:
             total, counts, capped = await self._kh_flat_exact(org, app_sk, where, base, viewer, transaction) if viewer is not None else await self._kh_flat_count(org, app_sk, where, base, admit, transaction)
         # the arrow of a group or a folder: on exactly when a browse of it lists something
         containers = [c for c in kept[:need] if c["kind"] == 2 or c["folder"]]
@@ -236,8 +321,10 @@ class KhListingMixin(PgBase):
         for row, c in zip(rows, kept[:need], strict=True):
             row["hasChildren"] = c["sk"] in lists
         payload = {"rows": rows, "total": total, "nRecord": (counts or {}).get("record", 0), "nFolder": (counts or {}).get("folder", 0), "nGroup": (counts or {}).get("recordGroup", 0)}
+        if crumbs is not None:
+            payload["crumbNodes"], payload["crumbEdges"] = crumbs
         page = await self._kh_v3_page_result(
-            payload, limit=limit, direction=direction, include_total=include_total, include_scope=include_scope, scoped_start=False, start_id=start_id, app_id=app_id,
+            payload, limit=limit, direction=direction, include_total=include_total, include_scope=include_scope, scoped_start=scoped, start_id=start_id, app_id=app_id,
             via_parent_id=via_parent_id, transaction=transaction, org_id=org_id, access=access, listed_under=None, name_parents=name_parents)
         if capped:
             page["totalCapped"] = True
@@ -245,6 +332,67 @@ class KhListingMixin(PgBase):
             page["hasMore"] = True
             page["resume"] = resume
         return page
+
+    async def _kh_flat_below(self, org: str, start_sk: int, app_sk: int, hidden: list[int], admit: Callable[[list[str]], Awaitable[set[str]]], depth: int,
+                             transaction: str | None) -> list[int]:
+        """What a flatten below a start lists before its filters: the rows of the connector that browsing down from the start reaches in ``depth`` hops, each one a hierarchy child
+        the viewer may open (the walk of Neo4j's and ArangoDB's flatten from a start, by the browse's rule: ``_kh_browse``). Not hidden by a group that hides its children."""
+        seen, frontier, out = {start_sk}, [start_sk], []
+        for level in range(depth):
+            if not frontier:
+                break
+            rows = await self._kq(lambda tx, f=frontier: tx.fetch(kgl.children_of_sql("", total=True), org, f, SCOPE_MAX + 1, hidden, SCOPE_MAX + 1), transaction)      # at most SCOPE_MAX + 1 rows in all, whatever the frontier
+            fresh = {r["sk"]: r["id"] for r in rows if r["sk"] not in seen and r["app_sk"] == app_sk}
+            seen |= set(fresh)
+            if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:
+                raise KnowledgeHubListingTooLarge
+            if level == depth - 1:      # the last level leads nowhere further, and the page and its count admit each row they keep
+                out += list(fresh)
+                break
+            opened = await admit(list(fresh.values())) if fresh else set()
+            frontier = [sk for sk, i in fresh.items() if i in opened]      # whether the viewer may open a row does not depend on the way to it: a row it may not is passed once
+            out += frontier
+        return out
+
+    async def _kh_flat_within(self, org: str, app_id: str, app_sk: int, depth: int, transaction: str | None) -> list[int]:
+        """The rows within ``depth`` hierarchy hops of the connector, and the records the hierarchy does not place that belong to it or to a group less than ``depth`` hops down
+        (Neo4j's and ArangoDB's bound on the flatten of a connector: a placed record counts by its hops, an unplaced one as one below its group). The hops pass through any node,
+        a deleted one too, as Neo4j's walk does (ArangoDB's stops at a deleted one)."""
+        levels: list[list[int]] = [[app_sk]]
+        seen = {app_sk}
+        groups: list[int] = []
+        for k in range(depth):
+            # Read only as many rows as could still fit: a level that fills them is too wide already, unless rows met before took some (then it is read again whole).
+            room = SCOPE_MAX + 1 - len(seen)
+            rows = await self._kq(lambda tx, f=levels[-1], n=room: tx.fetch(kgl.HIER_CHILDREN, org, f, n), transaction)
+            if len(rows) == room:
+                if len(seen | {r["sk"] for r in rows}) > SCOPE_MAX:
+                    raise KnowledgeHubListingTooLarge
+                rows = await self._kq(lambda tx, f=levels[-1]: tx.fetch(kgl.HIER_CHILDREN, org, f, SCOPE_MAX + 1), transaction)
+            fresh = [r for r in rows if r["sk"] not in seen]
+            seen |= {r["sk"] for r in fresh}
+            if len(rows) > SCOPE_MAX or len(seen) > SCOPE_MAX:
+                raise KnowledgeHubListingTooLarge
+            if k < depth - 1:
+                groups += [r["sk"] for r in fresh if r["kind"] == 2]
+            levels.append(list(dict.fromkeys(r["sk"] for r in fresh)))
+            if not levels[-1]:
+                break
+        async def read_unplaced(tx: Tx) -> list[Any]:
+            await tx.fetchval(kgl.NO_JIT)
+            return await tx.fetch(kgl.UNPLACED, org, groups, app_id, SCOPE_MAX + 1)
+        unplaced = await self._kq(lambda tx: kg_read.in_savepoint(tx, read_unplaced), transaction)
+        if len(seen) + len(unplaced) > SCOPE_MAX:
+            raise KnowledgeHubListingTooLarge
+        return sorted((seen - {app_sk}) | {r["sk"] for r in unplaced})
+
+    async def _kh_not_ready(self, org: str, start_id: str, *, at_app: bool, access: dict[str, Any], transaction: str | None, include_scope: bool, include_total: bool) -> dict[str, Any]:
+        """A start of a connector that holds nodes kg has not finished copying (``head``): nothing can be listed below it yet, which the caller answers as a source being prepared.
+        Refused as not ready only when the viewer may open the start (the App itself is gated already); a start they may not open is the not-found page, so the answer says
+        nothing of a node they cannot see."""
+        if not at_app and start_id not in await self._kh_admitter(org, access, transaction, served=False)([start_id]):
+            return self._kh_v3_empty_page(start_id, include_scope=include_scope, include_total=include_total, admitted=False)
+        raise KnowledgeHubListingNotReady
 
     def _kh_admitter(self, org: str, access: dict[str, Any], transaction: str | None, *, served: bool) -> Callable[[list[str]], Awaitable[set[str]]]:
         """The access check for a list of ids: kg first for a connector it serves, the live walk otherwise."""
@@ -277,7 +425,7 @@ class KhListingMixin(PgBase):
         for r in rows:
             # a row of another connector has its connector's classes, not these: the check decides it, as it does a deleted or a foreign one
             if (r["r13"] is False and r["has_path"] and r["class_id"] is not None and not r["fenced"] and not r["placeholder"] and r["class_id"] not in sets["unvouched"]
-                    and r["app_sk"] == sets["app_sk"] and not r["deleted"] and not r["alien"]):
+                    and r["app_sk"] == sets["app_sk"] and not r["deleted"] and not r["alien"] and (sets["known"] is None or r["class_id"] in sets["known"])):
                 if r["class_id"] in sets["plain"] or (r["class_id"] in sets["own"] and r["id"] in granted):
                     ok.add(r["id"])
             else:
@@ -415,6 +563,8 @@ class KhListingMixin(PgBase):
         groups = [c["sk"] for c in page if c["kind"] == 2 and not c["hide_children"]]
         held = {r["sk"] for r in await tx.fetch(kgl.HELD, org, groups, sorted(gset))} if tops and groups and gset else set()
         rest = asked
+        if sets is not None and sets["known"] is not None:      # a browse decides by the classes it has read: those of these rows' children too
+            sets = await cover_children(tx, org, sets, asked, hidden)
         if sets is not None:
             q = kgl.Params([org, asked, hidden])
             admit_c = kgl.class_admit("c", q, {"plain": sorted(sets["plain"]), "own": sorted(sets["own"]), "unvouched": sorted(sets["unvouched"]), "granted": sorted(gset), "walked": set()})
@@ -477,22 +627,28 @@ class KhListingMixin(PgBase):
 
     async def _kh_flat_exact(self, org: str, app_sk: int, where: str, base: kgl.Params, viewer: dict[str, Any], transaction: str | None) -> tuple[int, dict[str, int], bool]:
         """The total of a connector kg serves, from the stamped classes: what the viewer's grants open by class are counted where the rows are, up to COUNT_CAP, and the few rows kg does not decide
-        are counted from the access check's answer."""
+        are counted from the access check's answer. Rows the counters count are exact and come on top of the capped scan, so a capped total is a lower bound that can pass COUNT_CAP;
+        the counts by type always add up to the total."""
         left, walked = viewer["left"], viewer["walked"]
+        # With no filter and nothing hidden, the classes met with no grant of the row's own are counted from the counters (every row of them, no cap); the rows that need
+        # their own grant are still counted where they are.
+        folded = None
+        if kg_counts.serving() and not where:
+            plain = sorted(set(viewer["plain"]) - set(viewer["unvouched"]))
+            folded = await self._kq(lambda tx: kg_counts.class_rows(tx, org, app_sk, plain), transaction)
         q = kgl.Params(list(base.values))
         q.values[2] = COUNT_CAP + 1
-        sql = kgl.count_sql(where, q.add(viewer["plain"]), q.add(viewer["own"]), q.add(viewer["granted"]), q.add(viewer["unvouched"]))
-        counts = {"record": 0, "folder": 0, "recordGroup": 0}
-        for r in await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction):
-            counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += r["n"]
+        sql = kgl.count_sql(where, q.add([] if folded is not None else viewer["plain"]), q.add(viewer["own"]), q.add(viewer["granted"]), q.add(viewer["unvouched"]))
+        counts, capped = capped_counts(await self._kq(lambda tx, s=sql, v=tuple(q.values): tx.fetch(s, *v), transaction))
+        for (kind, folder), n in (folded or {}).items():
+            counts["recordGroup" if kind == 2 else "folder" if folder else "record"] += n
         if left:       # the rows the check admitted, by type, from their own rows
             by_id = {r["id"]: r for r in await self._kq(lambda tx: tx.fetch("/* pipeshub:kg.listing_walked */ SELECT id, kind, folder FROM kg.records r WHERE org_id = $1 AND app_sk = $2 AND kind IN (2, 3) AND id = ANY($3::text[])", org, app_sk, sorted(walked)), transaction)}
             for i in walked:
                 r = by_id.get(i)
                 if r:
                     counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += 1
-        total = sum(counts.values())
-        return min(total, COUNT_CAP), {k: v for k, v in counts.items() if v}, total > COUNT_CAP
+        return sum(counts.values()), {k: v for k, v in counts.items() if v}, capped
 
     async def _kh_flat_count(self, org: str, app_sk: int, where: str, base: kgl.Params, admit: Any, transaction: str | None) -> tuple[int, dict[str, int], bool]:  # noqa: ANN401
         """The rows of the first COUNT_SCAN candidates the check admits, by type, and whether there were more candidates (then the total is a lower bound)."""

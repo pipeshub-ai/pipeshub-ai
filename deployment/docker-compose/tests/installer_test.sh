@@ -387,10 +387,10 @@ compose="$(cat "$COMPOSE_DIR/docker-compose.yml")"
 check "env.template documents PIPESHUB_ENABLE_DCR" "$envtmpl" "PIPESHUB_ENABLE_DCR"
 check "env.template documents PIPESHUB_ENABLE_DEVICE_GRANT" "$envtmpl" "PIPESHUB_ENABLE_DEVICE_GRANT"
 check "env.template names pipeshub_device_client_id" "$envtmpl" "pipeshub_device_client_id"
-if grep -qE '^PIPESHUB_ENABLE_DCR=true' "$COMPOSE_DIR/env.template"; then
-  fail "env.template must not enable DCR by default"
+if grep -qE '^PIPESHUB_ENABLE_DCR=false' "$COMPOSE_DIR/env.template"; then
+  fail "env.template must not disable DCR by default"
 else
-  pass "env.template does not enable DCR by default"
+  pass "env.template does not disable DCR by default"
 fi
 if grep -qE '^PIPESHUB_ENABLE_DEVICE_GRANT=false' "$COMPOSE_DIR/env.template"; then
   fail "env.template must not disable device grant by default"
@@ -423,7 +423,7 @@ eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
 # --stop must tear down ALL profile-gated containers (not just the active
 # profile) so leftover graph/broker containers do not block network removal.
 stop_block="$(awk '/if \$FLAG_STOP; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
-check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"'
+check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate,postgres-metrics"'
 check "stop removes orphans" "$stop_block" "down --remove-orphans"
 check "stop uses COMPOSE_PROJECT_NAME from .env" "$stop_block" 'PROJECT_NAME="$(resolve_project_name)"'
 check "stop validates project name from .env" "$stop_block" 'require_valid_project_name "$PROJECT_NAME"'
@@ -539,7 +539,9 @@ check_exact "does not match a longer profile name" "$(COMPOSE_PROFILES=postgres-
 check_exact "keeps exactly the two opt-in profiles and nothing else" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
 # the exact check does fail on a wrongly appended profile (the substring check did not)
 [[ "graph-neo4j,sandbox,postgres" != "graph-neo4j,sandbox" ]] && pass "an appended postgres is caught by the exact comparison" || fail "an appended postgres is caught by the exact comparison"
-check "uninstall also covers the postgres profiles" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" 'sandbox,postgres,postgres-migrate"'
+check "uninstall also covers the postgres profiles" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" 'sandbox,postgres,postgres-migrate,postgres-metrics"'
+check_exact "keeps the metrics profile when it is set" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-metrics dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-metrics"
+check_exact "the document-store override does not add the metrics profile" "$(PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
 check "uninstall asks before deleting the PostgreSQL volume" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" "Also delete the PostgreSQL data volume?"
 # The .env the wizard writes carries one random password per login; an existing value is kept across --reconfigure.
 wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^  done/{exit}' "$INNER_INSTALLER")"

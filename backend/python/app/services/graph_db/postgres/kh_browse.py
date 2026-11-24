@@ -16,10 +16,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import current_org_id
-from app.exceptions.graph_db_exceptions import (
-    KnowledgeHubListingNotReady,
-    KnowledgeHubListingTooLarge,
-)
+from app.exceptions.graph_db_exceptions import KnowledgeHubListingTooLarge
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import PgBase, _doc
 from app.services.graph_db.postgres.kg import listing as kgl
@@ -38,7 +35,9 @@ from app.services.graph_db.postgres.kh_listing import (
     WINDOW_MAX,
     LeadBudget,
     _node_type,
+    capped_counts,
     chain_tops_apply,
+    class_sets,
     filtered_out,
     head,
     where_of,
@@ -102,8 +101,8 @@ class KhBrowseMixin(PgBase):
         async def unit(tx: Tx) -> dict[str, Any] | str:
             """Everything up to the page, in one read: the listing state, the breadcrumbs' trail, the children of a node held whole, and the access check's answer for the start,
             its ancestors and the children the classes do not decide."""
-            app_sk, app_doc, hidden, served, sets = await head(tx, org, aid, held, by_class=by_class)
-            if app_sk is None:      # a connector the viewer may browse that kg holds no current copy of: not ready, as the flat listing says
+            app_sk, app_doc, hidden, served, _ = await head(tx, org, aid, held, by_class=False)
+            if app_sk is None:      # a connector the viewer may browse that holds nodes kg has not finished copying: not ready, as the flat listing says
                 return "not_ready"
             # a start of this connector that kg holds and no group above hides (else the browse's 404)
             if not at_app and (start is None or start["app_sk"] != app_sk or start["deleted"] or start["alien"] or start["sk"] in set(hidden)):
@@ -129,12 +128,15 @@ class KhBrowseMixin(PgBase):
             if len(links) <= kgl.LINKS_MAX and (at_app or not start["hide_children"]):
                 got = await tx.fetch(kgl.children_held_sql(where, links_param), *p.values)
                 rows = None if got[0]["n"] > BROWSE_MEMORY_MAX else [r for r in got if r["sk"] is not None]
+            ancestors = [r for sk, r in (trail[4] if trail else {}).items() if sk != start["sk"] and r["kind"] != 1]
+            # a node held whole is decided by the classes of the rows it reads (its arrows add their children's: ``cover_children``); a wider one by every class of the connector
+            only = None if rows is None else sorted({r["class_id"] for r in [*rows, *([] if at_app else [start]), *ancestors] if r["class_id"] is not None})
+            sets = await class_sets(tx, org, app_sk, held, only) if served and by_class else None
             gs = set(granted)
             ok, left = self._kh_class_split(rows or [], sets, gs)
             # the children the classes do not decide are asked here only when they are few; otherwise (kg does not serve the connector, or it is mid-sync) they are asked a page at a time
             windowed = rows is not None and (sets is None or len(left) > UNDECIDED_MAX)
             # one question to the check: the start, its ancestors (which the breadcrumbs name) and those children
-            ancestors = [r for sk, r in (trail[4] if trail else {}).items() if sk != start["sk"] and r["kind"] != 1]
             ok2, left2 = self._kh_class_split([*([] if at_app else [start]), *ancestors], sets, gs)
             ok |= ok2
             ids = [r["id"] for r in [*left2, *([] if windowed else left)]]
@@ -160,7 +162,7 @@ class KhBrowseMixin(PgBase):
         if u == "refused":
             return refused()
         if u == "not_ready":
-            raise KnowledgeHubListingNotReady
+            return await self._kh_not_ready(org, start_id, at_app=at_app, access=access, transaction=transaction, include_scope=include_scope, include_total=include_total)
         app_id, app_sk, app_doc, hidden, served, sets = (u[k] for k in ("app_id", "app_sk", "app_doc", "hidden", "served", "sets"))
         if grants_out is not None:
             grants_out[app_id] = granted
@@ -403,11 +405,10 @@ class KhBrowseMixin(PgBase):
                 sql = kgl.browse_count_sql(where, c.add(sorted(sets["plain"])), c.add(sorted(sets["own"])), c.add(sorted(gset)), c.add(sorted(sets["unvouched"])),
                                            c.add(sets["app_sk"]), links)
                 listed, n = await self._kh_listed(left, *walk)
-                counts = self._kh_counts(listed)
-                for r in await self._kq(lambda tx, s=sql, v=tuple(c.values): tx.fetch(s, *v), transaction):
-                    counts["recordGroup" if r["kind"] == 2 else "folder" if r["folder"] else "record"] += r["n"]
-                total = sum(counts.values())
-                return min(total, COUNT_CAP), counts, total > COUNT_CAP or n < len(left)
+                counts, capped = capped_counts(await self._kq(lambda tx, s=sql, v=tuple(c.values): tx.fetch(s, *v), transaction))
+                for k, v in self._kh_counts(listed).items():
+                    counts[k] += v
+                return sum(counts.values()), counts, capped or n < len(left)
         c = kgl.Params(list(p.values))
         c.values[2] = COUNT_SCAN + 1
         first = list(await self._kq(lambda tx, s=kgl.children_sql(where, links), v=tuple(c.values): tx.fetch(s, *v), transaction))
@@ -494,41 +495,17 @@ class KhBrowseMixin(PgBase):
             return [{"id": n["id"], "handle": n["id"], "sk": n["sk"], "parents": n["parents"], "ownGroups": [{"id": g, "deleted": d} for g, d in n["own"]]} for n in nodes.values()]
         return await self._kq(read, transaction) if node_ids else []
 
-    async def _kh_v3_chain_top_facts(self, app_id: str, node_ids: list[str], group_ids: list[str], transaction: str | None) -> dict[str, set[str]]:
+    async def _kh_v3_chain_top_hidden(self, app_id: str, node_ids: list[str], transaction: str | None) -> set[str]:
         org = current_org_id()
 
-        async def read(tx: Tx) -> dict[str, set[str]]:
+        async def read(tx: Tx) -> set[str]:
             app_sk = await tx.fetchval(kgl.APP_KEY, org, app_id)
             if app_sk is None:
-                return {"hidden": set(node_ids), "underApp": set()}
-            hidden: set[int] = set(await tx.fetchval(kgl.HIDDEN, org, app_sk)) if await tx.fetchval(kgl.HAS_HIDER, org, app_sk) else set()
-            nodes = {r["id"]: r["sk"] for r in await tx.fetch(kgl.CHAIN_ROWS, org, sorted({*node_ids, *group_ids}))}
-            # up the hierarchy from the groups (the primary parent and the hierarchy links), as far as the check's walk goes: the groups that reach the App
-            starts = {nodes[g] for g in group_ids if g in nodes}
-            up: dict[int, set[int]] = {}
-            frontier, seen = set(starts), set(starts)
-            for _ in range(access_sql.MAX_HOPS):
-                if not frontier:
-                    break
-                for r in await tx.fetch(kgl.CHAIN_BY_SK, org, sorted(frontier)):
-                    if r["parent_sk"] is not None:
-                        up.setdefault(r["sk"], set()).add(r["parent_sk"])
-                for r in await tx.fetch(LINKS, org, sorted(frontier)):
-                    if r["kind"] == 1:
-                        up.setdefault(r["child_sk"], set()).add(r["parent_sk"])
-                frontier = {p for sk in frontier for p in up.get(sk, ())} - seen - {app_sk}
-                seen |= frontier
-
-            def reaches(sk: int) -> bool:
-                level, met = {sk}, {sk}
-                for _ in range(access_sql.MAX_HOPS):
-                    level = {p for x in level for p in up.get(x, ())} - met
-                    if app_sk in level:
-                        return True
-                    met |= level
-                return False
-            return {"hidden": {i for i, sk in nodes.items() if sk in hidden and i in set(node_ids)},
-                    "underApp": {g for g in group_ids if g in nodes and reaches(nodes[g])}}
+                return set(node_ids)
+            if not await tx.fetchval(kgl.HAS_HIDER, org, app_sk):
+                return set()
+            hidden = set(await tx.fetchval(kgl.HIDDEN, org, app_sk))
+            return {r["id"] for r in await tx.fetch(kgl.CHAIN_ROWS, org, sorted(set(node_ids))) if r["sk"] in hidden}
         return await self._kq(read, transaction)
 
 
@@ -544,11 +521,13 @@ async def _chain_nodes(tx: Tx, org: str, rows: list[Any]) -> dict[int, dict[str,
         (hier if lk["kind"] == 1 else groups)[lk["child_sk"]].append(lk["parent_sk"])
     refs = sorted({s for d in (hier, groups) for v in d.values() for s in v})
     keys = {r["sk"]: (r["coll"], r["id"]) for r in await tx.fetch(KEYS, org, refs)} if refs else {}
-    deleted = {r["sk"]: r["deleted"] for r in await tx.fetch(kgl.CHAIN_BY_SK, org, [s for s in refs if keys.get(s, (0,))[0] == 2])} if refs else {}
+    group_rows = await tx.fetch(kgl.CHAIN_BY_SK, org, [s for s in refs if keys.get(s, (0,))[0] == 2]) if refs else []
+    deleted = {r["sk"]: r["deleted"] for r in group_rows}
+    unlisted = {r["sk"] for r in group_rows if r["alien"]}      # a group that carries access only is no parent a browse opens
     out = {}
     for r in rows:
         own = hier[r["sk"]] if r["kind"] == 2 else groups[r["sk"]]
-        out[r["sk"]] = {"sk": r["sk"], "id": r["id"], "kind": r["kind"], "parents": [keys[s][1] for s in hier[r["sk"]] if s in keys],
+        out[r["sk"]] = {"sk": r["sk"], "id": r["id"], "kind": r["kind"], "parents": [keys[s][1] for s in hier[r["sk"]] if s in keys and s not in unlisted],
                         "own": [(keys[s][1], bool(deleted.get(s))) for s in dict.fromkeys(own) if s in keys and keys[s][0] == 2 and s != r["sk"]]}
     return out
 
