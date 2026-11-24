@@ -2264,7 +2264,7 @@ class LocalFsConnector(BaseConnector):
         """Tell the user a run stopped on a desktop-side failure.
 
         Plain words only, and the same words for the same failure on every
-        run: ``_suppress_notification`` keys on title + message, and exception
+        run: ``_suppress_notification`` keys on title + message (per recipient), and exception
         text carries run ids, page numbers and the relay's internal URL, which
         both read as noise to the user and change every run, so a desktop that
         kept timing out notified on every scheduled sync. The code goes in the

@@ -23,6 +23,11 @@ import { mcpEditCredentialImpact } from '../edit-impact';
 import { isSecretFieldName } from '../stdio-env-auth';
 import { McpInstanceConfigPanel } from '../team/components/mcp-instance-config-panel';
 import { McpAuthDialog } from '../components/mcp-auth-dialog';
+import { SECRET_FIELD_MASK_CLASS } from '@/app/components/ui/secret-text-field';
+
+/** A secret is hidden when its text input sits inside (or is) the mask class. */
+const isMasked = (input: HTMLInputElement) =>
+  input.type === 'text' && input.closest(`.${SECRET_FIELD_MASK_CLASS}`) !== null;
 
 function entry(overrides: Partial<McpMyServerEntry> = {}): McpMyServerEntry {
   return {
@@ -169,11 +174,6 @@ function renderPanel(props: {
       instances={editing ? [editing] : []}
       onOpenChange={noop}
       onSaved={noop}
-      onRequestDelete={noop}
-      busyInstanceId={null}
-      onAuthenticate={noop}
-      onReauthenticate={noop}
-      onDisconnect={noop}
     />,
   );
 }
@@ -223,7 +223,7 @@ describe('McpInstanceConfigPanel asks before an edit removes sign-ins', () => {
   it('says only the shared credential goes when it is turned off', async () => {
     renderPanel({ mode: 'edit', editing: entry({ useAdminAuth: true }) });
 
-    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('radio', { name: /Each person uses their own/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(await screen.findByText(/Turning off the shared credential removes it/)).toBeTruthy();
@@ -282,8 +282,8 @@ describe('McpInstanceConfigPanel local command', () => {
     renderPanel({ mode: 'create', prefillTemplate: slackLike, templates: [slackLike] });
 
     const inputFor = (label: string) => screen.getByText(label).parentElement!.querySelector('input')!;
-    expect(inputFor('CLIENT_SECRET').type).toBe('password');
-    expect(inputFor('CLIENT_ID').type).toBe('text');
+    expect(isMasked(inputFor('CLIENT_SECRET'))).toBe(true);
+    expect(isMasked(inputFor('CLIENT_ID'))).toBe(false);
   });
 });
 

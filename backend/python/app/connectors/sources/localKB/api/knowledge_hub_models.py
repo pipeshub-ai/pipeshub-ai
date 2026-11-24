@@ -227,6 +227,7 @@ class KnowledgeHubNodesResponse(BaseModel):
     counts: Optional[CountsInfo] = Field(None, description="Counts summary")
     permissions: Optional[PermissionsInfo] = Field(None, description="User permissions")
     notReady: Optional[list[str]] = Field(None, description="Sources left out of this listing because their copy is not made yet; the others are listed. Ask again in a moment")
+    preparing: Optional[bool] = Field(None, description="True when nothing could be listed because the source is still being prepared (its copy is not finished): the page is empty, with no cursor. Ask again in a moment")
     maxFolderDepth: int = Field(KB_MAX_FOLDER_DEPTH, description="Deepest a collection folder may be nested (a folder directly in the collection is depth 1)")
     typed_records: Optional[Dict[str, Any]] = Field(None, description="Typed Record instances keyed by record ID (only when include_typed_records is requested)")
 

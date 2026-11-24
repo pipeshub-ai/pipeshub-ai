@@ -26,7 +26,16 @@ export interface TrashItem {
 export interface TrashListResponse {
   success: boolean;
   items: TrashItem[];
-  pagination: { page: number; limit: number; totalCount: number; totalPages: number };
+  pagination: {
+    page: number;
+    limit: number;
+    /** Exact up to the server's cap; the cap itself when `totalCapped`. */
+    totalCount: number;
+    totalPages: number;
+    totalCapped?: boolean;
+    /** Pass back as `cursor` for the next page; null on the last one. */
+    nextCursor?: string | null;
+  };
   retention?: { minAgeMs: number } | null;
 }
 

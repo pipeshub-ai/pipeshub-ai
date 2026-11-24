@@ -94,6 +94,18 @@ describe('knowledge_base/validators/validators', () => {
       expect(result.success).to.be.true;
     });
 
+    it('keeps a user\'s force flag, which tells a Force reindex from a plain one', () => {
+      const result = reindexRecordSchema.safeParse({ params: { recordId: 'rec-123' }, body: { depth: 0, force: true } });
+      expect(result.success).to.be.true;
+      if (result.success) expect(result.data.body?.force).to.equal(true);
+    });
+
+    it('refuses a force flag that is not a boolean', () => {
+      for (const bad of ['true', 1, 'yes']) {
+        expect(reindexRecordSchema.safeParse({ params: { recordId: 'rec-123' }, body: { force: bad } }).success, String(bad)).to.be.false;
+      }
+    });
+
     it('should accept optional depth', () => {
       const data = { params: { recordId: 'rec-123' }, body: { depth: 5 } };
       const result = reindexRecordSchema.safeParse(data);
@@ -726,6 +738,42 @@ describe('knowledge_base/validators/validators', () => {
       const result = listKnowledgeBasesSchema.safeParse(data);
       expect(result.success).to.be.false;
     });
+
+    it('should report a search over 1000 characters as too_big on query.search, not throw', () => {
+      const result = listKnowledgeBasesSchema.safeParse({
+        query: { search: 'q'.repeat(1001) },
+      });
+      expect(result.success).to.be.false;
+      if (!result.success) {
+        expect(
+          result.error.issues.map((i) => [i.path, i.code, i.message]),
+        ).to.deep.equal([
+          [
+            ['query', 'search'],
+            'too_big',
+            'Search term too long (max 1000 characters)',
+          ],
+        ]);
+      }
+    });
+
+    it('should accept a search of exactly 1000 characters', () => {
+      const result = listKnowledgeBasesSchema.safeParse({
+        query: { search: 'q'.repeat(1000) },
+      });
+      expect(result.success).to.be.true;
+    });
+
+    it('should apply the length limit to the trimmed search', () => {
+      const search = 'q'.repeat(1000);
+      const result = listKnowledgeBasesSchema.safeParse({
+        query: { search: `  ${search}  ` },
+      });
+      expect(result.success).to.be.true;
+      if (result.success) {
+        expect(result.data.query.search).to.equal(search);
+      }
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -835,6 +883,27 @@ describe('Knowledge Base Validators - branch coverage', () => {
       });
       expect(result.success).to.be.true;
     });
+
+    for (const isVersioned of ['maybe', 'yes', 'TRUE']) {
+      it(`should report "${isVersioned}" as an issue on body.isVersioned, not throw`, () => {
+        const result = uploadRecordsSchema.safeParse({
+          body: { isVersioned },
+          params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
+        });
+        expect(result.success).to.be.false;
+        if (!result.success) {
+          expect(
+            result.error.issues.map((i) => [i.path, i.code, i.message]),
+          ).to.deep.equal([
+            [
+              ['body', 'isVersioned'],
+              'custom',
+              'isVersioned must be true, false, 1 or 0',
+            ],
+          ]);
+        }
+      });
+    }
   });
 
   // =========================================================================

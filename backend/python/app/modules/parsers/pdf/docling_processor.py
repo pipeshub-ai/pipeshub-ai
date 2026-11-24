@@ -17,6 +17,7 @@ from docling_core.types.doc.document import DoclingDocument
 
 if TYPE_CHECKING:
     from docling.datamodel.document import ConversionResult
+    from docling.datamodel.pipeline_options import TableFormerMode
     from docling.document_converter import DocumentConverter
 
     from app.services.resource_governor import ResourceGovernor
@@ -34,6 +35,7 @@ from app.services.resource_governor.lanes import (
     parse_lanes_mode,
 )
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
+from app.utils.env_config import env_choice
 from app.utils.lazy_heavy import ensure_docling, require_off_loop
 from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count  # noqa: F401 - re-exported
 from app.utils.pool_worker import run_and_release, start_housekeeping
@@ -102,6 +104,17 @@ def _get_local_parse_worker_count() -> int:
 LOCAL_DOCLING_PARSE_WORKERS = _get_local_parse_worker_count()
 
 
+def _get_table_mode(mode_enum: type["TableFormerMode"]) -> "TableFormerMode":
+    """TableFormer mode from ``PDF_DOCLING_TABLE_MODE`` (``accurate`` | ``fast``).
+
+    ``accurate`` is Docling's own default and keeps multi-line cells in one row,
+    where ``fast`` can split them into extra rows. ``fast`` is about 1.8x quicker
+    per table at the median. ``mode_enum`` is ``TableFormerMode``, passed in because
+    docling is imported lazily.
+    """
+    return mode_enum(env_choice("PDF_DOCLING_TABLE_MODE", "accurate", ("accurate", "fast")))
+
+
 @lru_cache(maxsize=1)
 def _get_process_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
@@ -135,7 +148,7 @@ def _get_converter() -> "DocumentConverter":
     pipeline_options = ThreadedPdfPipelineOptions(
         do_ocr=False,
         table_structure_options=TableStructureOptions(
-            mode=TableFormerMode.FAST,
+            mode=_get_table_mode(TableFormerMode),
         ),
         generate_picture_images=True,
         layout_batch_size=1,

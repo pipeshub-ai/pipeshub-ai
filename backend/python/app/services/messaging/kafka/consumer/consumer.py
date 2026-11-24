@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from aiokafka import AIOKafkaConsumer  # type: ignore
 from pydantic import ValidationError
 
-from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, decode_message, open_configured
+from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, Inbox, decode_message, open_configured, record_processed
 from app.core.org_context import spawn_detached
 from app.services.messaging import message_log
 from app.services.messaging.config import MessageHandler, StreamMessage, messaging_env
@@ -73,8 +73,10 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         logger: Logger,
         kafka_config: KafkaConsumerConfig,
         retry_manager: Optional["RetryManager"] = None,
+        inbox: Inbox | None = None,
     ) -> None:
         self.logger = logger
+        self.inbox = inbox  # skips events this group already finished (see app.services.messaging.inbox)
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
@@ -247,12 +249,14 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             # Carry the producer's trace id into consumer-side logs.
             message_log.bind_envelope(parsed_message)
             try:
-                opened = await open_configured(message.topic, parsed_message)
+                opened = await open_configured(
+                    message.topic, parsed_message, inbox=self.inbox, consumer=self.kafka_config.group_id
+                )
             except DuplicateEnvelope:
                 message_log.note(outcome="skipped", reason="duplicate")
                 return True, None
             except EnvelopeRejected as e:
-                message_log.note(reason="envelope_rejected", code=e.reason)
+                message_log.note(reason="envelope_rejected", code=e.reason, **e.facts())
                 return False, e
             message_log.bind_opened(opened.ctx, opened.message)
             try:
@@ -263,6 +267,8 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             result = await self.message_handler(stream_message)
             if not result:
                 message_log.note(reason="handler_false")
+            else:
+                await record_processed(self.inbox, self.kafka_config.group_id, opened.ctx)
             return result, None
 
         except Exception as e:

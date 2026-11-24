@@ -11,7 +11,7 @@ import {
 
 function stubUserGroupsFind(groups: { users?: unknown[] }[]): sinon.SinonStub {
   const lean = sinon.stub().resolves(groups);
-  const select = sinon.stub().returns({ lean });
+  const select = sinon.stub().returns({ sort: sinon.stub().returnsThis(), lean });
   return sinon.stub(UserGroups, 'find').returns({ select } as any);
 }
 

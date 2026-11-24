@@ -24,7 +24,12 @@ from typing import Any
 
 from app.services.graph_db.common.record_visibility import is_live_record
 
-from .models import RecordAccessDeniedError, RecordNotFoundError
+from .models import (
+    GRAPH_CALLER_BUGS,
+    RecordAccessDeniedError,
+    RecordNotFoundError,
+    graph_did_not_answer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +50,9 @@ class TieredRecordAuthorizer:
         """Authorize `actor` to read `record`. Raises `RecordAccessDeniedError`
         on denial; returns `None` on success.
 
-        Raises `RecordNotFoundError` for a record in the trash. Never raises
-        for reasons other than a confirmed denial — I/O errors propagate as
-        their own exception types.
+        Raises `RecordNotFoundError` for a record in the trash, and
+        `RecordContentUnavailableError` when the graph could not answer the
+        check. Our own bugs (`GRAPH_CALLER_BUGS`) propagate as they are.
         """
         if not is_live_record(record):
             record_id = getattr(record, "id", None) or (
@@ -69,9 +74,14 @@ class TieredRecordAuthorizer:
         )
 
         # Tier 2 — the permission model
-        tier3_result = await self._graph.check_record_access_with_details(
-            actor.user_id, actor.org_id, record_id
-        )
+        try:
+            tier3_result = await self._graph.check_record_access_with_details(
+                actor.user_id, actor.org_id, record_id
+            )
+        except GRAPH_CALLER_BUGS:
+            raise
+        except Exception as exc:
+            raise graph_did_not_answer(f"Could not check access to record {record_id}") from exc
         if tier3_result is not None:
             return
 

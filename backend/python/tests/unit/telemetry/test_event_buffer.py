@@ -2,7 +2,12 @@
 
 import threading
 
-from app.telemetry.event_buffer import MAX_EVENTS, EventBuffer, event_buffer, record_event
+from app.telemetry.event_buffer import (
+    MAX_EVENTS,
+    EventBuffer,
+    event_buffer,
+    record_event,
+)
 
 
 class TestEventBuffer:

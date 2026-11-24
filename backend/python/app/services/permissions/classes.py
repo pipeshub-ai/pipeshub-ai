@@ -6,10 +6,11 @@ per row). Every clause also needs the gate of the record's app (R4). The arms mi
 - R12 member of an app that opens: the empty clause;
 - R8 declared: for each live record-group-level group g of the app at or above the record's own groups: ``{g}`` or the R7 clauses of g;
 - R7 walk: OR over hierarchy paths to the app (at most 50 hops, record-group-level parents of the app skipped) of AND over hops, where a hop c -> p is always true (the app
-  opens; or the rule is OPEN/STRICT and c inherits p), a literal c (OPEN/STRICT not inheriting; RESTRICTED inheriting) or never true (deleted; RESTRICTED not inheriting; any
-  other rule). A literal on a node with no grant at all can never be held, so the hop never passes;
+  opens; or the rule is OPEN/STRICT and c inherits p), a literal c (OPEN/STRICT not inheriting; RESTRICTED or PARENT_AND_GRANT inheriting) or never true (deleted;
+  RESTRICTED or PARENT_AND_GRANT not inheriting; any other rule). A literal on a node with no grant at all can never be held, so the hop never passes;
 - R9 seed: ``{SELF}`` for an OPEN live granted record or group;
-- R10 below a seed: ``{s}`` plus the literals of the stretch, for each OPEN live granted ancestor s of the app reached over OPEN live nodes that inherit or are granted. This is the
+- R10 below a seed: ``{s}`` plus the literals of the stretch, for each OPEN live granted ancestor s of the app reached over live nodes that pass ``seed_hop`` (OPEN
+  inheriting or granted; PARENT_AND_GRANT inheriting and granted). This is the
   monotone form: exact where the oracle's "no other arm admits s" cannot change the answer, i.e. in an app without record-group-level groups (reaching s from the app then implies
   the R7 clause through s). In an app with such groups it is exact only for a seed that t reaches over plain nodes and whose R8 groups are all t's (``seeds_exact``); a record that
   needs any other R10 clause the other arms do not absorb is refused.
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from app.services.permissions.ports import StampNode
 
 SELF = "@self"
+PAG = "PARENT_AND_GRANT"
 MAX_HOPS = 50
 MAX_CLAUSES = 16
 
@@ -98,13 +100,27 @@ class Compiler:
         if rule in ("OPEN", "STRICT"):
             if inh:
                 return frozenset()
-        elif rule == "RESTRICTED":
+        elif rule in ("RESTRICTED", PAG):
             if not inh:
                 return None
         else:
             return None
         lit = self._lit(c, t)
         return frozenset({lit}) if lit else None
+
+    def seed_hop(self, c: str, p: str, t: str) -> frozenset[str] | None:
+        """R10: literals the hop c -> p below a seed needs (empty: always passes), or None: it never passes. An OPEN node inherits or is
+        granted; a PARENT_AND_GRANT node inherits and is granted."""
+        cn = self.node(c)
+        if cn is None or cn.deleted:
+            return None
+        rule, inh = cn.rule or "OPEN", p in cn.inherits
+        if rule == "OPEN" and inh:
+            return frozenset()
+        if rule == "OPEN" or (rule == PAG and inh):
+            lit = self._lit(c, t)
+            return frozenset({lit}) if lit else None
+        return None
 
     def _must(self, i: str) -> StampNode:
         """The node ``i`` (not the app): a node the map lacks fails closed."""
@@ -197,17 +213,13 @@ class Compiler:
             return got
         out: set[frozenset[str]] = set()
         cn = self.node(c)
-        if cn is not None and not cn.deleted and (cn.rule or "OPEN") == "OPEN":
+        if cn is not None:
             for p in cn.parents:
                 if p == self.app:
                     continue
-                if p in cn.inherits:
-                    extra: frozenset[str] = frozenset()
-                else:
-                    lit = self._lit(c, t)
-                    if lit is None:
-                        continue
-                    extra = frozenset({lit})
+                extra = self.seed_hop(c, p, t)
+                if extra is None:
+                    continue
                 if self._is_seed(self._must(p)):
                     out.add(extra | {p})
                 out |= {extra | need for need in self._below(p, t)}
@@ -227,18 +239,14 @@ class Compiler:
             nxt: dict[str, set[frozenset[str]]] = {}
             for c, needs in frontier.items():
                 cn = self.node(c)
-                if cn is None or cn.deleted or (cn.rule or "OPEN") != "OPEN":
+                if cn is None:
                     continue
                 for p in cn.parents:
                     if p == self.app:
                         continue
-                    if p in cn.inherits:
-                        extra: frozenset[str] = frozenset()
-                    else:
-                        lit = self._lit(c, t)
-                        if lit is None:
-                            continue
-                        extra = frozenset({lit})
+                    extra = self.seed_hop(c, p, t)
+                    if extra is None:
+                        continue
                     pn = self._must(p)
                     for need in needs:
                         step = need | extra
@@ -263,18 +271,14 @@ class Compiler:
             nxt: dict[str, set[tuple[frozenset[str], bool]]] = {}
             for c, needs in frontier.items():
                 cn = self.node(c)
-                if cn is None or cn.deleted or (cn.rule or "OPEN") != "OPEN":
+                if cn is None:
                     continue
                 for p in cn.parents:
                     if p == self.app:
                         continue
-                    if p in cn.inherits:
-                        extra: frozenset[str] = frozenset()
-                    else:
-                        lit = self._lit(c, t)
-                        if lit is None:
-                            continue
-                        extra = frozenset({lit})
+                    extra = self.seed_hop(c, p, t)
+                    if extra is None:
+                        continue
                     pn = self._must(p)
                     for need, crossed in needs:
                         step, crossed_now = need | extra, crossed or self.is_rgl(p)

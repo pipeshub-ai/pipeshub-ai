@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.messaging.kafka.handlers.entity import EntityEventService
+from tests.unit.attempt_start import attempt_start_via
 
 _COORDINATOR = "app.services.messaging.kafka.handlers.entity.get_coordinator"
 
@@ -45,6 +46,7 @@ def _service(apps: Apps) -> EntityEventService:
     graph = AsyncMock()
     graph.get_document = AsyncMock(side_effect=apps.get_document)
     graph.update_node = AsyncMock(side_effect=apps.update_node)
+    graph.write_attempt_start = attempt_start_via(graph)
     graph.update_node_fields_if_match = AsyncMock(side_effect=apps.update_node_fields_if_match)
     container = MagicMock()
     container.messaging_producer = AsyncMock()

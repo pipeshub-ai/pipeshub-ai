@@ -22,6 +22,7 @@ from app.utils.fetch_full_record import (
     UNAVAILABLE,
     _fetch_multiple_records_impl,
 )
+from tests.support.loop_clock import virtual_loop_time
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -55,14 +56,18 @@ def _cached_record(record_id: str) -> dict:
 
 
 async def _fetch(record_ids: list[str], **kwargs) -> object:
-    return await _fetch_multiple_records_impl(
-        record_ids,
-        kwargs.pop("virtual_record_id_to_result", {}),
-        graph_provider=kwargs.pop("graph_provider", _graph_provider()),
-        org_id=kwargs.pop("org_id", "org-1"),
-        user_id=kwargs.pop("user_id", "user-1"),
-        **kwargs,
-    )
+    # On a loop clock the test controls: the parse-now wait and its finish grace are budgets, and on the wall
+    # clock a busy runner spent them on resolving the ids (500 records left no time to describe the three asked).
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        virtual_loop_time(monkeypatch)
+        return await _fetch_multiple_records_impl(
+            record_ids,
+            kwargs.pop("virtual_record_id_to_result", {}),
+            graph_provider=kwargs.pop("graph_provider", _graph_provider()),
+            org_id=kwargs.pop("org_id", "org-1"),
+            user_id=kwargs.pop("user_id", "user-1"),
+            **kwargs,
+        )
 
 
 class TestCachedRecords:
@@ -295,7 +300,6 @@ class TestToolSurface:
 # --- Parse on demand ------------------------------------------------------------
 
 import logging  # noqa: E402
-import time  # noqa: E402
 
 from app.modules.pipeline.parse_now import ParseNow  # noqa: E402
 from app.utils.fetch_full_record import PREPARING  # noqa: E402
@@ -586,13 +590,15 @@ class TestParseNow:
             return True
 
         send.side_effect = watching
-        started = time.monotonic()
+        virtual_loop_time(monkeypatch)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
 
         result = await _parse_fetch(ids, docs, asker)
 
-        elapsed = time.monotonic() - started
+        elapsed = loop.time() - started
         assert send.await_count == 12 and set(polls_at_each_send) == {0}  # no look before every ask
-        assert 0.45 < elapsed < 3  # one 0.5 s deadline, not twelve (6 s)
+        assert elapsed == pytest.approx(0.5)  # one 0.5 s deadline, not twelve (6 s)
         assert set(result["unavailable_reasons"].values()) == {PREPARING}
 
     async def test_a_mixed_batch_keeps_the_requested_order(self, stored_content) -> None:  # R17

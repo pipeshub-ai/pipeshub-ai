@@ -652,6 +652,9 @@ class WebConnector(BaseConnector):
         self._landed_urls: set[str] = set()
         # Pages this sync kept, directly or through a redirect; visited_urls also holds pages fetched and dropped.
         self._kept_urls: set[str] = set()
+        # Normalized external ids of the ancestors this sync has dealt with, each once: folders it
+        # wrote, and pages, which the crawl writes.
+        self._ancestors_done: set[str] = set()
         self.retry_urls: dict[str, RetryUrl] = {}
         # Stored pages that answered 404/410: deleted when the next sync gets the same answer.
         self._gone_last_sync: set[str] = set()
@@ -1073,6 +1076,7 @@ class WebConnector(BaseConnector):
             self.visited_urls.clear()
             self._landed_urls.clear()
             self._kept_urls.clear()
+            self._ancestors_done.clear()
             self._robots.clear()
             self._robots_sitemap_urls.clear()
             self._robots_skipped.clear()
@@ -2051,9 +2055,10 @@ class WebConnector(BaseConnector):
         """In sitemap-only discovery, a stored page the sitemap says hasn't changed since is not fetched.
 
         With links in play the page is fetched anyway: its links may lead to pages no sitemap lists.
+        So is every page on a full sync, which unlinks what it does not write when it ends.
         """
         lastmod = self._sitemap_lastmod.get(normalized)
-        if self.discovery != DISCOVERY_SITEMAP or lastmod is None:
+        if self.full_sync or self.discovery != DISCOVERY_SITEMAP or lastmod is None:
             return False
         stored = await self._stored_record(url)
         # A folder placeholder is rewritten every sync, so its time says nothing about the page.
@@ -2648,8 +2653,10 @@ class WebConnector(BaseConnector):
         """Ask the site to skip the body when our stored copy is current (it answers 304).
 
         Not for a page whose links the crawl still needs, since a 304 carries no body to read them from.
+        Not on a full sync either: a page the site answers 304 for is not written, and the sync then
+        unlinks it, and the pages under it, when it ends.
         """
-        if links_needed and not self._is_document_url(url):
+        if self.full_sync or (links_needed and not self._is_document_url(url)):
             return None
         record = await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id, external_record_id=self._ensure_trailing_slash(url)
@@ -3658,6 +3665,8 @@ class WebConnector(BaseConnector):
             return
         in_trash = await self.data_entities_processor.on_record_deleted(record.id)
         self._stored_page_ids.discard(record.id)
+        # A page under this URL now needs a folder here.
+        self._ancestors_done.discard(self._ensure_trailing_slash(record.external_record_id))
         # A page in the trash keeps its stored copy and its links; the purge removes both.
         if in_trash:
             return
@@ -3676,10 +3685,25 @@ class WebConnector(BaseConnector):
             self.logger.warning("Could not read the pages under %s: %s", external_id, e)
             return None
 
+    async def _children_under(self, external_id: str) -> list[Record] | None:
+        """The records stored under ``external_id``, whether they name it with or without its trailing slash.
+
+        None when any could not be read.
+        """
+        children: dict[str, Record] = {}
+        for parent_ref in dict.fromkeys(
+            [external_id, external_id.rstrip("/"), self._ensure_trailing_slash(external_id)]
+        ):
+            stored = await self._children_of(parent_ref)
+            if stored is None:
+                return None
+            children.update({child.id: child for child in stored})
+        return list(children.values())
+
     async def _relink_children_left_out(self) -> None:
-        """Link again the children an earlier removal could not: an unchanged child is never rewritten."""
+        """Link again the children an earlier removal or full sync could not: an unchanged child is never rewritten."""
         for external_id in sorted(self._relink_pending):
-            children = await self._children_of(external_id)
+            children = await self._children_under(external_id)
             if children:
                 await self._keep_children_in_the_tree(external_id, children)
             elif children is not None:
@@ -3695,9 +3719,8 @@ class WebConnector(BaseConnector):
         """
         try:
             await self._ensure_parent_records_exist(removed_external_id)
-            folder = await self.data_entities_processor.get_record_by_external_id(
-                connector_id=self.connector_id, external_record_id=removed_external_id,
-            )
+            # Under either id: a pending entry keeps the one it was stored under when it failed.
+            folder = await self._stored_ancestor(self._ensure_trailing_slash(removed_external_id))
             if folder is None:
                 raise RuntimeError("no folder was written")
             await self.data_entities_processor.on_records_attached_to_parent(folder.id, [c.id for c in children])
@@ -4058,27 +4081,17 @@ class WebConnector(BaseConnector):
         return urlunparse((parsed.scheme, parsed.netloc, parent_path, '', '', ''))
 
     async def _ensure_parent_records_exist(self, parent_url: Optional[str]) -> None:
-        """Ensure that every ancestor record up to (and including) *parent_url*
-        exists in the data store before the child record is upserted.
+        """Write the folder record of every ancestor of a page, up to and including *parent_url*.
 
-        Strategy
-        --------
-        1. Return immediately when *parent_url* is ``None``.
-        2. Walk up the URL hierarchy from *parent_url* to build an ordered
-           segment list::
+        A folder is written once per sync, whether or not it is already stored. A full sync
+        ends by unlinking every record it did not write, so a stored folder left unwritten
+        lost its links, and the pages under it lost the access they inherit through it.
+        Writing it again restores the folder's own links if an earlier sync removed them. An
+        ancestor that is a page of the site is left to the crawl, which writes it with its
+        content. On a full sync the pages stored under every stored ancestor, folder or page,
+        are linked to it again too, since an unchanged page is not rewritten.
 
-               [parent_url, grandparent_url, great-grandparent_url, ...]
-
-        3. Iterate through that list, checking the DB for each URL.
-           - If the record **already exists** → break (all ancestors above it
-             are assumed to exist too).
-           - If it **does not exist** → build a placeholder ``FileRecord`` and
-             append it to ``batch_parent_records``.
-        4. Reverse ``batch_parent_records`` so the highest ancestor comes first.
-        5. Upsert via ``on_new_records``.  Because the list is ordered
-           root-first, ``_process_record`` will always find a parent already
-           in the DB and will never need to create its own placeholder via
-           ``_handle_parent_record``.
+        The folders go to ``on_new_records`` root first, so each finds its parent stored.
         """
         if not parent_url:
             return
@@ -4091,33 +4104,25 @@ class WebConnector(BaseConnector):
                 segments.append(current)
                 current = self._get_parent_url(current)
 
-            # ── Step 2: walk segments, collect the ones that are missing ─────
+            # ── Step 2: walk segments, collect the folders not yet written this sync ─
             batch_parent_records: List[Tuple[FileRecord, List[Permission]]] = []
+            stored_ancestors: list[Record] = []
+            done: dict[str, str] = {}
             timestamp = get_epoch_timestamp_in_ms()
 
             for segment_url in segments:
                 external_id = self._ensure_trailing_slash(segment_url)
-
-                # Primary lookup
-                existing = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_record_id=external_id,
-                )
-
-                # Legacy fallback: old records may have been stored without a trailing slash
-                if not existing:
-                    legacy_id = external_id.rstrip("/")
-                    if legacy_id != external_id:
-                        existing = await self.data_entities_processor.get_record_by_external_id(
-                            connector_id=self.connector_id,
-                            external_record_id=legacy_id,
-                        )
-
-                if existing:
-                    # This ancestor (and everything above it) already exists → stop
+                if external_id in self._ancestors_done:
+                    # Dealt with along with every ancestor above it.
                     break
 
-                # Record is missing — build a placeholder
+                existing = await self._stored_ancestor(external_id)
+                done[external_id] = existing.external_record_id if existing else external_id
+                if existing:
+                    stored_ancestors.append(existing)
+                    if not existing.is_internal:
+                        continue
+
                 parsed = urlparse(segment_url)
                 prefix_path = parsed.path if parsed.path.endswith("/") else parsed.path + "/"
                 record_name = parsed.netloc + prefix_path
@@ -4125,12 +4130,14 @@ class WebConnector(BaseConnector):
                 segment_parent_url = self._get_parent_url(segment_url)
 
                 file_record = FileRecord(
-                    id=str(uuid.uuid4()),
+                    id=existing.id if existing else str(uuid.uuid4()),
                     org_id=self.data_entities_processor.org_id,
                     record_name=record_name,
                     record_type=RecordType.FILE,
                     record_group_type=RecordGroupType.WEB,
-                    external_record_id=external_id,
+                    # The stored id, which on an old record has no trailing slash: the write
+                    # finds the record by it, and another id would store a second folder.
+                    external_record_id=existing.external_record_id if existing else external_id,
                     external_record_group_id=self.url,
                     version=0,
                     origin=OriginTypes.CONNECTOR,
@@ -4157,13 +4164,30 @@ class WebConnector(BaseConnector):
 
                 batch_parent_records.append((file_record, permissions))
 
-            if not batch_parent_records:
-                return
+            # A parent reference names the parent as it is stored, which on an old record has no
+            # trailing slash; one that names no stored record would drop the folder's parent link.
+            # A parent dealt with earlier in the sync is looked up again: the crawl may since have
+            # rewritten it under another id.
+            for file_record, _ in batch_parent_records:
+                parent_ref = file_record.parent_external_record_id
+                if not parent_ref:
+                    continue
+                key = self._ensure_trailing_slash(parent_ref)
+                if key in done:
+                    file_record.parent_external_record_id = done[key]
+                elif parent := await self._stored_ancestor(key):
+                    file_record.parent_external_record_id = parent.external_record_id
 
-            # ── Step 3: reverse so root-level ancestors are processed first ──
-            batch_parent_records.reverse()
+            if batch_parent_records:
+                # ── Step 3: reverse so root-level ancestors are processed first ──
+                batch_parent_records.reverse()
 
-            await self.data_entities_processor.on_new_records(batch_parent_records)
+                await self.data_entities_processor.on_new_records(batch_parent_records)
+            if self.full_sync:
+                for ancestor in stored_ancestors:
+                    await self._link_stored_pages_under(ancestor)
+            # Only once everything is stored, so a failed write is tried again for the next page.
+            self._ancestors_done.update(done)
 
         except Exception as e:
             self.logger.error(
@@ -4171,6 +4195,39 @@ class WebConnector(BaseConnector):
                 exc_info=True,
             )
 
+
+    async def _stored_ancestor(self, external_id: str) -> Optional[Record]:
+        """The record stored for an ancestor URL, under *external_id* or, on an old record, without its trailing slash."""
+        for candidate in dict.fromkeys([external_id, external_id.rstrip("/")]):
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=candidate,
+            )
+            if existing:
+                return existing
+        return None
+
+    async def _link_stored_pages_under(self, parent: Record) -> None:
+        """Link the pages stored under a folder or page to it again.
+
+        A full sync that did not write the parent removed its children's links to it along
+        with its own. An unchanged page is not rewritten, and its permissions update restores
+        only the inherit edge, so without this it stays out of the tree and out of reach.
+        """
+        try:
+            stored = await self._children_under(parent.external_record_id)
+            if stored is None:
+                raise RuntimeError("they could not be read")
+            children = [child.id for child in stored if not child.is_internal]
+            if children:
+                await self.data_entities_processor.on_records_attached_to_parent(parent.id, children)
+        except Exception as e:
+            # Only a full sync links them here, so the pending mark is what gets it done later.
+            self.logger.error(
+                "Could not link the pages under %s to it again; the next sync tries again: %s",
+                parent.external_record_id, e,
+            )
+            self._relink_pending.add(parent.external_record_id)
+            self._sync_point_base["relinkPending"] = sorted(self._relink_pending)
 
     @classmethod
     async def create_connector(
@@ -4456,7 +4513,7 @@ class WebConnector(BaseConnector):
         for svg in soup.find_all('svg'):
             svg.decompose()
 
-    def _convert_svg_tag_to_png(self, soup: BeautifulSoup, svg) -> bool:
+    async def _convert_svg_tag_to_png(self, soup: BeautifulSoup, svg) -> bool:
         """
         Convert an SVG tag to a PNG img tag.
 
@@ -4472,8 +4529,8 @@ class WebConnector(BaseConnector):
             svg_bytes = svg_content.encode('utf-8')
             svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
 
-            # Convert SVG to PNG
-            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+            # Convert SVG to PNG off the event loop: a render can take up to its 10s deadline.
+            png_b64_str = await ImageParser.svg_base64_to_png_base64_async(svg_b64_str)
             png_b64_str = self._clean_base64_string(png_b64_str)
 
             if not png_b64_str:
@@ -4494,10 +4551,10 @@ class WebConnector(BaseConnector):
             svg.decompose()
             return False
 
-    def _process_svg_tags(self, soup: BeautifulSoup) -> None:
+    async def _process_svg_tags(self, soup: BeautifulSoup) -> None:
         """Convert all SVG tags to PNG img tags."""
         for svg in soup.find_all('svg'):
-            _ = self._convert_svg_tag_to_png(soup, svg)
+            _ = await self._convert_svg_tag_to_png(soup, svg)
 
     # Image formats supported by OpenAI vision API
     OPENAI_SUPPORTED_IMAGE_TYPES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
@@ -4549,7 +4606,7 @@ class WebConnector(BaseConnector):
 
                     # Common path for both cases
                     try:
-                        png_b64 = self._convert_svg_bytes_to_png_base64(svg_bytes, 'inline-svg-data-uri')
+                        png_b64 = await self._convert_svg_bytes_to_png_base64(svg_bytes, 'inline-svg-data-uri')
                         if png_b64:
                             img['src'] = f"data:image/png;base64,{png_b64}"
                         else:
@@ -4623,7 +4680,7 @@ class WebConnector(BaseConnector):
 
             # Convert to base64 (handle SVG and AVIF specially)
             if content_type == 'image/svg+xml':
-                b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
+                b64_str = await self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
                 if not b64_str:
                     img.decompose()
                     return
@@ -4676,11 +4733,11 @@ class WebConnector(BaseConnector):
 
         return content_type.split(';')[0].strip().lower()
 
-    def _convert_svg_bytes_to_png_base64(self, svg_bytes: bytes, url: str) -> Optional[str]:
+    async def _convert_svg_bytes_to_png_base64(self, svg_bytes: bytes, url: str) -> Optional[str]:
         """Convert SVG bytes to PNG base64 string."""
         try:
             svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
-            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+            png_b64_str = await ImageParser.svg_base64_to_png_base64_async(svg_b64_str)
             png_b64_str = self._clean_base64_string(png_b64_str)
 
             if not png_b64_str:
@@ -4808,7 +4865,7 @@ class WebConnector(BaseConnector):
             if images_enabled:
                 self._resolve_lazy_images(soup)
                 # Convert SVG tags to PNG img tags
-                self._process_svg_tags(soup)
+                await self._process_svg_tags(soup)
 
                 # Process all images: download and convert to base64
                 await self._process_all_images(soup, weburl, headers, preferred_strategy)

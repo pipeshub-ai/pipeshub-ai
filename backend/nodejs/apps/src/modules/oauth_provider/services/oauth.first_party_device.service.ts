@@ -3,9 +3,9 @@ import { injectable, inject } from 'inversify'
 import crypto from 'crypto'
 import { Logger } from '../../../libs/services/logger.service'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
-import { getUserRepository } from '../../../libs/repositories/user'
 import {
   getOAuthAppRepository,
+  NO_APP_CREATOR,
   OAuthAppStatus,
   OAuthGrantType,
   type OAuthAppDto,
@@ -60,8 +60,8 @@ export class FirstPartyDeviceAppService {
       return existing.clientId;
     }
 
-    const owner = await this.resolveOwner()
-    if (!owner) {
+    const orgId = await getIdentityPort().oldestOrgId()
+    if (!orgId) {
       return null
     }
 
@@ -74,10 +74,10 @@ export class FirstPartyDeviceAppService {
     }
 
     try {
-      const app = await this.createApp(owner.orgId, owner.createdBy, allowedScopes)
+      const app = await this.createApp(orgId, allowedScopes)
       this.logger.info('First-party device app created', {
-        clientId: app.clientId,
-        orgId: owner.orgId,
+        client_id: app.clientId,
+        org_id: orgId,
       })
       return app.clientId
     } catch (error) {
@@ -91,7 +91,6 @@ export class FirstPartyDeviceAppService {
 
   private async createApp(
     orgId: string,
-    createdBy: string,
     allowedScopes: string[],
   ): Promise<OAuthAppDto> {
     const clientSecret = crypto.randomBytes(CLIENT_SECRET_BYTES).toString('hex')
@@ -106,7 +105,8 @@ export class FirstPartyDeviceAppService {
         'device_code and refresh_token only. Not a third-party app and not ' +
         'created through dynamic client registration.',
       orgId,
-      createdBy,
+      // One app for the instance: no person created it.
+      createdBy: NO_APP_CREATOR,
       redirectUris: [],
       allowedGrantTypes: [OAuthGrantType.DEVICE_CODE, OAuthGrantType.REFRESH_TOKEN],
       allowedScopes,
@@ -131,13 +131,13 @@ export class FirstPartyDeviceAppService {
     try {
       await getOAuthAppRepository().addAllowedScopes(app._id, missing);
       this.logger.info('First-party device app gained new preset scopes', {
-        clientId: app.clientId,
+        client_id: app.clientId,
         scopes: missing,
       });
     } catch (error) {
       // Discovery must keep working; the next call retries the update.
       this.logger.warn('First-party device app scope update failed', {
-        clientId: app.clientId,
+        client_id: app.clientId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -157,20 +157,5 @@ export class FirstPartyDeviceAppService {
       }
       return true
     })
-  }
-
-  private async resolveOwner(): Promise<{
-    orgId: string
-    createdBy: string
-  } | null> {
-    const orgId = await getIdentityPort().oldestOrgId()
-    if (!orgId) {
-      return null
-    }
-    const oldestUserId = await getUserRepository().getOldestId(orgId)
-    if (!oldestUserId) {
-      return null
-    }
-    return { orgId, createdBy: oldestUserId }
   }
 }

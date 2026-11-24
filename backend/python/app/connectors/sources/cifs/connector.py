@@ -55,10 +55,12 @@ from app.connectors.sources.network_share.errors import (
     DirectoryListingError,
     NetworkShareAuthError,
     ShareListingError,
+    ShareWalkIncompleteError,
 )
 from app.connectors.sources.network_share.operations import (
     create_share_groups,
     reindex_records,
+    requeue_parked_records,
     stream_file,
     walk_shares,
 )
@@ -190,6 +192,7 @@ if TYPE_CHECKING:
     )\
     .build_decorator()
 class CifsConnector(BaseConnector):
+    REQUEUE_PARKED = True
     # ConnectorFactory builds this connector's processor from this class.
     processor_cls: type[NetworkShareEntitiesProcessor] = NetworkShareEntitiesProcessor
 
@@ -304,6 +307,7 @@ class CifsConnector(BaseConnector):
             data_source=self.data_source,
             record=record,
             display_name=self.display_name,
+            logger=self.logger,
         )
 
     async def run_sync(self) -> None:
@@ -313,6 +317,20 @@ class CifsConnector(BaseConnector):
             # The walk stops on a refused sign-in and removes nothing; say so, then fail the run.
             await self._auth_error("Sign-in refused", str(exc))
             raise
+        except ShareWalkIncompleteError as exc:
+            title = (
+                "Sync could not read the share"
+                if self._last_walk is not None and self._last_walk.unreadable
+                else "Some folders could not be read"
+            )
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title(title),
+                message=exc.message,
+                payload={"connectorId": self.connector_id, "connectorName": Connectors.CIFS.value},
+            )
+            raise
 
     async def run_incremental_sync(self) -> None:
         # The scheduler calls run_sync. There is no change journal, and a
@@ -320,6 +338,7 @@ class CifsConnector(BaseConnector):
         await self.run_sync()
 
     async def _sync(self, *, prune: bool) -> None:
+        self._last_walk = None
         if not self.data_source:
             raise ConnectionError("CIFS connector is not initialized.")
         self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -340,7 +359,6 @@ class CifsConnector(BaseConnector):
             creator_email=self.creator_email,
             description_prefix="CIFS share",
         )
-        self._last_walk = None
         report = await walk_shares(
             data_source=self.data_source,
             processor=self.data_entities_processor,
@@ -362,17 +380,16 @@ class CifsConnector(BaseConnector):
         if report.complete:
             # Only a walk that read everything knows a pattern matched nothing.
             replace_action_item(self, FOLDER_FILTER_UNMATCHED_CODE, report.unmatched_patterns_item())
-        unreadable = report.unreadable
-        if unreadable:
-            await self.notify(
-                type=NotificationType.CONNECTOR_SYNC_ERROR,
-                severity=NotificationSeverity.ERROR,
-                title=self._notification_title("Sync could not read the share"),
-                message=(
-                    f"Nothing could be listed in {', '.join(unreadable)}. "
-                    "Check that the server is reachable and the account still has access."
-                ),
-                payload={"connectorId": self.connector_id, "connectorName": Connectors.CIFS.value},
+        if report.unreadable:
+            raise ShareWalkIncompleteError(
+                f"Nothing could be listed in {', '.join(report.unreadable)}. "
+                "Check that the server is reachable and the account still has access."
+            )
+        if report.unread:
+            count = len(report.unread)
+            raise ShareWalkIncompleteError(
+                f"{count} {'folder or file' if count == 1 else 'folders or files'} could not be read. "
+                "What was synced from them before was kept; the next sync tries them again."
             )
 
     def full_sync_coverage(self) -> FullSyncCoverage:
@@ -388,6 +405,17 @@ class CifsConnector(BaseConnector):
             await self.data_source.close()
         self.data_source = None
         await self._release_thread_lease()
+
+    async def requeue_records(self, records: list[Record]) -> None:
+        if not self.data_source:
+            raise ConnectionError("CIFS connector is not initialized.")
+        await requeue_parked_records(
+            data_source=self.data_source,
+            processor=self.data_entities_processor,
+            records=records,
+            indexing_filters=self.indexing_filters,
+            logger=self.logger,
+        )
 
     async def reindex_records(self, record_results: list[Record]) -> None:
         if not self.data_source:

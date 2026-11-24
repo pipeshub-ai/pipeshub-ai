@@ -340,7 +340,144 @@ refuses to install without one:
   only on containers it created. Only `dind` and `docker-proxy` mount
   `dind-sock`. The application container cannot reach the daemon directly.
 - `config.dockerHost` points at a daemon you run. Put the same proxy in front
-  of it. Never expose a raw dockerd.
+  of it. Never expose a raw dockerd. The proxy has no client authentication
+  and listens on 127.0.0.1 unless `DOCKER_PROXY_HOST` is set; when you set it
+  to reach the proxy from the app, limit who can connect (a NetworkPolicy).
+
+Releases sharing one daemon do not see each other through the proxy: its
+network list and inspect show only the sandbox egress network and this
+release's containers on it, and it removes only networks it created. It caps
+an upload into a sandbox at `DOCKER_PROXY_MAX_UPLOAD_MB` (default 10240),
+drops an upload that stalls for `DOCKER_PROXY_BODY_IDLE_TIMEOUT_S` (120) or
+runs past `DOCKER_PROXY_BODY_TIMEOUT_S` (1800), and holds at most
+`DOCKER_PROXY_MAX_CONNECTIONS_PER_CLIENT` (512) connections per client address.
+
+`config.sandboxMaxRunTimeoutS` (default 300, 10..3600) is the most seconds one
+`run_code` run may take; a larger timeout asked for by the model is lowered to
+it. Set the run-time cap only through `config.sandboxMaxRunTimeoutS`; the chart
+refuses it in `extraEnv`, which reaches only the app container, so the proxy's
+reaper would keep its 420 s age and kill longer runs mid-way. The proxy removes
+this release's sandbox containers that are older than the cap (at least 300 s,
+the install deadline) plus 120 s, for example after a crashed worker left one
+behind. Its containers carry the label
+`ai.pipeshub.docker-proxy.instance=<namespace>/<fullname>`. A sandbox
+container started by a proxy from before that label (one left over from before
+an upgrade) has no instance label and no proxy serves it. The reaper leaves it
+alone and logs how many there are, at most once an hour; set
+`sandbox.proxy.reapUnlabeled=true` (`DOCKER_PROXY_REAP_UNLABELED`) to remove
+them too once past the same age.
+
+With `config.dockerHost` the chart runs no `docker-proxy`: the proxy in front
+of your daemon is yours, and its reaper reads its own environment. Give it the
+same `SANDBOX_MAX_RUN_TIMEOUT_S` as `config.sandboxMaxRunTimeoutS`, or it
+removes runs longer than 300 s mid-way. Leave its `DOCKER_PROXY_REAP_UNLABELED`
+off while any stack on that daemon still runs an older version: their sandbox
+containers carry no instance label either. Releases that share one daemon should
+each have their own proxy with its own `DOCKER_PROXY_INSTANCE`; releases behind
+one proxy share its label and can reach each other's sandbox containers.
+
+### How many sandboxes run at once
+
+Each app pod counts its code sandboxes for the whole pod (every query worker
+shares the count). Unless `sandbox.capacity.maxTotal` is set, the cap is sized
+when the pod starts:
+
+- **With the `dind` sidecar**, from the sidecar's limits, which the app reads
+  through `resourceFieldRef`: the smallest of `sandbox.capacity.memoryShare`
+  (0.9) x `limits.memory` / 512Mi and 0.75 x `limits.cpu` / 0.5 CPU per run
+  (and 25% of the process limit / 256), at least 2. The defaults (2 CPU, 4Gi)
+  give 3; the `values-eks.yaml` sidecar (4 CPU, 4Gi) gives 6. Both limits are
+  required, and the chart refuses to render without them: a container with no
+  limit would be sized from the whole node.
+- **With `config.dockerHost`**, from that daemon's size. When more than one pod
+  can run (`replicaCount`, or `autoscaling.maxReplicas` with autoscaling on),
+  every pod would size itself from the whole daemon, so the chart sets
+  `SANDBOX_CAPACITY_DIVISOR` to that pod count and each pod takes its share.
+  With autoscaling the split uses the maximum, so a scaled-down deployment
+  runs below the daemon's capacity. `sandbox.capacity.maxTotal` overrides it.
+
+The sidecar's requests equal its limits (`sandbox.dind.resources`), so the
+node really has the room the cap assumes. That adds 1.75 CPU / 3.5Gi (defaults)
+or 3 CPU / 3Gi (`values-eks.yaml`) to each pod's scheduling footprint compared
+with earlier releases; the pod is still Burstable, since the other containers
+keep lower requests. The release notes warn when requests and limits differ.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `sandbox.capacity.maxTotal` | sized | The most sandboxes at once per pod (up to 1024). Empty or 0: sized automatically, and split between pods that share `config.dockerHost`. |
+| `sandbox.capacity.maxPerOrg` | none | The most one org may hold at once per pod. |
+| `sandbox.capacity.maxPerRequest` | 2 | The most one chat request runs at once; its other calls wait. |
+| `sandbox.capacity.minTotal` | 2 | The floor, and the cap until the size is known. |
+| `sandbox.capacity.memoryShare` | 0.9 | Share of the sidecar's memory limit (dind only). |
+| `sandbox.capacity.cpuFactor` | 0.75 | Share of the CPUs. |
+| `sandbox.capacity.slotWaitSeconds` | 120 | How long a run waits for a free sandbox. |
+| `sandbox.capacity.pidLimit` | unset | The pod's pids limit (kubelet `podPidsLimit`), which the app cannot read. |
+| `sandbox.capacity.memoryOvercommit` | 1 (off) | Count each run at 1/N of its memory limit. With the dind sidecar only while the live limit reads its cgroup, at most 2. |
+
+Sandbox containers are created with `oom_score_adj=1000`, so inside the
+sidecar's memory limit the kernel kills a sandbox before `dockerd`.
+
+The app's workers share these counts through files in
+`/tmp/pipeshub-sandbox-1000` (the chart does not mount `/tmp`, so it is the
+image's, mode 1777). If you mount an `emptyDir` at `/tmp` through
+`extraVolumeMounts`, it is writable by every user without the sticky bit, so
+the app moves the state to `/root/.cache/pipeshub-sandbox-1000` (the image
+account's home; `HOME=/home/user` is an `emptyDir` too) and logs one warning.
+Set `SANDBOX_STATE_DIR` through `extraEnv` to choose the place.
+
+### Live limit
+
+With the dind sidecar, each pod also holds new runs back while the sidecar
+itself is nearly full. A small loop in the `dind` container writes the
+sidecar's own cgroup counters (memory, CPU usage and throttling, pressure, OOM
+events) to the socket volume every `exportIntervalSeconds`; `docker-proxy`
+serves them to the app as `GET /_pipeshub/usage`, so `dockerd`, its shims and
+short runs are all counted. The app never reads the node.
+
+- Memory: the limit shrinks once the sidecar's working set passes `memHigh`
+  (0.90) of its limit; above `memHard` (0.95), or on memory pressure or an OOM
+  event in the sidecar, it halves, and a new run that would leave less than
+  5 % free waits.
+- CPU: the limit drops by one per sample after 45 s above `cpuBrake` (0.95)
+  or with more than `cpuThrottle` (25 %) of periods throttled.
+- It grows back, by doubling steps, only while runs wait for it.
+
+At the default sizes the cap already keeps the sidecar below these lines, so
+the live limit stays quiet; it matters when `maxTotal` or `cpuFactor` is
+raised above the sidecar's size, or with over-commit. Running code is never
+stopped. Waiting runs see the usual "waiting in queue" note; the query
+service's sandbox log lines start with `sandbox live limit`. The sidecar's
+memory is its own, so runs waiting for it never slow indexing down (in Docker
+Compose they do, since sandboxes and indexing share the host).
+
+If the proxy cannot serve the sidecar's counters (a custom `sandbox.dind.image`
+without `/bin/sh`, or a node whose cgroup view is not the sidecar's), the app
+falls back to the summed stats of its own sandbox containers, and failing that
+to the fixed cap. `sandbox.dind.liveLimit.enabled=false` removes the loop and
+restores the plain `dind` container.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `sandbox.dind.liveLimit.enabled` | true | Export the sidecar's counters and hold runs back near its limits. |
+| `sandbox.dind.liveLimit.exportIntervalSeconds` | 5 | How often the counters are written (2..15; docker-proxy treats counters older than 20 s as missing). |
+| `sandbox.dind.liveLimit.memHigh` | 0.90 | Working-set share above which the limit shrinks. |
+| `sandbox.dind.liveLimit.memHard` | 0.95 | Share above which it halves and new runs wait (above `memHigh`). |
+| `sandbox.dind.liveLimit.cpuBrake` | 0.95 | CPU use, as a share of the sidecar's CPU limit, that brakes. |
+| `sandbox.dind.liveLimit.cpuThrottle` | 0.25 | Share of throttled CPU periods that brakes. |
+
+### Load alerts
+
+Admins get a notification, and an email when mail is set up, when code runs in
+chat keep waiting for a sandbox (warning) or are refused (critical). Each pod
+has its own sandboxes and evaluates its own runs, so each pod has its own
+cooldown: the chart sets `SANDBOX_ALERT_SCOPE` to the pod name, and every pod
+alerts in the app each time an overload returns but emails each level at most
+once a day. With several replicas, each pod alerts
+separately, so one overload can bring one alert per pod. A rollout renames the
+pods, so a rollout during an overload can send the alert again. The thresholds and `SANDBOX_ALERTS=false`
+are set through `extraEnv`; the variables are listed in the Docker Compose
+`ADVANCED_DEPLOYMENT.md` ("Load alerts"). On the dind sidecar, memory waits
+count at once, since indexing does not share the sidecar's memory.
 
 Mounting a container-runtime socket into the application container would give
 the app, and any code it runs, root on the node. At render time the chart refuses
@@ -364,6 +501,27 @@ Docker proxy, or later). On an older `image.tag` the sidecar crash-loops and
 `run_code` fails. Upgrade `image.tag`, or set `sandbox.proxy.image` to a newer
 image.
 
+## Parsing in its own pods
+
+Off by default (the chart renders as without it). `parsing.enabled=true` adds a
+Deployment and ClusterIP Service named `<release>-parsing` (port 8092) and a
+PodDisruptionBudget, from the same image with `PIPESHUB_ROLE=parsing`, and sets
+`USE_PARSING_SERVICE=true` and `PARSING_SERVICE_URL` on the app pods. The pods
+carry the label `pipeshub.ai/workload: parsing`.
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `parsing.enabled` | `false` | render the parsing Deployment, Service and PDB and wire the app to it |
+| `parsing.replicas` | `1` | static replica count (this chart sets no HPA for it) |
+| `parsing.port` | `8092` | Service and container port |
+| `parsing.resources` | 1 CPU / 2Gi requested | keep the CPU request set; limits 4 CPU / 8Gi |
+| `parsing.nodeSelector`, `parsing.tolerations`, `parsing.affinity` | empty | place parse pods on a dedicated node pool |
+| `parsing.spreadAcrossNodes` | `true` | prefer one parse pod per node (ignored with `affinity`) |
+| `parsing.podDisruptionBudget.*` | enabled, `maxUnavailable: 1` | disruption budget |
+| `parsing.healthCheck.*` | see `values.yaml` | probes on `/health` |
+| `parsing.terminationGracePeriodSeconds` | `120` | time for an in-flight parse to finish |
+| `parsing.extraEnv`, `parsing.podAnnotations`, `parsing.podLabels` | empty | extras |
+
 ## High-Value Features
 
 - Secret validation with fail-fast messages
@@ -375,7 +533,12 @@ image.
 
 ## Metrics
 
-The chart exposes no scrape port: the services push product telemetry to the collector (see `telemetry.collection.enabled`) and do not serve `/metrics`. The earlier `metrics`, `monitoring.serviceMonitor` and `telemetry.otlp` values configured nothing and were removed.
+The chart serves the indexing governor's Prometheus metrics (a fixed set of series with closed labels: no pid, pod, org or record label, at most 300 series) when `metrics.enabled` is true (the default). Each pod publishes `/metrics` on the container port named `metrics` (`metrics.port`, default `9091`, plain HTTP, no authentication). `metrics.bind` is the address it listens on: `podIP` (the default) binds the pod's own address through the downward API, `0.0.0.0` listens on every interface, and any other IP address is used as given. The chart sets `PIPESHUB_METRICS_ENABLED`, `PIPESHUB_METRICS_PORT` and `PIPESHUB_METRICS_BIND` from these values.
+
+- Point your Prometheus at the container port named `metrics` of the application pods (path `/metrics`; the pods carry the label `app.kubernetes.io/component: main`).
+- The chart no longer renders the application `PodMonitor`. If your release had `metrics.podMonitor.enabled`, the upgrade deletes it: create your own `PodMonitor`, or an equivalent scrape configuration, before you upgrade, or scraping stops. The Redis subchart still renders its own `PodMonitor` when `redis.metrics.enabled` and `redis.metrics.podMonitor.enabled` are both true, so keep the PodMonitor CRD installed in that case.
+- With `networkPolicy.enabled: true`, add an ingress rule that lets your Prometheus reach the `metrics` port.
+- Product telemetry is separate: the services push it to the collector (see `telemetry.collection.enabled`), and the exporter never touches it.
 
 ## Validation
 

@@ -5,14 +5,15 @@ and the _fetch_connector_sync_block helper.
 Covered:
 - _fetch_connector_sync_block: missing config, non-dict config, non-dict sync, success
 - get_all_scheduled_connector_instances_internal:
-    empty org list → 404
+    empty org list → empty listing
+    each org read under its own context; a failed org is named and the others still listed
     no active connectors → empty items
     connector missing connectorId/type → skipped
     connector with MANUAL strategy → filtered out
     connector with SCHEDULED strategy → included in response
-    pagination: hasMore=True when probe returns limit+1 docs
+    pagination: hasMore=True when more candidates follow the page
     pagination: hasMore=False on the last page
-    exception in graph_provider → 500
+    exception listing the orgs → 500
 """
 
 import asyncio
@@ -27,6 +28,8 @@ from app.connectors.api.router import (
     _fetch_connector_sync_block,
     get_all_scheduled_connector_instances_internal,
 )
+from app.core import org_context
+from app.core.org_context import OrgContext, bind, current_or_system
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +64,7 @@ def _make_request(
     graph_provider = AsyncMock()
     graph_provider.get_all_orgs = AsyncMock(return_value=orgs if orgs is not None else [{"_key": "org-1"}])
     graph_provider.get_documents_paginated = AsyncMock(return_value=page_docs if page_docs is not None else [])
+    graph_provider.get_document = AsyncMock(return_value=None)      # no store records an org for an app without orgId
 
     container = MagicMock()
     container.logger = MagicMock(return_value=logger)
@@ -195,13 +199,13 @@ class TestFetchConnectorSyncBlock:
 
 class TestAllScheduledNoOrg:
     @pytest.mark.asyncio
-    async def test_no_orgs_raises_404(self) -> None:
+    async def test_no_orgs_is_an_empty_listing(self) -> None:
+        # A 404 aborts the caller's whole sweep; no org has no scheduled connector.
         request = _make_request(orgs=[])
 
-        with pytest.raises(HTTPException) as exc_info:
-            await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+        result = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
 
-        assert exc_info.value.status_code == 404
+        assert result["items"] == [] and result["hasMore"] is False and result["partial"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -334,8 +338,8 @@ class TestAllScheduledStrategyFiltering:
 
 class TestAllScheduledPagination:
     @pytest.mark.asyncio
-    async def test_has_more_true_when_probe_returns_limit_plus_one(self) -> None:
-        # limit=2, probe_limit=3; return 3 docs → has_more=True, items trimmed to 2
+    async def test_has_more_true_when_more_candidates_follow(self) -> None:
+        # limit=2 and 3 candidates → has_more=True, items trimmed to 2
         docs = [
             _active_doc("conn-1", "Confluence"),
             _active_doc("conn-2", "Slack"),
@@ -359,23 +363,16 @@ class TestAllScheduledPagination:
         assert result["hasMore"] is False
 
     @pytest.mark.asyncio
-    async def test_skip_calculated_correctly_for_page_2(self) -> None:
-        request = _make_request(page_docs=[])
+    async def test_pages_step_through_the_candidates_in_key_order(self) -> None:
+        docs = [_active_doc(f"conn-{i}", "Jira") for i in (3, 1, 2)]
 
-        await get_all_scheduled_connector_instances_internal(request, page=2, limit=10)
+        pages = []
+        for page in (1, 2):
+            request = _make_request(page_docs=docs, sync_configs=[_scheduled_sync()] * 3)
+            pages.append(await get_all_scheduled_connector_instances_internal(request, page=page, limit=2))
 
-        # skip = (page-1) * limit = 10
-        call = request.app.state.graph_provider.get_documents_paginated.call_args
-        assert call[1]["skip"] == 10
-
-    @pytest.mark.asyncio
-    async def test_skip_zero_for_page_1(self) -> None:
-        request = _make_request(page_docs=[])
-
-        await get_all_scheduled_connector_instances_internal(request, page=1, limit=10)
-
-        call = request.app.state.graph_provider.get_documents_paginated.call_args
-        assert call[1]["skip"] == 0
+        assert [[i["connectorId"] for i in p["items"]] for p in pages] == [["conn-1", "conn-2"], ["conn-3"]]
+        assert [p["hasMore"] for p in pages] == [True, False]
 
     @pytest.mark.asyncio
     async def test_filters_isactive_true_passed_to_provider(self) -> None:
@@ -442,9 +439,9 @@ class TestAllScheduledOrgOwnership:
 
 class TestAllScheduledErrorHandling:
     @pytest.mark.asyncio
-    async def test_graph_provider_exception_raises_500(self) -> None:
+    async def test_org_listing_exception_raises_500(self) -> None:
         request = _make_request()
-        request.app.state.graph_provider.get_documents_paginated = AsyncMock(
+        request.app.state.graph_provider.get_all_orgs = AsyncMock(
             side_effect=RuntimeError("DB unreachable")
         )
 
@@ -521,3 +518,139 @@ class TestListedConnectors:
         assert items["c-unread"]["unreadable"] is True
         assert items["c-dberr"]["unreadable"] is True, "a failed read is not a deleted connector"
         assert items["c-gone"] == {"connectorId": "c-gone", "missing": True}
+
+
+# ---------------------------------------------------------------------------
+# Per-org reads, under the org-less service token the schedule sweep sends
+# ---------------------------------------------------------------------------
+
+
+ORG_A, ORG_B = "org-a", "org-b"
+SWEEP_TOKEN = OrgContext(org_context.SYSTEM_ORG_ID, "system", "service", "scoped_jwt", "t")
+
+
+class _Graph:
+    """Two orgs' connectors. ``scoped`` answers as PostgreSQL does (the orgs list only under a system scope, a connector read only
+    the bound org's); otherwise every org's, as Neo4j and ArangoDB do."""
+
+    def __init__(self, *, scoped: bool, apps: list[dict] | None = None) -> None:
+        self.scoped = scoped
+        self.apps = apps if apps is not None else [
+            {**_active_doc("conn-a", "Jira"), "orgId": ORG_A},
+            {**_active_doc("conn-b", "Confluence"), "orgId": ORG_B},
+        ]
+        self.broken: set[str] = set()
+        self.inactive: set[str] = set()
+        self.holder: dict[str, str] = {}      # scoped only: the org an app without orgId is stored in, which a lookup by id gives
+        self.reads: list[str] = []
+
+    async def get_all_orgs(self, *, active: bool = True, **_kw: object) -> list[dict]:
+        ctx = current_or_system()
+        orgs = [{"_key": o} for o in (ORG_A, ORG_B) if not active or o not in self.inactive]
+        return orgs if not self.scoped or ctx.kind == "system" else [o for o in orgs if o["_key"] == ctx.org_id]
+
+    async def get_documents_paginated(self, collection: str, **kw: object) -> list[dict]:
+        assert kw["raise_on_error"] is True and kw["filters"] == {"isActive": True}
+        org = org_context.current_org_id()
+        self.reads.append(org)
+        if org in self.broken:
+            raise RuntimeError("graph did not answer")
+        return [dict(a) for a in self.apps if not self.scoped or a.get("orgId", self.holder.get(a["_key"], org)) == org]
+
+    async def get_document(self, key: str, collection: str, transaction: object = None, *, raise_on_error: bool = False) -> dict | None:
+        assert current_or_system().kind == "system", "a lookup by id names no org"
+        doc = next((dict(a) for a in self.apps if a["_key"] == key), None)
+        return {**doc, "orgId": self.holder[key]} if doc and self.scoped and key in self.holder else doc
+
+
+def _graph_request(graph: _Graph) -> MagicMock:
+    request = _make_request()
+    request.app.state.graph_provider = graph
+
+    async def get_config(path: str, **_kw: object) -> dict:
+        return _scheduled_sync()
+
+    request.app.container.config_service().get_config = AsyncMock(side_effect=get_config)
+    return request
+
+
+class TestAllScheduledPerOrg:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("scoped", [True, False], ids=["one-org-reads", "every-org-reads"])
+    async def test_every_orgs_connectors_are_listed_each_read_under_its_org(self, scoped: bool) -> None:
+        graph = _Graph(scoped=scoped)
+
+        with bind(SWEEP_TOKEN):
+            result = await get_all_scheduled_connector_instances_internal(_graph_request(graph), page=1, limit=50)
+
+        assert {i["connectorId"]: i["orgId"] for i in result["items"]} == {"conn-a": ORG_A, "conn-b": ORG_B}
+        assert graph.reads == [ORG_A, ORG_B]
+        assert result["partial"] is False and result["failedOrgs"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_failing_org_is_named_and_the_others_are_still_listed(self) -> None:
+        graph = _Graph(scoped=True)
+        graph.broken.add(ORG_A)
+
+        with bind(SWEEP_TOKEN):
+            result = await get_all_scheduled_connector_instances_internal(_graph_request(graph), page=1, limit=50)
+
+        assert [i["connectorId"] for i in result["items"]] == ["conn-b"]
+        assert result["partial"] is True and result["failedOrgs"] == [ORG_A]
+
+    @pytest.mark.asyncio
+    async def test_an_app_without_an_org_is_listed_once_under_the_first_org(self) -> None:
+        graph = _Graph(scoped=False, apps=[_active_doc("legacy", "Jira")])
+
+        with bind(SWEEP_TOKEN):
+            result = await get_all_scheduled_connector_instances_internal(_graph_request(graph), page=1, limit=50)
+
+        assert [(i["connectorId"], i["orgId"]) for i in result["items"]] == [("legacy", ORG_A)]
+
+    @pytest.mark.asyncio
+    async def test_listed_ids_are_read_across_orgs(self) -> None:
+        graph = _Graph(scoped=True)
+
+        with bind(SWEEP_TOKEN):
+            result = await get_all_scheduled_connector_instances_internal(
+                _graph_request(graph), page=1, limit=50, connector_ids="conn-a,conn-b",
+            )
+
+        assert {i["connectorId"]: i["orgId"] for i in result["items"]} == {"conn-a": ORG_A, "conn-b": ORG_B}
+
+    @pytest.mark.asyncio
+    async def test_an_app_without_an_org_waits_while_its_org_cannot_be_read(self) -> None:
+        # Listed under the next org instead, a repair would move its schedule to an org a lookup by id does not give it.
+        graph = _Graph(scoped=False, apps=[_active_doc("legacy", "Jira")])
+        graph.broken.add(ORG_A)
+
+        with bind(SWEEP_TOKEN):
+            result = await get_all_scheduled_connector_instances_internal(_graph_request(graph), page=1, limit=50)
+
+        assert result["items"] == []
+        assert result["partial"] is True and result["failedOrgs"] == [ORG_A]
+
+    @pytest.mark.asyncio
+    async def test_an_app_without_an_org_gets_the_same_org_listed_and_looked_up(self) -> None:
+        graph = _Graph(scoped=False, apps=[_active_doc("legacy", "Jira")])
+        graph.inactive.add(ORG_A)
+        request = _graph_request(graph)
+
+        with bind(SWEEP_TOKEN):
+            listed = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+            by_id = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50, connector_ids="legacy")
+
+        assert [i["orgId"] for i in listed["items"]] == [i["orgId"] for i in by_id["items"]] == [ORG_A]
+
+    @pytest.mark.asyncio
+    async def test_an_app_without_an_org_is_listed_under_the_org_holding_it_while_another_org_fails(self) -> None:
+        # A partitioned store answers it for its own org only: an earlier org's failure is no reason to hold it back.
+        graph = _Graph(scoped=True, apps=[_active_doc("legacy", "Jira")])
+        graph.holder["legacy"] = ORG_B
+        graph.broken.add(ORG_A)
+
+        with bind(SWEEP_TOKEN):
+            result = await get_all_scheduled_connector_instances_internal(_graph_request(graph), page=1, limit=50)
+
+        assert [(i["connectorId"], i["orgId"]) for i in result["items"]] == [("legacy", ORG_B)]
+        assert result["partial"] is True and result["failedOrgs"] == [ORG_A]

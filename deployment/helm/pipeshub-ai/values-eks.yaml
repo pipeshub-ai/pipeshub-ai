@@ -17,16 +17,18 @@ image:
 s3SignatureV4Preload: false
 
 replicaCount: 2
-# Two app nodes hold four pods. A surge pod needs a free 3 CPU and stays Pending.
+# An app pod requests about 6 CPU (app 2, dind 4), so one fits an m7i.2xlarge
+# app node. A surge pod would need a free node and stay Pending.
 rollingUpdate:
   maxSurge: 0
   maxUnavailable: 1
-# 4 app pods fit on the two app nodes. Add Karpenter or Cluster Autoscaler
-# before raising maxReplicas, or extra pods stay Pending.
+# The two app nodes hold two app pods. To run more, add app nodes (one per pod)
+# or Karpenter / Cluster Autoscaler before raising maxReplicas, or extra pods
+# stay Pending.
 autoscaling:
   enabled: true
   minReplicas: 2
-  maxReplicas: 4
+  maxReplicas: 2
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
 podDisruptionBudget:
@@ -53,6 +55,37 @@ tolerations:
     operator: Equal
     value: app
     effect: NoSchedule
+
+# Parsing in its own pods, off by default. Turn it on with
+#   parsing.enabled=true
+# (a file in PIPESHUB_EXTRA_VALUES, or helm --set). The pods run on the
+# `parsing` node group in deployment/helm/aws/cluster.yaml, a c7i.2xlarge
+# (8 vCPU, 16 GiB; about 7.9 CPU and 14.5 GiB allocatable). Docling is CPU-bound.
+# Three pods of 2 CPU / 4 GiB requested fit one node, and each pod runs two
+# parses at once (maxConcurrent), so a node does six.
+# replicas is a fixed count. The application keeps at most
+# clientConcurrency = replicas x maxConcurrent parses in flight toward the
+# pool: change the two together. Do not set replicas above 3 x the node
+# group's current node count, or the extra pods stay Pending.
+parsing:
+  enabled: false
+  replicas: 2
+  maxConcurrent: "2"
+  clientConcurrency: "4"
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+  nodeSelector:
+    pipeshub/role: parsing
+  tolerations:
+    - key: pipeshub/role
+      operator: Equal
+      value: parsing
+      effect: NoSchedule
 
 global:
   storageClass: gp3
@@ -84,9 +117,10 @@ sandbox:
   dind:
     enabled: true
     resources:
+      # Requests equal limits: the code sandbox cap is sized from the limits.
       requests:
-        cpu: "1"
-        memory: 1Gi
+        cpu: "4"
+        memory: 4Gi
       limits:
         cpu: "4"
         memory: 4Gi

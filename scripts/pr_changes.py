@@ -85,6 +85,13 @@ CHECKS: dict[str, tuple[str, ...]] = {
         "frontend/app/(main)/knowledge-base/sort-fields.json",
         "scripts/unit_shards.py",
         "scripts/unit_shard_durations.json",
+        # test_knob_passthrough.py reads these; capacity_blank_env_test.sh runs in the services shard.
+        f"{COMPOSE}/docker-compose.yml",
+        f"{COMPOSE}/env.template",
+        f"{COMPOSE}/tests/capacity_blank_env_test.sh",
+        "deployment/helm/pipeshub-ai/templates/deployment.yaml",
+        "deployment/helm/pipeshub-ai/values.yaml",
+        "deployment/process_monitor.sh",
         ".github/workflows/unit-test.yml",
     ),
     # main.yml
@@ -139,6 +146,7 @@ STORAGE_NODE = (
 INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/conftest.py",
     f"{PYTHON}/tests/support/**",
+    f"{PYTHON}/tests/unit/attempt_start.py",
     f"{PYTHON}/tests/unit/agents/adapter/conftest.py",
     f"{PYTHON}/tests/unit/agents/adapter/support/scripted_transport.py",
     f"{PYTHON}/tests/unit/connectors/sources/localKB/push/bodies.py",
@@ -147,6 +155,7 @@ INTEGRATION_HELPERS = (
     f"{PYTHON}/tests/unit/connectors/sources/test_connector_workflow_integration.py",
     f"{PYTHON}/tests/unit/modules/entity_resolution/conftest.py",
     f"{PYTHON}/tests/unit/modules/indexing/test_entity_index_rebuild.py",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/live_fakes.py",
     f"{PYTHON}/tests/unit/modules/pipeline/fakes.py",
     f"{PYTHON}/tests/unit/modules/transformers/test_entity_vectorstore_delete.py",
     f"{PYTHON}/tests/unit/services/artifact_registry/fakes.py",
@@ -187,6 +196,7 @@ MATRIX_PYTHON = (
     ".github/workflows/backend-matrix.yml",
     # Which test files each suite runs.
     "scripts/integration_discovery.py",
+    "scripts/graph_shards.py",
 ) + INTEGRATION_HELPERS + PYTHON_PACKAGING
 
 for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):
@@ -206,6 +216,17 @@ CHECKS["redis_cluster"] = (
         f"{COMPOSE}/docker-compose.integration.redis-cluster.yml",
         ".github/workflows/unit-test.yml",
     )
+)
+
+# unit-test.yml's sandbox-live job: builds the sandbox image and runs the
+# Docker-marked tests against a real daemon, which the unit shards skip.
+CHECKS["sandbox_live"] = (
+    f"{PYTHON}/app/agent_loop_lib/sandbox/**",
+    f"{PYTHON}/app/sandbox/**",
+    f"{PYTHON}/tests/unit/agent_loop_lib/sandbox/test_docker_live.py",
+    f"{PYTHON}/tests/unit/sandbox/test_docker_proxy_live.py",
+    "deployment/sandbox/**",
+    ".github/workflows/unit-test.yml",
 )
 
 # integration-tests.yml's helper unit tests (mocks only). The shards run them

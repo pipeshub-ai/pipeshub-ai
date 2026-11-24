@@ -11,10 +11,16 @@ from app.services.vector_db.collections import CollectionType, sanitize_collecti
 
 VIRTUAL_RECORD_ID_FIELD = "metadata.virtualRecordId"
 ORG_ID_FIELD = "metadata.orgId"
+# Deleting some of a record's points by block id filters on it; Redis refuses a filter on a field its index lacks.
+BLOCK_ID_FIELD = "metadata.blockId"
 # Which revision and embedding setup wrote a point, so a resumed embedding run can remove the points
 # of another (see app/modules/indexing/embed_resume.py).
 CONTENT_REV_FIELD = "metadata.contentRev"
 EMBED_KEY_FIELD = "metadata.embedKey"
+# Which weights made a point (fp32, int8-w; image and stamp mark points that are not text vectors).
+EMBED_PRECISION_FIELD = "metadata.embedPrecision"
+# Which epoch of the collection a point was written under (see app/services/vector_db/collection_epoch.py).
+EMBED_EPOCH_FIELD = "metadata.embedEpoch"
 CONNECTOR_IDS_FIELD = "connectorIds"
 RECORD_GROUP_IDS_FIELD = "recordGroupIds"
 # Root of a record's group chain, so search can scope by root instead of every
@@ -25,8 +31,11 @@ ROOT_RECORD_GROUP_IDS_FIELD = "rootRecordGroupIds"
 PAYLOAD_KEYWORD_INDEXES = (
     (VIRTUAL_RECORD_ID_FIELD, {"type": "keyword"}),
     (ORG_ID_FIELD, {"type": "keyword"}),
+    (BLOCK_ID_FIELD, {"type": "keyword"}),
     (CONTENT_REV_FIELD, {"type": "keyword"}),
     (EMBED_KEY_FIELD, {"type": "keyword"}),
+    (EMBED_PRECISION_FIELD, {"type": "keyword"}),
+    (EMBED_EPOCH_FIELD, {"type": "keyword"}),
     (CONNECTOR_IDS_FIELD, {"type": "keyword"}),
     (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
     (ROOT_RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),

@@ -64,6 +64,7 @@ const api = vi.hoisted(() => ({
     deleteNode: vi.fn(),
     streamUpload: vi.fn(),
     getRecordDetails: vi.fn(),
+    getRecordDetailsForOpen: vi.fn(),
     streamRecord: vi.fn(),
     streamDownloadRecord: vi.fn(),
     reindexItem: vi.fn(),
@@ -77,6 +78,19 @@ const api = vi.hoisted(() => ({
   },
 }));
 
+// Content opens go through the record-content cache; its transport is the faked `streamRecord`.
+vi.mock('@/lib/record-content', () => ({
+  openRecordContent: (id: string, variant: string) => ({
+    promise: api.kb
+      .streamRecord(id, variant === 'pdf' ? { convertTo: 'application/pdf' } : undefined)
+      .then((blob: Blob) => {
+        const url = URL.createObjectURL(blob);
+        return { url, blob, mime: blob.type, etag: null, release: () => URL.revokeObjectURL(url) };
+      }),
+    leave: () => {},
+  }),
+}));
+
 vi.mock('../api', async () => {
   const { pagedByCursor } = await import('./kb-page-harness');
   return {
@@ -85,20 +99,58 @@ vi.mock('../api', async () => {
       getNavigationNodes: pagedByCursor(api.hub.getNavigationNodes, 0),
       getNodeChildren: pagedByCursor(api.hub.getNodeChildren, 2),
     },
-    KnowledgeBaseApi: api.kb,
+    KnowledgeBaseApi: {
+      ...api.kb,
+      getRecordDetailsForOpen: async (...args: unknown[]) => ({
+        details: await (api.kb.getRecordDetails as (...a: unknown[]) => Promise<unknown>)(...args),
+        grant: null,
+      }),
+    },
     forgetPendingNodeChildrenRequests: () => {},
   };
 });
 
 const permissions = vi.hoisted(() => ({ denied: new Set<string>() }));
+// @/config imports the collection views itself, so views loaded while the partial mock below
+// resolves bind to the real permission hook; mock the collection hook they read it through.
+vi.mock('../hooks/use-collection-group-permissions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/use-collection-group-permissions')>()),
+  useCollectionGroupPermissions: () => ({
+    canEdit: !permissions.denied.has('editCollection'),
+    canDelete: !permissions.denied.has('deleteCollection'),
+    canManageSync: !permissions.denied.has('manageConnectorSync'),
+  }),
+}));
+// Records what the page hands to the extension slots, so the tests can check the wiring.
+const slots = vi.hoisted(() => ({
+  hookArgs: [] as Array<string | null>,
+  extras: {
+    panel: null as unknown,
+    onUploadStart: undefined as undefined | (() => void),
+    onFileSucceeded: undefined as undefined | ((recordId: string) => void),
+    onUploadEnd: undefined as undefined | (() => void),
+  },
+  selection: { props: null as null | { selectedItems: Array<{ id: string }>; onChanged?: () => void } },
+}));
 vi.mock('@/config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/config')>();
   return {
     ...actual,
+    // The page reaches the extension slots through this module, so they are replaced here.
+    useKbUploadExtras: (kbId: string | null) => {
+      slots.hookArgs.push(kbId);
+      return slots.extras;
+    },
+    SelectionActionBar: (props: React.ComponentProps<typeof actual.SelectionActionBar>) => {
+      slots.selection.props =
+        props.selectedCount > 0 ? { selectedItems: (props.selectedItems ?? []) as Array<{ id: string }>, onChanged: props.onChanged } : null;
+      return <actual.SelectionActionBar {...props} />;
+    },
     // Keep the real collection views, but do not wire the real auth client.
     // A live client calls /api/v1/connectors with no token, toasts that failure,
     // and the reindex "Try again" test then clicks the wrong error toast.
-    useAuthStore: undefined,
+    // The store is state, not the auth client; chat state reads the signed-in user through it.
+    useAuthStore: (await import('@/lib/store/auth-store')).useAuthStore,
     logoutAndRedirect: undefined,
     logoutFromWorkspaceMenu: undefined,
     apiClient: undefined,
@@ -199,6 +251,9 @@ let replaceState: { mockRestore: () => void } | null = null;
 
 beforeEach(() => {
   installBrowserShims();
+  slots.hookArgs.length = 0;
+  slots.extras = { panel: null, onUploadStart: undefined, onFileSucceeded: undefined, onUploadEnd: undefined };
+  slots.selection.props = null;
   usePendingChatStore.setState({ pending: null });
   nav.current = createNavigation();
   router.push.mockImplementation((url: string) => nav.current!.setUrl(url));
@@ -383,6 +438,177 @@ describe('Knowledge base page — collections list', () => {
 });
 
 describe('Knowledge base page — inside a collection', () => {
+  it('says a collection is still being prepared, asks again by itself and then lists its items', async () => {
+    withCollections();
+    // Preparing for every request in the first 1.5 s: the rows can only come from the page asking again by itself (after 2 s).
+    const start = Date.now();
+    api.hub.loadFolderData.mockImplementation(async () =>
+      Date.now() - start < 1_500 ? { ...engineeringContents([]), preparing: true } : engineeringContents(),
+    );
+    openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+
+    expect(await screen.findByText(/Preparing this source/)).toBeTruthy();
+    expect(screen.queryByText('No collection selected')).toBeNull();      // rows are coming, not missing
+    expect(screen.getByRole('status', { name: /Preparing this source/ })).toBeTruthy();
+    expect(await screen.findByRole('row', { name: 'spec.pdf' }, { timeout: 6_000 })).toBeTruthy();
+    expect(screen.queryByText(/Preparing this source/)).toBeNull();
+  });
+
+  describe('a retry of a source still being prepared stops once the user leaves it', () => {
+    const DEAL = hubNode({ id: 'rec-deal', name: 'deal.pdf', parentId: 'kb-sales' });
+    const salesContents = () =>
+      folderResponse({ id: 'kb-sales', name: 'Sales', nodeType: 'app' }, [{ id: 'kb-sales', name: 'Sales', nodeType: 'app' }], [DEAL]);
+    const engineeringCalls = () => api.hub.loadFolderData.mock.calls.filter(([, id]) => id === 'kb-eng').length;
+    // Past the first retry's wait (2 s), so a retry that was not cancelled has fired.
+    const pastTheFirstRetry = () => act(() => new Promise((resolve) => setTimeout(resolve, 2_600)));
+
+    beforeEach(() => {
+      withCollections();
+      api.hub.loadFolderData.mockImplementation(async (_type: string, id: string) =>
+        id === 'kb-eng' ? { ...engineeringContents([]), preparing: true } : salesContents(),
+      );
+    });
+
+    it('asks nothing more for a collection the user has left for the collections list, and leaves the list alone', async () => {
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base'));
+      await screen.findByRole('row', { name: 'Sales' });
+      const asked = engineeringCalls();
+
+      await pastTheFirstRetry();
+
+      expect(engineeringCalls()).toBe(asked);
+      expect(row('Sales')).toBeTruthy();
+      expect(screen.queryByText(/Preparing this source/)).toBeNull();
+    });
+
+    it('asks nothing more for a collection the user has left for another one', async () => {
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+      const asked = engineeringCalls();
+
+      await pastTheFirstRetry();
+
+      expect(engineeringCalls()).toBe(asked);
+      expect(row('deal.pdf')).toBeTruthy();
+    });
+
+    it('asks nothing more for a collection once the user switches to All records', async () => {
+      api.hub.getAllRootItems.mockResolvedValue(hubResponse([DEAL]));
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base?view=all-records'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+      const asked = engineeringCalls();
+
+      await pastTheFirstRetry();
+
+      expect(engineeringCalls()).toBe(asked);
+      expect(row('deal.pdf')).toBeTruthy();
+    });
+
+    it('sends no retry scheduled before a newer request of the same collection, so its answer stands', async () => {
+      const userAnswers: ((value: unknown) => void)[] = [];
+      let phase: 'preparing' | 'user' | 'after' = 'preparing';
+      let calls = 0;
+      api.hub.loadFolderData.mockImplementation((_type: string, id: string) => {
+        if (id !== 'kb-eng') return Promise.resolve(salesContents());
+        calls += 1;
+        if (phase === 'preparing') return Promise.resolve({ ...engineeringContents([]), preparing: true });
+        if (phase === 'user') return new Promise((resolve) => { userAnswers.push(resolve); });      // the user's own request, still in flight when the retry is due
+        return Promise.reject(new Error('the retry failed'));
+      });
+      openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByText(/Preparing this source/);
+      phase = 'user';
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-eng&from=search'));      // same collection, a new request
+      await waitFor(() => expect(userAnswers.length).toBeGreaterThan(0));
+      phase = 'after';
+      const asked = calls;
+
+      // The page loads twice on open, so the retry pending is the second (4 s after the second answer): wait past it.
+      await act(() => new Promise((resolve) => setTimeout(resolve, 4_600)));
+      await act(async () => userAnswers.forEach((answer) => answer(engineeringContents())));
+
+      expect(await screen.findByRole('row', { name: 'spec.pdf' })).toBeTruthy();
+      expect(calls).toBe(asked);      // the retry scheduled before the user's request was never sent
+      expect(screen.queryByText(/Failed to load items/)).toBeNull();
+    });
+
+    it('sends no All records retry scheduled before a newer request of the same view, so its answer stands', async () => {
+      const userAnswers: ((value: unknown) => void)[] = [];
+      let phase: 'preparing' | 'user' | 'after' = 'preparing';
+      let calls = 0;
+      api.hub.getAllRootItems.mockImplementation(() => {
+        calls += 1;
+        if (phase === 'preparing') return Promise.resolve(hubResponse([], { preparing: true }));
+        if (phase === 'user') return new Promise((resolve) => { userAnswers.push(resolve); });      // the user's own request, still in flight when the retry is due
+        return Promise.reject(new Error('the retry failed'));
+      });
+      openAt('/knowledge-base?view=all-records');
+      await screen.findByText(/Preparing this source/);
+      phase = 'user';
+      fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));      // the same view, a new request
+      await waitFor(() => expect(userAnswers.length).toBeGreaterThan(0));
+      phase = 'after';
+      const asked = calls;
+
+      await act(() => new Promise((resolve) => setTimeout(resolve, 4_600)));      // past any retry the opening loads scheduled
+      await act(async () => userAnswers.forEach((answer) => answer(hubResponse([DEAL]))));
+
+      expect(await screen.findByRole('row', { name: 'deal.pdf' })).toBeTruthy();
+      expect(calls).toBe(asked);      // the retry scheduled before the user's request was never sent
+    });
+
+    it('a retry the user has moved on from opens no more of its path in the sidebar', async () => {
+      const X = { id: 'folder-x', name: 'Drafts', nodeType: 'folder' as const };
+      const D = { id: 'folder-designs', name: 'Designs', nodeType: 'folder' as const };
+      let answers = 0;
+      let releaseCollection: (value: unknown) => void = () => {};
+      api.hub.loadFolderData.mockImplementation(async (_type: string, id: string) => {
+        if (id !== 'folder-x') return salesContents();
+        answers += 1;
+        return answers <= 2      // both loads of the opening answer that the folder is being prepared; the retry gets it ready
+          ? { ...folderResponse(X, [], []), breadcrumbs: [], preparing: true }
+          : folderResponse(X, [...ENGINEERING_TRAIL, D, X], [SPEC]);
+      });
+      api.hub.getNodeChildren.mockImplementation((_type: string, id: string) =>
+        id === 'kb-eng' && answers >= 3
+          ? new Promise((resolve) => { releaseCollection = resolve; })      // the retry's walk waits on the collection's children
+          : Promise.resolve(hubResponse([])),
+      );
+      openAt('/knowledge-base?nodeType=folder&nodeId=folder-x');
+      await screen.findByText(/Preparing this source/);
+      await waitFor(() => expect(answers).toBeGreaterThanOrEqual(3), { timeout: 8_000 });      // the retry has its answer and walks its path
+      await waitFor(() => expect(api.hub.getNodeChildren.mock.calls.some(([, id]) => id === 'kb-eng')).toBe(true));
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+
+      await act(async () => releaseCollection(hubResponse([hubNode({ ...D, parentId: 'kb-eng', hasChildren: true })])));
+      await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
+
+      expect(api.hub.getNodeChildren.mock.calls.some(([, id]) => id === 'folder-designs')).toBe(false);
+      expect(useKnowledgeBaseStore.getState().expandedFolders['folder-designs']).toBeFalsy();
+    });
+
+    it('asks nothing more for All records once the user leaves it', async () => {
+      api.hub.getAllRootItems.mockResolvedValue(hubResponse([], { preparing: true }));
+      openAt('/knowledge-base?view=all-records');
+      await screen.findByText(/Preparing this source/);
+      act(() => nav.current!.setUrl('/knowledge-base?nodeType=app&nodeId=kb-sales'));
+      await screen.findByRole('row', { name: 'deal.pdf' });
+      const asked = api.hub.getAllRootItems.mock.calls.length;
+
+      await pastTheFirstRetry();
+
+      expect(api.hub.getAllRootItems.mock.calls.length).toBe(asked);
+      expect(row('deal.pdf')).toBeTruthy();
+    });
+  });
+
   it('shows the collection name in the breadcrumb and every item in it', async () => {
     await openEngineering();
 
@@ -1156,7 +1382,36 @@ describe('Knowledge base page — working with files', () => {
     expect(api.kb.reindexItem).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalledWith('rec-spec', 0, undefined));
+    // A Force reindex says so: the server re-parses and re-indexes, and bypasses every stored result.
+    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalledWith('rec-spec', 0, undefined, true));
+  });
+
+  it('a retry of a failed file is not a force reindex', async () => {
+    await openEngineering();
+    api.kb.reindexItem.mockResolvedValue({});
+
+    await chooseRowAction('notes.txt', 'Retry indexing');
+
+    await waitFor(() => expect(api.kb.reindexItem).toHaveBeenCalled());
+    expect(api.kb.reindexItem.mock.calls[0]).toEqual(['rec-notes', 0, undefined]);
+  });
+
+  it('keeps the success when only the list refresh after a reindex fails, and offers no retry that would resend it', async () => {
+    await openEngineering();
+    api.kb.reindexItem.mockImplementation(async () => {
+      // The request is accepted; the refresh of the page that follows it then fails.
+      for (const [name, fn] of Object.entries(api.kb)) {
+        if (name !== 'reindexItem' && vi.isMockFunction(fn)) fn.mockRejectedValue(new Error('refresh failed'));
+      }
+      return {};
+    });
+
+    await chooseRowAction('notes.txt', 'Retry indexing');
+
+    await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.variant === 'success')).toBe(true));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(useToastStore.getState().toasts.some((t) => t.variant === 'error')).toBe(false);
+    expect(api.kb.reindexItem).toHaveBeenCalledTimes(1);
   });
 
   it('offers to try again when reindexing could not start', async () => {
@@ -1273,6 +1528,85 @@ describe('Knowledge base page — working with files', () => {
     expect(api.hub.loadFolderData).toHaveBeenLastCalledWith(
       'app', 'kb-eng', expect.objectContaining({ cursor: pageCursor(2) }), expect.anything(),
     );
+  });
+});
+
+describe('Knowledge base page — extension slots', () => {
+  it('hands the ticked rows and the list refresh to the selection bar', async () => {
+    await openEngineering();
+    fireEvent.click(within(row('spec.pdf')).getByRole('checkbox'));
+    await waitFor(() => expect(slots.selection.props).not.toBeNull());
+
+    expect(slots.selection.props?.selectedItems.map((i) => i.id)).toEqual(['rec-spec']);
+    api.hub.loadFolderData.mockClear();
+    await act(async () => slots.selection.props?.onChanged?.());
+    await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalled());
+  });
+
+  it('asks the upload hook about the open collection and calls its callbacks around an upload', async () => {
+    await openEngineering();
+    expect(slots.hookArgs).toContain('kb-eng');
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onFileSucceeded = (id) => order.push(`ok:${id}`);
+    slots.extras.onUploadEnd = () => order.push('end');
+    const file = new File(['x'], 'readme.txt', { type: 'text/plain' });
+    upload.items = [{ id: 'u1', name: file.name, size: 1, type: 'file', file }];
+    api.kb.streamUpload.mockImplementation(
+      async (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { onEvent: (e: { event: string; data?: unknown }) => void }) => {
+        opts.onEvent({ event: 'file:succeeded', data: { filePath: 'readme.txt', recordId: 'rec-new' } });
+        opts.onEvent({ event: 'done' });
+      },
+    );
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'ok:rec-new', 'end']));
+  });
+
+  it('calls the end callback when every picked file is over the size limit and nothing is sent', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    const huge = new File(['x'], 'dump.bin', { type: 'application/octet-stream' });
+    Object.defineProperty(huge, 'size', { value: 50 * 1024 * 1024 });
+    upload.items = [{ id: 'u1', name: huge.name, size: huge.size, type: 'file', file: huge }];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
+    expect(api.kb.streamUpload).not.toHaveBeenCalled();
+  });
+
+  it('calls the end callback when there are no files to upload', async () => {
+    await openEngineering();
+    const order: string[] = [];
+    slots.extras.onUploadStart = () => order.push('start');
+    slots.extras.onUploadEnd = () => order.push('end');
+    upload.items = [];
+
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+
+    await waitFor(() => expect(order).toEqual(['start', 'end']));
+  });
+
+  it('uploads normally when the hook provides no callbacks', async () => {
+    await openEngineering();
+    const file = new File(['x'], 'readme.txt', { type: 'text/plain' });
+    upload.items = [{ id: 'u1', name: file.name, size: 1, type: 'file', file }];
+    api.kb.streamUpload.mockImplementation(
+      async (_kb: string, _folder: string | null, _files: File[], _meta: unknown, opts: { onEvent: (e: { event: string; data?: unknown }) => void }) => {
+        opts.onEvent({ event: 'file:succeeded', data: { filePath: 'readme.txt' } });
+        opts.onEvent({ event: 'done' });
+      },
+    );
+    await chooseFromNewMenu('Upload data');
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload chosen files' }));
+    await waitFor(() => expect(api.kb.streamUpload).toHaveBeenCalledTimes(1));
   });
 });
 

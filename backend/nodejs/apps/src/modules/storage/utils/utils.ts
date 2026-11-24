@@ -10,6 +10,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { localEtagOf, normalizeEtag } from './storage-fingerprint';
 import { Logger } from '../../../libs/services/logger.service';
+import { releaseOnClientClose } from '../../../libs/utils/release-on-close';
 import { getMimeType } from '../mimetypes/mimetypes';
 import {
   Document,
@@ -18,7 +19,9 @@ import {
   StorageVendor,
 } from '../types/storage.service.types';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
-import { ErrorMetadata } from '../../../libs/errors/base.error';
+import { ErrorMetadata, withCause } from '../../../libs/errors/base.error';
+import { classifyError, levelFor } from '../../../libs/utils/error-class';
+import { storageCause } from '../providers/vendor-failure';
 import { createReadStream } from 'fs';
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../constants/constants';
 import fs from 'fs';
@@ -33,32 +36,30 @@ const logger = Logger.getInstance({
 });
 
 /**
- * Write a file to the storage vendor, or fail with a message the uploader can act on.
- * The vendor's own error (a path, an OS code, an S3 or Azure response) goes to the log only.
+ * A 503 for storage that failed us, with the vendor's status and code as its cause: the error
+ * middleware's line then says why, and the vendor's text (paths, buckets) never leaves.
  */
+export const storageUnavailable = (
+  message: string,
+  failure: unknown,
+): ServiceUnavailableError =>
+  withCause(new ServiceUnavailableError(message), storageCause(failure));
+
+/** Write a file to the storage vendor, or fail with a message the uploader can act on. */
 export async function writeToStorage(
   adapter: StorageServiceAdapter,
   payload: FilePayload,
-  context: Record<string, unknown> = {},
 ): Promise<StorageServiceResponse<string>> {
   let response: StorageServiceResponse<string>;
   try {
     response = await adapter.uploadDocumentToStorageService(payload);
   } catch (error) {
-    logger.error('Writing a file to storage failed', {
-      ...context,
-      error: error instanceof Error ? error.message : String(error),
-      metadata: (error as { metadata?: unknown }).metadata,
-    });
-    throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
+    throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, error);
   }
   if (response.statusCode !== HTTP_STATUS.OK || !response.data) {
-    logger.error('Writing a file to storage failed', {
-      ...context,
+    throw storageUnavailable(STORAGE_WRITE_FAILED_MESSAGE, {
       statusCode: response.statusCode,
-      error: response.msg,
     });
-    throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
   }
   return response;
 }
@@ -108,14 +109,10 @@ async function getDocumentInfoFromDb(
       throw error;
     }
 
-    const logger = Logger.getInstance();
-    logger.error('Error fetching document:', {
-      documentId,
-      orgId,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    });
-
-    throw new InternalServerError('Error fetching document information');
+    throw withCause(
+      new InternalServerError('Error fetching document information'),
+      error,
+    );
   }
 }
 
@@ -371,7 +368,6 @@ export function validateFileAndDocumentName(
     );
   }
 
-
   if (documentName?.includes('/')) {
     throw new BadRequestError(
       `File "${fileNameForError}": The document name cannot contain a forward slash.`,
@@ -432,33 +428,25 @@ export async function generatePresignedUrlForDirectUpload(
   adapter: StorageServiceAdapter,
   documentPath: string | undefined,
 ): Promise<string | undefined> {
-  try {
-    if (!documentPath) {
-      throw new BadRequestError('Document path is required');
-    }
-    const presignedUrlResponse =
-      await adapter.generatePresignedUrlForDirectUpload(documentPath);
-
-    if (presignedUrlResponse.statusCode !== 200) {
-      logger.error(
-        'Error generating presigned URL:',
-        presignedUrlResponse.data?.url,
-      );
-      const errorMetadata: ErrorMetadata = {
-        statusCode: presignedUrlResponse.statusCode,
-        requestedUrl: presignedUrlResponse.data?.url,
-        errorMessage: presignedUrlResponse.msg,
-        timestamp: new Date().toISOString(),
-      };
-      throw new InternalServerError(
-        'Error generating presigned URL:',
-        errorMetadata,
-      );
-    }
-    return presignedUrlResponse.data?.url;
-  } catch (error) {
-    throw error;
+  if (!documentPath) {
+    throw new BadRequestError('Document path is required');
   }
+  const presignedUrlResponse =
+    await adapter.generatePresignedUrlForDirectUpload(documentPath);
+
+  if (presignedUrlResponse.statusCode !== 200) {
+    const errorMetadata: ErrorMetadata = {
+      statusCode: presignedUrlResponse.statusCode,
+      requestedUrl: presignedUrlResponse.data?.url,
+      errorMessage: presignedUrlResponse.msg,
+      timestamp: new Date().toISOString(),
+    };
+    throw new InternalServerError(
+      'Error generating presigned URL:',
+      errorMetadata,
+    );
+  }
+  return presignedUrlResponse.data?.url;
 }
 
 export function getBaseUrl(url: string): string | undefined {
@@ -484,113 +472,168 @@ export function getStorageVendor(storageType: string): StorageVendor {
  * descriptor, which is the same file the bytes come from: with `ifMatch` a download of any other identity answers 412 before a byte
  * is sent, and the response always carries `ETag`.
  */
-export function serveFileFromLocalStorage(document: Document, res: Response, version?: number, ifMatch?: string) {
-  try {
-    const localFilePath = version !== undefined
-      ? (document.versionHistory?.[version]?.local?.localPath ||
-         document.versionHistory?.[version]?.local?.url)
-      : (document.local?.localPath);
+export type ByteRange = { start: number; end: number };
 
-    if (!localFilePath) {
-      throw new NotFoundError('Local file path not found for requested version');
-    }
-
-    // DON'T use new URL() - it treats # as a fragment identifier!
-    // Instead, manually parse the file:// URL
-
-    let filePath: string;
-
-    if (localFilePath.startsWith('file://')) {
-      // Remove the file:// protocol
-      let pathPart = localFilePath.substring(7); // Remove 'file://'
-
-      if (process.platform === 'win32') {
-        // Windows: file:///C:/path/to/file
-        // Remove leading / if present (file:/// becomes /C:/...)
-        if (pathPart.startsWith('/')) {
-          pathPart = pathPart.substring(1);
-        }
-        // Decode URI components and convert forward slashes to backslashes
-        filePath = decodeURIComponent(pathPart).replace(/\//g, '\\');
-      } else {
-        // Unix: file:///path/to/file or file://path/to/file
-        // Remove leading / if we have // (file:// case)
-        if (pathPart.startsWith('//')) {
-          pathPart = pathPart.substring(1);
-        }
-        filePath = decodeURIComponent(pathPart);
-      }
-    } else {
-      // If it's not a file:// URL, treat it as a direct path
-      filePath = localFilePath;
-    }
-
-    // Open the file once: its identity and its bytes then come from the same descriptor.
-    let fd: number;
-    try {
-      fd = fs.openSync(filePath, fs.constants.O_RDONLY);
-    } catch (err) {
-      logger.error('File not accessible:', {
-        filePath,
-        originalPath: localFilePath,
-        documentName: document.documentName,
-        extension: document.extension,
-        error: err,
-      });
-      throw new NotFoundError(
-        `File not found or not accessible: ${document.documentName}${document.extension}`,
-      );
-    }
-    let etag: string;
-    try {
-      etag = localEtagOf(fs.fstatSync(fd, { bigint: true }));
-    } catch (err) {
-      fs.closeSync(fd);
-      throw err;
-    }
-    if (ifMatch !== undefined && normalizeEtag(ifMatch) !== etag) {
-      fs.closeSync(fd);
-      throw new PreconditionFailedError(
-        'The file is not the one that was verified; read the document again',
-      );
-    }
-    res.setHeader('ETag', `"${etag}"`);
-
-    // Get mime type from extension
-    const mimeType = getMimeType(document.extension);
-
-    // Encode filename for Content-Disposition header
-    const fullName = `${document.documentName}${document.extension}`;
-    const filenameStar = encodeRFC5987(fullName);
-
-    // Set headers
-    res.setHeader('Content-Type', mimeType || 'application/octet-stream');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename*=UTF-8''${filenameStar}`,
-    );
-
-    // Stream the file
-    const fileStream = createReadStream(filePath, { fd });
-    fileStream.pipe(res);
-
-    // Handle streaming errors
-    fileStream.on('error', (error) => {
-      logger.error('Error streaming file:', {
-        filePath,
-        documentName: document.documentName,
-        error,
-      });
-      if (!res.headersSent) {
-        res
-          .status(HTTP_STATUS.INTERNAL_SERVER)
-          .json({ error: 'Error streaming file' });
-      }
-    });
-  } catch (error) {
-    logger.error('Error serving local file:', error);
-    throw error;
+/**
+ * Reads one `Range: bytes=...` header against a file of `size` bytes (RFC 9110 section 14.1.2).
+ * `null` means "serve the whole file": no header, a multi-range, or a header that is not a valid range.
+ * `'unsatisfiable'` means the range starts at or after the end (416). An end past the last byte is clamped.
+ */
+export function parseByteRange(
+  header: string | undefined,
+  size: number,
+): ByteRange | 'unsatisfiable' | null {
+  if (header === undefined || header === '') return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match || (match[1] === '' && match[2] === '')) return null;
+  if (match[1] === '') {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix === 0) return 'unsatisfiable';
+    return size === 0
+      ? 'unsatisfiable'
+      : { start: Math.max(0, size - suffix), end: size - 1 };
   }
+  const start = Number(match[1]);
+  const end = match[2] === '' ? size - 1 : Number(match[2]);
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    (match[2] !== '' && end < start)
+  )
+    return null;
+  if (start >= size) return 'unsatisfiable';
+  return { start, end: Math.min(end, size - 1) };
+}
+
+export function serveFileFromLocalStorage(
+  document: Document,
+  res: Response,
+  version?: number,
+  ifMatch?: string,
+  rangeHeader?: string,
+) {
+  const localFilePath =
+    version !== undefined
+      ? document.versionHistory?.[version]?.local?.localPath ||
+        document.versionHistory?.[version]?.local?.url
+      : document.local?.localPath;
+
+  if (!localFilePath) {
+    throw new NotFoundError('Local file path not found for requested version');
+  }
+
+  // DON'T use new URL() - it treats # as a fragment identifier!
+  // Instead, manually parse the file:// URL
+
+  let filePath: string;
+
+  if (localFilePath.startsWith('file://')) {
+    // Remove the file:// protocol
+    let pathPart = localFilePath.substring(7); // Remove 'file://'
+
+    if (process.platform === 'win32') {
+      // Windows: file:///C:/path/to/file
+      // Remove leading / if present (file:/// becomes /C:/...)
+      if (pathPart.startsWith('/')) {
+        pathPart = pathPart.substring(1);
+      }
+      // Decode URI components and convert forward slashes to backslashes
+      filePath = decodeURIComponent(pathPart).replace(/\//g, '\\');
+    } else {
+      // Unix: file:///path/to/file or file://path/to/file
+      // Remove leading / if we have // (file:// case)
+      if (pathPart.startsWith('//')) {
+        pathPart = pathPart.substring(1);
+      }
+      filePath = decodeURIComponent(pathPart);
+    }
+  } else {
+    // If it's not a file:// URL, treat it as a direct path
+    filePath = localFilePath;
+  }
+
+  // Open the file once: its identity and its bytes then come from the same descriptor.
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY);
+  } catch (err) {
+    throw withCause(
+      new NotFoundError(
+        `File not found or not accessible: ${document.documentName}${document.extension}`,
+      ),
+      storageCause(err),
+    );
+  }
+  let etag: string;
+  let size: number;
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    etag = localEtagOf(stat);
+    size = Number(stat.size);
+  } catch (err) {
+    fs.closeSync(fd);
+    throw err;
+  }
+  if (ifMatch !== undefined && normalizeEtag(ifMatch) !== etag) {
+    fs.closeSync(fd);
+    throw new PreconditionFailedError(
+      'The file is not the one that was verified; read the document again',
+    );
+  }
+  res.setHeader('ETag', `"${etag}"`);
+  res.setHeader('Accept-Ranges', 'bytes');
+
+  // One range of the same open file; the ETag above names exactly these bytes.
+  const range = parseByteRange(rangeHeader, size);
+  if (range === 'unsatisfiable') {
+    fs.closeSync(fd);
+    res.status(416);
+    res.setHeader('Content-Range', `bytes */${String(size)}`);
+    res.end();
+    return;
+  }
+
+  // Get mime type from extension
+  const mimeType = getMimeType(document.extension);
+
+  // Encode filename for Content-Disposition header
+  const fullName = `${document.documentName}${document.extension}`;
+  const filenameStar = encodeRFC5987(fullName);
+
+  // Set headers
+  res.setHeader('Content-Type', mimeType || 'application/octet-stream');
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename*=UTF-8''${filenameStar}`,
+  );
+
+  // Stream the file
+  if (range) {
+    res.status(206);
+    res.setHeader(
+      'Content-Range',
+      `bytes ${String(range.start)}-${String(range.end)}/${String(size)}`,
+    );
+    res.setHeader('Content-Length', String(range.end - range.start + 1));
+  }
+  const fileStream = createReadStream(
+    filePath,
+    range ? { fd, start: range.start, end: range.end } : { fd },
+  );
+  fileStream.pipe(res);
+  releaseOnClientClose(res, fileStream);
+
+  // Handle streaming errors
+  fileStream.on('error', (error) => {
+    logger[levelFor(classifyError(error))]('Streaming a local file failed', {
+      error,
+    });
+    if (!res.headersSent) {
+      res
+        .status(HTTP_STATUS.INTERNAL_SERVER)
+        .json({ error: 'Error streaming file' });
+    }
+  });
 }
 
 /**

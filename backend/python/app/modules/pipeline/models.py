@@ -6,11 +6,20 @@ the job envelope and the graph's record fields; parsing accepts either spelling.
 """
 
 import hashlib
+import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_serializer,
+    field_validator,
+)
 from pydantic.alias_generators import to_camel
 
 from app.config.constants.arangodb import ProgressStatus
@@ -19,9 +28,54 @@ from app.services.resource_governor.models import ParseTier
 _WIRE = ConfigDict(frozen=True, alias_generator=to_camel, populate_by_name=True, extra="ignore")
 
 
+_KNOWN_STATUSES = frozenset(status.value for status in ProgressStatus)
+_logger = logging.getLogger(__name__)
+#: Unknown stored values already reported, so a row's value is logged once per process and not once per read.
+_REPORTED: set[tuple[str, str]] = set()
+
+
+#: What a reader reports for a row whose status a newer release wrote.
+FOREIGN_REASON = "handled by a newer release"
+
+
+@dataclass(frozen=True)
+class ForeignStatus:
+    """A stage status this release does not know: a newer release wrote it, and that release owns the row.
+
+    Never mapped to a known status, because acting on a guess is how a row gets stuck or overwritten. This
+    release reads such a row but never compares-and-sets, sweeps or reclaims it.
+    """
+
+    value: str
+
+
+def _report_unknown(field: str, value: str, mapped_to: str) -> None:
+    if (field, value) not in _REPORTED:
+        _REPORTED.add((field, value))
+        _logger.warning(
+            "Stage state with unknown %s %r (written by a newer release): read as %s", field, value, mapped_to
+        )
+
+
 class Priority(StrEnum):
     INTERACTIVE = "interactive"
     BULK = "bulk"
+
+
+def _tier_or_heavy(value: object) -> object:
+    """A tier a later release added reads as HEAVY, the pool that is safe for any document."""
+    if isinstance(value, str) and value not in {tier.value for tier in ParseTier}:
+        _report_unknown("tier", value, ParseTier.HEAVY.value)
+        return ParseTier.HEAVY
+    return value
+
+
+def _priority_or_bulk(value: object) -> object:
+    """A priority a later release added reads as ``bulk``: never ahead of an interactive job."""
+    if isinstance(value, str) and value not in {priority.value for priority in Priority}:
+        _report_unknown("priority", value, Priority.BULK.value)
+        return Priority.BULK
+    return value
 
 
 class Workload(StrEnum):
@@ -98,6 +152,18 @@ class StageJob(BaseModel):
     text_chars: int = Field(ge=0)
     has_tables: bool
     has_images: bool
+
+    # A job a newer release published may carry a tier or priority this release lacks; refusing it would
+    # dead-letter the job, and only the sweep's republish backstop would bring it back.
+    @field_validator("tier", mode="before")
+    @classmethod
+    def _unknown_tier_is_heavy(cls, value: object) -> object:
+        return _tier_or_heavy(value)
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _unknown_priority_is_bulk(cls, value: object) -> object:
+        return _priority_or_bulk(value)
 
     @computed_field
     @property
@@ -188,6 +254,48 @@ class StageResult(BaseModel):
     record_view: RecordView | None = None
     # Kept with the stage's state on COMPLETED (see StageState.output).
     output: str | None = None
+    # What a PAUSED outcome says about the model call behind it, for the pause budget
+    # (``pause_budget``). Not stored: none of it reaches a record or a stage state.
+    # ``sent``: a request reached the wire (an open circuit is a refusal, not a send);
+    # a stage that cannot tell says it did, so a paused job never gets free sends.
+    sent: bool = True
+    # Requests on the wire behind this outcome (None: one when ``sent``); the pause budget counts these as sends.
+    requests: int | None = None
+    # A half-open trial: carried for the fleet, never charged to the job.
+    trial: bool = False
+    # A failed send made with the breaker closed while the provider was serving others.
+    chargeable: bool = False
+    # How many of the run's failed sends were chargeable (None: one when ``chargeable``).
+    charged: int | None = None
+    # Digest and size class of the provider key's breaker, for its hold ledger.
+    provider_pk: str | None = None
+    size_class: str | None = None
+    # The provider's readable key (class, model and endpoint host; never a credential), for reasons and notices.
+    provider_label: str | None = None
+
+    @classmethod
+    def paused_for(
+        cls, exc: BaseException | None, reason: str, *, traced: Mapping[str, object] | None = None
+    ) -> "StageResult":
+        """A PAUSED outcome for model calls the provider could not serve, carrying what the pause budget needs to count
+        them. ``traced`` is the run's own count (the job trace's ``pause_fields``), which wins over what one exception
+        says; without it, ``exc`` (``LLMUnavailableError``) is read, and an error that does not say counts as a send."""
+        retry_after = getattr(exc, "retry_after", None)
+        if traced:
+            return cls(outcome=StageOutcome.PAUSED, reason=reason, retry_after_s=retry_after, **traced)  # type: ignore[arg-type]
+        return cls(
+            outcome=StageOutcome.PAUSED,
+            reason=reason,
+            retry_after_s=retry_after,
+            sent=getattr(exc, "sent", True),
+            requests=getattr(exc, "requests", None),
+            trial=getattr(exc, "trial", False),
+            chargeable=getattr(exc, "chargeable", False),
+            charged=getattr(exc, "charged", None),
+            provider_pk=getattr(exc, "pk", None),
+            size_class=getattr(exc, "size_class", None),
+            provider_label=getattr(exc, "provider", None),
+        )
 
 
 class StageState(BaseModel):
@@ -205,7 +313,7 @@ class StageState(BaseModel):
     virtual_record_id: str
     rev: str
     stage: str
-    status: ProgressStatus
+    status: ProgressStatus | ForeignStatus
     stage_version: int = Field(ge=1)
     record_ids: tuple[str, ...] = Field(min_length=1)
     connector_id: str
@@ -232,6 +340,35 @@ class StageState(BaseModel):
     updated_at_ms: int = Field(ge=0)
     worker_id: str | None = None
     reason: str | None = None
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def _unknown_status_is_foreign(cls, value: object) -> object:
+        """A status a later release wrote (the stored schema accepts any string) reads as foreign: the read
+        never fails, and nothing in this release acts on the row."""
+        if isinstance(value, str) and value not in _KNOWN_STATUSES:
+            _report_unknown("status", value, f"foreign ({FOREIGN_REASON})")
+            return ForeignStatus(value)
+        return value
+
+    @field_serializer("status", when_used="json")
+    def _status_as_stored(self, status: ProgressStatus | ForeignStatus) -> str:
+        return status.value
+
+    @property
+    def foreign(self) -> bool:
+        """Whether a newer release owns this row (its status is one this release does not know)."""
+        return isinstance(self.status, ForeignStatus)
+
+    @field_validator("tier", mode="before")
+    @classmethod
+    def _unknown_tier_is_heavy(cls, value: object) -> object:
+        return _tier_or_heavy(value)
+
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _unknown_priority_is_bulk(cls, value: object) -> object:
+        return _priority_or_bulk(value)
 
     @classmethod
     def from_job(
@@ -291,7 +428,8 @@ class StageStateSummary(BaseModel):
     model_config = _WIRE
 
     stage: str
-    status: ProgressStatus
+    # A string for a row a newer release owns, whose status this release does not know.
+    status: ProgressStatus | str
     reason: str | None = None
     attempt: int = 0
     started_at_ms: int | None = None
@@ -300,10 +438,14 @@ class StageStateSummary(BaseModel):
 
     @classmethod
     def of(cls, state: StageState) -> "StageStateSummary":
+        if isinstance(state.status, ForeignStatus):
+            status, reason = state.status.value, FOREIGN_REASON
+        else:
+            status, reason = state.status, state.reason
         return cls(
             stage=state.stage,
-            status=state.status,
-            reason=state.reason,
+            status=status,
+            reason=reason,
             attempt=state.attempt,
             started_at_ms=state.started_at_ms,
             finished_at_ms=state.finished_at_ms,

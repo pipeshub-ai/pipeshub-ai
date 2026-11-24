@@ -122,7 +122,6 @@ function proxyMcp(
 
         // The OAuth callback's path carries the authorization code and state.
         logger.debug(`MCP servers proxy: ${action}`, {
-          userId,
           path: redactSensitiveQueryParams(pathBuilder(req)),
         });
 
@@ -139,12 +138,6 @@ function proxyMcp(
 
         handleConnectorResponse(connectorResponse, res, action, `${action} failed`);
       } catch (error: any) {
-        logger.error(`Error in MCP servers proxy: ${action}`, {
-          error: error.message,
-          userId: req.user?.userId,
-          status: error.response?.status || error.statusCode,
-          data: error.response?.data || error.data,
-        });
         next(handleBackendError(error, action));
       }
     };
@@ -156,8 +149,15 @@ function proxyMcp(
 
 export const listMcpCatalog = proxyMcp(
   HttpMethod.GET,
-  (req) => `/catalog${queryString(req.query as Record<string, unknown>, ['page', 'limit', 'search'])}`,
+  (req) => `/catalog${queryString(req.query as Record<string, unknown>, ['page', 'limit', 'search', 'category'])}`,
   'List MCP catalog',
+);
+
+/** The organization's servers people signed in to, most used first: counts only, never who. */
+export const listPopularMcpServers = proxyMcp(
+  HttpMethod.GET,
+  (req) => `/popular${queryString(req.query, ['limit'])}`,
+  'List popular MCP servers',
 );
 
 export const getMcpCatalogTemplate = proxyMcp(

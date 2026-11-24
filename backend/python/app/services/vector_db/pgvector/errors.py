@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncpg
 
+from app.core.db.errors import ConnectionLost
 from app.exceptions.non_retryable import NonRetryableError
 from app.services.vector_db.errors import (
     OrgMismatch,
@@ -50,7 +51,8 @@ def classify_pg_search_error(error: BaseException) -> SearchFailureKind | None:
         asyncpg.PostgresConnectionError
         | asyncpg.CannotConnectNowError
         | asyncpg.InterfaceError
-        | ConnectionError,
+        | ConnectionError
+        | ConnectionLost,
     ):
         return SearchFailureKind.UNAVAILABLE
     return None

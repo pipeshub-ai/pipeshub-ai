@@ -9,13 +9,19 @@ Needs a migrated database: PG_CORE_URL (a `pipeshub_connectors_login` DSN), PG_P
 from __future__ import annotations
 
 import asyncio
+import os
 
+import asyncpg
 import pytest
 
 from app.core import org_context
+from app.core.db import uow
 from app.core.org_context import MissingOrgContext, OrgMismatch, SystemContextNotAllowed
 from app.models.entities import Person
+from app.services.graph_db.postgres.hierarchy import HUB_ROOT_KB_CHILDREN
+from app.services.graph_db.postgres.kg.reader import seeks
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+from tests.support import plan_gate
 
 from .test_access import APP, World, _org, rec
 from .test_access import w as w
@@ -140,21 +146,14 @@ async def test_the_owner_of_a_record_is_a_user_with_an_owner_grant_of_type_user_
         assert await p.get_record_owner_source_user_email("noowner") is None
 
 
-async def test_mail_is_found_by_its_message_id_header_in_its_collection_and_org_only(w: World) -> None:
+async def test_mail_message_id_header_is_read_in_its_collection_and_org_only(w: World) -> None:
     await w.nodes("mails", {"_key": "m1", "messageIdHeader": "<a@x>"}, {"_key": "m2", "messageIdHeader": "<a@x>"}, {"_key": "m3", "messageIdHeader": "<b@x>"})
     await w.nodes("records", {"_key": "r1", "messageIdHeader": "<a@x>", "connectorId": APP})
     p = w.p
     assert await p.get_message_id_header_by_key("m1", "mails") == "<a@x>" and await p.get_message_id_header_by_key("m1", "records") is None
     assert await p.get_message_id_header_by_key("missing", "mails") is None
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == ["m2"]
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "none", "mails") == ["m1", "m2"]
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "none", "records") == ["r1"]
-    assert await p.get_related_mails_by_message_id_header("<zz@x>", "none", "mails") == []
-    other = _org()
-    with in_org(other):
-        await World(p, other).nodes("mails", {"_key": "m9", "messageIdHeader": "<a@x>"})
-        assert await p.get_related_mails_by_message_id_header("<a@x>", "none", "mails") == ["m9"]
-    assert await p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == ["m2"]          # not the other org's m9
+    with in_org(_org()):
+        assert await p.get_message_id_header_by_key("m1", "mails") is None
 
 
 async def test_mail_reads_answer_nothing_when_they_fail_and_come_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,10 +161,9 @@ async def test_mail_reads_answer_nothing_when_they_fail_and_come_back(w: World, 
     real = w.p._q
     monkeypatch.setattr(w.p, "_q", failing)
     assert await w.p.get_message_id_header_by_key("m1", "mails") is None
-    assert await w.p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == []
     assert await w.p.get_record_owner_source_user_email("m1") is None
     monkeypatch.setattr(w.p, "_q", real)
-    assert await w.p.get_related_mails_by_message_id_header("<a@x>", "m1", "mails") == ["m2"]
+    assert await w.p.get_message_id_header_by_key("m1", "mails") == "<a@x>"
 
 
 # ---- the verified email of a login user ------------------------------------------------------------------------------------------------
@@ -485,6 +483,85 @@ async def test_the_root_listing_gives_the_users_role_on_each_app_and_nothing_to_
     with pytest.raises(ValueError, match="page direction"):
         await roots(w, direction="up")
 
+
+async def _explain_seeking(tx: uow.Tx, sql: str, *args: object) -> object:
+    """The plan of ``sql`` as the root listing runs it: under kg.reader.seeks."""
+    async with seeks(tx):
+        return await tx._con.fetchval("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, *args)
+
+
+async def test_a_collection_has_children_when_one_live_record_of_its_own_belongs_to_it(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``hasChildren`` of a collection at the root: a live, non-placeholder record of that collection (and this org) that belongs to it. One such record is enough,
+    so the read stops at the first: a DISTINCT over every belongs-to edge of every collection read 258,000 buffers (245 ms) for 11 collections at a million records.
+    The edges are analysed before this org's are written, so the planner puts the org at a row: each collection's edges must still come from the index by target
+    (edges_by_target), not the primary key, where to_id is not leading and PostgreSQL 17 read every belongs-to edge of the org once per collection."""
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        await con.execute("ANALYZE graph.edges")
+    finally:
+        await con.close()
+    await w.nodes("users", {"_key": "u", "userId": "uid-u"})
+    await w.nodes("apps", *({"_key": k, "type": "KB", "name": k} for k in ("full", "dead", "ph", "alien", "foreign", "empty", "big")))
+    await w.nodes("records", rec("f1", connectorId="full"), rec("d1", connectorId="dead", isDeleted=True), rec("p1", connectorId="ph", isPlaceholder=True),
+                  rec("a1", connectorId="full"), rec("o1", connectorId="foreign", orgId="another-org"))
+    for r, app in (("f1", "full"), ("d1", "dead"), ("p1", "ph"), ("a1", "alien"), ("o1", "foreign")):        # a1 belongs to 'alien' but is a record of 'full'
+        await w.edge("belongsTo", ("records", r), ("apps", app))
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'b' || g,
+        jsonb_build_object('connectorId', 'big', 'orgId', $1::text) FROM generate_series(1, 3000) g""", w.org), write=True)
+    await pg_db.run(lambda tx: tx.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc)
+        SELECT $1, 'belongsTo', 'records', 'b' || g, 'apps', 'big', '{}'::jsonb FROM generate_series(1, 3000) g""", w.org), write=True)
+    sent: list[tuple[str, tuple]] = []
+    real = uow.Tx.fetch
+
+    async def spy(tx: uow.Tx, sql: str, *args: object, **kw: object) -> object:
+        if "pipeshub:graph.hub_root_kb_children" in sql:
+            sent.append((sql, args))
+        return await real(tx, sql, *args, **kw)
+    monkeypatch.setattr(uow.Tx, "fetch", spy)
+    rows = (await roots(w, apps=["full", "dead", "ph", "alien", "foreign", "empty", "big"]))["rows"]
+    assert {r["id"]: r["hasChildren"] for r in rows} == {"full": True, "dead": False, "ph": False, "alien": False, "foreign": False, "empty": False, "big": True}
+    assert len(sent) == 1
+    sql, args = sent[0]
+    plan = plan_gate.root(await pg_db.run(lambda tx: _explain_seeking(tx, sql, *args)))
+    # each record read by its key and each edge read by its collection; a few index pages per collection, not one node read per child of 'big'
+    assert not (bad := plan_gate.unkeyed(plan, "nodes", r"\bid = ")), bad
+    assert not (bad := plan_gate.unkeyed(plan, "edges", r"\bto_id (=|>=) ", r"edges_\w*(_org_id_coll_to_id_idx|by_target)")), bad
+    assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 100, plan.get("Shared Hit Blocks")
+
+
+
+async def test_each_collections_children_are_read_by_target_on_every_edges_leaf_the_statistics_do_not_know_the_org_in(pg_db) -> None:
+    """The edges are hash-partitioned by org, and each leaf has its own statistics and its own order of indexes. On a leaf whose statistics put the org at a
+    row, the planner chose between edges_by_target (org, coll, to_id) and the primary key (org, coll, from_id, ...) by that order: on five of the sixteen
+    leaves PostgreSQL 17 took the primary key and read every belongsTo edge of the org once per collection (350 buffers for 3,000 edges). One org per leaf,
+    each analysed before its edges are written: every collection's edges come from edges_by_target."""
+    admin = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    orgs: list[str] = []
+    try:
+        while len(orgs) < 16:           # graph.edges_def is HASH (org_id) with modulus 16: one org for each remainder
+            o = _org()
+            if await admin.fetchval("SELECT satisfies_hash_partition('graph.edges_def'::regclass, 16, $1, $2::text)", len(orgs), o):
+                orgs.append(o)
+        await admin.execute("ANALYZE graph.edges")
+        for o in orgs:
+            await admin.execute("""INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'b' || g, jsonb_build_object('id', 'b' || g, 'connectorId', 'big', 'orgId', $1::text)
+                FROM generate_series(1, 3000) g""", o)
+            await admin.execute("""INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, doc) SELECT $1, 'belongsTo', 'records', 'b' || g, 'apps', 'big', '{}'::jsonb
+                FROM generate_series(1, 3000) g""", o)
+        for o in orgs:
+            with in_org(o):
+                ran = await pg_db.run(lambda tx, o=o: _explain_seeking(tx, HUB_ROOT_KB_CHILDREN, o, ["full", "dead", "ph", "alien", "foreign", "empty", "big"]))
+                assert [r["id"] for r in await pg_db.run(lambda tx, o=o: tx.fetch(HUB_ROOT_KB_CHILDREN, o, ["empty", "big"]))] == ["big"]
+            plan = plan_gate.root(ran)
+            leaf = next(n["Relation Name"] for n in plan_gate.scans(plan, "edges"))
+            assert not (bad := plan_gate.unkeyed(plan, "edges", r"\bto_id (=|>=) ", r"edges_\w*(_org_id_coll_to_id_idx|by_target)")), (leaf, bad)
+            assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) < 100, (leaf, plan.get("Shared Hit Blocks"))
+    finally:
+        for o in orgs:
+            await admin.execute("DELETE FROM graph.edges WHERE org_id = $1", o)
+            await admin.execute("DELETE FROM graph.nodes WHERE org_id = $1", o)
+            await admin.execute("DELETE FROM kg.graph_changes WHERE org_id = $1", o)
+        await admin.close()
 
 async def test_a_failed_root_listing_raises_rather_than_listing_nothing_and_comes_back(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await w.nodes("users", {"_key": "u", "userId": "uid-u"})

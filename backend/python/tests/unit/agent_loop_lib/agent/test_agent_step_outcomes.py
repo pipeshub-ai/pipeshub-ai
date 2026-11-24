@@ -364,7 +364,8 @@ class TestModelFailures:
         result = await agent.run(_GOAL)
 
         assert result.success is False
-        assert result.error == "LLM call failed: provider returned 503"
+        assert result.error == "LLM call failed: internal (RuntimeError)"
+        assert result.error_detail == "LLM call failed: provider returned 503"
 
     async def test_model_error_while_input_guardrail_is_still_running(self) -> None:
         transport = ScriptedTransport().add_error(RuntimeError("bad request"))
@@ -383,7 +384,7 @@ class TestModelFailures:
 
         result = await asyncio.wait_for(agent.run(_GOAL), timeout=2.0)
 
-        assert result.error == "LLM call failed: bad request"
+        assert result.error_detail == "LLM call failed: bad request"
         assert guard_cancelled.is_set()
 
 
@@ -569,7 +570,7 @@ class TestEveryExitNamesItsEndEvent:
         agent, _ = _build(ScriptedTransport().add_error(RuntimeError("transport bug")))
         result = await agent.run(_GOAL)
         assert (result.end_event, result.error_class) == ("llm_call_failed", "internal")
-        assert result.error == "LLM call failed: transport bug"
+        assert result.error == "LLM call failed: internal (RuntimeError)"
 
     @pytest.mark.parametrize(("event", "middleware", "end_event"), [
         (HookEvent.PRE_AGENT, _deny_async, "agent_blocked"),

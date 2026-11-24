@@ -196,7 +196,7 @@ def _fresh_membership(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services.messaging import membership
 
     async def fresh(_config_service: object) -> list[dict[str, object]]:
-        return [{"checkedAt": int(time.time() * 1000), "untagged": []}]
+        return [{"checkedAt": int(time.time() * 1000), "untagged": [], "groupsChecked": ["g"], "groupsExpected": ["g"]}]
 
     monkeypatch.setattr(membership, "read_entries_from_config", fresh)
     membership._READERS.clear()

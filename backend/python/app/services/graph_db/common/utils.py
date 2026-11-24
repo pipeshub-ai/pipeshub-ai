@@ -1,5 +1,7 @@
+import os
 import re
-from collections.abc import Iterable
+import uuid
+from collections.abc import Collection, Iterable
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -69,6 +71,11 @@ KB_ROLE_PRIORITY: dict[str, int] = {
 # against a cycle, not a product limit: a cascade that stopped at 20 left
 # anything deeper behind.
 CONTAINMENT_MAX_DEPTH = 1000
+
+# Folders ``list_user_knowledge_bases`` returns per collection, the first by id;
+# ``foldersTruncated`` says more exist; browsing the collection pages through
+# them all.
+KB_LIST_FOLDERS_CAP = 100
 
 # Records considered per entity when listing an entity's records, taken
 # before the newest-first sort. Without a bound, a language or broad category
@@ -255,7 +262,7 @@ PERSON_EDGES_TO_USER: tuple[str, ...] = tuple(r.value for r in (
     EntityRelations.CREATED_BY, EntityRelations.LEAD_BY,
     EntityRelations.AUTHORED_BY, EntityRelations.OWNED_BY,
     EntityRelations.REVIEWED_BY, EntityRelations.ADDRESSED_TO,
-    EntityRelations.LAST_MODIFIED_BY,
+    EntityRelations.LAST_MODIFIED_BY, EntityRelations.SHARED_WITH,
 ))
 PERSON_EDGES_FROM_USER: tuple[str, ...] = tuple(r.value for r in (
     EntityRelations.MENTIONED_IN, EntityRelations.INVOLVED_IN,
@@ -438,15 +445,106 @@ TRASH_STATE_FIELDS = (
     "trashedExternalRecordId",
 )
 
+# Record fields a write to an existing record never changes. ``createdAtTimestamp`` is when PipesHub first stored the
+# record; ``incarnationId`` names the life of the record's vertex and changes only in ``restore_records``. Both are written when
+# the vertex is inserted. Insert-only applies to the ``records`` collection, not to its type documents or any other collection.
+INSERT_ONLY_RECORD_FIELDS = ("createdAtTimestamp", "incarnationId")
+
+# Trash state is written only by the trash API and ``restore_records``: an upsert onto an existing record leaves it alone
+# (it would otherwise untrash a record without the incarnation reset a restore gives).
+RECORD_UPDATE_DROPPED_FIELDS = (*INSERT_ONLY_RECORD_FIELDS, "isDeleted", *TRASH_STATE_FIELDS)
+
+
+def _env_on(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def record_created_at_insert_only() -> bool:
+    """``RECORD_CREATED_AT_INSERT_ONLY`` (default on): the stores keep a record's stored ``createdAtTimestamp``. It adds no
+    field, so an older process cannot refuse it; off restores the merge-everything write."""
+    return _env_on("RECORD_CREATED_AT_INSERT_ONLY", "true")
+
+
+def record_incarnation_write() -> bool:
+    """``RECORD_INCARNATION_WRITE`` (default off in the release that adds ``incarnationId``): the store mints the id at
+    insert, ``restore_records`` resets it, and the orphan guard compares it. A process on an older closed ArangoDB record schema
+    refuses a record carrying a field it does not know, so the field is accepted by the schema first and written one release later."""
+    return _env_on("RECORD_INCARNATION_WRITE", "false")
+
+
+def new_incarnation_id() -> str:
+    return uuid.uuid4().hex
+
+
+def positive_min(stored: Any, incoming: Any) -> Any:  # noqa: ANN401
+    """The earlier of two timestamps, ignoring any that is not a positive number (a parser that returns 0 must not freeze 1970)."""
+    ok = [v for v in (stored, incoming) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0]
+    return min(ok) if ok else stored
+
+
+def record_update_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """The part of a record document an upsert may write onto an existing record."""
+    if not record_created_at_insert_only():
+        # the older merge-everything write, except that an update never writes the incarnation id: only an insert and a restore do
+        return {k: v for k, v in doc.items() if k != "incarnationId"}
+    return {k: v for k, v in doc.items() if k not in RECORD_UPDATE_DROPPED_FIELDS}
+
+
+def merge_same_id_record_docs(earlier: dict[str, Any], later: dict[str, Any]) -> dict[str, Any]:
+    """Two documents written for one new record in one batch, as one: the later row wins for every key, except
+    ``createdAtTimestamp``, which is the earliest positive value given (the rule a placeholder's promotion uses). The same on every store."""
+    merged = {**earlier, **later}
+    if "createdAtTimestamp" in earlier and "createdAtTimestamp" in later:
+        merged["createdAtTimestamp"] = positive_min(earlier["createdAtTimestamp"], later["createdAtTimestamp"])
+    return merged
+
+
+def collapse_repeated_records(records: list[Any]) -> list[Any]:
+    """The records of one ``batch_upsert_records`` call with each id once, by the rule every store applies to repeated ids: the last row
+    is the record written (its type, so its type document and edge are written once, and its fields), with ``createdAtTimestamp`` the
+    earliest positive value any row gave and a promotion mark if any row had one. Order follows each id's first appearance."""
+    if not record_created_at_insert_only():
+        return records                  # the switch restores the older write: rows are written as given, in order
+    ids = [getattr(record, "id", None) for record in records]
+    if None in ids or len(set(ids)) == len(ids):
+        return records
+    groups: dict[Any, list[Any]] = {}
+    for record in records:
+        groups.setdefault(record.id, []).append(record)          # one pass; a dict keeps each id's first appearance first
+    out: list[Any] = []
+    for rows in groups.values():
+        merged = rows[-1].model_copy()
+        dates = [r.created_at for r in rows if isinstance(r.created_at, int) and r.created_at > 0]
+        merged.created_at = min(dates) if dates else rows[-1].created_at
+        merged._promotes_stub = any(r._promotes_stub for r in rows)
+        merged._known_new = all(r._known_new for r in rows)
+        out.append(merged)
+    return out
+
+
+def record_insert_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """The document written when the vertex does not exist: the caller's, without any incarnation id it carries, and with a freshly
+    minted one when ``RECORD_INCARNATION_WRITE`` is on. A carried id (a copy from a stored or deleted record) never starts a vertex.
+
+    With ``RECORD_CREATED_AT_INSERT_ONLY`` off nothing is minted on any store: that switch restores the older write, which knew no
+    incarnation id, so the older and the newer behaviour never both stand for a record."""
+    out = {k: v for k, v in doc.items() if k != "incarnationId"} if "incarnationId" in doc else doc
+    if record_incarnation_write() and record_created_at_insert_only():
+        return {**out, "incarnationId": new_incarnation_id()}
+    return out
+
+
 # Bookkeeping the services keep on a stored record for their own use: the trash
 # state (the record endpoint refuses a trashed record, and a restore clears it),
-# when a rate-limit wait began, the stranded sweep's re-sends and the duplicate
+# when a rate-limit wait began, the stranded sweep's re-sends, the record processing diagnostics
+# (`firstQueuedAt`, `failedAt`, `indexingAttempts`, `pageCount`) and the duplicate
 # taxonomy copy, the mark a push leaves for indexing, and the projected property values with their controls
 # (`recordProps`, `propsSet`, `propsGen`, `propsSrc`, `propsVer`; on Neo4j the values are flat `p_<name>` keys,
 # dropped by `api_record` too). No client reads them, and the record endpoint's response
 # schema rejects fields it does not list, so the endpoint leaves these out.
 # `deletedByUserId` predates the trash and is documented, so it stays in.
 INTERNAL_RECORD_FIELDS = frozenset({
+    "incarnationId",
     "deletedAtTimestamp",
     "deleteSource",
     "deleteBatchId",
@@ -454,8 +552,19 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "purgeLastError",
     "trashedExternalRecordId",
     "rateLimitedSince",
+    "deferredUntilMs",
+    "rateLimitedSinceMs",
+    "refreshIntentId",
+    "refreshIntentAtMs",
+    "refreshDoneId",
     "lastRepublishedAt",
     "republishCount",
+    "firstQueuedAt",
+    "failedAt",
+    "indexingAttempts",
+    "pageCount",
+    "indexedMd5",
+    "pendingTaxonomyRefs",
     "duplicateReconcilePending",
     "duplicateReconcileAttempts",
     "extractionDeferred",
@@ -466,6 +575,11 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "propsGen",
     "propsSrc",
     "propsVer",
+    "pendingVirtualRecordId",
+    "indexedParser",
+    "indexedParserAt",
+    "indexedParserVrid",
+    "indexedParserSource",
     "embedVrid",
     "embedRev",
     "embedKey",
@@ -482,12 +596,23 @@ INTERNAL_RECORD_FIELDS = frozenset({
 _PROJECTED_PROPERTY_KEY = re.compile(r"^p_[a-zA-Z0-9_]{1,64}$")
 
 
-def api_record(record: dict[str, Any]) -> dict[str, Any]:
-    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``."""
+def api_record(record: dict[str, Any], *, keep: Collection[str] = ()) -> dict[str, Any]:
+    """The stored record as the record endpoint returns it, without ``INTERNAL_RECORD_FIELDS``.
+
+    ``keep`` names fields a response documents although they are internal elsewhere (the trash
+    fields on the record update response); only those are left in.
+    """
     return {
         key: value for key, value in record.items()
-        if key not in INTERNAL_RECORD_FIELDS and not _PROJECTED_PROPERTY_KEY.match(key)
+        if (key not in INTERNAL_RECORD_FIELDS or key in keep) and not _PROJECTED_PROPERTY_KEY.match(key)
     }
+
+
+def api_records(records: list[object] | dict[str, object]) -> list[object] | dict[str, object]:
+    """``api_record`` over a list of stored records, or over the values of a map of them."""
+    if isinstance(records, dict):
+        return {key: api_record(value) if isinstance(value, dict) else value for key, value in records.items()}
+    return [api_record(value) if isinstance(value, dict) else value for value in records]
 
 
 # A Recently deleted row for a multi-select delete names this many of its other items.
@@ -514,6 +639,10 @@ def restore_items(
         if external_id := item.get("reclaimExternalRecordId"):
             fields["externalRecordId"] = external_id
             reclaims.append({"id": item["id"], "ext": external_id})
+        if record_incarnation_write():
+            # every restore from the trash starts a new incarnation: the vectors went at the trash, so a run that
+            # began before it serves a deleted incarnation. Written in the restore's own statement, never through an upsert.
+            fields["incarnationId"] = new_incarnation_id()
         items.append({"id": item["id"], "set": fields})
     if reclaims and not connector_id:
         raise ValueError("restore_records needs connector_id to take an external id back")
@@ -638,6 +767,21 @@ def cleans_taxonomy_points(record: dict[str, Any]) -> bool:
     )
 
 
+def taxonomy_refs_from_links(links: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, str]]]:
+    """``{record key: [{"id", "type"}]}`` from the rows of ``get_record_taxonomy_links``, deduplicated per record."""
+    refs: dict[str, list[dict[str, str]]] = {}
+    for link in links:
+        entity_type = TAXONOMY_ENTITY_TYPE_BY_COLLECTION.get(link.get("collection"))
+        record_key, entity_id = link.get("recordId"), link.get("entityId")
+        if not entity_type or not record_key or not entity_id:
+            continue
+        ref = {"id": str(entity_id), "type": entity_type}
+        bucket = refs.setdefault(str(record_key), [])
+        if ref not in bucket:
+            bucket.append(ref)
+    return refs
+
+
 async def record_taxonomy_refs(
     graph: "IGraphDBProvider", record_keys: Iterable[str], logger: Logger,
 ) -> dict[str, list[dict[str, str]]]:
@@ -660,17 +804,7 @@ async def record_taxonomy_refs(
             len(keys), exc,
         )
         return {}
-    refs: dict[str, list[dict[str, str]]] = {}
-    for link in links:
-        entity_type = TAXONOMY_ENTITY_TYPE_BY_COLLECTION.get(link.get("collection"))
-        record_key, entity_id = link.get("recordId"), link.get("entityId")
-        if not entity_type or not record_key or not entity_id:
-            continue
-        ref = {"id": str(entity_id), "type": entity_type}
-        bucket = refs.setdefault(str(record_key), [])
-        if ref not in bucket:
-            bucket.append(ref)
-    return refs
+    return taxonomy_refs_from_links(links)
 
 
 async def deleted_record_taxonomy_refs(

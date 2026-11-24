@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from enum import Enum
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.agent_loop_lib.core.exceptions import AgentLoopError
 from app.agent_loop_lib.sandbox.base import SandboxInfo
@@ -84,6 +85,23 @@ def normalize_sandbox_path(path: str) -> str:
     return cleaned
 
 
+_ENTRY_FILE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*")
+
+
+def validate_entry_file(entry: str) -> str:
+    """`entry` if it is a plain relative path inside the working directory:
+    segments of letters, digits, ``_``, ``.`` and ``-`` that do not start
+    with ``.`` or ``-``, so no ``..``, no absolute path, no shell
+    metacharacters (backends put it in a ``sh -c`` command). Raises
+    `ValueError` otherwise."""
+    if not isinstance(entry, str) or len(entry) > 255 or not _ENTRY_FILE_RE.fullmatch(entry):
+        raise ValueError(
+            f"entry_file {entry!r} must be a relative path inside the working directory "
+            "(letters, digits, '_', '.', '-' and '/', no '..')"
+        )
+    return entry
+
+
 class CodingSandboxError(AgentLoopError):
     """Base for coding-sandbox infrastructure failures (as opposed to
     code-level failures, which are represented as data on `CodeResult`/
@@ -106,6 +124,7 @@ class ErrorCategory(str, Enum):
     IMPORT = "import"
     TIMEOUT = "timeout"
     PERMISSION = "permission"
+    OUT_OF_MEMORY = "out_of_memory"
     UNKNOWN = "unknown"
 
 
@@ -151,6 +170,11 @@ class CodeRequest(BaseModel):
     packages: list[str] = Field(default_factory=list)
     allow_network: bool = False
     entry_file: str | None = None
+
+    @field_validator("entry_file")
+    @classmethod
+    def _entry_file_inside_working_dir(cls, value: str | None) -> str | None:
+        return None if value is None else validate_entry_file(value)
 
 
 class CodeResult(BaseModel):
@@ -330,6 +354,19 @@ class CodingSandboxBackend(ABC):
         """Read a file from the sandbox's working directory. Same
         traversal restriction as `upload_file`."""
         ...
+
+    async def read_file_head(self, path: str, max_bytes: int) -> tuple[bytes, bool]:
+        """At most `max_bytes` of a file, and whether the file has more.
+        Backends that can read part of a file override this so a large file
+        is never read whole; this default downloads it and cuts it."""
+        content = await self.download_file(path)
+        max_bytes = max(0, int(max_bytes))
+        return content[:max_bytes], len(content) > max_bytes
+
+    async def file_size(self, path: str) -> int | None:
+        """Size in bytes of a file, or None when the backend cannot tell
+        without reading it. Same traversal restriction as `download_file`."""
+        return None
 
     @abstractmethod
     async def list_files(self) -> list[str]:

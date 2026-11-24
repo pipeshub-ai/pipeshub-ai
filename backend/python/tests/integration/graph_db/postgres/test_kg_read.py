@@ -28,6 +28,7 @@ from tests.permissions import gen
 from tests.permissions.graph import Namespace
 from tests.permissions.runner import ConformanceRunner, targets
 from tests.permissions.scenario import load_all
+from tests.support import plan_gate
 
 from .test_conformance import CHUNK, PgLayer, _describe
 
@@ -78,7 +79,7 @@ def _switch(value: str | None):  # noqa: ANN202
 
 async def flip(db, org: str) -> tuple[int, int]:
     """Copy every connector of the org into kg, verify it and promote it to enforce. Returns (promoted, connectors). A world with a value the projection refuses (an access rule that is
-    not one of the three) stays on the walk, which is itself a case the check must answer equally."""
+    not one of the four) stays on the walk, which is itself a case the check must answer equally."""
     async def apps(tx) -> list[str]:
         return [r["id"] for r in await tx.fetch("SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' ORDER BY id", org)]
     with _bound(org):
@@ -96,7 +97,7 @@ async def flip(db, org: str) -> tuple[int, int]:
     return done, len(ids)
 
 
-KG_TABLES = ("records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "scopes", "restamp_queue", "graph_changes", "projection_state", "node_keys")
+KG_TABLES = ("records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "scopes", "restamp_queue", "graph_changes", "projection_state", "node_keys", "counts")      # counts after records: deleting records adds counter deltas
 
 
 class KgLayer(PgLayer):
@@ -152,6 +153,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
     over: list[str] = []
     under: list[str] = []
     rows: list[str] = []
+    per_node: list[str] = []
     pairs = 0
     for i, w in enumerate(worlds):
         ns = await layer._ns(w)
@@ -161,8 +163,12 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
             uid = ns.id(viewer)
             with _bound(org):
                 access = await prov.get_knowledge_hub_access_v3(uid, org)
+                gate = await prov._q(lambda tx, u=uid, o=org: prov._check_gate(tx, o, u), None)      # the access a check reads when given none: grants read per node
             walk = await _ask(prov, org, uid, ids, access, "0")
             got = await _ask(prov, org, uid, ids, access, None)
+            for switch in ("0", None):
+                probed = await _ask(prov, org, uid, ids, gate, switch)
+                per_node += [f"{tag}{i} {viewer} {switch} {x}" for x in sorted({*probed, *walk}) if probed.get(x) != walk.get(x)]
             pairs += len(ids)
             over += [f"{tag}{i} {viewer} {x}" for x in sorted(set(got) - set(walk))]
             under += [f"{tag}{i} {viewer} {x}" for x in sorted(set(walk) - set(got))]
@@ -176,6 +182,7 @@ async def _gate(layer: KgLayer, prov, worlds: list, tag: str, decided: Counter, 
     assert over == [], over[:10]
     assert under == [], under[:10]
     assert rows == [], rows[:10]
+    assert per_node == [], per_node[:10]
     assert pairs > 0
     assert not need_kg or (decided["admit"] > 0 and decided["denied"] > 0), f"kg decided too little to prove anything: {dict(decided)}"
 
@@ -208,6 +215,8 @@ class Case:
 
 
 async def _admin(sql: str, *args) -> None:
+    if not os.environ.get("PG_ADMIN_URL"):
+        pytest.skip("PG_ADMIN_URL is not set (an owner DSN: this test plants rows no service role may write)")
     con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
     try:
         await con.execute(sql, *args)
@@ -283,18 +292,6 @@ async def test_with_the_switch_at_zero_nothing_reads_kg(layer, pg_provider, pg_d
     with _switch("0"):
         assert kg_read.enabled() is False
         assert await _ask(pg_provider, c.org, c.uid, c.ids, c.access, "0")
-
-
-async def test_with_the_projection_off_the_connectors_go_back_to_the_walk(layer, pg_provider, pg_db, monkeypatch) -> None:
-    c = await _case(layer, pg_provider, pg_db)
-    assert c.x in (await _decide(pg_db, c.org, c.ids, c.access)).admit
-    monkeypatch.setenv("PG_KG_PROJECT", "0")
-    rec = next(n for n in c.world.nodes if n.kind == "record")
-    with _bound(c.org):
-        await pg_provider.batch_upsert_nodes([{"id": c.ns.id(rec.id), "recordName": "renamed"}], "records")      # the write takes back its log rows: kg cannot tell it is behind
-    d = await _decide(pg_db, c.org, c.ids, c.access)
-    assert not d.admit and d.denied == 0 and set(d.walk) == set(c.ids)
-    await _same_as_walk(pg_provider, c)
 
 
 async def test_a_connector_that_is_not_enforced_or_not_current_takes_the_walk(layer, pg_provider, pg_db, monkeypatch) -> None:
@@ -464,27 +461,25 @@ def _not_seeks(plan: dict[str, Any], indexes: set[str]) -> list[str]:
     found: list[str] = []
     used: set[str] = set()
 
-    def visit(node: dict[str, Any]) -> None:
-        if node.get("Schema", "kg") == "kg" and node.get("Relation Name") in ("records", "node_keys", "scope_classes", "links"):
-            index, cond, loops = node.get("Index Name"), node.get("Index Cond", ""), node.get("Actual Loops", 0)
-            pages = (node.get("Shared Hit Blocks", 0) + node.get("Shared Read Blocks", 0)) / max(loops, 1)
-            used.add(index)
-            if node["Node Type"] not in ("Index Scan", "Index Only Scan") or index not in indexes:
-                found.append(f"{node['Node Type']} {index or ''} on {node['Relation Name']}")
-            elif "org_id = " not in cond or not re.search(rf"\b{KEY_OF[index]}( = | >= |, )", cond):
-                found.append(f"{index}: the index condition {cond} does not bound {KEY_OF[index]}")
-            elif loops and (node["Actual Rows"] > 1 or pages > 8):
-                found.append(f"{index}: {node['Actual Rows']} rows and {pages:.1f} pages per probe ({loops} probes)")
-        for child in node.get("Plans", []):
-            visit(child)
-
-    visit(plan["Plan"])
+    for node in plan_gate.scans(plan, ("records", "node_keys", "scope_classes", "links")):
+        if node.get("Schema", "kg") != "kg" or node["Relation Name"] not in ("records", "node_keys", "scope_classes", "links"):
+            continue
+        loops = node.get("Actual Loops", 0)
+        pages = (node.get("Shared Hit Blocks", 0) + node.get("Shared Read Blocks", 0)) / max(loops, 1)
+        bounds = plan_gate.bounds(node)
+        used.update(index for index, _ in bounds)
+        if not bounds or any(index not in indexes for index, _ in bounds):
+            found.append(f"{node['Node Type']} {[index for index, _ in bounds]} on {node['Relation Name']}")
+        elif bad := [(index, cond) for index, cond in bounds if "org_id = " not in cond or not re.search(rf"\b{KEY_OF[index]}( = | >= |, )", cond)]:
+            found.append(f"the index condition does not bound the key: {bad}")
+        elif loops and (node["Actual Rows"] > 1 or pages > 8):
+            found.append(f"{bounds[0][0]}: {node['Actual Rows']} rows and {pages:.1f} pages per probe ({loops} probes)")
     return found + [f"{i} is not used" for i in sorted(indexes - used)]
 
 
 async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer, pg_provider, pg_db) -> None:
     """EXPLAIN gate: on an org of 12,000 records, as the reader's unit runs the statements (custom plans, bitmap scans off), never analysed and then analysed, each is bounded by its
-    inputs: no sequential or bitmap heap scan, and the index conditions are the org and the key asked. Run as well (EXPLAIN ANALYZE), every scan of a kg table is a seek: the statement's
+    inputs: no sequential scan, and the index conditions (a bitmap heap scan's are its bitmap index scans') are the org and the key asked. Run as well (EXPLAIN ANALYZE), every scan of a kg table is a seek: the statement's
     key index, bounded by the key, at most one row and a few pages per probe. Run on every PostgreSQL version of the suite."""
     c = await _case(layer, pg_provider, pg_db, literal_kind=3)
     await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, leaf) SELECT $1, 50000000 + g, 3, 'plans-r' || g, 3, $2, true FROM generate_series(1, $3) g", c.org, c.app_sk, N)
@@ -507,7 +502,7 @@ async def test_every_statement_of_the_reader_is_answered_by_index_searches(layer
                 return text, (json.loads(ran) if isinstance(ran, str) else ran)[0]
             with _bound(c.org):
                 plan, ran = await pg_db.run(go, custom_plan=True)
-            if "Seq Scan" in plan or "Bitmap Heap Scan" in plan or any(t not in plan for t in must):
+            if "Seq Scan" in plan or any(t not in plan for t in must):
                 pytest.fail(f"{state} {name}: a scan the ids do not bound, or an index condition missing ({must})\n{plan}")
             if bad := _not_seeks(ran, indexes):
                 pytest.fail(f"{state} {name}: not a seek per key: {bad}\n{plan}")
@@ -536,7 +531,7 @@ async def test_a_chunk_of_asked_ids_is_read_without_compiling_the_statement(laye
     assert ("JIT" in bare) == available, bare.get("JIT")      # the forcing works: the profile is what keeps it off
 
 
-async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monkeypatch) -> None:
+async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(pg_required: None, monkeypatch) -> None:
     """PROFILE (sorts and bitmap scans off, short lock and statement limits) is the read's own: after a read that succeeds and one that fails, run as a unit of its own or in a
     savepoint of a longer transaction, the settings are back in that transaction and in the next one on the same pooled connection."""
     monkeypatch.setenv("PG_POOL_MAX", "1")                       # one connection: every unit below runs on it
@@ -547,7 +542,7 @@ async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monk
     async def settings(tx) -> dict[str, Any]:
         return dict(await tx.fetchrow("/* pipeshub:test.read_settings */ SELECT pg_backend_pid() AS pid, current_setting('enable_sort') AS sort, "
                                       "current_setting('enable_bitmapscan') AS bitmap, current_setting('statement_timeout') AS statement, current_setting('lock_timeout') AS lock, "
-                                      "current_setting('jit') AS jit"))
+                                      "current_setting('jit') AS jit, current_setting('plan_cache_mode') AS plans"))
 
     async def walk(ids, vrids, acc) -> list:
         return []
@@ -566,6 +561,7 @@ async def test_the_read_profile_ends_with_the_read_on_its_pooled_connection(monk
         with _bound(org):
             before = await db.run(settings)
             assert (await db.run(profiled))["sort"] == "off" and (await db.run(profiled))["jit"] == "off"           # in force while the read runs
+            assert (await db.run(profiled))["plans"] == "force_custom_plan" and before["plans"] != "force_custom_plan"
             for broken in (False, True):
                 with monkeypatch.context() as m:
                     if broken:

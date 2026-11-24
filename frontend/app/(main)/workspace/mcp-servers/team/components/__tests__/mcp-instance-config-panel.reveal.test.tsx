@@ -20,7 +20,7 @@ vi.mock('@/lib/hooks/use-secret-reveal-available', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/hooks/use-secret-reveal-available')>()),
   useSecretRevealAvailable: () => true,
 }));
-vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null }));
+vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null, McpManageAccess: () => null }));
 vi.mock('../../../api', () => ({ McpServersApi: api }));
 vi.mock('../../../components', () => ({ McpDisabledCallout: () => null, McpDisconnectDialog: () => null, isMcpInstanceDisabled: () => false }));
 vi.mock('../../../../components/workspace-right-panel', () => ({
@@ -83,11 +83,6 @@ function panel(editingInstance: Instance) {
     customStdioAllowed: true,
     onOpenChange: vi.fn(),
     onSaved: vi.fn(),
-    onRequestDelete: vi.fn(),
-    busyInstanceId: null,
-    onAuthenticate: vi.fn(),
-    onReauthenticate: vi.fn(),
-    onDisconnect: vi.fn(),
   } as PanelProps;
   return (
     <Theme>

@@ -666,3 +666,56 @@ async def test_a_replace_whose_write_fails_keeps_the_old_links(backend) -> None:
     await provider.replace_record_entity_relations(case_id, users, "INFERRED", [edge])
     assert await _edges(provider, case_id) == [(f"{org}-ann", "ASSIGNED_TO")]
     assert await _edges(provider, mail_id) == [(f"{org}-ann", "AUTHORED_BY"), (f"{org}-bob", "ADDRESSED_TO")]
+
+
+def _person_edge(org: str, record_id: str, user: str, edge_type: str) -> dict:
+    return {
+        "_from": f"records/{record_id}", "_to": f"users/{org}-{user}", "edgeType": edge_type, "origin": "INFERRED",
+        "source": f"{org}-conn", "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+    }
+
+
+async def test_a_replace_keeps_the_edge_types_it_is_told_to_keep(backend) -> None:
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    case_id = f"{org}-case"
+    users = [CollectionNames.USERS.value]
+
+    await provider.replace_record_entity_relations(
+        case_id, users, "INFERRED",
+        [_person_edge(org, case_id, "ann", "OWNED_BY"), _person_edge(org, case_id, "bob", "SHARED_WITH")],
+    )
+    assert await _edges(provider, case_id) == [(f"{org}-ann", "OWNED_BY"), (f"{org}-bob", "SHARED_WITH")]
+
+    await provider.replace_record_entity_relations(
+        case_id, users, "INFERRED", [_person_edge(org, case_id, "ann", "AUTHORED_BY")], keep_edge_types=["SHARED_WITH"],
+    )
+    assert await _edges(provider, case_id) == [(f"{org}-ann", "AUTHORED_BY"), (f"{org}-bob", "SHARED_WITH")]
+
+    # A kept type is still written when the new edges carry it.
+    await provider.replace_record_entity_relations(
+        case_id, users, "INFERRED",
+        [_person_edge(org, case_id, "ann", "AUTHORED_BY"), _person_edge(org, case_id, "ann", "SHARED_WITH")],
+        keep_edge_types=["SHARED_WITH"],
+    )
+    assert await _edges(provider, case_id) == [
+        (f"{org}-ann", "AUTHORED_BY"), (f"{org}-ann", "SHARED_WITH"), (f"{org}-bob", "SHARED_WITH"),
+    ]
+
+    await provider.replace_record_entity_relations(case_id, users, "INFERRED", [])
+    assert await _edges(provider, case_id) == []
+
+
+async def test_a_shared_with_edge_lists_the_record_for_its_person(backend) -> None:
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    case_id = f"{org}-case"
+    await provider.replace_record_entity_relations(
+        case_id, [CollectionNames.USERS.value], "INFERRED", [_person_edge(org, case_id, "bob", "SHARED_WITH")],
+    )
+
+    ref = {"id": f"{org}-bob", "type": "person", "connectorIds": [f"{org}-conn"]}
+    rows = (await provider.get_entity_candidate_records([ref], org))[("person", f"{org}-bob")]
+    assert [r["_key"] for r in rows] == [case_id]

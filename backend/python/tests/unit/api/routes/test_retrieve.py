@@ -103,6 +103,19 @@ class TestRetrieve:
         assert [c["record"]["recordId"] for c in body["chunks"]] == ["r1", "r2"]
 
     @pytest.mark.asyncio
+    async def test_rewrite_without_chat_model_retrieves_the_typed_query(self) -> None:
+        retrieval = MagicMock()
+        retrieval.llm = None
+        retrieval.get_llm_instance = AsyncMock(return_value=None)
+        retrieval.search_with_filters = AsyncMock(return_value=_results(_hit("r1", 0, "a")))
+        response = await retrieve(
+            request=_request(), body=RetrieveQuery(query="rollback", rewriteQuery=True),
+            retrieval_service=retrieval, graph_provider=MagicMock(),
+        )
+        assert response.status_code == 200
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == ["rollback"]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(("stored", "returned"), [([None], None), ([None, 3], [3]), (None, None), (3, [3])])
     async def test_page_numbers_are_integers_or_null(self, stored: list | int | None, returned: list | None) -> None:
         # Records without pages (Markdown, plain text) are indexed with pageNum [None];

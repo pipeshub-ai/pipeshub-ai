@@ -23,7 +23,9 @@ from app.agent_loop_lib.tools.base import (
 )
 from app.agent_loop_lib.tools.decorators import (
     accepted_argument_names,
+    reject_missing_arguments,
     reject_unknown_arguments,
+    required_argument_names,
 )
 from app.agent_loop_lib.tools.errors import ToolValidationError
 from app.modules.agents.context.tool_descriptions import _extract_parameters_from_schema
@@ -726,14 +728,22 @@ class PipesHubStructuredToolAdapter(Tool):
         return _params_from_schema(getattr(self._structured_tool, "args_schema", None), self.name)
 
     def validate(self, kwargs: dict[str, Any]) -> None:
-        """Only unknown argument names are rejected; dynamic tools normalize
-        loosely typed values themselves."""
+        """Only argument names are checked, unknown ones and missing required
+        ones; dynamic tools normalize loosely typed values themselves."""
         reject_unknown_arguments(self._accepted_args, kwargs)
+        reject_missing_arguments(self._required_args, kwargs)
+
+    @functools.cached_property
+    def _target(self) -> Any:  # noqa: ANN401
+        return getattr(self._structured_tool, "coroutine", None) or getattr(self._structured_tool, "func", None)
 
     @functools.cached_property
     def _accepted_args(self) -> frozenset[str] | None:
-        target = getattr(self._structured_tool, "coroutine", None) or getattr(self._structured_tool, "func", None)
-        return accepted_argument_names(target) if target is not None else None
+        return accepted_argument_names(self._target) if self._target is not None else None
+
+    @functools.cached_property
+    def _required_args(self) -> frozenset[str]:
+        return required_argument_names(self._target) if self._target is not None else frozenset()
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
         coroutine = getattr(self._structured_tool, "coroutine", None)

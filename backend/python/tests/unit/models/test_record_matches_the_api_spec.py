@@ -48,12 +48,21 @@ def _model_record_keys() -> set[str]:
     The optional fields are populated so those branches are taken; a key that
     only appears for some records still has to be in the schema.
     """
-    record = Record(**_record_kwargs(queued_at=1, root_record_group_id="rg-root"))
+    record = Record(**_record_kwargs(
+        queued_at=1,
+        root_record_group_id="rg-root",
+        first_queued_at=1,
+        indexing_attempts=1,
+    ))
     return set(record.to_arango_base_record())
 
 
 def test_the_spec_knows_every_field_a_record_carries() -> None:
-    missing = sorted(_model_record_keys() - _STORED_ONLY - _spec_record_properties())
+    # The fields the endpoint leaves out never reach the response, so the spec
+    # does not describe them (test_the_fields_the_record_endpoint_leaves_out...).
+    missing = sorted(
+        _model_record_keys() - _STORED_ONLY - INTERNAL_RECORD_FIELDS - _spec_record_properties()
+    )
     assert missing == [], (
         "these are on the record but not in GetRecordByIdResponseSchema, so the "
         "response-validation tests will reject them: " + ", ".join(missing)

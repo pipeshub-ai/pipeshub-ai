@@ -589,11 +589,12 @@ class TestClose:
         for t in threads:
             t.start()
         time.sleep(0.1)
-        start = time.monotonic()
         budget.close()
         for t in threads:
-            t.join(timeout=2)
-        assert time.monotonic() - start < 1.0
+            t.join(timeout=30)  # bounds a hang only
+        # Ended by the close, not timed: close() only marks the budget closed, and each waiter raises LaneBudgetClosed
+        # at its next poll (try_acquire checks it first). A budget left open would keep them polling to their own 10 s
+        # timeout and LaneWaitTimeout. (It was "closed within 1 s", which a busy runner can stretch.)
         assert len(outcome) == 4
         assert all(isinstance(o, LaneBudgetClosed) for o in outcome), outcome
         held.release()  # after close: no EBADF

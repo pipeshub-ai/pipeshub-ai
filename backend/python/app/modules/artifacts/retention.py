@@ -260,6 +260,8 @@ class RevisionRetentionSweep:
         finished = [k is None or k in trashed for k in key_of]
         failing_run: list[int] = []
         tried = 0
+        running = 0
+        settled = asyncio.Condition()
 
         started: set[str] = set()
 
@@ -277,37 +279,52 @@ class RevisionRetentionSweep:
                 report.cut_short = True
             return report.cut_short
 
+        def run_decided() -> bool:
+            return not failing_run or running == 0 or len(failing_run) >= self.max_consecutive_failures
+
         async def one(index: int, pointer: dict[str, Any]) -> None:
-            nonlocal tried
+            nonlocal tried, running
             vrid = str(pointer["virtualRecordId"])
             key = key_of[index]
             if key is None:      # a pointer without an organisation starts out finished
                 return
             async with gate:
+                # After a failure, wait for the vrids still running: their answers decide whether storage is down (the
+                # run reaches the limit) or not (one succeeds), in whatever order they arrive. Started on the slot the
+                # first failure freed, this vrid would spend a whole timeout on storage that is down.
+                async with settled:
+                    await settled.wait_for(run_decided)
                 if not leader() or stop_starting(vrid):
                     return
                 tried += 1
+                running += 1
                 # An organisation that joins a group already started is finished whatever the deadline says: the cursor moves past
                 # the whole group, so what is left of it here would wait for the next lap.
                 joined = vrid in started
                 started.add(vrid)
                 try:
-                    with for_org(key[0], job="revision_retention"):
-                        ok = await self._retire_virtual_record(
-                            pointer, unheld.get(key, []), cutoff_ms, report, leader, None if joined else deadline
+                    try:
+                        with for_org(key[0], job="revision_retention"):
+                            ok = await self._retire_virtual_record(
+                                pointer, unheld.get(key, []), cutoff_ms, report, leader, None if joined else deadline
+                            )
+                    except Exception as exc:
+                        ok = False
+                        report.failed += 1
+                        self.logger.warning(
+                            "Revision retention: could not retire old revisions of %s; next pass retries: %s: %s",
+                            vrid, type(exc).__name__, exc,
                         )
-                except Exception as exc:
-                    ok = False
-                    report.failed += 1
-                    self.logger.warning(
-                        "Revision retention: could not retire old revisions of %s; next pass retries: %s: %s",
-                        vrid, type(exc).__name__, exc,
-                    )
-                if ok:
-                    failing_run.clear()
-                else:
-                    failing_run.append(index)
-                finished[index] = True
+                    if ok:
+                        failing_run.clear()
+                    else:
+                        failing_run.append(index)
+                    finished[index] = True
+                finally:
+                    # Also when cancelled: a vrid waiting on this run would otherwise wait for good.
+                    running -= 1
+                    async with settled:
+                        settled.notify_all()
 
         await asyncio.gather(*(one(i, p) for i, p in enumerate(pointers) if not finished[i]))
         if report.interrupted:

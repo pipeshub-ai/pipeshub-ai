@@ -71,6 +71,7 @@ from app.services.vector_db.pgvector.sampler import Sample, Sampler
 from app.services.vector_db.pgvector.scope import (
     ambient_or_required,
     ambient_org,
+    current_statement_timeout_ms,
     org_scope,
     require_org,
 )
@@ -79,6 +80,7 @@ from app.services.vector_db.pgvector.visibility import Scope, scope_of
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from datetime import datetime
 
     from app.config.configuration_service import ConfigurationService
@@ -242,6 +244,16 @@ class PgVectorService(IVectorDBService):
         _, catalog = self._assert_connected()
         return await catalog.orgs_of_vrids(virtual_record_ids)
 
+    async def other_orgs_hold_virtual_record(self, virtual_record_id: str, org_id: str) -> bool:
+        """A vetted function answers it (true or false, never which org): a scroll here reads one org only."""
+        db, _ = self._assert_connected()
+
+        async def read(tx: Tx) -> bool:
+            return await tx.fetchval("/* pipeshub:pgvector.vrid_held_elsewhere */ SELECT retrieval.vrid_held_elsewhere($1)", virtual_record_id)
+
+        with org_scope(org_id):
+            return bool(await db.run(read, custom_plan=True))
+
     def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
         return classify_pg_search_error(error)
 
@@ -315,7 +327,10 @@ class PgVectorService(IVectorDBService):
         space = await catalog.active_space(org, real_time=True) if org else None
         if space is None:
             return VectorCollectionInfo(name=collection_name, exists=True)
-        points = await db.run(lambda tx: reads.count(tx, org, row.collection_id, space.space_id), custom_plan=True)
+        points = await db.run(
+            lambda tx: reads.count(tx, org, row.collection_id, space.space_id),
+            custom_plan=True, timeout_ms=current_statement_timeout_ms(),
+        )
         return VectorCollectionInfo(
             name=collection_name, exists=True, dense_dimension=space.dim, points_count=points
         )
@@ -375,7 +390,9 @@ class PgVectorService(IVectorDBService):
         if any(s.role == "active" for s in spaces):
             # The org's space is another model's or dimension: while the org holds no point it takes the space this write defines,
             # named as a first write names it (the database decides; a point that exists or lands meanwhile makes it refuse).
-            await catalog.replace_empty_space(org, model or UNKNOWN_MODEL, dim)
+            observed_empty_at = time.time()
+            if await catalog.replace_empty_space(org, model or UNKNOWN_MODEL, dim):
+                await self._announce_space_replaced(org, model, observed_empty_at)
             # Whatever the answer, read the spaces again: a concurrent writer of this very model may have won the replacement.
             catalog.forget(org=org)
             found = _match(await catalog.org_spaces(org), dim, model)
@@ -393,6 +410,20 @@ class PgVectorService(IVectorDBService):
                 f"the organisation's embedding space is {space.effective_model} with dimension {space.dim}, not {model or 'unnamed'}-model vectors of dimension {dim}"
             )
         return found
+
+    def add_space_replaced_listener(self, listener: Callable[[str, str | None, float], Awaitable[object]]) -> None:
+        """Call ``listener(org, model, observed_empty_at)`` after an org's empty space was replaced by a write's own.
+
+        The holder of the configuration store (not this provider) uses it to drop a pin that described the old space.
+        """
+        self.__dict__.setdefault("_space_replaced_listeners", []).append(listener)
+
+    async def _announce_space_replaced(self, org: str, model: str | None, observed_empty_at: float) -> None:
+        for listener in self.__dict__.get("_space_replaced_listeners", []):
+            try:
+                await listener(org, model, observed_empty_at)
+            except Exception:  # a pin that could not be checked is claimed or refused by the write that follows
+                logger.warning("a space-replaced listener failed", exc_info=True)
 
     @staticmethod
     async def _claim_name(catalog: Catalog, org: str, space: OrgSpace, model: str | None) -> OrgSpace:
@@ -488,7 +519,10 @@ class PgVectorService(IVectorDBService):
             if space is None:
                 return 0
             compiled = compile_filter(count_filter, first_param=4)
-            return int(await db.run(lambda tx: reads.count_filtered(tx, org, coll.collection_id, space.space_id, compiled), custom_plan=True))
+            return int(await db.run(
+                lambda tx: reads.count_filtered(tx, org, coll.collection_id, space.space_id, compiled),
+                custom_plan=True, timeout_ms=current_statement_timeout_ms(),
+            ))
 
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
         """The points with these ids in the request's org, in the order asked; ids that name no point (or are no UUID) are left out.
@@ -503,6 +537,24 @@ class PgVectorService(IVectorDBService):
         found = await db.run(lambda tx: reads.retrieve(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
         position = {str(i): n for n, i in enumerate(wanted)}
         return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
+
+    async def scroll_with_vectors(self, collection_name: str, scroll_filter: FilterExpression, limit: int, offset: str | None = None) -> ScrollResult:
+        """``scroll`` returning each point whole: its payload, its dense vector (the halfvec column) and its sparse terms (the postings)."""
+        db, catalog = self._assert_connected()
+        org = _filter_org(scroll_filter)
+        if not 1 <= limit <= MAX_SCROLL_LIMIT:
+            raise ValueError(f"scroll limit must be between 1 and {MAX_SCROLL_LIMIT}")
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return ScrollResult(points=[], next_offset=None)
+            compiled = compile_filter(scroll_filter, first_param=5)
+            points, nxt = await db.run(
+                lambda tx: reads.scroll(tx, org, coll.collection_id, space.space_id, compiled, limit, offset, None, vectors=True),
+                custom_plan=True,
+            )
+        return ScrollResult(points=points, next_offset=nxt)
 
     async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
         """Which of these ids have a live point in the request's org, reading no payload; real time like ``retrieve_points``."""
@@ -578,13 +630,13 @@ class PgVectorService(IVectorDBService):
                     t.cancel()
                 await asyncio.gather(*legs, return_exceptions=True)
                 raise
-            dense_rows, degraded = answers[0]
-            rows = [[pid for _, pid in dense_rows]]
-            if sparse is not None:
-                rows.append([pid for _, pid in answers[1][0]])
-                degraded = degraded or answers[1][1]
-            if degraded:
-                degraded_notice.note(degraded)          # the provider contract: an empty answer is flagged too
+            rows = [[pid for _, pid in leg_rows] for leg_rows, _ in answers]
+            # the provider contract: an empty answer is flagged too. Every leg's reason is noted: an exact dense leg (quantization, complete) must not hide a
+            # word search that ran out of time beside it. The hits carry the first one.
+            reasons = [reason for _, reason in answers if reason]
+            for reason in reasons:
+                degraded_notice.note(reason)
+            degraded = reasons[0] if reasons else None
             ranked = fusion.rrf(rows, req.limit)
             if not req.with_payload:
                 return [SearchResult(id=pid, score=score, degraded=degraded) for pid, score in ranked]

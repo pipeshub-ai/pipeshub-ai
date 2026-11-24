@@ -18,6 +18,7 @@ on:
       - 'deployment/docker-compose/pgbackrest.env.example'
       - 'deployment/docker-compose/scripts/pg-restore.sh'
       - 'deployment/docker-compose/tests/pg_backup_schedule_test.sh'
+      - 'deployment/docker-compose/docker-compose.postgres-only.yml'
       - 'backend/db/**'
       - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
       - 'deployment/docker-compose/tests/postgres_*_test.sh'
@@ -77,6 +78,9 @@ jobs:
 
       - name: Migration job and the document-store override
         run: bash deployment/docker-compose/tests/postgres_migrate_test.sh
+
+      - name: The PostgreSQL-only override starts no other store
+        run: bash deployment/docker-compose/tests/postgres_only_test.sh
 
       - name: Server and pooler under the Helm chart's pod restrictions
         run: bash deployment/docker-compose/tests/postgres_nonroot_test.sh

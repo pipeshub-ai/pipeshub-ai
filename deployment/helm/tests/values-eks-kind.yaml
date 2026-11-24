@@ -21,6 +21,19 @@ resources:
 persistence:
   enabled: false
 
+# values-eks.yaml sizes the parsing pods for a c7i.2xlarge node group. Off in
+# the smoke run; if a run turns it on, the pods must fit a kind node.
+parsing:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+  nodeSelector: null
+  tolerations: null
+
 ingress:
   enabled: false
 

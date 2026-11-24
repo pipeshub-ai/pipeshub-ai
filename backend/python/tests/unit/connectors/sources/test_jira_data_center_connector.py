@@ -46,6 +46,7 @@ def _make_deps():
     dep.get_all_app_users = AsyncMock(return_value=[])
 
     dsp = MagicMock()
+    dsp.transaction.return_value.__aenter__.return_value.get_sync_point = AsyncMock(return_value=None)  # nothing stored yet
     cs = MagicMock()
     cs.get_config = AsyncMock()
     return logger, dep, dsp, cs
@@ -546,20 +547,9 @@ class TestJiraDataCenterRunSyncSmoke:
 class TestJiraDataCenterModuleHelpers:
     def test_normalize_group_row(self) -> None:
         assert _normalize_jira_dc_group_row({}) is None
-        # On DC, name is the canonical group identifier; when neither
-        # groupId nor id is present, fall back to name as groupId.
-        assert _normalize_jira_dc_group_row({"name": "g"}) == {
-            "name": "g",
-            "groupId": "g",
-        }
-        assert _normalize_jira_dc_group_row({"name": "g", "groupId": "1"}) == {
-            "name": "g",
-            "groupId": "1",
-        }
-        assert _normalize_jira_dc_group_row({"name": "g", "id": "2"}) == {
-            "name": "g",
-            "groupId": "2",
-        }
+        # On DC, the name is the group's only identifier: an id in a row is not a second key.
+        for raw in ({"name": "g"}, {"name": "g", "groupId": "1"}, {"name": "g", "id": "2"}):
+            assert _normalize_jira_dc_group_row(raw) == {"name": "g", "groupId": "g"}
 
 
 # -----------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 import importlib
 import pkgutil
 import re
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -98,6 +99,97 @@ class TestMCPRegistry:
         assert "paypal" in type_ids
         assert "gitlab" in type_ids
         assert "posthog" in type_ids
+        assert "egnyte" in type_ids
+        assert "lucid" in type_ids
+        assert "intercom" in type_ids
+        assert "granola" in type_ids
+        assert "fireflies" in type_ids
+        assert "fathom" in type_ids
+        assert "miro" in type_ids
+        assert "instantly" in type_ids
+        assert "apollo" in type_ids
+
+    def test_apollo_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        apollo = registry.get_template("apollo")
+
+        assert apollo is not None
+        assert apollo.default_url == "https://mcp.apollo.io/mcp"
+        assert apollo.transport == MCPTransport.STREAMABLE_HTTP
+        assert apollo.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert apollo.supports_dcr
+        assert not apollo.require_oauth_client
+        assert not apollo.url_editable
+        assert apollo.default_scopes == [
+            "read_user_profile",
+            "mcp_scope",
+            "mixed_people_api_search",
+            "mixed_companies_search",
+        ]
+        assert apollo.icon == "/icons/connectors/apollo.svg"
+
+    def test_miro_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        miro = registry.get_template("miro")
+
+        assert miro is not None
+        assert miro.display_name == "Miro"
+        assert miro.transport == MCPTransport.STREAMABLE_HTTP
+        assert miro.default_url == "https://mcp.miro.com/"
+        assert miro.default_auth_mode == MCPAuthMode.OAUTH
+        assert miro.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert miro.supports_dcr is True
+        assert miro.require_oauth_client is False
+        assert miro.url_editable is False
+        assert miro.authorization_url == "https://mcp.miro.com/authorize"
+        assert miro.token_url == "https://mcp.miro.com/token"
+        assert miro.default_scopes == []
+        assert miro.icon == "/icons/connectors/miro.svg"
+        assert miro.documentation_url == "https://developers.miro.com/docs/mcp-intro"
+
+    def test_instantly_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        instantly = registry.get_template("instantly")
+
+        assert instantly is not None
+        assert instantly.display_name == "Instantly"
+        assert instantly.transport == MCPTransport.STREAMABLE_HTTP
+        assert instantly.default_url == "https://mcp.instantly.ai/mcp"
+        assert instantly.default_auth_mode == MCPAuthMode.OAUTH
+        assert instantly.supported_auth_modes == [MCPAuthMode.OAUTH, MCPAuthMode.API_TOKEN]
+        assert instantly.supports_dcr is True
+        assert instantly.require_oauth_client is False
+        assert instantly.url_editable is False
+        assert instantly.authorization_url == "https://api.instantly.ai/oauth/authorize"
+        assert instantly.token_url == "https://api.instantly.ai/oauth/token"
+        assert instantly.default_scopes == []
+        assert instantly.icon == "/icons/connectors/instantly.svg"
+        assert instantly.documentation_url == "https://developer.instantly.ai/mcp/introduction"
+
+    def test_lucid_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        lucid = registry.get_template("lucid")
+
+        assert lucid is not None
+        assert lucid.display_name == "Lucid"
+        assert lucid.transport == MCPTransport.STREAMABLE_HTTP
+        assert lucid.default_url == "https://mcp.lucid.app/mcp"
+        assert lucid.default_auth_mode == MCPAuthMode.OAUTH
+        assert lucid.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert lucid.supports_dcr is True
+        assert lucid.require_oauth_client is False
+        assert lucid.url_editable is False
+        assert lucid.authorization_url == "https://mcp.lucid.app/oauth/authorize"
+        assert lucid.token_url == "https://mcp.lucid.app/oauth/token"
+        assert lucid.default_scopes == []
+        assert lucid.icon == "/icons/connectors/lucid.svg"
+        assert lucid.documentation_url == (
+            "https://help.lucid.co/hc/en-us/articles/42578801807508"
+        )
 
     def test_monday_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -251,6 +343,98 @@ class TestMCPRegistry:
         assert gitlab.default_scopes == ["mcp"]
         assert gitlab.icon == "/icons/connectors/gitlab.svg"
         assert gitlab.documentation_url == "https://docs.gitlab.com/user/model_context_protocol/mcp_server/"
+
+    def test_egnyte_catalog_entry(self) -> None:
+        """Egnyte is one official host that registers PipesHub itself, so the admin only signs in."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        egnyte = registry.get_template("egnyte")
+        assert egnyte is not None
+        assert egnyte.default_url == "https://mcp-server.egnyte.com/mcp"
+        assert egnyte.transport == MCPTransport.STREAMABLE_HTTP
+        assert egnyte.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert egnyte.supports_dcr is True
+        assert egnyte.url_editable is False
+        assert egnyte.require_oauth_client is False
+        assert egnyte.authorization_url == "https://mcp-oauth.egnyte.com/external/oauth2/authorize/egnyte-connect"
+        assert egnyte.token_url == "https://mcp-oauth.egnyte.com/egnyte-connect/oauth2/token"
+        assert egnyte.default_scopes == []
+        assert egnyte.icon == "/icons/connectors/egnyte.svg"
+
+    @pytest.mark.parametrize(
+        ("type_id", "display_name", "url", "authorization_url", "token_url", "icon", "docs"),
+        [
+            (
+                "intercom", "Intercom", "https://mcp.intercom.com/mcp",
+                "https://mcp.intercom.com/authorize", "https://mcp.intercom.com/token",
+                "/icons/connectors/intercom.svg", "https://developers.intercom.com/docs/guides/mcp",
+            ),
+            (
+                "granola", "Granola", "https://mcp.granola.ai/mcp",
+                "https://mcp-auth.granola.ai/oauth2/authorize", "https://mcp-auth.granola.ai/oauth2/token",
+                "/icons/connectors/granola.svg",
+                "https://docs.granola.ai/help-center/sharing/integrations/mcp",
+            ),
+            (
+                "fireflies", "Fireflies", "https://api.fireflies.ai/mcp",
+                "https://api.fireflies.ai/authorize", "https://api.fireflies.ai/token",
+                "/icons/connectors/fireflies.png",
+                "https://docs.fireflies.ai/getting-started/mcp-configuration",
+            ),
+            (
+                "fathom", "Fathom", "https://api.fathom.ai/mcp",
+                "https://fathom.video/mcp/oauth/authorize", "https://api.fathom.ai/mcp/oauth/token",
+                "/icons/connectors/fathom.svg", "https://developers.fathom.ai/mcp-docs",
+            ),
+        ],
+    )
+    def test_meeting_and_support_catalog_entries(
+        self, type_id: str, display_name: str, url: str, authorization_url: str,
+        token_url: str, icon: str, docs: str,
+    ) -> None:
+        """Each of these vendors' own hosted server registers PipesHub by DCR, so users only sign in."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        template = registry.get_template(type_id)
+
+        assert template is not None
+        assert template.display_name == display_name
+        assert template.transport == MCPTransport.STREAMABLE_HTTP
+        assert template.default_url == url
+        assert template.default_auth_mode == MCPAuthMode.OAUTH
+        assert template.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert template.supports_dcr is True
+        assert template.require_oauth_client is False
+        assert template.url_editable is False
+        assert template.authorization_url == authorization_url
+        assert template.token_url == token_url
+        assert template.default_scopes == []
+        assert template.icon == icon
+        assert template.documentation_url == docs
+
+    @pytest.mark.parametrize("type_id", ["intercom", "granola", "fireflies", "fathom", "instantly"])
+    def test_new_catalog_entry_logo_file_exists(self, type_id: str) -> None:
+        """The template's `icon` path must point at a file the frontend actually serves."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        template = registry.get_template(type_id)
+        assert template is not None and template.icon is not None
+
+        frontend_public = Path(__file__).parents[6] / "frontend" / "public"
+        if not frontend_public.is_dir():
+            pytest.skip("the frontend is not part of this checkout")
+        assert (frontend_public / template.icon.lstrip("/")).is_file()
+
+    def test_intercom_and_fireflies_do_not_cover_the_other_hosts(self) -> None:
+        """Intercom's entry is the US host only; Fireflies' is the account server, not its docs search."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        intercom = registry.get_template("intercom")
+        fireflies = registry.get_template("fireflies")
+        assert intercom is not None and fireflies is not None
+        assert "/sse" not in (intercom.default_url or "")
+        assert ".eu." not in (intercom.default_url or "")
+        assert "docs.fireflies.ai" not in (fireflies.default_url or "")
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode

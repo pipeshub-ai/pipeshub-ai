@@ -19,7 +19,7 @@ import os
 import sys
 from collections.abc import Callable, Coroutine, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from app.telemetry.backend import METRICS_BACKEND
@@ -54,6 +54,10 @@ class OrgContext:
     kind: Literal["user", "service", "job", "system"]
     source: str  # "jwt" | "scoped_jwt" | "envelope" | "legacy-payload" | "job:<name>" | "system:<reason>"
     request_id: str
+    # The producer's event id of the envelope this context came from (None for any other source). Never
+    # serialised and never an authority: the consumer copies it into the payload as ``_event_id`` so the
+    # handler can tell a redelivery of an event from a new one.
+    event_id: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         if (self.kind == "system") != (self.org_id is None):

@@ -207,6 +207,76 @@ class TestPlaceholdersAreRestricted:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("drop_grants", [True, False])
+    async def test_withdraw_takes_the_users_own_grants_only_when_asked(self, drop_grants: bool) -> None:
+        from app.config.constants.arangodb import Connectors
+        from app.models.entities import AppUser
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        order: list[str] = []
+        tx_store.delete_edge = AsyncMock(side_effect=lambda *a: order.append("link"))
+        tx_store.remove_user_access_to_connector = AsyncMock(side_effect=lambda *a: order.append("grants"))
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        user = AppUser(id="node-1", app_name=Connectors.JIRA, connector_id="c", source_user_id="a", email="a@x.com", full_name="a")
+
+        await proc.withdraw_app_user_access("conn-1", [user], drop_grants=drop_grants)
+
+        if drop_grants:
+            tx_store.remove_user_access_to_connector.assert_awaited_once_with("conn-1", "node-1")
+            # Where each statement commits alone, a failure after the first leaves the safe state.
+            assert order == ["grants", "link"]
+        else:
+            tx_store.remove_user_access_to_connector.assert_not_awaited()
+            assert order == ["link"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("open_already", [True, False])
+    async def test_the_org_team_is_let_in_only_after_unlinked_users_lose_their_grants(self, open_already: bool) -> None:
+        """Every call removes the grants left on users the connector does not link, the gate open or not, in one
+        statement that checks the link (a user linked meanwhile keeps theirs), then lets the All team through and says
+        whether the edge is there."""
+        proc, tx_store = _make_processor(), _make_tx_store()
+        proc.org_id = "org-1"
+        calls: list[tuple] = []
+        edges = {("org-1", "conn-1")} if open_already else set()
+        tx_store.remove_unlinked_user_access_to_connector = AsyncMock(side_effect=lambda c: calls.append(("drop", c)))
+
+        async def ensure_team_app_edge(connector_id: str, org_id: str) -> None:
+            calls.append(("open", org_id))
+            edges.add((org_id, connector_id))
+
+        tx_store.ensure_team_app_edge = AsyncMock(side_effect=ensure_team_app_edge)
+        tx_store.get_edge = AsyncMock(side_effect=lambda f, fc, t, tc, c, **k: {"_key": "e"} if ("org-1", t) in edges else None)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        assert await proc.open_app_to_org_team("conn-1") is True
+        assert calls == [("drop", "conn-1"), ("open", "org-1")]
+        assert edges == {("org-1", "conn-1")}
+
+    @pytest.mark.asyncio
+    async def test_an_org_without_its_all_team_is_not_reported_open(self) -> None:
+        """The store writes no edge when the All team is missing, without an error: the caller must not save a
+        confirmation for a gate that is not open."""
+        proc, tx_store = _make_processor(), _make_tx_store()
+        proc.org_id = "org-1"
+        tx_store.remove_unlinked_user_access_to_connector = AsyncMock(return_value=0)
+        tx_store.ensure_team_app_edge = AsyncMock()
+        tx_store.get_edge = AsyncMock(return_value=None)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        assert await proc.open_app_to_org_team("conn-1") is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_cleanup_leaves_the_org_team_out(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        proc.org_id = "org-1"
+        tx_store.remove_unlinked_user_access_to_connector = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+        tx_store.ensure_team_app_edge = AsyncMock()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        with pytest.raises(ConnectionError):
+            await proc.open_app_to_org_team("conn-1")
+        tx_store.ensure_team_app_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_withdraw_drops_the_access_cache_when_a_later_delete_fails(self) -> None:
         # Without explicit transactions the first delete has already committed.
         from app.config.constants.arangodb import Connectors
@@ -1898,7 +1968,7 @@ class TestFailedPrincipalLookupsStopRewrites:
         with pytest.raises(RuntimeError, match="read failed"):
             await proc.on_new_app_roles([(role, [member])])
 
-        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True, "org_id": proc.org_id}
         tx_store.replace_edges_to.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2000,7 +2070,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "unknown@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is False
         proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
@@ -2018,7 +2088,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_skips_edge_without_to(self):
@@ -2037,7 +2107,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         tx_store.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2057,7 +2127,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         tx_store.batch_create_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2080,7 +2150,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         tx_store.batch_create_edges.assert_awaited_once()
         # Should have created 2 edges
         edges = tx_store.batch_create_edges.call_args[0][0]
@@ -2106,7 +2176,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         # The upsert overwrites the edge: a delete first would lose it if the upsert failed.
         tx_store.delete_edge.assert_not_awaited()
         tx_store.batch_create_edges.assert_awaited_once()
@@ -2133,7 +2203,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         # No new edges created
         tx_store.batch_create_edges.assert_not_awaited()
 
@@ -2156,7 +2226,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
-        assert result is None
+        assert result is True
         tx_store.batch_create_edges.assert_awaited()
 
     @pytest.mark.asyncio
@@ -2187,6 +2257,7 @@ class TestMigrateGroupPermissionsToUser:
             "grp-1", "user@test.com", "conn-1", tx_store
         )
 
+        assert result is False                    # a grant was not moved: the caller keeps the group
         # Should log warning for first edge
         proc.logger.warning.assert_called()
         # Should still create edge for second
@@ -2623,7 +2694,7 @@ class TestDeletePermissionFromRecord:
         with pytest.raises(RuntimeError, match="read failed"):
             await proc.delete_permission_from_record("rec-1", "user@test.com")
 
-        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        assert tx_store.get_user_by_email.await_args.kwargs == {"raise_on_error": True, "org_id": proc.org_id}
         tx_store.batch_delete_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -2802,7 +2873,7 @@ class TestOnNewAppUsers:
 
         await proc.on_new_app_users([user])
 
-        tx_store.batch_upsert_app_users.assert_awaited_once_with([user])
+        tx_store.batch_upsert_app_users.assert_awaited_once_with([user], proc.org_id)
 
     @pytest.mark.asyncio
     async def test_exception_logged_and_raised(self):
@@ -3636,6 +3707,55 @@ class TestMigrateGroupToUserByExternalId:
 
         tx_store.delete_user_group_by_id.assert_awaited_once_with("grp-1")
 
+    @staticmethod
+    def _group_with_grants(user: MagicMock | None, get_edge: AsyncMock | None = None) -> tuple[DataSourceEntitiesProcessor, MagicMock]:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        group = MagicMock()
+        group.id, group.name = "grp-1", "Test Group"
+        tx_store.get_user_group_by_external_id.return_value = group
+        tx_store.get_user_by_email.return_value = user
+        tx_store.get_edges_from_node.return_value = [
+            {"_key": "e1", "_to": f"{CollectionNames.RECORDS.value}/rec-1", "role": "READER"},
+            {"_key": "e2", "_to": f"{CollectionNames.RECORDS.value}/rec-2", "role": "READER"},
+        ]
+        tx_store.get_edge.side_effect = get_edge or AsyncMock(return_value=None)
+        return proc, tx_store
+
+    @pytest.mark.asyncio
+    async def test_a_user_not_found_in_the_org_keeps_the_group_and_its_grants(self) -> None:
+        proc, tx_store = self._group_with_grants(None)
+
+        await proc.migrate_group_to_user_by_external_id("ext-grp", "user@test.com", "conn-1")
+
+        tx_store.get_user_by_email.assert_awaited_once_with("user@test.com", org_id="org-1")
+        tx_store.delete_user_group_by_id.assert_not_awaited()
+        tx_store.batch_create_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_grant_that_could_not_be_moved_keeps_the_group(self) -> None:
+        user = MagicMock()
+        user.id = "user-1"
+        proc, tx_store = self._group_with_grants(user, AsyncMock(side_effect=[RuntimeError("edge error"), None]))
+
+        await proc.migrate_group_to_user_by_external_id("ext-grp", "user@test.com", "conn-1")
+
+        (edge,) = tx_store.batch_create_edges.await_args.args[0]
+        assert edge["to_id"] == "rec-2"
+        tx_store.delete_user_group_by_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_grants_all_moved_delete_the_group(self) -> None:
+        user = MagicMock()
+        user.id = "user-1"
+        proc, tx_store = self._group_with_grants(user)
+
+        await proc.migrate_group_to_user_by_external_id("ext-grp", "user@test.com", "conn-1")
+
+        assert {e["to_id"] for e in tx_store.batch_create_edges.await_args.args[0]} == {"rec-1", "rec-2"}
+        tx_store.delete_user_group_by_id.assert_awaited_once_with("grp-1")
+
 
 # ===========================================================================
 # _process_record with TicketRecord (lines 784-793)
@@ -3764,7 +3884,7 @@ class TestGetUsers:
         result = await proc.get_all_active_users()
 
         assert result == mock_users
-        tx_store.get_users.assert_awaited_once_with("org-1", active=True)
+        tx_store.get_users.assert_awaited_once_with("org-1", active=True, raise_on_error=False)
 
     @pytest.mark.asyncio
     async def test_get_all_app_users(self):
@@ -5190,6 +5310,26 @@ class TestOnRecordContentUpdate:
         assert call_args[0][1]["eventType"] == "updateRecord"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("content_changed", "revision", "published"), [
+        (False, "r1", False), (False, "r2", True), (True, "r1", True)],
+        ids=["said_unchanged_and_unchanged", "said_unchanged_but_new_revision", "callers_that_do_not_say"])
+    async def test_a_write_said_to_leave_content_alone_publishes_only_when_the_save_asks_for_indexing(
+        self, content_changed: bool, revision: str, published: bool,
+    ) -> None:
+        """A write only to keep an indexed record's grants keeps its outcome and sends no event, as on_new_records;
+        a new revision re-queues it whatever the caller said. Callers that do not say still publish."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        stored = _make_record(external_revision_id="r1", indexing_status=ProgressStatus.COMPLETED.value)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_content_update(_make_record(external_revision_id=revision), content_changed=content_changed)
+
+        events = [c.args[1]["eventType"] for c in proc.messaging_producer.send_message.call_args_list]
+        assert events == (["updateRecord"] if published else [])
+
+    @pytest.mark.asyncio
     async def test_skips_auto_index_off(self):
         """Skips content update for AUTO_INDEX_OFF records."""
         proc = _make_processor()
@@ -5210,8 +5350,11 @@ class TestOnRecordContentUpdate:
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
-        record = _make_record()
+        record = _make_record(external_revision_id="r2")
         record.indexing_status = ProgressStatus.COMPLETED.value
+        # An indexed record whose content changed (a new revision): the save re-queues it.
+        tx_store.get_record_by_external_id = AsyncMock(return_value=_make_record(
+            external_revision_id="r1", indexing_status=ProgressStatus.COMPLETED.value))
 
         with patch.object(proc, "_mark_queued_after_publish", new_callable=AsyncMock) as mock_mark:
             await proc.on_record_content_update(record)

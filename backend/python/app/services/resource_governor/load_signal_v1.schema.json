@@ -1,0 +1,457 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "load-signal-v1",
+ "title": "LoadSignal v1 (what this publisher writes; the fields of contracts section 14 that have no producer yet are optional)",
+ "type": "object",
+ "required": [
+  "v",
+  "cpu",
+  "mem",
+  "pools",
+  "waiting",
+  "downstream"
+ ],
+ "properties": {
+  "v": {
+   "const": 1
+  },
+  "workerCount": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "cpu": {
+   "type": "object",
+   "properties": {
+    "quota": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "util": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "psiSomeAvg10": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "psiSomeAvg60": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "throttledRatio": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "saturated": {
+     "type": [
+      "boolean",
+      "null"
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "mem": {
+   "type": "object",
+   "properties": {
+    "pressureRaw": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "workingSetRatio": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "limitBytes": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "psiSomeAvg60": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "psiFullAvg60": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "oomKillsTotal": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "saturated": {
+     "type": [
+      "boolean",
+      "null"
+     ]
+    }
+   },
+   "additionalProperties": false
+  },
+  "pools": {
+   "type": "object",
+   "propertyNames": {
+    "enum": [
+     "index_heavy",
+     "index_light",
+     "heavy_parse",
+     "light_parse"
+    ]
+   },
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "ceiling": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "limit": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "inUse": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "waiters": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "state": {
+      "enum": [
+       "braked",
+       "full",
+       "open",
+       null
+      ]
+     },
+     "reason": {
+      "enum": [
+       "none",
+       "ramping",
+       "memory_target",
+       "memory_hard",
+       "memory_soft",
+       "cpu",
+       "downstream",
+       "frozen",
+       null
+      ]
+     },
+     "reasonForS": {
+      "type": [
+       "number",
+       "null"
+      ]
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "waiting": {
+   "type": "object",
+   "properties": {
+    "oldestNotStartedS": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "oldestNotStartedPublishMs": {
+     "type": "object",
+     "properties": {
+      "light": {
+       "type": [
+        "number",
+        "null"
+       ]
+      },
+      "heavy": {
+       "type": [
+        "number",
+        "null"
+       ]
+      }
+     },
+     "additionalProperties": false
+    }
+   },
+   "additionalProperties": false
+  },
+  "downstream": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "object",
+    "properties": {
+     "throttles": {
+      "type": "integer"
+     },
+     "timeouts": {
+      "type": "integer"
+     },
+     "exhaustions": {
+      "type": "integer"
+     },
+     "unavailable": {
+      "type": "integer"
+     },
+     "calls": {
+      "type": "integer"
+     },
+     "local": {
+      "type": "boolean"
+     }
+    },
+    "additionalProperties": false
+   }
+  },
+  "memberId": {
+   "type": "string"
+  },
+  "service": {
+   "type": "string"
+  },
+  "pid": {
+   "type": "integer"
+  },
+  "pod": {
+   "type": "string"
+  },
+  "roles": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "seq": {
+   "type": "integer"
+  },
+  "containerStartMs": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "draining": {
+   "type": "boolean"
+  },
+  "restartsRecent": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "restartsByRole": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "number"
+   }
+  },
+  "unexpectedRestartAtMs": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "loopLagMs": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "parse": {
+   "type": "object",
+   "properties": {
+    "gates": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "object",
+      "properties": {
+       "capacity": {
+        "type": [
+         "number",
+         "null"
+        ]
+       },
+       "running": {
+        "type": "object",
+        "propertyNames": {
+         "enum": [
+          "small",
+          "large",
+          "huge"
+         ]
+        },
+        "additionalProperties": {
+         "type": "number"
+        }
+       },
+       "waiting": {
+        "type": "object",
+        "propertyNames": {
+         "enum": [
+          "small",
+          "large",
+          "huge"
+         ]
+        },
+        "additionalProperties": {
+         "type": "number"
+        }
+       }
+      },
+      "additionalProperties": false
+     }
+    },
+    "engines": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "object",
+      "properties": {
+       "limit": {
+        "type": [
+         "number",
+         "null"
+        ]
+       },
+       "inUse": {
+        "type": [
+         "number",
+         "null"
+        ]
+       },
+       "waiters": {
+        "type": [
+         "number",
+         "null"
+        ]
+       }
+      },
+      "additionalProperties": false
+     }
+    }
+   },
+   "additionalProperties": false
+  },
+  "counters": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "number"
+   }
+  },
+  "budget": {
+   "type": "object",
+   "properties": {
+    "C": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "used": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "reserveHeld": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "reserveUsed": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "criticalWaiters": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "bigWaiters": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "oldestCriticalWaitS": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "saturated": {
+     "type": [
+      "boolean",
+      "null"
+     ]
+    },
+    "floorsOverCapacity": {
+     "type": [
+      "boolean",
+      "number",
+      "null"
+     ]
+    },
+    "families": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "object",
+      "properties": {
+       "used": {
+        "type": [
+         "number",
+         "null"
+        ]
+       },
+       "waiting": {
+        "type": [
+         "number",
+         "null"
+        ]
+       }
+      },
+      "additionalProperties": false
+     }
+    }
+   },
+   "additionalProperties": false
+  }
+ },
+ "additionalProperties": false
+}

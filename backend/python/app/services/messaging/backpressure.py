@@ -10,11 +10,17 @@ just queue up behind the same saturated service, growing
 them on the broker where they belong. ``BackpressureCoordinator`` closes
 that gap: any client signals it on a 429, and the consumer's read loop
 checks it before every poll, pausing new reads for the signalled duration
-instead of admitting more work it can't yet process.
+instead of admitting more work it can't yet process. A service only one index
+tier calls (``policy.SERVICE_POOL``: Docling) holds only the records that call
+it on a consumer that can pass over them (``consumer_concurrency.held_pools``).
 
 One coordinator per process, shared by every service client and consumer:
 clients signal it from the worker loop and consumers read it on the main
 loop, so every access takes a thread lock.
+
+``BackpressureEpisode`` is the other half: per consumer, it decides when the
+indexing consumers log that their own reads are held back (engaged / cleared),
+once per episode rather than once per loop turn.
 """
 from __future__ import annotations
 
@@ -24,20 +30,58 @@ import time
 from typing import TYPE_CHECKING
 
 from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.services.spend_guard.retry_policy import clamp_retry_after
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
 
 logger = logging.getLogger(__name__)
+
+# A finish frees an index permit for one loop turn and that turn's dispatch takes it back, so a backpressure
+# episode ends only once later turns have seen it stay clear for this long: one WARNING and one INFO per episode.
+BACKPRESSURE_CLEAR_SETTLE_SECONDS = 5.0
+
+
+class BackpressureEpisode:
+    """When a consumer logs backpressure: ``engaged()`` is True on the turn an episode starts, ``cleared(now)`` on
+    the turn it ends. Log state only; pausing reads stays with the caller."""
+
+    def __init__(self) -> None:
+        self._open = False
+        self._clear_since: float | None = None
+
+    @property
+    def open(self) -> bool:
+        return self._open
+
+    def engaged(self) -> bool:
+        self._clear_since = None
+        started = not self._open
+        self._open = True
+        return started
+
+    def cleared(self, now: float) -> bool:
+        if not self._open:
+            return False
+        if self._clear_since is None:
+            self._clear_since = now
+        if now - self._clear_since < BACKPRESSURE_CLEAR_SETTLE_SECONDS:
+            return False
+        self.reset()
+        return True
+
+    def reset(self) -> None:
+        self._open = False
+        self._clear_since = None
 
 
 class BackpressureCoordinator:
     """Tracks the furthest-future pause deadline signalled by any service.
 
-    A later signal from a *different* service while already paused extends
-    (never shortens) the shared pause deadline — the consumer must wait for
-    whichever downstream service recovers last, since resuming early would
-    just immediately re-admit work for the still-saturated one.
+    Each service keeps its own deadline, extended (never shortened) by its
+    later signals. ``pause_remaining`` is the latest of them, less the services
+    a reader passes as ``ignoring``: a consumer that holds a tier-scoped
+    service's records itself waits only for the others.
     """
 
     def __init__(self, *, clock: "Callable[[], float]" = time.monotonic) -> None:
@@ -48,8 +92,12 @@ class BackpressureCoordinator:
     def signal(self, service_name: str, retry_after: float) -> None:
         """Record that *service_name* asked us to back off for
         *retry_after* seconds. A no-op for a non-positive duration."""
-        if retry_after <= 0:
+        # A provider's wait is untrusted input: finite and at most an hour, whatever it asked for, because this pause
+        # stops reads for every organisation on the process.
+        clamped = clamp_retry_after(retry_after)
+        if clamped is None or clamped <= 0:
             return
+        retry_after = clamped
         # The pause below stops new reads for the requested duration; the
         # governor additionally narrows the index pools so that when reads
         # resume they resume at a width the service just said it can take.
@@ -61,22 +109,25 @@ class BackpressureCoordinator:
                 self._pause_until[service_name] = until
         if extended:
             logger.info(
-                "Backpressure signalled by %s: pausing consumption for %.1fs",
+                "Backpressure signalled by %s for %.1fs",
                 service_name, retry_after,
             )
 
     def is_paused(self) -> bool:
         return self.pause_remaining() > 0.0
 
-    def pause_remaining(self) -> float:
-        """Seconds until every signalled service's pause has cleared (0 if
-        none are currently paused). Expired entries are pruned as a side
-        effect so ``paused_services`` never reports a stale name."""
+    def pause_remaining(self, *, ignoring: "Collection[str]" = ()) -> float:
+        """Seconds until every signalled service's pause, other than those
+        *ignoring* names, has cleared (0 if none are currently paused). Expired
+        entries are pruned as a side effect so ``paused_services`` never
+        reports a stale name."""
         now = self._clock()
         with self._lock:
             for name in [name for name, until in self._pause_until.items() if until <= now]:
                 del self._pause_until[name]
-            latest = max(self._pause_until.values(), default=now)
+            latest = max(
+                (until for name, until in self._pause_until.items() if name not in ignoring), default=now
+            )
         return max(0.0, latest - now)
 
     @property

@@ -7,6 +7,8 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 import { settle } from './chat-test-harness'
 import { ORG, OWNER, RUN, appConfig, delta, finalAnswer, startStream, type Flow, type StreamHandler } from './streaming-flows'
+import { registerUpstreams } from '../../../../src/libs/http/upstream-call'
+import { registerAppUpstreams } from '../../../../src/modules/tokens_manager/config/config'
 
 const FIRST_QUESTION = 'What changed in the release?'
 
@@ -138,6 +140,9 @@ const sentFiles = (run: Awaited<ReturnType<typeof startStream>>) =>
   filesOf(run.ai.streamCalls[0]?.body as Record<string, unknown>)
 
 describe('es_controller editing the last question', () => {
+  beforeEach(() => registerAppUpstreams(appConfig))
+  afterEach(() => registerUpstreams({}))
+
   afterEach(() => {
     sinon.restore()
   })

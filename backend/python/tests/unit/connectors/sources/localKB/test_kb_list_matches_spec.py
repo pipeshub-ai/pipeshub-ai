@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.config.constants.arangodb import AppStatus
-from app.connectors.sources.localKB.api.models import KnowledgeBaseResponse
+from app.connectors.sources.localKB.api.models import KnowledgeBaseListItem
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from tests.support.openapi_spec import openapi_spec
 
@@ -12,7 +12,7 @@ def test_the_list_item_schema_has_every_field_of_a_knowledge_base() -> None:
     schemas = openapi_spec()["components"]["schemas"]
     item = schemas["GetAllKnowledgeBaseResponseSchema"]["properties"]["knowledgeBases"]["items"]
 
-    assert set(item["properties"]) == set(KnowledgeBaseResponse.model_fields)
+    assert set(item["properties"]) == set(KnowledgeBaseListItem.model_fields)
     assert item["properties"]["status"]["nullable"] is True
 
 

@@ -1,6 +1,12 @@
 """Exa MCP server template — AI-native web search, run over STDIO."""
 from app.agents.mcp.mcp_server_decorator import mcp_server
-from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPTransport
+from app.agents.mcp.models import (
+    AuthHint,
+    MCPAuthMode,
+    MCPCategory,
+    MCPServerTemplate,
+    MCPTransport,
+)
 
 
 @mcp_server(
@@ -23,6 +29,13 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
             help_text="Create an API key at https://dashboard.exa.ai/",
         ),
         tags=["search", "web"],
+        category=MCPCategory.SEARCH,
+        capabilities=[
+            "Search the web",
+            "Read a web page",
+            "Research a company or topic",
+        ],
+        read_only=True,
     )
 )
 class ExaMCPServer:

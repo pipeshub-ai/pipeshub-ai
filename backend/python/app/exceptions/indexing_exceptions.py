@@ -21,6 +21,15 @@ class DocumentProcessingError(IndexingError):
         self.doc_id = doc_id
 
 
+class ProviderRateLimitedTooLongError(DocumentProcessingError):
+    """A model provider kept rate-limiting one record for longer than ``RATE_LIMIT_MAX_WAIT_S`` in all (the waits it was
+    handed back for added up). A terminal error (a document processing one): the record is failed with this message as its reason, not retried."""
+
+    def __init__(self, message: str, doc_id: str | None = None, details: dict | None = None) -> None:
+        super().__init__(message, doc_id, details)
+        self.doc_id = doc_id
+
+
 class PasswordProtectedError(DocumentProcessingError):
     """The file is encrypted and needs a password to open.
 
@@ -74,6 +83,18 @@ class RecordDeletedError(IndexingError):
         super().__init__(f"record {record_id} was deleted while it was being indexed", record_id)
 
 
+class SupersededRun(RecordDeletedError):
+    """This run's replacement copy can no longer be committed: the record's status was changed under it (an edit saved
+    mid-run stores NOT_STARTED) or another run took over the record's pending virtual record.
+
+    An expected outcome, handled as :class:`RecordDeletedError` is (terminal, no FAILED write): the follow-up event the
+    change published redoes the work. The run removes its own pending copy before it raises this.
+    """
+
+    def __init__(self, record_id: str) -> None:
+        IndexingError.__init__(self, f"the replacement copy of record {record_id} was superseded", record_id)
+
+
 class RecordStatusUpdateError(IndexingError):
     """Raised when persisting a record's status fields to the graph DB fails.
 
@@ -97,6 +118,12 @@ class EmbeddingError(IndexingError):
 
 class EmbeddingModelUnavailableError(IndexingError):
     """The embedding model could not be built or did not answer a probe."""
+
+    pass
+
+
+class EmbeddingPrecisionUnknownError(EmbeddingModelUnavailableError):
+    """The embedding server did not say which weights computed a response, or two responses of one call disagreed."""
 
     pass
 

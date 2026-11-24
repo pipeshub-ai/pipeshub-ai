@@ -18,6 +18,8 @@ interface DocxRendererProps {
   fileBlob?: Blob;
   citations?: PreviewCitation[];
   activeCitationId?: string | null;
+  /** Increments on every click on a citation, so a repeat click on the active one scrolls again. */
+  citationClickVersion?: number;
   onHighlightClick?: (citationId: string) => void;
 }
 
@@ -108,7 +110,7 @@ const DOCX_FRAME_CSS = `
  * DOCX is converted to HTML on a detached element (nothing in it loads or
  * runs), sanitised, and shown in the same isolated frame as HTML previews.
  */
-export function DocxRenderer({ fileUrl, fileName, fileBlob, citations, activeCitationId, onHighlightClick }: DocxRendererProps) {
+export function DocxRenderer({ fileUrl, fileName, fileBlob, citations, activeCitationId, citationClickVersion, onHighlightClick }: DocxRendererProps) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sanitizedHtml, setSanitizedHtml] = useState('');
@@ -206,6 +208,7 @@ export function DocxRenderer({ fileUrl, fileName, fileBlob, citations, activeCit
           baseCss={DOCX_FRAME_CSS}
           citations={citations}
           activeCitationId={activeCitationId}
+          citationClickVersion={citationClickVersion}
           onHighlightClick={onHighlightClick}
         />
       )}

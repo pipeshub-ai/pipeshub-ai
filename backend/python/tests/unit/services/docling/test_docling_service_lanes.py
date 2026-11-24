@@ -153,12 +153,21 @@ async def test_abandon_after_the_lease_is_held_is_ignored(rig: SimpleNamespace) 
 async def test_service_lease_wait_beyond_30s_is_backpressure(rig: SimpleNamespace) -> None:
     assert mod.DOCLING_GATE_TIMEOUT_SECONDS == 30.0
     blocker = rig.budget.acquire(timeout=2)
-    with patch.object(mod, "DOCLING_GATE_TIMEOUT_SECONDS", 0.3):
+    lease_waits: list[float | None] = []
+    real_acquire = rig.budget.acquire_async
+
+    async def acquire_async(*args: object, timeout: float | None = None, **kwargs: object) -> object:
+        lease_waits.append(timeout)
+        return await real_acquire(*args, timeout=timeout, **kwargs)
+
+    with patch.object(mod, "DOCLING_GATE_TIMEOUT_SECONDS", 0.3), patch.object(rig.budget, "acquire_async", acquire_async):
         started = time.monotonic()
         response = await call()
     assert response.status_code == 429  # type: ignore[attr-defined]
     assert response.headers["retry-after"] == "5"  # type: ignore[attr-defined]
-    assert 0.25 <= time.monotonic() - started < 3
+    # The lane wait the service asked for, not an upper bound on the wall time (which a busy runner stretches).
+    assert lease_waits == [0.3]
+    assert time.monotonic() - started >= 0.25  # and it did wait for it
     assert rig.converter.calls == 0
     blocker.release()
 

@@ -6,6 +6,7 @@ import pytest
 from app.services.graph_db.postgres.kg.model import (
     LINK_GROUP,
     LINK_HIERARCHY,
+    LINK_PARENT_CHILD,
     PRINCIPALS,
     UAR,
     GEdge,
@@ -66,7 +67,21 @@ def test_a_second_parent_and_a_second_group_are_links() -> None:
     primary_parent = min(snap.sk[REC], snap.sk[("records", "p2")])
     primary_group = min(snap.sk[G], snap.sk[("recordGroups", "g2")])
     assert (row["parent_sk"], row["group_sk"]) == (primary_parent, primary_group)
-    assert d.links == {(max(snap.sk[REC], snap.sk[("records", "p2")]), LINK_HIERARCHY, snap.sk[CHILD]), (max(snap.sk[G], snap.sk[("recordGroups", "g2")]), LINK_GROUP, snap.sk[CHILD])}
+    assert d.links == {(max(snap.sk[REC], snap.sk[("records", "p2")]), LINK_HIERARCHY, snap.sk[CHILD]), (max(snap.sk[G], snap.sk[("recordGroups", "g2")]), LINK_GROUP, snap.sk[CHILD]),
+                       (snap.sk[REC], LINK_PARENT_CHILD, snap.sk[CHILD])}      # the PARENT_CHILD parent, primary or not; the attachment's parent and the bookmark are not
+
+
+def test_every_parent_child_parent_is_a_kind_3_link_and_an_attachment_parent_is_not() -> None:
+    """The move guards follow PARENT_CHILD relations only: each such parent of a record is a kind-3 link (the primary parent too); an ATTACHMENT parent, a parent that
+    is not there and a relation of another kind give none."""
+    p2, p3, gone = ("records", "p2"), ("records", "p3"), ("records", "gone")
+    nodes = {APP: {}, REC: {"connectorId": "a"}, p2: {"connectorId": "a"}, p3: {"connectorId": "a"}, CHILD: {"connectorId": "a"}}
+    edges = [edge("nodeRelations", *REC, *CHILD, relationshipType="PARENT_CHILD"), edge("nodeRelations", *p2, *CHILD, relationshipType="PARENT_CHILD"),
+             edge("nodeRelations", *p3, *CHILD, relationshipType="ATTACHMENT"), edge("nodeRelations", *gone, *CHILD, relationshipType="PARENT_CHILD"),
+             edge("nodeRelations", *p3, *REC, relationshipType="LINKED")]
+    snap = world(nodes, edges)
+    d = derive({CHILD, REC}, snap)
+    assert {lk for lk in d.links if lk[1] == LINK_PARENT_CHILD} == {(snap.sk[REC], LINK_PARENT_CHILD, snap.sk[CHILD]), (snap.sk[p2], LINK_PARENT_CHILD, snap.sk[CHILD])}
 
 
 def test_grants_are_read_from_both_ends_and_the_membership_is_a_closure_row() -> None:
@@ -182,7 +197,8 @@ def test_the_primary_parent_is_a_parent_child_one_in_the_same_connector_then_the
     snap = world(nodes, edges)
     d = derive({CHILD}, snap)
     assert d.records[snap.sk[CHILD]]["parent_sk"] == snap.sk[pc]
-    assert d.links == {(snap.sk[att], LINK_HIERARCHY, snap.sk[CHILD]), (snap.sk[foreign], LINK_HIERARCHY, snap.sk[CHILD])}
+    assert d.links == {(snap.sk[att], LINK_HIERARCHY, snap.sk[CHILD]), (snap.sk[foreign], LINK_HIERARCHY, snap.sk[CHILD]),
+                       (snap.sk[foreign], LINK_PARENT_CHILD, snap.sk[CHILD]), (snap.sk[pc], LINK_PARENT_CHILD, snap.sk[CHILD])}
 
 
 def test_the_primary_group_is_one_of_the_records_own_connector_first() -> None:
@@ -197,7 +213,17 @@ def test_a_record_row_has_exactly_the_columns_the_writer_takes() -> None:
     from app.services.graph_db.postgres.kg.writers import RECORD_COLS
     snap = basic()
     row = derive({CHILD}, snap).records[snap.sk[CHILD]]
-    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort"}      # the listing columns have a writer of their own (w_listing_set)
+    # the listing columns and the trash columns have writers of their own (w_listing_set, w_trash_set)
+    assert set(row) == set(RECORD_COLS) - {"sk"} | {"folder", "hide_children", "alien", "name_sort", "deleted_ms", "delete_batch"}
+
+
+def test_the_trash_columns_are_the_delete_time_and_batch_as_the_walk_reads_them() -> None:
+    nodes = {APP: {}, REC: {"connectorId": "a", "isDeleted": True, "deletedAtTimestamp": 1790000000000, "deleteBatchId": "bt1"},
+             ("records", "live"): {"connectorId": "a"}, ("records", "odd"): {"connectorId": "a", "deletedAtTimestamp": "12", "deleteBatchId": 7}}
+    snap = world(nodes, [])
+    rows = derive(set(nodes), snap).records
+    assert {k[1]: (rows[snap.sk[k]]["deleted_ms"], rows[snap.sk[k]]["delete_batch"]) for k in nodes if k[0] == "records"} == {
+        REC[1]: (1790000000000, "bt1"), "live": (None, None), "odd": (12, "7")}       # doc->>'deletedAtTimestamp' cast to bigint, doc->>'deleteBatchId' as text
 
 
 def test_the_listing_columns_follow_the_hub_types_the_hidden_children_and_the_organisation() -> None:
@@ -249,3 +275,4 @@ def test_the_name_sort_orders_names_by_utf16_code_unit_not_by_code_point() -> No
     assert by_sort == sorted(names, key=lambda n: n.lower().encode("utf-16-be", "surrogatepass"))
     assert by_sort.index("\U00010000x") < by_sort.index("x") < by_sort.index("�x")
     assert sorted(names, key=str.lower).index("\U00010000x") > sorted(names, key=str.lower).index("�x")      # by code point it is the other way round
+

@@ -22,8 +22,12 @@ import {
 import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useEnterprisePrompt } from '@/lib/hooks/use-enterprise-prompt';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
+import { ENTERPRISE_FEATURES, type EnterpriseSection } from '@/app/(main)/workspace/enterprise/enterprise-feature-pages';
+import { useFeedbackDialogStore } from '@/app/(main)/feedback/store';
+import { useSupportDialogStore } from '@/app/(main)/support/store';
 
 // ========================================
 // Route constants (labels resolved at render via i18n)
@@ -92,6 +96,13 @@ const PERSONAL_ITEMS: NavItem[] = [
 
 const PEOPLE_ROUTES = PEOPLE_SUB_ITEMS.map((item) => item.route);
 
+/** Marks an Enterprise Edition page. Hidden from the link's name, so it still reads "Groups". */
+const ENTERPRISE_LOCK = (
+  <span aria-hidden="true" style={{ display: 'inline-flex' }}>
+    <MaterialIcon name="lock" size={14} color="var(--slate-9)" />
+  </span>
+);
+
 // ========================================
 // Component
 // ========================================
@@ -106,9 +117,12 @@ export default function WorkspaceSidebar() {
   const rawPathname = usePathname();
   const { t } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
+  const openSupport = useSupportDialogStore((s) => s.open);
+  const openFeedback = useFeedbackDialogStore((s) => s.open);
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
+  const showEnterprise = useEnterprisePrompt();
   const isMobile = useIsMobile();
   const isMobileOpen = useMobileSidebarStore((s) => s.isOpen);
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
@@ -158,6 +172,22 @@ export default function WorkspaceSidebar() {
   const visibleWorkspaceItems = WORKSPACE_ITEMS.filter(isNavItemVisible);
   const visiblePeopleItems = PEOPLE_SUB_ITEMS;
   const visiblePersonalItems = PERSONAL_ITEMS.filter(isNavItemVisible);
+
+  /** The Enterprise Edition pages listed in one part of the sidebar, each locked. */
+  const renderEnterpriseItems = (section: EnterpriseSection) =>
+    showEnterprise &&
+    Object.values(ENTERPRISE_FEATURES)
+      .filter((item) => item.section === section)
+      .map((item) => (
+        <WorkspaceSidebarItem
+          key={item.route}
+          icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+          label={t(item.labelKey)}
+          href={`${item.route}/`}
+          isActive={isActive(item.route)}
+          rightSlot={ENTERPRISE_LOCK}
+        />
+      ));
 
   return (
     <SidebarBase
@@ -215,14 +245,16 @@ export default function WorkspaceSidebar() {
             </CollapsibleSection>
           )}
 
-          {isAdmin && (
+          {showEnterprise && (
             <WorkspaceSidebarItem
               icon={<MaterialIcon name={GROUPS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
               label={t(GROUPS_NAV_ITEM.labelKey)}
               href={`${GROUPS_NAV_ITEM.route}/`}
               isActive={isActive(GROUPS_NAV_ITEM.route)}
+              rightSlot={ENTERPRISE_LOCK}
             />
           )}
+          {renderEnterpriseItems('overview')}
         </Flex>
 
         {/* ── Workspace section ── */}
@@ -240,6 +272,21 @@ export default function WorkspaceSidebar() {
             ))}
           </Flex>
         )}
+
+        {/* ── Usage & credits, then Security: Enterprise Edition pages, shown locked ── */}
+        {showEnterprise && (
+          <Flex direction="column" gap="1">
+            <SectionHeader title={t('workspace.sidebar.sections.usageAndCredits')} />
+            {renderEnterpriseItems('usageAndCredits')}
+          </Flex>
+        )}
+        {showEnterprise && (
+          <Flex direction="column" gap="1">
+            <SectionHeader title={t('workspace.sidebar.sections.security')} />
+            {renderEnterpriseItems('security')}
+          </Flex>
+        )}
+
         <Flex direction="column" gap="1">
           <SectionHeader title={t('workspace.sidebar.sections.developerSettings')} />
           {DEVELOPER_SETTINGS_ITEMS.map((item) => (
@@ -273,6 +320,21 @@ export default function WorkspaceSidebar() {
               rightSlot={item.beta ? <BetaBadge /> : undefined}
             />
           ))}
+        </Flex>
+
+        {/* This sidebar has no footer, so the workspace menu's help items are not reachable from here. */}
+        <Flex direction="column" gap="1">
+          <SectionHeader title={t('workspace.sidebar.sections.help')} />
+          <WorkspaceSidebarItem
+            icon={<MaterialIcon name="support_agent" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+            label={t('support.menuLabel')}
+            onClick={openSupport}
+          />
+          <WorkspaceSidebarItem
+            icon={<MaterialIcon name="feedback" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+            label={t('feedback.menuLabel')}
+            onClick={openFeedback}
+          />
         </Flex>
       </Flex>
     </SidebarBase>

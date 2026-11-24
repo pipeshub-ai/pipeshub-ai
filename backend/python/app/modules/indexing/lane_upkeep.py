@@ -286,6 +286,7 @@ def _report(
                     None if oldest is None else max(0.0, round((now_ms - oldest) / 1000, 1))
                 ),
                 "pending": backlog.pending.get(stream) if backlog is not None else None,
+                **_pending_view(backlog, stream, now_ms),
             }
         )
     return LaneReport(
@@ -295,6 +296,19 @@ def _report(
         backlog_read=backlog is not None,
         lanes=lanes,
     )
+
+
+def _pending_view(backlog: LaneBacklog | None, stream: str, now_ms: int) -> dict[str, object]:
+    """How old a lane's pending list is, and which stopped consumers hold part of it."""
+    head = backlog.oldest_pending_ms.get(stream) if backlog is not None else None
+    stale = backlog.stale.get(stream) if backlog is not None else None
+    return {
+        "oldestPendingSeconds": None if head is None else max(0.0, round((now_ms - head) / 1000, 1)),
+        "staleConsumers": [
+            {"name": name, "pending": count, "idleSeconds": round(idle_ms / 1000, 1)}
+            for name, (count, idle_ms) in sorted((stale.owners if stale else {}).items())
+        ],
+    }
 
 
 def _publish_metrics(report: LaneReport) -> None:

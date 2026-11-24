@@ -109,9 +109,31 @@ class TestPlan:
             "parsingStatus": "NOT_STARTED",
             RETRY_NOT_BEFORE_FIELD: NOW + 1800 * 1000,
             RATE_LIMITED_SINCE_FIELD: NOW,
+            # a record that is in no run starts one
+            "firstQueuedAt": NOW,
+            "indexingAttempts": 0,
         }
         assert is_deferred(updates)
         assert not is_deferred({})
+
+
+class TestDeferralKeepsTheRun:
+    def test_a_record_inside_a_run_keeps_its_start_and_its_attempts(self) -> None:
+        record = {"indexingStatus": "IN_PROGRESS", "firstQueuedAt": NOW - 5000, "indexingAttempts": 3}
+        plan = plan_deferral(record, 60, now_ms=NOW, max_total_seconds=DAY_S)
+
+        updates = deferral_updates(plan, reason="paused", record=record, now_ms=NOW)
+
+        assert updates["firstQueuedAt"] == NOW - 5000
+        assert "indexingAttempts" not in updates
+
+    def test_a_record_from_before_the_run_fields_gains_its_queue_time_as_a_start(self) -> None:
+        record = {"indexingStatus": "IN_PROGRESS", "queuedAtTimestamp": NOW - 9000}
+        plan = plan_deferral(record, 60, now_ms=NOW, max_total_seconds=DAY_S)
+
+        updates = deferral_updates(plan, reason="paused", record=record, now_ms=NOW)
+
+        assert updates["firstQueuedAt"] == NOW - 9000
 
 
 class TestDue:

@@ -41,10 +41,26 @@ class SchemaValidationError(Exception):
         super().__init__(f"Schema validation failed for collection '{collection}': {message}")
 
 
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
+
+def _is_integer(_checker: object, instance: object) -> bool:
+    """``integer`` as ArangoDB and the graph stores read it: an integral *type* within 64 bits.
+
+    jsonschema's own rule also accepts ``2.0`` (a float with no fraction) and Python ints of any size;
+    ArangoDB refuses the first (it stores a double), and no store can keep the second. A writer
+    that built such a value must fail on every store, not only on ArangoDB.
+    """
+    return isinstance(instance, int) and not isinstance(instance, bool) and _INT64_MIN <= instance <= _INT64_MAX
+
+
 def _compile(schema: dict) -> Validator:
     validator_cls = validators.validator_for(schema)
     validator_cls.check_schema(schema)
-    return validator_cls(schema)
+    strict = validators.extend(
+        validator_cls, type_checker=validator_cls.TYPE_CHECKER.redefine("integer", _is_integer),
+    )
+    return strict(schema)
 
 
 #: Properties a backend keeps on a node or edge for its own bookkeeping: the listing sort name and

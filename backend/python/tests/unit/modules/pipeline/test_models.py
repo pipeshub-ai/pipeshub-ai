@@ -138,3 +138,13 @@ def test_the_revision_is_read_back_from_a_state_key() -> None:
     assert stage_state_rev(stage_state_key("vr-1", "0a1b2c3d4e5f6a7b", "entities")) == "0a1b2c3d4e5f6a7b"
     # Read from the right, so a virtual record id holding a colon still parses.
     assert stage_state_rev(stage_state_key("legacy:vr", "rev", "classify")) == "rev"
+
+
+def test_a_job_reads_a_tier_or_priority_a_newer_release_added_as_heavy_and_bulk() -> None:
+    payload = {**_job().model_dump(mode="json", by_alias=True), "tier": "nano", "priority": "urgent"}
+
+    job = StageJob.model_validate(payload)
+
+    assert (job.tier, job.priority) == (ParseTier.HEAVY, Priority.BULK)
+    with pytest.raises(ValidationError):
+        StageJob.model_validate({**payload, "tier": 3})

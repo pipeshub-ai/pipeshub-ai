@@ -8,7 +8,7 @@ import { LoadingButton } from '@/app/components/ui/loading-button';
 import { WorkspaceRightPanel } from '../../../components';
 import { toast } from '@/lib/store/toast-store';
 import { useSkillsStore } from '../store';
-import { SkillsApi } from '../api';
+import { SkillsApi, isCandidateGoneError } from '../api';
 import type { SkillCandidate } from '../types';
 
 // ========================================
@@ -56,8 +56,13 @@ export function SkillCandidatesPanel() {
       toast.success(t('workspace.skills.toasts.candidateApproved', { name: candidate.name }));
       await refresh();
       setSkills(await SkillsApi.listSkills());
-    } catch {
-      toast.error(t('workspace.skills.toasts.candidateActionError'));
+    } catch (error) {
+      if (isCandidateGoneError(error)) {
+        toast.info(t('workspace.skills.toasts.candidateGone'));
+        await refresh();
+      } else {
+        toast.error(t('workspace.skills.toasts.candidateActionError'));
+      }
     } finally {
       setBusyId(null);
     }
@@ -69,8 +74,13 @@ export function SkillCandidatesPanel() {
       await SkillsApi.rejectCandidate(candidate.candidate_id);
       toast.success(t('workspace.skills.toasts.candidateRejected', { name: candidate.name }));
       await refresh();
-    } catch {
-      toast.error(t('workspace.skills.toasts.candidateActionError'));
+    } catch (error) {
+      if (isCandidateGoneError(error)) {
+        toast.info(t('workspace.skills.toasts.candidateGone'));
+        await refresh();
+      } else {
+        toast.error(t('workspace.skills.toasts.candidateActionError'));
+      }
     } finally {
       setBusyId(null);
     }

@@ -7,58 +7,58 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 
 | Connector | Group | Rule | Container where | Writer evidence | Classified by |
 |---|---|---|---|---|---|
-| `atlassian/confluence_cloud` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_cloud/connector.py:4847` | writer read |
-| `atlassian/confluence_datacenter` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_datacenter/connector.py:1080` | writer read |
-| `atlassian/confluence_datacenter_personal` | container | container | the whole app | `app/connectors/sources/atlassian/confluence_datacenter_personal/connector.py:133` | writer read |
-| `atlassian/jira_cloud` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_cloud/connector.py:5316` | writer read |
-| `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py:4868` | writer read |
-| `atlassian/jira_cloud_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_cloud_personal/connector.py:97` | writer read |
-| `atlassian/jira_data_center_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_data_center_personal/connector.py:66` | writer read |
-| `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1690` | writer read |
-| `microsoft/onedrive` | onedrive | override | - | `app/connectors/sources/microsoft/onedrive/connector.py:1060` | writer read |
-| `google/drive/team` | drive | union | shared drives whose items are neither shared nor limited | `app/connectors/sources/google/drive/team/drive_access.py:64` | writer read |
-| `google/drive/individual` | container | container | the whole app | `app/connectors/sources/google/drive/individual/connector.py:185` | writer read |
-| `linear` | linear | container | teams | `app/connectors/sources/linear/connector.py:1190` | writer read |
-| `slack/team` | container | container | channels (threads inherit the channel) | `app/connectors/sources/slack/team/connector.py:1655` | writer read |
-| `slack/individual` | container | container | the whole app | `app/connectors/sources/slack/individual/connector.py:332` | writer read |
-| `google/gmail/team` | container | container | mailboxes (labels inherit the mailbox) | `app/connectors/sources/google/gmail/team/connector.py:1787` | writer read |
-| `google/gmail/individual` | container | container | the whole app | `app/connectors/sources/google/gmail/individual/connector.py:131` | writer read |
-| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py:1190` | writer read |
-| `microsoft/outlook_individual` | container | container | the whole app | `app/connectors/sources/microsoft/outlook_individual/connector.py:167` | writer read |
-| `github_teams` | container | container | repositories and projects | `app/connectors/sources/github_teams/projects.py:526` | writer read |
-| `github` | container | container | the whole app | `app/connectors/sources/github/connector.py:178` | writer read |
-| `gitlab` | container | container | projects | `app/connectors/sources/gitlab/projects.py:538` | writer read |
-| `gitlab_personal` | container | container | the whole app | `app/connectors/sources/gitlab_personal/connector.py:107` | writer read |
-| `notion` | container | container | workspace and team groups | `app/connectors/sources/notion/connector.py:2325` | writer read |
-| `notion_personal` | container | container | the whole app | `app/connectors/sources/notion_personal/connector.py:55` | writer read |
-| `localKB` | container | container | the whole app | `app/connectors/sources/localKB/connector.py:57` | writer read |
-| `local_fs` | container | container | the whole app | `app/connectors/sources/local_fs/connector.py:467` | writer read |
-| `local_repo` | container | container | the whole app | `app/connectors/sources/local_repo/connector.py:38` | writer read |
-| `local_folder` | container | container | the whole app | `app/connectors/sources/local_folder/connector.py:347` | writer read |
-| `cifs` | container | container | the whole app | `app/connectors/sources/cifs/connector.py:92` | writer read |
-| `smb` | container | container | the whole app | `app/connectors/sources/smb/connector.py:90` | writer read |
-| `azure_blob` | container | container | the whole app | `app/connectors/sources/azure_blob/connector.py:352` | writer read |
-| `azure_files` | container | container | the whole app | `app/connectors/sources/azure_files/connector.py:327` | writer read |
-| `dropbox_individual` | container | container | the whole app | `app/connectors/sources/dropbox_individual/connector.py:188` | writer read |
-| `google_cloud_storage` | container | container | the whole app | `app/connectors/sources/google_cloud_storage/connector.py:312` | writer read |
-| `minio` | container | container | the whole app | `app/connectors/sources/minio/connector.py:70` | writer read |
-| `s3` | container | container | the whole app | `app/connectors/sources/s3/connector.py:62` | writer read |
-| `nextcloud` | container | container | the whole app | `app/connectors/sources/nextcloud/connector.py:532` | writer read |
-| `mariadb` | container | container | the whole app | `app/connectors/sources/mariadb/connector.py:221` | writer read |
-| `postgres` | container | container | the whole app | `app/connectors/sources/postgres/connector.py:421` | writer read |
-| `snowflake` | container | container | the whole app | `app/connectors/sources/snowflake/connector.py:399` | writer read |
-| `rss` | container | container | the whole app | `app/connectors/sources/rss/connector.py:106` | writer read |
-| `web` | container | container | the whole app | `app/connectors/sources/web/connector.py:351` | writer read |
-| `box` | item-acl | override | - | `app/connectors/sources/box/connector.py:522` | grep, to confirm |
-| `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py:115` | grep, to confirm |
-| `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py:3751` | grep, to confirm |
-| `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py:3765` | grep, to confirm |
-| `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py:2057` | grep, to confirm |
-| `zammad` | item-acl | override | - | `app/connectors/sources/zammad/connector.py:2003` | grep, to confirm |
-| `zoom` | item-acl | override | - | `app/connectors/sources/zoom/connector.py:907` | grep, to confirm |
-| `drupal_wiki` | item-acl | override | - | `app/connectors/sources/drupal_wiki/connector.py:997` | grep, to confirm |
-| `bookstack` | item-acl | override | - | `app/connectors/sources/bookstack/connector.py:1224` | grep, to confirm |
-| `demo` | item-acl | override | - | `app/connectors/sources/demo/connector.py:202` | grep, to confirm |
+| `atlassian/confluence_cloud` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_cloud/connector.py::ConfluenceConnector._transform_to_space_record_group` | writer read |
+| `atlassian/confluence_datacenter` | confluence | intersection | spaces without page restrictions | `app/connectors/sources/atlassian/confluence_datacenter/connector.py::ConfluenceDataCenterConnector._backfill_space_homepage_from_api` | writer read |
+| `atlassian/confluence_datacenter_personal` | container | container | the whole app | `app/connectors/sources/atlassian/confluence_datacenter_personal/connector.py::ConfluenceDataCenterPersonalConnector` | writer read |
+| `atlassian/jira_cloud` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_cloud/connector.py::JiraConnector._build_records_for_issue` | writer read |
+| `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py::JiraDataCenterConnector._build_issue_records` | writer read |
+| `atlassian/jira_cloud_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_cloud_personal/connector.py::JiraCloudPersonalConnector` | writer read |
+| `atlassian/jira_data_center_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_data_center_personal/connector.py::JiraDataCenterPersonalConnector` | writer read |
+| `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py::SharePointConnector._drive_item_access` | writer read |
+| `microsoft/onedrive` | onedrive | override | - | `app/connectors/sources/microsoft/onedrive/connector.py::OneDriveConnector._process_delta_item` | writer read |
+| `google/drive/team` | drive | union | shared drives whose items are neither shared nor limited | `app/connectors/sources/google/drive/team/drive_access.py::item_inherits_parent` | writer read |
+| `google/drive/individual` | container | container | the whole app | `app/connectors/sources/google/drive/individual/connector.py::GoogleDriveIndividualConnector` | writer read |
+| `linear` | linear | container | teams | `app/connectors/sources/linear/connector.py::LinearConnector._fetch_teams` | writer read |
+| `slack/team` | container | container | channels (threads inherit the channel) | `app/connectors/sources/slack/team/connector.py::SlackConnector._to_channel_record_group` | writer read |
+| `slack/individual` | container | container | the whole app | `app/connectors/sources/slack/individual/connector.py::SlackIndividualConnector` | writer read |
+| `google/gmail/team` | container | container | mailboxes (labels inherit the mailbox) | `app/connectors/sources/google/gmail/team/connector.py::GoogleGmailTeamConnector._sync_record_groups` | writer read |
+| `google/gmail/individual` | container | container | the whole app | `app/connectors/sources/google/gmail/individual/connector.py::GoogleGmailIndividualConnector` | writer read |
+| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py::OutlookConnector._transform_group_to_record_group` | writer read |
+| `microsoft/outlook_individual` | container | container | the whole app | `app/connectors/sources/microsoft/outlook_individual/connector.py::OutlookIndividualConnector` | writer read |
+| `github_teams` | container | container | repositories and projects | `app/connectors/sources/github_teams/projects.py::ProjectsSync._create_record_group_hierarchy` | writer read |
+| `github` | container | container | the whole app | `app/connectors/sources/github/connector.py::GithubConnector` | writer read |
+| `gitlab` | container | container | projects | `app/connectors/sources/gitlab/projects.py::ProjectsSync._build_project_record_groups` | writer read |
+| `gitlab_personal` | container | container | the whole app | `app/connectors/sources/gitlab_personal/connector.py::GitLabPersonalConnector` | writer read |
+| `notion` | container | container | workspace and team groups | `app/connectors/sources/notion/connector.py::NotionConnector._add_users_to_workspace_permissions` | writer read |
+| `notion_personal` | container | container | the whole app | `app/connectors/sources/notion_personal/connector.py::NotionPersonalConnector` | writer read |
+| `localKB` | container | container | the whole app | `app/connectors/sources/localKB/connector.py::KnowledgeBaseConnector` | writer read |
+| `local_fs` | container | container | the whole app | `app/connectors/sources/local_fs/connector.py::LocalFsConnector` | writer read |
+| `local_repo` | container | container | the whole app | `app/connectors/sources/local_repo/connector.py::LocalRepoConnector` | writer read |
+| `local_folder` | container | container | the whole app | `app/connectors/sources/local_folder/connector.py::FolderConnector._owner_and_group` | writer read |
+| `cifs` | container | container | the whole app | `app/connectors/sources/cifs/connector.py::CifsConnector` | writer read |
+| `smb` | container | container | the whole app | `app/connectors/sources/smb/connector.py::SmbConnector` | writer read |
+| `azure_blob` | container | container | the whole app | `app/connectors/sources/azure_blob/connector.py::AzureBlobConnector` | writer read |
+| `azure_files` | container | container | the whole app | `app/connectors/sources/azure_files/connector.py::AzureFilesConnector` | writer read |
+| `dropbox_individual` | container | container | the whole app | `app/connectors/sources/dropbox_individual/connector.py::DropboxIndividualConnector` | writer read |
+| `google_cloud_storage` | container | container | the whole app | `app/connectors/sources/google_cloud_storage/connector.py::GCSConnector` | writer read |
+| `minio` | container | container | the whole app | `app/connectors/sources/minio/connector.py::MinIOConnector` | writer read |
+| `s3` | container | container | the whole app | `app/connectors/sources/s3/connector.py::S3Connector` | writer read |
+| `nextcloud` | container | container | the whole app | `app/connectors/sources/nextcloud/connector.py::NextcloudConnector` | writer read |
+| `mariadb` | container | container | the whole app | `app/connectors/sources/mariadb/connector.py::MariaDBConnector` | writer read |
+| `postgres` | container | container | the whole app | `app/connectors/sources/postgres/connector.py::PostgreSQLConnector` | writer read |
+| `snowflake` | container | container | the whole app | `app/connectors/sources/snowflake/connector.py::SnowflakeConnector` | writer read |
+| `rss` | container | container | the whole app | `app/connectors/sources/rss/connector.py::RSSConnector` | writer read |
+| `web` | container | container | the whole app | `app/connectors/sources/web/connector.py::WebConnector` | writer read |
+| `box` | item-acl | override | - | `app/connectors/sources/box/connector.py::BoxConnector._process_box_entry` | grep, to confirm |
+| `dropbox` | item-acl | override | - | `app/connectors/sources/dropbox/shared_folders.py::folder_grants` | grep, to confirm |
+| `salesforce` | item-acl | override | - | `app/connectors/sources/salesforce/connector.py::SalesforceConnector._build_deal_record` | grep, to confirm |
+| `servicenow/servicenow` | item-acl | override | - | `app/connectors/sources/servicenow/servicenow/connector.py::ServiceNowConnector._process_single_article` | grep, to confirm |
+| `zendesk` | item-acl | override | - | `app/connectors/sources/zendesk/connector.py::ZendeskConnector._ticket_to_record` | grep, to confirm |
+| `zammad` | item-acl | override | - | `app/connectors/sources/zammad/connector.py::ZammadConnector._create_answer_with_permissions` | grep, to confirm |
+| `zoom` | item-acl | override | - | `app/connectors/sources/zoom/connector.py::ZoomConnector._build_record_group` | grep, to confirm |
+| `drupal_wiki` | item-acl | override | - | `app/connectors/sources/drupal_wiki/connector.py::DrupalWikiConnector._sync_spaces` | grep, to confirm |
+| `bookstack` | item-acl | override | - | `app/connectors/sources/bookstack/connector.py::BookStackConnector._page_record` | grep, to confirm |
+| `demo` | item-acl | override | - | `app/connectors/sources/demo/connector.py::DemoConnector` | grep, to confirm |
 
 ## Connector x change kind
 
@@ -69,8 +69,8 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `atlassian/confluence_cloud` | 2 | 2 | 5 | - | 2 | 1 | 1 | - | - | - | gap |
 | `atlassian/confluence_datacenter` | 2 | 2 | 5 | - | 2 | 1 | 1 | - | - | - | gap |
 | `atlassian/confluence_datacenter_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
-| `atlassian/jira_cloud` | gap | gap | gap | - | gap | - | gap | - | - | gap | - |
-| `atlassian/jira_data_center` | gap | gap | gap | - | gap | - | gap | - | - | gap | - |
+| `atlassian/jira_cloud` | gap | 2 | gap | - | gap | - | gap | - | - | gap | - |
+| `atlassian/jira_data_center` | gap | 2 | gap | - | gap | - | gap | - | - | gap | - |
 | `atlassian/jira_cloud_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `atlassian/jira_data_center_personal` | gap | 6 | - | - | - | 3 | - | - | 3 | - | - |
 | `microsoft/sharepoint_online` | 3 | 1 | - | 2 | 2 | - | - | 3 | - | - | - |
@@ -141,7 +141,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | confluence | user-removed | change | CONF-C-11 |
 | confluence | audit-event | change | **gap** |
 | jira | no-level | static | **gap** |
-| jira | level-holder | static | **gap** |
+| jira | level-holder | static | REGR-14, REGR-15, REGR-16 |
 | jira | browse-less-holder | static | **gap** |
 | jira | reporter-holder | static | **gap** |
 | jira | sub-task | static | **gap** |
@@ -153,7 +153,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | jira | placeholder-parent | static | **gap** |
 | jira | scheme-change | change | **gap** |
 | jira | role-actor-change | change | **gap** |
-| jira | level-members-change | change | **gap** |
+| jira | level-members-change | change | REGR-14, REGR-15 |
 | jira | level-set | change | **gap** |
 | jira | level-cleared | change | **gap** |
 | jira | reporter-assignee-change | change | **gap** |
@@ -190,7 +190,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | drive | limited-folder | static | DRIVE-S-01, DRIVE-S-02 |
 | drive | shared-drive-member | static | DRIVE-C-06, DRIVE-S-01 |
 | drive | multi-parent | static | **gap** |
-| drive | link-only | static | DRIVE-S-01 |
+| drive | link-only | static | DRIVE-S-01, DRIVE-S-03 |
 | drive | folder-share | change | DRIVE-C-01, DRIVE-S-01 |
 | drive | sub-folder-share | change | DRIVE-C-02, DRIVE-S-01 |
 | drive | direct-file-share | change | DRIVE-C-03, DRIVE-S-01 |
@@ -225,4 +225,4 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | item-acl | shared | static | **gap** |
 | item-acl | not-shared | static | **gap** |
 
-37 gaps of 101 cells.
+35 gaps of 101 cells.

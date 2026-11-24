@@ -9,6 +9,7 @@
 import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
+import { classifyError, levelFor } from '../../../libs/utils/error-class';
 import {
   BadRequestError,
   ConflictError,
@@ -53,12 +54,6 @@ const PROXY_FORWARD_HEADERS: readonly string[] = [
   'x-forwarded-for',
   'accept-language',
 ];
-
-// Client-controlled values must not be able to forge extra log lines.
-const forLog = (value: unknown, maxLength = 200): string =>
-  String(value ?? '')
-    .replace(/[\r\n]/g, ' ')
-    .slice(0, maxLength);
 
 /** Allowlisted proxy headers. Admin is JWT role on Python — never X-Is-Admin. */
 export const buildProxyHeaders = (
@@ -114,8 +109,6 @@ const createConnectorConfigUpdateHandler = (
       // Create payload
       const config = createPayload(req.body);
 
-      logger.info(`${operationName} for ${connectorId}`);
-
       const headers = buildProxyHeaders(req);
 
       // Execute API call
@@ -136,10 +129,8 @@ const createConnectorConfigUpdateHandler = (
           onSuccess(req, req.body);
         } catch (hookError) {
           logger.error('Post-update hook threw synchronously', {
-            connectorId,
-            operationName,
-            error:
-              hookError instanceof Error ? hookError.message : 'Unknown error',
+            operation: operationName,
+            error: hookError,
           });
         }
       }
@@ -152,13 +143,6 @@ const createConnectorConfigUpdateHandler = (
         'Connector instance not found',
       );
     } catch (error: any) {
-      logger.error(`Error ${operationName.toLowerCase()}`, {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(error, operationName.toLowerCase());
       next(handledError);
     }
@@ -172,17 +156,25 @@ interface ConnectorSnapshot {
   sync: ConnectorSyncBlock | null;
 }
 
-// The schedule is left as it was until the next toggle or schedule sweep.
+type SnapshotFailure = 'non_2xx' | 'no_envelope' | 'no_type' | 'request_failed';
+
+/**
+ * One failed read of the settings a reconcile needs. A read the service refused, or that timed
+ * out, already has its WARN call line, so it is DEBUG here; a 2xx without the expected body, or
+ * our own bug, has no other line and is ERROR. The connector comes from the request context.
+ */
 const logSnapshotFailure = (
-  connectorId: string,
-  reason: string,
-  extra: Record<string, unknown> = {},
+  reason: SnapshotFailure,
+  fields: { status?: number; error?: unknown } = {},
 ): void => {
-  logger.error(RECONCILE_LOG_MESSAGE, {
-    connectorId,
-    outcome: 'snapshot_failed',
+  const ours =
+    reason === 'no_envelope' ||
+    reason === 'no_type' ||
+    (reason === 'request_failed' && classifyError(fields.error) === 'internal');
+  logger[ours ? 'error' : 'debug'](RECONCILE_LOG_MESSAGE, {
+    outcome: 'failure',
     reason,
-    ...extra,
+    ...fields,
   });
 };
 
@@ -221,9 +213,7 @@ const fetchConnectorSnapshot = async (
       { timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS },
     );
     if (!resp || resp.statusCode < 200 || resp.statusCode >= 300) {
-      logSnapshotFailure(connectorId, 'non-2xx response', {
-        statusCode: resp.statusCode,
-      });
+      logSnapshotFailure('non_2xx', { status: resp.statusCode });
       return null;
     }
 
@@ -232,15 +222,13 @@ const fetchConnectorSnapshot = async (
     const data = resp.data as Record<string, any> | null;
     const envelope = data?.config as Record<string, any> | undefined;
     if (!envelope || typeof envelope !== 'object') {
-      logSnapshotFailure(connectorId, 'response has no config envelope');
+      logSnapshotFailure('no_envelope');
       return null;
     }
 
     const type = String(envelope.type ?? '');
     if (!type) {
-      logSnapshotFailure(connectorId, 'response has no connector type', {
-        responseKeys: Object.keys(envelope),
-      });
+      logSnapshotFailure('no_type');
       return null;
     }
 
@@ -255,16 +243,20 @@ const fetchConnectorSnapshot = async (
       sync,
     };
   } catch (error) {
-    logSnapshotFailure(connectorId, 'request failed', {
-      error: error instanceof Error ? error.message : 'Unknown error',
-      stack: error instanceof Error ? error.stack : undefined,
-    });
+    logSnapshotFailure('request_failed', { error });
     return null;
   }
 };
 
 /** Waits (ms) before each attempt to read the connector settings for a schedule reconcile. */
 const RECONCILE_RETRY_WAITS_MS = [0, 5_000, 30_000];
+
+/** With the instance read before it, under the ~90 s a browser or proxy waits, so the user gets
+ * an answer rather than a dropped connection. A timed-out toggle is not retried: the connector
+ * service may still be writing it. */
+export const CONNECTOR_TOGGLE_TIMEOUT_MS = 60_000;
+/** The read a sync toggle makes before it; a plain lookup, so far shorter than the toggle. */
+export const CONNECTOR_TOGGLE_READ_TIMEOUT_MS = 10_000;
 
 const fireConnectorScheduleReconcile = (
   scheduler: CrawlingSchedulerService,
@@ -284,12 +276,11 @@ const fireConnectorScheduleReconcile = (
         .catch((err: unknown) => {
           logger.error(
             'Could not record a schedule change for the hourly repair',
-            {
-              connectorId,
-              error: err instanceof Error ? err.message : String(err),
-            },
+            { error: err },
           );
         });
+    // Set when the orchestrator threw: it has already written its own line for that failure.
+    let reported = false;
     try {
       // A busy connector service answers late or not at all; a schedule left unwritten because of
       // that would silently never run, so the read is tried again before giving up.
@@ -298,24 +289,19 @@ const fireConnectorScheduleReconcile = (
         if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
         snapshot = await fetchConnectorSnapshot(req, connectorId, appConfig);
         if (snapshot) break;
-        logger.warn(
-          'Connector snapshot unavailable for schedule reconcile; will retry',
-          {
-            connectorId,
-          },
-        );
       }
       if (!snapshot) {
         await markPending();
-        logger.error(
-          'Could not read connector settings to update its schedule; the hourly repair will apply them',
-          { connectorId },
-        );
+        // The reconcile's one line; the hourly repair will apply the settings.
+        logger.warn(RECONCILE_LOG_MESSAGE, {
+          outcome: 'failure',
+          reason: 'snapshot_failed',
+          attempt: RECONCILE_RETRY_WAITS_MS.length,
+        });
         return;
       }
 
       logger.debug('Connector snapshot fetched for schedule reconcile', {
-        connectorId,
         type: snapshot.type,
         isActive: snapshot.isActive,
         selectedStrategy: snapshot.sync?.selectedStrategy,
@@ -329,17 +315,18 @@ const fireConnectorScheduleReconcile = (
         isActive: snapshot.isActive,
         sync: snapshot.sync,
       };
-      await reconcileConnectorSchedule(scheduler, logger, input);
+      try {
+        await reconcileConnectorSchedule(scheduler, logger, input);
+      } catch (error) {
+        reported = true;
+        throw error;
+      }
       await scheduler.clearReconcilePending(connectorId, startedAt);
     } catch (error) {
       await markPending();
-      logger.error(
+      logger[reported ? 'warn' : levelFor(classifyError(error))](
         'Background schedule reconcile failed; the hourly repair will apply it',
-        {
-          connectorId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-          stack: error instanceof Error ? error.stack : undefined,
-        },
+        { error },
       );
     }
   });
@@ -379,8 +366,6 @@ export const getConnectorRegistry =
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.debug(`Getting connector registry for user ${userId}`);
-
       const queryParams = new URLSearchParams();
       if (scope) {
         queryParams.append('scope', String(scope));
@@ -410,12 +395,6 @@ export const getConnectorRegistry =
         'Connectors from registry not found'
       );
     } catch (error: any) {
-      logger.error('Error getting connector registry', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(error, 'get connector registry');
       next(handledError);
     }
@@ -470,8 +449,6 @@ export const getConnectorInstances =
       if (isActive !== undefined) queryParams.append('isActive', String(isActive));
       if (connectorType !== undefined) queryParams.append('connectorType', String(connectorType));
 
-      logger.debug(`Getting connector instances for user ${userId}`);
-
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/?${queryParams.toString()}`,
         HttpMethod.GET,
@@ -486,12 +463,6 @@ export const getConnectorInstances =
         'Connector instances not found'
       );
     } catch (error: any) {
-      logger.error('Error getting connector instances', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(error, 'get connector instances');
       next(handledError);
     }
@@ -514,8 +485,6 @@ export const getActiveConnectorInstances =
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.info(`Getting active connector instances for user ${userId}`);
-
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/active`,
         HttpMethod.GET,
@@ -529,12 +498,6 @@ export const getActiveConnectorInstances =
         'Active connectors not found'
       );
     } catch (error: any) {
-      logger.error('Error getting active connector instances', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'get active connector instances',
@@ -560,8 +523,6 @@ export const getInactiveConnectorInstances =
         throw new UnauthorizedError('User authentication required');
       }
 
-      logger.info(`Getting inactive connector instances for user ${userId}`);
-
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/inactive`,
         HttpMethod.GET,
@@ -575,12 +536,6 @@ export const getInactiveConnectorInstances =
         'Inactive connectors not found'
       );
     } catch (error: any) {
-      logger.error('Error getting inactive connector instances', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'get inactive connector instances',
@@ -606,8 +561,6 @@ export const getConfiguredConnectorInstances =
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
       }
-
-      logger.info(`Getting configured connector instances for user ${userId}`);
 
       const headers = buildProxyHeaders(req);
 
@@ -639,12 +592,6 @@ export const getConfiguredConnectorInstances =
         'Connector config not found'
       );
     } catch (error: any) {
-      logger.error('Error getting configured connector instances', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'get configured connector instances',
@@ -681,12 +628,6 @@ export const createConnectorInstance =
         );
       }
 
-      logger.info(`Creating connector instance for user ${userId}`, {
-        connectorType,
-        instanceName,
-        authType,
-      });
-
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
@@ -703,12 +644,6 @@ export const createConnectorInstance =
         'Connector config not found'
       );
     } catch (error: any) {
-      logger.error('Error creating connector instance', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'create connector instance',
@@ -734,7 +669,6 @@ export const getConnectorInstance =
         throw new BadRequestError('Connector ID is required');
       }
 
-      logger.info(`Getting connector instance ${connectorId}`);
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
@@ -751,13 +685,6 @@ export const getConnectorInstance =
         'Connector schema not found'
       );
     } catch (error: any) {
-      logger.error('Error getting connector instance', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(error, 'get connector instance');
       next(handledError);
     }
@@ -780,8 +707,6 @@ export const getConnectorInstanceConfig =
         throw new BadRequestError('Connector ID is required');
       }
 
-      logger.debug(`Getting connector instance config for ${connectorId}`);
-
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
@@ -797,13 +722,6 @@ export const getConnectorInstanceConfig =
         'Connector config and schema not found'
       );
     } catch (error: any) {
-      logger.error('Error getting connector instance config', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'get connector instance config',
@@ -837,8 +755,6 @@ export const updateConnectorInstanceConfig =
         baseUrl: baseUrl,
       };
 
-      logger.info(`Updating connector instance config for ${connectorId}`);
-
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
@@ -866,13 +782,6 @@ export const updateConnectorInstanceConfig =
         'Connector instance not found',
       );
     } catch (error: any) {
-      logger.error('Error updating connector instance config', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'update connector instance config',
@@ -949,8 +858,6 @@ export const deleteConnectorInstance =
         throw new BadRequestError('Connector ID is required');
       }
 
-      logger.info(`Deleting connector instance ${connectorId}`);
-
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
@@ -969,15 +876,10 @@ export const deleteConnectorInstance =
         setImmediate(async () => {
           try {
             await scheduler.removeJobsForConnector(connectorId, orgId);
-            logger.info('Removed sync schedule after connector deletion', {
-              connectorId,
-              orgId,
-            });
+            logger.debug('Removed sync schedule after connector deletion');
           } catch (err) {
             logger.error('Failed to remove sync schedule after connector deletion', {
-              connectorId,
-              orgId,
-              error: err instanceof Error ? err.message : 'Unknown error',
+              error: err,
             });
           }
         });
@@ -990,13 +892,6 @@ export const deleteConnectorInstance =
         'Connector instance not found'
       );
     } catch (error: any) {
-      logger.error('Error deleting connector instance', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'delete connector instance',
@@ -1082,10 +977,6 @@ export const getOAuthAuthorizationUrl =
 
       const authorizationUrl = `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/oauth/authorize?${queryParams.toString()}`;
 
-      logger.info(
-        `Getting OAuth authorization URL for instance ${connectorId}`,
-      );
-
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
@@ -1101,13 +992,6 @@ export const getOAuthAuthorizationUrl =
         'OAuth authorization URL not found'
       );
     } catch (error: any) {
-      logger.error('Error getting OAuth authorization URL', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'get OAuth authorization URL',
@@ -1132,8 +1016,6 @@ export const handleOAuthCallback =
       if (!code || !state) {
         throw new BadRequestError('Code and state are required');
       }
-
-      logger.info('Handling OAuth callback');
 
       const queryParams = new URLSearchParams();
       if (code) queryParams.set('code', String(code));
@@ -1195,12 +1077,6 @@ export const handleOAuthCallback =
         'OAuth callback failed'
       );
     } catch (error: any) {
-      logger.error('Error handling OAuth callback', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(error, 'handle OAuth callback');
       next(handledError);
     }
@@ -1227,8 +1103,6 @@ export const getConnectorInstanceFilterOptions =
         throw new BadRequestError('Connector ID is required');
       }
 
-      logger.info(`Getting filter options for instance ${connectorId}`);
-
       const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/filters`,
@@ -1243,13 +1117,6 @@ export const getConnectorInstanceFilterOptions =
         'Connector instance filter options not found'
       );
     } catch (error: any) {
-      logger.error('Error getting connector instance filter options', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'get connector instance filter options',
@@ -1280,11 +1147,7 @@ export const getFilterFieldOptions =
         throw new BadRequestError('Filter key is required');
       }
 
-      logger.info(`Getting filter field options for instance ${connectorId}, filter ${filterKey}`);
-
       const headers = buildProxyHeaders(req);
-
-      logger.info(`Forwarding to Python for filter field options`);
 
       // Build query string with cursor support
       const queryParams = new URLSearchParams();
@@ -1325,14 +1188,6 @@ export const getFilterFieldOptions =
         'Filter field options not found'
       );
     } catch (error: any) {
-      logger.error('Error getting filter field options', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        filterKey: req.params.filterKey,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'get filter field options',
@@ -1364,7 +1219,7 @@ export const saveConnectorInstanceFilterOptions =
       }
 
       logger.warn(
-        `Deprecated POST /api/v1/connectors/${connectorId}/filters was called; use PUT /api/v1/connectors/${connectorId}/config/filters-sync with {sync?, filters?: {sync, indexing}} while the connector is disabled. This endpoint will be removed in a future release.`,
+        'Deprecated POST /api/v1/connectors/:connectorId/filters was called; use PUT /api/v1/connectors/:connectorId/config/filters-sync with {sync?, filters?: {sync, indexing}} while the connector is disabled. This endpoint will be removed in a future release.',
       );
 
       const headers = buildProxyHeaders(req);
@@ -1382,13 +1237,6 @@ export const saveConnectorInstanceFilterOptions =
         'Connector instance filter options not found'
       );
     } catch (error: any) {
-      logger.error('Error saving connector instance filter options', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'save connector instance filter options',
@@ -1413,7 +1261,7 @@ export const toggleConnectorInstance =
   ): Promise<void> => {
     try {
       const { connectorId } = req.params;
-      const { type, fullSync, deviceId, deviceName } = req.body;
+      const { type, enabled, fullSync, deviceId, deviceName } = req.body;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
@@ -1422,8 +1270,6 @@ export const toggleConnectorInstance =
       if (!type) {
         throw new BadRequestError('Toggle type is required');
       }
-
-      logger.info(`Toggling connector instance ${connectorId} with type ${type}`);
 
       const headers = buildProxyHeaders(req);
       let ownerDeviceName: string | null | undefined;
@@ -1435,9 +1281,12 @@ export const toggleConnectorInstance =
           connectorId,
           appConfig,
           headers,
+          { timeoutMs: CONNECTOR_TOGGLE_READ_TIMEOUT_MS },
         );
         ownerDeviceName = instance.ownerDeviceName;
-        if (instance.isActive === false) {
+        // An off connector asked to stay off is left alone by the service, so
+        // only a real enable needs a device that can serve the pull.
+        if (instance.isActive === false && enabled !== false) {
           const refusal = localFsSyncRefusal(req.user?.orgId, instance, {
             fallbackUserId: req.user?.userId,
             requestDeviceId: deviceId,
@@ -1455,10 +1304,12 @@ export const toggleConnectorInstance =
       }
       const body: {
         type: string;
+        enabled?: boolean;
         fullSync?: boolean;
         deviceId?: string;
         deviceName?: string;
       } = { type };
+      if (typeof enabled === 'boolean') body.enabled = enabled;
       if (typeof fullSync === 'boolean') {
         body.fullSync = fullSync;
       }
@@ -1469,6 +1320,12 @@ export const toggleConnectorInstance =
         HttpMethod.POST,
         headers,
         body,
+        {
+          timeoutMs: CONNECTOR_TOGGLE_TIMEOUT_MS,
+          // A request naming the state it wants can be sent again after a
+          // dropped connection; a flip sent twice turns the connector back.
+          retries: typeof enabled === 'boolean' ? 3 : 1,
+        },
       );
 
       const isSuccess =
@@ -1502,13 +1359,6 @@ export const toggleConnectorInstance =
         'Connector instance not found'
       );
     } catch (error: any) {
-      logger.error('Error toggling connector instance', {
-        error: error.message,
-        connectorId: req.params.connectorId,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(
         error,
         'toggle connector instance',
@@ -1538,8 +1388,6 @@ export const getConnectorSchema =
         throw new BadRequestError('Connector type is required');
       }
 
-      logger.info(`Getting connector schema for ${connectorType}`);
-
       const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/registry/${encodeURIComponent(connectorType)}/schema`,
@@ -1554,13 +1402,6 @@ export const getConnectorSchema =
         'Connector schema not found'
       );
     } catch (error: any) {
-      logger.error('Error getting connector schema', {
-        error: error.message,
-        connectorType: req.params.connectorType,
-        userId: req.user?.userId,
-        status: error.response?.status,
-        data: error.response?.data,
-      });
       const handledError = handleBackendError(error, 'get connector schema');
       next(handledError);
     }
@@ -1605,12 +1446,6 @@ export const testConnectorConnection =
         'Connector type not found'
       );
     } catch (error: any) {
-      logger.error('Error testing connector connection', {
-        error: error.message,
-        connectorType: req.params.connectorType,
-        userId: req.user?.userId,
-        status: error.response?.status,
-      });
       const handledError = handleBackendError(error, 'test the connection');
       next(handledError);
     }
@@ -1641,11 +1476,6 @@ export const getConnectorEgressIps =
         'Egress IPs not found'
       );
     } catch (error: any) {
-      logger.error('Error getting connector egress IPs', {
-        error: error.message,
-        userId: req.user?.userId,
-        status: error.response?.status,
-      });
       const handledError = handleBackendError(error, 'get the connector IP addresses');
       next(handledError);
     }
@@ -1669,8 +1499,6 @@ async (
     if (!userId) {
       throw new UnauthorizedError('User authentication required');
     }
-
-    logger.debug(`Getting active agent instances for user ${userId}`);
 
     const queryParams = new URLSearchParams();
     if (scope) {
@@ -1701,12 +1529,6 @@ async (
       'Failed to get active agent instances',
     );
   } catch (error: any) {
-    logger.error('Error getting active agent instances', {
-      error: error.message,
-      userId: req.user?.userId,
-      status: error.response?.status,
-      data: error.response?.data,
-    });
     const handledError = handleBackendError(
       error,
       'get active agent instances',
@@ -1737,6 +1559,231 @@ export const getPermissionStatus =
       );
     } catch (error) {
       next(handleBackendError(error, 'get permission status'));
+    }
+  };
+
+/** Admin only, decided by the connector service as for the status: it writes the connector's own permission filter mode and answers with the status. */
+export const setPermissionFilter =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { mode } = req.body as { mode: string };
+      const response = await executeConnectorCommand<{
+        detail?: { error?: string };
+      }>(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(req.params.connectorId as string)}/permissions/filter`,
+        HttpMethod.PATCH,
+        buildProxyHeaders(req),
+        { mode },
+      );
+      // The refusal carries the blockers the card lists; the generic mapper would flatten them to a message.
+      if (
+        response.statusCode === 409 &&
+        response.data?.detail?.error === 'not_switchable'
+      ) {
+        res.status(409).json(response.data.detail);
+        return;
+      }
+      handleConnectorResponse(
+        response,
+        res,
+        'Setting the permission filter',
+        'Connector not found',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'set permission filter'));
+    }
+  };
+
+/**
+ * Per-user access: a user's own source account on a team connector. Proxied as is; the
+ * connector service decides who may do what and never returns a credential.
+ */
+type UserAccessHandler = (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+) => Promise<void>;
+
+const proxyUserAccess =
+  (
+    appConfig: AppConfig,
+    method: HttpMethod,
+    operation: string,
+    suffix: (req: AuthenticatedUserRequest) => string = () => '',
+    // The route's validated body; only POST routes send one.
+    body: (req: AuthenticatedUserRequest) => unknown = () => undefined,
+  ): UserAccessHandler =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(req.params.connectorId as string)}/user-access${suffix(req)}`,
+        method,
+        buildProxyHeaders(req),
+        body(req),
+        // A retried POST would send invites twice; the connector service may have done the work.
+        { retries: method === HttpMethod.POST ? 1 : 3 },
+      );
+      handleConnectorResponse(response, res, operation, 'Connector not found');
+    } catch (error) {
+      next(handleBackendError(error, operation));
+    }
+  };
+
+/** The organisation's per-user connectors, each with whether the caller has connected. */
+export const listMyPerUserConnectors =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/user-access/mine`,
+        HttpMethod.GET,
+        buildProxyHeaders(req),
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'list your connectable accounts',
+        'No data',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'list your connectable accounts'));
+    }
+  };
+
+export const getMyConnectorConnection = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(appConfig, HttpMethod.GET, 'get your connection');
+
+export const connectMyConnectorAccount = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.POST,
+    'connect your account',
+    undefined,
+    (req) => ({ token: (req.body as { token: string }).token }),
+  );
+
+/** The URL that signs the caller in with the source through the connector's OAuth app. */
+export const startMyConnectorSignIn = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.GET,
+    'start your sign-in',
+    () => '/oauth/authorize',
+  );
+
+export const disconnectMyConnectorAccount = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(appConfig, HttpMethod.DELETE, 'disconnect your account');
+
+export const listConnectorUserConnections = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.GET,
+    'list connected users',
+    () => '/users',
+  );
+
+export const removeConnectorUserConnection = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.DELETE,
+    'remove a connected user',
+    (req) => `/users/${encodeURIComponent(req.params.userId as string)}`,
+  );
+
+/** Admin only: everyone who could connect, with their connection and invite state. */
+export const getConnectorUserRoster = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.GET,
+    'list the connector roster',
+    (req) => {
+      const query = new URLSearchParams();
+      for (const key of ['q', 'offset', 'limit'] as const) {
+        const value: unknown = req.query[key];
+        if (typeof value === 'string' || typeof value === 'number') {
+          query.set(key, String(value));
+        }
+      }
+      const qs = query.toString();
+      return qs !== '' ? `/roster?${qs}` : '/roster';
+    },
+  );
+
+/** Admin only: notify people (by id, or everyone not yet connected) to connect their account. */
+export const inviteConnectorUsers = (appConfig: AppConfig): UserAccessHandler =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.POST,
+    'invite users to connect',
+    () => '/invites',
+    (req) => req.body,
+  );
+
+/** The caller turns reminders to connect this connector off or on. */
+export const setMyConnectorReminders = (
+  appConfig: AppConfig,
+): UserAccessHandler =>
+  proxyUserAccess(
+    appConfig,
+    HttpMethod.POST,
+    'update your reminders',
+    () => '/reminders',
+    (req) => ({ optedOut: (req.body as { optedOut: boolean }).optedOut }),
+  );
+
+/**
+ * Public: the routes behind an emailed connect link. The link token is the only credential,
+ * so no caller identity is forwarded even if the browser sent one.
+ */
+export const proxyUserAccessLink =
+  (appConfig: AppConfig, name: 'info' | 'authorize' | 'complete' | 'opt-out') =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const operation = `connect link ${name}`;
+    try {
+      const headers = buildProxyHeaders(req);
+      delete headers.authorization;
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/user-access/link/${name}`,
+        HttpMethod.POST,
+        headers,
+        req.body,
+        // An OAuth code works once: a retry after the service used it would report a false failure.
+        { retries: name === 'complete' ? 1 : 3 },
+      );
+      handleConnectorResponse(response, res, operation, 'No data');
+    } catch (error) {
+      next(handleBackendError(error, operation));
     }
   };
 
@@ -1772,17 +1819,7 @@ export const getConnectorStats =
         'Getting connector stats',
         'Connector stats not found',
       );
-
-      logger.debug('Connector stats retrieved successfully', {
-        userId,
-        orgId,
-        requestId: req.context?.requestId,
-      });
     } catch (error: any) {
-      logger.error('Error getting connector stats', {
-        connectorId: req.params.connectorId,
-        error,
-      });
       next(handleBackendError(error, 'get connector stats'));
       return;
     }
@@ -1852,13 +1889,7 @@ export const getRecordContent =
         'Getting record content',
         'Record content not found',
       );
-
-      logger.info('Record content retrieved successfully');
     } catch (error: any) {
-      logger.error('Error getting record content', {
-        recordId: req.params.recordId,
-        error,
-      });
       const handleError = handleBackendError(error, 'get record content');
       next(handleError);
       return;
@@ -1887,10 +1918,13 @@ export const navigateKnowledgeGraph =
         createdBefore,
         modifiedAfter,
         modifiedBefore,
+        cursor,
       } = req.query;
 
       const queryParams = new URLSearchParams();
       if (nodeId) queryParams.append('node_id', String(nodeId));
+      if (typeof cursor === 'string' && cursor !== '')
+        queryParams.append('cursor', cursor);
       if (page) queryParams.append('page', String(page));
       if (limit) queryParams.append('limit', String(limit));
       if (depth) queryParams.append('depth', String(depth));
@@ -1921,13 +1955,7 @@ export const navigateKnowledgeGraph =
         'Navigating knowledge graph',
         'Navigation result not found',
       );
-
-      logger.info('Knowledge graph navigated successfully');
     } catch (error: any) {
-      logger.error('Error navigating knowledge graph', {
-        nodeId: forLog(req.query?.nodeId),
-        error,
-      });
       const handleError = handleBackendError(error, 'navigate knowledge graph');
       next(handleError);
       return;
@@ -1974,10 +2002,7 @@ export const lookupRecord =
         'Looking up records',
         'Lookup result not found',
       );
-
-      logger.info('Record lookup completed successfully');
     } catch (error: any) {
-      logger.error('Error looking up records', { error });
       const handleError = handleBackendError(error, 'look up records');
       next(handleError);
       return;
@@ -2015,7 +2040,7 @@ const validateActiveConnector = async (
   );
 
   if (!isAllowed) {
-    throw new BadRequestError(`Connector ${connectorId} not allowed`);
+    throw new BadRequestError('Connector not allowed');
   }
 
   logger.debug('Connector validation successful', {
@@ -2082,9 +2107,7 @@ const proxyVectorStoreJob =
         `Vector store ${operation} not started`,
         `Vector store ${operation} failed`,
       );
-      logger.info(`Vector store ${operation} accepted`);
     } catch (error: any) {
-      logger.error(`Error starting vector store ${operation}`, { error });
       next(handleBackendError(error, `vector store ${operation}`));
     }
   };
@@ -2128,12 +2151,7 @@ export const reindexConnector =
       );
 
       handleConnectorResponse(response, res, 'Connector not found', 'Connector not reindexed');
-      logger.info('Connector reindexed successfully', { connectorId });
     } catch (error: any) {
-      logger.error('Error reindexing connector', {
-        connectorId: req.params.connectorId,
-        error,
-      });
       next(handleBackendError(error, 'reindex connector'));
       return;
     }
@@ -2210,9 +2228,6 @@ export const resyncConnectorRecords =
 
       return; // Added return statement
     } catch (error: any) {
-      logger.error('Error resyncing connector records', {
-        error,
-      });
       next(handleBackendError(error, 'resync connector'));
       return; // Added return statement
     }
@@ -2248,12 +2263,7 @@ export const stopConnectorSync =
         'stopping connector sync',
         'Failed to stop sync',
       );
-      logger.info('Connector sync stop requested', { connectorId });
     } catch (error: any) {
-      logger.error('Error stopping connector sync', {
-        connectorId: req.params.connectorId,
-        error,
-      });
       next(handleBackendError(error, 'stop connector sync'));
       return;
     }
@@ -2274,12 +2284,14 @@ export const explainPermission =
     const user = req.user as { userId?: string; orgId?: string } | undefined;
     const { userId, orgId } = user ?? {};
     const connectorId = req.params.connectorId as string;
+    // Who asked, the org and the connector come from the request context.
     // The route's schema has already required both as strings.
     const { userId: targetUserId, recordId } = req.query as {
       userId: string;
       recordId: string;
     };
-    let outcome: Record<string, unknown> = { status: 'failed' };
+    let answer: { status?: number; code?: string; admitted?: boolean } = {};
+    let outcome: 'success' | 'failure' = 'success';
     try {
       if (!userId || !orgId) {
         throw new UnauthorizedError(
@@ -2297,7 +2309,7 @@ export const explainPermission =
       );
       const data = response.data as
         { code?: string; admitted?: boolean } | undefined;
-      outcome = {
+      answer = {
         status: response.statusCode,
         code: data?.code,
         admitted: data?.admitted,
@@ -2309,15 +2321,14 @@ export const explainPermission =
         'Explanation not found',
       );
     } catch (error: unknown) {
+      outcome = 'failure';
       next(handleBackendError(error, 'explain access'));
     } finally {
       logger.info('Access explanation requested', {
-        actorUserId: userId,
-        orgId,
-        connectorId,
-        targetUserId,
-        recordId,
-        ...outcome,
+        target_user_id: targetUserId,
+        record_id: recordId,
+        outcome,
+        ...answer,
       });
     }
   };

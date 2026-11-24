@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { getOrgRepository } from '../../../libs/repositories/org';
 import { asAccount } from '../../../libs/context/orgContext';
 import { createUnitOfWork } from '../../../libs/repositories/doc-store';
+import { kickOutbox } from '../../../libs/services/outbox/outbox.dispatcher';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   detectRasterImageFormat,
@@ -43,6 +44,8 @@ import {
   signupSource,
 } from '../../../libs/services/telemetry/identity';
 import { ORG_CREATED_EVENT } from '../constants/constants';
+import { audit } from '../../../libs/services/audit';
+import { withCause } from '../../../libs/errors/base.error';
 
 const ADDRESS_FIELDS = [
   'addressLine1',
@@ -51,6 +54,13 @@ const ADDRESS_FIELDS = [
   'country',
   'postCode',
 ] as const;
+
+/** The onboarding status as an audit reason (snake_case). */
+const ONBOARDING_REASONS: Readonly<Record<string, string>> = {
+  configured: 'configured',
+  notConfigured: 'not_configured',
+  skipped: 'skipped',
+};
 
 @injectable()
 export class OrgController {
@@ -261,6 +271,13 @@ export class OrgController {
             },
           ),
       );
+      // The admin signs in and calls next; the poll interval would leave their graph user missing until then.
+      kickOutbox();
+      audit('org.create', {
+        actor: adminUserId,
+        org: org._id,
+        outcome: 'success',
+      });
       recordEvent(ORG_CREATED_EVENT, {
         orgId: org._id,
         userId: adminUserId,
@@ -299,10 +316,12 @@ export class OrgController {
       if (error instanceof BadRequestError || error instanceof NotFoundError) {
         throw error;
       }
-      this.logger.error('Creating the organisation failed', { error });
       throw markClientSafe(
-        new InternalServerError(
-          serverFailureMessage('create the organisation'),
+        withCause(
+          new InternalServerError(
+            serverFailureMessage('create the organisation'),
+          ),
+          error,
         ),
       );
     }
@@ -314,7 +333,6 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     const orgId = req.user?.orgId;
-    this.logger.debug(orgId);
     try {
       const org = await getOrgRepository().getLive(orgId as string);
 
@@ -415,6 +433,7 @@ export class OrgController {
         orgId as string,
         updateData,
       );
+      audit('org.update', { outcome: 'success' });
 
       await this.eventService.start();
       let event: Event = {
@@ -457,6 +476,7 @@ export class OrgController {
       if (!deleted) {
         throw new NotFoundError('Organisation not found');
       }
+      audit('org.delete', { outcome: 'success' });
 
       await this.eventService.start();
       let event: Event = {
@@ -531,6 +551,7 @@ export class OrgController {
 
       const base64Logo = processedBuffer.toString('base64');
       await getOrgRepository().setLogo(orgId as string, base64Logo, mimeType);
+      audit('org.logo.update', { outcome: 'success', reason: 'set' });
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability
       // The frontend doesn't use the response and fetches the logo separately via getOrgLogo()
@@ -588,6 +609,7 @@ export class OrgController {
       if (!orgLogo) {
         throw new NotFoundError('Organisation logo not found');
       }
+      audit('org.logo.update', { outcome: 'success', reason: 'removed' });
 
       res.status(200).send(orgLogo);
       return;
@@ -643,6 +665,10 @@ export class OrgController {
       if (!org) {
         throw new NotFoundError('Organisation not found');
       }
+      audit('org.onboarding.update', {
+        outcome: 'success',
+        reason: ONBOARDING_REASONS[status as string],
+      });
 
       res.status(200).json({
         message: 'Onboarding status updated successfully',

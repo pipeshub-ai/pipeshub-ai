@@ -5,6 +5,9 @@ import {
   FilePayload,
   SignObjectUrlOptions,
   SignedObjectUrl,
+  ObjectPage,
+  ConditionalCapabilities,
+  ConditionalDeleteResult,
   StorageServiceResponse,
 } from '../types/storage.service.types';
 
@@ -219,6 +222,48 @@ export interface StorageServiceInterface {
    * Writes bytes at a storage key, replacing any file already there. Local only.
    */
   writeObject?(storageKey: string, data: Buffer): Promise<void>;
+
+  /**
+   * Writes bytes at a storage key only when nothing is stored there. Resolves
+   * false, and leaves the stored object alone, when the key is taken. Local only.
+   */
+  writeObjectIfAbsent?(storageKey: string, data: Buffer): Promise<boolean>;
+
+  /**
+   * One page of the objects under a key prefix, in key order. `after` is the
+   * cursor a previous page returned. An empty or missing prefix is an empty page.
+   */
+  listObjects?(
+    prefix: string,
+    options: { after?: string; limit: number },
+  ): Promise<ObjectPage>;
+
+  /**
+   * Removes objects by key, at most 1000 per call. A key that is already gone
+   * is not an error; any other failure rejects.
+   */
+  deleteObjects?(storageKeys: string[]): Promise<void>;
+
+  /**
+   * Removes each object only if its ETag is still the listed one. An object that changed stays and is returned in
+   * `changed`; one already gone is a success. Present only when the store honours the condition.
+   */
+  deleteObjectsIfMatch?(
+    items: { key: string; etag: string }[],
+  ): Promise<ConditionalDeleteResult>;
+
+  /** What the store honours, probed once (S3-compatibles) or known (Azure, local). Absent: nothing conditional. */
+  conditionalCapabilities?(): Promise<ConditionalCapabilities>;
+
+  /**
+   * Local storage's stand-in for a signed conditional PUT: replaces the object only if its ETag is `etag`.
+   * `gone` when there is no object, `changed` when its ETag differs.
+   */
+  writeObjectIfMatch?(
+    storageKey: string,
+    data: Buffer,
+    etag: string,
+  ): Promise<'written' | 'gone' | 'changed'>;
 
   /**
    * Opens a storage key for reading, checked to be a regular file inside the

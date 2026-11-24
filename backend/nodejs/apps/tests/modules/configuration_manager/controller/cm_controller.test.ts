@@ -928,6 +928,7 @@ describe('ConfigurationManager Controller', () => {
         'ENABLE_SOFT_DELETE',
         'ENABLE_NAMED_ENTITY_EXTRACTION',
         'ENABLE_USER_CONTEXT',
+        'ENABLE_RECORD_PREVIEW_CACHE',
       ])
       expect(flags.find((f: any) => f.key === 'ENABLE_MCP')?.advanced).to.not.equal(true)
       expect(flags.find((f: any) => f.key === 'ENABLE_NAMED_ENTITY_EXTRACTION')?.defaultEnabled).to.equal(false)
@@ -946,6 +947,16 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].featureFlags.ENABLE_MCP).to.equal(true)
+    })
+
+    it('should default ENABLE_RECORD_PREVIEW_CACHE to true when the store has no entry', async () => {
+      const kvs = createMockKeyValueStore()
+      const handler = getEffectivePlatformFeatureFlags(kvs)
+      const res = createMockResponse()
+
+      await handler(createMockRequest(), res, createMockNext())
+
+      expect(res.json.firstCall.args[0].featureFlags.ENABLE_RECORD_PREVIEW_CACHE).to.equal(true)
     })
 
     it('should default ENABLE_SKILLS to true when the store has no entry', async () => {
@@ -4138,7 +4149,7 @@ describe('ConfigurationManager Controller', () => {
       expect(err.message).to.include('and 2 more')
     })
 
-    it('should throw InternalServerError (fail-closed) when usage check throws', async () => {
+    it('refuses with 503 (fail-closed) when usage check throws', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -4158,12 +4169,12 @@ describe('ConfigurationManager Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.statusCode).to.equal(500)
-      expect(err.code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
+      expect(err.statusCode).to.equal(503)
+      expect(err.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
       expect(kvs.set.called).to.be.false
     })
 
-    it('should throw InternalServerError (fail-closed) when usage check returns non-200', async () => {
+    it('refuses with 503 (fail-closed) when usage check returns non-200', async () => {
       const aiModels = {
         llm: [
           { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
@@ -4186,8 +4197,8 @@ describe('ConfigurationManager Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.statusCode).to.equal(500)
-      expect(err.code).to.equal('HTTP_INTERNAL_SERVER_ERROR')
+      expect(err.statusCode).to.equal(503)
+      expect(err.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
       expect(kvs.set.called).to.be.false
     })
   })
@@ -7442,6 +7453,76 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
       expect(kvs.compareAndSet.calledOnce).to.be.true
+    })
+
+    // The AI service words a failed check as `{ message }`, `{ error }`, FastAPI's `{ detail }`, or bare
+    // text; the dialog shows only what reaches `error.message`, so every shape has to get there.
+    const failedCheckBodies: Array<[string, number, unknown]> = [
+      ['a message', 400, { status: 'error', message: 'OpenAI said: "You exceeded your current quota"' }],
+      ['an error string', 500, { status: 'not healthy', error: 'OpenAI said: "You exceeded your current quota"' }],
+      ['an error object', 502, { error: { message: 'OpenAI said: "You exceeded your current quota"' } }],
+      ['a FastAPI detail', 500, { detail: 'OpenAI said: "You exceeded your current quota"' }],
+      ['a detail object', 400, { detail: { message: 'OpenAI said: "You exceeded your current quota"' } }],
+      ['bare text', 500, 'OpenAI said: "You exceeded your current quota"'],
+    ]
+    for (const [shape, statusCode, data] of failedCheckBodies) {
+      for (const [name, makeHandler] of [
+        ['an edit', updateAIModelProvider],
+        ['an add', addAIModelProvider],
+      ] as const) {
+        it(`passes the check's reason to the dialog for ${name} when it comes as ${shape}`, async () => {
+          sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode, data } as any)
+          const existingModels = {
+            llm: [{ modelKey: 'mk-1', provider: 'openai', configuration: { model: 'gpt-4' }, isDefault: true, isMultimodal: false, isReasoning: false }],
+            embedding: [],
+          }
+          const kvs = createMockKeyValueStore({
+            get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(existingModels))),
+          })
+          const appConfig = { aiBackend: 'http://ai:8000', cmBackend: 'http://cm:3001' } as any
+          const handler = makeHandler(kvs, createMockEventService(), appConfig)
+          const req = createMockRequest({
+            params: { modelType: 'llm', modelKey: 'mk-1' },
+            body: {
+              modelType: 'llm',
+              provider: 'openai',
+              configuration: { model: 'gpt-6-luna', apiKey: 'k' },
+            },
+          })
+          const res = createMockResponse()
+
+          await handler(req, res, createMockNext())
+
+          expect(res.status.calledWith(statusCode)).to.be.true
+          expect(res.json.firstCall.args[0].error.message).to.equal(
+            'OpenAI said: "You exceeded your current quota"',
+          )
+          expect(kvs.compareAndSet.called).to.be.false
+        })
+      }
+    }
+
+    it('falls back to a generic reason when the check sends none', async () => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 500, data: { detail: '   ' } } as any)
+      const existingModels = {
+        llm: [{ modelKey: 'mk-1', provider: 'openai', configuration: { model: 'gpt-4' }, isDefault: true, isMultimodal: false, isReasoning: false }],
+        embedding: [],
+      }
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify(existingModels))),
+      })
+      const handler = updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai:8000', cmBackend: 'http://cm:3001' } as any)
+      const req = createMockRequest({
+        params: { modelType: 'llm', modelKey: 'mk-1' },
+        body: { provider: 'openai', configuration: { model: 'gpt-4', apiKey: 'k' } },
+      })
+      const res = createMockResponse()
+
+      await handler(req, res, createMockNext())
+
+      expect(res.json.firstCall.args[0].error.message).to.equal(
+        'Failed to do health check of llm configuration, check credentials again',
+      )
     })
 
     it('should return 400 when provider is missing', async () => {

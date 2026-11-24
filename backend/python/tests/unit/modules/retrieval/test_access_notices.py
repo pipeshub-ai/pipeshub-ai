@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -257,3 +258,42 @@ async def test_an_entity_filter_that_matches_nothing_still_carries_the_notices_w
     assert result["status"] == Status.EMPTY_RESPONSE.value
     assert result["message"] == mod.ENTITY_FILTER_NO_MATCH_MESSAGE
     assert result["accessNotices"] == [{"code": "connector_syncing", "connectorId": "c1", "connectorName": "Jira", "firstSync": True}]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "filters", "time_range"),
+    [
+        ({"prefer_record_ids": True}, {}, None),  # the record-id path
+        ({}, {}, {"start": 1}),  # a filter no container expresses
+        ({}, {}, None),  # the container path
+    ],
+    ids=["record-ids", "unsupported-filter", "containers"],
+)
+async def test_the_access_read_runs_after_the_callers_lookup(monkeypatch, kwargs, filters, time_range) -> None:
+    """For a brand-new caller the lookup writes their graph user; an access read beside it answered for nobody."""
+    svc = RetrievalService.__new__(RetrievalService)
+    svc.logger = MagicMock()
+    svc.graph_provider = AsyncMock()
+    order: list[str] = []
+
+    async def user_lookup(user_id: str) -> dict:
+        await asyncio.sleep(0.01)
+        order.append("user")
+        return {"_key": "u1"}
+
+    async def record_ids(*_a: object, **_k: object) -> dict:
+        order.append("access")
+        return {"v1": "r1"}
+
+    async def containers(*_a: object, **_k: object) -> MagicMock:
+        order.append("access")
+        return MagicMock(fallback_reason=None, scope_connector_ids=None, app_ids=frozenset())
+
+    monkeypatch.setattr(svc, "_excluded_demo_apps", AsyncMock(return_value=frozenset()))
+    monkeypatch.setattr(svc, "_get_user_cached", user_lookup)
+    monkeypatch.setattr(svc, "_get_accessible_virtual_ids_task", record_ids)
+    svc.graph_provider.get_accessible_containers = containers
+
+    _, _, user = await svc._resolve_search_scope("u1", "org", filters, time_range, **kwargs)
+    assert user == {"_key": "u1"}
+    assert order == ["user", "access"]

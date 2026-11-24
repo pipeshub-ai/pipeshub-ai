@@ -31,6 +31,7 @@ class TestAcceptedServiceScopes:
                 "document:parse",
                 "document:classify",
                 "entity:user:write",
+                "entity:user:ensure",
             }
         )
 

@@ -34,23 +34,34 @@ Security model:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import logging
 import os
+import shlex
 import shutil
 import tarfile
 import tempfile
 import time
 from uuid import uuid4
 
+from app.agent_loop_lib.sandbox.coding.docker import (
+    create_bounded_container,
+    disk_watch_note,
+    start_disk_watch,
+)
 from app.agent_loop_lib.sandbox.coding.egress_firewall import (
     CONTAINER_HARDENING,
-    create_sandbox_container,
     ensure_egress_network_sync,
     firewall_unavailable,
     firewalled_container_kwargs,
     new_firewall_token,
     parse_cidrs,
+)
+from app.agent_loop_lib.sandbox.coding.output_limits import (
+    ExtractBudget,
+    extract_tar_stream,
+    read_capped_stream,
 )
 from app.sandbox.base_executor import BaseExecutor, build_sandbox_env
 from app.sandbox.models import (
@@ -254,7 +265,7 @@ class DockerExecutor(BaseExecutor):
                     "sh", "-c",
                     f"pip install --quiet --no-cache-dir --target /deps "
                     f"--index-url {_DEFAULT_PIP_INDEX_URL} "
-                    + " ".join(packages),
+                    + _shell_words(packages),
                 ]
                 extract_path = "/deps"
                 mount_point = "/deps"
@@ -264,7 +275,7 @@ class DockerExecutor(BaseExecutor):
                     f"mkdir -p /install && cd /install && "
                     f"npm install --prefix /install --no-save --loglevel=error "
                     f"--registry={_DEFAULT_NPM_REGISTRY} "
-                    + " ".join(packages),
+                    + _shell_words(packages),
                 ]
                 extract_path = "/install/node_modules"
                 mount_point = "/node_modules"
@@ -304,8 +315,9 @@ class DockerExecutor(BaseExecutor):
         token: str,
     ) -> bytes:
         """Deps tar from one firewalled install container."""
-        container = create_sandbox_container(
+        container = create_bounded_container(
             client,
+            purpose="install",
             image=SANDBOX_IMAGE,
             environment={},
             mem_limit=self.memory_limit_mb * 1024 * 1024,
@@ -321,11 +333,22 @@ class DockerExecutor(BaseExecutor):
             elif language == SandboxLanguage.TYPESCRIPT:
                 container.put_archive("/", _tar_empty_dir("install", mode=0o777))
             container.start()
-            exit_info = container.wait(timeout=timeout + 30)
+            # Same disk watch as the coding sandbox: where the daemon ignores
+            # the per-run quota, a run past it (or one whose size cannot be
+            # read) is stopped.
+            watch = start_disk_watch(client, container.id)
+            try:
+                exit_info = container.wait(timeout=timeout + 30)
+            finally:
+                if watch is not None:
+                    watch.stop()
             exit_code = exit_info.get("StatusCode", -1)
+            stopped = disk_watch_note(watch, install=True)
+            if stopped:
+                raise RuntimeError(stopped.strip())
             if exit_code != 0:
-                stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
-                stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
+                stderr = _capped_logs(container, stdout=False)
+                stdout = _capped_logs(container, stdout=True)
                 if firewall_unavailable(exit_code, stderr, token):
                     raise RuntimeError(
                         f"Package install refused: sandbox image {SANDBOX_IMAGE} cannot install "
@@ -412,11 +435,12 @@ class DockerExecutor(BaseExecutor):
                 )
 
         container = None
+        watch = None
         try:
             mem_bytes = self.memory_limit_mb * 1024 * 1024
             nano_cpus = int(self.cpu_limit * 1e9)
 
-            container = create_sandbox_container(
+            container = create_bounded_container(
                 client,
                 image=image,
                 command=command,
@@ -447,12 +471,13 @@ class DockerExecutor(BaseExecutor):
                 container.put_archive(deps_target, deps_tar)
 
             container.start()
+            watch = start_disk_watch(client, container.id)
 
             def _blocking_wait():
                 exit_info = container.wait(timeout=timeout + 30)
                 exit_code = exit_info.get("StatusCode", -1)
-                stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
-                stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
+                stdout = _capped_logs(container, stdout=True)
+                stderr = _capped_logs(container, stdout=False)
                 return exit_code, stdout, stderr
 
             try:
@@ -461,14 +486,16 @@ class DockerExecutor(BaseExecutor):
                     timeout=timeout + 5,
                 )
             except (asyncio.TimeoutError, asyncio.CancelledError):
+                if watch is not None:
+                    watch.stop()
                 logger.warning("Container execution timed out after %ds, killing container", timeout)
                 try:
                     container.kill()
                 except Exception:
                     pass
                 try:
-                    stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
-                    stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
+                    stdout = _capped_logs(container, stdout=True)
+                    stderr = _capped_logs(container, stdout=False)
                 except Exception:
                     stdout, stderr = "", ""
                 return ExecutionResult(
@@ -479,13 +506,26 @@ class DockerExecutor(BaseExecutor):
                     error=f"Execution timed out after {timeout}s",
                 )
 
+            if watch is not None:
+                watch.stop()
+            stopped = disk_watch_note(watch)
+            if stopped:
+                return ExecutionResult(
+                    success=False,
+                    stdout=stdout,
+                    stderr=stopped + stderr,
+                    exit_code=exit_code or 137,
+                    error=stopped.strip(),
+                )
+
             # Pull output artifacts from the container into the local output_dir.
-            _extract_container_dir(container, "/output", output_dir)
+            budget = _extract_container_dir(container, "/output", output_dir)
 
             return ExecutionResult(
                 success=exit_code == 0,
                 stdout=stdout,
-                stderr=stderr,
+                # Tells the caller which outputs were left out, and why.
+                stderr=stderr + budget.note(),
                 exit_code=exit_code,
             )
         except Exception as exc:
@@ -496,6 +536,8 @@ class DockerExecutor(BaseExecutor):
                     pass
             raise
         finally:
+            if watch is not None:
+                watch.stop()
             if container:
                 try:
                     container.remove(force=True)
@@ -547,60 +589,77 @@ def _tar_empty_dir(name: str, *, mode: int = 0o755) -> bytes:
     return buf.read()
 
 
-def _get_archive_bytes(container: object, path: str) -> bytes:
-    """Stream ``container.get_archive(path)`` into a bytes blob."""
+# The most dependency archive one install may hand back. It is held in
+# memory until the run container gets it, so it is bounded.
+_DEPS_ARCHIVE_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _shell_words(specs: list[str]) -> str:
+    """Package specs as literal ``sh`` words: ``numpy>=1.26`` would
+    otherwise be read as a redirection, and ``lodash@4.*`` as a glob."""
+    return " ".join(shlex.quote(spec) for spec in specs)
+
+
+def _capped_logs(container: object, *, stdout: bool) -> str:
+    """One output stream of a finished container, keeping only its first
+    and last bytes; the rest is read past and dropped."""
+    try:
+        try:
+            # `follow` defaults to `stream`: a container still running (a kill
+            # that failed) would keep this read open.
+            stream = container.logs(stdout=stdout, stderr=not stdout, stream=True, follow=False)
+        except TypeError:
+            # A client without streaming logs.
+            stream = container.logs(stdout=stdout, stderr=not stdout)
+    except Exception as exc:
+        logger.debug("reading container logs failed: %s", exc)
+        return ""
+    return read_capped_stream(stream)
+
+
+def _get_archive_bytes(container: object, path: str, *, limit: int = _DEPS_ARCHIVE_MAX_BYTES) -> bytes:
+    """Stream ``container.get_archive(path)`` into a bytes blob of at most
+    ``limit`` bytes; a larger archive fails the install instead of filling
+    this process's memory."""
     bits, _ = container.get_archive(path)
-    return b"".join(bits)
+    buf = bytearray()
+    try:
+        for chunk in bits:
+            if not chunk:
+                continue
+            if len(buf) + len(chunk) > limit:
+                raise RuntimeError(
+                    f"Package install produced more than {limit // (1024 * 1024)} MiB of "
+                    "dependencies; install fewer or smaller packages"
+                )
+            buf += chunk
+    finally:
+        close = getattr(bits, "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()
+    return bytes(buf)
 
 
-# Keep up to 16 MiB of tar data in memory; anything larger spills to disk.
-# This avoids OOM on large artifact directories while still being fast for
-# the common small-output case.
-_TAR_SPOOL_MAX_SIZE = 16 * 1024 * 1024
-
-
-def _extract_container_dir(container: object, container_path: str, local_dir: str) -> None:
+def _extract_container_dir(container: object, container_path: str, local_dir: str) -> ExtractBudget:
     """Pull a directory from a container via ``get_archive`` and extract to *local_dir*.
 
-    The archive is streamed chunk-by-chunk into a ``SpooledTemporaryFile`` so
-    small archives stay in memory while large ones transparently spill to
-    disk. This prevents high memory consumption / OOM on large outputs.
+    The archive is read as it streams in, within the run output limits
+    (``output_limits.ExtractLimits.for_output``): oversized files are
+    skipped, collection stops at the total or file-count limit, and nothing
+    is spooled.
 
     Only regular files are extracted. A symlink (or hardlink/device) member is
     never a legitimate artifact and, left on the host, would be followed by the
     next run's readers and copy host files back into the sandbox (SB-5), so
     non-regular members are dropped and ``filter="data"`` sanitises the rest.
     """
+    budget = ExtractBudget.for_output()
     try:
         bits, _ = container.get_archive(container_path)
-        with tempfile.SpooledTemporaryFile(max_size=_TAR_SPOOL_MAX_SIZE) as tar_stream:
-            for chunk in bits:
-                if chunk:
-                    tar_stream.write(chunk)
-            tar_stream.seek(0)
-            resolved_root = os.path.realpath(local_dir)
-            with tarfile.open(fileobj=tar_stream, mode="r|*") as tar:
-                prefix = os.path.basename(container_path.rstrip("/")) + "/"
-                for member in tar:
-                    if member.isdir():
-                        continue
-                    if not member.isfile():
-                        logger.warning(
-                            "Skipping non-regular tar member %r (type %r) from %s",
-                            member.name, member.type, container_path,
-                        )
-                        continue
-                    if member.name.startswith(prefix):
-                        member.name = member.name[len(prefix):]
-                    if not member.name:
-                        continue
-                    target = os.path.realpath(os.path.join(local_dir, member.name))
-                    if not target.startswith(resolved_root + os.sep) and target != resolved_root:
-                        logger.warning(
-                            "Skipping tar member with path traversal: %s -> %s",
-                            member.name, target,
-                        )
-                        continue
-                    tar.extract(member, local_dir, filter="data")
+        extract_tar_stream(bits, container_path, local_dir, budget)
     except Exception:
         logger.debug("No output artifacts to extract from container %s", container_path)
+    if budget.note():
+        logger.warning("sandbox output %s: %s", container_path, budget.note().strip())
+    return budget

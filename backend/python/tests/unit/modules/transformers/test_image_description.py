@@ -12,17 +12,23 @@ import asyncio
 import base64
 import io
 import logging
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat, ImageMetadata
+from app.models.blocks import (
+    Block,
+    BlocksContainer,
+    BlockType,
+    DataFormat,
+    ImageMetadata,
+)
 from app.modules.transformers.image_description import (
     MAX_IMAGES_ENV_VAR,
     ImageDescriber,
     harvest_descriptions,
 )
+from tests.support.loop_clock import virtual_loop_time
 
 
 def _png(width: int = 800, height: int = 600, seed: int = 0) -> str:
@@ -180,9 +186,11 @@ class TestPerRecordCap:
 
 
 class TestBudget:
-    async def test_a_stalled_call_is_skipped_when_the_budget_runs_out(self) -> None:
+    async def test_a_stalled_call_is_skipped_when_the_budget_runs_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """One stalled vision call held a chat upload for six minutes, long past
         the browser's 90s wait (PP-256). The caller's budget bounds the pass."""
+        virtual_loop_time(monkeypatch)
+        loop = asyncio.get_running_loop()
         describer, vlm, patcher = _describer()
         container = _container(_image_block(0), _image_block(1), _image_block(2))
         stalled_uri = container.blocks[1].data["uri"]
@@ -193,11 +201,12 @@ class TestBudget:
             return MagicMock(content="A bar chart of Q3 revenue")
 
         vlm.ainvoke = AsyncMock(side_effect=respond)
-        started = time.monotonic()
+        started = loop.time()
         with patcher:
             written = await describer.annotate(container, budget_s=0.5)
 
-        assert time.monotonic() - started < 5
+        # The pass ends at the budget, not when the stalled call would have answered (30 s).
+        assert loop.time() - started == pytest.approx(0.5)
         assert written == 2
         assert container.blocks[1].image_metadata is None
         assert container.blocks[0].image_metadata.description == "A bar chart of Q3 revenue"

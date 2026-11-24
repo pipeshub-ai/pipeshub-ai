@@ -6,6 +6,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_fleet_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests stand in for the services' collaborators; the fleet Redis binding is exercised, unpatched, in
+    tests/unit/services/messaging/test_fleet_state_startup.py and the spend integration tests."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.setattr("app.parsing_main.bind_service_fleet", AsyncMock(return_value=MagicMock(aclose=AsyncMock())))
+
+
+
 class TestHealthCheck:
     async def test_governor_stats_failure_is_not_echoed(self) -> None:
         """Still healthy; the exception goes to the log and the payload says only that stats are unavailable."""
@@ -14,6 +24,7 @@ class TestHealthCheck:
 
         error = RuntimeError("SENTINEL /sys/fs/cgroup/memory.max")
         mock_governor = MagicMock()
+        mock_governor.admission_explain.return_value = {}
         mock_governor.stats.side_effect = error
         mock_governor.fleet_ceilings.heavy = 6
         mock_registry = MagicMock()
@@ -34,7 +45,9 @@ class TestHealthCheck:
             "formats": ["pdf"],
             "resource_governor": {"error": "unavailable"},
         }
-        assert set(body) == {"status", "service", "formats", "resource_governor", "llm_gateway", "cpu", "lanes"}
+        assert set(body) == {
+            "status", "service", "formats", "resource_governor", "llm_gateway", "llm_wire_hooks", "cpu", "lanes", "admission", "load",
+        }
         assert "SENTINEL" not in result.body.decode()
         mock_container.logger.return_value.warning.assert_called_once_with(
             "Resource governor stats failed: %s", error
@@ -52,6 +65,7 @@ class TestHealthCheck:
         mock_registry = MagicMock()
         mock_registry.list_all_formats.return_value = {}
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.stats.side_effect = lambda: seen.setdefault("stats", threading.current_thread().name) and {}
 
         def fake_lanes_health(*_args: object) -> dict[str, object]:
@@ -81,6 +95,7 @@ class TestHealthCheck:
         mock_registry = MagicMock()
         mock_registry.list_all_formats.return_value = {}
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.stats.return_value = {}
         release = threading.Event()
         loop = asyncio.get_running_loop()
@@ -108,6 +123,7 @@ class TestHealthCheck:
         mock_registry = MagicMock()
         mock_registry.list_all_formats.return_value = {}
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.fleet_ceilings.heavy = 6
         governor.stats.return_value = {}
         # An explicit thread count in the environment would make the plan "explicit_threads".
@@ -224,6 +240,7 @@ class TestLifespan:
 
         container = MagicMock()
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.run = AsyncMock()
         governor.ceilings = SimpleNamespace(heavy=1, light=1)
         app = MagicMock()
@@ -268,6 +285,7 @@ class TestLifespan:
 
         order: list[str] = []
         governor = MagicMock()
+        governor.admission_explain.return_value = {}
         governor.run = AsyncMock()
         governor.ceilings = SimpleNamespace(heavy=1, light=1)
         governor.stop.side_effect = lambda: order.append("governor.stop")
@@ -312,3 +330,44 @@ class TestLifespan:
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
         }
         assert lines["parse_pool.shutdown_parse_pool"] < lines["governor.stop"] < lines["governor.close"]
+
+
+class TestReadiness:
+    """/health/ready asks the Docling service the pod calls; /health stays a liveness signal that does not."""
+
+    async def test_ready_when_docling_answers(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        from app.parsing_main import readiness
+
+        with patch.object(httpx.AsyncClient, "get", AsyncMock(return_value=SimpleNamespace(status_code=200))):
+            result = await readiness()
+        assert result.status_code == 200
+
+    @pytest.mark.parametrize("failure", ["ConnectError", "ReadTimeout"])
+    async def test_not_ready_when_docling_does_not_answer(self, failure: str) -> None:
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        from app.parsing_main import readiness
+
+        with patch.object(httpx.AsyncClient, "get", AsyncMock(side_effect=getattr(httpx, failure)("down"))):
+            result = await readiness()
+        assert result.status_code == 503
+        assert json.loads(result.body)["docling"] == "unavailable"
+
+    async def test_not_ready_when_docling_is_unhealthy(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        from app.parsing_main import readiness
+
+        with patch.object(httpx.AsyncClient, "get", AsyncMock(return_value=SimpleNamespace(status_code=503))):
+            result = await readiness()
+        assert result.status_code == 503

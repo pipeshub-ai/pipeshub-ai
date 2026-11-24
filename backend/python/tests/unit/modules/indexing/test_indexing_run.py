@@ -49,6 +49,7 @@ def _make_indexing_pipeline():
         )
         # no other org holds points unless a test says so (the shared-VRID release check reads this)
         pipeline.vector_db_service.scroll = AsyncMock(return_value=MagicMock(points=[]))
+        pipeline.vector_db_service.other_orgs_hold_virtual_record = AsyncMock(return_value=None)  # answered by the scroll
         return pipeline
 
 

@@ -35,7 +35,7 @@ function store(settings: unknown, entries: Record<string, unknown> = {}): any {
   return kv
 }
 
-const entry = (over: Record<string, unknown> = {}) => JSON.stringify({ checkedAt: NOW - 1_000, untagged: [], groupsChecked: ['g'], ...over })
+const entry = (over: Record<string, unknown> = {}) => JSON.stringify({ checkedAt: NOW - 1_000, untagged: [], groupsChecked: ['g'], groupsExpected: ['g'], ...over })
 
 function res(): any {
   const r: any = { statusCode: 0, body: null }
@@ -201,9 +201,25 @@ describe('setPlatformSettings: the artifact rollout rules', () => {
     it('a stale entry never hides a fresh one, and no fresh entry is stale', () => {
       expect(evaluateMembership([], NOW).reason).to.equal('stale')
       expect(evaluateMembership([{ checkedAt: NOW - 100_000, untagged: [] }], NOW).reason).to.equal('stale')
-      expect(evaluateMembership([{ checkedAt: NOW - 100_000, untagged: ['x'] }, { checkedAt: NOW, untagged: [] }], NOW).ok).to.be.true
+      expect(evaluateMembership([{ checkedAt: NOW - 100_000, untagged: ['x'] }, { checkedAt: NOW, untagged: [], groupsChecked: ['g'], groupsExpected: ['g'] }], NOW).ok).to.be.true
       expect(evaluateMembership([null, 'junk', {}], NOW).reason).to.equal('stale')
       expect(nextGeneration('g', {}, { ENABLE_ARTIFACT_READ: true })).to.not.equal('g')
+    })
+
+    it('a clean entry counts only when it checked every group it expected', () => {
+      const full = { checkedAt: NOW, untagged: [], groupsChecked: ['pipeline_x', 'records'], groupsExpected: ['records', 'pipeline_x'] }
+      expect(evaluateMembership([full], NOW).ok).to.be.true
+      expect(evaluateMembership([{ ...full, groupsChecked: ['records'] }], NOW).reason).to.equal('stale')   // checked before a stage consumer started
+      expect(evaluateMembership([{ checkedAt: NOW, untagged: [], groupsChecked: ['records'] }], NOW).reason).to.equal('stale')   // an older writer
+      expect(evaluateMembership([{ ...full, groupsExpected: [] }], NOW).reason).to.equal('stale')
+      expect(evaluateMembership([{ checkedAt: NOW, untagged: ['old-pod'] }, full], NOW).untagged).to.deep.equal(['old-pod'])
+    })
+
+    it('a group one fresh entry expects must be checked by some fresh entry', () => {
+      const exLeader = { checkedAt: NOW - 60_000, untagged: [], groupsChecked: ['records'], groupsExpected: ['records'] }
+      const newLeader = { checkedAt: NOW - 1_000, untagged: [], groupsChecked: ['records'], groupsExpected: ['pipeline_x', 'records'] }
+      expect(evaluateMembership([exLeader, newLeader], NOW).reason).to.equal('stale')
+      expect(evaluateMembership([exLeader, { ...newLeader, groupsChecked: ['pipeline_x', 'records'] }], NOW).ok).to.be.true
     })
   })
 })

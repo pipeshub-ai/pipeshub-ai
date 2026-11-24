@@ -4,6 +4,7 @@ and auth/token management.
 All models use camelCase aliases on the wire (matching the frontend/Node conventions)
 while keeping snake_case attribute names in Python.
 """
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -54,6 +55,24 @@ class MCPAuthMode(str, Enum):
     API_TOKEN = "api_token"
     OAUTH = "oauth"
     HEADERS = "headers"
+
+
+class MCPCategory(str, Enum):
+    """The one catalog shelf a server sits on, so people can browse by what kind of tool it is."""
+
+    COMMUNICATION = "communication"
+    MEETINGS = "meetings"
+    DOCS = "docs"
+    PROJECTS = "projects"
+    DEVELOPER = "developer"
+    DATA = "data"
+    SALES = "sales"
+    SUPPORT = "support"
+    FINANCE = "finance"
+    DESIGN = "design"
+    AUTOMATION = "automation"
+    SEARCH = "search"
+    SECURITY = "security"
 
 
 class TokenEndpointAuthMethod(str, Enum):
@@ -122,6 +141,12 @@ class MCPServerTemplate(MCPCamelModel):
     documentation_url: Optional[str] = None
     auth_hint: Optional[AuthHint] = None
     tags: list[str] = Field(default_factory=list)
+    category: Optional[MCPCategory] = None
+    # What someone gets done with it, in their words ("Schedule meetings"): search reads these, and
+    # the catalog lists them. Hand-written, since a server's tools are only known after sign-in.
+    capabilities: list[str] = Field(default_factory=list)
+    # Every tool only looks things up. Unset means some tools change data.
+    read_only: bool = False
     # The catalog entry that took this one's place. A replaced entry can't be used for a new
     # server; servers already made from it keep running from it.
     replaced_by: Optional[str] = None
@@ -263,6 +288,16 @@ class OAuthTokens(MCPCamelModel):
     # Absent on tokens from before it was recorded, all issued with `client_secret_post`.
     token_endpoint_auth_method: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("expires_in", mode="before")
+    @classmethod
+    def _whole_seconds(cls, value: object) -> object:
+        # Some providers send a fraction (3599.5). Connectors accept it too; dropping it only refreshes a moment early.
+        if not isinstance(value, float) or not math.isfinite(value):
+            return value
+        whole = int(value)
+        # Under a second never becomes 0, which the expiry properties read as "no expiry".
+        return whole if whole or value == 0 else (1 if value > 0 else -1)
 
     @property
     def is_expired(self) -> bool:

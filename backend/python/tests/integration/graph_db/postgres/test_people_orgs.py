@@ -251,7 +251,7 @@ async def test_a_new_app_user_takes_over_the_person_with_their_address(w: World)
     await person(w, "pat", "pat@x.io")
     await w.nodes("records", rec("shared"))
     await w.edge("permission", ("person", "pat"), ("records", "shared"), type="USER", role="READER")
-    await w.p.batch_upsert_app_users([AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id=APP, id="upat", source_user_id="s-pat", email="pat@x.io", full_name="Pat")])
+    await w.p.batch_upsert_app_users([AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id=APP, id="upat", source_user_id="s-pat", email="pat@x.io", full_name="Pat")], org_id=w.org)
     assert await w.p.get_document("pat", "person") is None
     assert [e[1] for e in await edges(w, "permission", frm=("users", "upat"))] == ["records/shared"]
 
@@ -282,26 +282,26 @@ async def test_an_address_names_the_user_else_the_group_else_the_person_of_the_o
     await person(w, "pa", "pat@x.io")
     await person(w, "pb", "pg@x.io")
     p = w.p
-    assert [await p.get_entity_id_by_email(e) for e in ("ann@x.io", "TEAM@x.io", "pat@x.io", "both@x.io", "pg@x.io", "none@x.io")] == ["ua", "ga", "pa", "ub", "gc", None]
-    assert await p.bulk_get_entity_ids_by_email(["ann@x.io", "team@x.io", "pat@x.io", "Both@x.io", "pg@x.io", "none@x.io", "ann@x.io", ""]) == {
+    assert [await p.get_entity_id_by_email(e, org_id=w.org) for e in ("ann@x.io", "TEAM@x.io", "pat@x.io", "both@x.io", "pg@x.io", "none@x.io")] == ["ua", "ga", "pa", "ub", "gc", None]
+    assert await p.bulk_get_entity_ids_by_email(["ann@x.io", "team@x.io", "pat@x.io", "Both@x.io", "pg@x.io", "none@x.io", "ann@x.io", ""], org_id=w.org) == {
         "Ann@X.io": ("ua", "users", "USER"), "team@x.io": ("ga", "groups", "GROUP"), "pat@x.io": ("pa", "person", "USER"),
         "both@x.io": ("ub", "users", "USER"), "Both@x.io": ("gb", "groups", "GROUP"), "pg@x.io": ("gc", "groups", "GROUP")}      # keyed by the address as stored
-    assert await p.bulk_get_entity_ids_by_email([]) == {}
+    assert await p.bulk_get_entity_ids_by_email([], org_id=w.org) == {}
     with in_org(_org()):
-        assert await p.get_entity_id_by_email("ann@x.io") is None and await p.bulk_get_entity_ids_by_email(["ann@x.io"]) == {}
+        assert await p.get_entity_id_by_email("ann@x.io", org_id=w.org) is None and await p.bulk_get_entity_ids_by_email(["ann@x.io"], org_id=w.org) == {}
 
 
 async def test_a_failed_lookup_by_email_answers_nothing(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await w.nodes("users", {"_key": "ua", "email": "ann@x.io"})
     monkeypatch.setattr(w.p, "_q", failing)
-    assert await w.p.get_entity_id_by_email("ann@x.io") is None and await w.p.bulk_get_entity_ids_by_email(["ann@x.io"]) == {}
+    assert await w.p.get_entity_id_by_email("ann@x.io", org_id=w.org) is None and await w.p.bulk_get_entity_ids_by_email(["ann@x.io"], org_id=w.org) == {}
 
 
 async def test_no_org_is_an_error_for_a_lookup_by_email(pg_provider) -> None:
     with pytest.raises(MissingOrgContext):
-        await pg_provider.get_entity_id_by_email("a@x.io")
+        await pg_provider.get_entity_id_by_email("a@x.io", org_id="org-1")
     with org_context.system("test.no-org"), pytest.raises((SystemContextNotAllowed, MissingOrgContext)):
-        await pg_provider.bulk_get_entity_ids_by_email(["a@x.io"])
+        await pg_provider.bulk_get_entity_ids_by_email(["a@x.io"], org_id="org-1")
 
 
 # ---- the entity relations of a record ----------------------------------------------------------------------------------------------------------
@@ -395,6 +395,26 @@ async def test_a_replace_swaps_the_origins_links_and_leaves_the_rest(w: World) -
     for args in (("", ["users"], "INFERRED", []), ("deal", [], "INFERRED", []), ("deal", ["users"], "", [])):
         with pytest.raises(ValueError, match="needs a record"):
             await w.p.replace_record_entity_relations(*args)
+
+
+async def test_a_replace_keeps_the_edge_types_it_is_told_to_keep(w: World) -> None:
+    await w.nodes("users", {"_key": "bob"}, {"_key": "ann"})
+    await w.nodes("records", rec("case"))
+
+    def edge(user: str, edge_type: str) -> dict:
+        return {"_from": "records/case", "_to": f"users/{user}", "edgeType": edge_type, "origin": "INFERRED", "createdAtTimestamp": 2}
+
+    async def stored() -> list[tuple[str, str]]:
+        return [(e[1], e[2]) for e in await edges(w, "entityRelations", frm=("records", "case"))]
+
+    await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [edge("ann", "OWNED_BY"), edge("bob", "SHARED_WITH")])
+    assert await stored() == [("users/ann", "OWNED_BY"), ("users/bob", "SHARED_WITH")]
+    await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [edge("ann", "AUTHORED_BY")], keep_edge_types=["SHARED_WITH"])
+    assert await stored() == [("users/ann", "AUTHORED_BY"), ("users/bob", "SHARED_WITH")]
+    await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [edge("ann", "AUTHORED_BY"), edge("ann", "SHARED_WITH")], keep_edge_types=["SHARED_WITH"])
+    assert await stored() == [("users/ann", "AUTHORED_BY"), ("users/ann", "SHARED_WITH"), ("users/bob", "SHARED_WITH")]
+    await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [])
+    assert await stored() == []
 
 
 async def test_a_replace_that_fails_keeps_the_old_links_without_a_transaction(w: World) -> None:

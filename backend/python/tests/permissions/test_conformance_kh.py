@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 from . import gen
 from .kh_layer import (
@@ -26,6 +27,7 @@ from .kh_layer import (
     check_world,
     check_worlds,
     children_of,
+    counts_from_the_second_page,
     cursor_in_the_clear,
     on_every_store,
     refused_by_cap,
@@ -37,6 +39,7 @@ from .kh_worlds import (
     CROSSREACH,
     DECLDEEP,
     DECLHIDE,
+    DECLPAG,
     DECLSTUB,
     DEEP_CHAIN,
     DEEPOPEN,
@@ -47,11 +50,15 @@ from .kh_worlds import (
     HIDESEED,
     KEYCLASH,
     KH_WORLDS,
+    LEVELS,
     NESTSTUB,
     OPENGRANT,
     OPENGRANTTEAM,
     OPENGROUP,
     OPENSTUB,
+    PAGMEMBER,
+    PAGSEED,
+    PAGSTORY,
     REACHSTUB,
     SCOPEDSIDE,
     SCOPEDTWO,
@@ -124,6 +131,11 @@ def _assert_each_store(results: list[tuple[GraphCheckLayer, list[KhFinding] | Ex
         raise problems[0]
 
 
+def _split(layer: object) -> bool:
+    """Whether ``layer`` browses with the split browse (docs/knowledge-hub-browse.md), which has no sample and no time budget."""
+    return getattr(layer, "name", "") == "neo4j" and Neo4jProvider.kh_browse_mode() == "split"
+
+
 async def test_golden_worlds_count_what_the_viewer_may_read(graph_layers) -> None:
     scenarios: list[Scenario] = load_all()
     worlds = [*dict.fromkeys(s.final_world() for s in scenarios), *KH_WORLDS]      # shapes no generator builds: the connector check of every arm, arrows, a multi-page walk
@@ -189,6 +201,20 @@ async def test_a_folder_lists_each_stub_once_over_its_pages(graph_layers) -> Non
             await layer.release([FOLDERSTUB])
 
 
+async def test_counts_asked_for_from_the_second_page_on_describe_the_whole_folder(graph_layers) -> None:
+    """A first page asked without counts issues a cursor carrying the total alone; every later page that asks for counts gets counts by type that add
+    up to its total, as the rows of the whole folder do (they came back empty beside a total until the carried total aged out)."""
+    for layer in graph_layers:
+        await layer.preload([FOLDERSTUB])
+        try:
+            items, pages = await counts_from_the_second_page(layer, FOLDERSTUB, "u", "f", "folder", 4)
+            assert len(items) == 9 and len(pages) == 2, (layer.name, len(items), pages)
+            by_type = dict(Counter(i.nodeType for i in items))
+            assert all(p == (9, 9, 9, by_type) for p in pages), (layer.name, pages, by_type)
+        finally:
+            await layer.release([FOLDERSTUB])
+
+
 async def test_a_node_the_oracle_admits_past_the_cap_is_listed_under_its_parent(graph_layers) -> None:
     """A seed, and a member of an App that opens everything, are admitted with no hop cap: below depth 50 each link is listed under its parent,
     with an arrow, and the layer never excuses one as the cap's (`refused_by_cap` reads the verdict, not the depth)."""
@@ -237,7 +263,8 @@ async def test_a_page_that_ends_where_the_check_was_last_asked_names_no_child_th
             ns, cursors = await layer._ns(WIDE), []
             items, _, _ = await browse_pages(layer, WIDE, "u", "f", "recordGroup", 50, cursors=cursors)
             assert [ns.local(i.id) for i in items] == readable, layer.name
-            assert cursors, layer.name
+            # The split browse decides every child before the page, so the forty fit one page and no cursor resumes a check.
+            assert cursors or _split(layer), layer.name
             assert not [n for c in cursors for n in denied if n in cursor_in_the_clear(c)], layer.name
         finally:
             await layer.release([WIDE])
@@ -359,7 +386,8 @@ async def test_a_child_the_check_admits_by_any_arm_keeps_its_row_and_its_stub(gr
             assert await children_of(layer, STUBSEED, "u", "h", "recordGroup") == {"S": True}, layer.name
             assert await children_of(layer, NESTSTUB, "u", "h", "recordGroup") == {"S": True}, layer.name
             assert await children_of(layer, NESTSTUB, "u", "S", "record") == {"T": True}, layer.name
-            assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == {}, layer.name
+            # Past the sample the legacy listing leaves the stub out; the split browse has no sample and lists it, since opening it lists k200.
+            assert await children_of(layer, CAPSTUB, "u", "h", "recordGroup") == ({"S": True} if _split(layer) else {}), layer.name
             assert await children_of(layer, CAPSTUB, "u", "S", "record") == {"k200": False}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "R", "record") == {"S": True}, layer.name
             assert await children_of(layer, REACHSTUB, "u", "f", "recordGroup") == {"R": True}, layer.name
@@ -390,6 +418,25 @@ async def test_a_child_below_a_group_that_hides_its_children_is_listed_only_wher
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release([HIDESEED, DECLHIDE])
+
+
+async def test_a_group_that_carries_access_only_is_no_row_and_each_record_under_it_is_listed_once(graph_layers) -> None:
+    """A Jira security level's group (LEVELS): never listed, flattened or opened, no arrow for it, and every issue under it listed once, where it
+    is filed; a record granted below it whose other parent the viewer cannot open is a chain-top of its own group, as if the level were not
+    there. The access check still reads through it."""
+    for layer in graph_layers:
+        await layer.preload([LEVELS])
+        try:
+            assert await layer.admitted(LEVELS, "u", ["s1", "t1", "s2", "L"]) == {"s1", "t1", "s2", "L"}, layer.name
+            assert await children_of(layer, LEVELS, "u", "P", "recordGroup") == {"E": True, "E2": True, "t1": True, "t2": False}, layer.name
+            assert await children_of(layer, LEVELS, "u", "E", "record") == {"s1": False}, layer.name
+            assert await children_of(layer, LEVELS, "y", "P", "recordGroup") == {"E": True, "E2": True, "o": False, "t1": False, "t2": False}, layer.name
+            assert await children_of(layer, LEVELS, "w", "P", "recordGroup") == {"E": False, "t2": False}, layer.name
+            assert "L" not in (await children_of(layer, LEVELS, "u", "J", "app", flattened=True) or {}), layer.name
+            bad = _bad(await check_world(layer, LEVELS, "levels"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([LEVELS])
 
 
 async def test_a_depth_bound_counts_hops_through_a_deleted_folder(graph_layers) -> None:
@@ -570,3 +617,37 @@ async def test_a_chain_top_nothing_else_lists_is_listed_under_the_app(graph_laye
             await layer.release([UNPLACED])
 
     _assert_each_store(await on_every_store(graph_layers, run), "{store} unplaced", "{store}")
+
+
+async def test_a_parent_and_grant_record_is_read_below_a_parent_read_by_its_own_grant_and_nowhere_else(graph_layers) -> None:
+    """PAGSEED: dave reads the issue i1 only by his own grant, and the PARENT_AND_GRANT comment c1 (granted to his group), the file f1 in it and
+    the reply c5 granted to him, by the access check and by browsing i1; never without the record's own grant or under a parent he cannot read.
+    PAGSTORY: a RESTRICTED story under an epic read the same way stays closed. DECLPAG: under a member of a declared group it stays closed, as an
+    OPEN child there does. PAGMEMBER: under a member that is also read below a seed it is read, as an OPEN child there is."""
+    oracle = OracleLayer()
+    expected = {
+        (PAGSEED, "dave"): {"i1", "c1", "f1", "c5"},
+        (PAGSEED, "alice"): {"P", "i1", "i2", "c1", "f1", "c3", "s1"},
+        (PAGSEED, "bob"): {"P", "i1", "i2", "c2"},
+        (PAGSEED, "carol"): {"i2"},
+        (PAGSTORY, "dave"): {"epic"},
+        (DECLPAG, "u"): {"d", "k"},
+        (PAGMEMBER, "u"): {"S", "M", "C", "O"},
+    }
+    asked = {PAGSEED: ["P", "i1", "i2", "c1", "c2", "c3", "c4", "c5", "f1", "s1"], PAGSTORY: ["P", "epic", "story", "sub", "plain", "note"],
+             DECLPAG: ["d", "k", "c"], PAGMEMBER: ["S", "M", "C", "O"]}
+    for (world, who), want in expected.items():
+        assert await oracle.admitted(world, who, asked[world]) == want, who
+    worlds = [PAGSEED, PAGSTORY, DECLPAG, PAGMEMBER]
+    for layer in graph_layers:
+        await layer.preload(worlds)
+        try:
+            for (world, who), want in expected.items():
+                assert await layer.admitted(world, who, asked[world]) == want, (layer.name, who)
+            assert await children_of(layer, PAGSEED, "dave", "i1", "record") == {"c1": True}, layer.name
+            assert await children_of(layer, PAGSEED, "dave", "c1", "record") == {"f1": False, "c5": False}, layer.name
+            assert await children_of(layer, PAGSTORY, "dave", "epic", "record") == {}, layer.name
+            bad = [f for i, world in enumerate(worlds) for f in _bad(await check_world(layer, world, f"pag-{i}"))]
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release(worlds)

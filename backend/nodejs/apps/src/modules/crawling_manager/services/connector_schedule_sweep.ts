@@ -22,6 +22,11 @@ export const SWEEP_QUEUE_NAME = 'connector-schedule-sweep';
 const SWEEP_JOB_NAME = 'sweep';
 const SWEEP_STARTUP_JOB_ID = 'sweep-startup';
 const DEFAULT_SWEEP_INTERVAL_MINUTES = 15;
+// The startup sweep runs while the connector service may still be starting (one container starts both),
+// so its listing is retried for about three minutes, like the scheduled-jobs backfill.
+const STARTUP_LISTING_ATTEMPTS = 10;
+const STARTUP_LISTING_FIRST_DELAY_MS = 2_000;
+const STARTUP_LISTING_MAX_DELAY_MS = 30_000;
 
 export interface SweepSummary {
   checked: number;
@@ -54,6 +59,8 @@ export class ConnectorScheduleSweepService {
   });
   private queue: Queue | PgJobQueue | null = null;
   private worker: Worker | PgJobWorker | null = null;
+  // close() waits for the running job, so the startup wait must end when the service closes
+  private readonly closing = new AbortController();
 
   constructor(
     @inject(CrawlingSchedulerService)
@@ -70,10 +77,8 @@ export class ConnectorScheduleSweepService {
     }
 
     try {
-      const run = async (): Promise<void> => {
-        await runWithRequestContext({ rootId: newSystemRoot() }, () =>
-          this.sweep(),
-        );
+      const run = async (job: { id?: string }): Promise<void> => {
+        await this.runJob(job);
       };
       if (usesPgScheduler()) {
         // no Redis: the same one-sweeper-per-tick contract on PostgreSQL (claimed with SKIP LOCKED)
@@ -88,7 +93,7 @@ export class ConnectorScheduleSweepService {
         // an emitted 'error' with no listener would crash the process on a transient database error
         worker.on('error', (e: unknown) => {
           this.logger.error('connector schedule sweep worker error', {
-            error: e instanceof Error ? e.message : String(e),
+            error: e,
           });
         });
         this.worker = worker;
@@ -127,7 +132,7 @@ export class ConnectorScheduleSweepService {
       // BullMQ emits 'error' asynchronously; without a listener Node treats it as uncaught.
       const logAsyncError = (message: string) => (error: unknown) => {
         this.logger.error(message, {
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error,
         });
       };
       this.queue.on(
@@ -159,12 +164,65 @@ export class ConnectorScheduleSweepService {
     } catch (error) {
       // Defensive job only; never block app startup on it.
       this.logger.error('Failed to start connector schedule sweep', {
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error,
       });
     }
   }
 
-  async sweep(): Promise<SweepSummary> {
+  private runJob(job: { id?: string }): Promise<SweepSummary> {
+    return runWithRequestContext({ rootId: newSystemRoot() }, () =>
+      this.sweep({ waitForConnectorService: job.id === SWEEP_STARTUP_JOB_ID }),
+    );
+  }
+
+  private async listScheduledConnectors(
+    waitForConnectorService: boolean,
+  ): Promise<scheduledConnectorsClient.ScheduledConnectorListing> {
+    let delay = STARTUP_LISTING_FIRST_DELAY_MS;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await scheduledConnectorsClient.fetchAllScheduledConnectors(
+          this.appConfig,
+        );
+      } catch (error) {
+        if (
+          !waitForConnectorService ||
+          attempt >= STARTUP_LISTING_ATTEMPTS ||
+          this.closing.signal.aborted
+        ) {
+          throw error;
+        }
+        this.logger.info(
+          'Connector service not reachable yet; the startup schedule sweep retries',
+          {
+            attempt,
+            retryInMs: delay,
+            error,
+          },
+        );
+        if (await this.sleepUnlessClosed(delay)) throw error;
+        delay = Math.min(delay * 2, STARTUP_LISTING_MAX_DELAY_MS);
+      }
+    }
+  }
+
+  /** Resolves true when the service closed during the wait. */
+  private sleepUnlessClosed(ms: number): Promise<boolean> {
+    const { signal } = this.closing;
+    return new Promise<boolean>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', done);
+        resolve(signal.aborted);
+      };
+      const timer = setTimeout(done, ms);
+      signal.addEventListener('abort', done);
+    });
+  }
+
+  async sweep({
+    waitForConnectorService = false,
+  }: { waitForConnectorService?: boolean } = {}): Promise<SweepSummary> {
     const started = Date.now();
     const summary: SweepSummary = {
       checked: 0,
@@ -186,19 +244,22 @@ export class ConnectorScheduleSweepService {
     let snapshot: Awaited<
       ReturnType<CrawlingSchedulerService['listRepeatableSchedules']>
     >;
+    let live: typeof snapshot;
     try {
       // Snapshot before fetching: a schedule a user creates mid-sweep is not in
       // it, so it can never be mistaken for an orphan.
       snapshot = await this.scheduler.listRepeatableSchedules();
-      const listing =
-        await scheduledConnectorsClient.fetchAllScheduledConnectors(
-          this.appConfig,
-        );
+      const listing = await this.listScheduledConnectors(
+        waitForConnectorService,
+      );
       desired = listing.items;
       listingPartial = listing.partial;
+      // Read again for the per-connector match: the listing can wait minutes for the
+      // connector service, and a schedule lost meanwhile must still be recreated.
+      live = await this.scheduler.listRepeatableSchedules();
     } catch (error) {
       this.logger.error('Connector schedule sweep aborted; nothing changed', {
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error,
       });
       summary.aborted = true;
       return finish();
@@ -209,9 +270,9 @@ export class ConnectorScheduleSweepService {
     for (const item of desired) {
       summary.checked++;
       const ctx = {
-        connectorId: item.connectorId,
-        type: item.type,
-        orgId: item.orgId,
+        connector_id: item.connectorId,
+        connector_type: item.type,
+        org_id: item.orgId,
       };
       try {
         const name = this.scheduler.jobNameFor(item.type, item.connectorId);
@@ -230,7 +291,7 @@ export class ConnectorScheduleSweepService {
         const every = Math.floor(intervalMinutes) * 60_000;
         // `every` only: BullMQ ignores tz for interval jobs, and comparing it
         // would reschedule on every sweep whenever the stored tz is normalised.
-        const current = snapshot.filter((r) => r.name === name);
+        const current = live.filter((r) => r.name === name);
         const matching = current.filter((r) => Number(r.every) === every);
         const stale = current.filter((r) => Number(r.every) !== every);
 
@@ -286,7 +347,7 @@ export class ConnectorScheduleSweepService {
         failedConnectorIds.add(item.connectorId);
         this.logger.error('Sweep failed for connector', {
           ...ctx,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error,
         });
       }
     }
@@ -336,7 +397,7 @@ export class ConnectorScheduleSweepService {
         summary.errors++;
         this.logger.error('Sweep failed to remove orphaned schedule', {
           name: r.name,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error,
         });
       }
     }
@@ -345,6 +406,7 @@ export class ConnectorScheduleSweepService {
   }
 
   async close(): Promise<void> {
+    this.closing.abort();
     await this.worker?.close();
     await this.queue?.close();
     this.worker = null;

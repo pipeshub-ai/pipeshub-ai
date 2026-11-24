@@ -191,6 +191,28 @@ class TestBuildCodingSandboxManager:
         assert entry.limits.max_concurrent == 3
         assert entry.limits.max_lifetime_s == 60.0
 
+    async def test_the_runs_stop_token_reaches_the_manager(self, monkeypatch) -> None:
+        from types import SimpleNamespace
+
+        from app.agent_loop_lib.core.context import CancellationToken
+
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        token = CancellationToken()
+        ctx = SimpleNamespace(org_id="o", user_id="u", conversation_id="c", cancellation_token=token)
+        manager = await build_coding_sandbox_manager(ctx=ctx)
+        assert manager._stop_token is token
+
+        without = SimpleNamespace(org_id="o", user_id="u", conversation_id="c")
+        assert (await build_coding_sandbox_manager(ctx=without))._stop_token is None
+
+    async def test_run_timeout_cap_comes_from_settings(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        monkeypatch.setenv("SANDBOX_MAX_RUN_TIMEOUT_S", "120")
+        manager = await build_coding_sandbox_manager()
+        assert manager.run_timeout_cap(SandboxType.CODING) == 120
+
     async def test_local_factory_produces_real_local_sandbox_instance(
         self, monkeypatch,
     ) -> None:
@@ -915,6 +937,33 @@ class TestCodingSandboxArtifactBridge:
             {"file": "report.pdf", "error": "RuntimeError: permission denied"}
         ]
         assert "artifact_errors_note" in ctx.tool_response.data
+
+    async def test_a_failed_registrations_error_reaches_the_model_without_its_secret(self, monkeypatch) -> None:
+        """`artifact_errors` rides on a successful run result, which the executor does not mask: a storage driver's
+        error that quotes a signed URL or a key reaches the model with the secret masked and the words kept."""
+        context = _make_context(blob_store=AsyncMock())
+        registry = _make_mock_registry()
+        registry.register_output = AsyncMock(
+            side_effect=RuntimeError("upload refused: https://acct.blob.core.windows.net/c/r.pdf?sig=FAKE-SIG-FOR-TEST"),
+        )
+        monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
+        manager = SandboxManager()
+        manager.register_backend_factory(
+            SandboxType.CODING, lambda: _FakeBackend({"output/report.pdf": b"pdf-bytes"}),
+        )
+        sandbox_id, _ = await manager.get_or_create(SandboxType.CODING)
+        ctx = ToolResultContext(
+            tool_path="/toolsets/coding_sandbox/run_code",
+            tool_use_id=__import__("uuid").uuid4(),
+            tool_response=ToolOutput(success=True, data={"artifacts": ["output/report.pdf"], "sandbox_id": sandbox_id}),
+        )
+
+        with patch("app.agents.agent_loop.sandbox_bridge.register_task"):
+            await coding_sandbox_artifact_bridge(context, manager)(ctx, _noop_next)
+
+        (failure,) = ctx.tool_response.data["artifact_errors"]
+        assert failure["error"].startswith("RuntimeError: upload refused:")
+        assert "FAKE-SIG-FOR-TEST" not in failure["error"]
 
     async def test_emits_live_sse_artifact_event_when_event_sink_present(self, monkeypatch) -> None:
         blob_store = AsyncMock()

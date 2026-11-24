@@ -2,7 +2,7 @@
 
 The answers are those of ``Neo4jProvider``. Every statement binds the ambient org and the org argument matches the documents' ``orgId``. A failed read
 raises: nothing here answers "empty" or "all" for "failed". A list of ids or connectors that is empty matches nothing, and an empty ``within`` admits nothing.
-``get_permitted_entity_records`` is not the access decision (it reads neither the access rule nor the connector gate): its callers decide each row with ``check_access``.
+``get_permitted_entity_records`` is not the access decision (it reads the access rule only so far that a record needing its own grant, RESTRICTED or PARENT_AND_GRANT, takes its role from its own grants alone, never from what it inherits, and it does not read the connector gate): its callers decide each row with ``check_access``.
 Every statement is a literal with bound parameters.
 """
 from __future__ import annotations
@@ -233,18 +233,20 @@ class EntityAccessMixin(PgBase):
                   UNION ALL SELECT g.to_id, NULL FROM graph.edges b JOIN graph.nodes o ON o.org_id = b.org_id AND o.coll = 'organizations' AND o.id = b.to_id
                     JOIN graph.edges g ON g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = 'organizations' AND g.from_id = o.id AND g.to_coll = 'recordGroups' AND g.doc->>'type' = 'ORG'
                     WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION')
-                SELECT DISTINCT rg.id, coalesce((rg.doc->>'hideChildren')::boolean, false) AS hide FROM reach JOIN graph.nodes rg ON rg.org_id = $1 AND rg.coll = 'recordGroups' AND rg.id = reach.rg
+                SELECT DISTINCT rg.id, coalesce((rg.doc->>'hideChildren')::boolean, false) AS hide, rg.doc->>'connectorId' AS cid FROM reach JOIN graph.nodes rg ON rg.org_id = $1 AND rg.coll = 'recordGroups' AND rg.id = reach.rg
                 WHERE rg.doc->>'orgId' = $5 AND coalesce((rg.doc->>'isDeleted')::boolean, false) = false AND rg.doc->>'connectorId' = ANY($6::text[])
                   AND (reach.cid IS NULL OR rg.doc->>'connectorId' = reach.cid)""",
                                     org, uk, [p for p, _ in principals], [c for _, c in principals], org_id, levels)
-            roots = [r["id"] for r in seeds if not r["hide"]]
-            nested = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_nested */ WITH RECURSIVE w(id, depth) AS (
-                  SELECT x, 0 FROM unnest($2::text[]) x
-                  UNION SELECT i.from_id, w.depth + 1 FROM w JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.to_coll = 'recordGroups' AND i.to_id = w.id
-                    AND i.from_coll = 'recordGroups' JOIN graph.nodes c ON c.org_id = i.org_id AND c.coll = 'recordGroups' AND c.id = i.from_id WHERE w.depth < $3::int)
+            roots = [r for r in seeds if not r["hide"]]
+            # The walk stays inside each seed's connector.
+            nested = await tx.fetch("""/* pipeshub:graph.get_entity_access_context_nested */ WITH RECURSIVE w(id, cid, depth) AS (
+                  SELECT x, c, 0 FROM unnest($2::text[], $6::text[]) AS s(x, c)
+                  UNION SELECT i.from_id, w.cid, w.depth + 1 FROM w JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions' AND i.to_coll = 'recordGroups' AND i.to_id = w.id
+                    AND i.from_coll = 'recordGroups' JOIN graph.nodes c ON c.org_id = i.org_id AND c.coll = 'recordGroups' AND c.id = i.from_id AND c.doc->>'connectorId' = w.cid
+                    WHERE w.depth < $3::int)
                 SELECT DISTINCT c.id FROM w JOIN graph.nodes c ON c.org_id = $1 AND c.coll = 'recordGroups' AND c.id = w.id
                 WHERE w.depth >= 1 AND c.doc->>'orgId' = $4 AND coalesce((c.doc->>'isDeleted')::boolean, false) = false AND c.doc->>'connectorId' = ANY($5::text[])""",
-                                     org, roots, CONTAINER_INHERIT_MAX_DEPTH, org_id, levels)
+                                     org, [r["id"] for r in roots], CONTAINER_INHERIT_MAX_DEPTH, org_id, levels, [r["cid"] for r in roots])
             return {"user_key": uk, "apps": apps, "record_group_ids": sorted({r["id"] for r in seeds} | {r["id"] for r in nested})}
         return await self._q(go, transaction)
 

@@ -13,6 +13,7 @@ import asyncio
 import pytest
 
 from app.core.org_context import OrgMismatch
+from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 
 from .test_access import APP, World, _org, rec
 from .test_access import w as w
@@ -290,7 +291,7 @@ async def test_updating_a_grant_is_logged_for_the_projection_like_any_other_gran
 
     async def wipe() -> None:
         async def go(tx) -> None:
-            await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1), 5)", w.org)
+            await tx.execute("/* pipeshub:test.clear_log */ SELECT kg.w_changes_delete(ARRAY(SELECT id FROM kg.graph_changes WHERE org_id = $1), $2)", w.org, CODE_EPOCH)
         await p._q(go, None, write=True)
     await wipe()
     await p.update_edge("users/m", "records/r", {"role": "READER"}, "permission")             # nothing the projection reads changed
@@ -324,21 +325,19 @@ async def test_a_record_is_below_an_ancestor_only_over_parent_child_edges_from_i
 
 # ---- keys and lists of records ---------------------------------------------------------------------------------------------------------------
 
-async def test_records_are_found_by_external_id_with_or_without_a_connector_and_never_across_orgs(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_records_are_found_by_external_id_and_connector_and_never_across_orgs(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await w.nodes("records", rec("r1", externalRecordId="ext1"), {"_key": "r2", "connectorId": "other-app", "externalRecordId": "ext1"}, rec("r3", externalRecordId="ext3"))
     p = w.p
     assert await p.get_record_key_by_external_id("ext1", APP) == "r1" and await p.get_record_key_by_external_id("ext1", "other-app") == "r2"
     assert await p.get_record_key_by_external_id("ext1", "no-app") is None and await p.get_record_key_by_external_id("zzz", APP) is None
-    assert await p.get_key_by_external_file_id("ext3") == "r3" and await p.get_key_by_external_message_id("ext3") == "r3"
-    assert await p.get_key_by_external_file_id("ext1") == "r1"                              # two connectors: the smallest key, stably
     other = _org()
     with in_org(other):
-        assert await p.get_key_by_external_file_id("ext3") is None
+        assert await p.get_record_key_by_external_id("ext1", APP) is None
     real = p._q
     monkeypatch.setattr(p, "_q", failing)
-    assert await p.get_key_by_external_file_id("ext3") is None and await p.get_record_key_by_external_id("ext1", APP) is None
+    assert await p.get_record_key_by_external_id("ext1", APP) is None
     monkeypatch.setattr(p, "_q", real)
-    assert await p.get_key_by_external_message_id("ext3") == "r3"
+    assert await p.get_record_key_by_external_id("ext1", APP) == "r1"
 
 
 async def test_records_with_a_group_or_a_parent_are_linked_and_the_rest_are_not(w: World) -> None:
