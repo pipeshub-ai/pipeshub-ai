@@ -108,6 +108,7 @@ class TestMCPRegistry:
         assert "miro" in type_ids
         assert "instantly" in type_ids
         assert "apollo" in type_ids
+        assert "mixpanel" in type_ids
 
     def test_apollo_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -435,6 +436,26 @@ class TestMCPRegistry:
         assert "/sse" not in (intercom.default_url or "")
         assert ".eu." not in (intercom.default_url or "")
         assert "docs.fireflies.ai" not in (fireflies.default_url or "")
+
+    def test_mixpanel_catalog_entry(self) -> None:
+        """Mixpanel's US host registers PipesHub itself and asks only for its mandatory scopes."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        mixpanel = registry.get_template("mixpanel")
+        assert mixpanel is not None
+        assert mixpanel.default_url == "https://mcp.mixpanel.com/mcp"
+        assert mixpanel.transport == MCPTransport.STREAMABLE_HTTP
+        assert mixpanel.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert mixpanel.supports_dcr is True
+        assert mixpanel.url_editable is False
+        assert mixpanel.require_oauth_client is False
+        assert mixpanel.authorization_url == "https://mixpanel.com/oauth/authorize"
+        assert mixpanel.token_url == "https://mixpanel.com/oauth/token/"
+        assert mixpanel.default_scopes == [
+            "projects", "analysis", "events", "insights", "segmentation",
+            "retention", "data:read", "funnels", "flows", "data_definitions",
+        ]
+        assert mixpanel.icon == "/icons/connectors/mixpanel.svg"
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode
