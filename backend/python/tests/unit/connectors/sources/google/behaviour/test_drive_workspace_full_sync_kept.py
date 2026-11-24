@@ -149,6 +149,96 @@ async def test_a_group_left_out_of_the_listing_whose_members_cannot_be_read_keep
     assert KEPT not in ws.records.deleted_groups
     assert unlinked.user_groups & {KEPT} == set(), "unconfirmed: the group is kept"
     assert unlinked.user_groups & {GONE} == {GONE}
+    assert _members(ws, KEPT) == {BOB}, "a failed read is not an empty group"
+
+
+def _members(ws: Workspace, group_email: str) -> set[str]:  # noqa: F811
+    return {m.email for m in ws.records.user_groups[group_email][1]}
+
+
+def _reaches_through_a_group(ws: Workspace, email: str, external_id: str) -> bool:  # noqa: F811
+    """Whether a group granted on the item has the person among its stored members."""
+    return any(
+        entity == "GROUP" and group in ws.records.user_groups and email in _members(ws, group)
+        for group, entity, _ in ws.grants(external_id)
+    )
+
+
+def _members_answer(ws: Workspace, group_email: str, answer: dict[str, Any]) -> None:  # noqa: F811
+    """members.list answers this body for the group."""
+    ws.http.route("GET", f"{ADMIN_API}/groups/{group_email}/members", lambda req: answer)
+
+
+async def test_a_group_left_out_of_the_listing_that_has_no_members_left_loses_its_members(ws: Workspace) -> None:  # noqa: F811
+    await _two_groups_synced(ws)
+    assert _reaches_through_a_group(ws, BOB, "f1")
+    _groups_listed_without(ws, KEPT)
+    ws.world.groups[KEPT]["members"] = []
+
+    unlinked = await _runner_full_sync(ws)
+
+    assert KEPT in ws.records.user_groups and KEPT not in ws.records.deleted_groups
+    assert _members(ws, KEPT) == set(), "members.list answers the group is empty"
+    assert not _reaches_through_a_group(ws, BOB, "f1"), "the former member loses the group's access"
+    assert (KEPT, "GROUP", "READ") in ws.grants("f1"), "the grant to the group itself stays"
+    assert KEPT not in ws.records.kept_user_groups
+    assert unlinked.user_groups & {KEPT} == set(), "written this run: not unlinked"
+    assert unlinked.user_groups & {GONE} == {GONE}
+
+
+async def test_an_empty_members_answer_without_its_members_key_empties_the_group(ws: Workspace) -> None:  # noqa: F811
+    await _two_groups_synced(ws)
+    _groups_listed_without(ws, KEPT)
+    # The directory leaves an empty list out of its answer.
+    _members_answer(ws, KEPT, {"kind": "admin#directory#members", "etag": "e1"})
+
+    await _runner_full_sync(ws)
+
+    assert _members(ws, KEPT) == set()
+    assert KEPT not in ws.records.kept_user_groups
+
+
+@pytest.mark.parametrize("answer", [
+    {"etag": "e1"},
+    {"kind": "admin#directory#members", "members": None},
+    {"kind": "admin#directory#members", "members": [], "nextPageToken": "1"},
+], ids=["no-kind-no-members", "members-null", "empty-page-with-more"])
+async def test_a_members_answer_that_is_not_conclusively_empty_keeps_the_stored_members(
+    ws: Workspace, answer: dict[str, Any]  # noqa: F811
+) -> None:
+    await _two_groups_synced(ws)
+    _groups_listed_without(ws, KEPT)
+    _members_answer(ws, KEPT, answer)
+
+    unlinked = await _runner_full_sync(ws)
+
+    assert _members(ws, KEPT) == {BOB}, "unknown is not empty"
+    assert _reaches_through_a_group(ws, BOB, "f1")
+    assert ws.records.kept_user_groups == [KEPT]
+    assert unlinked.user_groups & {KEPT} == set()
+
+
+async def test_an_emptied_group_that_cannot_be_written_is_kept_and_the_run_is_incomplete(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+) -> None:
+    await _two_groups_synced(ws)
+    _groups_listed_without(ws, KEPT)
+    ws.world.groups[KEPT]["members"] = []
+    connector = await ws.connector_()
+    real = ws.records.on_new_user_groups
+
+    async def on_new_user_groups(groups: list[tuple[Any, list[Any]]], **kwargs: bool) -> None:
+        if any(g.source_user_group_id == KEPT for g, _ in groups):
+            raise RuntimeError("graph unavailable")
+        await real(groups, **kwargs)
+
+    monkeypatch.setattr(ws.records, "on_new_user_groups", on_new_user_groups)
+
+    await connector._remove_deleted_groups(set())
+
+    assert _members(ws, KEPT) == {BOB}
+    assert ws.records.kept_user_groups == [KEPT]
+    assert not connector.full_sync_coverage().complete
 
 
 async def test_a_group_left_out_of_the_listing_whose_lookup_fails_keeps_its_links(ws: Workspace) -> None:  # noqa: F811

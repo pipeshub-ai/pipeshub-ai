@@ -1725,7 +1725,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         A deleted Workspace group keeps its members in PipesHub otherwise, and with them every grant made to
         the group. The directory documents no error answers for members.list
         (https://developers.google.com/workspace/admin/directory/reference/rest/v1/members/list), so its "not
-        found" is confirmed with groups.get for that exact group; any other answer keeps the group for the next run.
+        found" is confirmed with groups.get for that exact group. A group whose members.list answer is empty is
+        written with no members; any other answer keeps the group as stored for the next run.
         """
         stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
         kept: list[AppUserGroup] = []
@@ -1733,7 +1734,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             group_id = (group.source_user_group_id or "").lower()
             if not group_id or "@" not in group_id or group_id in listed_group_ids:
                 continue
-            if not await self._group_is_gone(group_id):
+            state = await self._unlisted_group_state(group_id)
+            if state == "empty":
+                if not await self._write_emptied_group(group):
+                    kept.append(group)
+                continue
+            if state != "gone":
                 kept.append(group)
                 continue
             self.logger.info(f"Group {group_id} was deleted in Google Workspace; removing it and its access")
@@ -1741,26 +1747,51 @@ class GoogleDriveTeamConnector(BaseConnector):
         # A kept group was not rewritten this run, so the full sync's unlink would otherwise drop its members.
         self.data_entities_processor.note_kept_user_groups(self.connector_id, kept)
 
-    async def _group_is_gone(self, group_id: str) -> bool:
-        """Whether a group missing from the listing is deleted: True only when members.list and groups.get
-        both answer 404."""
+    async def _unlisted_group_state(self, group_id: str) -> str:
+        """What the directory says of a group missing from the listing: "gone" only when members.list and
+        groups.get both answer 404, "empty" when members.list answers that it has no members, else "kept"."""
         try:
-            await self.admin_data_source.members_list(groupKey=group_id, maxResults=1)
+            answer = await self.admin_data_source.members_list(groupKey=group_id, maxResults=1)
         except HttpError as e:
             if e.resp.status != HttpStatusCode.NOT_FOUND.value:
                 self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {e}")
-                return False
+                return "kept"
             try:
                 await self.admin_data_source.groups_get(groupKey=group_id)
             except HttpError as again:
                 if again.resp.status != HttpStatusCode.NOT_FOUND.value:
                     self.logger.warning(f"Could not confirm that group {group_id} was deleted; keeping it: {again}")
-                    return False
-                return True
+                    return "kept"
+                return "gone"
             self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
-            return False
+            return "kept"
+        if self._is_empty_members_answer(answer):
+            return "empty"
         self.logger.warning(f"Group {group_id} is missing from the listing but still exists; keeping it")
-        return False
+        return "kept"
+
+    @staticmethod
+    def _is_empty_members_answer(answer: object) -> bool:
+        """Whether a members.list answer says the group has no members. The directory leaves an empty list's
+        key out, so an answer without it counts only when its kind marks it a members list; any other shape
+        is unknown, not empty."""
+        if not isinstance(answer, dict) or answer.get("nextPageToken"):
+            return False
+        if "members" in answer:
+            return answer["members"] == []
+        return answer.get("kind") == "admin#directory#members"
+
+    async def _write_emptied_group(self, group: AppUserGroup) -> bool:
+        """Write a stored group the directory says has no members with an empty membership, so its former
+        members lose the access granted to it. False when the write fails; the group is then kept as stored."""
+        try:
+            await self.data_entities_processor.on_new_user_groups([(group, [])])
+        except Exception as e:
+            self._sync_ledger.note_incomplete()
+            self.logger.error(f"Could not clear the members of group {group.source_user_group_id}: {e}", exc_info=True)
+            return False
+        self.logger.info(f"Group {group.source_user_group_id} has no members left; cleared its members")
+        return True
 
     async def _process_group(self, group: Dict) -> None:
         """
