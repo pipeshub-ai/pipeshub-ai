@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from google_behaviour_fakes import ApiRequest
+from google_behaviour_fakes import ApiRequest, google_error
 from test_drive_workspace_sync_behaviour import (  # noqa: F401
     ALICE,
     BOB,
@@ -25,6 +25,8 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 )
 
 KEPT = "eng@example.com"
+CAROL = "carol@example.com"
+NESTED = "eng-oncall@example.com"
 GONE = "gone@example.com"
 ADMIN_API = "/admin/directory/v1"
 DRIVE_API = "/drive/v3"
@@ -137,6 +139,78 @@ async def test_a_group_left_out_of_the_listing_that_still_has_members_keeps_its_
     assert KEPT in ws.records.user_groups and KEPT not in ws.records.deleted_groups
     assert unlinked.user_groups & {KEPT} == set(), "members.list still answers: the group exists"
     assert unlinked.user_groups & {GONE} == {GONE}
+    assert _members(ws, KEPT) == {BOB}, "written with the members the directory lists"
+    assert KEPT not in ws.records.kept_user_groups, "written this run, so not noted kept"
+
+
+async def _group_with_a_leaver_synced(ws: Workspace) -> None:  # noqa: F811
+    """KEPT holds BOB directly and CAROL through a nested group, and grants f1; then BOB leaves it at the source
+    and the listing leaves KEPT out."""
+    ws.world.add_user(CAROL)
+    ws.world.add_group(NESTED, [CAROL])
+    ws.world.add_group(KEPT, [BOB, NESTED])
+    ws.world.add_item("f1", "plan.txt", parent="root-alice", owner=ALICE, perms=[
+        {"type": "group", "role": "reader", "emailAddress": KEPT},
+    ])
+    await ws.sync()
+    assert _members(ws, KEPT) == {BOB, CAROL}
+    ws.world.groups[KEPT]["members"] = [NESTED]
+    _groups_listed_without(ws, KEPT)
+
+
+async def test_a_user_who_left_a_group_left_out_of_the_listing_loses_its_access(ws: Workspace) -> None:  # noqa: F811
+    await _group_with_a_leaver_synced(ws)
+
+    unlinked = await _runner_full_sync(ws)
+
+    assert _members(ws, KEPT) == {CAROL}, "the membership the directory lists now, nested members included"
+    assert not _reaches_through_a_group(ws, BOB, "f1"), "the user removed at the source loses the group's access"
+    assert _reaches_through_a_group(ws, CAROL, "f1"), "the remaining member keeps it"
+    assert (KEPT, "GROUP", "READ") in ws.grants("f1")
+    assert KEPT not in ws.records.kept_user_groups
+    assert unlinked.user_groups & {KEPT} == set()
+
+
+async def test_a_group_left_out_of_the_listing_whose_members_are_read_in_part_keeps_the_stored_members(
+    ws: Workspace  # noqa: F811
+) -> None:
+    await _group_with_a_leaver_synced(ws)
+
+    def members(req: ApiRequest) -> object:
+        if req.query.get("pageToken"):
+            return google_error(500, "backendError")
+        return {"kind": "admin#directory#members", "nextPageToken": "1", "members": [
+            {"id": "ext-x", "email": CAROL, "type": "USER", "role": "MEMBER"},
+        ]}
+
+    ws.http.route("GET", f"{ADMIN_API}/groups/{KEPT}/members", members)
+
+    unlinked = await _runner_full_sync(ws)
+
+    assert _members(ws, KEPT) == {BOB, CAROL}, "a partial read is not the membership"
+    assert ws.records.kept_user_groups == [KEPT]
+    assert unlinked.user_groups & {KEPT} == set()
+
+
+async def test_a_group_with_members_that_cannot_be_written_is_kept_and_the_run_is_incomplete(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+) -> None:
+    await _group_with_a_leaver_synced(ws)
+    connector = await ws.connector_()
+    real = ws.records.on_new_user_groups
+
+    async def on_new_user_groups(groups: list[tuple[Any, list[Any]]], **kwargs: bool) -> None:
+        if any(g.source_user_group_id == KEPT for g, _ in groups):
+            raise RuntimeError("graph unavailable")
+        await real(groups, **kwargs)
+
+    monkeypatch.setattr(ws.records, "on_new_user_groups", on_new_user_groups)
+
+    await connector._remove_deleted_groups({NESTED})
+
+    assert _members(ws, KEPT) == {BOB, CAROL}
+    assert ws.records.kept_user_groups == [KEPT]
+    assert not connector.full_sync_coverage().complete
 
 
 async def test_a_group_left_out_of_the_listing_whose_members_cannot_be_read_keeps_its_links(ws: Workspace) -> None:  # noqa: F811
@@ -287,6 +361,7 @@ async def test_a_group_the_directory_confirms_deleted_is_not_noted_kept(ws: Work
 async def test_a_kept_group_leaves_the_full_sync_complete(ws: Workspace) -> None:  # noqa: F811
     await _two_groups_synced(ws)
     _groups_listed_without(ws, KEPT)
+    ws.http.fail("GET", f"{ADMIN_API}/groups/{KEPT}/members", 500, "backendError")
     ws.records.kept_user_groups.clear()
     ws.sync_points.sync_points.clear()
     ws.records.begin_full_sync_run(CONNECTOR_ID)
@@ -425,6 +500,7 @@ async def test_the_kept_user_groups_are_noted_once_per_run(ws: Workspace, monkey
         notes.append([g.source_user_group_id for g in groups])
 
     monkeypatch.setattr(ws.records, "note_kept_user_groups", note_kept_user_groups)
+    ws.world.unlistable_groups[KEPT] = 404  # members.list cannot find it, groups.get still does: kept
 
     await connector._remove_deleted_groups(set())
     ws.world.groups.pop(KEPT)
